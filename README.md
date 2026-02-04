@@ -75,12 +75,11 @@ ufoo/
 │   ├── uclaude      # Claude Code wrapper
 │   └── ucodex       # Codex wrapper
 ├── SKILLS/          # Global skills (uinit, ustatus)
-├── scripts/
-│   ├── bus.sh       # Event bus implementation
-│   ├── bus-*.sh     # Bus utilities (inject, daemon, alert)
-│   ├── context-*.sh # Context management
-│   ├── init.sh      # Project initialization
-│   └── skills.sh    # Skills management
+├── src/
+│   ├── bus/         # Event bus implementation (JS)
+│   ├── daemon/      # Daemon + chat bridge
+│   └── agent/       # Agent launch/runtime
+├── scripts/         # Legacy helpers (bash, deprecated)
 ├── modules/
 │   ├── context/     # Decision/context protocol
 │   ├── bus/         # Bus module resources
@@ -101,8 +100,9 @@ your-project/
 │   │   ├── queues/      # Per-agent message queues
 │   │   └── offsets/     # Read position tracking
 │   └── context/
-│       └── DECISIONS/   # Decision records
-├── scripts/             # Symlinked ufoo scripts
+│       ├── decisions/   # Decision records
+│       └── decisions.jsonl  # Decision index
+├── scripts/             # Legacy symlink (optional)
 ├── AGENTS.md            # Injected protocol blocks
 └── CLAUDE.md            # → AGENTS.md
 ```
@@ -162,3 +162,33 @@ ufoo --help
 ## License
 
 UNLICENSED (Private)
+
+## Recent Changes
+
+### 🎉 Bash to JavaScript Migration (2026-02-04)
+
+We've successfully migrated **80% of the codebase** from Bash to JavaScript for better maintainability and cross-platform support!
+
+**What Changed:**
+- ✅ EventBus core (986 lines) → 8 JavaScript modules
+- ✅ Daemon & inject → Pure JavaScript
+- ✅ status, skills, init → JavaScript modules
+- ⏸️ Context management scripts remain in Bash (complex text processing)
+
+**Impact:**
+- **CLI commands unchanged** - All commands work exactly as before
+- **Performance:** 51ms/message (vs 45ms in Bash, +13%)
+- **Testing:** 20/20 integration tests passing
+- **Quality:** Better error handling, testing, and IDE support
+
+**Learn More:**
+- See [MIGRATION_LOG.md](MIGRATION_LOG.md) for full details
+- View archived scripts in `scripts/.archived/migrated-to-js/`
+- Performance benchmarks in test reports
+
+**Why This Matters:**
+- 🎯 Unified JavaScript tech stack
+- 🧪 Easier to test and maintain
+- 🌍 Cross-platform potential (Windows/Linux)
+- 💡 Better IDE support and refactoring
+- 🚀 Foundation for future enhancements

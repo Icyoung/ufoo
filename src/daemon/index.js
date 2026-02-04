@@ -2,9 +2,10 @@ const fs = require("fs");
 const path = require("path");
 const net = require("net");
 const { runUfooAgent } = require("../agent/ufooAgent");
-const { spawnAgent, closeAgent } = require("./ops");
+const { launchAgent, closeAgent } = require("./ops");
 const { buildStatus } = require("./status");
-const { spawnSync } = require("child_process");
+const EventBus = require("../bus");
+const { generateInstanceId, subscriberToSafeName } = require("../bus/utils");
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -13,9 +14,10 @@ function sleep(ms) {
 async function renameSpawnedAgent(projectRoot, agentType, nickname, startIso) {
   if (!nickname) return null;
   const busPath = path.join(projectRoot, ".ufoo", "bus", "bus.json");
-  const script = path.join(projectRoot, "scripts", "bus.sh");
   const targetType = agentType === "codex" ? "codex" : "claude-code";
   const deadline = Date.now() + 10000;
+  const eventBus = new EventBus(projectRoot);
+  let lastError = null;
   while (Date.now() < deadline) {
     try {
       const bus = JSON.parse(fs.readFileSync(busPath, "utf8"));
@@ -32,16 +34,15 @@ async function renameSpawnedAgent(projectRoot, agentType, nickname, startIso) {
       if (candidates.length === 0) candidates = entries;
       candidates.sort((a, b) => (a[1].joined_at || "").localeCompare(b[1].joined_at || ""));
       const [agentId] = candidates[candidates.length - 1];
-      const res = spawnSync("bash", [script, "rename", agentId, nickname], { cwd: projectRoot });
-      if (res.status === 0) return { ok: true, agent_id: agentId, nickname };
-      const err = (res.stderr || res.stdout || "").toString("utf8").trim();
-      return { ok: false, agent_id: agentId, nickname, error: err || "rename failed" };
-    } catch {
+      await eventBus.rename(agentId, nickname);
+      return { ok: true, agent_id: agentId, nickname };
+    } catch (err) {
+      lastError = err && err.message ? err.message : String(err || "rename failed");
       // ignore and retry
     }
     await sleep(200);
   }
-  return { ok: false, nickname, error: "rename timeout" };
+  return { ok: false, nickname, error: lastError || "rename timeout" };
 }
 
 function ensureDir(dir) {
@@ -136,12 +137,6 @@ async function waitForNewSubscriber(projectRoot, agentType, existing, timeoutMs 
   return null;
 }
 
-function renameSubscriber(projectRoot, subscriberId, nickname) {
-  const script = path.join(projectRoot, "scripts", "bus.sh");
-  const res = spawnSync("bash", [script, "rename", subscriberId, nickname], { cwd: projectRoot });
-  return res.status === 0;
-}
-
 function checkAndCleanupNickname(projectRoot, nickname) {
   if (!nickname) return { existing: null, cleaned: false };
   const busPath = path.join(projectRoot, ".ufoo", "bus", "bus.json");
@@ -174,7 +169,7 @@ function checkAndCleanupNickname(projectRoot, nickname) {
 async function handleOps(projectRoot, ops = []) {
   const results = [];
   for (const op of ops) {
-    if (op.action === "spawn") {
+    if (op.action === "launch") {
       const count = op.count || 1;
       const agent = op.agent === "codex" ? "codex" : "claude";
       const nickname = op.nickname || "";
@@ -182,7 +177,7 @@ async function handleOps(projectRoot, ops = []) {
       const startIso = startTime.toISOString();
       if (nickname && count > 1) {
         results.push({
-          action: "spawn",
+          action: "launch",
           ok: false,
           agent,
           count,
@@ -196,7 +191,7 @@ async function handleOps(projectRoot, ops = []) {
         if (existing) {
           // Agent with this nickname already exists and is active
           results.push({
-            action: "spawn",
+            action: "launch",
             ok: true,
             agent,
             count,
@@ -208,8 +203,15 @@ async function handleOps(projectRoot, ops = []) {
           continue;
         }
         // eslint-disable-next-line no-await-in-loop
-        await spawnAgent(projectRoot, agent, count, nickname);
-        results.push({ action: "spawn", ok: true, agent, count, nickname: nickname || undefined });
+        const launchResult = await launchAgent(projectRoot, agent, count, nickname);
+        results.push({
+          action: "launch",
+          mode: launchResult.mode,
+          ok: true,
+          agent,
+          count,
+          nickname: nickname || undefined
+        });
         if (nickname) {
           // eslint-disable-next-line no-await-in-loop
           const renameResult = await renameSpawnedAgent(projectRoot, agent, nickname, startIso);
@@ -218,7 +220,7 @@ async function handleOps(projectRoot, ops = []) {
           }
         }
       } catch (err) {
-        results.push({ action: "spawn", ok: false, agent, count, error: err.message });
+        results.push({ action: "launch", ok: false, agent, count, error: err.message });
       }
     } else if (op.action === "close") {
       const ok = await closeAgent(projectRoot, op.agent_id);
@@ -228,56 +230,72 @@ async function handleOps(projectRoot, ops = []) {
   return results;
 }
 
-function dispatchMessages(projectRoot, dispatch = [], daemonSubscriber = null) {
-  const script = path.join(projectRoot, "scripts", "bus.sh");
-  const defaultPublisher = daemonSubscriber || "ufoo-agent";
-  const env = { ...process.env, AI_BUS_PUBLISHER: defaultPublisher };
+async function dispatchMessages(projectRoot, dispatch = []) {
+  const eventBus = new EventBus(projectRoot);
+  // Always use "ufoo-agent" as the publisher for daemon messages
+  const defaultPublisher = "ufoo-agent";
   for (const item of dispatch) {
     if (!item || !item.target || !item.message) continue;
     const pub = item.publisher || defaultPublisher;
-    env.AI_BUS_PUBLISHER = pub;
-    if (item.target === "broadcast") {
-      spawnSync("bash", [script, "broadcast", item.message], { env, cwd: projectRoot });
-    } else {
-      spawnSync("bash", [script, "send", item.target, item.message], { env, cwd: projectRoot });
+    try {
+      if (item.target === "broadcast") {
+        await eventBus.broadcast(item.message, pub);
+      } else {
+        await eventBus.send(item.target, item.message, pub);
+      }
+    } catch {
+      // ignore dispatch failures
     }
   }
 }
 
 function startBusBridge(projectRoot, onEvent, onStatus) {
-  const script = path.join(projectRoot, "scripts", "bus.sh");
   const state = {
     subscriber: null,
     queueFile: null,
     pending: new Set(),
   };
+  const eventBus = new EventBus(projectRoot);
+  let joinInProgress = false;
+
+  function getAgentNickname(agentId) {
+    if (!agentId) return agentId;
+    try {
+      const busPath = path.join(projectRoot, ".ufoo", "bus", "bus.json");
+      const bus = JSON.parse(fs.readFileSync(busPath, "utf8"));
+      const meta = bus.subscribers && bus.subscribers[agentId];
+      if (meta && meta.nickname) {
+        return meta.nickname;
+      }
+    } catch {
+      // Ignore errors, return original ID
+    }
+    return agentId;
+  }
 
   function ensureSubscriber() {
-    if (state.subscriber) return;
+    if (state.subscriber || joinInProgress) return;
     const debugFile = path.join(projectRoot, ".ufoo", "run", "bus-join-debug.txt");
-    try {
-      fs.writeFileSync(debugFile, `Attempting join at ${new Date().toISOString()}\n`, { flag: "a" });
-      // Clear session env vars so join creates a new session
-      const env = { ...process.env, CLAUDE_SESSION_ID: "", CODEX_SESSION_ID: "" };
-      const res = spawnSync("bash", [script, "join"], { cwd: projectRoot, env });
-      if (res.status !== 0) {
-        const errMsg = (res.stderr || res.stdout || "").toString("utf8");
-        fs.writeFileSync(debugFile, `Join failed: ${errMsg}\n`, { flag: "a" });
-        return;
+    joinInProgress = true;
+    (async () => {
+      try {
+        fs.writeFileSync(debugFile, `Attempting join at ${new Date().toISOString()}\n`, { flag: "a" });
+        // Use fixed ID "ufoo-agent" for daemon's bus identity with explicit nickname
+        const sub = await eventBus.join("ufoo-agent", "ufoo-agent", "ufoo-agent");
+        if (!sub) {
+          fs.writeFileSync(debugFile, "Join returned empty subscriber\n", { flag: "a" });
+          return;
+        }
+        state.subscriber = sub;
+        const safe = subscriberToSafeName(sub);
+        state.queueFile = path.join(projectRoot, ".ufoo", "bus", "queues", safe, "pending.jsonl");
+        fs.writeFileSync(debugFile, `Successfully joined as ${sub}\n`, { flag: "a" });
+      } catch (err) {
+        fs.writeFileSync(debugFile, `Exception: ${err.message || err}\n`, { flag: "a" });
+      } finally {
+        joinInProgress = false;
       }
-      const out = (res.stdout || "").toString("utf8").trim();
-      const sub = out.split(/\r?\n/).pop();
-      if (!sub) {
-        fs.writeFileSync(debugFile, `Join returned empty subscriber\n`, { flag: "a" });
-        return;
-      }
-      state.subscriber = sub;
-      const safe = sub.replace(/:/g, "_");
-      state.queueFile = path.join(projectRoot, ".ufoo", "bus", "queues", safe, "pending.jsonl");
-      fs.writeFileSync(debugFile, `Successfully joined as ${sub}\n`, { flag: "a" });
-    } catch (err) {
-      fs.writeFileSync(debugFile, `Exception: ${err.message || err}\n`, { flag: "a" });
-    }
+    })();
   }
 
   function poll() {
@@ -312,7 +330,8 @@ function startBusBridge(projectRoot, onEvent, onStatus) {
       if (evt.publisher && state.pending.has(evt.publisher)) {
         state.pending.delete(evt.publisher);
         if (onStatus) {
-          onStatus({ phase: "done", text: `${evt.publisher} done`, key: evt.publisher });
+          const displayName = getAgentNickname(evt.publisher);
+          onStatus({ phase: "done", text: `${displayName} done`, key: evt.publisher });
         }
       }
     }
@@ -329,7 +348,8 @@ function startBusBridge(projectRoot, onEvent, onStatus) {
       if (!target) return;
       state.pending.add(target);
       if (onStatus) {
-        onStatus({ phase: "start", text: `${target} processing`, key: target });
+        const displayName = getAgentNickname(target);
+        onStatus({ phase: "start", text: `${displayName} processing`, key: target });
       }
     },
     getSubscriber() {
@@ -394,6 +414,16 @@ function startDaemon({ projectRoot, provider, model }) {
         for (const req of items) {
           if (!req || typeof req !== "object") continue;
           if (req.type === "status") {
+            // 先清理不活跃的订阅者，确保状态准确
+            try {
+              const eventBus = new EventBus(projectRoot);
+              eventBus.ensureBus();
+              eventBus.loadBusData();
+              eventBus.subscriberManager.cleanupInactive();
+              eventBus.saveBusData();
+            } catch {
+              // ignore cleanup errors, proceed with status
+            }
             const status = buildStatus(projectRoot);
             socket.write(`${JSON.stringify({ type: "status", data: status })}\n`);
             continue;
@@ -430,7 +460,7 @@ function startDaemon({ projectRoot, provider, model }) {
                 busBridge.markPending(item.target);
               }
             }
-            dispatchMessages(projectRoot, result.payload.dispatch || [], busBridge.getSubscriber());
+            await dispatchMessages(projectRoot, result.payload.dispatch || []);
             const opsResults = await handleOps(projectRoot, result.payload.ops || []);
             log(`ok reply=${Boolean(result.payload.reply)} dispatch=${(result.payload.dispatch || []).length} ops=${(result.payload.ops || []).length}`);
             socket.write(

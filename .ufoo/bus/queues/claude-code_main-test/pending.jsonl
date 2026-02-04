@@ -1,2 +1,0 @@
-{"seq":3,"ts":"2026-01-29T09:14:08.000Z","type":"message","event":"targeted","publisher":"claude-code:other-agent","target":"claude-code:main-test","data":{"message":"这是一条测试消息，请查收！"}}
-{"seq":6,"ts":"2026-01-29T09:20:42.000Z","type":"message","event":"targeted","publisher":"claude-code:another-agent","target":"claude-code:main-test","data":{"message":"测试自动通知！"}}

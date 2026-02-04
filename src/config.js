@@ -8,7 +8,9 @@ const DEFAULT_CONFIG = {
 };
 
 function normalizeLaunchMode(value) {
-  return value === "internal" ? "internal" : "terminal";
+  if (value === "internal") return "internal";
+  if (value === "tmux") return "tmux";
+  return "terminal";
 }
 
 function normalizeAgentProvider(value) {

@@ -1,1 +1,0 @@
-{"seq":19,"ts":"2026-01-29T16:15:37.000Z","type":"message","event":"targeted","publisher":"unknown","target":"claude-code:0243a548","data":{"message":"{\"task\": \"检查项目结构\", \"action\": \"请分析当前项目的目录结构和主要模块\"}"}}

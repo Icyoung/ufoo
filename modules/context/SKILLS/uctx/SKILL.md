@@ -14,12 +14,72 @@ Fast context check for daily use. Run at session start or anytime.
 
 Pre-flight reminder:
 - If the user is asking for evaluation/recommendation/plan, write a decision before replying.
+  Use: `ufoo ctx decisions new "<Title>"`
+
+## Decision format (canonical)
+
+Project context is decision-only. Decisions live at:
+`<project>/.ufoo/context/decisions/`
+
+Decision index (JSONL):
+`<project>/.ufoo/context/decisions.jsonl`
+
+Generate/update the index:
+```bash
+ufoo ctx decisions index
+```
+
+Each JSONL row includes:
+- `ts` (ISO timestamp)
+- `type` (`decision` or `decision_status`)
+- `file` (decision filename)
+- `author` (decision author or resolver)
+
+Create a new decision (recommended before replying when required):
+```bash
+ufoo ctx decisions new "Short Title"
+```
+
+**File naming:** `NNNN-short-title.md` (4-digit prefix + kebab-case slug).
+
+**Template for new decisions:**
+```yaml
+---
+status: open
+---
+# DECISION NNNN: <Title>
+
+Date: YYYY-MM-DD
+Author: <agent>
+
+Context:
+What led to this decision?
+
+Decision:
+What is now considered true?
+
+Implications:
+What must follow from this?
+```
+
+**Status updates (only edit frontmatter):**
+```yaml
+---
+status: resolved
+resolved_by: <agent>
+resolved_at: YYYY-MM-DD
+---
+```
+
+Rules:
+- Decisions are append-only. Do not rewrite past content.
+- Only update the frontmatter when changing status.
 
 ## Workflow
 
 ### 1. Verify structure exists
 
-Check `.ufoo/context/` exists. If missing, tell user to run `uinit` (ufoo init CLI).
+Check `.ufoo/context/decisions/` exists. If missing, tell user to run `ufoo init`.
 
 ### 2. List all decisions
 

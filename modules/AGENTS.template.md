@@ -44,9 +44,7 @@ ufoo ctx decisions -n 1
 ```
 
 Key files in `.ufoo/context/`:
-- `DECISIONS/` - Decision log (append-only)
-- `SYSTEM.md` - System overview
-- `CONSTRAINTS.md` - Non-negotiable rules
+- `decisions/` - Decision log (append-only)
 
 **Decision recording policy:**
 - **Must record**: evaluations, architecture, naming, trade-offs
@@ -83,5 +81,5 @@ Extract sender ID from "from" field, use it to reply.
 
 1. Receive: `@you from claude-code:bd36dda0 Content: {"message":"Please analyze the project structure"}`
 2. Execute: Analyze the project structure
-3. Reply: `ufoo bus send "claude-code:bd36dda0" "Project contains src/, scripts/, modules/"`
+3. Reply: `ufoo bus send "claude-code:bd36dda0" "Project contains src/, modules/, bin/"`
 <!-- /ufoo -->

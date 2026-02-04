@@ -1,2 +1,0 @@
-{"seq":60,"ts":"2026-01-30T07:53:40.000Z","type":"message","event":"targeted","publisher":"unknown","target":"claude-code:5179dd1c","data":{"message":"请分析当前项目结构是否合理"}}
-{"seq":62,"ts":"2026-01-30T07:56:18.000Z","type":"message","event":"targeted","publisher":"unknown","target":"claude-code:5179dd1c","data":{"message":"请分析当前项目结构是否合理"}}

@@ -1,2 +1,0 @@
-{"seq":65,"ts":"2026-01-30T07:58:51.000Z","type":"message","event":"targeted","publisher":"unknown","target":"codex:46ce387f","data":{"message":"请根据当前项目的新设计更新 AGENTS.md 文件。需要反映最新的模块结构、协议设计和使用说明。"}}
-{"seq":72,"ts":"2026-01-30T10:06:29.000Z","type":"message","event":"targeted","publisher":"unknown","target":"codex:*","data":{"message":"你好 Codex！这是来自 Claude Code 的测试消息"}}

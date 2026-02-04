@@ -32,10 +32,18 @@ function runCommand(command, args, options = {}) {
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d) => {
-      stdout += d.toString("utf8");
+      const chunk = d.toString("utf8");
+      stdout += chunk;
+      if (options.onStdout) {
+        options.onStdout(chunk);
+      }
     });
     child.stderr.on("data", (d) => {
-      stderr += d.toString("utf8");
+      const chunk = d.toString("utf8");
+      stderr += chunk;
+      if (options.onStderr) {
+        options.onStderr(chunk);
+      }
     });
     let timeout = null;
     if (options.timeoutMs) {

@@ -75,12 +75,11 @@ ufoo/
 │   ├── uclaude      # Claude Code 包装器
 │   └── ucodex       # Codex 包装器
 ├── SKILLS/          # 全局技能（uinit, ustatus）
-├── scripts/
-│   ├── bus.sh       # 事件总线实现
-│   ├── bus-*.sh     # 总线工具（注入、守护进程、提醒）
-│   ├── context-*.sh # 上下文管理
-│   ├── init.sh      # 项目初始化
-│   └── skills.sh    # 技能管理
+├── src/
+│   ├── bus/         # 事件总线实现（JS）
+│   ├── daemon/      # Daemon + chat bridge
+│   └── agent/       # Agent 启动/运行
+├── scripts/         # 历史遗留（bash，已弃用）
 ├── modules/
 │   ├── context/     # 决策/上下文协议
 │   ├── bus/         # 总线模块资源
@@ -102,7 +101,7 @@ your-project/
 │   │   └── offsets/     # 读取位置跟踪
 │   └── context/
 │       └── DECISIONS/   # 决策记录
-├── scripts/             # 软链接的 ufoo 脚本
+├── scripts/             # 软链接（历史遗留，可选）
 ├── AGENTS.md            # 注入的协议块
 └── CLAUDE.md            # → AGENTS.md
 ```

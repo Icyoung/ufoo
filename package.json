@@ -17,8 +17,8 @@
   ],
   "bin": {
     "ufoo": "bin/ufoo.js",
-    "uclaude": "bin/uclaude",
-    "ucodex": "bin/ucodex"
+    "uclaude": "bin/uclaude.js",
+    "ucodex": "bin/ucodex.js"
   },
   "files": [
     "bin/",
@@ -32,9 +32,18 @@
   "engines": {
     "node": ">=18"
   },
+  "scripts": {
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage"
+  },
   "dependencies": {
     "blessed": "^0.1.81",
     "chalk": "^4.1.2",
-    "commander": "^13.1.0"
+    "commander": "^13.1.0",
+    "gray-matter": "^4.0.3"
+  },
+  "devDependencies": {
+    "jest": "^30.2.0"
   }
 }

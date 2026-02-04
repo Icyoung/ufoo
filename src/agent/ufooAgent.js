@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { runCliAgent } = require("./cliRunner");
 const { normalizeCliOutput } = require("./normalizeOutput");
+const { buildStatus } = require("../daemon/status");
 
 function loadSessionState(projectRoot) {
   const dir = path.join(projectRoot, ".ufoo", "agent");
@@ -20,41 +21,27 @@ function saveSessionState(projectRoot, state) {
   fs.writeFileSync(path.join(dir, "ufoo-agent.json"), JSON.stringify(state, null, 2));
 }
 
-function isPidAlive(pid) {
-  if (!pid || typeof pid !== "number") return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return Boolean(err && err.code === "EPERM");
-  }
-}
-
 function loadBusSummary(projectRoot, maxLines = 20) {
-  const busPath = path.join(projectRoot, ".ufoo", "bus", "bus.json");
+  // Use daemon's buildStatus as the single source of truth
   let subscribers = [];
   let nicknames = {};
   try {
-    const bus = JSON.parse(fs.readFileSync(busPath, "utf8"));
-    subscribers = Object.entries(bus.subscribers || {})
-      .map(([id, meta]) => {
-        const pid = typeof meta.pid === "number" ? meta.pid : Number(meta.pid || 0);
-        const status = meta.status || "unknown";
-        const online = status === "active" && isPidAlive(pid);
-        const nickname = meta.nickname || "";
-        if (nickname) {
-          nicknames[nickname] = id;
-        }
-        return {
-          id,
-          status,
-          online,
-          agent_type: meta.agent_type || "",
-          nickname,
-          last_heartbeat: meta.last_heartbeat || "",
-        };
-      })
-      .filter((item) => item.online);
+    const status = buildStatus(projectRoot);
+    const activeMeta = status.active_meta || [];
+    subscribers = activeMeta.map((item) => {
+      const nickname = item.nickname || "";
+      if (nickname) {
+        nicknames[nickname] = item.id;
+      }
+      return {
+        id: item.id,
+        status: "active",
+        online: true,
+        agent_type: "", // Not included in active_meta, but not needed
+        nickname,
+        last_heartbeat: "",
+      };
+    });
   } catch {
     subscribers = [];
     nicknames = {};
@@ -84,6 +71,11 @@ function loadBusSummary(projectRoot, maxLines = 20) {
 }
 
 function buildSystemPrompt(context) {
+  const hasAgents = context.subscribers && context.subscribers.length > 0;
+  const agentGuidance = hasAgents
+    ? ""
+    : "\n- IMPORTANT: No agents are currently online. To execute tasks, you MUST launch agents using ops.launch.\n- Example: {\"reply\":\"Creating agent\",\"ops\":[{\"action\":\"launch\",\"agent\":\"claude\",\"count\":1}]}";
+
   return [
     "You are ufoo-agent, a headless routing controller.",
     "Return ONLY valid JSON. No extra text.",
@@ -91,14 +83,15 @@ function buildSystemPrompt(context) {
     "{",
     '  "reply": "string",',
     '  "dispatch": [{"target":"broadcast|<agent-id>|<nickname>","message":"string"}],',
-    '  "ops": [{"action":"spawn|close","agent":"codex|claude","count":1,"agent_id":"id","nickname":"optional"}],',
+    '  "ops": [{"action":"launch|close","agent":"codex|claude","count":1,"agent_id":"id","nickname":"optional"}],',
     '  "disambiguate": {"prompt":"string","candidates":[{"agent_id":"id","reason":"string"}]}',
     "}",
     "Rules:",
     "- target must be 'broadcast', concrete agent-id, or a known nickname",
     "- If multiple possible agents, use disambiguate with candidates and no dispatch.",
-    "- If user specifies a nickname for a new agent, include ops.spawn with nickname so daemon can rename.",
+    "- If user specifies a nickname for a new agent, include ops.launch with nickname so daemon can rename.",
     "- If no action needed, return reply with empty dispatch/ops.",
+    agentGuidance,
     "",
     "Context: online agents and recent bus events:",
     JSON.stringify(context),
@@ -200,7 +193,7 @@ async function runUfooAgent({ projectRoot, prompt, provider, model }) {
   const fallbackNickname = extractNickname(prompt);
   if (fallbackNickname && payload && Array.isArray(payload.ops)) {
     for (const op of payload.ops) {
-      if (op && op.action === "spawn" && !op.nickname) {
+      if (op && op.action === "launch" && !op.nickname) {
         op.nickname = fallbackNickname;
         break;
       }

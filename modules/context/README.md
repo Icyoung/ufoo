@@ -1,24 +1,12 @@
 # context
 
-A collaboration protocol that constrains AI behavior through explicit, versioned files.
+Decision-only context module for ufoo.
 
-## Why
-
-AI coding agents (Claude Code, Codex, Cursor, etc.) have two fundamental problems:
-
-1. **No shared memory** — Decisions made in one session are invisible to other agents or future sessions. Each agent starts fresh, repeating mistakes or contradicting prior work.
-
-This protocol solves it by treating decisions and context as files:
-- **Decisions as files** — Persistent, versioned, reviewable. All agents read the same truth.
-
-## Core Principle
-
-```
-Global context defines the law.
-Project context defines the truth.
-```
-
-**Files are truth, not memory.**
+Purpose:
+- Persist decisions in project workspaces
+- Keep decision format canonical in `uctx` skill
+ 
+Bus handles communication; context handles durable decision truth.
 
 ## Quick Start
 
@@ -34,42 +22,32 @@ This repository is the `context` module. The recommended entrypoint is `ufoo`.
 
 Global modules live under `~/.ufoo/modules/`.
 
-### Project: `<project>/.context/` (writable)
+### Project: `<project>/.ufoo/context/` (writable)
 
 ```
-.context/
-├── README.md        # Entry point / how to use this context
-├── SYSTEM.md        # Project architecture
-├── CONSTRAINTS.md   # Non-negotiable rules
-├── ASSUMPTIONS.md   # Current assumptions
-├── TERMINOLOGY.md   # Shared vocabulary
-└── DECISIONS/       # Append-only log
+.ufoo/context/
+├── decisions/       # Append-only decision log (decision-only mode)
+└── decisions.jsonl  # Decision index (ts/type/file/author)
 ```
 
-Must be in Git. Must be reviewable. Truth.
+Should be in the project workspace and writable by agents.
+Versioning is optional but recommended for auditability.
 
-## Protocol Structure
+## Module Structure
 
 ```
 context/                 # This repo
-├── SYSTEM.md               # Protocol definition
-├── RULES.md                # Collaboration rules
-├── CONSTRAINTS.md          # Protocol constraints
-├── DECISION-PROTOCOL.md    # How to write decisions
-├── HANDOFF.md              # Session handoff rules
-├── CONTEXT-STRUCTURE.md    # Project structure spec
-├── TEMPLATES/              # AI behavior constraint
-├── SKILLS/                 # tool skill docs (module-local)
-└── .context/            # Local project context for this repo (ignored; not part of protocol distribution)
+├── README.md               # This file
+├── SKILLS/uctx/SKILL.md    # Canonical decision format + workflow
+└── .ufoo/context/          # Local project context for this repo (ignored; not part of protocol distribution)
 ```
 
 ## For AI Agents
 
 1. Read installed module from `~/.ufoo/modules/context/`
-2. Read/write context from `<project>/.context/`
+2. Read/write decisions in `<project>/.ufoo/context/decisions/`
 3. **Never write to global** — only to project
-4. When unsure, write a decision
-5. Do not modify TEMPLATES/ without a decision
+4. Follow the decision format in `SKILLS/uctx/SKILL.md`
 
 ## Validate
 

@@ -1,5 +1,0 @@
-[notify] DEPRECATED: keystroke injection removed; using agent-side alert instead.
-[notify] subscriber: claude-code:e406c0fb (interval: 5s)
-[notify] Tip: stop with: bash scripts/ai-bus-alert.sh "claude-code:e406c0fb" --stop
-[alert] starting daemon for claude-code:e406c0fb (log: .ai-bus/logs/alert-claude-code_e406c0fb.log)
-[alert] daemon started (pid will be written to .ai-bus/pids/alert-claude-code_e406c0fb.pid)

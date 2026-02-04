@@ -1,5 +1,0 @@
-[alert] subscriber: claude-code:e406c0fb
-[alert] queue: .ai-bus/queues/claude-code_e406c0fb/pending.jsonl
-[alert] interval: 5s
-[alert] title: 1, bell: 1, notify: 1, tty: 0
-]0;[ai-bus]

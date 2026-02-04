@@ -44,21 +44,25 @@ async function runCli(argv) {
     program
       .name("ufoo")
       .description("ufoo CLI (wrapper-first; prefers project-local scripts).")
-      .version(pkg.version);
+      .version(pkg.version, "-v, --version", "Display version with banner");
 
     program
       .command("doctor")
       .description("Run repo doctor checks")
       .action(() => {
         const repoRoot = getPackageRoot();
-        run("bash", [path.join(repoRoot, "scripts/doctor.sh")]);
+        const RepoDoctor = require("./doctor");
+        const doctor = new RepoDoctor(repoRoot);
+        const ok = doctor.run();
+        if (!ok) process.exitCode = 1;
       });
     program
       .command("status")
       .description("Show project status (banner, unread bus, open decisions)")
-      .action(() => {
-        const repoRoot = getPackageRoot();
-        run("bash", [path.join(repoRoot, "scripts/status.sh")]);
+      .action(async () => {
+        const StatusDisplay = require("./status");
+        const status = new StatusDisplay(process.cwd());
+        await status.show();
       });
     program
       .command("daemon")
@@ -87,15 +91,16 @@ async function runCli(argv) {
       .description("Initialize modules in a project")
       .option("--modules <list>", "Comma-separated modules (context,bus,resources)", "context")
       .option("--project <dir>", "Target project directory", process.cwd())
-      .action((opts) => {
+      .action(async (opts) => {
+        const UfooInit = require("./init");
         const repoRoot = getPackageRoot();
-        run("bash", [
-          path.join(repoRoot, "scripts/init.sh"),
-          "--modules",
-          opts.modules,
-          "--project",
-          opts.project,
-        ]);
+        const init = new UfooInit(repoRoot);
+        try {
+          await init.init(opts);
+        } catch (err) {
+          console.error(err.message);
+          process.exitCode = 1;
+        }
       });
 
     const skills = program.command("skills").description("Manage skills templates");
@@ -103,8 +108,11 @@ async function runCli(argv) {
       .command("list")
       .description("List available skills")
       .action(() => {
+        const SkillsManager = require("./skills");
         const repoRoot = getPackageRoot();
-        run("bash", [path.join(repoRoot, "scripts/skills.sh"), "list"]);
+        const manager = new SkillsManager(repoRoot);
+        const skillsList = manager.list();
+        skillsList.forEach((skill) => console.log(skill));
       });
     skills
       .command("install")
@@ -113,13 +121,16 @@ async function runCli(argv) {
       .option("--target <dir>", "Install target directory")
       .option("--codex", "Install into ~/.codex/skills")
       .option("--agents", "Install into ~/.agents/skills")
-      .action((name, opts) => {
+      .action(async (name, opts) => {
+        const SkillsManager = require("./skills");
         const repoRoot = getPackageRoot();
-        const args = [path.join(repoRoot, "scripts/skills.sh"), "install", name];
-        if (opts.target) args.push("--target", opts.target);
-        if (opts.codex) args.push("--codex");
-        if (opts.agents) args.push("--agents");
-        run("bash", args);
+        const manager = new SkillsManager(repoRoot);
+        try {
+          await manager.install(name, opts);
+        } catch (err) {
+          console.error(err.message);
+          process.exitCode = 1;
+        }
       });
 
     const bus = program.command("bus").description("Project bus commands");
@@ -135,29 +146,42 @@ async function runCli(argv) {
       .option("--no-bell", "Disable terminal bell")
       .allowUnknownOption(true)
       .action((subscriber, interval, opts) => {
-        const script = getPackageScript("scripts/bus-alert.sh");
-        const args = [script, subscriber, interval];
-        if (opts.notify) args.push("--notify");
-        if (opts.daemon) args.push("--daemon");
-        if (opts.stop) args.push("--stop");
-        if (opts.title === false) args.push("--no-title");
-        if (opts.bell === false) args.push("--no-bell");
-        run("bash", args);
+        const EventBus = require("./bus");
+        const eventBus = new EventBus(process.cwd());
+        const parsedInterval = parseInt(interval, 10);
+        eventBus
+          .alert(subscriber, Number.isFinite(parsedInterval) ? parsedInterval : 2, {
+            notify: opts.notify,
+            daemon: opts.daemon,
+            stop: opts.stop,
+            title: opts.title !== false,
+            bell: opts.bell !== false,
+          })
+          .catch((err) => {
+            console.error(err.message);
+            process.exitCode = 1;
+          });
       });
     bus
       .command("listen")
       .description("Foreground listener for incoming messages")
-      .argument("<subscriber>", "Subscriber ID")
+      .argument("[subscriber]", "Subscriber ID")
       .option("--from-beginning", "Print existing queued messages first")
       .option("--reset", "Truncate pending queue before listening")
       .option("--auto-join", "Auto-join bus to get subscriber ID")
       .action((subscriber, opts) => {
-        const script = getPackageScript("scripts/bus-listen.sh");
-        const args = [script, subscriber];
-        if (opts.fromBeginning) args.push("--from-beginning");
-        if (opts.reset) args.push("--reset");
-        if (opts.autoJoin) args.push("--auto-join");
-        run("bash", args);
+        const EventBus = require("./bus");
+        const eventBus = new EventBus(process.cwd());
+        eventBus
+          .listen(subscriber, {
+            fromBeginning: opts.fromBeginning,
+            reset: opts.reset,
+            autoJoin: opts.autoJoin,
+          })
+          .catch((err) => {
+            console.error(err.message);
+            process.exitCode = 1;
+          });
       });
     bus
       .command("daemon")
@@ -167,56 +191,214 @@ async function runCli(argv) {
       .option("--stop", "Stop running daemon")
       .option("--status", "Check daemon status")
       .action((opts) => {
-        const script = getPackageScript("scripts/bus-daemon.sh");
-        const args = [script];
-        if (opts.interval) args.push("--interval", opts.interval);
-        if (opts.daemon) args.push("--daemon");
-        if (opts.stop) args.push("--stop");
-        if (opts.status) args.push("--status");
-        run("bash", args);
+        const EventBus = require("./bus");
+        const eventBus = new EventBus(process.cwd());
+        (async () => {
+          try {
+            const interval = parseInt(opts.interval, 10) * 1000 || 2000;
+            if (opts.stop) {
+              await eventBus.daemon("stop");
+            } else if (opts.status) {
+              await eventBus.daemon("status");
+            } else {
+              await eventBus.daemon("start", { background: opts.daemon, interval });
+            }
+          } catch (err) {
+            console.error(err.message);
+            process.exitCode = 1;
+          }
+        })();
       });
     bus
       .command("inject")
       .description("Inject /bus into a Terminal.app tab by subscriber ID")
       .argument("<subscriber>", "Subscriber ID to inject into")
       .action((subscriber) => {
-        const script = getPackageScript("scripts/bus-inject.sh");
-        run("bash", [script, subscriber]);
+        const EventBus = require("./bus");
+        const eventBus = new EventBus(process.cwd());
+        (async () => {
+          try {
+            await eventBus.inject(subscriber);
+          } catch (err) {
+            console.error(err.message);
+            process.exitCode = 1;
+          }
+        })();
+      });
+    bus
+      .command("activate")
+      .description("Activate (focus) the terminal/tmux window of an agent")
+      .argument("<agent-id>", "Agent ID or nickname to activate")
+      .action((agentId) => {
+        const AgentActivator = require("./bus/activate");
+        const activator = new AgentActivator(process.cwd());
+        (async () => {
+          try {
+            await activator.activate(agentId);
+          } catch (err) {
+            console.error(err.message);
+            process.exitCode = 1;
+          }
+        })();
       });
     bus
       .command("run", { isDefault: true })
-      .description("Run bus.sh commands (join, check, send, status, etc.)")
+      .description("Run bus commands (join, check, send, status, etc.)")
       .allowUnknownOption(true)
-      .argument("<args...>", "Arguments passed to scripts/bus.sh")
-      .action((args) => {
-        const script = getPackageScript("scripts/bus.sh");
-        run("bash", [script, ...args]);
+      .argument("<args...>", "Arguments passed to bus module")
+      .action(async (args) => {
+        const EventBus = require("./bus");
+        const eventBus = new EventBus(process.cwd());
+        const cmd = args[0];
+        const cmdArgs = args.slice(1);
+
+        try {
+          switch (cmd) {
+            case "init":
+              await eventBus.init();
+              break;
+            case "join":
+              {
+                const subscriber = await eventBus.join(cmdArgs[0], cmdArgs[1], cmdArgs[2]);
+                if (subscriber) console.log(subscriber);
+              }
+              break;
+            case "leave":
+              await eventBus.leave(cmdArgs[0]);
+              break;
+            case "send":
+              await eventBus.send(cmdArgs[0], cmdArgs[1]);
+              break;
+            case "broadcast":
+              await eventBus.broadcast(cmdArgs[0]);
+              break;
+            case "check":
+              await eventBus.check(cmdArgs[0]);
+              break;
+            case "ack":
+              await eventBus.ack(cmdArgs[0]);
+              break;
+            case "consume":
+              await eventBus.consume(cmdArgs[0], cmdArgs.includes("--from-beginning"));
+              break;
+            case "status":
+              await eventBus.status();
+              break;
+            case "resolve":
+              await eventBus.resolve(cmdArgs[0], cmdArgs[1]);
+              break;
+            case "rename":
+              await eventBus.rename(cmdArgs[0], cmdArgs[1]);
+              break;
+            case "whoami":
+              await eventBus.whoami();
+              break;
+            default:
+              console.error(`Unknown bus subcommand: ${sub}`);
+              process.exitCode = 1;
+          }
+        } catch (err) {
+          console.error(err.message);
+          process.exitCode = 1;
+        }
       });
 
     program
       .command("ctx")
-      .description("Project ctx commands (delegates to ./scripts/context-*.sh)")
+      .description("Project context commands (doctor|lint|decisions)")
       .argument("[subcmd]", "Subcommand (doctor|lint|decisions)", "doctor")
       .allowUnknownOption(true)
       .argument("[subargs...]", "Subcommand args")
-      .action((subcmd, subargs = []) => {
-        const map = {
-          doctor: "scripts/context-doctor.sh",
-          lint: "scripts/context-lint.sh",
-          decisions: "scripts/context-decisions.sh",
-        };
-        const rel = map[subcmd];
-        if (!rel) {
-          console.error(
-            chalk.red(
-              `Unknown ctx subcommand: ${subcmd}. Supported: ${Object.keys(map).join(", ")}`
-            )
-          );
+      .action(async (subcmd, subargs = []) => {
+        const DecisionsManager = require("./context/decisions");
+        const ContextDoctor = require("./context/doctor");
+        const cwd = process.cwd();
+
+        try {
+          switch (subcmd) {
+            case "doctor": {
+              const doctor = new ContextDoctor(cwd);
+              const mode = subargs.includes("--project") ? "project" : "protocol";
+              const projectPath = mode === "project" ? subargs[subargs.indexOf("--project") + 1] : null;
+              await doctor.run({ mode, projectPath });
+              break;
+            }
+            case "lint": {
+              const doctor = new ContextDoctor(cwd);
+              const mode = subargs.includes("--project") ? "project" : "protocol";
+              const projectPath = mode === "project" ? subargs[subargs.indexOf("--project") + 1] : null;
+              if (mode === "project") {
+                doctor.lintProject(projectPath);
+              } else {
+                doctor.lintProtocol();
+              }
+              break;
+            }
+            case "decisions": {
+              const manager = new DecisionsManager(cwd);
+              const opts = {};
+
+              if (subargs[0] === "index" || subargs.includes("--index")) {
+                manager.writeIndex();
+                break;
+              }
+              if (subargs[0] === "new") {
+                const create = { title: "", author: "", status: "" };
+                for (let i = 1; i < subargs.length; i++) {
+                  const arg = subargs[i];
+                  if (arg === "--author") {
+                    create.author = subargs[++i] || "";
+                    continue;
+                  }
+                  if (arg === "--status") {
+                    create.status = subargs[++i] || "";
+                    continue;
+                  }
+                  if (!arg.startsWith("-")) {
+                    create.title = create.title ? `${create.title} ${arg}` : arg;
+                    continue;
+                  }
+                }
+                manager.createDecision(create);
+                break;
+              }
+
+              // Parse options
+              for (let i = 0; i < subargs.length; i++) {
+                if (subargs[i] === "-n") opts.num = parseInt(subargs[++i]);
+                if (subargs[i] === "-s") opts.status = subargs[++i];
+                if (subargs[i] === "-l") opts.listOnly = true;
+                if (subargs[i] === "-a") opts.all = true;
+                if (subargs[i] === "-d") {
+                  manager.decisionsDir = subargs[++i];
+                  manager.contextDir = path.dirname(manager.decisionsDir);
+                  manager.indexFile = path.join(manager.contextDir, "decisions.jsonl");
+                }
+              }
+
+              if (opts.listOnly) {
+                manager.list({ status: opts.status || "open" });
+              } else {
+                manager.show({
+                  status: opts.status || "open",
+                  num: opts.num || 1,
+                  all: opts.all || false,
+                });
+              }
+              break;
+            }
+            default:
+              console.error(
+                chalk.red(
+                  `Unknown ctx subcommand: ${subcmd}. Supported: doctor, lint, decisions`
+                )
+              );
+              process.exitCode = 1;
+          }
+        } catch (err) {
+          console.error(chalk.red(`Error: ${err.message}`));
           process.exitCode = 1;
-          return;
         }
-        const script = getPackageScript(rel);
-        run("bash", [script, ...subargs]);
       });
 
     program.addHelpText(
@@ -224,9 +406,16 @@ async function runCli(argv) {
       `\nNotes:\n  - If 'ufoo' isn't in PATH, run it via ${chalk.cyan(
         "./bin/ufoo"
       )} (repo) or install globally via npm.\n  - For bus notifications inside Codex, prefer ${chalk.cyan(
-        "scripts/bus-alert.sh"
-      )} / ${chalk.cyan("scripts/bus-listen.sh")} (no IME issues).\n`
+        "ufoo bus alert"
+      )} / ${chalk.cyan("ufoo bus listen")} (no IME issues).\n`
     );
+
+    // 检查是否是 --version 或 -V 参数
+    if (argv.includes("--version") || argv.includes("-V")) {
+      const { showUfooBanner } = require("./utils/banner");
+      showUfooBanner({ version: pkg.version });
+      return;
+    }
 
     await program.parseAsync(argv);
     return;
@@ -248,11 +437,11 @@ async function runCli(argv) {
     console.log("  ufoo init [--modules <list>] [--project <dir>]");
     console.log("  ufoo skills list");
     console.log("  ufoo skills install <name|all> [--target <dir> | --codex | --agents]");
-    console.log("  ufoo bus <args...>    (delegates to ./scripts/bus.sh)");
+    console.log("  ufoo bus <args...>    (JS bus implementation)");
     console.log("  ufoo ctx <subcmd> ... (doctor|lint|decisions)");
     console.log("");
     console.log("Notes:");
-    console.log("  - For Codex notifications, use scripts/bus-alert.sh / scripts/bus-listen.sh");
+    console.log("  - For Codex notifications, use ufoo bus alert / ufoo bus listen");
   };
 
   if (cmd === "" || cmd === "--help" || cmd === "-h") {
@@ -260,12 +449,26 @@ async function runCli(argv) {
     return;
   }
 
+  if (cmd === "--version" || cmd === "-V") {
+    const { showUfooBanner } = require("./utils/banner");
+    showUfooBanner({ version: pkg.version });
+    return;
+  }
+
   if (cmd === "doctor") {
-    run("bash", [path.join(repoRoot, "scripts/doctor.sh")]);
+    const RepoDoctor = require("./doctor");
+    const doctor = new RepoDoctor(repoRoot);
+    const ok = doctor.run();
+    if (!ok) process.exitCode = 1;
     return;
   }
   if (cmd === "status") {
-    run("bash", [path.join(repoRoot, "scripts/status.sh")]);
+    const StatusDisplay = require("./status");
+    const status = new StatusDisplay(process.cwd());
+    status.show().catch((err) => {
+      console.error(err.message);
+      process.exitCode = 1;
+    });
     return;
   }
   if (cmd === "daemon") {
@@ -277,31 +480,57 @@ async function runCli(argv) {
     return;
   }
   if (cmd === "init") {
+    const UfooInit = require("./init");
+    const init = new UfooInit(repoRoot);
+
     const getOpt = (name, def) => {
       const i = rest.indexOf(name);
       if (i === -1) return def;
       if (i + 1 >= rest.length) throw new Error(`Missing value for ${name}`);
       return rest[i + 1];
     };
-    run("bash", [
-      path.join(repoRoot, "scripts/init.sh"),
-      "--modules",
-      getOpt("--modules", "context"),
-      "--project",
-      getOpt("--project", process.cwd()),
-    ]);
+
+    const opts = {
+      modules: getOpt("--modules", "context"),
+      project: getOpt("--project", process.cwd()),
+    };
+
+    init.init(opts).catch((err) => {
+      console.error(err.message);
+      process.exitCode = 1;
+    });
     return;
   }
   if (cmd === "skills") {
+    const SkillsManager = require("./skills");
+    const manager = new SkillsManager(repoRoot);
     const sub = rest[0] || "";
+
     if (sub === "list") {
-      run("bash", [path.join(repoRoot, "scripts/skills.sh"), "list"]);
+      const skillsList = manager.list();
+      skillsList.forEach((skill) => console.log(skill));
       return;
     }
     if (sub === "install") {
       const name = rest[1];
       if (!name) throw new Error("skills install requires <name|all>");
-      run("bash", [path.join(repoRoot, "scripts/skills.sh"), "install", ...rest.slice(1)]);
+
+      const options = {};
+      for (let i = 2; i < rest.length; i++) {
+        if (rest[i] === "--target" && i + 1 < rest.length) {
+          options.target = rest[i + 1];
+          i++;
+        } else if (rest[i] === "--codex") {
+          options.codex = true;
+        } else if (rest[i] === "--agents") {
+          options.agents = true;
+        }
+      }
+
+      manager.install(name, options).catch((err) => {
+        console.error(err.message);
+        process.exitCode = 1;
+      });
       return;
     }
     help();
@@ -311,34 +540,213 @@ async function runCli(argv) {
   if (cmd === "bus") {
     const sub = rest[0] || "";
     if (sub === "alert") {
-      run("bash", [getPackageScript("scripts/bus-alert.sh"), ...rest.slice(1)]);
+      const EventBus = require("./bus");
+      const eventBus = new EventBus(process.cwd());
+      const args = rest.slice(1);
+      const subscriber = args[0];
+      let interval = 2;
+      let idx = 1;
+      if (args[1] && /^[0-9]+$/.test(args[1])) {
+        interval = parseInt(args[1], 10);
+        idx = 2;
+      }
+      const options = {
+        notify: args.includes("--notify"),
+        daemon: args.includes("--daemon"),
+        stop: args.includes("--stop"),
+        title: !args.includes("--no-title"),
+        bell: !args.includes("--no-bell"),
+      };
+      eventBus
+        .alert(subscriber, interval, options)
+        .catch((err) => {
+          console.error(err.message);
+          process.exitCode = 1;
+        });
       return;
     }
     if (sub === "listen") {
-      run("bash", [getPackageScript("scripts/bus-listen.sh"), ...rest.slice(1)]);
+      const EventBus = require("./bus");
+      const eventBus = new EventBus(process.cwd());
+      const args = rest.slice(1);
+      const subscriber = args.find((arg) => !arg.startsWith("--"));
+      const options = {
+        fromBeginning: args.includes("--from-beginning"),
+        reset: args.includes("--reset"),
+        autoJoin: args.includes("--auto-join"),
+      };
+      eventBus
+        .listen(subscriber, options)
+        .catch((err) => {
+          console.error(err.message);
+          process.exitCode = 1;
+        });
       return;
     }
     if (sub === "daemon") {
-      run("bash", [getPackageScript("scripts/bus-daemon.sh"), ...rest.slice(1)]);
+      // 使用 JavaScript daemon
+      const EventBus = require("./bus");
+      const eventBus = new EventBus(process.cwd());
+
+      (async () => {
+        try {
+          const hasStop = rest.includes("--stop");
+          const hasStatus = rest.includes("--status");
+          const hasDaemon = rest.includes("--daemon");
+          const intervalIdx = rest.indexOf("--interval");
+          const interval = intervalIdx !== -1 ? parseInt(rest[intervalIdx + 1], 10) * 1000 : 2000;
+
+          if (hasStop) {
+            await eventBus.daemon("stop");
+          } else if (hasStatus) {
+            await eventBus.daemon("status");
+          } else {
+            await eventBus.daemon("start", { background: hasDaemon, interval });
+          }
+        } catch (err) {
+          console.error(err.message);
+          process.exitCode = 1;
+        }
+      })();
       return;
     }
     if (sub === "inject") {
-      run("bash", [getPackageScript("scripts/bus-inject.sh"), ...rest.slice(1)]);
+      // 使用 JavaScript inject
+      const EventBus = require("./bus");
+      const eventBus = new EventBus(process.cwd());
+
+      (async () => {
+        try {
+          const subscriber = rest[1];
+          if (!subscriber) {
+            throw new Error("inject requires <subscriber-id>");
+          }
+          await eventBus.inject(subscriber);
+        } catch (err) {
+          console.error(err.message);
+          process.exitCode = 1;
+        }
+      })();
       return;
     }
-    run("bash", [getPackageScript("scripts/bus.sh"), ...rest]);
+
+    // Use JavaScript EventBus module for core commands
+    const EventBus = require("./bus");
+    const eventBus = new EventBus(process.cwd());
+
+    (async () => {
+      try {
+        const cmdArgs = rest.slice(1);
+        switch (sub) {
+          case "init":
+            await eventBus.init();
+            break;
+          case "join":
+            {
+              const subscriber = await eventBus.join(cmdArgs[0], cmdArgs[1], cmdArgs[2]);
+              if (subscriber) console.log(subscriber);
+            }
+            break;
+          case "leave":
+            await eventBus.leave(cmdArgs[0]);
+            break;
+          case "send":
+            await eventBus.send(cmdArgs[0], cmdArgs[1]);
+            break;
+          case "broadcast":
+            await eventBus.broadcast(cmdArgs[0]);
+            break;
+          case "check":
+            await eventBus.check(cmdArgs[0]);
+            break;
+          case "ack":
+            await eventBus.ack(cmdArgs[0]);
+            break;
+          case "consume":
+            await eventBus.consume(cmdArgs[0], cmdArgs.includes("--from-beginning"));
+            break;
+          case "status":
+            await eventBus.status();
+            break;
+          case "resolve":
+            await eventBus.resolve(cmdArgs[0], cmdArgs[1]);
+            break;
+          case "rename":
+            await eventBus.rename(cmdArgs[0], cmdArgs[1]);
+            break;
+          case "whoami":
+            await eventBus.whoami();
+            break;
+          default:
+            console.error(`Unknown bus subcommand: ${sub}`);
+            process.exitCode = 1;
+        }
+      } catch (err) {
+        console.error(err.message);
+        process.exitCode = 1;
+      }
+    })();
     return;
   }
   if (cmd === "ctx") {
     const sub = rest[0] || "doctor";
-    const map = {
-      doctor: "scripts/context-doctor.sh",
-      lint: "scripts/context-lint.sh",
-      decisions: "scripts/context-decisions.sh",
-    };
-    const rel = map[sub];
-    if (!rel) throw new Error(`Unknown ctx subcommand: ${sub}`);
-    run("bash", [getPackageScript(rel), ...rest.slice(1)]);
+    const subargs = rest.slice(1);
+    const DecisionsManager = require("./context/decisions");
+    const ContextDoctor = require("./context/doctor");
+    const cwd = process.cwd();
+
+    (async () => {
+      try {
+        switch (sub) {
+          case "doctor": {
+            const doctor = new ContextDoctor(cwd);
+            const mode = subargs.includes("--project") ? "project" : "protocol";
+            const projectPath = mode === "project" ? subargs[subargs.indexOf("--project") + 1] : null;
+            await doctor.run({ mode, projectPath });
+            break;
+          }
+          case "lint": {
+            const doctor = new ContextDoctor(cwd);
+            const mode = subargs.includes("--project") ? "project" : "protocol";
+            const projectPath = mode === "project" ? subargs[subargs.indexOf("--project") + 1] : null;
+            if (mode === "project") {
+              doctor.lintProject(projectPath);
+            } else {
+              doctor.lintProtocol();
+            }
+            break;
+          }
+          case "decisions": {
+            const manager = new DecisionsManager(cwd);
+            const opts = {};
+
+            for (let i = 0; i < subargs.length; i++) {
+              if (subargs[i] === "-n") opts.num = parseInt(subargs[++i]);
+              if (subargs[i] === "-s") opts.status = subargs[++i];
+              if (subargs[i] === "-l") opts.listOnly = true;
+              if (subargs[i] === "-a") opts.all = true;
+              if (subargs[i] === "-d") manager.decisionsDir = subargs[++i];
+            }
+
+            if (opts.listOnly) {
+              manager.list({ status: opts.status || "open" });
+            } else {
+              manager.show({
+                status: opts.status || "open",
+                num: opts.num || 1,
+                all: opts.all || false,
+              });
+            }
+            break;
+          }
+          default:
+            throw new Error(`Unknown ctx subcommand: ${sub}`);
+        }
+      } catch (err) {
+        console.error(`Error: ${err.message}`);
+        process.exit(1);
+      }
+    })();
     return;
   }
 

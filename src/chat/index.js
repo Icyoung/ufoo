@@ -1,10 +1,13 @@
 const net = require("net");
 const path = require("path");
 const blessed = require("blessed");
-const { spawn, spawnSync } = require("child_process");
+const { spawn, spawnSync, execSync } = require("child_process");
 const fs = require("fs");
 const { loadConfig, saveConfig, normalizeLaunchMode, normalizeAgentProvider } = require("../config");
 const { socketPath, isRunning } = require("../daemon");
+const UfooInit = require("../init");
+const EventBus = require("../bus");
+const AgentLauncher = require("../agent/launcher");
 
 function connectSocket(sockPath) {
   return new Promise((resolve, reject) => {
@@ -53,10 +56,9 @@ async function connectWithRetry(sockPath, retries, delayMs) {
 
 async function runChat(projectRoot) {
   if (!fs.existsSync(path.join(projectRoot, ".ufoo"))) {
-    const initScript = resolveProjectFile(projectRoot, path.join("scripts", "init.sh"), path.join("scripts", "init.sh"));
-    spawnSync("bash", [initScript, "--modules", "context,bus", "--project", projectRoot], {
-      stdio: "inherit",
-    });
+    const repoRoot = path.join(__dirname, "..", "..");
+    const init = new UfooInit(repoRoot);
+    await init.init({ modules: "context,bus", project: projectRoot });
   }
   if (!isRunning(projectRoot)) {
     startDaemon(projectRoot);
@@ -65,6 +67,11 @@ async function runChat(projectRoot) {
   const daemonBin = resolveProjectFile(projectRoot, path.join("bin", "ufoo.js"), path.join("bin", "ufoo.js"));
   const sock = socketPath(projectRoot);
   let client = null;
+  let reconnectPromise = null;
+  let exitRequested = false;
+  let connectionLostNotified = false;
+  const pendingRequests = [];
+  const MAX_PENDING_REQUESTS = 50;
 
   const connectClient = async () => {
     let newClient = await connectWithRetry(sock, 25, 200);
@@ -77,6 +84,47 @@ async function runChat(projectRoot) {
     }
     return newClient;
   };
+
+  function enqueueRequest(req) {
+    if (!req || req.type === "status") return;
+    pendingRequests.push(req);
+    if (pendingRequests.length > MAX_PENDING_REQUESTS) {
+      pendingRequests.shift();
+    }
+  }
+
+  function flushPendingRequests() {
+    if (!client || client.destroyed) return;
+    while (pendingRequests.length > 0) {
+      const req = pendingRequests.shift();
+      client.write(`${JSON.stringify(req)}\n`);
+    }
+  }
+
+  async function ensureConnected() {
+    if (client && !client.destroyed) return true;
+    if (exitRequested) return false;
+    if (reconnectPromise) return reconnectPromise;
+    queueStatusLine("Reconnecting to daemon");
+    logMessage("status", "{magenta-fg}⚙{/magenta-fg} Reconnecting to daemon...");
+    reconnectPromise = (async () => {
+      const newClient = await connectClient();
+      if (!newClient) {
+        resolveStatusLine("{red-fg}✗{/red-fg} Daemon offline");
+        logMessage("error", "{red-fg}✗{/red-fg} Failed to reconnect to daemon");
+        return false;
+      }
+      attachClient(newClient);
+      connectionLostNotified = false;
+      resolveStatusLine("{green-fg}✓{/green-fg} Daemon reconnected");
+      return true;
+    })();
+    try {
+      return await reconnectPromise;
+    } finally {
+      reconnectPromise = null;
+    }
+  }
 
   client = await connectClient();
   if (!client) {
@@ -590,6 +638,7 @@ async function runChat(projectRoot) {
   }
 
   function exitHandler() {
+    exitRequested = true;
     if (screen && screen.program && typeof screen.program.decrst === "function") {
       screen.program.decrst(2004);
     }
@@ -1104,26 +1153,47 @@ async function runChat(projectRoot) {
         { cmd: "rename", desc: "Rename agent nickname" },
         { cmd: "list", desc: "List all agents" },
         { cmd: "status", desc: "Bus status" },
+        { cmd: "activate", desc: "Activate agent terminal" },
       ]
     },
-    { cmd: "/ctx", desc: "Context management" },
-    { cmd: "/skills", desc: "Skills management" },
-    { cmd: "/ubus", desc: "Check bus messages" },
-    { cmd: "/uctx", desc: "Context status" },
-    { cmd: "/uinit", desc: "Initialize/repair" },
-    { cmd: "/ustatus", desc: "Unified status" },
+    {
+      cmd: "/ctx",
+      desc: "Context management",
+      subcommands: [
+        { cmd: "status", desc: "Show context status (default)" },
+        { cmd: "doctor", desc: "Check context integrity" },
+        { cmd: "decisions", desc: "List all decisions" },
+      ]
+    },
+    {
+      cmd: "/skills",
+      desc: "Skills management",
+      subcommands: [
+        { cmd: "list", desc: "List available skills" },
+        { cmd: "install", desc: "Install skills (use: all or name)" },
+      ]
+    },
+    {
+      cmd: "/launch",
+      desc: "Launch new agent",
+      subcommands: [
+        { cmd: "claude", desc: "Launch Claude agent" },
+        { cmd: "codex", desc: "Launch Codex agent" },
+      ]
+    },
   ];
 
   // Agent selection state
   let activeAgents = [];
   let activeAgentLabelMap = new Map();
+  let activeAgentMetaMap = new Map(); // Store full meta including launch_mode
   let agentListWindowStart = 0;
   const MAX_AGENT_WINDOW = 5;
   let selectedAgentIndex = -1;  // -1 = not in dashboard selection mode
   let targetAgent = null;       // Selected agent for direct messaging
   let focusMode = "input";      // "input" or "dashboard"
   let dashboardView = "agents"; // "agents" or "mode"
-  let selectedModeIndex = launchMode === "internal" ? 1 : 0;
+  let selectedModeIndex = launchMode === "internal" ? 2 : (launchMode === "tmux" ? 1 : 0);
   const providerOptions = [
     { label: "codex", value: "codex-cli" },
     { label: "claude", value: "claude-cli" },
@@ -1154,7 +1224,11 @@ async function runChat(projectRoot) {
   }
 
   function send(req) {
-    if (!client || client.destroyed) return;
+    if (!client || client.destroyed) {
+      enqueueRequest(req);
+      void ensureConnected();
+      return;
+    }
     client.write(`${JSON.stringify(req)}\n`);
   }
 
@@ -1194,15 +1268,32 @@ async function runChat(projectRoot) {
     const next = normalizeLaunchMode(mode);
     if (next === launchMode) return;
     launchMode = next;
-    selectedModeIndex = launchMode === "internal" ? 1 : 0;
+    selectedModeIndex = launchMode === "internal" ? 2 : (launchMode === "tmux" ? 1 : 0);
     saveConfig(projectRoot, { launchMode });
     logMessage("status", `{magenta-fg}⚙{/magenta-fg} Launch mode: ${launchMode}`);
     renderDashboard();
     screen.render();
+    void restartDaemon();
   }
 
   function providerLabel(value) {
     return value === "claude-cli" ? "claude" : "codex";
+  }
+
+  function clearUfooAgentIdentity() {
+    const agentDir = path.join(projectRoot, ".ufoo", "agent");
+    const stateFile = path.join(agentDir, "ufoo-agent.json");
+    const historyFile = path.join(agentDir, "ufoo-agent.history.jsonl");
+    try {
+      fs.rmSync(stateFile, { force: true });
+    } catch {
+      // ignore
+    }
+    try {
+      fs.rmSync(historyFile, { force: true });
+    } catch {
+      // ignore
+    }
   }
 
   function setAgentProvider(provider) {
@@ -1211,6 +1302,7 @@ async function runChat(projectRoot) {
     agentProvider = next;
     selectedProviderIndex = agentProvider === "claude-cli" ? 1 : 0;
     saveConfig(projectRoot, { agentProvider });
+    clearUfooAgentIdentity();
     logMessage("status", `{magenta-fg}⚙{/magenta-fg} ufoo-agent: ${providerLabel(agentProvider)}`);
     renderDashboard();
     screen.render();
@@ -1256,7 +1348,7 @@ async function runChat(projectRoot) {
     let content = " ";
     if (focusMode === "dashboard") {
       if (dashboardView === "mode") {
-        const modes = ["terminal", "internal"];
+        const modes = ["terminal", "tmux", "internal"];
         const modeParts = modes.map((mode, i) => {
           if (i === selectedModeIndex) {
             return `{inverse}${mode}{/inverse}`;
@@ -1302,7 +1394,10 @@ async function runChat(projectRoot) {
     } else {
       // Normal dashboard display (input mode)
       const agents = activeAgents.length > 0
-        ? activeAgents.slice(0, 3).map((id) => getAgentLabel(id)).join(", ") + (activeAgents.length > 3 ? ` +${activeAgents.length - 3}` : "")
+        ? activeAgents.slice(0, 3).map((id) => {
+            const label = getAgentLabel(id);
+            return label;
+          }).join(", ") + (activeAgents.length > 3 ? ` +${activeAgents.length - 3}` : "")
         : "none";
       content += `{gray-fg}Agents:{/gray-fg} {cyan-fg}${agents}{/cyan-fg}`;
       content += `  {gray-fg}Mode:{/gray-fg} {cyan-fg}${launchMode}{/cyan-fg}`;
@@ -1315,6 +1410,7 @@ async function runChat(projectRoot) {
     activeAgents = status.active || [];
     const metaList = Array.isArray(status.active_meta) ? status.active_meta : [];
     activeAgentLabelMap = new Map();
+    activeAgentMetaMap = new Map();
     let fallbackMap = null;
     if (metaList.length === 0 && activeAgents.length > 0) {
       try {
@@ -1334,6 +1430,9 @@ async function runChat(projectRoot) {
         ? meta.nickname
         : (fallbackMap && fallbackMap.get(id)) || id;
       activeAgentLabelMap.set(id, label);
+      if (meta) {
+        activeAgentMetaMap.set(id, meta);
+      }
     }
     clampAgentWindow();
     if (focusMode === "dashboard") {
@@ -1368,13 +1467,13 @@ async function runChat(projectRoot) {
     if (!key || focusMode !== "dashboard") return false;
     if (dashboardView === "mode") {
       if (key.name === "left") {
-        selectedModeIndex = selectedModeIndex <= 0 ? 1 : 0;
+        selectedModeIndex = selectedModeIndex <= 0 ? 2 : selectedModeIndex - 1;
         renderDashboard();
         screen.render();
         return true;
       }
       if (key.name === "right") {
-        selectedModeIndex = selectedModeIndex >= 1 ? 0 : 1;
+        selectedModeIndex = selectedModeIndex >= 2 ? 0 : selectedModeIndex + 1;
         renderDashboard();
         screen.render();
         return true;
@@ -1393,7 +1492,7 @@ async function runChat(projectRoot) {
         return true;
       }
       if (key.name === "enter" || key.name === "return") {
-        const modes = ["terminal", "internal"];
+        const modes = ["terminal", "tmux", "internal"];
         setLaunchMode(modes[selectedModeIndex]);
         exitDashboardMode(false);
         return true;
@@ -1456,7 +1555,7 @@ async function runChat(projectRoot) {
     }
     if (key.name === "down") {
       dashboardView = "mode";
-      selectedModeIndex = launchMode === "internal" ? 1 : 0;
+      selectedModeIndex = launchMode === "internal" ? 2 : (launchMode === "tmux" ? 1 : 0);
       renderDashboard();
       screen.render();
       return true;
@@ -1512,6 +1611,7 @@ async function runChat(projectRoot) {
     if (!newClient) return;
     detachClient();
     client = newClient;
+    connectionLostNotified = false;
     let buffer = "";
     client.on("data", (data) => {
       buffer += data.toString("utf8");
@@ -1586,6 +1686,11 @@ async function runChat(projectRoot) {
             // Not JSON, use as-is
           }
 
+          // Convert literal \n to actual newlines for better display
+          if (typeof displayMessage === "string") {
+            displayMessage = displayMessage.replace(/\\n/g, "\n");
+          }
+
           // Extract nickname if publisher is in subscriber:id format
           let displayName = publisher;
           if (publisher.includes(":")) {
@@ -1623,14 +1728,381 @@ async function runChat(projectRoot) {
       }
     }
   });
-    client.on("close", () => {
-      client = null;
-    });
+    const handleDisconnect = () => {
+      if (client === newClient) {
+        client = null;
+      }
+      if (exitRequested) return;
+      if (!connectionLostNotified) {
+        connectionLostNotified = true;
+        logMessage("status", "{red-fg}✗{/red-fg} Daemon disconnected");
+      }
+      void ensureConnected();
+    };
+    client.on("close", handleDisconnect);
+    client.on("error", handleDisconnect);
+    flushPendingRequests();
   };
 
   attachClient(client);
 
-  input.on("submit", (value) => {
+  // Command handlers
+  async function handleDoctorCommand() {
+    logMessage("system", "{yellow-fg}⚙{/yellow-fg} Running health check...");
+
+    // Capture console output safely
+    const originalLog = console.log;
+    const originalError = console.error;
+
+    console.log = (...args) => logMessage("system", args.join(" "));
+    console.error = (...args) => logMessage("error", args.join(" "));
+
+    try {
+      const UfooDoctor = require("../doctor");
+      const doctor = new UfooDoctor(projectRoot);
+      const result = doctor.run();
+
+      if (result) {
+        logMessage("system", "{green-fg}✓{/green-fg} System healthy");
+      } else {
+        logMessage("error", "{red-fg}✗{/red-fg} Health check failed");
+      }
+      screen.render();
+    } catch (err) {
+      logMessage("error", `{red-fg}✗{/red-fg} Doctor check failed: ${err.message}`);
+      screen.render();
+    } finally {
+      console.log = originalLog;
+      console.error = originalError;
+    }
+  }
+
+  async function handleStatusCommand() {
+    // Display current status directly instead of requesting
+    if (activeAgents.length === 0) {
+      logMessage("system", "{cyan-fg}Status:{/cyan-fg} No active agents");
+    } else {
+      logMessage("system", `{cyan-fg}Status:{/cyan-fg} ${activeAgents.length} active agent(s)`);
+      for (const id of activeAgents) {
+        const label = getAgentLabel(id);
+        const meta = activeAgentMetaMap.get(id);
+        const mode = meta?.launch_mode || "unknown";
+        logMessage("system", `  • {cyan-fg}${label}{/cyan-fg} {gray-fg}[${mode}]{/gray-fg}`);
+      }
+    }
+
+    // Also show daemon status
+    if (isRunning(projectRoot)) {
+      logMessage("system", "{green-fg}✓{/green-fg} Daemon is running");
+    } else {
+      logMessage("system", "{red-fg}✗{/red-fg} Daemon is not running");
+    }
+  }
+
+  async function handleDaemonCommand(args) {
+    const subcommand = args[0];
+
+    if (subcommand === "start") {
+      if (isRunning(projectRoot)) {
+        logMessage("system", "{yellow-fg}⚠{/yellow-fg} Daemon already running");
+      } else {
+        logMessage("system", "{yellow-fg}⚙{/yellow-fg} Starting daemon...");
+        startDaemon(projectRoot);
+        await new Promise(r => setTimeout(r, 1000));
+        if (isRunning(projectRoot)) {
+          logMessage("system", "{green-fg}✓{/green-fg} Daemon started");
+        } else {
+          logMessage("error", "{red-fg}✗{/red-fg} Failed to start daemon");
+        }
+      }
+    } else if (subcommand === "stop") {
+      logMessage("system", "{yellow-fg}⚙{/yellow-fg} Stopping daemon...");
+      stopDaemon(projectRoot);
+      await new Promise(r => setTimeout(r, 1000));
+      if (!isRunning(projectRoot)) {
+        logMessage("system", "{green-fg}✓{/green-fg} Daemon stopped");
+      } else {
+        logMessage("error", "{red-fg}✗{/red-fg} Failed to stop daemon");
+      }
+    } else if (subcommand === "restart") {
+      logMessage("system", "{yellow-fg}⚙{/yellow-fg} Restarting daemon...");
+      await restartDaemon();
+    } else if (subcommand === "status") {
+      if (isRunning(projectRoot)) {
+        logMessage("system", "{green-fg}✓{/green-fg} Daemon is running");
+      } else {
+        logMessage("system", "{red-fg}✗{/red-fg} Daemon is not running");
+      }
+    } else {
+      logMessage("error", "{red-fg}✗{/red-fg} Unknown daemon command. Use: start, stop, restart, status");
+    }
+  }
+
+  async function handleInitCommand(args) {
+    logMessage("system", "{yellow-fg}⚙{/yellow-fg} Initializing ufoo modules...");
+
+    // Capture console output safely
+    const originalLog = console.log;
+    const originalError = console.error;
+    const logs = [];
+
+    console.log = (...args) => {
+      const msg = args.join(" ");
+      logs.push(msg);
+      // Also output to logMessage immediately to avoid UI blocking
+      logMessage("system", msg);
+    };
+    console.error = (...args) => {
+      const msg = args.join(" ");
+      logs.push(`ERROR: ${msg}`);
+      logMessage("error", msg);
+    };
+
+    try {
+      const repoRoot = path.join(__dirname, "..", "..");
+      const init = new UfooInit(repoRoot);
+      const modules = args.length > 0 ? args.join(",") : "context,bus";
+      await init.init({ modules, project: projectRoot });
+
+      logMessage("system", "{green-fg}✓{/green-fg} Initialization complete");
+      screen.render();
+    } catch (err) {
+      logMessage("error", `{red-fg}✗{/red-fg} Init failed: ${err.message}`);
+      if (err.stack) {
+        logMessage("error", err.stack);
+      }
+      screen.render();
+    } finally {
+      console.log = originalLog;
+      console.error = originalError;
+    }
+  }
+
+  async function handleBusCommand(args) {
+    const subcommand = args[0];
+
+    try {
+      const bus = new EventBus(projectRoot);
+
+      if (subcommand === "send") {
+        if (args.length < 3) {
+          logMessage("error", "{red-fg}✗{/red-fg} Usage: /bus send <target> <message>");
+          return;
+        }
+        const target = args[1];
+        const message = args.slice(2).join(" ");
+        await bus.send(target, message);
+        logMessage("system", `{green-fg}✓{/green-fg} Message sent to ${target}`);
+      } else if (subcommand === "rename") {
+        if (args.length < 3) {
+          logMessage("error", "{red-fg}✗{/red-fg} Usage: /bus rename <agent> <nickname>");
+          return;
+        }
+        const agentId = args[1];
+        const nickname = args[2];
+        await bus.rename(agentId, nickname);
+        logMessage("system", `{green-fg}✓{/green-fg} Renamed ${agentId} to ${nickname}`);
+        requestStatus();
+      } else if (subcommand === "list") {
+        bus.ensureBus();
+        bus.loadBusData();
+        const subscribers = Object.entries(bus.busData.subscribers || {});
+        if (subscribers.length === 0) {
+          logMessage("system", "{gray-fg}No active agents{/gray-fg}");
+        } else {
+          logMessage("system", "{cyan-fg}Active agents:{/cyan-fg}");
+          for (const [id, meta] of subscribers) {
+            const nickname = meta.nickname ? ` (${meta.nickname})` : "";
+            const status = meta.status || "unknown";
+            logMessage("system", `  • ${id}${nickname} {gray-fg}[${status}]{/gray-fg}`);
+          }
+        }
+      } else if (subcommand === "status") {
+        bus.ensureBus();
+        bus.loadBusData();
+        const count = Object.keys(bus.busData.subscribers || {}).length;
+        logMessage("system", `{cyan-fg}Bus status:{/cyan-fg} ${count} agent(s) registered`);
+      } else if (subcommand === "activate") {
+        if (args.length < 2) {
+          logMessage("error", "{red-fg}✗{/red-fg} Usage: /bus activate <agent>");
+          return;
+        }
+        const target = args[1];
+        const AgentActivator = require("../bus/activate");
+        const activator = new AgentActivator(projectRoot);
+        await activator.activate(target);
+        logMessage("system", `{green-fg}✓{/green-fg} Activated ${target}`);
+      } else {
+        logMessage("error", "{red-fg}✗{/red-fg} Unknown bus command. Use: send, rename, list, status, activate");
+      }
+    } catch (err) {
+      logMessage("error", `{red-fg}✗{/red-fg} Bus command failed: ${err.message}`);
+    }
+  }
+
+  async function handleCtxCommand(args) {
+    logMessage("system", "{yellow-fg}⚙{/yellow-fg} Running context check...");
+
+    // Capture console output safely
+    const originalLog = console.log;
+    const originalError = console.error;
+
+    console.log = (...args) => logMessage("system", args.join(" "));
+    console.error = (...args) => logMessage("error", args.join(" "));
+
+    try {
+      const UfooContext = require("../context");
+      const ctx = new UfooContext(projectRoot);
+
+      if (args.length === 0 || args[0] === "doctor") {
+        await ctx.doctor();
+      } else if (args[0] === "decisions") {
+        await ctx.listDecisions();
+      } else {
+        await ctx.status();
+      }
+
+      screen.render();
+    } catch (err) {
+      logMessage("error", `{red-fg}✗{/red-fg} Context check failed: ${err.message}`);
+      screen.render();
+    } finally {
+      console.log = originalLog;
+      console.error = originalError;
+    }
+  }
+
+  async function handleSkillsCommand(args) {
+    const subcommand = args[0];
+
+    // Capture console output safely
+    const originalLog = console.log;
+    console.log = (...args) => logMessage("system", args.join(" "));
+
+    try {
+      const UfooSkills = require("../skills");
+      const skills = new UfooSkills(projectRoot);
+
+      if (subcommand === "list") {
+        const skillList = skills.list();
+        if (skillList.length === 0) {
+          logMessage("system", "{gray-fg}No skills found{/gray-fg}");
+        } else {
+          logMessage("system", `{cyan-fg}Available skills:{/cyan-fg} ${skillList.length}`);
+          for (const skill of skillList) {
+            logMessage("system", `  • ${skill}`);
+          }
+        }
+      } else if (subcommand === "install") {
+        const target = args[1] || "all";
+        logMessage("system", `{yellow-fg}⚙{/yellow-fg} Installing skills: ${target}...`);
+        await skills.install(target);
+        logMessage("system", "{green-fg}✓{/green-fg} Skills installed");
+      } else {
+        logMessage("error", "{red-fg}✗{/red-fg} Unknown skills command. Use: list, install");
+      }
+
+      screen.render();
+    } catch (err) {
+      logMessage("error", `{red-fg}✗{/red-fg} Skills command failed: ${err.message}`);
+      screen.render();
+    } finally {
+      console.log = originalLog;
+    }
+  }
+
+  async function handleLaunchCommand(args) {
+    if (args.length === 0) {
+      logMessage("error", "{red-fg}✗{/red-fg} Usage: /launch <claude|codex> [nickname=<name>] [count=<n>]");
+      return;
+    }
+
+    const agentType = args[0];
+    if (agentType !== "claude" && agentType !== "codex") {
+      logMessage("error", "{red-fg}✗{/red-fg} Unknown agent type. Use: claude or codex");
+      return;
+    }
+
+    // Parse options
+    const options = {};
+    for (let i = 1; i < args.length; i++) {
+      const arg = args[i];
+      if (arg.includes("=")) {
+        const [key, value] = arg.split("=", 2);
+        options[key] = value;
+      }
+    }
+
+    const nickname = options.nickname || "";
+    const count = parseInt(options.count || "1", 10);
+
+    try {
+      const launcher = new AgentLauncher(projectRoot, launchMode);
+
+      for (let i = 0; i < count; i++) {
+        const finalNickname = count > 1 && nickname ? `${nickname}-${i + 1}` : nickname;
+        logMessage("system", `{yellow-fg}⚙{/yellow-fg} Launching ${agentType}${finalNickname ? ` (${finalNickname})` : ""}...`);
+        await launcher.launch(agentType, finalNickname);
+      }
+
+      logMessage("system", `{green-fg}✓{/green-fg} Launched ${count} ${agentType} agent(s)`);
+      setTimeout(requestStatus, 1000);
+    } catch (err) {
+      logMessage("error", `{red-fg}✗{/red-fg} Launch failed: ${err.message}`);
+    }
+  }
+
+  function parseCommand(text) {
+    if (!text.startsWith("/")) return null;
+
+    // Split by whitespace, respecting quotes
+    const parts = text.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
+    if (parts.length === 0) return null;
+
+    const command = parts[0].slice(1); // Remove leading /
+    const args = parts.slice(1).map(arg => arg.replace(/^"|"$/g, "")); // Remove quotes
+
+    return { command, args };
+  }
+
+  async function executeCommand(text) {
+    const parsed = parseCommand(text);
+    if (!parsed) return false;
+
+    const { command, args } = parsed;
+
+    switch (command) {
+      case "doctor":
+        await handleDoctorCommand();
+        return true;
+      case "status":
+        await handleStatusCommand();
+        return true;
+      case "daemon":
+        await handleDaemonCommand(args);
+        return true;
+      case "init":
+        await handleInitCommand(args);
+        return true;
+      case "bus":
+        await handleBusCommand(args);
+        return true;
+      case "ctx":
+        await handleCtxCommand(args);
+        return true;
+      case "skills":
+        await handleSkillsCommand(args);
+        return true;
+      case "launch":
+        await handleLaunchCommand(args);
+        return true;
+      default:
+        logMessage("error", `{red-fg}✗{/red-fg} Unknown command: /${command}`);
+        return true;
+    }
+  }
+
+  input.on("submit", async (value) => {
     const text = value.trim();
     input.clearValue();
     screen.render();
@@ -1647,10 +2119,32 @@ async function runChat(projectRoot) {
     if (targetAgent) {
       const label = getAgentLabel(targetAgent);
       logMessage("user", `{cyan-fg}→{/cyan-fg} {magenta-fg}@${label}{/magenta-fg} ${text}`);
+
       // Use bus send command
-      const { spawnSync } = require("child_process");
-      spawnSync("ufoo", ["bus", "send", targetAgent, text], { cwd: projectRoot });
+      const bus = new EventBus(projectRoot);
+      try {
+        bus.send(targetAgent, text).then(() => {
+          logMessage("system", `{green-fg}✓{/green-fg} Message sent to ${label}`);
+        }).catch((err) => {
+          logMessage("error", `{red-fg}✗{/red-fg} Failed to send: ${err.message}`);
+        });
+      } catch (err) {
+        logMessage("error", `{red-fg}✗{/red-fg} Failed to send: ${err.message}`);
+      }
+
       clearTargetAgent();
+      input.focus();
+      return;
+    }
+
+    // Check if it's a command
+    if (text.startsWith("/")) {
+      logMessage("user", `{cyan-fg}→{/cyan-fg} ${text}`);
+      try {
+        await executeCommand(text);
+      } catch (err) {
+        logMessage("error", `{red-fg}✗{/red-fg} Command error: ${err.message}`);
+      }
       input.focus();
       return;
     }

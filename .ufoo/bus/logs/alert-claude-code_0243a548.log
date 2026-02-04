@@ -1,5 +1,0 @@
-[alert] subscriber: claude-code:0243a548
-[alert] queue: .ai-bus/queues/claude-code_0243a548/pending.jsonl
-[alert] interval: 2s
-[alert] title: 1, bell: 1, notify: 1, tty: 0
-]0;[ai-bus]]0;[ai-bus:1]]0;[ai-bus]

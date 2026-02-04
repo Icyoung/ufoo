@@ -18,14 +18,14 @@ Usage:
   ufoo daemon --start|--stop|--status
   ufoo chat
   ufoo init [--modules context[,resources]] [--project <dir>]
-  ufoo bus <...>            # delegates to ./scripts/bus.sh in the current project
-  ufoo ctx <...>            # delegates to ./scripts/ai-context-*.sh in the current project
+  ufoo bus <...>            # JS bus implementation (project-local data)
+  ufoo ctx <...>            # JS context commands (doctor|lint|decisions)
   ufoo skills list
   ufoo skills install <name|all> [--codex|--agents|--target <dir>]
 
 Notes:
   - `init` creates/updates <project>/.ai-context and injects CLAUDE.md/AGENTS.md blocks.
-  - For Codex notifications, prefer `scripts/bus-alert.sh` / `scripts/bus-listen.sh` (no IME issues).
+  - For Codex notifications, prefer `ufoo bus alert` / `ufoo bus listen` (no IME issues).
 USAGE
 }
 
@@ -37,10 +37,10 @@ case "$cmd" in
     exec node "$repo_root/bin/ufoo.js" chat
     ;;
   doctor)
-    exec bash "$repo_root/scripts/doctor.sh"
+    exec node "$repo_root/bin/ufoo.js" doctor "$@"
     ;;
   status)
-    exec bash "$repo_root/scripts/status.sh"
+    exec node "$repo_root/bin/ufoo.js" status "$@"
     ;;
   daemon)
     exec node "$repo_root/bin/ufoo.js" daemon "$@"
@@ -49,41 +49,19 @@ case "$cmd" in
     exec node "$repo_root/bin/ufoo.js" chat
     ;;
   init)
-    exec bash "$repo_root/scripts/init.sh" "$@"
+    exec node "$repo_root/bin/ufoo.js" init "$@"
     ;;
   bus)
     # Project-local bus commands. Must be run from within the target project.
-    if [[ ! -x "./scripts/bus.sh" ]]; then
-      echo "FAIL: missing ./scripts/bus.sh. Run: ufoo init --modules bus" >&2
-      exit 1
-    fi
-    exec bash "./scripts/bus.sh" "$@"
+    exec node "$repo_root/bin/ufoo.js" bus "$@"
     ;;
   ctx)
-    # Project-local ctx commands. Must be run from within the target project.
-    sub="${1:-doctor}"
-    shift || true
-    case "$sub" in
-      doctor)
-        exec bash "./scripts/ai-context-doctor.sh" "$@"
-        ;;
-      lint)
-        exec bash "./scripts/ai-context-lint.sh" "$@"
-        ;;
-      decisions)
-        exec bash "./scripts/ai-context-decisions.sh" "$@"
-        ;;
-      *)
-        echo "Unknown ctx subcommand: $sub" >&2
-        echo "Supported: doctor, lint, decisions" >&2
-        exit 1
-        ;;
-    esac
+    exec node "$repo_root/bin/ufoo.js" ctx "$@"
     ;;
   skills)
     sub="${1:-}"
     shift || true
-    exec bash "$repo_root/scripts/skills.sh" "$sub" "$@"
+    exec node "$repo_root/bin/ufoo.js" skills "$sub" "$@"
     ;;
   *)
     echo "Unknown command: $cmd" >&2
