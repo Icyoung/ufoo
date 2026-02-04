@@ -168,9 +168,10 @@ class AgentLauncher {
         stdio: "inherit",
         env: {
           ...process.env,
-          // 确保环境变量传递
-          CLAUDE_SESSION_ID: sessionId,
-          CODEX_SESSION_ID: sessionId,
+          // 只设置当前 agent 类型的 session ID，避免污染
+          ...(this.agentType === "claude-code"
+            ? { CLAUDE_SESSION_ID: sessionId, CODEX_SESSION_ID: "" }
+            : { CODEX_SESSION_ID: sessionId, CLAUDE_SESSION_ID: "" }),
         },
       });
 
