@@ -113,7 +113,7 @@ class AgentLauncher {
    * 确保 daemon 正在运行
    */
   async ensureDaemon() {
-    const pidFile = path.join(this.cwd, ".ufoo/bus/.daemon.pid");
+    const pidFile = path.join(this.cwd, ".ufoo/run/ufoo-daemon.pid");
 
     if (fs.existsSync(pidFile)) {
       const pidStr = fs.readFileSync(pidFile, "utf8").trim();
@@ -128,8 +128,8 @@ class AgentLauncher {
       }
     }
 
-    // Start daemon
-    spawnSync("ufoo", ["bus", "daemon", "--daemon"], {
+    // Start daemon using correct command
+    spawnSync("ufoo", ["daemon", "start"], {
       cwd: this.cwd,
       stdio: "ignore",
       detached: true,

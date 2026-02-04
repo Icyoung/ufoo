@@ -125,7 +125,15 @@ class EventBus {
     }
 
     if (!agentType) {
-      agentType = process.env.CODEX_SESSION_ID ? "codex" : "claude-code";
+      // 优先检查 CLAUDECODE 环境变量 (Claude Code CLI 设置)
+      // 然后检查哪个 SESSION_ID 存在
+      if (process.env.CLAUDECODE || process.env.CLAUDE_SESSION_ID) {
+        agentType = "claude-code";
+      } else if (process.env.CODEX_SESSION_ID) {
+        agentType = "codex";
+      } else {
+        agentType = "claude-code"; // 默认
+      }
     }
 
     const result = await this.subscriberManager.join(
