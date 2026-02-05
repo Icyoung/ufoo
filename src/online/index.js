@@ -181,7 +181,7 @@ class OnlineServer extends EventEmitter {
         }
         let roomId = "";
         do {
-          roomId = crypto.randomBytes(6).toString("hex");
+          roomId = `room_${Math.floor(Math.random() * 1000000).toString().padStart(6, "0")}`;
         } while (this.rooms.has(roomId));
         if (type === "private") {
           const password = String(payload.password || "");

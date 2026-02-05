@@ -34,7 +34,7 @@ describe('OnlineServer rooms (HTTP)', () => {
     });
     expect(createPublic.status).toBe(200);
     expect(createPublic.data.ok).toBe(true);
-    expect(createPublic.data.room.room_id).toBeDefined();
+    expect(createPublic.data.room.room_id).toMatch(/^room_\d{6}$/);
 
     const createPrivate = await httpRequest({
       method: 'POST',
@@ -43,7 +43,7 @@ describe('OnlineServer rooms (HTTP)', () => {
     });
     expect(createPrivate.status).toBe(200);
     expect(createPrivate.data.ok).toBe(true);
-    expect(createPrivate.data.room.room_id).toBeDefined();
+    expect(createPrivate.data.room.room_id).toMatch(/^room_\d{6}$/);
 
     const list = await httpRequest({ method: 'GET', url: base });
     expect(list.status).toBe(200);
