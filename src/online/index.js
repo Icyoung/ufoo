@@ -120,6 +120,7 @@ class OnlineServer extends EventEmitter {
         }
       });
     }, this.sweepIntervalMs);
+    if (this.sweepTimer.unref) this.sweepTimer.unref();
   }
 
   stopIdleSweep() {

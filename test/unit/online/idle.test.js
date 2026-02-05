@@ -23,5 +23,6 @@ describe('OnlineServer idle timeout', () => {
 
     await new Promise((resolve) => ws.once('close', resolve));
     await server.stop();
+    ws.removeAllListeners();
   }, 15000);
 });
