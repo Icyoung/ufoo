@@ -287,7 +287,8 @@ async function runCli(argv) {
       .description("Manage online rooms (HTTP)")
       .argument("<action>", "create|list")
       .option("--server <url>", "Online server base URL (http://host:port)")
-      .option("--name <room>", "Room name")
+      .option("--room-id <id>", "Room id (global unique)")
+      .option("--name <room>", "Room name (optional)")
       .option("--type <type>", "Room type (public|private)")
       .option("--password <pwd>", "Room password (private only)")
       .action(async (action, opts) => {
@@ -302,10 +303,16 @@ async function runCli(argv) {
           }
           if (action === "create") {
             const payload = {
+              room_id: opts.roomId,
               name: opts.name,
               type: opts.type,
               password: opts.password,
             };
+            if (!payload.room_id || !payload.type) {
+              console.error("online room create requires --room-id and --type");
+              process.exitCode = 1;
+              return;
+            }
             const res = await fetch(endpoint, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -637,7 +644,7 @@ async function runCli(argv) {
     console.log("  ufoo skills list");
     console.log("  ufoo skills install <name|all> [--target <dir> | --codex | --agents]");
     console.log("  ufoo online token <subscriber> [--nickname <name>] [--server <url>] [--file <path>]");
-    console.log("  ufoo online room create --name <room> --type public|private [--password <pwd>] [--server <url>]");
+    console.log("  ufoo online room create --room-id <id> [--name <room>] --type public|private [--password <pwd>] [--server <url>]");
     console.log("  ufoo online room list [--server <url>]");
     console.log("  ufoo bus <args...>    (JS bus implementation)");
     console.log("  ufoo ctx <subcmd> ... (doctor|lint|decisions)");

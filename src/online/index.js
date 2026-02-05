@@ -146,8 +146,9 @@ class OnlineServer extends EventEmitter {
   }
 
   listRooms() {
-    return Array.from(this.rooms.entries()).map(([name, room]) => ({
-      name,
+    return Array.from(this.rooms.entries()).map(([roomId, room]) => ({
+      room_id: roomId,
+      name: room.name || "",
       type: room.type,
       members: room.members.size,
       created_at: room.created_at,
@@ -168,21 +169,22 @@ class OnlineServer extends EventEmitter {
         } catch {
           payload = null;
         }
-        if (!payload || !payload.name || !payload.type) {
-          this.sendJson(res, 400, { ok: false, error: "Missing name/type" });
+        if (!payload || !payload.room_id || !payload.type) {
+          this.sendJson(res, 400, { ok: false, error: "Missing room_id/type" });
           return;
         }
-        const name = String(payload.name).trim();
+        const roomId = String(payload.room_id).trim();
+        const name = String(payload.name || "").trim();
         const type = String(payload.type).trim();
-        if (!name) {
-          this.sendJson(res, 400, { ok: false, error: "Invalid room name" });
+        if (!roomId) {
+          this.sendJson(res, 400, { ok: false, error: "Invalid room id" });
           return;
         }
         if (!["public", "private"].includes(type)) {
           this.sendJson(res, 400, { ok: false, error: "Invalid room type" });
           return;
         }
-        if (this.rooms.has(name)) {
+        if (this.rooms.has(roomId)) {
           this.sendJson(res, 409, { ok: false, error: "Room already exists" });
           return;
         }
@@ -192,15 +194,15 @@ class OnlineServer extends EventEmitter {
             this.sendJson(res, 400, { ok: false, error: "Private room requires password" });
             return;
           }
-          this.roomPasswords.set(name, this.hashPassword(password));
+          this.roomPasswords.set(roomId, this.hashPassword(password));
         }
-        this.rooms.set(name, {
+        this.rooms.set(roomId, {
           name,
           type,
           members: new Set(),
           created_at: new Date().toISOString(),
         });
-        this.sendJson(res, 200, { ok: true, room: { name, type } });
+        this.sendJson(res, 200, { ok: true, room: { room_id: roomId, name, type } });
       });
       return;
     }
@@ -549,12 +551,12 @@ class OnlineServer extends EventEmitter {
   }
 
   handleRoomJoin(client, message) {
-    const roomName = String(message.room || "").trim();
-    if (!roomName) {
+    const roomId = String(message.room || "").trim();
+    if (!roomId) {
       this.sendError(client.ws, "Missing room", false, "ROOM_MISSING");
       return;
     }
-    const room = this.rooms.get(roomName);
+    const room = this.rooms.get(roomId);
     if (!room) {
       this.sendError(client.ws, "Room not found", false, "ROOM_NOT_FOUND");
       return;
@@ -562,35 +564,35 @@ class OnlineServer extends EventEmitter {
     if (room.type === "private") {
       const password = String(message.password || "");
       const hashed = this.hashPassword(password);
-      const expected = this.roomPasswords.get(roomName);
+      const expected = this.roomPasswords.get(roomId);
       if (!expected || expected !== hashed) {
         this.sendError(client.ws, "Invalid room password", false, "ROOM_PASSWORD_INVALID");
         return;
       }
     }
 
-    if (client.rooms.size >= 1 && !client.rooms.has(roomName)) {
+    if (client.rooms.size >= 1 && !client.rooms.has(roomId)) {
       this.sendError(client.ws, "Already in another room", false, "ROOM_ALREADY_JOINED");
       return;
     }
 
     room.members.add(client);
-    client.rooms.add(roomName);
-    this.send(client.ws, { type: "join_ack", ok: true, room: roomName });
+    client.rooms.add(roomId);
+    this.send(client.ws, { type: "join_ack", ok: true, room: roomId });
   }
 
   handleRoomLeave(client, message) {
-    const roomName = String(message.room || "").trim();
-    if (!roomName) {
+    const roomId = String(message.room || "").trim();
+    if (!roomId) {
       this.sendError(client.ws, "Missing room", false, "ROOM_MISSING");
       return;
     }
-    const room = this.rooms.get(roomName);
+    const room = this.rooms.get(roomId);
     if (room) {
       room.members.delete(client);
     }
-    client.rooms.delete(roomName);
-    this.send(client.ws, { type: "leave_ack", ok: true, room: roomName });
+    client.rooms.delete(roomId);
+    this.send(client.ws, { type: "leave_ack", ok: true, room: roomId });
   }
 
   cleanupClient(client) {
@@ -611,8 +613,8 @@ class OnlineServer extends EventEmitter {
     client.channels.clear();
 
     if (client.rooms) {
-      client.rooms.forEach((roomName) => {
-        const room = this.rooms.get(roomName);
+      client.rooms.forEach((roomId) => {
+        const room = this.rooms.get(roomId);
         if (room) {
           room.members.delete(client);
         }

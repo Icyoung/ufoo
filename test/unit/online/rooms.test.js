@@ -30,7 +30,7 @@ describe('OnlineServer rooms (HTTP)', () => {
     const createPublic = await httpRequest({
       method: 'POST',
       url: base,
-      body: { name: 'lobby', type: 'public' },
+      body: { room_id: 'lobby-1', name: 'lobby', type: 'public' },
     });
     expect(createPublic.status).toBe(200);
     expect(createPublic.data.ok).toBe(true);
@@ -38,7 +38,7 @@ describe('OnlineServer rooms (HTTP)', () => {
     const createPrivate = await httpRequest({
       method: 'POST',
       url: base,
-      body: { name: 'secret', type: 'private', password: 'pwd' },
+      body: { room_id: 'secret-1', name: 'secret', type: 'private', password: 'pwd' },
     });
     expect(createPrivate.status).toBe(200);
     expect(createPrivate.data.ok).toBe(true);
@@ -46,6 +46,7 @@ describe('OnlineServer rooms (HTTP)', () => {
     const list = await httpRequest({ method: 'GET', url: base });
     expect(list.status).toBe(200);
     expect(list.data.rooms.length).toBe(2);
+    expect(list.data.rooms[0].room_id).toBeDefined();
 
     await server.stop();
   }, 15000);
