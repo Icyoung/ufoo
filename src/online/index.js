@@ -169,25 +169,20 @@ class OnlineServer extends EventEmitter {
         } catch {
           payload = null;
         }
-        if (!payload || !payload.room_id || !payload.type) {
-          this.sendJson(res, 400, { ok: false, error: "Missing room_id/type" });
+        if (!payload || !payload.type) {
+          this.sendJson(res, 400, { ok: false, error: "Missing type" });
           return;
         }
-        const roomId = String(payload.room_id).trim();
         const name = String(payload.name || "").trim();
         const type = String(payload.type).trim();
-        if (!roomId) {
-          this.sendJson(res, 400, { ok: false, error: "Invalid room id" });
-          return;
-        }
         if (!["public", "private"].includes(type)) {
           this.sendJson(res, 400, { ok: false, error: "Invalid room type" });
           return;
         }
-        if (this.rooms.has(roomId)) {
-          this.sendJson(res, 409, { ok: false, error: "Room already exists" });
-          return;
-        }
+        let roomId = "";
+        do {
+          roomId = crypto.randomBytes(6).toString("hex");
+        } while (this.rooms.has(roomId));
         if (type === "private") {
           const password = String(payload.password || "");
           if (!password) {
