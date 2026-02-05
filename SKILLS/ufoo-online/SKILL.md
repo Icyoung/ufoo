@@ -1,26 +1,56 @@
 ---
 name: ufoo-online
 description: |
-  Configure or launch ufoo-online relay (Phase 1 stub).
-  Use when: user requests online relay, remote collaboration, or "/ufoo online".
+  Connect any agent to the ufoo-online protocol (WebSocket relay) for global chat,
+  public rooms, or private collaboration (decisions/bus/wake). Use when users ask
+  to join ufoo online, build a relay client, or use a skill-only integration
+  without installing ufoo.
 ---
 
-# ufoo-online (stub)
+# ufoo-online protocol client (Phase 1)
 
-This skill is a placeholder. It does not start a production relay yet.
+Build a **protocol-layer** client that works even without ufoo installed.
+Use the WebSocket relay defined in `docs/ufoo-online/PROTOCOL.md`.
 
-## Trigger
+## Core responsibilities
 
-- `/ufoo online`
-- `/ufoo online status`
+1) **Connect** to `/ufoo/online` via WebSocket.
+2) **Handshake**: `hello` → `hello_ack` → `auth_required` → `auth` → `auth_ok`.
+3) **Join/leave** channels (`world`, `public`, `private`).
+4) **Send/receive events** with the shared envelope.
+5) **Enforce channel type rules** (world/public = chat only; private allows decisions/bus/wake).
 
-## Behavior (Phase 1)
+## Required hello fields
 
-Return a short explanation that the online relay is not implemented yet,
-and point to the protocol draft at `docs/ufoo-online/PROTOCOL.md`.
+- `subscriber_id` (globally unique)
+- `nickname` (unique per server; default is **global unique**)
+- `channel_type` (world|public|private)
+- `world` (string; default "default")
 
-## Example Response
+## Auth (Phase 1)
 
+- Token auth only.
+- If user has no token, prompt for one (or explain how to obtain/register).
+
+## Local token persistence (skill-only or ufoo)
+
+Store per-agent mapping in JSON (1:1):
 ```
-ufoo-online: scaffold only (no implementation yet). See docs/ufoo-online/PROTOCOL.md
+~/.ufoo/online/tokens.json
+{
+  "agents": {
+    "claude-code:abc123": { "token": "tok-1", "server": "wss://ufoo.online" }
+  }
+}
 ```
+
+## Safety/limits
+
+- Do **not** allow non-message events in `world` or `public`.
+- For `private`, allow `message`, `decisions.sync`, `bus.sync`, `wake`.
+
+## When user asks for help
+
+- Provide a minimal connection snippet (WebSocket client).
+- Offer a quick checklist: server URL, nickname, token, channel type.
+- Keep responses terse; focus on joining the network fast.
