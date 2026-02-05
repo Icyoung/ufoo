@@ -75,9 +75,11 @@ class MessageManager {
     }
 
     // 3. 尝试作为代理类型（匹配所有该类型的订阅者）
-    const subscribers = this.busData.subscribers || {};
+    const subscribers = this.busData.agents || {};
+    const isActive = (meta) => !meta || meta.status === "active";
+
     const byType = Object.entries(subscribers)
-      .filter(([, meta]) => meta.agent_type === target)
+      .filter(([, meta]) => meta.agent_type === target && isActive(meta))
       .map(([id]) => id);
 
     if (byType.length > 0) {
@@ -87,6 +89,7 @@ class MessageManager {
     // 4. 通配符（所有活跃订阅者）
     if (target === "*") {
       return Object.entries(subscribers)
+        .filter(([, meta]) => isActive(meta))
         .map(([id]) => id);
     }
 
@@ -102,7 +105,7 @@ class MessageManager {
     if (target === subscriber) return true;
 
     // 代理类型匹配
-    const meta = this.busData.subscribers?.[subscriber];
+    const meta = this.busData.agents?.[subscriber];
     if (meta && target === meta.agent_type) return true;
 
     // 昵称匹配
@@ -160,6 +163,43 @@ class MessageManager {
    */
   async broadcast(message, publisher = "unknown") {
     return this.send("*", message, publisher);
+  }
+
+  /**
+   * 发送系统事件（非消息）
+   */
+  async emit(target, eventName, data = {}, publisher = "unknown", type = "status/agent") {
+    const seq = await this.getNextSeq();
+    const timestamp = getTimestamp();
+    const date = getDate();
+
+    // 解析目标
+    const targets = this.resolveTarget(target);
+    if (targets.length === 0) {
+      throw new Error(`Target "${target}" not found`);
+    }
+
+    const event = {
+      seq,
+      timestamp,
+      type,
+      event: eventName,
+      publisher,
+      target,
+      data,
+    };
+
+    const eventFile = path.join(this.eventsDir, `${date}.jsonl`);
+    appendJSONL(eventFile, event);
+
+    for (const targetSubscriber of targets) {
+      const offset = await this.queueManager.getOffset(targetSubscriber);
+      if (seq > offset) {
+        await this.queueManager.appendPending(targetSubscriber, event);
+      }
+    }
+
+    return { seq, targets };
   }
 
   /**
@@ -230,7 +270,7 @@ class MessageManager {
    * 智能路由解析（找出所有匹配的候选者）
    */
   async resolve(myId, targetType) {
-    const subscribers = this.busData.subscribers || {};
+    const subscribers = this.busData.agents || {};
     const candidates = Object.entries(subscribers)
       .filter(([id, meta]) => {
         if (id === myId) return false; // 排除自己

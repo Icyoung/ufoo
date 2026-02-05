@@ -1,5 +1,5 @@
 const fs = require("fs");
-const { getTimestamp, isAgentPidAlive, isValidTty } = require("./utils");
+const { getTimestamp, isAgentPidAlive, isValidTty, getTtyProcessInfo } = require("./utils");
 const NicknameManager = require("./nickname");
 const { spawnSync } = require("child_process");
 
@@ -43,6 +43,10 @@ function tryTtyWithStdin(fd) {
 }
 
 function getTtyPath() {
+  // 0) Honor explicit ttyPath from node stdio if present (useful for tests)
+  const stdinTtyPath = normalizeTty(process.stdin?.ttyPath || "");
+  if (stdinTtyPath) return stdinTtyPath;
+
   // 1) Try stdin directly (inherits real tty if present)
   let ttyPath = tryTtyWithStdin(0);
   if (ttyPath) return ttyPath;
@@ -89,9 +93,9 @@ class SubscriberManager {
 
   async cleanupDuplicateTty(currentSubscriber, ttyPath) {
     if (!ttyPath) return;
-    if (!this.busData.subscribers) return;
+    if (!this.busData.agents) return;
 
-    const entries = Object.entries(this.busData.subscribers);
+    const entries = Object.entries(this.busData.agents);
     for (const [id, meta] of entries) {
       if (id === currentSubscriber) continue;
       const metaTtyRaw = meta?.tty || "";
@@ -101,7 +105,7 @@ class SubscriberManager {
       if (!metaTty) continue;
       if (metaTty === ttyPath) {
         // Remove stale subscriber using same tty
-        delete this.busData.subscribers[id];
+        delete this.busData.agents[id];
         try {
           const queueDir = this.queueManager.getQueueDir(id);
           if (queueDir) {
@@ -119,20 +123,20 @@ class SubscriberManager {
   /**
    * 加入总线
    */
-  async join(sessionId, agentType, nickname = null) {
+  async join(sessionId, agentType, nickname = null, options = {}) {
     // Special case: ufoo-agent uses fixed ID without suffix
     const subscriber = (sessionId === "ufoo-agent")
       ? "ufoo-agent"
       : `${agentType}:${sessionId}`;
 
-    if (!this.busData.subscribers) {
-      this.busData.subscribers = {};
+    if (!this.busData.agents) {
+      this.busData.agents = {};
     }
 
     const nicknameManager = new NicknameManager(this.busData);
 
     // 检查是否是重新加入（rejoin）
-    const existingMeta = this.busData.subscribers[subscriber];
+    const existingMeta = this.busData.agents[subscriber];
     let finalNickname = nickname;
 
     if (existingMeta && existingMeta.nickname) {
@@ -145,39 +149,53 @@ class SubscriberManager {
       }
       finalNickname = nickname;
     } else {
-      // 自动生成昵称
+      // 自动生成昵称（并标记占用，避免并发重复）
       finalNickname = nicknameManager.generateAutoNickname(agentType);
+      nicknameManager.setNickname(subscriber, finalNickname);
     }
 
-    const launchMode = process.env.UFOO_LAUNCH_MODE || "";
-    const detectedTty = getTtyPath();
-    const tty = isValidTty(detectedTty) ? detectedTty : "";
+    const launchMode = options.launchMode || process.env.UFOO_LAUNCH_MODE || "";
+    const overridePid = Number.isFinite(options.parentPid) && options.parentPid > 0
+      ? options.parentPid
+      : null;
+    const hasOverrideTty = Object.prototype.hasOwnProperty.call(options, "tty");
+    const overrideTty = (typeof options.tty === "string" && isValidTty(options.tty.trim()))
+      ? options.tty.trim()
+      : "";
+    const detectedTty = hasOverrideTty ? overrideTty : getTtyPath();
+    const tty = overrideTty || (isValidTty(detectedTty) ? detectedTty : "");
     const preservedTty = !tty && launchMode !== "internal" && isValidTty(existingMeta?.tty)
       ? existingMeta.tty
       : "";
     const finalTty = tty || preservedTty;
+    const ttyInfo = finalTty ? getTtyProcessInfo(finalTty) : null;
 
     // 清理同一 tty 的旧订阅者（避免重复启动污染）
     await this.cleanupDuplicateTty(subscriber, finalTty);
 
-    // 更新订阅者信息
-    this.busData.subscribers[subscriber] = {
+    // 更新订阅者信息（保留已有字段，如 provider_session_*）
+    const preserved = existingMeta && typeof existingMeta === "object"
+      ? { ...existingMeta }
+      : {};
+    this.busData.agents[subscriber] = {
+      ...preserved,
       agent_type: agentType,
       nickname: finalNickname,
       status: "active",
       joined_at: existingMeta?.joined_at || getTimestamp(),
       last_seen: getTimestamp(),
-      pid: getJoinedPid(),
+      pid: overridePid || getJoinedPid(),
       tty: finalTty,
-      tmux_pane: process.env.TMUX_PANE || "",
+      tty_shell_pid: ttyInfo?.shellPid || 0,
+      tmux_pane: options.tmuxPane || process.env.TMUX_PANE || "",
       launch_mode: launchMode,
     };
 
     // 保存 tty 信息
-    if (this.busData.subscribers[subscriber].tty) {
+    if (this.busData.agents[subscriber].tty) {
       await this.queueManager.saveTty(
         subscriber,
-        this.busData.subscribers[subscriber].tty
+        this.busData.agents[subscriber].tty
       );
     } else {
       // 清理旧 tty 文件，避免错误注入
@@ -201,12 +219,12 @@ class SubscriberManager {
    * 离开总线
    */
   async leave(subscriber) {
-    if (!this.busData.subscribers || !this.busData.subscribers[subscriber]) {
+    if (!this.busData.agents || !this.busData.agents[subscriber]) {
       return false;
     }
 
-    this.busData.subscribers[subscriber].status = "inactive";
-    this.busData.subscribers[subscriber].last_seen = getTimestamp();
+    this.busData.agents[subscriber].status = "inactive";
+    this.busData.agents[subscriber].last_seen = getTimestamp();
 
     return true;
   }
@@ -215,7 +233,7 @@ class SubscriberManager {
    * 重命名订阅者
    */
   async rename(subscriber, newNickname) {
-    if (!this.busData.subscribers || !this.busData.subscribers[subscriber]) {
+    if (!this.busData.agents || !this.busData.agents[subscriber]) {
       throw new Error(`Subscriber "${subscriber}" not found`);
     }
 
@@ -226,8 +244,8 @@ class SubscriberManager {
       throw new Error(`Nickname "${newNickname}" already exists`);
     }
 
-    const oldNickname = this.busData.subscribers[subscriber].nickname;
-    this.busData.subscribers[subscriber].nickname = newNickname;
+    const oldNickname = this.busData.agents[subscriber].nickname;
+    this.busData.agents[subscriber].nickname = newNickname;
 
     return { subscriber, oldNickname, newNickname };
   }
@@ -236,12 +254,18 @@ class SubscriberManager {
    * 获取所有在线订阅者
    */
   getActiveSubscribers() {
-    if (!this.busData.subscribers) return [];
+    if (!this.busData.agents) return [];
 
-    return Object.entries(this.busData.subscribers)
+    return Object.entries(this.busData.agents)
       .filter(([, meta]) => {
-        // 检查状态和进程是否存活
-        return meta.status === "active" && (!meta.pid || isAgentPidAlive(meta.pid));
+        if (meta.status !== "active") return false;
+
+        // 检查进程是否存活（如果有 pid）
+        if (meta.pid && !isAgentPidAlive(meta.pid)) {
+          return false;
+        }
+
+        return true;
       })
       .map(([id, meta]) => ({ id, ...meta }));
   }
@@ -250,15 +274,15 @@ class SubscriberManager {
    * 获取订阅者信息
    */
   getSubscriber(subscriber) {
-    return this.busData.subscribers?.[subscriber] || null;
+    return this.busData.agents?.[subscriber] || null;
   }
 
   /**
    * 更新订阅者的最后活动时间
    */
   updateLastSeen(subscriber) {
-    if (this.busData.subscribers && this.busData.subscribers[subscriber]) {
-      this.busData.subscribers[subscriber].last_seen = getTimestamp();
+    if (this.busData.agents && this.busData.agents[subscriber]) {
+      this.busData.agents[subscriber].last_seen = getTimestamp();
     }
   }
 
@@ -266,11 +290,13 @@ class SubscriberManager {
    * 清理不活跃的订阅者
    */
   cleanupInactive() {
-    if (!this.busData.subscribers) return;
+    if (!this.busData.agents) return;
 
-    for (const [id, meta] of Object.entries(this.busData.subscribers)) {
+    for (const [id, meta] of Object.entries(this.busData.agents)) {
       // 如果有 PID，检查进程是否存活
-      if (meta.pid && !isAgentPidAlive(meta.pid) && meta.status === "active") {
+      const ttyInfo = meta.tty ? getTtyProcessInfo(meta.tty) : null;
+      const ttyHasAgent = ttyInfo ? ttyInfo.hasAgent : false;
+      if (meta.pid && !isAgentPidAlive(meta.pid) && !ttyHasAgent && meta.status === "active") {
         meta.status = "inactive";
         meta.last_seen = getTimestamp();
       }

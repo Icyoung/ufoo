@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { readJSON } = require("../bus/utils");
+const { getUfooPaths } = require("../ufoo/paths");
 
 /**
  * 显示项目状态
@@ -8,7 +9,8 @@ const { readJSON } = require("../bus/utils");
 class StatusDisplay {
   constructor(projectRoot) {
     this.projectRoot = projectRoot;
-    this.ufooDir = path.join(projectRoot, ".ufoo");
+    this.paths = getUfooPaths(projectRoot);
+    this.ufooDir = this.paths.ufooDir;
   }
 
   /**
@@ -25,8 +27,13 @@ class StatusDisplay {
    * 获取当前订阅者信息
    */
   getCurrentSubscriber() {
-    const busFile = path.join(this.ufooDir, "bus", "bus.json");
-    if (!fs.existsSync(busFile)) {
+    // 优先使用 UFOO_SUBSCRIBER_ID（daemon 启动的情况）
+    if (process.env.UFOO_SUBSCRIBER_ID) {
+      return process.env.UFOO_SUBSCRIBER_ID;
+    }
+
+    const agentsFile = this.paths.agentsFile;
+    if (!fs.existsSync(agentsFile)) {
       return null;
     }
 
@@ -39,21 +46,14 @@ class StatusDisplay {
     }
 
     if (currentTty && currentTty.startsWith("/dev/")) {
-      const busData = readJSON(busFile);
-      if (busData && busData.subscribers) {
-        for (const [id, meta] of Object.entries(busData.subscribers)) {
+      const busData = readJSON(agentsFile);
+      if (busData && busData.agents) {
+        for (const [id, meta] of Object.entries(busData.agents)) {
           if (meta.tty === currentTty) {
             return id;
           }
         }
       }
-    }
-
-    // 回退到环境变量
-    const sessionId = process.env.CLAUDE_SESSION_ID || process.env.CODEX_SESSION_ID;
-    if (sessionId) {
-      const agentType = process.env.CODEX_SESSION_ID ? "codex" : "claude-code";
-      return `${agentType}:${sessionId}`;
     }
 
     return null;
@@ -63,13 +63,13 @@ class StatusDisplay {
    * 统计未读消息
    */
   countUnreadMessages() {
-    const queuesDir = path.join(this.ufooDir, "bus", "queues");
+    const queuesDir = this.paths.busQueuesDir;
     if (!fs.existsSync(queuesDir)) {
       return { total: 0, details: [] };
     }
 
-    const busFile = path.join(this.ufooDir, "bus", "bus.json");
-    const busData = readJSON(busFile, {});
+    const agentsFile = this.paths.agentsFile;
+    const busData = readJSON(agentsFile, {});
 
     let total = 0;
     const details = [];
@@ -94,8 +94,8 @@ class StatusDisplay {
 
         // 找到订阅者名称
         let subscriberName = safeName.replace(/_/, ":");
-        if (busData.subscribers) {
-          for (const [id, meta] of Object.entries(busData.subscribers)) {
+        if (busData.agents) {
+          for (const [id, meta] of Object.entries(busData.agents)) {
             if (id.replace(/:/, "_") === safeName) {
               subscriberName = id;
               break;
@@ -190,10 +190,10 @@ class StatusDisplay {
    */
   getSubscriberNickname(subscriber) {
     if (!subscriber) return null;
-    const busFile = path.join(this.ufooDir, "bus", "bus.json");
-    const busData = readJSON(busFile);
-    if (!busData || !busData.subscribers) return null;
-    const meta = busData.subscribers[subscriber];
+    const agentsFile = this.paths.agentsFile;
+    const busData = readJSON(agentsFile);
+    if (!busData || !busData.agents) return null;
+    const meta = busData.agents[subscriber];
     return meta && meta.nickname ? meta.nickname : null;
   }
 
@@ -201,18 +201,35 @@ class StatusDisplay {
    * 显示横幅（如果存在）
    */
   showBanner(subscriber) {
-    if (!subscriber) {
+    const { spawnSync } = require("child_process");
+    const bannerScript = path.join(__dirname, "../../scripts/banner.sh");
+
+    const printSimple = () => {
       console.log("=== ufoo status ===");
-      console.log();
+      if (subscriber) {
+        console.log(`Agent: ${subscriber}`);
+      } else {
+        console.log();
+      }
+    };
+
+    if (!subscriber) {
+      printSimple();
       return;
     }
 
-    const { showBanner } = require("../utils/banner");
-    const agentType = subscriber.startsWith("codex:") ? "codex" : "claude";
-    const sessionId = subscriber.split(":")[1] || "unknown";
-    const nickname = this.getSubscriberNickname(subscriber);
+    if (fs.existsSync(bannerScript)) {
+      const agentType = subscriber.startsWith("codex:") ? "codex" : "claude";
+      const sessionId = subscriber.split(":")[1] || "unknown";
+      const nickname = this.getSubscriberNickname(subscriber) || "";
+      const script = `source "${bannerScript}"; show_banner "${agentType}" "${sessionId}" "${nickname}"`;
+      const res = spawnSync("bash", ["-c", script], { stdio: "inherit" });
+      if (res && res.status === 0) {
+        return;
+      }
+    }
 
-    showBanner({ agentType, sessionId, nickname });
+    printSimple();
   }
 
   /**
