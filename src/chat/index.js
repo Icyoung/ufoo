@@ -7,7 +7,7 @@ const { loadConfig, saveConfig, normalizeLaunchMode, normalizeAgentProvider } = 
 const { socketPath, isRunning } = require("../daemon");
 const UfooInit = require("../init");
 const EventBus = require("../bus");
-const AgentLauncher = require("../agent/launcher");
+const { getUfooPaths } = require("../ufoo/paths");
 
 function connectSocket(sockPath) {
   return new Promise((resolve, reject) => {
@@ -22,12 +22,16 @@ function resolveProjectFile(projectRoot, relativePath, fallbackRelativePath) {
   return path.join(__dirname, "..", "..", fallbackRelativePath);
 }
 
-function startDaemon(projectRoot) {
+function startDaemon(projectRoot, options = {}) {
   const daemonBin = resolveProjectFile(projectRoot, path.join("bin", "ufoo.js"), path.join("bin", "ufoo.js"));
+  const env = options.forceResume
+    ? { ...process.env, UFOO_FORCE_RESUME: "1" }
+    : process.env;
   const child = spawn(process.execPath, [daemonBin, "daemon", "--start"], {
     detached: true,
     stdio: "ignore",
     cwd: projectRoot,
+    env,
   });
   child.unref();
 }
@@ -55,16 +59,16 @@ async function connectWithRetry(sockPath, retries, delayMs) {
 }
 
 async function runChat(projectRoot) {
-  if (!fs.existsSync(path.join(projectRoot, ".ufoo"))) {
+  if (!fs.existsSync(getUfooPaths(projectRoot).ufooDir)) {
     const repoRoot = path.join(__dirname, "..", "..");
     const init = new UfooInit(repoRoot);
     await init.init({ modules: "context,bus", project: projectRoot });
   }
 
-  // Ensure session ID exists for chat (persistent across restarts)
-  if (!process.env.CLAUDE_SESSION_ID && !process.env.CODEX_SESSION_ID) {
+  // Ensure subscriber ID exists for chat (persistent across restarts)
+  if (!process.env.UFOO_SUBSCRIBER_ID) {
     const crypto = require("crypto");
-    const sessionFile = path.join(projectRoot, ".ufoo", "chat", "session-id.txt");
+    const sessionFile = path.join(getUfooPaths(projectRoot).ufooDir, "chat", "session-id.txt");
     const sessionDir = path.dirname(sessionFile);
     fs.mkdirSync(sessionDir, { recursive: true });
 
@@ -75,7 +79,8 @@ async function runChat(projectRoot) {
       sessionId = crypto.randomBytes(4).toString("hex");
       fs.writeFileSync(sessionFile, sessionId, "utf8");
     }
-    process.env.CLAUDE_SESSION_ID = sessionId;
+    // Chat 模式默认使用 claude-code 类型
+    process.env.UFOO_SUBSCRIBER_ID = `claude-code:${sessionId}`;
   }
 
   if (!isRunning(projectRoot)) {
@@ -137,6 +142,7 @@ async function runChat(projectRoot) {
       attachClient(newClient);
       connectionLostNotified = false;
       resolveStatusLine("{green-fg}✓{/green-fg} Daemon reconnected");
+      requestStatus();
       return true;
     })();
     try {
@@ -150,7 +156,7 @@ async function runChat(projectRoot) {
   if (!client) {
     // Check if daemon failed to start
     if (!isRunning(projectRoot)) {
-      const logFile = path.join(projectRoot, ".ufoo", "run", "ufoo-daemon.log");
+      const logFile = getUfooPaths(projectRoot).ufooDaemonLog;
       // eslint-disable-next-line no-console
       console.error("Failed to start ufoo daemon. Check logs at:", logFile);
       throw new Error("Daemon failed to start. Check the daemon log for details.");
@@ -162,17 +168,28 @@ async function runChat(projectRoot) {
     smartCSR: true,
     title: "ufoo chat",
     fullUnicode: true,
-    // Allow terminal native copy by not fully grabbing mouse
-    // Hold Option/Alt to use native selection in most terminals
+    // Toggle mouse at runtime to balance copy vs scroll
     sendFocus: true,
     mouse: false,
     // Allow Ctrl+C to exit even when input grabs keys
     ignoreLocked: ["C-c"],
   });
+  // Prefer normal buffer for reliable terminal selection/copy
+  if (screen.program && typeof screen.program.normalBuffer === "function") {
+    screen.program.normalBuffer();
+    if (screen.program.put && typeof screen.program.put.keypad_local === "function") {
+      screen.program.put.keypad_local();
+    }
+    if (typeof screen.program.clear === "function") {
+      screen.program.clear();
+      screen.program.cup(0, 0);
+    }
+  }
 
   const config = loadConfig(projectRoot);
   let launchMode = config.launchMode;
   let agentProvider = config.agentProvider;
+  let autoResume = config.autoResume !== false;
 
   // Dynamic input height settings
   // Layout: topLine(1) + content + bottomLine(1) + dashboard(1)
@@ -191,11 +208,11 @@ async function runChat(projectRoot) {
     scrollable: true,
     alwaysScroll: true,
     scrollback: 10000,
-    scrollbar: { ch: "│", style: { fg: "cyan" } },
+    scrollbar: null,
     keys: true,
     vi: true,
-    // Enable mouse wheel scrolling in log area (use Option/Alt for native selection)
-    mouse: true,
+    // Mouse handled globally (toggleable) to keep copy working
+    mouse: false,
   });
 
   // Status line just above input
@@ -213,7 +230,7 @@ async function runChat(projectRoot) {
   const bannerText = `{bold}UFOO{/bold} · Multi-Agent Manager{|}v${pkg.version}`;
   statusLine.setContent(bannerText);
 
-  const historyDir = path.join(projectRoot, ".ufoo", "chat");
+  const historyDir = path.join(getUfooPaths(projectRoot).ufooDir, "chat");
   const historyFile = path.join(historyDir, "history.jsonl");
   const inputHistoryFile = path.join(historyDir, "input-history.jsonl");
 
@@ -227,8 +244,10 @@ async function runChat(projectRoot) {
   let lastLogType = null;
   let hasLoggedAny = false;
 
-  function shouldSpace(type) {
-    return SPACED_TYPES.has(type);
+  function shouldSpace(type, text) {
+    if (SPACED_TYPES.has(type)) return true;
+    if (text && /daemon/i.test(text)) return true;
+    return false;
   }
 
   function writeSpacer(writeHistory) {
@@ -248,7 +267,7 @@ async function runChat(projectRoot) {
   }
 
   function recordLog(type, text, meta = {}, writeHistory = true) {
-    if (type !== "spacer" && shouldSpace(type)) {
+    if (type !== "spacer" && shouldSpace(type, text)) {
       writeSpacer(writeHistory);
     }
     logBox.log(text);
@@ -323,16 +342,69 @@ async function runChat(projectRoot) {
   const pendingStatusLines = [];
   const busStatusQueue = [];
   let primaryStatusText = bannerText;
+  let primaryStatusPending = false;
+  const shimmerStart = Date.now();
+  let statusAnimationTimer = null;
+  const STATUS_ANIM_FRAME_MS = 50;
+  const SHIMMER_PADDING = 10;
+  const SHIMMER_BAND_HALF_WIDTH = 5;
+  const SHIMMER_SWEEP_MS = 2000;
+  const SPINNER_PERIOD_MS = 600;
 
   function formatProcessingText(text) {
     if (!text) return text;
     if (text.includes("{")) return text;
     if (!/processing/i.test(text)) return text;
-    return `{yellow-fg}⏳{/yellow-fg} ${text}`;
+    return text;
   }
 
-  function renderStatusLine() {
+  function shimmerText(text, nowMs) {
+    if (!text) return "";
+    if (text.includes("{")) return text;
+    const chars = Array.from(text);
+    const period = chars.length + SHIMMER_PADDING * 2;
+    const pos =
+      Math.floor(((nowMs - shimmerStart) % SHIMMER_SWEEP_MS) / SHIMMER_SWEEP_MS * period);
+    let out = "";
+    for (let i = 0; i < chars.length; i += 1) {
+      const iPos = i + SHIMMER_PADDING;
+      const dist = Math.abs(iPos - pos);
+      let intensity = 0;
+      if (dist <= SHIMMER_BAND_HALF_WIDTH) {
+        const x = Math.PI * (dist / SHIMMER_BAND_HALF_WIDTH);
+        intensity = 0.5 * (1 + Math.cos(x));
+      }
+      const ch = chars[i];
+      if (intensity < 0.2) {
+        out += `{gray-fg}${ch}{/gray-fg}`;
+      } else if (intensity < 0.6) {
+        out += ch;
+      } else {
+        out += `{bold}{white-fg}${ch}{/white-fg}{/bold}`;
+      }
+    }
+    return out;
+  }
+
+  function spinnerFrame(nowMs) {
+    const on = Math.floor((nowMs - shimmerStart) / SPINNER_PERIOD_MS) % 2 === 0;
+    return on
+      ? "{white-fg}•{/white-fg}"
+      : "{gray-fg}◦{/gray-fg}";
+  }
+
+  function renderPendingStatus(text, nowMs) {
+    const spinner = spinnerFrame(nowMs);
+    const shimmer = shimmerText(text, nowMs);
+    if (!shimmer) return spinner;
+    return `${spinner} ${shimmer}`;
+  }
+
+  function renderStatusLine(nowMs = Date.now()) {
     let content = primaryStatusText || "";
+    if (primaryStatusPending) {
+      content = renderPendingStatus(primaryStatusText, nowMs);
+    }
     if (busStatusQueue.length > 0) {
       const extra = busStatusQueue.length > 1
         ? ` {gray-fg}(+${busStatusQueue.length - 1}){/gray-fg}`
@@ -345,16 +417,31 @@ async function runChat(projectRoot) {
     statusLine.setContent(content);
   }
 
-  function setPrimaryStatus(text) {
+  function updateStatusAnimation() {
+    if (primaryStatusPending && !statusAnimationTimer) {
+      statusAnimationTimer = setInterval(() => {
+        if (!primaryStatusPending) return;
+        renderStatusLine(Date.now());
+        screen.render();
+      }, STATUS_ANIM_FRAME_MS);
+    } else if (!primaryStatusPending && statusAnimationTimer) {
+      clearInterval(statusAnimationTimer);
+      statusAnimationTimer = null;
+    }
+  }
+
+  function setPrimaryStatus(text, options = {}) {
     primaryStatusText = text || "";
+    primaryStatusPending = Boolean(options.pending);
+    updateStatusAnimation();
     renderStatusLine();
   }
 
   function queueStatusLine(text) {
-    const formatted = formatProcessingText(text);
-    pendingStatusLines.push(formatted);
+    let raw = text || "";
+    pendingStatusLines.push(raw);
     if (pendingStatusLines.length === 1) {
-      setPrimaryStatus(formatted);
+      setPrimaryStatus(raw, { pending: true });
       screen.render();
     }
   }
@@ -364,9 +451,9 @@ async function runChat(projectRoot) {
       pendingStatusLines.shift();
     }
     if (pendingStatusLines.length > 0) {
-      setPrimaryStatus(pendingStatusLines[0]);
+      setPrimaryStatus(pendingStatusLines[0], { pending: true });
     } else {
-      setPrimaryStatus(text || "");
+      setPrimaryStatus(text || "", { pending: false });
     }
     screen.render();
   }
@@ -407,6 +494,7 @@ async function runChat(projectRoot) {
     width: "100%",
     height: 0,
     hidden: true,
+    wrap: false,
     border: {
       type: "line",
       top: true,
@@ -443,8 +531,8 @@ async function runChat(projectRoot) {
   const inputBottomLine = blessed.line({
     parent: screen,
     bottom: 1,
-    left: 0,
-    width: "100%",
+    left: 1,
+    width: "100%-2",
     orientation: "horizontal",
     style: { fg: "cyan" },
   });
@@ -477,8 +565,8 @@ async function runChat(projectRoot) {
   const inputTopLine = blessed.line({
     parent: screen,
     bottom: currentInputHeight - 1,  // 4-1=3: above input(2) + inputHeight(1)
-    left: 0,
-    width: "100%",
+    left: 1,
+    width: "100%-2",
     orientation: "horizontal",
     style: { fg: "cyan" },
   });
@@ -566,6 +654,34 @@ async function runChat(projectRoot) {
     return text.length;
   }
 
+  function ensureInputCursorVisible() {
+    const innerWidth = getInnerWidth();
+    if (innerWidth <= 0) return;
+    const totalRows = countLines(input.value, innerWidth);
+    const visibleRows = Math.max(1, input.height || 1);
+    const { row } = getCursorRowCol(input.value, cursorPos, innerWidth);
+    let base = input.childBase || 0;
+    const maxBase = Math.max(0, totalRows - visibleRows);
+    const bottomMargin = visibleRows > 1 ? 1 : 0;
+    const upperLimit = base;
+    const lowerLimit = base + visibleRows - bottomMargin - 1;
+
+    if (row < upperLimit) {
+      base = row;
+    } else if (row > lowerLimit) {
+      base = row - (visibleRows - bottomMargin - 1);
+    }
+
+    if (base > maxBase) base = maxBase;
+    if (base < 0) base = 0;
+    if (base !== input.childBase) {
+      input.childBase = base;
+      if (typeof input.scrollTo === "function") {
+        input.scrollTo(base);
+      }
+    }
+  }
+
   function resetPreferredCol() {
     preferredCol = null;
   }
@@ -615,6 +731,7 @@ async function runChat(projectRoot) {
     normalizeCommandPrefix();
     resetPreferredCol();
     resizeInput();
+    ensureInputCursorVisible();
     input._updateCursor();
     screen.render();
     updateDraftFromInput();
@@ -625,6 +742,7 @@ async function runChat(projectRoot) {
     cursorPos = input.value.length;
     resetPreferredCol();
     resizeInput();
+    ensureInputCursorVisible();
     input._updateCursor();
     screen.render();
   }
@@ -661,6 +779,10 @@ async function runChat(projectRoot) {
     exitRequested = true;
     if (screen && screen.program && typeof screen.program.decrst === "function") {
       screen.program.decrst(2004);
+    }
+    if (statusAnimationTimer) {
+      clearInterval(statusAnimationTimer);
+      statusAnimationTimer = null;
     }
     if (client) {
       client.end();
@@ -699,9 +821,12 @@ async function runChat(projectRoot) {
     const parts = filterText.split(/\s+/);
     let commands = [];
 
-    if ((parts.length > 1 || (endsWithSpace && parts.length === 1)) && parts[0].startsWith("/")) {
+    const mainCmd = parts[0];
+    const isLaunch = mainCmd && mainCmd.toLowerCase() === "/launch";
+    const wantsSubcommands = (parts.length > 1 || (endsWithSpace && parts.length === 1));
+
+    if ((wantsSubcommands || isLaunch) && mainCmd && mainCmd.startsWith("/")) {
       // Subcommand mode: "/bus rename"
-      const mainCmd = parts[0];
       const subFilter = parts[1] || "";
 
       // Find the main command
@@ -709,31 +834,41 @@ async function runChat(projectRoot) {
         item.cmd.toLowerCase() === mainCmd.toLowerCase()
       );
 
-      if (mainCmdObj && mainCmdObj.subcommands) {
-        // Filter subcommands
-        commands = mainCmdObj.subcommands
-          .filter(sub => sub.cmd.toLowerCase().startsWith(subFilter.toLowerCase()))
-          .map(sub => ({ ...sub, isSubcommand: true, parentCmd: mainCmd }));
+      const fallbackLaunchSubs = [
+        { cmd: "claude", desc: "Launch Claude agent" },
+        { cmd: "codex", desc: "Launch Codex agent" },
+      ];
+
+      if ((mainCmdObj && mainCmdObj.subcommands) || isLaunch) {
+        const baseSubs = mainCmdObj && mainCmdObj.subcommands ? mainCmdObj.subcommands : [];
+        let subs = baseSubs;
+        if (isLaunch) {
+          const merged = new Map();
+          for (const sub of [...baseSubs, ...fallbackLaunchSubs]) {
+            if (!sub || !sub.cmd) continue;
+            merged.set(sub.cmd, sub);
+          }
+          subs = Array.from(merged.values());
+        }
+        if (isLaunch) {
+          // Always show both launch targets for clarity
+          commands = subs
+            .map(sub => ({ ...sub, isSubcommand: true, parentCmd: mainCmd }))
+            .sort((a, b) => a.cmd.localeCompare(b.cmd));
+        } else {
+          // Filter subcommands
+          commands = subs
+            .filter(sub => sub.cmd.toLowerCase().startsWith(subFilter.toLowerCase()))
+            .map(sub => ({ ...sub, isSubcommand: true, parentCmd: mainCmd }))
+            .sort((a, b) => a.cmd.localeCompare(b.cmd));
+        }
       }
     } else {
       // Main command mode: "/bus"
-      const prefixMatches = COMMAND_REGISTRY.filter(item =>
-        item.cmd.toLowerCase().startsWith(filterText.toLowerCase())
-      );
-      // Also allow fuzzy matches on the command body (e.g. "/b" -> /bus + /ubus)
-      let fuzzyMatches = [];
-      if (filterText.startsWith("/") && parts.length === 1) {
-        const needle = filterText.slice(1).toLowerCase();
-        if (needle) {
-          fuzzyMatches = COMMAND_REGISTRY.filter(item =>
-            item.cmd.toLowerCase().includes(needle)
-          );
-        }
-      }
-      const merged = new Map();
-      for (const item of prefixMatches) merged.set(item.cmd, item);
-      for (const item of fuzzyMatches) merged.set(item.cmd, item);
-      commands = Array.from(merged.values());
+      const filterLower = filterText.toLowerCase();
+      commands = COMMAND_REGISTRY
+        .filter(item => item.cmd.toLowerCase().startsWith(filterLower))
+        .sort((a, b) => a.cmd.localeCompare(b.cmd, "en", { sensitivity: "base" }));
     }
 
     if (commands.length === 0) {
@@ -746,9 +881,9 @@ async function runChat(projectRoot) {
     completionIndex = 0;
     completionScrollOffset = 0;
 
-    // Calculate panel height (max 8 visible + 1 for top border)
-    const visibleItems = Math.min(8, completionCommands.length);
-    completionPanel.height = visibleItems + 1;
+    // Calculate panel height (max 7 visible + 1 for top border)
+    completionVisibleCount = Math.min(7, completionCommands.length);
+    completionPanel.height = completionVisibleCount + 1;
     completionPanel.bottom = currentInputHeight - 1;
     completionPanel.hidden = false;
 
@@ -760,6 +895,7 @@ async function runChat(projectRoot) {
     completionCommands = [];
     completionIndex = 0;
     completionScrollOffset = 0;
+    completionVisibleCount = 0;
     completionPanel.hidden = true;
     screen.render();
   }
@@ -767,7 +903,10 @@ async function runChat(projectRoot) {
   function renderCompletionPanel() {
     if (!completionActive || completionCommands.length === 0) return;
 
-    const maxVisible = 8;
+    const panelVisible = Math.max(1, (completionPanel.height || 1) - 1);
+    const maxVisible = completionVisibleCount
+      ? Math.max(1, Math.min(completionVisibleCount, panelVisible))
+      : panelVisible;
 
     // Adjust scroll offset to keep selected item visible
     if (completionIndex < completionScrollOffset) {
@@ -781,19 +920,35 @@ async function runChat(projectRoot) {
     const visibleEnd = Math.min(completionScrollOffset + maxVisible, completionCommands.length);
     const visibleCommands = completionCommands.slice(visibleStart, visibleEnd);
 
+    const panelWidth = typeof completionPanel.width === "number"
+      ? completionPanel.width
+      : screen.width;
     const lines = visibleCommands.map((item, i) => {
       const actualIndex = visibleStart + i;
+      const cmdText = item.cmd;
+      const descText = item.desc || "";
       const cmdPart = actualIndex === completionIndex
-        ? `{inverse}${item.cmd}{/inverse}`
-        : `{cyan-fg}${item.cmd}{/cyan-fg}`;
-      const descPart = `{gray-fg}${item.desc}{/gray-fg}`;
-      // Use promptBox width (2) to align with input position
+        ? `{inverse}${cmdText}{/inverse}`
+        : `{cyan-fg}${cmdText}{/cyan-fg}`;
       const indent = " ".repeat(promptBox.width || 2);
-      return `${indent}${cmdPart}  ${descPart}`;
+      const maxDescWidth = Math.max(0, panelWidth - indent.length - cmdText.length - 2);
+      const trimmedDesc = truncateText(descText, maxDescWidth);
+      const descPart = trimmedDesc ? `{gray-fg}${trimmedDesc}{/gray-fg}` : "";
+      // Use promptBox width (2) to align with input position
+      return descPart
+        ? `${indent}${cmdPart}  ${descPart}`
+        : `${indent}${cmdPart}`;
     });
 
     completionPanel.setContent(lines.join("\n"));
     screen.render();
+  }
+
+  function completionPageSize() {
+    const panelVisible = Math.max(1, (completionPanel.height || 1) - 1);
+    return completionVisibleCount
+      ? Math.max(1, Math.min(completionVisibleCount, panelVisible))
+      : panelVisible;
   }
 
   function completionUp() {
@@ -810,6 +965,55 @@ async function runChat(projectRoot) {
       ? 0
       : completionIndex + 1;
     renderCompletionPanel();
+  }
+
+  function completionPageUp() {
+    if (completionCommands.length === 0) return;
+    const step = completionPageSize();
+    completionIndex = Math.max(0, completionIndex - step);
+    renderCompletionPanel();
+  }
+
+  function completionPageDown() {
+    if (completionCommands.length === 0) return;
+    const step = completionPageSize();
+    completionIndex = Math.min(completionCommands.length - 1, completionIndex + step);
+    renderCompletionPanel();
+  }
+
+  function completionPreview(selected) {
+    const current = input.value || "";
+    const trimmed = current.trim();
+    const endsWithSpace = /\s$/.test(current);
+    if (selected.isSubcommand) {
+      const parts = trimmed.split(/\s+/);
+      const base = parts[0] || "";
+      const completedCore = base ? `${base} ${selected.cmd}` : selected.cmd;
+      const isComplete = trimmed === completedCore || trimmed.startsWith(`${completedCore} `);
+      return { text: `${completedCore} `, isComplete };
+    }
+    const completedCore = selected.cmd;
+    const hasChildren = selected.subcommands && selected.subcommands.length > 0;
+    const isComplete =
+      (trimmed === completedCore && (!hasChildren || endsWithSpace)) ||
+      trimmed.startsWith(`${completedCore} `);
+    return { text: `${completedCore} `, isComplete };
+  }
+
+  function applyCompletionPreview(preview) {
+    input.value = preview.text;
+    cursorPos = input.value.length;
+    resetPreferredCol();
+    input._updateCursor();
+    updateDraftFromInput();
+    screen.render();
+  }
+
+  function truncateText(text, maxWidth) {
+    if (maxWidth <= 0) return "";
+    if (text.length <= maxWidth) return text;
+    if (maxWidth <= 3) return text.slice(0, maxWidth);
+    return `${text.slice(0, maxWidth - 3)}...`;
   }
 
   function confirmCompletion() {
@@ -859,9 +1063,43 @@ async function runChat(projectRoot) {
       confirmCompletion();
       return true;
     }
+    if (key.name === "pageup") {
+      completionPageUp();
+      return true;
+    }
+    if (key.name === "pagedown") {
+      completionPageDown();
+      return true;
+    }
     if (key.name === "enter" || key.name === "return") {
-      // Enter submits input, doesn't confirm completion
+      if (completionEnterSuppressed) {
+        return true;
+      }
+      const selected = completionCommands[completionIndex];
+      if (selected) {
+        const preview = completionPreview(selected);
+        if (!preview.isComplete) {
+          applyCompletionPreview(preview);
+          if (!selected.isSubcommand && selected.subcommands && selected.subcommands.length > 0) {
+            showCompletion(input.value);
+          } else {
+            hideCompletion();
+          }
+          completionEnterSuppressed = true;
+          if (completionEnterReset) clearImmediate(completionEnterReset);
+          completionEnterReset = setImmediate(() => {
+            completionEnterSuppressed = false;
+          });
+          return true;
+        }
+      }
+      // Already complete; allow normal submit
       hideCompletion();
+      completionEnterSuppressed = true;
+      if (completionEnterReset) clearImmediate(completionEnterReset);
+      completionEnterReset = setImmediate(() => {
+        completionEnterSuppressed = false;
+      });
       return false;
     }
     if (key.name === "escape") {
@@ -905,6 +1143,7 @@ async function runChat(projectRoot) {
     }
     // dashboard and inputBottomLine stay fixed at bottom 0 and 1
     logBox.height = Math.max(1, screen.height - currentInputHeight - 1);
+    ensureInputCursorVisible();
   }
 
   // Override the internal listener to support cursor movement
@@ -917,11 +1156,6 @@ async function runChat(projectRoot) {
       return;
     }
     normalizeCommandPrefix();
-    if (key && (key.name === "pageup" || key.name === "pagedown")) {
-      const delta = Math.max(1, Math.floor(logBox.height / 2));
-      scrollLog(key.name === "pageup" ? -delta : delta);
-      return;
-    }
     if (focusMode === "dashboard") {
       if (handleDashboardKey(key)) return;
       return;
@@ -930,6 +1164,11 @@ async function runChat(projectRoot) {
     // Command completion mode
     if (completionActive) {
       if (handleCompletionKey(ch, key)) return;
+    }
+    if (key && (key.name === "pageup" || key.name === "pagedown")) {
+      const delta = Math.max(1, Math.floor(logBox.height / 2));
+      scrollLog(key.name === "pageup" ? -delta : delta);
+      return;
     }
 
     // Treat multi-char input (paste) as insertion, including newlines.
@@ -957,6 +1196,7 @@ async function runChat(projectRoot) {
     if (key.name === "left") {
       if (cursorPos > 0) cursorPos--;
       resetPreferredCol();
+      ensureInputCursorVisible();
       this._updateCursor();
       this.screen.render();
       return;
@@ -965,6 +1205,7 @@ async function runChat(projectRoot) {
     if (key.name === "right") {
       if (cursorPos < this.value.length) cursorPos++;
       resetPreferredCol();
+      ensureInputCursorVisible();
       this._updateCursor();
       this.screen.render();
       return;
@@ -973,6 +1214,7 @@ async function runChat(projectRoot) {
     if (key.name === "home") {
       cursorPos = 0;
       resetPreferredCol();
+      ensureInputCursorVisible();
       this._updateCursor();
       this.screen.render();
       return;
@@ -981,6 +1223,7 @@ async function runChat(projectRoot) {
     if (key.name === "end") {
       cursorPos = this.value.length;
       resetPreferredCol();
+      ensureInputCursorVisible();
       this._updateCursor();
       this.screen.render();
       return;
@@ -1022,6 +1265,7 @@ async function runChat(projectRoot) {
           : Math.min(totalRows - 1, row + 1);
         cursorPos = getCursorPosForRowCol(this.value, targetRow, preferredCol, innerWidth);
       }
+      ensureInputCursorVisible();
       this._updateCursor();
       this.screen.render();
       return;
@@ -1038,6 +1282,7 @@ async function runChat(projectRoot) {
         cursorPos--;
         resetPreferredCol();
         resizeInput();
+        ensureInputCursorVisible();
         this._updateCursor();
         updateDraftFromInput();
 
@@ -1058,6 +1303,7 @@ async function runChat(projectRoot) {
         this.value = this.value.slice(0, cursorPos) + this.value.slice(cursorPos + 1);
         resetPreferredCol();
         resizeInput();
+        ensureInputCursorVisible();
         this._updateCursor();
         this.screen.render();
         updateDraftFromInput();
@@ -1100,21 +1346,9 @@ async function runChat(projectRoot) {
     const innerWidth = getInnerWidth();
     if (innerWidth <= 0) return;
 
+    ensureInputCursorVisible();
     const { row, col } = getCursorRowCol(this.value, cursorPos, innerWidth);
-    const innerHeight = this.height || 1;
-
-    let scrollOffset = this.childBase || 0;
-    if (row < scrollOffset) {
-      scrollOffset = row;
-    } else if (row >= scrollOffset + innerHeight) {
-      scrollOffset = row - innerHeight + 1;
-    }
-    if (scrollOffset !== this.childBase) {
-      this.childBase = scrollOffset;
-      if (typeof this.scrollTo === "function") {
-        this.scrollTo(scrollOffset);
-      }
-    }
+    const scrollOffset = this.childBase || 0;
 
     const displayRow = row - scrollOffset;
     const safeCol = Math.min(Math.max(0, col), innerWidth - 1);
@@ -1150,58 +1384,77 @@ async function runChat(projectRoot) {
   let completionCommands = [];
   let completionIndex = 0;
   let completionScrollOffset = 0;
+  let completionVisibleCount = 0;
+  let completionEnterSuppressed = false;
+  let completionEnterReset = null;
 
-  const COMMAND_REGISTRY = [
-    { cmd: "/doctor", desc: "Health check diagnostics" },
-    { cmd: "/status", desc: "Status display" },
-    {
-      cmd: "/daemon",
-      desc: "Daemon management",
-      subcommands: [
-        { cmd: "start", desc: "Start daemon" },
-        { cmd: "stop", desc: "Stop daemon" },
-        { cmd: "restart", desc: "Restart daemon" },
-        { cmd: "status", desc: "Daemon status" },
-      ]
-    },
-    { cmd: "/init", desc: "Initialize modules" },
-    {
-      cmd: "/bus",
+  const COMMAND_TREE = {
+    "/bus": {
       desc: "Event bus operations",
-      subcommands: [
-        { cmd: "send", desc: "Send message to agent" },
-        { cmd: "rename", desc: "Rename agent nickname" },
-        { cmd: "list", desc: "List all agents" },
-        { cmd: "status", desc: "Bus status" },
-        { cmd: "activate", desc: "Activate agent terminal" },
-      ]
+      children: {
+        activate: { desc: "Activate agent terminal" },
+        list: { desc: "List all agents" },
+        rename: { desc: "Rename agent nickname" },
+        send: { desc: "Send message to agent" },
+        status: { desc: "Bus status" },
+      },
     },
-    {
-      cmd: "/ctx",
+    "/ctx": {
       desc: "Context management",
-      subcommands: [
-        { cmd: "status", desc: "Show context status (default)" },
-        { cmd: "doctor", desc: "Check context integrity" },
-        { cmd: "decisions", desc: "List all decisions" },
-      ]
+      children: {
+        decisions: { desc: "List all decisions" },
+        doctor: { desc: "Check context integrity" },
+        status: { desc: "Show context status (default)" },
+      },
     },
-    {
-      cmd: "/skills",
-      desc: "Skills management",
-      subcommands: [
-        { cmd: "list", desc: "List available skills" },
-        { cmd: "install", desc: "Install skills (use: all or name)" },
-      ]
+    "/daemon": {
+      desc: "Daemon management",
+      children: {
+        restart: { desc: "Restart daemon" },
+        start: { desc: "Start daemon" },
+        status: { desc: "Daemon status" },
+        stop: { desc: "Stop daemon" },
+      },
     },
-    {
-      cmd: "/launch",
+    "/doctor": { desc: "Health check diagnostics" },
+    "/init": { desc: "Initialize modules" },
+    "/launch": {
       desc: "Launch new agent",
-      subcommands: [
-        { cmd: "claude", desc: "Launch Claude agent" },
-        { cmd: "codex", desc: "Launch Codex agent" },
-      ]
+      children: {
+        claude: { desc: "Launch Claude agent" },
+        codex: { desc: "Launch Codex agent" },
+      },
     },
-  ];
+    "/resume": { desc: "Resume agents (optional nickname)" },
+    "/skills": {
+      desc: "Skills management",
+      children: {
+        install: { desc: "Install skills (use: all or name)" },
+        list: { desc: "List available skills" },
+      },
+    },
+    "/status": { desc: "Status display" },
+  };
+
+  function buildCommandRegistry(tree) {
+    return Object.keys(tree)
+      .sort((a, b) => a.localeCompare(b, "en", { sensitivity: "base" }))
+      .map((cmd) => {
+        const node = tree[cmd] || {};
+        const entry = { cmd, desc: node.desc || "" };
+        if (node.children) {
+          entry.subcommands = Object.keys(node.children)
+            .sort((a, b) => a.localeCompare(b, "en", { sensitivity: "base" }))
+            .map((sub) => ({
+              cmd: sub,
+              desc: (node.children[sub] && node.children[sub].desc) || "",
+            }));
+        }
+        return entry;
+      });
+  }
+
+  const COMMAND_REGISTRY = buildCommandRegistry(COMMAND_TREE);
 
   // Agent selection state
   let activeAgents = [];
@@ -1212,13 +1465,18 @@ async function runChat(projectRoot) {
   let selectedAgentIndex = -1;  // -1 = not in dashboard selection mode
   let targetAgent = null;       // Selected agent for direct messaging
   let focusMode = "input";      // "input" or "dashboard"
-  let dashboardView = "agents"; // "agents" or "mode"
+  let dashboardView = "agents"; // "agents" | "mode" | "provider" | "resume"
   let selectedModeIndex = launchMode === "internal" ? 2 : (launchMode === "tmux" ? 1 : 0);
   const providerOptions = [
     { label: "codex", value: "codex-cli" },
     { label: "claude", value: "claude-cli" },
   ];
   let selectedProviderIndex = agentProvider === "claude-cli" ? 1 : 0;
+  const resumeOptions = [
+    { label: "Resume previous session", value: true },
+    { label: "Start new session", value: false },
+  ];
+  let selectedResumeIndex = autoResume ? 0 : 1;
   let restartInProgress = false;
 
   function getAgentLabel(agentId) {
@@ -1296,12 +1554,13 @@ async function runChat(projectRoot) {
     void restartDaemon();
   }
 
+
   function providerLabel(value) {
     return value === "claude-cli" ? "claude" : "codex";
   }
 
   function clearUfooAgentIdentity() {
-    const agentDir = path.join(projectRoot, ".ufoo", "agent");
+    const agentDir = getUfooPaths(projectRoot).agentDir;
     const stateFile = path.join(agentDir, "ufoo-agent.json");
     const historyFile = path.join(agentDir, "ufoo-agent.history.jsonl");
     try {
@@ -1329,6 +1588,18 @@ async function runChat(projectRoot) {
     void restartDaemon();
   }
 
+  function setAutoResume(value) {
+    const next = value !== false;
+    if (next === autoResume) return;
+    autoResume = next;
+    selectedResumeIndex = autoResume ? 0 : 1;
+    saveConfig(projectRoot, { autoResume });
+    const label = autoResume ? "Resume previous session" : "Start new session";
+    logMessage("status", `{magenta-fg}⚙{/magenta-fg} Resume mode: ${label}`);
+    renderDashboard();
+    screen.render();
+  }
+
   async function restartDaemon() {
     if (restartInProgress) return;
     restartInProgress = true;
@@ -1343,7 +1614,7 @@ async function runChat(projectRoot) {
         }
       }
       stopDaemon(projectRoot);
-      startDaemon(projectRoot);
+      startDaemon(projectRoot, { forceResume: true });
       const newClient = await connectClient();
       if (newClient) {
         attachClient(newClient);
@@ -1385,6 +1656,15 @@ async function runChat(projectRoot) {
           return `{cyan-fg}${opt.label}{/cyan-fg}`;
         });
         content += `{gray-fg}Agent:{/gray-fg} ${providerParts.join("  ")}`;
+        content += "  {gray-fg}│ ←/→ select, Enter confirm, ↓ resume, ↑ back{/gray-fg}";
+      } else if (dashboardView === "resume") {
+        const resumeParts = resumeOptions.map((opt, i) => {
+          if (i === selectedResumeIndex) {
+            return `{inverse}${opt.label}{/inverse}`;
+          }
+          return `{cyan-fg}${opt.label}{/cyan-fg}`;
+        });
+        content += `{gray-fg}Resume:{/gray-fg} ${resumeParts.join("  ")}`;
         content += "  {gray-fg}│ ←/→ select, Enter confirm, ↑ back{/gray-fg}";
       } else {
         if (activeAgents.length > 0) {
@@ -1422,6 +1702,7 @@ async function runChat(projectRoot) {
       content += `{gray-fg}Agents:{/gray-fg} {cyan-fg}${agents}{/cyan-fg}`;
       content += `  {gray-fg}Mode:{/gray-fg} {cyan-fg}${launchMode}{/cyan-fg}`;
       content += `  {gray-fg}Agent:{/gray-fg} {cyan-fg}${providerLabel(agentProvider)}{/cyan-fg}`;
+      content += `  {gray-fg}Resume:{/gray-fg} {cyan-fg}${autoResume ? "auto" : "off"}{/cyan-fg}`;
     }
     dashboard.setContent(content);
   }
@@ -1434,10 +1715,10 @@ async function runChat(projectRoot) {
     let fallbackMap = null;
     if (metaList.length === 0 && activeAgents.length > 0) {
       try {
-        const busPath = path.join(projectRoot, ".ufoo", "bus", "bus.json");
+        const busPath = getUfooPaths(projectRoot).agentsFile;
         const bus = JSON.parse(fs.readFileSync(busPath, "utf8"));
         fallbackMap = new Map();
-        for (const [id, meta] of Object.entries(bus.subscribers || {})) {
+        for (const [id, meta] of Object.entries(bus.agents || {})) {
           if (meta && meta.nickname) fallbackMap.set(id, meta.nickname);
         }
       } catch {
@@ -1477,6 +1758,7 @@ async function runChat(projectRoot) {
     clampAgentWindow();
     selectedModeIndex = launchMode === "internal" ? 1 : 0;
     selectedProviderIndex = agentProvider === "claude-cli" ? 1 : 0;
+    selectedResumeIndex = autoResume ? 0 : 1;
     screen.grabKeys = true;
     renderDashboard();
     screen.program.hideCursor();
@@ -1536,6 +1818,13 @@ async function runChat(projectRoot) {
         screen.render();
         return true;
       }
+      if (key.name === "down") {
+        dashboardView = "resume";
+        selectedResumeIndex = autoResume ? 0 : 1;
+        renderDashboard();
+        screen.render();
+        return true;
+      }
       if (key.name === "up") {
         dashboardView = "mode";
         renderDashboard();
@@ -1545,6 +1834,41 @@ async function runChat(projectRoot) {
       if (key.name === "enter" || key.name === "return") {
         const selected = providerOptions[selectedProviderIndex];
         if (selected) setAgentProvider(selected.value);
+        exitDashboardMode(false);
+        return true;
+      }
+      if (key.name === "escape") {
+        exitDashboardMode(false);
+        return true;
+      }
+      return true;
+    }
+    if (dashboardView === "resume") {
+      if (key.name === "left") {
+        selectedResumeIndex = selectedResumeIndex <= 0 ? resumeOptions.length - 1 : selectedResumeIndex - 1;
+        renderDashboard();
+        screen.render();
+        return true;
+      }
+      if (key.name === "right") {
+        selectedResumeIndex = selectedResumeIndex >= resumeOptions.length - 1 ? 0 : selectedResumeIndex + 1;
+        renderDashboard();
+        screen.render();
+        return true;
+      }
+      if (key.name === "up") {
+        dashboardView = "provider";
+        renderDashboard();
+        screen.render();
+        return true;
+      }
+      if (key.name === "enter" || key.name === "return") {
+        const selected = resumeOptions[selectedResumeIndex];
+        if (selected) {
+          setAutoResume(selected.value);
+          const label = selected.value ? "Resume previous session" : "Start new session";
+          logMessage("status", `{magenta-fg}⚙{/magenta-fg} Resume mode: ${label}`);
+        }
         exitDashboardMode(false);
         return true;
       }
@@ -1684,9 +2008,7 @@ async function runChat(projectRoot) {
           if (!payload.reply && !payload.disambiguate) {
             resolveStatusLine("{gray-fg}✓{/gray-fg} Done");
           }
-          if (msg.opsResults && msg.opsResults.length > 0) {
-            logMessage("ops", `{magenta-fg}⚡{/magenta-fg} ${JSON.stringify(msg.opsResults)}`);
-          }
+          // opsResults are noisy JSON; keep them out of the log UI
           screen.render();
         } else if (msg.type === "bus") {
           const data = msg.data || {};
@@ -1697,10 +2019,14 @@ async function runChat(projectRoot) {
 
           // Try to parse message as JSON (from internal agents)
           let displayMessage = data.message || "";
+          let isStream = false;
           try {
             const parsed = JSON.parse(data.message);
             if (parsed && typeof parsed === "object" && parsed.reply) {
               displayMessage = parsed.reply;
+            } else if (parsed && typeof parsed === "object" && parsed.stream) {
+              displayMessage = typeof parsed.delta === "string" ? parsed.delta : "";
+              isStream = true;
             }
           } catch {
             // Not JSON, use as-is
@@ -1714,15 +2040,15 @@ async function runChat(projectRoot) {
           // Extract nickname if publisher is in subscriber:id format
           let displayName = publisher;
           if (publisher.includes(":")) {
-            // Try to get nickname from activeAgentLabelMap or bus.json
+            // Try to get nickname from activeAgentLabelMap or all-agents.json
             if (activeAgentLabelMap && activeAgentLabelMap.has(publisher)) {
               displayName = activeAgentLabelMap.get(publisher);
             } else {
-              // Fallback: read directly from bus.json
+              // Fallback: read directly from all-agents.json
               try {
-                const busPath = path.join(projectRoot, ".ufoo", "bus", "bus.json");
+                const busPath = getUfooPaths(projectRoot).agentsFile;
                 const bus = JSON.parse(fs.readFileSync(busPath, "utf8"));
-                const meta = bus.subscribers && bus.subscribers[publisher];
+                const meta = bus.agents && bus.agents[publisher];
                 if (meta && meta.nickname) {
                   displayName = meta.nickname;
                 }
@@ -1733,8 +2059,13 @@ async function runChat(projectRoot) {
           }
 
           const line = `${prefix} {gray-fg}${displayName}{/gray-fg}: ${displayMessage}`;
-          logMessage("bus", line, data);
-          if (data.event === "agent_renamed") {
+          if (isStream) {
+            recordLog("bus_stream", line, data, true);
+          } else {
+            logMessage("bus", line, data);
+          }
+          if (data.event === "agent_renamed" || data.event === "message") {
+            // 收到消息时刷新 status，更新在线 agent 列表
             requestStatus();
           }
           screen.render();
@@ -1930,7 +2261,7 @@ async function runChat(projectRoot) {
       } else if (subcommand === "list") {
         bus.ensureBus();
         bus.loadBusData();
-        const subscribers = Object.entries(bus.busData.subscribers || {});
+        const subscribers = Object.entries(bus.busData.agents || {});
         if (subscribers.length === 0) {
           logMessage("system", "{gray-fg}No active agents{/gray-fg}");
         } else {
@@ -1944,7 +2275,7 @@ async function runChat(projectRoot) {
       } else if (subcommand === "status") {
         bus.ensureBus();
         bus.loadBusData();
-        const count = Object.keys(bus.busData.subscribers || {}).length;
+        const count = Object.keys(bus.busData.agents || {}).length;
         logMessage("system", `{cyan-fg}Bus status:{/cyan-fg} ${count} agent(s) registered`);
       } else if (subcommand === "activate") {
         if (args.length < 2) {
@@ -2059,21 +2390,32 @@ async function runChat(projectRoot) {
 
     const nickname = options.nickname || "";
     const count = parseInt(options.count || "1", 10);
+    if (nickname && count > 1) {
+      logMessage("error", "{red-fg}✗{/red-fg} nickname requires count=1");
+      return;
+    }
 
     try {
-      const launcher = new AgentLauncher(projectRoot, launchMode);
-
-      for (let i = 0; i < count; i++) {
-        const finalNickname = count > 1 && nickname ? `${nickname}-${i + 1}` : nickname;
-        logMessage("system", `{yellow-fg}⚙{/yellow-fg} Launching ${agentType}${finalNickname ? ` (${finalNickname})` : ""}...`);
-        await launcher.launch(agentType, finalNickname);
-      }
-
-      logMessage("system", `{green-fg}✓{/green-fg} Launched ${count} ${agentType} agent(s)`);
+      const label = nickname ? ` (${nickname})` : "";
+      logMessage("system", `{yellow-fg}⚙{/yellow-fg} Launching ${agentType}${label}...`);
+      send({
+        type: "launch_agent",
+        agent: agentType,
+        count: Number.isFinite(count) ? count : 1,
+        nickname,
+      });
       setTimeout(requestStatus, 1000);
     } catch (err) {
       logMessage("error", `{red-fg}✗{/red-fg} Launch failed: ${err.message}`);
     }
+  }
+
+  async function handleResumeCommand(args) {
+    const target = args[0] || "";
+    const label = target ? ` (${target})` : "";
+    logMessage("system", `{yellow-fg}⚙{/yellow-fg} Resuming agents${label}...`);
+    send({ type: "resume_agents", target });
+    setTimeout(requestStatus, 1000);
   }
 
   function parseCommand(text) {
@@ -2119,6 +2461,9 @@ async function runChat(projectRoot) {
         return true;
       case "launch":
         await handleLaunchCommand(args);
+        return true;
+      case "resume":
+        await handleResumeCommand(args);
         return true;
       default:
         logMessage("error", `{red-fg}✗{/red-fg} Unknown command: /${command}`);
@@ -2205,6 +2550,7 @@ async function runChat(projectRoot) {
     clearLog();
   });
 
+
   screen.key(["i", "enter"], () => {
     if (focusMode === "dashboard") return;
     if (screen.focused === input) return;
@@ -2268,7 +2614,6 @@ async function runChat(projectRoot) {
   renderDashboard();
   resizeInput();
   requestStatus();
-  setInterval(requestStatus, 2000);
   screen.on("resize", () => {
     resizeInput();
     if (completionActive) hideCompletion();
