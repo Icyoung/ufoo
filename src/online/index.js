@@ -308,7 +308,7 @@ class OnlineServer extends EventEmitter {
       return;
     }
 
-    if (!message.token) {
+    if (!message.token && !message.token_hash) {
       this.sendError(client.ws, "Missing token", false, "AUTH_TOKEN_MISSING");
       return;
     }
