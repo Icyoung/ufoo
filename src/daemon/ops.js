@@ -112,21 +112,42 @@ async function spawnManagedTerminalAgent(projectRoot, agent, nickname = "", proc
   const binary = agent === "codex" ? "./bin/ucodex.js" : "./bin/uclaude.js";
   const agentType = agent === "codex" ? "codex" : "claude-code";
   const existing = listSubscribers(projectRoot, agentType);
+  const runDir = getUfooPaths(projectRoot).runDir;
+  fs.mkdirSync(runDir, { recursive: true });
 
-  // Run in Terminal.app to ensure a real TTY is available
+  const args = Array.isArray(extraArgs) ? extraArgs : [];
+  const argText = args.length > 0 ? ` ${args.map(shellEscape).join(" ")}` : "";
+  const nickEnv = nickname ? `UFOO_NICKNAME=${shellEscape(nickname)} ` : "";
+  const modeEnv = "UFOO_LAUNCH_MODE=terminal ";
+  const envPrefix = extraEnv ? `${String(extraEnv).trim()} ` : "";
+  const titleCmd = buildTitleCmd(nickname);
+  const prefix = titleCmd ? `${titleCmd} && ` : "";
+
+  const logFile = path.join(runDir, `terminal-${agent}-${Date.now()}.log`);
+  const runCmd = `cd ${shellEscape(projectRoot)} && ${prefix}${modeEnv}${nickEnv}${envPrefix}${binary}${argText}`;
+
+  // Spawn managed agent as daemon child using a PTY via `script`
+  const scriptCmd = `bash -lc ${shellEscape(runCmd)}`;
+  const child = spawn("script", ["-q", logFile, "-c", scriptCmd], {
+    detached: false,
+    stdio: ["ignore", "ignore", "ignore"],
+    cwd: projectRoot,
+    env: {
+      ...process.env,
+      UFOO_LAUNCH_MODE: "terminal",
+      UFOO_NICKNAME: nickname || "",
+    },
+  });
+
+  if (processManager) {
+    processManager.register(`terminal-${agent}-${child.pid}`, child);
+  }
+
+  // Open Terminal.app to tail logs for visibility
   if (process.platform === "darwin") {
-    const nickEnv = nickname ? `UFOO_NICKNAME=${shellEscape(nickname)} ` : "";
-    const modeEnv = "UFOO_LAUNCH_MODE=terminal ";
-    const ttyEnv = "UFOO_TTY_OVERRIDE=$(tty) ";
-    const args = Array.isArray(extraArgs) ? extraArgs : [];
-    const envPrefix = extraEnv ? `${String(extraEnv).trim()} ` : "";
-    const argText = args.length > 0 ? ` ${args.map(shellEscape).join(" ")}` : "";
-    const titleCmd = buildTitleCmd(nickname);
-    const prefix = titleCmd ? `${titleCmd} && ` : "";
-    const runCmd = `cd ${shellEscape(projectRoot)} && ${prefix}${modeEnv}${nickEnv}${ttyEnv}${envPrefix}${binary}${argText}`;
     const script = [
       'tell application "Terminal"',
-      `do script "${escapeCommand(runCmd)}"`,
+      `do script "${escapeCommand(`tail -n +1 -f ${logFile}`)}"`,
       "activate",
       "end tell",
     ];
@@ -134,7 +155,7 @@ async function spawnManagedTerminalAgent(projectRoot, agent, nickname = "", proc
   }
 
   const subscriberId = await waitForNewSubscriber(projectRoot, agentType, existing, 15000);
-  return { child: null, subscriberId: subscriberId || null };
+  return { child, subscriberId: subscriberId || null };
 }
 
 async function spawnInternalAgent(projectRoot, agent, count = 1, nickname = "", processManager = null) {
