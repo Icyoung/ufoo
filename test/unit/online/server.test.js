@@ -16,7 +16,7 @@ function createMessageQueue(ws) {
     }
   });
 
-  return function nextMessage() {
+  return function nextMessage(timeoutMs = 3000) {
     if (messages.length > 0) {
       return Promise.resolve(messages.shift());
     }
@@ -27,7 +27,7 @@ function createMessageQueue(ws) {
           resolver = null;
           reject(new Error('Timeout waiting for message'));
         }
-      }, 3000);
+      }, timeoutMs);
     });
   };
 }
@@ -121,6 +121,7 @@ describe('OnlineServer (Phase 1)', () => {
     const first = await next2();
     const error = first.type === 'hello_ack' ? await next2() : first;
     expect(error.type).toBe('error');
+    expect(error.code).toBe('NICKNAME_TAKEN');
     expect(error.error).toMatch(/already exists/);
 
     ws1.close();
@@ -160,7 +161,8 @@ describe('OnlineServer (Phase 1)', () => {
     ws1.send(JSON.stringify({ type: 'join', channel: 'demo' }));
     ws2.send(JSON.stringify({ type: 'join', channel: 'demo' }));
 
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await next1();
+    await next2();
 
     ws1.send(JSON.stringify({
       type: 'event',

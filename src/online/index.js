@@ -121,23 +121,24 @@ class OnlineServer extends EventEmitter {
     }
   }
 
-  sendError(ws, error, close = false) {
+  sendError(ws, error, close = false, code = null) {
     if (ws.readyState !== WebSocket.OPEN) {
       if (close) ws.close();
       return;
     }
+    const payload = code ? { type: "error", code, error } : { type: "error", error };
     if (close) {
-      ws.send(JSON.stringify({ type: "error", error }), () => {
+      ws.send(JSON.stringify(payload), () => {
         ws.close();
       });
       return;
     }
-    this.send(ws, { type: "error", error });
+    this.send(ws, payload);
   }
 
   requireAuth(client) {
     if (!client.authed) {
-      this.sendError(client.ws, "Unauthorized");
+      this.sendError(client.ws, "Unauthorized", false, "UNAUTHORIZED");
       return false;
     }
     return true;
@@ -153,7 +154,7 @@ class OnlineServer extends EventEmitter {
     }
 
     if (!message || typeof message.type !== "string") {
-      this.sendError(client.ws, "Invalid message");
+      this.sendError(client.ws, "Invalid message", false, "INVALID_MESSAGE");
       return;
     }
 
@@ -179,13 +180,13 @@ class OnlineServer extends EventEmitter {
         this.handleEvent(client, message);
         return;
       default:
-        this.sendError(client.ws, "Unknown message type");
+        this.sendError(client.ws, "Unknown message type", false, "UNKNOWN_TYPE");
     }
   }
 
   handleHello(client, message) {
     if (client.helloReceived) {
-      this.sendError(client.ws, "Hello already received");
+      this.sendError(client.ws, "Hello already received", false, "HELLO_DUPLICATE");
       return;
     }
 
@@ -194,17 +195,17 @@ class OnlineServer extends EventEmitter {
     const nickname = info.nickname;
 
     if (!subscriberId || !nickname) {
-      this.sendError(client.ws, "Missing subscriber_id or nickname");
+      this.sendError(client.ws, "Missing subscriber_id or nickname", false, "HELLO_INVALID");
       return;
     }
 
     if (this.clientsById.has(subscriberId)) {
-      this.sendError(client.ws, `Subscriber "${subscriberId}" already connected`, true);
+      this.sendError(client.ws, `Subscriber "${subscriberId}" already connected`, true, "SUBSCRIBER_EXISTS");
       return;
     }
 
     if (this.clientsByNickname.has(nickname)) {
-      this.sendError(client.ws, `Nickname "${nickname}" already exists`, true);
+      this.sendError(client.ws, `Nickname "${nickname}" already exists`, true, "NICKNAME_TAKEN");
       return;
     }
 
@@ -232,28 +233,27 @@ class OnlineServer extends EventEmitter {
 
   handleAuth(client, message) {
     if (!client.helloReceived) {
-      this.sendError(client.ws, "Hello required");
+      this.sendError(client.ws, "Hello required", false, "HELLO_REQUIRED");
       return;
     }
 
     if (client.authed) {
-      this.sendError(client.ws, "Already authenticated");
+      this.sendError(client.ws, "Already authenticated", false, "AUTH_DUPLICATE");
       return;
     }
 
     if (message.method !== "token") {
-      this.sendError(client.ws, "Unsupported auth method");
+      this.sendError(client.ws, "Unsupported auth method", false, "AUTH_METHOD_UNSUPPORTED");
       return;
     }
 
     if (!message.token) {
-      this.sendError(client.ws, "Missing token");
+      this.sendError(client.ws, "Missing token", false, "AUTH_TOKEN_MISSING");
       return;
     }
 
     if (!this.allowAnyToken && !this.allowedTokens.has(message.token)) {
-      this.sendError(client.ws, "Invalid token");
-      client.ws.close();
+      this.sendError(client.ws, "Invalid token", true, "AUTH_TOKEN_INVALID");
       return;
     }
 
@@ -265,7 +265,7 @@ class OnlineServer extends EventEmitter {
     if (!this.requireAuth(client)) return;
     const channel = message.channel;
     if (!channel) {
-      this.sendError(client.ws, "Missing channel");
+      this.sendError(client.ws, "Missing channel", false, "CHANNEL_MISSING");
       return;
     }
 
@@ -276,13 +276,14 @@ class OnlineServer extends EventEmitter {
     const members = this.channels.get(channel);
     members.add(client);
     client.channels.add(channel);
+    this.send(client.ws, { type: "join_ack", ok: true, channel });
   }
 
   handleLeave(client, message) {
     if (!this.requireAuth(client)) return;
     const channel = message.channel;
     if (!channel) {
-      this.sendError(client.ws, "Missing channel");
+      this.sendError(client.ws, "Missing channel", false, "CHANNEL_MISSING");
       return;
     }
 
@@ -292,17 +293,23 @@ class OnlineServer extends EventEmitter {
       if (members.size === 0) this.channels.delete(channel);
     }
     client.channels.delete(channel);
+    this.send(client.ws, { type: "leave_ack", ok: true, channel });
   }
 
   handleEvent(client, message) {
     if (!this.requireAuth(client)) return;
     if (!client.subscriberId) {
-      this.sendError(client.ws, "Unknown subscriber");
+      this.sendError(client.ws, "Unknown subscriber", false, "SUBSCRIBER_UNKNOWN");
+      return;
+    }
+
+    if (!message.payload || typeof message.payload.kind !== "string") {
+      this.sendError(client.ws, "Missing payload.kind", false, "EVENT_INVALID");
       return;
     }
 
     if (message.from && message.from !== client.subscriberId) {
-      this.sendError(client.ws, "Invalid sender");
+      this.sendError(client.ws, "Invalid sender", false, "EVENT_SENDER_INVALID");
       return;
     }
 
@@ -315,7 +322,7 @@ class OnlineServer extends EventEmitter {
     if (payload.to) {
       const target = this.clientsById.get(payload.to);
       if (!target) {
-        this.sendError(client.ws, `Target "${payload.to}" not found`);
+        this.sendError(client.ws, `Target "${payload.to}" not found`, false, "TARGET_NOT_FOUND");
         return;
       }
       this.send(target.ws, payload);
@@ -323,6 +330,10 @@ class OnlineServer extends EventEmitter {
     }
 
     if (payload.channel) {
+      if (!client.channels.has(payload.channel)) {
+        this.sendError(client.ws, "Join channel first", false, "NOT_IN_CHANNEL");
+        return;
+      }
       const members = this.channels.get(payload.channel);
       if (!members || members.size === 0) return;
       members.forEach((member) => {
@@ -331,7 +342,7 @@ class OnlineServer extends EventEmitter {
       return;
     }
 
-    this.sendError(client.ws, "Missing routing target");
+    this.sendError(client.ws, "Missing routing target", false, "ROUTE_MISSING");
   }
 
   cleanupClient(client) {
