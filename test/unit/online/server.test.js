@@ -68,6 +68,7 @@ describe('OnlineServer (Phase 1)', () => {
         subscriber_id: 'claude-code:abc123',
         agent_type: 'claude-code',
         nickname: 'agent-1',
+        channel_type: 'private',
         version: '0.1.0',
         capabilities: [],
         project: { slug: 'demo' },
@@ -103,6 +104,7 @@ describe('OnlineServer (Phase 1)', () => {
         subscriber_id: 'claude-code:abc123',
         agent_type: 'claude-code',
         nickname: 'agent-dup',
+        channel_type: 'private',
       },
     }));
     await next1();
@@ -115,6 +117,7 @@ describe('OnlineServer (Phase 1)', () => {
         subscriber_id: 'codex:def456',
         agent_type: 'codex',
         nickname: 'agent-dup',
+        channel_type: 'private',
       },
     }));
 
@@ -142,7 +145,7 @@ describe('OnlineServer (Phase 1)', () => {
 
     ws1.send(JSON.stringify({
       type: 'hello',
-      client: { subscriber_id: 'claude-code:one', agent_type: 'claude-code', nickname: 'one' },
+      client: { subscriber_id: 'claude-code:one', agent_type: 'claude-code', nickname: 'one', channel_type: 'private' },
     }));
     await next1();
     await next1();
@@ -151,7 +154,7 @@ describe('OnlineServer (Phase 1)', () => {
 
     ws2.send(JSON.stringify({
       type: 'hello',
-      client: { subscriber_id: 'codex:two', agent_type: 'codex', nickname: 'two' },
+      client: { subscriber_id: 'codex:two', agent_type: 'codex', nickname: 'two', channel_type: 'private' },
     }));
     await next2();
     await next2();
@@ -194,7 +197,7 @@ describe('OnlineServer (Phase 1)', () => {
 
     ws1.send(JSON.stringify({
       type: 'hello',
-      client: { subscriber_id: 'claude-code:alpha', agent_type: 'claude-code', nickname: 'alpha' },
+      client: { subscriber_id: 'claude-code:alpha', agent_type: 'claude-code', nickname: 'alpha', channel_type: 'private' },
     }));
     await next1();
     await next1();
@@ -203,7 +206,7 @@ describe('OnlineServer (Phase 1)', () => {
 
     ws2.send(JSON.stringify({
       type: 'hello',
-      client: { subscriber_id: 'codex:beta', agent_type: 'codex', nickname: 'beta' },
+      client: { subscriber_id: 'codex:beta', agent_type: 'codex', nickname: 'beta', channel_type: 'private' },
     }));
     await next2();
     await next2();

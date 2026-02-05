@@ -193,9 +193,15 @@ class OnlineServer extends EventEmitter {
     const info = message.client || {};
     const subscriberId = info.subscriber_id;
     const nickname = info.nickname;
+    const channelType = info.channel_type;
 
     if (!subscriberId || !nickname) {
       this.sendError(client.ws, "Missing subscriber_id or nickname", false, "HELLO_INVALID");
+      return;
+    }
+
+    if (!channelType || !["world", "public", "private"].includes(channelType)) {
+      this.sendError(client.ws, "Invalid channel_type", false, "CHANNEL_TYPE_INVALID");
       return;
     }
 
@@ -212,6 +218,7 @@ class OnlineServer extends EventEmitter {
     client.helloReceived = true;
     client.subscriberId = subscriberId;
     client.nickname = nickname;
+    client.channelType = channelType;
 
     this.clientsById.set(subscriberId, client);
     this.clientsByNickname.set(nickname, client);
@@ -318,6 +325,19 @@ class OnlineServer extends EventEmitter {
       from: client.subscriberId,
       ts: message.ts || new Date().toISOString(),
     };
+
+    const kind = payload.payload.kind;
+    const allowedByType = {
+      world: new Set(["message"]),
+      public: new Set(["message"]),
+      private: new Set(["message", "decisions.sync", "bus.sync", "wake"]),
+    };
+
+    const typeAllowed = allowedByType[client.channelType] || new Set();
+    if (!typeAllowed.has(kind)) {
+      this.sendError(client.ws, "Event kind not allowed for channel type", false, "EVENT_KIND_FORBIDDEN");
+      return;
+    }
 
     if (payload.to) {
       const target = this.clientsById.get(payload.to);
