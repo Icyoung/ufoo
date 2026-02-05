@@ -1,6 +1,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const EventEmitter = require("events");
 const WebSocket = require("ws");
 
@@ -30,6 +31,9 @@ class OnlineServer extends EventEmitter {
     this.idleTimeoutMs = options.idleTimeoutMs ?? 30000;
     this.sweepIntervalMs = options.sweepIntervalMs ?? 10000;
     this.sweepTimer = null;
+
+    this.rooms = new Map();
+    this.roomPasswords = new Map();
   }
 
   loadTokens(options) {
@@ -62,6 +66,17 @@ class OnlineServer extends EventEmitter {
     if (this.server) return Promise.resolve();
 
     this.server = http.createServer((req, res) => {
+      if (!req.url) {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+
+      if (req.url.startsWith("/ufoo/online/rooms")) {
+        this.handleRoomsRequest(req, res);
+        return;
+      }
+
       res.writeHead(200, { "Content-Type": "text/plain" });
       res.end("ufoo-online: running\n");
     });
@@ -109,6 +124,88 @@ class OnlineServer extends EventEmitter {
     return new Promise((resolve) => {
       server.close(() => resolve());
     });
+  }
+
+  readBody(req) {
+    return new Promise((resolve) => {
+      let body = "";
+      req.on("data", (chunk) => {
+        body += chunk.toString();
+      });
+      req.on("end", () => resolve(body));
+    });
+  }
+
+  sendJson(res, statusCode, payload) {
+    res.writeHead(statusCode, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(payload));
+  }
+
+  hashPassword(password) {
+    return crypto.createHash("sha256").update(String(password || "")).digest("hex");
+  }
+
+  listRooms() {
+    return Array.from(this.rooms.entries()).map(([name, room]) => ({
+      name,
+      type: room.type,
+      members: room.members.size,
+      created_at: room.created_at,
+    }));
+  }
+
+  handleRoomsRequest(req, res) {
+    if (req.method === "GET") {
+      this.sendJson(res, 200, { ok: true, rooms: this.listRooms() });
+      return;
+    }
+
+    if (req.method === "POST") {
+      this.readBody(req).then((body) => {
+        let payload = null;
+        try {
+          payload = JSON.parse(body || "{}");
+        } catch {
+          payload = null;
+        }
+        if (!payload || !payload.name || !payload.type) {
+          this.sendJson(res, 400, { ok: false, error: "Missing name/type" });
+          return;
+        }
+        const name = String(payload.name).trim();
+        const type = String(payload.type).trim();
+        if (!name) {
+          this.sendJson(res, 400, { ok: false, error: "Invalid room name" });
+          return;
+        }
+        if (!["public", "private"].includes(type)) {
+          this.sendJson(res, 400, { ok: false, error: "Invalid room type" });
+          return;
+        }
+        if (this.rooms.has(name)) {
+          this.sendJson(res, 409, { ok: false, error: "Room already exists" });
+          return;
+        }
+        if (type === "private") {
+          const password = String(payload.password || "");
+          if (!password) {
+            this.sendJson(res, 400, { ok: false, error: "Private room requires password" });
+            return;
+          }
+          this.roomPasswords.set(name, this.hashPassword(password));
+        }
+        this.rooms.set(name, {
+          name,
+          type,
+          members: new Set(),
+          created_at: new Date().toISOString(),
+        });
+        this.sendJson(res, 200, { ok: true, room: { name, type } });
+      });
+      return;
+    }
+
+    this.sendJson(res, 405, { ok: false, error: "Method not allowed" });
   }
 
   startIdleSweep() {
@@ -263,6 +360,7 @@ class OnlineServer extends EventEmitter {
     client.nickname = nickname;
     client.channelType = channelType;
     client.world = world;
+    client.rooms = new Set();
 
     this.clientsById.set(subscriberId, client);
     this.clientsByNickname.set(nickname, client);
@@ -326,6 +424,13 @@ class OnlineServer extends EventEmitter {
   handleJoin(client, message) {
     if (!this.requireAuth(client)) return;
     const channel = message.channel;
+    const room = message.room;
+
+    if (room) {
+      this.handleRoomJoin(client, message);
+      return;
+    }
+
     if (!channel) {
       this.sendError(client.ws, "Missing channel", false, "CHANNEL_MISSING");
       return;
@@ -344,6 +449,13 @@ class OnlineServer extends EventEmitter {
   handleLeave(client, message) {
     if (!this.requireAuth(client)) return;
     const channel = message.channel;
+    const room = message.room;
+
+    if (room) {
+      this.handleRoomLeave(client, message);
+      return;
+    }
+
     if (!channel) {
       this.sendError(client.ws, "Missing channel", false, "CHANNEL_MISSING");
       return;
@@ -404,6 +516,22 @@ class OnlineServer extends EventEmitter {
       return;
     }
 
+    if (payload.room) {
+      if (!client.rooms.has(payload.room)) {
+        this.sendError(client.ws, "Join room first", false, "NOT_IN_ROOM");
+        return;
+      }
+      const room = this.rooms.get(payload.room);
+      if (!room) {
+        this.sendError(client.ws, "Room not found", false, "ROOM_NOT_FOUND");
+        return;
+      }
+      room.members.forEach((member) => {
+        if (member !== client) this.send(member.ws, payload);
+      });
+      return;
+    }
+
     if (payload.channel) {
       if (!client.channels.has(payload.channel)) {
         this.sendError(client.ws, "Join channel first", false, "NOT_IN_CHANNEL");
@@ -418,6 +546,51 @@ class OnlineServer extends EventEmitter {
     }
 
     this.sendError(client.ws, "Missing routing target", false, "ROUTE_MISSING");
+  }
+
+  handleRoomJoin(client, message) {
+    const roomName = String(message.room || "").trim();
+    if (!roomName) {
+      this.sendError(client.ws, "Missing room", false, "ROOM_MISSING");
+      return;
+    }
+    const room = this.rooms.get(roomName);
+    if (!room) {
+      this.sendError(client.ws, "Room not found", false, "ROOM_NOT_FOUND");
+      return;
+    }
+    if (room.type === "private") {
+      const password = String(message.password || "");
+      const hashed = this.hashPassword(password);
+      const expected = this.roomPasswords.get(roomName);
+      if (!expected || expected !== hashed) {
+        this.sendError(client.ws, "Invalid room password", false, "ROOM_PASSWORD_INVALID");
+        return;
+      }
+    }
+
+    if (client.rooms.size >= 1 && !client.rooms.has(roomName)) {
+      this.sendError(client.ws, "Already in another room", false, "ROOM_ALREADY_JOINED");
+      return;
+    }
+
+    room.members.add(client);
+    client.rooms.add(roomName);
+    this.send(client.ws, { type: "join_ack", ok: true, room: roomName });
+  }
+
+  handleRoomLeave(client, message) {
+    const roomName = String(message.room || "").trim();
+    if (!roomName) {
+      this.sendError(client.ws, "Missing room", false, "ROOM_MISSING");
+      return;
+    }
+    const room = this.rooms.get(roomName);
+    if (room) {
+      room.members.delete(client);
+    }
+    client.rooms.delete(roomName);
+    this.send(client.ws, { type: "leave_ack", ok: true, room: roomName });
   }
 
   cleanupClient(client) {
@@ -436,6 +609,16 @@ class OnlineServer extends EventEmitter {
       }
     });
     client.channels.clear();
+
+    if (client.rooms) {
+      client.rooms.forEach((roomName) => {
+        const room = this.rooms.get(roomName);
+        if (room) {
+          room.members.delete(client);
+        }
+      });
+      client.rooms.clear();
+    }
   }
 }
 

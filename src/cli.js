@@ -282,6 +282,47 @@ async function runCli(argv) {
         }
       });
 
+    online
+      .command("room")
+      .description("Manage online rooms (HTTP)")
+      .argument("<action>", "create|list")
+      .option("--server <url>", "Online server base URL (http://host:port)")
+      .option("--name <room>", "Room name")
+      .option("--type <type>", "Room type (public|private)")
+      .option("--password <pwd>", "Room password (private only)")
+      .action(async (action, opts) => {
+        const base = opts.server || "http://127.0.0.1:8787";
+        const endpoint = `${base.replace(/\/$/, "")}/ufoo/online/rooms`;
+        try {
+          if (action === "list") {
+            const res = await fetch(endpoint);
+            const data = await res.json();
+            console.log(JSON.stringify(data, null, 2));
+            return;
+          }
+          if (action === "create") {
+            const payload = {
+              name: opts.name,
+              type: opts.type,
+              password: opts.password,
+            };
+            const res = await fetch(endpoint, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            const data = await res.json();
+            console.log(JSON.stringify(data, null, 2));
+            return;
+          }
+          console.error("online room requires action create|list");
+          process.exitCode = 1;
+        } catch (err) {
+          console.error(err.message || String(err));
+          process.exitCode = 1;
+        }
+      });
+
     const bus = program.command("bus").description("Project bus commands");
     bus
       .command("alert")
@@ -596,6 +637,8 @@ async function runCli(argv) {
     console.log("  ufoo skills list");
     console.log("  ufoo skills install <name|all> [--target <dir> | --codex | --agents]");
     console.log("  ufoo online token <subscriber> [--nickname <name>] [--server <url>] [--file <path>]");
+    console.log("  ufoo online room create --name <room> --type public|private [--password <pwd>] [--server <url>]");
+    console.log("  ufoo online room list [--server <url>]");
     console.log("  ufoo bus <args...>    (JS bus implementation)");
     console.log("  ufoo ctx <subcmd> ... (doctor|lint|decisions)");
     console.log("");
@@ -748,6 +791,47 @@ async function runCli(argv) {
         console.error(err.message || String(err));
         process.exitCode = 1;
       }
+      return;
+    }
+    if (sub === "room") {
+      const action = rest[1] || "";
+      const getOpt = (name) => {
+        const i = rest.indexOf(name);
+        if (i === -1) return "";
+        return rest[i + 1] || "";
+      };
+      const base = getOpt("--server") || "http://127.0.0.1:8787";
+      const endpoint = `${base.replace(/\/$/, "")}/ufoo/online/rooms`;
+      (async () => {
+        try {
+          if (action === "list") {
+            const res = await fetch(endpoint);
+            const data = await res.json();
+            console.log(JSON.stringify(data, null, 2));
+            return;
+          }
+          if (action === "create") {
+            const payload = {
+              name: getOpt("--name"),
+              type: getOpt("--type"),
+              password: getOpt("--password"),
+            };
+            const res = await fetch(endpoint, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            const data = await res.json();
+            console.log(JSON.stringify(data, null, 2));
+            return;
+          }
+          console.error("online room requires action create|list");
+          process.exitCode = 1;
+        } catch (err) {
+          console.error(err.message || String(err));
+          process.exitCode = 1;
+        }
+      })();
       return;
     }
     help();

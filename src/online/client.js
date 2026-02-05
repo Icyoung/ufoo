@@ -189,8 +189,16 @@ class OnlineClient extends EventEmitter {
     this.send({ type: "leave", channel });
   }
 
-  sendEvent({ channel, to, payload }) {
-    this.send({ type: "event", channel, to, payload });
+  joinRoom(room, password = "") {
+    this.send({ type: "join", room, password });
+  }
+
+  leaveRoom(room) {
+    this.send({ type: "leave", room });
+  }
+
+  sendEvent({ channel, room, to, payload }) {
+    this.send({ type: "event", channel, room, to, payload });
   }
 
   close() {
