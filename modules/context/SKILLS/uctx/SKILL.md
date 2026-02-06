@@ -40,17 +40,19 @@ Create a new decision (recommended before replying when required):
 ufoo ctx decisions new "Short Title"
 ```
 
-**File naming:** `NNNN-short-title.md` (4-digit prefix + kebab-case slug).
+**File naming:** `NNNN-<nickname>-short-title.md` (4-digit prefix + nickname + kebab-case slug).
 
 **Template for new decisions:**
 ```yaml
 ---
 status: open
+nickname: <nickname>
 ---
 # DECISION NNNN: <Title>
 
 Date: YYYY-MM-DD
 Author: <agent>
+Nickname: <nickname>
 
 Context:
 What led to this decision?

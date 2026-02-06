@@ -34,8 +34,7 @@ describe('StatusDisplay', () => {
     processExitSpy.mockRestore();
 
     // Clean up environment variables
-    delete process.env.CLAUDE_SESSION_ID;
-    delete process.env.CODEX_SESSION_ID;
+    delete process.env.UFOO_SUBSCRIBER_ID;
   });
 
   describe('checkUfooDir', () => {
@@ -55,53 +54,23 @@ describe('StatusDisplay', () => {
   });
 
   describe('getCurrentSubscriber', () => {
-    it('should return null if bus.json does not exist', () => {
+    it('should return null if all-agents.json does not exist', () => {
       const subscriber = statusDisplay.getCurrentSubscriber();
       expect(subscriber).toBeNull();
     });
 
-    it('should return subscriber from environment variable (CLAUDE)', () => {
-      process.env.CLAUDE_SESSION_ID = 'test123';
+    it('should return subscriber from UFOO_SUBSCRIBER_ID', () => {
+      process.env.UFOO_SUBSCRIBER_ID = 'claude-code:test123';
 
-      // The implementation tries /dev/tty first which will fail in test environment
-      // then falls back to env vars - we just test that the logic works
       const subscriber = statusDisplay.getCurrentSubscriber();
-
-      // In test environment, /dev/tty read will fail or return non-/dev path
-      // so it should fall back to env var
-      if (subscriber === null) {
-        // /dev/tty might have succeeded, skip this test
-        expect(true).toBe(true);
-      } else {
-        expect(subscriber).toBe('claude-code:test123');
-      }
+      expect(subscriber).toBe('claude-code:test123');
     });
 
-    it('should return subscriber from environment variable (CODEX)', () => {
-      process.env.CODEX_SESSION_ID = 'xyz789';
+    it('should return subscriber from UFOO_SUBSCRIBER_ID (codex)', () => {
+      process.env.UFOO_SUBSCRIBER_ID = 'codex:xyz789';
 
       const subscriber = statusDisplay.getCurrentSubscriber();
-
-      if (subscriber === null) {
-        // /dev/tty path might have interfered, skip
-        expect(true).toBe(true);
-      } else {
-        expect(subscriber).toBe('codex:xyz789');
-      }
-    });
-
-    it('should prioritize CODEX_SESSION_ID over CLAUDE_SESSION_ID', () => {
-      process.env.CLAUDE_SESSION_ID = 'test123';
-      process.env.CODEX_SESSION_ID = 'xyz789';
-
-      const subscriber = statusDisplay.getCurrentSubscriber();
-
-      if (subscriber === null) {
-        // /dev/tty path might have interfered, skip
-        expect(true).toBe(true);
-      } else {
-        expect(subscriber).toBe('codex:xyz789');
-      }
+      expect(subscriber).toBe('codex:xyz789');
     });
 
     it('should return null if no environment variables set', () => {
@@ -110,12 +79,12 @@ describe('StatusDisplay', () => {
     });
 
     it('should find subscriber by tty if available', () => {
-      const busDir = path.join(ufooDir, 'bus');
-      fs.mkdirSync(busDir, { recursive: true });
+      const agentDir = path.join(ufooDir, 'agent');
+      fs.mkdirSync(agentDir, { recursive: true });
 
-      const busFile = path.join(busDir, 'bus.json');
+      const busFile = path.join(agentDir, 'all-agents.json');
       const busData = {
-        subscribers: {
+        agents: {
           'claude-code:abc123': {
             tty: '/dev/ttys001',
             status: 'active',
@@ -126,7 +95,7 @@ describe('StatusDisplay', () => {
 
       // This test is difficult to mock properly without causing recursion
       // Just test the logic directly
-      const result = busData.subscribers['claude-code:abc123'];
+      const result = busData.agents['claude-code:abc123'];
       expect(result.tty).toBe('/dev/ttys001');
     });
   });
@@ -182,18 +151,18 @@ describe('StatusDisplay', () => {
       expect(result.details).toEqual([]);
     });
 
-    it('should use bus.json for subscriber names if available', () => {
-      const busDir = path.join(ufooDir, 'bus');
-      fs.mkdirSync(busDir, { recursive: true });
+    it('should use all-agents.json for subscriber names if available', () => {
+      const agentDir = path.join(ufooDir, 'agent');
+      fs.mkdirSync(agentDir, { recursive: true });
 
-      const busFile = path.join(busDir, 'bus.json');
+      const busFile = path.join(agentDir, 'all-agents.json');
       fs.writeFileSync(busFile, JSON.stringify({
-        subscribers: {
+        agents: {
           'claude-code:abc123': { nickname: 'architect' },
         },
       }), 'utf8');
 
-      const queuesDir = path.join(busDir, 'queues');
+      const queuesDir = path.join(ufooDir, 'bus', 'queues');
       const queue1 = path.join(queuesDir, 'claude-code_abc123');
       fs.mkdirSync(queue1, { recursive: true });
       fs.writeFileSync(path.join(queue1, 'pending.jsonl'), '{"seq":1}\n', 'utf8');
@@ -215,11 +184,11 @@ describe('StatusDisplay', () => {
       fs.mkdirSync(decisionsDir, { recursive: true });
 
       // Create decision files
-      fs.writeFileSync(path.join(decisionsDir, '0001-test.md'),
+      fs.writeFileSync(path.join(decisionsDir, '0001-architect-test.md'),
         '---\nstatus: open\n---\n# Test Decision\n', 'utf8');
-      fs.writeFileSync(path.join(decisionsDir, '0002-test.md'),
+      fs.writeFileSync(path.join(decisionsDir, '0002-architect-test.md'),
         '---\nstatus: closed\n---\n# Closed Decision\n', 'utf8');
-      fs.writeFileSync(path.join(decisionsDir, '0003-test.md'),
+      fs.writeFileSync(path.join(decisionsDir, '0003-architect-test.md'),
         '---\nstatus: open\n---\n# Another Open\n', 'utf8');
 
       const result = statusDisplay.countOpenDecisions();
@@ -227,11 +196,11 @@ describe('StatusDisplay', () => {
       expect(result.total).toBe(2);
       expect(result.details).toHaveLength(2);
       expect(result.details[0]).toMatchObject({
-        file: '0001-test.md',
+        file: '0001-architect-test.md',
         title: 'Test Decision'
       });
       expect(result.details[1]).toMatchObject({
-        file: '0003-test.md',
+        file: '0003-architect-test.md',
         title: 'Another Open'
       });
     });
@@ -240,7 +209,7 @@ describe('StatusDisplay', () => {
       const decisionsDir = path.join(ufooDir, 'context', 'decisions');
       fs.mkdirSync(decisionsDir, { recursive: true });
 
-      fs.writeFileSync(path.join(decisionsDir, '0001-test.md'),
+      fs.writeFileSync(path.join(decisionsDir, '0001-architect-test.md'),
         '# No Status\nContent', 'utf8');
 
       const result = statusDisplay.countOpenDecisions();
@@ -264,7 +233,7 @@ describe('StatusDisplay', () => {
       const decisionsDir = path.join(ufooDir, 'context', 'decisions');
       fs.mkdirSync(decisionsDir, { recursive: true });
 
-      fs.writeFileSync(path.join(decisionsDir, '0001-test.md'),
+      fs.writeFileSync(path.join(decisionsDir, '0001-architect-test.md'),
         '---\nstatus: open\n---\nNo title here', 'utf8');
 
       const result = statusDisplay.countOpenDecisions();
@@ -415,7 +384,7 @@ describe('StatusDisplay', () => {
 
       const decisionsDir = path.join(ufooDir, 'context', 'decisions');
       fs.mkdirSync(decisionsDir, { recursive: true });
-      fs.writeFileSync(path.join(decisionsDir, '0001-test.md'),
+      fs.writeFileSync(path.join(decisionsDir, '0001-architect-test.md'),
         '---\nstatus: open\n---\n# Test Decision\n', 'utf8');
 
       await statusDisplay.show();
@@ -442,10 +411,10 @@ describe('StatusDisplay', () => {
   });
 
   describe('edge cases', () => {
-    it('should handle corrupted bus.json gracefully', () => {
-      const busDir = path.join(ufooDir, 'bus');
-      fs.mkdirSync(busDir, { recursive: true });
-      fs.writeFileSync(path.join(busDir, 'bus.json'), 'invalid json', 'utf8');
+    it('should handle corrupted all-agents.json gracefully', () => {
+      const agentDir = path.join(ufooDir, 'agent');
+      fs.mkdirSync(agentDir, { recursive: true });
+      fs.writeFileSync(path.join(agentDir, 'all-agents.json'), 'invalid json', 'utf8');
 
       const result = statusDisplay.countUnreadMessages();
       expect(result.total).toBe(0);
@@ -455,7 +424,7 @@ describe('StatusDisplay', () => {
       const decisionsDir = path.join(ufooDir, 'context', 'decisions');
       fs.mkdirSync(decisionsDir, { recursive: true });
 
-      fs.writeFileSync(path.join(decisionsDir, '0001-test.md'),
+      fs.writeFileSync(path.join(decisionsDir, '0001-architect-test.md'),
         '---\n---\n---\nstatus: open\n---\n# Title\n', 'utf8');
 
       const result = statusDisplay.countOpenDecisions();
