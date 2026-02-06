@@ -236,3 +236,4 @@ Future phases may add:
 - Minimal server scaffold
 - Client stub integration
 - Protocol doc (this file)
+- Optional bridge: local bus message relay (message-only)

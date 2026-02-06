@@ -372,6 +372,44 @@ async function runCli(argv) {
         }
       });
 
+    online
+      .command("bridge")
+      .description("Bridge local bus messages to ufoo-online (message-only)")
+      .option("--server <url>", "Online server URL (ws://host:port/ufoo/online)")
+      .option("--channel <name>", "Channel name")
+      .option("--channel-type <type>", "Channel type (world|public|private)")
+      .option("--world <name>", "World name")
+      .option("--subscriber <id>", "Subscriber ID")
+      .option("--nickname <name>", "Nickname")
+      .option("--agent-type <type>", "Agent type label")
+      .option("--token <token>", "Token")
+      .option("--token-hash <hash>", "Token hash")
+      .option("--token-file <path>", "Token file path")
+      .option("--interval <ms>", "Poll interval (ms)")
+      .action(async (opts) => {
+        const OnlineBridge = require("./online/bridge");
+        const bridge = new OnlineBridge({
+          projectRoot: process.cwd(),
+          url: opts.server || undefined,
+          channel: opts.channel || "",
+          channelType: opts.channelType || "private",
+          world: opts.world || "default",
+          subscriberId: opts.subscriber || "",
+          nickname: opts.nickname || "",
+          agentType: opts.agentType || "ufoo",
+          token: opts.token || "",
+          tokenHash: opts.tokenHash || "",
+          tokenFile: opts.tokenFile || "",
+          pollIntervalMs: opts.interval ? parseInt(opts.interval, 10) : undefined,
+        });
+        try {
+          await bridge.start();
+        } catch (err) {
+          console.error(err.message || String(err));
+          process.exitCode = 1;
+        }
+      });
+
     const bus = program.command("bus").description("Project bus commands");
     bus
       .command("alert")
@@ -718,6 +756,7 @@ async function runCli(argv) {
     console.log("  ufoo online room list [--server <url>]");
     console.log("  ufoo online channel create --name <name> [--type world|public] [--server <url>]");
     console.log("  ufoo online channel list [--server <url>]");
+    console.log("  ufoo online bridge --channel <name> --subscriber <id> --nickname <name> [--server <url>] [...]");
     console.log("  ufoo bus wake <target> [--reason <reason>] [--no-shake]");
     console.log("  ufoo bus <args...>    (JS bus implementation)");
     console.log("  ufoo ctx <subcmd> ... (doctor|lint|decisions)");

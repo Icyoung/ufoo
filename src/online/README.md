@@ -7,6 +7,7 @@ Minimal WebSocket relay implementing the Phase 1 protocol.
 - Control: `join`, `leave`, `ping`, `pong`
 - Routing: direct (`to`) or channel broadcast (`channel`)
 - Wake: relay `payload.kind = "wake"` and emit `type = "wake"` notifications
+- Bridge: local bus <-> online relay (message-only)
 
 See `docs/ufoo-online/PROTOCOL.md` for the draft protocol.
 
