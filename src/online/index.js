@@ -577,6 +577,9 @@ class OnlineServer extends EventEmitter {
         return;
       }
       this.send(target.ws, payload);
+      if (payload.payload && payload.payload.kind === "wake") {
+        this.send(target.ws, { type: "wake", from: client.subscriberId });
+      }
       return;
     }
 
@@ -591,7 +594,12 @@ class OnlineServer extends EventEmitter {
         return;
       }
       room.members.forEach((member) => {
-        if (member !== client) this.send(member.ws, payload);
+        if (member !== client) {
+          this.send(member.ws, payload);
+          if (payload.payload && payload.payload.kind === "wake") {
+            this.send(member.ws, { type: "wake", from: client.subscriberId });
+          }
+        }
       });
       return;
     }
@@ -605,7 +613,12 @@ class OnlineServer extends EventEmitter {
       const members = channel ? channel.members : null;
       if (!members || members.size === 0) return;
       members.forEach((member) => {
-        if (member !== client) this.send(member.ws, payload);
+        if (member !== client) {
+          this.send(member.ws, payload);
+          if (payload.payload && payload.payload.kind === "wake") {
+            this.send(member.ws, { type: "wake", from: client.subscriberId });
+          }
+        }
       });
       return;
     }

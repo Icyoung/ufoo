@@ -6,6 +6,7 @@ Minimal WebSocket relay implementing the Phase 1 protocol.
 - Handshake: `hello` → `hello_ack` → `auth_required` → `auth`
 - Control: `join`, `leave`, `ping`, `pong`
 - Routing: direct (`to`) or channel broadcast (`channel`)
+- Wake: relay `payload.kind = "wake"` and emit `type = "wake"` notifications
 
 See `docs/ufoo-online/PROTOCOL.md` for the draft protocol.
 

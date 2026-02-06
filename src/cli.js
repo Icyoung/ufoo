@@ -465,6 +465,24 @@ async function runCli(argv) {
         })();
       });
     bus
+      .command("wake")
+      .description("Wake an agent (inject /ubus into its terminal)")
+      .argument("<target>", "Subscriber ID or nickname")
+      .option("--reason <reason>", "Wake reason")
+      .option("--no-shake", "Disable window shake")
+      .action((target, opts) => {
+        const EventBus = require("./bus");
+        const eventBus = new EventBus(process.cwd());
+        (async () => {
+          try {
+            await eventBus.wake(target, { reason: opts.reason || "remote", shake: opts.shake !== false });
+          } catch (err) {
+            console.error(err.message || String(err));
+            process.exitCode = 1;
+          }
+        })();
+      });
+    bus
       .command("activate")
       .description("Activate (focus) the terminal/tmux window of an agent")
       .argument("<agent-id>", "Agent ID or nickname to activate")
@@ -517,6 +535,12 @@ async function runCli(argv) {
                 // 自动 join（如果还没有 join）并获取 subscriber ID
                 const publisher = await eventBus.ensureJoined();
                 await eventBus.broadcast(cmdArgs[0], publisher);
+              }
+              break;
+            case "wake":
+              {
+                const publisher = await eventBus.ensureJoined();
+                await eventBus.wake(cmdArgs[0], { publisher, reason: "remote" });
               }
               break;
             case "check":
@@ -590,7 +614,7 @@ async function runCli(argv) {
                 break;
               }
               if (subargs[0] === "new") {
-                const create = { title: "", author: "", status: "" };
+                const create = { title: "", author: "", status: "", nickname: "" };
                 for (let i = 1; i < subargs.length; i++) {
                   const arg = subargs[i];
                   if (arg === "--author") {
@@ -599,6 +623,10 @@ async function runCli(argv) {
                   }
                   if (arg === "--status") {
                     create.status = subargs[++i] || "";
+                    continue;
+                  }
+                  if (arg === "--nickname") {
+                    create.nickname = subargs[++i] || "";
                     continue;
                   }
                   if (!arg.startsWith("-")) {
@@ -690,6 +718,7 @@ async function runCli(argv) {
     console.log("  ufoo online room list [--server <url>]");
     console.log("  ufoo online channel create --name <name> [--type world|public] [--server <url>]");
     console.log("  ufoo online channel list [--server <url>]");
+    console.log("  ufoo bus wake <target> [--reason <reason>] [--no-shake]");
     console.log("  ufoo bus <args...>    (JS bus implementation)");
     console.log("  ufoo ctx <subcmd> ... (doctor|lint|decisions)");
     console.log("");
@@ -1031,6 +1060,24 @@ async function runCli(argv) {
       })();
       return;
     }
+    if (sub === "wake") {
+      const EventBus = require("./bus");
+      const eventBus = new EventBus(process.cwd());
+      (async () => {
+        try {
+          const target = rest[1];
+          if (!target) throw new Error("wake requires <subscriber-id|nickname>");
+          const reasonIdx = rest.indexOf("--reason");
+          const reason = reasonIdx !== -1 ? rest[reasonIdx + 1] : "remote";
+          const shake = !rest.includes("--no-shake");
+          await eventBus.wake(target, { reason, shake });
+        } catch (err) {
+          console.error(err.message || String(err));
+          process.exitCode = 1;
+        }
+      })();
+      return;
+    }
 
     // Use JavaScript EventBus module for core commands
     const EventBus = require("./bus");
@@ -1064,6 +1111,12 @@ async function runCli(argv) {
               // 自动 join（如果还没有 join）并获取 subscriber ID
               const publisher = await eventBus.ensureJoined();
               await eventBus.broadcast(cmdArgs[0], publisher);
+            }
+            break;
+          case "wake":
+            {
+              const publisher = await eventBus.ensureJoined();
+              await eventBus.wake(cmdArgs[0], { publisher, reason: "remote" });
             }
             break;
           case "check":
@@ -1136,6 +1189,7 @@ async function runCli(argv) {
               if (subargs[i] === "-l") opts.listOnly = true;
               if (subargs[i] === "-a") opts.all = true;
               if (subargs[i] === "-d") manager.decisionsDir = subargs[++i];
+              if (subargs[i] === "--nickname") opts.nickname = subargs[++i];
             }
 
             if (opts.listOnly) {

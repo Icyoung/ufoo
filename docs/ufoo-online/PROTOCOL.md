@@ -169,6 +169,18 @@ All messages use a shared envelope:
 { "type": "pong" }
 ```
 
+### `wake` (Phase 1)
+
+When a client sends an event with `payload.kind = "wake"`, the relay delivers
+both the original event and a lightweight control frame:
+
+```json
+{ "type": "wake", "from": "claude-code:a1b2c3" }
+```
+
+Clients should treat this as a hint to surface attention (e.g., trigger local
+`ufoo bus wake` or inject `/ubus`).
+
 ### `join` / `leave`
 
 ```json

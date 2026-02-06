@@ -4,8 +4,6 @@ const { spawn } = require("child_process");
 const {
   getTimestamp,
   ensureDir,
-  readJSON,
-  writeJSON,
   logInfo,
   logOk,
   logWarn,
@@ -15,13 +13,18 @@ const {
   subscriberToSafeName,
   isPidAlive,
   truncateFile,
+  getCurrentTty,
+  sleep,
 } = require("./utils");
+const { shakeTerminalByTty } = require("./shake");
 const QueueManager = require("./queue");
 const SubscriberManager = require("./subscriber");
 const MessageManager = require("./message");
 const NicknameManager = require("./nickname");
 const BusDaemon = require("./daemon");
 const Injector = require("./inject");
+const { getUfooPaths } = require("../ufoo/paths");
+const { loadAgentsData, saveAgentsData } = require("../ufoo/agentsStore");
 
 /**
  * Event Bus - 项目级 Agent 事件总线
@@ -29,10 +32,11 @@ const Injector = require("./inject");
 class EventBus {
   constructor(projectRoot) {
     this.projectRoot = projectRoot;
-    this.busDir = path.join(projectRoot, ".ufoo", "bus");
-    this.busFile = path.join(this.busDir, "bus.json");
-    this.eventsDir = path.join(this.busDir, "events");
-    this.logsDir = path.join(this.busDir, "logs");
+    this.paths = getUfooPaths(projectRoot);
+    this.busDir = this.paths.busDir;
+    this.agentsFile = this.paths.agentsFile;
+    this.eventsDir = this.paths.busEventsDir;
+    this.logsDir = this.paths.busLogsDir;
 
     this.busData = null;
     this.queueManager = null;
@@ -44,7 +48,7 @@ class EventBus {
    * 确保 bus 已初始化
    */
   ensureBus() {
-    if (!fs.existsSync(this.busDir)) {
+    if (!fs.existsSync(this.busDir) || !fs.existsSync(this.paths.agentDir)) {
       throw new Error(
         "Event bus not initialized. Please run: ufoo bus init or /uinit"
       );
@@ -55,10 +59,7 @@ class EventBus {
    * 加载 bus 数据
    */
   loadBusData() {
-    this.busData = readJSON(this.busFile, {
-      created_at: getTimestamp(),
-      subscribers: {},
-    });
+    this.busData = loadAgentsData(this.agentsFile);
 
     this.queueManager = new QueueManager(this.busDir);
     this.subscriberManager = new SubscriberManager(
@@ -71,7 +72,7 @@ class EventBus {
       this.queueManager
     );
 
-    // 自动清理不活跃的 subscribers
+    // 自动清理不活跃的 agents
     this.subscriberManager.cleanupInactive();
   }
 
@@ -80,32 +81,76 @@ class EventBus {
    */
   saveBusData() {
     if (this.busData) {
-      writeJSON(this.busFile, this.busData);
+      saveAgentsData(this.agentsFile, this.busData);
     }
+  }
+
+  /**
+   * 获取当前订阅者 ID
+   */
+  getCurrentSubscriber() {
+    // 优先使用 UFOO_SUBSCRIBER_ID（daemon 启动的情况）
+    if (process.env.UFOO_SUBSCRIBER_ID) {
+      return process.env.UFOO_SUBSCRIBER_ID;
+    }
+
+    if (!fs.existsSync(this.agentsFile)) {
+      return null;
+    }
+
+    // 尝试从 session.txt 读取
+    const sessionFile = path.join(this.paths.agentDir, "session.txt");
+    if (fs.existsSync(sessionFile)) {
+      const sessionId = fs.readFileSync(sessionFile, "utf8").trim();
+      if (sessionId) {
+        return sessionId;
+      }
+    }
+
+    // 尝试通过 tty 查找订阅者
+    let currentTty = null;
+    try {
+      const ttyPath = fs.realpathSync("/dev/tty");
+      if (ttyPath && ttyPath.startsWith("/dev/")) {
+        currentTty = ttyPath;
+      }
+    } catch {
+      // tty 不可用
+    }
+
+    if (currentTty && this.busData && this.busData.agents) {
+      for (const [id, meta] of Object.entries(this.busData.agents)) {
+        if (meta.tty === currentTty) {
+          return id;
+        }
+      }
+    }
+
+    return null;
   }
 
   /**
    * 初始化事件总线
    */
   async init() {
-    if (fs.existsSync(this.busDir)) {
-      return;
-    }
-
     // 创建目录结构
     ensureDir(this.busDir);
+    ensureDir(this.paths.agentDir);
     ensureDir(this.eventsDir);
     ensureDir(path.join(this.busDir, "queues"));
     ensureDir(this.logsDir);
     ensureDir(path.join(this.busDir, "offsets"));
+    ensureDir(this.paths.busDaemonDir);
+    ensureDir(this.paths.busDaemonCountsDir);
 
-    // 创建初始 bus.json
-    const busData = {
-      created_at: getTimestamp(),
-      subscribers: {},
-    };
-
-    writeJSON(this.busFile, busData);
+    // 创建初始 agents 文件（如不存在）
+    if (!fs.existsSync(this.agentsFile)) {
+      const busData = {
+        created_at: getTimestamp(),
+        agents: {},
+      };
+      saveAgentsData(this.agentsFile, busData);
+    }
     logOk("Event bus initialized");
   }
 
@@ -118,22 +163,12 @@ class EventBus {
 
     // 自动检测 session ID 和 agent type
     if (!sessionId) {
-      sessionId =
-        process.env.CLAUDE_SESSION_ID ||
-        process.env.CODEX_SESSION_ID ||
-        generateInstanceId();
+      sessionId = generateInstanceId();
     }
 
     if (!agentType) {
-      // 优先检查 CLAUDECODE 环境变量 (Claude Code CLI 设置)
-      // 然后检查哪个 SESSION_ID 存在
-      if (process.env.CLAUDECODE || process.env.CLAUDE_SESSION_ID) {
-        agentType = "claude-code";
-      } else if (process.env.CODEX_SESSION_ID) {
-        agentType = "codex";
-      } else {
-        agentType = "claude-code"; // 默认
-      }
+      // 默认为 claude-code（手动启动情况）
+      agentType = "claude-code";
     }
 
     const result = await this.subscriberManager.join(
@@ -172,7 +207,7 @@ class EventBus {
   /**
    * 重命名订阅者
    */
-  async rename(subscriber, newNickname) {
+  async rename(subscriber, newNickname, publisher = null) {
     this.ensureBus();
     this.loadBusData();
 
@@ -182,6 +217,21 @@ class EventBus {
         newNickname
       );
       this.saveBusData();
+      const pub = publisher || this.getDefaultPublisher() || "unknown";
+      try {
+        await this.messageManager.emit(
+          "*",
+          "agent_renamed",
+          {
+            agent_id: result.subscriber,
+            old_nickname: result.oldNickname,
+            new_nickname: result.newNickname,
+          },
+          pub
+        );
+      } catch {
+        // ignore event emit failures
+      }
       logOk(
         `Renamed ${result.subscriber}: "${result.oldNickname}" -> "${result.newNickname}"`
       );
@@ -199,31 +249,25 @@ class EventBus {
     this.ensureBus();
     this.loadBusData();
 
-    const sessionId =
-      process.env.CLAUDE_SESSION_ID || process.env.CODEX_SESSION_ID;
-    const agentType = process.env.CODEX_SESSION_ID ? "codex" : "claude-code";
+    // 优先使用 UFOO_SUBSCRIBER_ID（daemon 启动的情况）
+    if (process.env.UFOO_SUBSCRIBER_ID) {
+      const subscriber = process.env.UFOO_SUBSCRIBER_ID;
+      const meta = this.subscriberManager.getSubscriber(subscriber);
 
-    if (!sessionId) {
-      logError("No session ID found. Please run: ufoo bus join");
-      return null;
+      if (meta) {
+        console.log(subscriber);
+        return subscriber;
+      }
     }
 
-    const subscriber = `${agentType}:${sessionId}`;
-    const meta = this.subscriberManager.getSubscriber(subscriber);
-
-    if (!meta) {
-      logError(`Not joined. Please run: ufoo bus join`);
-      return null;
-    }
-
-    console.log(subscriber);
-    return subscriber;
+    logError("Not joined to bus. Please run: ufoo bus join");
+    return null;
   }
 
   /**
    * 发送消息
    */
-  async send(target, message, publisher = null) {
+  async send(target, message, publisher = null, options = {}) {
     this.ensureBus();
     this.loadBusData();
 
@@ -232,11 +276,44 @@ class EventBus {
       publisher =
         process.env.AI_BUS_PUBLISHER ||
         this.getDefaultPublisher() ||
+        this.getCurrentSubscriber() ||
         "unknown";
     }
 
+    // 如果 publisher 还是 unknown，尝试从命令行参数或环境推断
+    if (publisher === "unknown") {
+      // 尝试从 tty 查找可能的 subscriber
+      const possibleSubscriber = this.getCurrentSubscriber();
+      if (possibleSubscriber) {
+        publisher = possibleSubscriber;
+      }
+    }
+
+    // 如果 publisher 不在 agents 列表中，自动注册它（懒加载模式）
+    if (publisher !== "unknown" && this.busData.agents && !this.busData.agents[publisher]) {
+      // 解析 agent 信息
+      const parts = publisher.split(":");
+      const agentType = parts[0] || "unknown-agent";
+      const sessionId = parts[1] || require("./utils").generateInstanceId();
+
+      // 自动加入总线（静默模式，不输出日志）
+      const subscriber = await this.subscriberManager.join(sessionId, agentType, null);
+      this.saveBusData();
+      publisher = subscriber; // 使用规范化的 subscriber ID
+    }
+
+    // 更新 publisher 的心跳
+    if (publisher !== "unknown" && this.busData.agents && this.busData.agents[publisher]) {
+      this.subscriberManager.updateLastSeen(publisher);
+      this.saveBusData();
+    }
+
     try {
-      const result = await this.messageManager.send(target, message, publisher);
+      const eventName = options.event || "message";
+      const data = options.data || { message };
+      const result = eventName === "message"
+        ? await this.messageManager.send(target, message, publisher)
+        : await this.messageManager.emit(target, eventName, data, publisher);
       logOk(
         `Message sent: seq=${result.seq} -> ${result.targets.join(", ")}`
       );
@@ -250,8 +327,8 @@ class EventBus {
   /**
    * 广播消息
    */
-  async broadcast(message, publisher = null) {
-    return this.send("*", message, publisher);
+  async broadcast(message, publisher = null, options = {}) {
+    return this.send("*", message, publisher, options);
   }
 
   /**
@@ -260,6 +337,10 @@ class EventBus {
   async check(subscriber, autoAck = false) {
     this.ensureBus();
     this.loadBusData();
+
+    // 更新心跳
+    this.subscriberManager.updateLastSeen(subscriber);
+    this.saveBusData();
 
     const pending = await this.messageManager.check(subscriber);
 
@@ -333,6 +414,14 @@ class EventBus {
     // 清理不活跃的订阅者
     this.subscriberManager.cleanupInactive();
 
+    // 尝试获取当前 subscriber 并更新 last_seen + 重新激活（保持心跳）
+    const currentSubscriber = this.getCurrentSubscriber();
+    if (currentSubscriber && this.busData.agents && this.busData.agents[currentSubscriber]) {
+      this.subscriberManager.updateLastSeen(currentSubscriber);
+      this.busData.agents[currentSubscriber].status = "active";
+      this.saveBusData();
+    }
+
     console.log(`${colors.cyan}=== Event Bus Status ===${colors.reset}`);
     console.log();
 
@@ -343,7 +432,7 @@ class EventBus {
 
     // 显示在线订阅者
     const active = this.subscriberManager.getActiveSubscribers();
-    console.log(`${colors.cyan}Online subscribers:${colors.reset}`);
+    console.log(`${colors.cyan}Online agents:${colors.reset}`);
     if (active.length === 0) {
       console.log("  (none)");
     } else {
@@ -409,12 +498,34 @@ class EventBus {
    * 获取默认发布者
    */
   getDefaultPublisher() {
-    const sessionId =
-      process.env.CLAUDE_SESSION_ID || process.env.CODEX_SESSION_ID;
-    if (!sessionId) return null;
+    // 使用 UFOO_SUBSCRIBER_ID（daemon 启动的情况）
+    return process.env.UFOO_SUBSCRIBER_ID || null;
+  }
 
-    const agentType = process.env.CODEX_SESSION_ID ? "codex" : "claude-code";
-    return `${agentType}:${sessionId}`;
+  /**
+   * 确保当前 agent 已经 join 总线（如果没有则自动 join）
+   */
+  async ensureJoined() {
+    this.ensureBus();
+    this.loadBusData();
+
+    // 检查是否已经 join
+    const currentSubscriber = this.getCurrentSubscriber();
+    if (currentSubscriber && this.busData.agents && this.busData.agents[currentSubscriber]) {
+      // 已经 join，只需更新心跳
+      this.subscriberManager.updateLastSeen(currentSubscriber);
+      this.saveBusData();
+      return currentSubscriber;
+    }
+
+    // 还没有 join，自动 join
+    const sessionId = null; // 自动生成
+    const agentType = null; // 自动检测
+    const nickname = null; // 自动生成
+    const subscriber = await this.join(sessionId, agentType, nickname);
+
+    // 静默加入（不输出 "Joined event bus" 信息）
+    return subscriber;
   }
 
   /**
@@ -536,7 +647,8 @@ class EventBus {
         console.log(`[alert] ${now} +${newCount} new message(s)`);
 
         if (useBell) {
-          process.stdout.write("\x07");
+          const tty = getCurrentTty();
+          if (tty) shakeTerminalByTty(tty);
         }
         if (useTitle) {
           process.stdout.write(`\x1b]0;[${count}] ${subscriber}\x07`);
@@ -561,6 +673,52 @@ class EventBus {
       lastCount = count;
       await sleep(intervalMs);
     }
+  }
+
+  /**
+   * 远程唤醒本地 agent（触发 /ubus 注入）
+   */
+  async wake(subscriber, options = {}) {
+    this.ensureBus();
+    this.loadBusData();
+
+    const publisher =
+      options.publisher ||
+      process.env.AI_BUS_PUBLISHER ||
+      this.getDefaultPublisher() ||
+      this.getCurrentSubscriber() ||
+      "unknown";
+
+    const targets = this.messageManager.resolveTarget(subscriber || "");
+    if (targets.length === 0) {
+      throw new Error(`Target "${subscriber}" not found`);
+    }
+
+    for (const target of targets) {
+      const safeName = subscriberToSafeName(target);
+      const queueDir = path.join(this.busDir, "queues", safeName);
+      const pendingFile = path.join(queueDir, "pending.jsonl");
+      ensureDir(queueDir);
+
+      const before = fs.existsSync(pendingFile) ? fs.readFileSync(pendingFile, "utf8") : "";
+      const countBefore = before.trim() ? before.trim().split(/\r?\n/).length : 0;
+      await this.messageManager.emit(target, "wake", { reason: options.reason || "remote" }, publisher, "status/wake");
+      const after = fs.existsSync(pendingFile) ? fs.readFileSync(pendingFile, "utf8") : "";
+      const countAfter = after.trim() ? after.trim().split(/\r?\n/).length : 0;
+
+      if (countAfter > countBefore) {
+        await sleep(50);
+        const daemon = new BusDaemon(this.busDir, this.agentsFile, this.paths.busDaemonDir, 2000);
+        await daemon.injector.inject(target, options.command || "");
+        if (options.shake !== false) {
+          const tty = daemon.injector.readTty(target);
+          if (tty) shakeTerminalByTty(tty, { skipFrontmost: true });
+        }
+      }
+    }
+
+    logOk(`Wake sent -> ${targets.join(", ")}`);
+    return { ok: true, targets };
   }
 
   /**
@@ -632,8 +790,9 @@ class EventBus {
       const lines = readLines();
       if (lines.length > lastLines) {
         const newLines = lines.slice(lastLines);
+        const tty = getCurrentTty();
+        if (tty) shakeTerminalByTty(tty);
         newLines.forEach((line) => {
-          process.stdout.write("\x07");
           formatLine(line);
         });
         lastLines = lines.length;
@@ -647,7 +806,7 @@ class EventBus {
    */
   async daemon(action, options = {}) {
     const interval = options.interval || 2000;
-    const daemon = new BusDaemon(this.busDir, interval);
+    const daemon = new BusDaemon(this.busDir, this.agentsFile, this.paths.busDaemonDir, interval);
 
     switch (action) {
       case "start":
@@ -667,10 +826,10 @@ class EventBus {
   /**
    * 注入命令到订阅者终端
    */
-  async inject(subscriber) {
+  async inject(subscriber, commandOverride = "") {
     this.ensureBus();
-    const injector = new Injector(this.busDir);
-    await injector.inject(subscriber);
+    const injector = new Injector(this.busDir, this.agentsFile);
+    await injector.inject(subscriber, commandOverride);
   }
 }
 

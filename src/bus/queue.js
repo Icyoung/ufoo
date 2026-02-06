@@ -91,6 +91,10 @@ class QueueManager {
     this.ensureQueueDir(subscriber);
     const pendingPath = this.getPendingPath(subscriber);
     appendJSONL(pendingPath, event);
+    if (event && event.event === "wake") {
+      const wakePath = path.join(this.getQueueDir(subscriber), "wake");
+      fs.writeFileSync(wakePath, String(event.seq || Date.now()), "utf8");
+    }
   }
 
   /**

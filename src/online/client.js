@@ -90,6 +90,9 @@ class OnlineClient extends EventEmitter {
       try {
         const msg = JSON.parse(data.toString());
         this.emit("message", msg);
+        if (msg.type === "wake") {
+          this.emit("wake", msg);
+        }
       } catch {
         // ignore
       }

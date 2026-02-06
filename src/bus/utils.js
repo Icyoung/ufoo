@@ -53,7 +53,9 @@ function isPidAlive(pid) {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
+  } catch (err) {
+    // Sandbox can return EPERM for other processes even if they are alive.
+    if (err && err.code === "EPERM") return true;
     return false;
   }
 }
@@ -83,7 +85,7 @@ function getPidCommand(pid) {
 function isAgentPidAlive(pid) {
   if (!isPidAlive(pid)) return false;
   const cmd = getPidCommand(pid);
-  if (!cmd) return false;
+  if (!cmd) return true;
   return /(claude|codex|node)/i.test(cmd);
 }
 
@@ -95,6 +97,67 @@ function isValidTty(ttyPath) {
   if (ttyPath === "/dev/tty") return false;
   if (!ttyPath.startsWith("/dev/")) return false;
   return true;
+}
+
+function normalizeTty(ttyPath) {
+  if (!ttyPath) return "";
+  const trimmed = String(ttyPath).trim();
+  if (!trimmed || trimmed === "not a tty") return "";
+  if (trimmed === "/dev/tty") return "";
+  return trimmed;
+}
+
+function getCurrentTty() {
+  try {
+    const res = spawnSync("tty", {
+      stdio: [0, "pipe", "ignore"],
+      encoding: "utf8",
+    });
+    if (res && res.status === 0) {
+      const tty = normalizeTty(res.stdout || "");
+      return isValidTty(tty) ? tty : "";
+    }
+  } catch {
+    // ignore
+  }
+  return "";
+}
+
+function parsePsLines(raw) {
+  const lines = String(raw || "").trim().split(/\r?\n/).filter(Boolean);
+  return lines.map((line) => {
+    const match = line.trim().match(/^(\d+)\s+(.+)$/);
+    if (!match) return null;
+    return { pid: parseInt(match[1], 10), comm: match[2].trim() };
+  }).filter(Boolean);
+}
+
+function getTtyProcessInfo(ttyPath) {
+  if (!isValidTty(ttyPath)) {
+    return { alive: false, idle: false, hasAgent: false, shellPid: 0, processes: [] };
+  }
+  const ttyName = ttyPath.replace("/dev/", "");
+  try {
+    const res = spawnSync("ps", ["-t", ttyName, "-o", "pid=,comm="], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    if (res.status !== 0) {
+      return { alive: false, idle: false, hasAgent: false, shellPid: 0, processes: [] };
+    }
+    const processes = parsePsLines(res.stdout || "");
+    if (processes.length === 0) {
+      return { alive: false, idle: false, hasAgent: false, shellPid: 0, processes: [] };
+    }
+    const shellNames = new Set(["zsh", "bash", "fish", "sh", "login"]);
+    const hasAgent = processes.some((p) => /(codex|claude|node)/i.test(p.comm));
+    const nonShell = processes.filter((p) => !shellNames.has(p.comm));
+    const idle = !hasAgent && nonShell.length === 0;
+    const shell = processes.find((p) => shellNames.has(p.comm));
+    return { alive: true, idle, hasAgent, shellPid: shell ? shell.pid : 0, processes };
+  } catch {
+    return { alive: false, idle: false, hasAgent: false, shellPid: 0, processes: [] };
+  }
 }
 
 /**
@@ -191,6 +254,10 @@ function truncateFile(filePath) {
   }
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * 日志输出（带颜色）
  */
@@ -229,6 +296,8 @@ module.exports = {
   getPidCommand,
   isAgentPidAlive,
   isValidTty,
+  getCurrentTty,
+  getTtyProcessInfo,
   ensureDir,
   appendFileAtomic,
   writeFileAtomic,
@@ -238,6 +307,7 @@ module.exports = {
   appendJSONL,
   readLastLine,
   truncateFile,
+  sleep,
   logInfo,
   logOk,
   logWarn,
