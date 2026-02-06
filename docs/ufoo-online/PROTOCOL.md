@@ -140,6 +140,12 @@ All messages use a shared envelope:
 - `world` / `public`: chat only
 - `private`: chat + decisions/bus sync + remote wake
 
+**Decision ID (Phase 1, simplified):**
+- Format: `<counter>-<nickname>` (e.g., `1-Jimmy`, `2-Jimmy`)
+- `nickname` must be globally unique on the server
+- Each agent maintains its own local counter (persisted)
+- The creator generates the ID; receivers must not re-generate it
+
 
 ### Required fields
 - `type`: "event" | control frame types
