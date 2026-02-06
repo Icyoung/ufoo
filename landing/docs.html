@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>UFOO Docs - Multi-Agent Workspace Protocol</title>
+  <meta name="description" content="Documentation for UFOO - the multi-agent workspace protocol. CLI reference, bus protocol, context sharing, and more.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="docs.css">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x1f4cb;</text></svg>">
+</head>
+<body>
+  <!-- Header -->
+  <header class="header">
+    <div class="header-content">
+      <div class="logo">
+        <span class="logo-symbol">&gt;_</span>
+        <a href="index.html" class="logo-text"><span class="u">U</span>FOO</a>
+      </div>
+      <nav class="nav">
+        <a href="docs.html" class="nav-link active">Docs</a>
+        <a href="https://github.com/Icyoung/ufoo" class="nav-link">GitHub</a>
+        <a href="index.html#whats-new" class="nav-link">Changelog</a>
+        <a href="index.html#getting-started" class="nav-cta">Get Started</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="docs-layout">
+    <!-- Sidebar -->
+    <aside class="docs-sidebar">
+      <nav class="docs-nav">
+        <div class="docs-nav-section">
+          <h5>Getting Started</h5>
+          <a href="#installation" class="docs-nav-link active">Installation</a>
+          <a href="#quick-start" class="docs-nav-link">Quick Start</a>
+          <a href="#architecture" class="docs-nav-link">Architecture</a>
+        </div>
+        <div class="docs-nav-section">
+          <h5>CLI Reference</h5>
+          <a href="#commands" class="docs-nav-link">Commands</a>
+          <a href="#uclaude" class="docs-nav-link">uclaude</a>
+          <a href="#ucodex" class="docs-nav-link">ucodex</a>
+        </div>
+        <div class="docs-nav-section">
+          <h5>Core Modules</h5>
+          <a href="#event-bus" class="docs-nav-link">Event Bus</a>
+          <a href="#context" class="docs-nav-link">Context &amp; Decisions</a>
+          <a href="#daemon" class="docs-nav-link">Daemon</a>
+          <a href="#skills" class="docs-nav-link">Skills</a>
+        </div>
+        <div class="docs-nav-section">
+          <h5>Advanced</h5>
+          <a href="#pty-wrapper" class="docs-nav-link">PTY Wrapper</a>
+          <a href="#ready-detection" class="docs-nav-link">Ready Detection</a>
+          <a href="#project-structure" class="docs-nav-link">Project Structure</a>
+        </div>
+      </nav>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="docs-main">
+      <!-- Installation -->
+      <section id="installation" class="docs-section">
+        <h1>Installation</h1>
+        <p>UFOO requires Node.js 18 or higher.</p>
+
+        <div class="docs-code">
+          <div class="docs-code-header">
+            <span>Terminal</span>
+            <button class="copy-btn" data-copy="npm install -g u-foo">Copy</button>
+          </div>
+          <pre><code><span class="prompt">$</span> npm install -g u-foo</code></pre>
+        </div>
+
+        <p>Or use without installing:</p>
+
+        <div class="docs-code">
+          <div class="docs-code-header">
+            <span>Terminal</span>
+            <button class="copy-btn" data-copy="npx u-foo">Copy</button>
+          </div>
+          <pre><code><span class="prompt">$</span> npx u-foo</code></pre>
+        </div>
+
+        <p>Verify installation:</p>
+        <div class="docs-code">
+          <pre><code><span class="prompt">$</span> ufoo --version
+<span class="success">1.0.6</span>
+
+<span class="prompt">$</span> ufoo doctor
+<span class="success">&#x2713;</span> Node.js v22.x detected
+<span class="success">&#x2713;</span> u-foo@1.0.6 installed globally
+<span class="success">&#x2713;</span> claude CLI found
+<span class="success">&#x2713;</span> codex CLI found</code></pre>
+        </div>
+      </section>
+
+      <!-- Quick Start -->
+      <section id="quick-start" class="docs-section">
+        <h1>Quick Start</h1>
+        <p>Two steps to multi-agent collaboration:</p>
+
+        <div class="docs-steps">
+          <div class="docs-step">
+            <div class="docs-step-num">1</div>
+            <div>
+              <h3>Initialize your workspace</h3>
+              <div class="docs-code">
+                <pre><code><span class="prompt">$</span> cd your-project
+<span class="prompt">$</span> ufoo init
+<span class="success">&#x2713;</span> Created .ufoo/
+<span class="success">&#x2713;</span> Bus initialized
+<span class="success">&#x2713;</span> Context ready</code></pre>
+              </div>
+            </div>
+          </div>
+
+          <div class="docs-step">
+            <div class="docs-step-num">2</div>
+            <div>
+              <h3>Launch agents with the <span class="u">u</span> prefix</h3>
+              <div class="docs-code">
+                <pre><code><span class="dim"># Terminal 1 - Launch Claude as project manager</span>
+<span class="prompt">$</span> <span class="u">u</span>claude --nickname pm
+
+<span class="dim"># Terminal 2 - Launch Codex as developer</span>
+<span class="prompt">$</span> <span class="u">u</span>codex --nickname dev
+
+<span class="dim"># They auto-discover each other via the bus</span>
+<span class="dim">[</span><span class="u">u</span><span class="purple">bus</span><span class="dim">]</span> <span class="success">@pm &#x2194; @dev routing enabled</span></code></pre>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="docs-callout">
+          <span class="docs-callout-icon">&gt;</span>
+          <div>
+            <strong>That's it.</strong> Agents communicate via the event bus, share decisions via context files, and coordinate automatically. No config files needed.
+          </div>
+        </div>
+      </section>
+
+      <!-- Architecture -->
+      <section id="architecture" class="docs-section">
+        <h1>Architecture</h1>
+        <p>UFOO creates a shared workspace layer between AI agents:</p>
+
+        <div class="docs-code arch-diagram">
+          <pre><code>  <span class="u">uclaude</span>          <span class="u">ucodex</span>          <span class="dim">other...</span>
+     |                |                |
+     &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x252c;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;
+                      |
+               <span class="purple">ufoo bus</span>       <span class="dim">Event Bus</span>
+                      |
+         &#x250c;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x253c;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;
+         |            |            |
+    <span class="green">.ufoo/bus</span>    <span class="green">context</span>    <span class="green">decisions</span></code></pre>
+        </div>
+
+        <h3>Data Flow</h3>
+        <div class="docs-table-wrap">
+          <table class="docs-table">
+            <thead>
+              <tr>
+                <th>Layer</th>
+                <th>Purpose</th>
+                <th>Storage</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span class="u">Agent Wrappers</span></td>
+                <td>Launch agents with auto-init and bus join</td>
+                <td>Process memory</td>
+              </tr>
+              <tr>
+                <td><span class="purple">Event Bus</span></td>
+                <td>Real-time messaging between agents</td>
+                <td><code>.ufoo/bus/</code></td>
+              </tr>
+              <tr>
+                <td><span class="green">Context</span></td>
+                <td>Shared decisions and project knowledge</td>
+                <td><code>.ufoo/context/</code></td>
+              </tr>
+              <tr>
+                <td><span class="orange">Daemon</span></td>
+                <td>Background process for bus monitoring</td>
+                <td><code>.ufoo/daemon/</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- CLI Commands -->
+      <section id="commands" class="docs-section">
+        <h1>CLI Reference</h1>
+        <p>All available <code>ufoo</code> commands:</p>
+
+        <h3>Core Commands</h3>
+        <div class="docs-table-wrap">
+          <table class="docs-table">
+            <thead>
+              <tr>
+                <th>Command</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>ufoo init</code></td>
+                <td>Initialize <code>.ufoo/</code> in current project</td>
+              </tr>
+              <tr>
+                <td><code>ufoo status</code></td>
+                <td>Show banner, unread messages, open decisions</td>
+              </tr>
+              <tr>
+                <td><code>ufoo chat</code></td>
+                <td>Launch interactive chat UI (default command)</td>
+              </tr>
+              <tr>
+                <td><code>ufoo resume [nickname]</code></td>
+                <td>Resume a previous agent session</td>
+              </tr>
+              <tr>
+                <td><code>ufoo doctor</code></td>
+                <td>Check installation health</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Bus Commands</h3>
+        <div class="docs-table-wrap">
+          <table class="docs-table">
+            <thead>
+              <tr>
+                <th>Command</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>ufoo bus join</code></td>
+                <td>Join the workspace event bus</td>
+              </tr>
+              <tr>
+                <td><code>ufoo bus send &lt;id&gt; &lt;msg&gt;</code></td>
+                <td>Send a message to an agent</td>
+              </tr>
+              <tr>
+                <td><code>ufoo bus check &lt;id&gt;</code></td>
+                <td>Check pending messages for an agent</td>
+              </tr>
+              <tr>
+                <td><code>ufoo bus status</code></td>
+                <td>Show bus status and connected agents</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Context Commands</h3>
+        <div class="docs-table-wrap">
+          <table class="docs-table">
+            <thead>
+              <tr>
+                <th>Command</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>ufoo ctx decisions -l</code></td>
+                <td>List all decisions</td>
+              </tr>
+              <tr>
+                <td><code>ufoo ctx decisions -n 1</code></td>
+                <td>Show latest decision</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Daemon Commands</h3>
+        <div class="docs-table-wrap">
+          <table class="docs-table">
+            <thead>
+              <tr>
+                <th>Command</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>ufoo daemon --start</code></td>
+                <td>Start background daemon</td>
+              </tr>
+              <tr>
+                <td><code>ufoo daemon --stop</code></td>
+                <td>Stop background daemon</td>
+              </tr>
+              <tr>
+                <td><code>ufoo daemon --status</code></td>
+                <td>Check daemon status</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Skills Commands</h3>
+        <div class="docs-table-wrap">
+          <table class="docs-table">
+            <thead>
+              <tr>
+                <th>Command</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>ufoo skills list</code></td>
+                <td>List available skills</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- uclaude -->
+      <section id="uclaude" class="docs-section">
+        <h1><span class="u">u</span>claude</h1>
+        <p>Wrapper around Claude Code CLI with automatic workspace integration.</p>
+
+        <div class="docs-code">
+          <pre><code><span class="prompt">$</span> uclaude [options]
+
+<span class="dim">Options:</span>
+  --nickname &lt;name&gt;   Set agent nickname (e.g. pm, dev, reviewer)
+  --resume            Resume previous session
+  --internal          Run in headless/internal mode</code></pre>
+        </div>
+
+        <h3>What <span class="u">u</span>claude does automatically</h3>
+        <ul class="docs-list">
+          <li>Runs <code>ufoo init</code> if workspace not initialized</li>
+          <li>Joins the event bus with the given nickname</li>
+          <li>Injects bus probe after Claude is ready (via PTY wrapper)</li>
+          <li>Monitors parent-child process relationships</li>
+          <li>Maintains isolated session IDs per agent type</li>
+        </ul>
+      </section>
+
+      <!-- ucodex -->
+      <section id="ucodex" class="docs-section">
+        <h1><span class="u">u</span>codex</h1>
+        <p>Wrapper around OpenAI Codex CLI with identical workspace integration.</p>
+
+        <div class="docs-code">
+          <pre><code><span class="prompt">$</span> ucodex [options]
+
+<span class="dim">Options:</span>
+  --nickname &lt;name&gt;   Set agent nickname
+  --resume            Resume previous session</code></pre>
+        </div>
+
+        <p>Works exactly like <code>uclaude</code> but launches the Codex CLI instead.</p>
+      </section>
+
+      <!-- Event Bus -->
+      <section id="event-bus" class="docs-section">
+        <h1>Event Bus</h1>
+        <p>The bus is how agents talk to each other. Messages are stored in <code>.ufoo/bus/</code> as flat files — no database, no server.</p>
+
+        <h3>How It Works</h3>
+        <div class="docs-code">
+          <pre><code><span class="dim"># Agent "pm" sends a message to agent "dev"</span>
+<span class="prompt">$</span> ufoo bus send dev "Please review src/auth.js"
+
+<span class="dim"># Agent "dev" checks for messages</span>
+<span class="prompt">$</span> ufoo bus check dev
+<span class="purple">[1]</span> from @pm: Please review src/auth.js
+
+<span class="dim"># In-agent: the /ubus skill auto-polls and executes</span></code></pre>
+        </div>
+
+        <h3>Bus Storage</h3>
+        <div class="docs-code">
+          <pre><code>.ufoo/bus/
+&#x251c;&#x2500;&#x2500; events/       <span class="dim"># Append-only event log</span>
+&#x251c;&#x2500;&#x2500; queues/       <span class="dim"># Per-agent message queues</span>
+&#x2514;&#x2500;&#x2500; offsets/      <span class="dim"># Read position tracking</span></code></pre>
+        </div>
+
+        <h3>Smart Routing</h3>
+        <p>Agents resolve nicknames to IDs automatically. The bus supports:</p>
+        <ul class="docs-list">
+          <li>Direct messaging between agents</li>
+          <li>Broadcast to all connected agents</li>
+          <li>Nickname-based routing (e.g. <code>@pm</code>, <code>@dev</code>)</li>
+          <li>Auto-acknowledgment of received messages</li>
+        </ul>
+      </section>
+
+      <!-- Context -->
+      <section id="context" class="docs-section">
+        <h1>Context &amp; Decisions</h1>
+        <p>Shared project knowledge that persists across sessions and agents.</p>
+
+        <h3>Decisions</h3>
+        <p>When agents make architectural or implementation decisions, they record them:</p>
+
+        <div class="docs-code">
+          <pre><code><span class="dim"># List all decisions</span>
+<span class="prompt">$</span> ufoo ctx decisions -l
+
+<span class="purple">[001]</span> Use JWT for auth tokens
+<span class="purple">[002]</span> PostgreSQL as primary database
+<span class="purple">[003]</span> TailwindCSS for styling
+
+<span class="dim"># View latest decision</span>
+<span class="prompt">$</span> ufoo ctx decisions -n 1</code></pre>
+        </div>
+
+        <h3>Decision Storage</h3>
+        <p>Decisions are stored as markdown files in <code>.ufoo/context/decisions/</code> — fully git-friendly. Commit them alongside your code for full traceability.</p>
+
+        <div class="docs-callout">
+          <span class="docs-callout-icon">&gt;</span>
+          <div>
+            <strong>Recording policy:</strong> Agents must record architecture decisions, dependency choices, and API design changes. Implementation details are optional.
+          </div>
+        </div>
+      </section>
+
+      <!-- Daemon -->
+      <section id="daemon" class="docs-section">
+        <h1>Daemon</h1>
+        <p>Background process that monitors the bus and bridges agent communication.</p>
+
+        <div class="docs-code">
+          <pre><code><span class="dim"># Start daemon</span>
+<span class="prompt">$</span> ufoo daemon --start
+<span class="success">&#x2713;</span> Daemon started (pid: 12345)
+
+<span class="dim"># Check status</span>
+<span class="prompt">$</span> ufoo daemon --status
+<span class="green">running</span> pid:12345 uptime:2m
+
+<span class="dim"># Stop daemon</span>
+<span class="prompt">$</span> ufoo daemon --stop
+<span class="success">&#x2713;</span> Daemon stopped</code></pre>
+        </div>
+
+        <h3>v1.0.6: Single Daemon Guarantee</h3>
+        <p>Only one daemon instance runs per workspace. The system detects and prevents duplicate daemons, resolving the multi-daemon conflicts present in earlier versions.</p>
+      </section>
+
+      <!-- Skills -->
+      <section id="skills" class="docs-section">
+        <h1>Skills</h1>
+        <p>Extensible agent capabilities defined as markdown files. Agents discover and execute them via slash commands.</p>
+
+        <h3>Built-in Skills</h3>
+        <div class="docs-table-wrap">
+          <table class="docs-table">
+            <thead>
+              <tr>
+                <th>Skill</th>
+                <th>Trigger</th>
+                <th>Purpose</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>/ubus</code></td>
+                <td>Check bus messages</td>
+                <td>Auto-poll and execute pending messages from other agents</td>
+              </tr>
+              <tr>
+                <td><code>/uctx</code></td>
+                <td>Context check</td>
+                <td>Quick view of decisions and context health</td>
+              </tr>
+              <tr>
+                <td><code>/ustatus</code></td>
+                <td>Status overview</td>
+                <td>Banner, unread messages, open decisions at a glance</td>
+              </tr>
+              <tr>
+                <td><code>/uinit</code></td>
+                <td>Initialize workspace</td>
+                <td>Manually trigger .ufoo/ initialization</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Custom Skills</h3>
+        <p>Place markdown files in <code>SKILLS/&lt;name&gt;/SKILL.md</code> to define custom skills. Agents discover them automatically via <code>ufoo skills list</code>.</p>
+      </section>
+
+      <!-- PTY Wrapper -->
+      <section id="pty-wrapper" class="docs-section">
+        <h1>PTY Wrapper</h1>
+        <p>Terminal emulation layer that wraps agent processes for intelligent interaction.</p>
+
+        <h3>What It Does</h3>
+        <ul class="docs-list">
+          <li>Spawns agents inside a pseudo-terminal (via <code>node-pty</code>)</li>
+          <li>Captures and analyzes terminal output in real-time</li>
+          <li>Injects bus probe commands after agent initialization</li>
+          <li>Handles terminal resize, signals, and lifecycle</li>
+        </ul>
+
+        <h3>Smart Probe Injection</h3>
+        <p>Instead of injecting commands immediately (which may fail if the agent isn't ready), the PTY wrapper waits for the ReadyDetector signal before sending the session probe.</p>
+      </section>
+
+      <!-- Ready Detection -->
+      <section id="ready-detection" class="docs-section">
+        <h1>Ready Detection</h1>
+        <p>Introduced in v1.0.5, the ReadyDetector monitors PTY output to determine when an agent is ready to accept input.</p>
+
+        <h3>Detection Strategy</h3>
+        <div class="docs-code">
+          <pre><code><span class="dim">Multi-layer fallback:</span>
+1. <span class="green">PTY output analysis</span>    <span class="dim">10s window - watch for ready patterns</span>
+2. <span class="orange">Fallback timer</span>         <span class="dim">8s after launch - assume ready</span>
+3. <span class="purple">Retry loop</span>             <span class="dim">15 retries max - for slow startups</span></code></pre>
+        </div>
+
+        <h3>Performance Metrics</h3>
+        <p>The system tracks detection time and buffer usage for diagnostics. Use <code>ufoo doctor</code> to view readiness statistics.</p>
+      </section>
+
+      <!-- Project Structure -->
+      <section id="project-structure" class="docs-section">
+        <h1>Project Structure</h1>
+        <p>What <code>ufoo init</code> creates in your project:</p>
+
+        <div class="docs-code">
+          <pre><code>your-project/
+&#x2514;&#x2500;&#x2500; .ufoo/
+    &#x251c;&#x2500;&#x2500; agent/
+    &#x2502;   &#x2514;&#x2500;&#x2500; all-agents.json    <span class="dim"># Agent metadata registry</span>
+    &#x251c;&#x2500;&#x2500; bus/
+    &#x2502;   &#x251c;&#x2500;&#x2500; events/            <span class="dim"># Append-only event log</span>
+    &#x2502;   &#x251c;&#x2500;&#x2500; queues/            <span class="dim"># Per-agent message queues</span>
+    &#x2502;   &#x2514;&#x2500;&#x2500; offsets/           <span class="dim"># Read position tracking</span>
+    &#x251c;&#x2500;&#x2500; context/
+    &#x2502;   &#x251c;&#x2500;&#x2500; decisions/         <span class="dim"># Decision records (markdown)</span>
+    &#x2502;   &#x2514;&#x2500;&#x2500; decisions.jsonl    <span class="dim"># Decision index</span>
+    &#x2514;&#x2500;&#x2500; daemon/
+        &#x2514;&#x2500;&#x2500; ...                <span class="dim"># Daemon runtime files</span></code></pre>
+        </div>
+
+        <div class="docs-callout">
+          <span class="docs-callout-icon">&gt;</span>
+          <div>
+            <strong>Git tip:</strong> Add <code>.ufoo/daemon/</code> and <code>.ufoo/bus/queues/</code> to your <code>.gitignore</code>. Keep <code>.ufoo/context/</code> tracked for shared decisions.
+          </div>
+        </div>
+      </section>
+
+      <!-- Footer inside docs -->
+      <div class="docs-footer">
+        <p>UFOO v1.0.6 &mdash; <a href="https://github.com/Icyoung/ufoo">GitHub</a> &middot; <a href="https://www.npmjs.com/package/u-foo">npm</a></p>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    // Copy button
+    document.querySelectorAll('.copy-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const text = btn.dataset.copy;
+        navigator.clipboard.writeText(text);
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+      });
+    });
+
+    // Active sidebar link on scroll
+    const sections = document.querySelectorAll('.docs-section');
+    const navLinks = document.querySelectorAll('.docs-nav-link');
+
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          navLinks.forEach(link => link.classList.remove('active'));
+          const activeLink = document.querySelector(`.docs-nav-link[href="#${entry.target.id}"]`);
+          if (activeLink) activeLink.classList.add('active');
+        }
+      });
+    }, { rootMargin: '-80px 0px -60% 0px' });
+
+    sections.forEach(section => observer.observe(section));
+  </script>
+</body>
+</html>

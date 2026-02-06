@@ -338,6 +338,73 @@ section {
   color: var(--text-dim) !important;
 }
 
+/* What's New Section */
+.whats-new {
+  background: var(--bg-page);
+}
+
+.changelog-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 24px;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.changelog-item {
+  background: var(--bg-card);
+  border-radius: 12px;
+  padding: 28px;
+  transition: background 0.2s;
+}
+
+.changelog-item:hover {
+  background: var(--bg-hover);
+}
+
+.changelog-tag {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  padding: 4px 10px;
+  border-radius: 4px;
+  margin-bottom: 16px;
+}
+
+.changelog-tag.green {
+  color: var(--green);
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.changelog-tag.purple {
+  color: var(--purple);
+  background: rgba(167, 139, 250, 0.1);
+}
+
+.changelog-tag.cyan {
+  color: var(--cyan);
+  background: rgba(34, 211, 238, 0.1);
+}
+
+.changelog-tag.orange {
+  color: var(--orange);
+  background: rgba(249, 115, 22, 0.1);
+}
+
+.changelog-item h4 {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.changelog-item p {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 /* Getting Started */
 .getting-started {
   background: var(--bg-page);
@@ -596,6 +663,10 @@ section {
     grid-template-columns: 1fr;
   }
 
+  .changelog-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
   .steps {
     flex-direction: column;
     gap: 48px;
@@ -638,6 +709,10 @@ section {
 
   .ascii-banner {
     display: none;
+  }
+
+  .changelog-grid {
+    grid-template-columns: 1fr;
   }
 
   .footer-nav {

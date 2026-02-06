@@ -20,9 +20,9 @@
         <span class="logo-text"><span class="u">U</span>FOO</span>
       </div>
       <nav class="nav">
-        <a href="https://github.com/anthropics/ufoo" class="nav-link">Docs</a>
-        <a href="https://github.com/anthropics/ufoo" class="nav-link">GitHub</a>
-        <a href="#" class="nav-link">Blog</a>
+        <a href="docs.html" class="nav-link">Docs</a>
+        <a href="https://github.com/Icyoung/ufoo" class="nav-link">GitHub</a>
+        <a href="#whats-new" class="nav-link">Changelog</a>
         <a href="#getting-started" class="nav-cta">Get Started</a>
       </nav>
     </div>
@@ -31,17 +31,14 @@
   <!-- Hero Section -->
   <section class="hero">
     <div class="hero-content">
-      <!-- ASCII Art Banner -->
-      <pre class="ascii-banner">██╗   ██╗███████╗ ██████╗  ██████╗
-██║   ██║██╔════╝██╔═══██╗██╔═══██╗
-██║   ██║█████╗  ██║   ██║██║   ██║
-██║   ██║██╔══╝  ██║   ██║██║   ██║
-╚██████╔╝██║     ╚██████╔╝╚██████╔╝
- ╚═════╝ ╚═╝      ╚═════╝  ╚═════╝</pre>
+      <!-- ASCII Art Banner (compact v1.0.6) -->
+      <pre class="ascii-banner">█ █ █▀▀ █▀█ █▀█
+█ █ █▀  █ █ █ █
+▀▀▀ ▀   ▀▀▀ ▀▀▀</pre>
 
       <div class="badge">
         <span class="badge-dot"></span>
-        <span>v1.0 // works with Claude Code &amp; Codex CLI</span>
+        <span>v1.0.6 // works with Claude Code &amp; Codex CLI</span>
       </div>
 
       <h1 class="hero-title">Just Add <span class="highlight">u</span>.<br>That's It.</h1>
@@ -64,7 +61,7 @@
         </div>
         <div class="terminal-content">
           <div class="line"><span class="prompt">$</span> npm install <span class="u">u</span><span class="white">-foo</span></div>
-          <div class="line success">+ u-foo@1.0.0 installed in 0.8s</div>
+          <div class="line success">+ u-foo@1.0.6 installed in 0.8s</div>
           <div class="line"><span class="prompt">$</span> <span class="u">u</span><span class="white">foo</span><span class="dim"> init</span></div>
           <div class="line success">✓ Workspace ready at .ufoo/</div>
           <div class="line spacer"></div>
@@ -111,6 +108,48 @@
           <code>$ <span class="u">u</span>foo broadcast "start building"</code>
         </div>
         <p class="feature-note">Parallel agent development for your entire project.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- What's New Section -->
+  <section class="whats-new" id="whats-new">
+    <div class="section-header">
+      <span class="section-label">WHAT'S NEW</span>
+      <h2>v1.0.6 Highlights</h2>
+      <p class="section-subtitle">Faster, leaner, smarter agent orchestration.</p>
+    </div>
+
+    <div class="changelog-grid">
+      <div class="changelog-item">
+        <div class="changelog-tag green">perf</div>
+        <h4>Compact Banner</h4>
+        <p>Reduced terminal startup footprint. 3-line logo replaces the 6-line ASCII art. Streamlined info display for less noise.</p>
+      </div>
+      <div class="changelog-item">
+        <div class="changelog-tag purple">feat</div>
+        <h4>Parent-Child Monitoring</h4>
+        <p>Agent processes now track parent-child relationships in terminal mode. Orphan detection and automatic cleanup built in.</p>
+      </div>
+      <div class="changelog-item">
+        <div class="changelog-tag cyan">fix</div>
+        <h4>Session ID Isolation</h4>
+        <p>Fixed session ID pollution between different agent types. Each agent now maintains a clean, isolated session.</p>
+      </div>
+      <div class="changelog-item">
+        <div class="changelog-tag orange">core</div>
+        <h4>Smart Ready Detection</h4>
+        <p>PTY wrapper with ReadyDetector monitors output to detect agent readiness. Multi-layer fallback ensures reliable startup.</p>
+      </div>
+      <div class="changelog-item">
+        <div class="changelog-tag green">refactor</div>
+        <h4>Bash &rarr; JavaScript</h4>
+        <p>80% of codebase migrated from Bash to JavaScript. Better error handling, IDE support, and 20/20 tests passing.</p>
+      </div>
+      <div class="changelog-item">
+        <div class="changelog-tag purple">stable</div>
+        <h4>Single Daemon</h4>
+        <p>Resolved multi-daemon conflicts. Only one daemon instance per workspace. Stable nicknames with persistent session IDs.</p>
       </div>
     </div>
   </section>
@@ -204,8 +243,8 @@
     </div>
 
     <div class="cta-links">
-      <a href="https://github.com/anthropics/ufoo" class="cta-link primary">View on GitHub →</a>
-      <a href="https://github.com/anthropics/ufoo#readme" class="cta-link">Read the Docs →</a>
+      <a href="https://github.com/Icyoung/ufoo" class="cta-link primary">View on GitHub →</a>
+      <a href="docs.html" class="cta-link">Read the Docs →</a>
     </div>
   </section>
 
@@ -223,21 +262,18 @@
       <div class="footer-nav">
         <div class="footer-col">
           <h5>Product</h5>
-          <a href="#">Features</a>
-          <a href="#">Pricing</a>
-          <a href="#">Changelog</a>
+          <a href="#getting-started">Getting Started</a>
+          <a href="#whats-new">Changelog</a>
         </div>
         <div class="footer-col">
           <h5>Resources</h5>
-          <a href="#">Documentation</a>
-          <a href="#">API Reference</a>
-          <a href="#">Examples</a>
+          <a href="docs.html">Documentation</a>
+          <a href="docs.html#commands">CLI Reference</a>
         </div>
         <div class="footer-col">
           <h5>Community</h5>
-          <a href="#">GitHub</a>
-          <a href="#">Discord</a>
-          <a href="#">Twitter</a>
+          <a href="https://github.com/Icyoung/ufoo">GitHub</a>
+          <a href="https://www.npmjs.com/package/u-foo">npm</a>
         </div>
       </div>
     </div>
@@ -246,7 +282,7 @@
 
     <div class="footer-bottom">
       <span>© 2025 UFOO Protocol // Built by humans, orchestrated by agents</span>
-      <span>git:main @ v1.0.0</span>
+      <span>git:master @ v1.0.6</span>
     </div>
   </footer>
 
