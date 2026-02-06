@@ -146,6 +146,11 @@ All messages use a shared envelope:
 - Each agent maintains its own local counter (persisted)
 - The creator generates the ID; receivers must not re-generate it
 
+**Decision sync (incremental by id):**
+- Each decision event includes `decision.id` (`NNNN-<nickname>-<slug>`)
+- Receivers keep a local cache of synced ids to skip repeats
+- For each nickname, track the highest counter seen; skip lower counters
+
 
 ### Required fields
 - `type`: "event" | control frame types
