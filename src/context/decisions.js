@@ -130,24 +130,34 @@ class DecisionsManager {
       process.env.USERNAME ||
       "unknown";
 
+    const nicknameRaw =
+      options.nickname ||
+      process.env.UFOO_NICKNAME ||
+      process.env.USER ||
+      process.env.USERNAME ||
+      "unknown";
+
     const status = options.status || "open";
     const num = this.nextNumber();
     const slug = this.slugify(title);
+    const nick = this.slugify(nicknameRaw);
 
     fs.mkdirSync(this.contextDir, { recursive: true });
     fs.mkdirSync(this.decisionsDir, { recursive: true });
 
-    const file = `${num}-${slug}.md`;
+    const file = `${num}-${nick}-${slug}.md`;
     const filePath = path.join(this.decisionsDir, file);
     const date = new Date().toISOString().slice(0, 10);
 
     const content =
       `---\n` +
       `status: ${status}\n` +
+      `nickname: ${nicknameRaw}\n` +
       `---\n` +
       `# DECISION ${num}: ${title}\n\n` +
       `Date: ${date}\n` +
-      `Author: ${author}\n\n` +
+      `Author: ${author}\n` +
+      `Nickname: ${nicknameRaw}\n\n` +
       `Context:\nWhat led to this decision?\n\n` +
       `Decision:\nWhat is now considered true?\n\n` +
       `Implications:\nWhat must follow from this?\n`;
