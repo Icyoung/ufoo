@@ -184,11 +184,11 @@ describe('StatusDisplay', () => {
       fs.mkdirSync(decisionsDir, { recursive: true });
 
       // Create decision files
-      fs.writeFileSync(path.join(decisionsDir, '0001-test.md'),
+      fs.writeFileSync(path.join(decisionsDir, '0001-architect-test.md'),
         '---\nstatus: open\n---\n# Test Decision\n', 'utf8');
-      fs.writeFileSync(path.join(decisionsDir, '0002-test.md'),
+      fs.writeFileSync(path.join(decisionsDir, '0002-architect-test.md'),
         '---\nstatus: closed\n---\n# Closed Decision\n', 'utf8');
-      fs.writeFileSync(path.join(decisionsDir, '0003-test.md'),
+      fs.writeFileSync(path.join(decisionsDir, '0003-architect-test.md'),
         '---\nstatus: open\n---\n# Another Open\n', 'utf8');
 
       const result = statusDisplay.countOpenDecisions();
@@ -196,11 +196,11 @@ describe('StatusDisplay', () => {
       expect(result.total).toBe(2);
       expect(result.details).toHaveLength(2);
       expect(result.details[0]).toMatchObject({
-        file: '0001-test.md',
+        file: '0001-architect-test.md',
         title: 'Test Decision'
       });
       expect(result.details[1]).toMatchObject({
-        file: '0003-test.md',
+        file: '0003-architect-test.md',
         title: 'Another Open'
       });
     });
@@ -209,7 +209,7 @@ describe('StatusDisplay', () => {
       const decisionsDir = path.join(ufooDir, 'context', 'decisions');
       fs.mkdirSync(decisionsDir, { recursive: true });
 
-      fs.writeFileSync(path.join(decisionsDir, '0001-test.md'),
+      fs.writeFileSync(path.join(decisionsDir, '0001-architect-test.md'),
         '# No Status\nContent', 'utf8');
 
       const result = statusDisplay.countOpenDecisions();
@@ -233,7 +233,7 @@ describe('StatusDisplay', () => {
       const decisionsDir = path.join(ufooDir, 'context', 'decisions');
       fs.mkdirSync(decisionsDir, { recursive: true });
 
-      fs.writeFileSync(path.join(decisionsDir, '0001-test.md'),
+      fs.writeFileSync(path.join(decisionsDir, '0001-architect-test.md'),
         '---\nstatus: open\n---\nNo title here', 'utf8');
 
       const result = statusDisplay.countOpenDecisions();
@@ -384,7 +384,7 @@ describe('StatusDisplay', () => {
 
       const decisionsDir = path.join(ufooDir, 'context', 'decisions');
       fs.mkdirSync(decisionsDir, { recursive: true });
-      fs.writeFileSync(path.join(decisionsDir, '0001-test.md'),
+      fs.writeFileSync(path.join(decisionsDir, '0001-architect-test.md'),
         '---\nstatus: open\n---\n# Test Decision\n', 'utf8');
 
       await statusDisplay.show();
@@ -424,7 +424,7 @@ describe('StatusDisplay', () => {
       const decisionsDir = path.join(ufooDir, 'context', 'decisions');
       fs.mkdirSync(decisionsDir, { recursive: true });
 
-      fs.writeFileSync(path.join(decisionsDir, '0001-test.md'),
+      fs.writeFileSync(path.join(decisionsDir, '0001-architect-test.md'),
         '---\n---\n---\nstatus: open\n---\n# Title\n', 'utf8');
 
       const result = statusDisplay.countOpenDecisions();

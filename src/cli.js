@@ -252,6 +252,164 @@ async function runCli(argv) {
         }
       });
 
+    const online = program.command("online").description("ufoo online helpers");
+    online
+      .command("token")
+      .description("Generate and store a ufoo-online token")
+      .argument("<subscriber>", "Subscriber ID (e.g., claude-code:abc123)")
+      .option("--nickname <name>", "Nickname for this agent")
+      .option("--server <url>", "Online server URL")
+      .option("--file <path>", "Tokens file path")
+      .action((subscriber, opts) => {
+        try {
+          const { generateToken, setToken, defaultTokensPath } = require("./online/tokens");
+          const filePath = opts.file || defaultTokensPath();
+          const token = generateToken();
+          const entry = setToken(filePath, subscriber, token, opts.server || "", {
+            nickname: opts.nickname || "",
+          });
+          console.log(JSON.stringify({
+            subscriber,
+            token,
+            token_hash: entry.token_hash,
+            server: entry.server,
+            nickname: entry.nickname,
+            file: filePath,
+          }, null, 2));
+        } catch (err) {
+          console.error(err.message || String(err));
+          process.exitCode = 1;
+        }
+      });
+
+    online
+      .command("room")
+      .description("Manage online rooms (HTTP)")
+      .argument("<action>", "create|list")
+      .option("--server <url>", "Online server base URL (http://host:port)")
+      .option("--name <room>", "Room name (optional)")
+      .option("--type <type>", "Room type (public|private)")
+      .option("--password <pwd>", "Room password (private only)")
+      .action(async (action, opts) => {
+        const base = opts.server || "http://127.0.0.1:8787";
+        const endpoint = `${base.replace(/\/$/, "")}/ufoo/online/rooms`;
+        try {
+          if (action === "list") {
+            const res = await fetch(endpoint);
+            const data = await res.json();
+            console.log(JSON.stringify(data, null, 2));
+            return;
+          }
+          if (action === "create") {
+            const payload = {
+              name: opts.name,
+              type: opts.type,
+              password: opts.password,
+            };
+            if (!payload.type) {
+              console.error("online room create requires --type");
+              process.exitCode = 1;
+              return;
+            }
+            const res = await fetch(endpoint, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            const data = await res.json();
+            console.log(JSON.stringify(data, null, 2));
+            return;
+          }
+          console.error("online room requires action create|list");
+          process.exitCode = 1;
+        } catch (err) {
+          console.error(err.message || String(err));
+          process.exitCode = 1;
+        }
+      });
+
+    online
+      .command("channel")
+      .description("Manage online channels (HTTP)")
+      .argument("<action>", "create|list")
+      .option("--server <url>", "Online server base URL (http://host:port)")
+      .option("--name <name>", "Channel name (unique)")
+      .option("--type <type>", "Channel type (world|public)")
+      .action(async (action, opts) => {
+        const base = opts.server || "http://127.0.0.1:8787";
+        const endpoint = `${base.replace(/\/$/, "")}/ufoo/online/channels`;
+        try {
+          if (action === "list") {
+            const res = await fetch(endpoint);
+            const data = await res.json();
+            console.log(JSON.stringify(data, null, 2));
+            return;
+          }
+          if (action === "create") {
+            const payload = {
+              name: opts.name,
+              type: opts.type,
+            };
+            if (!payload.name) {
+              console.error("online channel create requires --name");
+              process.exitCode = 1;
+              return;
+            }
+            const res = await fetch(endpoint, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            const data = await res.json();
+            console.log(JSON.stringify(data, null, 2));
+            return;
+          }
+          console.error("online channel requires action create|list");
+          process.exitCode = 1;
+        } catch (err) {
+          console.error(err.message || String(err));
+          process.exitCode = 1;
+        }
+      });
+
+    online
+      .command("bridge")
+      .description("Bridge local bus messages to ufoo-online (message-only)")
+      .option("--server <url>", "Online server URL (ws://host:port/ufoo/online)")
+      .option("--channel <name>", "Channel name")
+      .option("--channel-type <type>", "Channel type (world|public|private)")
+      .option("--world <name>", "World name")
+      .option("--subscriber <id>", "Subscriber ID")
+      .option("--nickname <name>", "Nickname")
+      .option("--agent-type <type>", "Agent type label")
+      .option("--token <token>", "Token")
+      .option("--token-hash <hash>", "Token hash")
+      .option("--token-file <path>", "Token file path")
+      .option("--interval <ms>", "Poll interval (ms)")
+      .action(async (opts) => {
+        const OnlineBridge = require("./online/bridge");
+        const bridge = new OnlineBridge({
+          projectRoot: process.cwd(),
+          url: opts.server || undefined,
+          channel: opts.channel || "",
+          channelType: opts.channelType || "private",
+          world: opts.world || "default",
+          subscriberId: opts.subscriber || "",
+          nickname: opts.nickname || "",
+          agentType: opts.agentType || "ufoo",
+          token: opts.token || "",
+          tokenHash: opts.tokenHash || "",
+          tokenFile: opts.tokenFile || "",
+          pollIntervalMs: opts.interval ? parseInt(opts.interval, 10) : undefined,
+        });
+        try {
+          await bridge.start();
+        } catch (err) {
+          console.error(err.message || String(err));
+          process.exitCode = 1;
+        }
+      });
+
     const bus = program.command("bus").description("Project bus commands");
     bus
       .command("alert")
@@ -330,7 +488,7 @@ async function runCli(argv) {
       });
     bus
       .command("inject")
-      .description("Inject /ubus command into agent's terminal (via PTY socket or tmux)")
+      .description("Inject /bus into a Terminal.app tab by subscriber ID")
       .argument("<subscriber>", "Subscriber ID to inject into")
       .action((subscriber) => {
         const EventBus = require("./bus");
@@ -340,6 +498,24 @@ async function runCli(argv) {
             await eventBus.inject(subscriber);
           } catch (err) {
             console.error(err.message);
+            process.exitCode = 1;
+          }
+        })();
+      });
+    bus
+      .command("wake")
+      .description("Wake an agent (inject /ubus into its terminal)")
+      .argument("<target>", "Subscriber ID or nickname")
+      .option("--reason <reason>", "Wake reason")
+      .option("--no-shake", "Disable window shake")
+      .action((target, opts) => {
+        const EventBus = require("./bus");
+        const eventBus = new EventBus(process.cwd());
+        (async () => {
+          try {
+            await eventBus.wake(target, { reason: opts.reason || "remote", shake: opts.shake !== false });
+          } catch (err) {
+            console.error(err.message || String(err));
             process.exitCode = 1;
           }
         })();
@@ -397,6 +573,12 @@ async function runCli(argv) {
                 // 自动 join（如果还没有 join）并获取 subscriber ID
                 const publisher = await eventBus.ensureJoined();
                 await eventBus.broadcast(cmdArgs[0], publisher);
+              }
+              break;
+            case "wake":
+              {
+                const publisher = await eventBus.ensureJoined();
+                await eventBus.wake(cmdArgs[0], { publisher, reason: "remote" });
               }
               break;
             case "check":
@@ -470,7 +652,7 @@ async function runCli(argv) {
                 break;
               }
               if (subargs[0] === "new") {
-                const create = { title: "", author: "", status: "" };
+                const create = { title: "", author: "", status: "", nickname: "" };
                 for (let i = 1; i < subargs.length; i++) {
                   const arg = subargs[i];
                   if (arg === "--author") {
@@ -479,6 +661,10 @@ async function runCli(argv) {
                   }
                   if (arg === "--status") {
                     create.status = subargs[++i] || "";
+                    continue;
+                  }
+                  if (arg === "--nickname") {
+                    create.nickname = subargs[++i] || "";
                     continue;
                   }
                   if (!arg.startsWith("-")) {
@@ -565,6 +751,13 @@ async function runCli(argv) {
     console.log("  ufoo init [--modules <list>] [--project <dir>]");
     console.log("  ufoo skills list");
     console.log("  ufoo skills install <name|all> [--target <dir> | --codex | --agents]");
+    console.log("  ufoo online token <subscriber> [--nickname <name>] [--server <url>] [--file <path>]");
+    console.log("  ufoo online room create [--name <room>] --type public|private [--password <pwd>] [--server <url>]");
+    console.log("  ufoo online room list [--server <url>]");
+    console.log("  ufoo online channel create --name <name> [--type world|public] [--server <url>]");
+    console.log("  ufoo online channel list [--server <url>]");
+    console.log("  ufoo online bridge --channel <name> --subscriber <id> --nickname <name> [--server <url>] [...]");
+    console.log("  ufoo bus wake <target> [--reason <reason>] [--no-shake]");
     console.log("  ufoo bus <args...>    (JS bus implementation)");
     console.log("  ufoo ctx <subcmd> ... (doctor|lint|decisions)");
     console.log("");
@@ -684,6 +877,136 @@ async function runCli(argv) {
     process.exitCode = 1;
     return;
   }
+  if (cmd === "online") {
+    const sub = rest[0] || "";
+    if (sub === "token") {
+      const subscriber = rest[1];
+      if (!subscriber) {
+        console.error("online token requires <subscriber>");
+        process.exitCode = 1;
+        return;
+      }
+      const getOpt = (name) => {
+        const i = rest.indexOf(name);
+        if (i === -1) return "";
+        return rest[i + 1] || "";
+      };
+      try {
+        const { generateToken, setToken, defaultTokensPath } = require("./online/tokens");
+        const filePath = getOpt("--file") || defaultTokensPath();
+        const token = generateToken();
+        const entry = setToken(filePath, subscriber, token, getOpt("--server"), {
+          nickname: getOpt("--nickname"),
+        });
+        console.log(JSON.stringify({
+          subscriber,
+          token,
+          token_hash: entry.token_hash,
+          server: entry.server,
+          nickname: entry.nickname,
+          file: filePath,
+        }, null, 2));
+      } catch (err) {
+        console.error(err.message || String(err));
+        process.exitCode = 1;
+      }
+      return;
+    }
+    if (sub === "room") {
+      const action = rest[1] || "";
+      const getOpt = (name) => {
+        const i = rest.indexOf(name);
+        if (i === -1) return "";
+        return rest[i + 1] || "";
+      };
+      const base = getOpt("--server") || "http://127.0.0.1:8787";
+      const endpoint = `${base.replace(/\/$/, "")}/ufoo/online/rooms`;
+      (async () => {
+        try {
+          if (action === "list") {
+            const res = await fetch(endpoint);
+            const data = await res.json();
+            console.log(JSON.stringify(data, null, 2));
+            return;
+          }
+          if (action === "create") {
+            const payload = {
+              name: getOpt("--name"),
+              type: getOpt("--type"),
+              password: getOpt("--password"),
+            };
+            if (!payload.type) {
+              console.error("online room create requires --type");
+              process.exitCode = 1;
+              return;
+            }
+            const res = await fetch(endpoint, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            const data = await res.json();
+            console.log(JSON.stringify(data, null, 2));
+            return;
+          }
+          console.error("online room requires action create|list");
+          process.exitCode = 1;
+        } catch (err) {
+          console.error(err.message || String(err));
+          process.exitCode = 1;
+        }
+      })();
+      return;
+    }
+    if (sub === "channel") {
+      const action = rest[1] || "";
+      const getOpt = (name) => {
+        const i = rest.indexOf(name);
+        if (i === -1) return "";
+        return rest[i + 1] || "";
+      };
+      const base = getOpt("--server") || "http://127.0.0.1:8787";
+      const endpoint = `${base.replace(/\/$/, "")}/ufoo/online/channels`;
+      (async () => {
+        try {
+          if (action === "list") {
+            const res = await fetch(endpoint);
+            const data = await res.json();
+            console.log(JSON.stringify(data, null, 2));
+            return;
+          }
+          if (action === "create") {
+            const payload = {
+              name: getOpt("--name"),
+              type: getOpt("--type") || "public",
+            };
+            if (!payload.name) {
+              console.error("online channel create requires --name");
+              process.exitCode = 1;
+              return;
+            }
+            const res = await fetch(endpoint, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            const data = await res.json();
+            console.log(JSON.stringify(data, null, 2));
+            return;
+          }
+          console.error("online channel requires action create|list");
+          process.exitCode = 1;
+        } catch (err) {
+          console.error(err.message || String(err));
+          process.exitCode = 1;
+        }
+      })();
+      return;
+    }
+    help();
+    process.exitCode = 1;
+    return;
+  }
   if (cmd === "bus") {
     const sub = rest[0] || "";
     if (sub === "alert") {
@@ -776,6 +1099,24 @@ async function runCli(argv) {
       })();
       return;
     }
+    if (sub === "wake") {
+      const EventBus = require("./bus");
+      const eventBus = new EventBus(process.cwd());
+      (async () => {
+        try {
+          const target = rest[1];
+          if (!target) throw new Error("wake requires <subscriber-id|nickname>");
+          const reasonIdx = rest.indexOf("--reason");
+          const reason = reasonIdx !== -1 ? rest[reasonIdx + 1] : "remote";
+          const shake = !rest.includes("--no-shake");
+          await eventBus.wake(target, { reason, shake });
+        } catch (err) {
+          console.error(err.message || String(err));
+          process.exitCode = 1;
+        }
+      })();
+      return;
+    }
 
     // Use JavaScript EventBus module for core commands
     const EventBus = require("./bus");
@@ -809,6 +1150,12 @@ async function runCli(argv) {
               // 自动 join（如果还没有 join）并获取 subscriber ID
               const publisher = await eventBus.ensureJoined();
               await eventBus.broadcast(cmdArgs[0], publisher);
+            }
+            break;
+          case "wake":
+            {
+              const publisher = await eventBus.ensureJoined();
+              await eventBus.wake(cmdArgs[0], { publisher, reason: "remote" });
             }
             break;
           case "check":
@@ -881,6 +1228,7 @@ async function runCli(argv) {
               if (subargs[i] === "-l") opts.listOnly = true;
               if (subargs[i] === "-a") opts.all = true;
               if (subargs[i] === "-d") manager.decisionsDir = subargs[++i];
+              if (subargs[i] === "--nickname") opts.nickname = subargs[++i];
             }
 
             if (opts.listOnly) {

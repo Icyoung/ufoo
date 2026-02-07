@@ -14,6 +14,7 @@ const {
   isPidAlive,
   truncateFile,
   getCurrentTty,
+  sleep,
 } = require("./utils");
 const { shakeTerminalByTty } = require("./shake");
 const QueueManager = require("./queue");
@@ -266,7 +267,7 @@ class EventBus {
   /**
    * 发送消息
    */
-  async send(target, message, publisher = null) {
+  async send(target, message, publisher = null, options = {}) {
     this.ensureBus();
     this.loadBusData();
 
@@ -308,7 +309,11 @@ class EventBus {
     }
 
     try {
-      const result = await this.messageManager.send(target, message, publisher);
+      const eventName = options.event || "message";
+      const data = options.data || { message };
+      const result = eventName === "message"
+        ? await this.messageManager.send(target, message, publisher)
+        : await this.messageManager.emit(target, eventName, data, publisher);
       logOk(
         `Message sent: seq=${result.seq} -> ${result.targets.join(", ")}`
       );
@@ -322,8 +327,8 @@ class EventBus {
   /**
    * 广播消息
    */
-  async broadcast(message, publisher = null) {
-    return this.send("*", message, publisher);
+  async broadcast(message, publisher = null, options = {}) {
+    return this.send("*", message, publisher, options);
   }
 
   /**
@@ -668,6 +673,52 @@ class EventBus {
       lastCount = count;
       await sleep(intervalMs);
     }
+  }
+
+  /**
+   * 远程唤醒本地 agent（触发 /ubus 注入）
+   */
+  async wake(subscriber, options = {}) {
+    this.ensureBus();
+    this.loadBusData();
+
+    const publisher =
+      options.publisher ||
+      process.env.AI_BUS_PUBLISHER ||
+      this.getDefaultPublisher() ||
+      this.getCurrentSubscriber() ||
+      "unknown";
+
+    const targets = this.messageManager.resolveTarget(subscriber || "");
+    if (targets.length === 0) {
+      throw new Error(`Target "${subscriber}" not found`);
+    }
+
+    for (const target of targets) {
+      const safeName = subscriberToSafeName(target);
+      const queueDir = path.join(this.busDir, "queues", safeName);
+      const pendingFile = path.join(queueDir, "pending.jsonl");
+      ensureDir(queueDir);
+
+      const before = fs.existsSync(pendingFile) ? fs.readFileSync(pendingFile, "utf8") : "";
+      const countBefore = before.trim() ? before.trim().split(/\r?\n/).length : 0;
+      await this.messageManager.emit(target, "wake", { reason: options.reason || "remote" }, publisher, "status/wake");
+      const after = fs.existsSync(pendingFile) ? fs.readFileSync(pendingFile, "utf8") : "";
+      const countAfter = after.trim() ? after.trim().split(/\r?\n/).length : 0;
+
+      if (countAfter > countBefore) {
+        await sleep(50);
+        const daemon = new BusDaemon(this.busDir, this.agentsFile, this.paths.busDaemonDir, 2000);
+        await daemon.injector.inject(target, options.command || "");
+        if (options.shake !== false) {
+          const tty = daemon.injector.readTty(target);
+          if (tty) shakeTerminalByTty(tty, { skipFrontmost: true });
+        }
+      }
+    }
+
+    logOk(`Wake sent -> ${targets.join(", ")}`);
+    return { ok: true, targets };
   }
 
   /**

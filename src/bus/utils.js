@@ -254,6 +254,10 @@ function truncateFile(filePath) {
   }
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * 日志输出（带颜色）
  */
@@ -349,6 +353,7 @@ module.exports = {
   appendJSONL,
   readLastLine,
   truncateFile,
+  sleep,
   logInfo,
   logOk,
   logWarn,

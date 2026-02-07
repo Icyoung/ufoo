@@ -217,14 +217,19 @@ class BusDaemon {
       const lastCount = this.getLastCount(safeName);
 
       // 如果有新消息，注入命令
-      if (count > lastCount) {
+      const wakePath = path.join(queuesDir, safeName, "wake");
+      const wakeActive = fs.existsSync(wakePath);
+
+      if (count > lastCount || wakeActive) {
         const subscriber = safeNameToSubscriber(safeName);
         const now = new Date().toISOString().split("T")[1].slice(0, 8);
-        console.log(`[daemon] ${now} New message for ${subscriber} (${lastCount} -> ${count})`);
+        const note = wakeActive && count <= lastCount ? " (wake)" : "";
+        console.log(`[daemon] ${now} New message for ${subscriber} (${lastCount} -> ${count})${note}`);
 
         try {
           await this.injector.inject(subscriber);
           console.log(`[daemon] Injected /bus into ${subscriber}`);
+          if (wakeActive) fs.rmSync(wakePath, { force: true });
         } catch (err) {
           console.error(`[daemon] Failed to inject: ${err.message}`);
         }

@@ -1,7 +1,6 @@
 const fs = require("fs");
 const path = require("path");
 const net = require("net");
-const { spawnSync } = require("child_process");
 const { runUfooAgent } = require("../agent/ufooAgent");
 const { launchAgent, closeAgent, resumeAgents } = require("./ops");
 const { buildStatus } = require("./status");
@@ -154,12 +153,14 @@ function isRunning(projectRoot) {
   if (!pid) return false;
   try {
     process.kill(pid, 0);
-    // PID 存活即认为 daemon 正在运行
-    // 不调用 isDaemonProcess() — ps 命令可能有瞬态失败导致误判
-    // 不删除 PID/socket — 破坏性操作会导致竞争条件
     return true;
   } catch {
-    // 进程已死
+    try {
+      fs.unlinkSync(pidPath(projectRoot));
+    } catch {
+      // ignore
+    }
+    removeSocket(projectRoot);
     return false;
   }
 }
@@ -278,6 +279,22 @@ async function handleOps(projectRoot, ops = [], processManager = null) {
         }
         // eslint-disable-next-line no-await-in-loop
         const launchResult = await launchAgent(projectRoot, agent, count, nickname, processManager);
+        if (launchResult.subscriberIds && launchResult.subscriberIds.length > 0) {
+          for (const subscriberId of launchResult.subscriberIds) {
+            scheduleProviderSessionProbe({
+              projectRoot,
+              subscriberId,
+              agentType: agent === "codex" ? "codex" : "claude-code",
+              onResolved: (id, resolved) => {
+                providerSessions.set(id, {
+                  sessionId: resolved.sessionId,
+                  source: resolved.source || "",
+                  updated_at: new Date().toISOString(),
+                });
+              },
+            });
+          }
+        }
         results.push({
           action: "launch",
           mode: launchResult.mode,
@@ -523,33 +540,27 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
   const lockFile = path.join(runDir, "daemon.lock");
   let lockFd;
   try {
+    // 尝试独占方式打开锁文件（如果已存在且被锁定则失败）
     lockFd = fs.openSync(lockFile, "wx");
     fs.writeSync(lockFd, `${process.pid}\n`);
   } catch (err) {
     if (err.code === "EEXIST") {
-      // 锁文件已存在，检查持有者是否还活着
-      let existingPid;
+      // 锁文件已存在，检查是否仍有效
       try {
-        existingPid = parseInt(fs.readFileSync(lockFile, "utf8").trim(), 10);
-      } catch {
-        existingPid = NaN;
-      }
-      if (existingPid && Number.isFinite(existingPid)) {
-        let alive = false;
+        const existingPid = parseInt(fs.readFileSync(lockFile, "utf8").trim(), 10);
+        // 检查该进程是否还活着
         try {
           process.kill(existingPid, 0);
-          alive = true;
-        } catch {
-          // 进程已死
-        }
-        if (alive) {
           throw new Error(`Daemon already running with PID ${existingPid}`);
+        } catch {
+          // 进程已死，清理旧锁
+          fs.unlinkSync(lockFile);
+          lockFd = fs.openSync(lockFile, "wx");
+          fs.writeSync(lockFd, `${process.pid}\n`);
         }
+      } catch (readErr) {
+        throw new Error(`Failed to acquire daemon lock: ${readErr.message}`);
       }
-      // 持有者已死，接管锁
-      try { fs.unlinkSync(lockFile); } catch { /* ignore */ }
-      lockFd = fs.openSync(lockFile, "wx");
-      fs.writeSync(lockFd, `${process.pid}\n`);
     } else {
       throw err;
     }
@@ -570,9 +581,6 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
   // Provider session cache (in-memory)
   const providerSessions = loadProviderSessionCache(projectRoot);
 
-  // Probe handles (用于agent_ready时提前触发probe)
-  const probeHandles = new Map(); // subscriberId -> { triggerNow }
-
   const sockets = new Set();
   const sendToSockets = (payload) => {
     const line = `${JSON.stringify(payload)}\n`;
@@ -591,33 +599,6 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
   }, (status) => {
     sendToSockets({ type: "status", data: status });
   }, () => sockets.size > 0);
-
-  // 定期检测状态变化并推送（仅当有变化时）
-  let lastActiveJson = "";
-  const statusSyncInterval = setInterval(() => {
-    if (sockets.size === 0) return; // 没有客户端连接时跳过
-    try {
-      // 先清理不活跃的订阅者，确保状态准确
-      const syncBus = new EventBus(projectRoot);
-      syncBus.ensureBus();
-      syncBus.loadBusData();
-      syncBus.subscriberManager.cleanupInactive();
-      syncBus.saveBusData();
-    } catch {
-      // ignore cleanup errors
-    }
-    try {
-      const status = buildStatus(projectRoot);
-      const currentActiveJson = JSON.stringify(status.active);
-      if (currentActiveJson !== lastActiveJson) {
-        lastActiveJson = currentActiveJson;
-        sendToSockets({ type: "status", data: status });
-        log(`status sync: active agents changed to ${status.active.length}`);
-      }
-    } catch {
-      // ignore status check errors
-    }
-  }, 3000); // 每3秒检测一次
 
   const server = net.createServer((socket) => {
     sockets.add(socket);
@@ -771,43 +752,6 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
             }
             continue;
           }
-          if (req.type === "close_agent") {
-            const { agentId } = req;
-            if (!agentId) {
-              socket.write(
-                `${JSON.stringify({
-                  type: "error",
-                  error: "close_agent requires agentId",
-                })}\n`,
-              );
-              continue;
-            }
-            try {
-              const ok = await closeAgent(projectRoot, agentId);
-              // Always cleanup inactive and broadcast — removes dead agents from list
-              try {
-                const cleanupBus = new EventBus(projectRoot);
-                cleanupBus.ensureBus();
-                cleanupBus.loadBusData();
-                cleanupBus.subscriberManager.cleanupInactive();
-                cleanupBus.saveBusData();
-              } catch { /* ignore */ }
-              log(`close_agent id=${agentId} ok=${ok}`);
-              const status = buildStatus(projectRoot);
-              socket.write(
-                `${JSON.stringify({ type: "close_agent_ok", ok: true, agentId })}\n`,
-              );
-              sendToSockets({ type: "status", data: status });
-            } catch (err) {
-              socket.write(
-                `${JSON.stringify({
-                  type: "error",
-                  error: err.message || "close_agent failed",
-                })}\n`,
-              );
-            }
-            continue;
-          }
           if (req.type === "resume_agents") {
             const target = req.target || "";
             try {
@@ -838,7 +782,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
           }
           if (req.type === "register_agent") {
             // Manual agent launch requests daemon to register it
-            const { agentType, nickname, parentPid, launchMode, tmuxPane, tty, skipProbe, reuseSession } = req;
+            const { agentType, nickname, parentPid, launchMode, tmuxPane, tty, skipProbe } = req;
             if (!agentType) {
               socket.write(
                 `${JSON.stringify({
@@ -850,23 +794,8 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
             }
             try {
               const crypto = require("crypto");
-
-              // 检查是否复用旧 session
-              let sessionId;
-              let subscriberId;
-              let isReusing = false;
-
-              if (reuseSession && reuseSession.sessionId && reuseSession.subscriberId) {
-                // 验证旧 session 是否可以复用
-                sessionId = reuseSession.sessionId;
-                subscriberId = reuseSession.subscriberId;
-                isReusing = true;
-                log(`register_agent reusing session: ${subscriberId}`);
-              } else {
-                // 生成新的 session
-                sessionId = crypto.randomBytes(4).toString("hex");
-                subscriberId = `${agentType}:${sessionId}`;
-              }
+              const sessionId = crypto.randomBytes(4).toString("hex");
+              const subscriberId = `${agentType}:${sessionId}`;
 
               // Daemon registers the agent in bus
               const eventBus = new EventBus(projectRoot);
@@ -880,8 +809,6 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
                 parentPid: Number.isFinite(parsedParentPid) ? parsedParentPid : undefined,
                 launchMode: launchMode || "",
                 tmuxPane: tmuxPane || "",
-                // 如果复用旧 session，保留 provider session ID
-                providerSessionId: isReusing ? reuseSession.providerSessionId : undefined,
               };
               if (Object.prototype.hasOwnProperty.call(req, "tty")) {
                 const ttyValue = typeof tty === "string" ? tty.trim() : "";
@@ -894,31 +821,20 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
               eventBus.saveBusData();
 
               const finalNickname = eventBus.busData?.agents?.[subscriberId]?.nickname || "";
-              const reusedLabel = isReusing ? " (reused)" : "";
-              log(`register_agent type=${agentType} nickname=${finalNickname || "(none)"} id=${subscriberId}${reusedLabel}`);
-
-              // 如果复用 session 且已有 provider session ID，跳过 probe
-              const hasProviderSession = isReusing && reuseSession.providerSessionId;
-              if (!skipProbe && !hasProviderSession && finalNickname) {
-                const probeHandle = scheduleProviderSessionProbe({
+              log(`register_agent type=${agentType} nickname=${finalNickname || "(none)"} id=${subscriberId}`);
+              if (!skipProbe) {
+                scheduleProviderSessionProbe({
                   projectRoot,
                   subscriberId,
                   agentType,
-                  nickname: finalNickname,
                   onResolved: (id, resolved) => {
                     providerSessions.set(id, {
                       sessionId: resolved.sessionId,
                       source: resolved.source || "",
                       updated_at: new Date().toISOString(),
                     });
-                    // 清理handle
-                    probeHandles.delete(id);
                   },
                 });
-                // 保存handle，用于agent_ready时提前触发
-                if (probeHandle) {
-                  probeHandles.set(subscriberId, probeHandle);
-                }
               }
               socket.write(
                 `${JSON.stringify({
@@ -927,9 +843,6 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
                   nickname: finalNickname || "",
                 })}\n`,
               );
-              // 广播状态更新给所有连接的客户端
-              const status = buildStatus(projectRoot);
-              sendToSockets({ type: "status", data: status });
             } catch (err) {
               log(`register_agent failed: ${err.message}`);
               socket.write(
@@ -939,28 +852,6 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
                 })}\n`,
               );
             }
-            continue;
-          }
-          if (req.type === "agent_ready") {
-            // Agent has completed initialization and is ready to receive commands
-            const { subscriberId } = req;
-            if (!subscriberId) {
-              continue; // Silently ignore invalid requests
-            }
-
-            log(`agent_ready id=${subscriberId} - triggering probe immediately`);
-
-            // 提前触发probe（不再等待8秒延迟）
-            const probeHandle = probeHandles.get(subscriberId);
-            if (probeHandle && typeof probeHandle.triggerNow === "function") {
-              // 异步触发，不阻塞消息处理
-              probeHandle.triggerNow().catch((err) => {
-                log(`agent_ready probe trigger failed for ${subscriberId}: ${err.message}`);
-              });
-            } else {
-              log(`agent_ready no probe handle found for ${subscriberId}`);
-            }
-
             continue;
           }
         }
@@ -973,6 +864,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
 
   // 清理旧 daemon 留下的孤儿 internal agent 进程
   const EventBus = require("../bus");
+  const { spawnSync } = require("child_process");
   const eventBus = new EventBus(projectRoot);
   try {
     eventBus.ensureBus();
@@ -1045,9 +937,8 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
             // 父 daemon 还活着，跳过
           } catch {
             // 父 daemon 已死，标记为 inactive
-            // 设置 last_seen 为很久以前，强制立即超时
+            // 注意：不更新 last_seen，保持原有时间戳，这样会自动超时
             meta.status = "inactive";
-            meta.last_seen = "2020-01-01T00:00:00.000Z";
             log(`Marked orphan internal agent ${subscriberId} as inactive (parent daemon ${meta.pid} is dead)`);
           }
         }
@@ -1059,8 +950,8 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
   }
 
   const config = loadConfig(projectRoot);
-  const autoResumeEnabled = config.autoResume !== false;
-  const shouldResume = resumeMode === "force" || (resumeMode === "auto" && autoResumeEnabled);
+  const autoResume = config.autoResume !== false;
+  const shouldResume = resumeMode === "force" || (resumeMode === "auto" && autoResume);
   if (shouldResume) {
     setTimeout(() => {
       resumeAgents(projectRoot, "", processManager).catch((err) => {
@@ -1075,7 +966,6 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
     // 清理所有子进程
     processManager.cleanup();
 
-    clearInterval(statusSyncInterval);
     busBridge.stop();
     removeSocket(projectRoot);
 

@@ -7,9 +7,7 @@ const { loadConfig, saveConfig, normalizeLaunchMode, normalizeAgentProvider } = 
 const { socketPath, isRunning } = require("../daemon");
 const UfooInit = require("../init");
 const EventBus = require("../bus");
-const AgentActivator = require("../bus/activate");
 const { getUfooPaths } = require("../ufoo/paths");
-const { subscriberToSafeName } = require("../bus/utils");
 
 function connectSocket(sockPath) {
   return new Promise((resolve, reject) => {
@@ -254,11 +252,7 @@ async function runChat(projectRoot) {
 
   function writeSpacer(writeHistory) {
     if (lastLogWasSpacer || !hasLoggedAny) return;
-    try {
-      logBox.log(" ");
-    } catch {
-      // ignore rendering errors
-    }
+    logBox.log(" ");
     if (writeHistory) {
       appendHistory({
         ts: new Date().toISOString(),
@@ -273,16 +267,15 @@ async function runChat(projectRoot) {
   }
 
   function recordLog(type, text, meta = {}, writeHistory = true) {
-    const lineText = text == null ? "" : String(text);
     if (type !== "spacer" && shouldSpace(type, text)) {
       writeSpacer(writeHistory);
     }
-    appendToLogBox(lineText);
+    logBox.log(text);
     if (writeHistory) {
       appendHistory({
         ts: new Date().toISOString(),
         type,
-        text: lineText,
+        text,
         meta,
       });
     }
@@ -293,39 +286,6 @@ async function runChat(projectRoot) {
 
   function logMessage(type, text, meta = {}) {
     recordLog(type, text, meta, true);
-  }
-
-  // Prevent blessed tag parsing crashes from untrusted text.
-  // blessed parses `{...}` as style tags; certain inputs like `{foo,bar}` can
-  // trigger a blessed bug (Program._attr on unknown comma/semicolon parts).
-  //
-  // Workaround: blessed@0.1.81 has a bug where tags containing comma/semicolon
-  // (e.g. `{foo,bar}`) can crash when the log widget reparses cached lines.
-  // We proactively neutralize any such tag-like sequences so they don't match
-  // blessed's tag regex on subsequent reparses.
-  function neutralizeBlessedCommaTags(text) {
-    if (text == null) return "";
-    const raw = String(text);
-    if (!raw.includes("{")) return raw;
-    return raw.replace(/\{\/?[\w\-,;!#]*[;,][\w\-,;!#]*\}/g, (m) => {
-      // Insert a space after separators so `{foo,bar}` becomes `{foo, bar}`.
-      // This stops blessed from treating it as a tag on future reparses.
-      const inner = m.slice(1, -1).replace(/[,;]/g, (ch) => `${ch} `);
-      return `{${inner}}`;
-    });
-  }
-
-  function escapeBlessed(text) {
-    if (text == null) return "{escape}{/escape}";
-    const raw = neutralizeBlessedCommaTags(text);
-    // Avoid allowing payload to terminate escape mode.
-    const safe = raw.replace(/\{\/escape\}/g, "{open}/escape{close}");
-    return `{escape}${safe}{/escape}`;
-  }
-
-  function appendToLogBox(text) {
-    // Avoid a blessed render-time crash for `{foo,bar}`-like tag sequences.
-    logBox.log(neutralizeBlessedCommaTags(text));
   }
 
   function loadHistory(limit = 2000) {
@@ -341,7 +301,7 @@ async function runChat(projectRoot) {
         }
         if (!item.text) continue;
         if (hasSpacer) {
-          appendToLogBox(item.text);
+          logBox.log(item.text);
           lastLogWasSpacer = false;
           lastLogType = item.type || null;
           hasLoggedAny = true;
@@ -500,9 +460,8 @@ async function runChat(projectRoot) {
 
   function enqueueBusStatus(item) {
     if (!item || !item.text) return;
-    const rawText = item.text == null ? "" : String(item.text);
-    const key = item.key || rawText;
-    const formatted = escapeBlessed(formatProcessingText(rawText));
+    const key = item.key || item.text;
+    const formatted = formatProcessingText(item.text);
     const existing = busStatusQueue.find((entry) => entry.key === key);
     if (existing) {
       existing.text = formatted;
@@ -514,8 +473,7 @@ async function runChat(projectRoot) {
 
   function resolveBusStatus(item) {
     if (!item) return;
-    const rawText = item.text == null ? "" : String(item.text);
-    const key = item.key || rawText;
+    const key = item.key || item.text;
     let index = -1;
     if (key) {
       index = busStatusQueue.findIndex((entry) => entry.key === key);
@@ -569,21 +527,12 @@ async function runChat(projectRoot) {
     tags: true,
   });
 
-  // Agent TTY view state
-  let currentView = "main";        // "main" | "agent"
-  let viewingAgent = null;          // subscriber ID of agent being viewed
-  let agentOutputClient = null;     // net.Socket connected to inject.sock
-  let agentOutputBuffer = "";       // partial line buffer for output parsing
-  let agentInputClient = null;      // net.Socket for sending raw input
-  let _detachedChildren = null;     // Screen children saved during agent view
-  let agentInputSuppressUntil = 0;  // Suppress input forwarding until this timestamp
-
   // Bottom border line for input area (above dashboard)
   const inputBottomLine = blessed.line({
     parent: screen,
     bottom: 1,
-    left: 0,
-    width: "100%",
+    left: 1,
+    width: "100%-2",
     orientation: "horizontal",
     style: { fg: "cyan" },
   });
@@ -616,8 +565,8 @@ async function runChat(projectRoot) {
   const inputTopLine = blessed.line({
     parent: screen,
     bottom: currentInputHeight - 1,  // 4-1=3: above input(2) + inputHeight(1)
-    left: 0,
-    width: "100%",
+    left: 1,
+    width: "100%-2",
     orientation: "horizontal",
     style: { fg: "cyan" },
   });
@@ -625,8 +574,6 @@ async function runChat(projectRoot) {
   // Add cursor position tracking
   let cursorPos = 0;
   let preferredCol = null;
-  const unicode = blessed.unicode;
-  const wideRegex = new RegExp(unicode.chars.all.source);
 
   // Get inner width
   function getInnerWidth() {
@@ -647,86 +594,13 @@ async function runChat(projectRoot) {
     return 1;
   }
 
-  function getWrapWidth() {
-    if (input._clines && typeof input._clines.width === "number") {
-      return Math.max(1, input._clines.width);
-    }
-    return getInnerWidth();
-  }
-
-  function isWideChar(ch) {
-    return wideRegex.test(ch);
-  }
-
-  function transformChar(ch) {
-    if (ch === "\n") return "\n";
-    if (ch === "\r") return "";
-    if (ch === "\t") return screen.tabc;
-
-    const code = ch.codePointAt(0);
-    if (
-      code <= 0x08
-      || code === 0x0b
-      || code === 0x0c
-      || (code >= 0x0e && code <= 0x1a)
-      || (code >= 0x1c && code <= 0x1f)
-      || code === 0x7f
-    ) {
-      return "";
-    }
-
-    if (ch === "\x1b") return "";
-
-    const isWide = isWideChar(ch);
-
-    if (screen.fullUnicode) {
-      if (screen.program && screen.program.isiTerm2 && unicode.isCombining(ch, 0)) {
-        return "";
-      }
-      if (isWide) return `${ch}\x03`;
-      return ch;
-    }
-
-    if (unicode.isCombining(ch, 0)) return "";
-    if (unicode.isSurrogate(ch, 0)) return "?";
-    if (isWide) return "??";
-    return ch;
-  }
-
-  function transformText(text) {
-    if (!text) return "";
-    const out = [];
-    for (const ch of text) {
-      out.push(transformChar(ch));
-    }
-    return out.join("");
-  }
-
-  function visualLength(text) {
-    return transformText(text).length;
-  }
-
-  function originalIndexForVisual(line, visualIndex) {
-    if (visualIndex <= 0) return 0;
-    let visual = 0;
-    let offset = 0;
-    for (const ch of line) {
-      const rep = transformChar(ch);
-      const repLen = rep.length;
-      if (visual + repLen > visualIndex) return offset;
-      visual += repLen;
-      offset += ch.length;
-    }
-    return line.length;
-  }
-
-  // Count lines considering both wrapping and newlines (matches blessed wrap)
+  // Count lines considering both wrapping and newlines
   function countLines(text, width) {
     if (width <= 0) return 1;
-    const lines = (text || "").split("\n");
+    const lines = text.split("\n");
     let total = 0;
     for (const line of lines) {
-      const lineWidth = visualLength(line);
+      const lineWidth = input.strWidth(line);
       total += Math.max(1, Math.ceil(lineWidth / width));
     }
     return total;
@@ -734,33 +608,45 @@ async function runChat(projectRoot) {
 
   function getCursorRowCol(text, pos, width) {
     if (width <= 0) return { row: 0, col: 0 };
-    const before = (text || "").slice(0, pos);
-    const transformed = transformText(before);
-    const lines = transformed.split("\n");
+    const before = text.slice(0, pos);
+    const lines = before.split("\n");
     let row = 0;
     for (let i = 0; i < lines.length - 1; i++) {
-      const lineWidth = lines[i].length;
+      const lineWidth = input.strWidth(lines[i]);
       row += Math.max(1, Math.ceil(lineWidth / width));
     }
     const lastLine = lines[lines.length - 1] || "";
-    const lastWidth = lastLine.length;
+    const lastWidth = input.strWidth(lastLine);
     row += Math.floor(lastWidth / width);
     const col = lastWidth % width;
     return { row, col };
   }
 
+  function getLinePosForCol(line, targetCol) {
+    if (targetCol <= 0) return 0;
+    let col = 0;
+    let offset = 0;
+    for (const ch of Array.from(line)) {
+      const w = input.strWidth(ch);
+      if (col + w > targetCol) return offset;
+      col += w;
+      offset += ch.length;
+    }
+    return offset;
+  }
+
   function getCursorPosForRowCol(text, targetRow, targetCol, width) {
     if (width <= 0) return 0;
-    const lines = (text || "").split("\n");
+    const lines = text.split("\n");
     let row = 0;
     let pos = 0;
     for (const line of lines) {
-      const lineWidth = visualLength(line);
+      const lineWidth = input.strWidth(line);
       const wrappedRows = Math.max(1, Math.ceil(lineWidth / width));
       if (targetRow < row + wrappedRows) {
         const rowInLine = targetRow - row;
         const visualCol = rowInLine * width + Math.max(0, targetCol);
-        return pos + originalIndexForVisual(line, Math.min(visualCol, lineWidth));
+        return pos + getLinePosForCol(line, visualCol);
       }
       pos += line.length + 1;
       row += wrappedRows;
@@ -769,7 +655,7 @@ async function runChat(projectRoot) {
   }
 
   function ensureInputCursorVisible() {
-    const innerWidth = getWrapWidth();
+    const innerWidth = getInnerWidth();
     if (innerWidth <= 0) return;
     const totalRows = countLines(input.value, innerWidth);
     const visibleRows = Math.max(1, input.height || 1);
@@ -891,9 +777,6 @@ async function runChat(projectRoot) {
 
   function exitHandler() {
     exitRequested = true;
-    // Clean up agent view connections
-    disconnectAgentOutput();
-    disconnectAgentInput();
     if (screen && screen.program && typeof screen.program.decrst === "function") {
       screen.program.decrst(2004);
     }
@@ -998,12 +881,9 @@ async function runChat(projectRoot) {
     completionIndex = 0;
     completionScrollOffset = 0;
 
-    // Calculate panel height (visible items + 2 for blessed border overhead)
-    // blessed reserves 2 rows for border (iheight) even when only border.top is set
-    const availableHeight = screen.height - currentInputHeight - 1;
+    // Calculate panel height (max 7 visible + 1 for top border)
     completionVisibleCount = Math.min(7, completionCommands.length);
-    completionVisibleCount = Math.min(completionVisibleCount, Math.max(1, availableHeight - 2));
-    completionPanel.height = completionVisibleCount + 2;
+    completionPanel.height = completionVisibleCount + 1;
     completionPanel.bottom = currentInputHeight - 1;
     completionPanel.hidden = false;
 
@@ -1023,8 +903,7 @@ async function runChat(projectRoot) {
   function renderCompletionPanel() {
     if (!completionActive || completionCommands.length === 0) return;
 
-    // blessed reserves 2 rows for border (iheight=2) even with only border.top
-    const panelVisible = Math.max(1, (completionPanel.height || 2) - 2);
+    const panelVisible = Math.max(1, (completionPanel.height || 1) - 1);
     const maxVisible = completionVisibleCount
       ? Math.max(1, Math.min(completionVisibleCount, panelVisible))
       : panelVisible;
@@ -1066,7 +945,7 @@ async function runChat(projectRoot) {
   }
 
   function completionPageSize() {
-    const panelVisible = Math.max(1, (completionPanel.height || 2) - 2);
+    const panelVisible = Math.max(1, (completionPanel.height || 1) - 1);
     return completionVisibleCount
       ? Math.max(1, Math.min(completionVisibleCount, panelVisible))
       : panelVisible;
@@ -1244,7 +1123,7 @@ async function runChat(projectRoot) {
 
   // Resize input box based on content
   function resizeInput() {
-    const innerWidth = getWrapWidth();
+    const innerWidth = getInnerWidth();
     if (innerWidth <= 0) return;
 
     const numLines = countLines(input.value, innerWidth);
@@ -1261,12 +1140,6 @@ async function runChat(projectRoot) {
     // Reposition completion panel if active
     if (completionActive) {
       completionPanel.bottom = currentInputHeight - 1;
-      // Re-clamp visible count for new available space
-      const availableHeight = screen.height - currentInputHeight - 1;
-      const maxVisible = Math.min(7, completionCommands.length);
-      completionVisibleCount = Math.min(maxVisible, Math.max(1, availableHeight - 2));
-      completionPanel.height = completionVisibleCount + 2;
-      renderCompletionPanel();
     }
     // dashboard and inputBottomLine stay fixed at bottom 0 and 1
     logBox.height = Math.max(1, screen.height - currentInputHeight - 1);
@@ -1275,7 +1148,6 @@ async function runChat(projectRoot) {
 
   // Override the internal listener to support cursor movement
   input._listener = function(ch, key) {
-    if (currentView === "agent") return; // Agent view handles keys at screen level
     if (key && key.ctrl && key.name === "c") {
       exitHandler();
       return;
@@ -1286,14 +1158,7 @@ async function runChat(projectRoot) {
     normalizeCommandPrefix();
     if (focusMode === "dashboard") {
       if (handleDashboardKey(key)) return;
-      // On agents view, printable char auto-exits dashboard keeping @target
-      if (dashboardView === "agents" && ch && ch.length === 1 && !key.ctrl && !key.meta
-          && !/^[\x00-\x1f\x7f]$/.test(ch)) {
-        exitDashboardMode(true);
-        // Fall through to normal input handling so the char is inserted
-      } else {
-        return;
-      }
+      return;
     }
 
     // Command completion mode
@@ -1383,7 +1248,7 @@ async function runChat(projectRoot) {
       }
     }
     if (key.name === "up" || key.name === "down") {
-      const innerWidth = getWrapWidth();
+      const innerWidth = getInnerWidth();
       if (innerWidth > 0) {
         const { row, col } = getCursorRowCol(this.value, cursorPos, innerWidth);
         if (preferredCol === null) preferredCol = col;
@@ -1475,11 +1340,10 @@ async function runChat(projectRoot) {
   input._updateCursor = function() {
     if (this.screen.focused !== this) return;
 
-    let lpos;
-    try { lpos = this._getCoords(); } catch { return; }
+    const lpos = this._getCoords();
     if (!lpos) return;
 
-    const innerWidth = getWrapWidth();
+    const innerWidth = getInnerWidth();
     if (innerWidth <= 0) return;
 
     ensureInputCursorVisible();
@@ -1602,17 +1466,15 @@ async function runChat(projectRoot) {
   let targetAgent = null;       // Selected agent for direct messaging
   let focusMode = "input";      // "input" or "dashboard"
   let dashboardView = "agents"; // "agents" | "mode" | "provider" | "resume"
-  const launchModes = ["auto", "terminal", "tmux", "internal"];
-  function modeToIndex(m) { const i = launchModes.indexOf(m); return i >= 0 ? i : 0; }
-  let selectedModeIndex = modeToIndex(launchMode);
+  let selectedModeIndex = launchMode === "internal" ? 2 : (launchMode === "tmux" ? 1 : 0);
   const providerOptions = [
     { label: "codex", value: "codex-cli" },
     { label: "claude", value: "claude-cli" },
   ];
   let selectedProviderIndex = agentProvider === "claude-cli" ? 1 : 0;
   const resumeOptions = [
-    { label: "Auto", value: true },
-    { label: "Off", value: false },
+    { label: "Resume previous session", value: true },
+    { label: "Start new session", value: false },
   ];
   let selectedResumeIndex = autoResume ? 0 : 1;
   let restartInProgress = false;
@@ -1683,13 +1545,8 @@ async function runChat(projectRoot) {
   function setLaunchMode(mode) {
     const next = normalizeLaunchMode(mode);
     if (next === launchMode) return;
-    // Check tmux availability before switching
-    if (next === "tmux" && !process.env.TMUX) {
-      logMessage("error", "{red-fg}✗{/red-fg} tmux mode requires running inside a tmux session");
-      return;
-    }
     launchMode = next;
-    selectedModeIndex = modeToIndex(launchMode);
+    selectedModeIndex = launchMode === "internal" ? 2 : (launchMode === "tmux" ? 1 : 0);
     saveConfig(projectRoot, { launchMode });
     logMessage("status", `{magenta-fg}⚙{/magenta-fg} Launch mode: ${launchMode}`);
     renderDashboard();
@@ -1737,8 +1594,8 @@ async function runChat(projectRoot) {
     autoResume = next;
     selectedResumeIndex = autoResume ? 0 : 1;
     saveConfig(projectRoot, { autoResume });
-    const label = autoResume ? "Auto" : "Off";
-    logMessage("status", `{magenta-fg}⚙{/magenta-fg} Resume: ${label}`);
+    const label = autoResume ? "Resume previous session" : "Start new session";
+    logMessage("status", `{magenta-fg}⚙{/magenta-fg} Resume mode: ${label}`);
     renderDashboard();
     screen.render();
   }
@@ -1782,12 +1639,10 @@ async function runChat(projectRoot) {
     let content = " ";
     if (focusMode === "dashboard") {
       if (dashboardView === "mode") {
-        const modeParts = launchModes.map((mode, i) => {
+        const modes = ["terminal", "tmux", "internal"];
+        const modeParts = modes.map((mode, i) => {
           if (i === selectedModeIndex) {
             return `{inverse}${mode}{/inverse}`;
-          }
-          if (mode === launchMode) {
-            return `{bold}{cyan-fg}${mode}{/cyan-fg}{/bold}`;
           }
           return `{cyan-fg}${mode}{/cyan-fg}`;
         });
@@ -1798,9 +1653,6 @@ async function runChat(projectRoot) {
           if (i === selectedProviderIndex) {
             return `{inverse}${opt.label}{/inverse}`;
           }
-          if (opt.value === agentProvider) {
-            return `{bold}{cyan-fg}${opt.label}{/cyan-fg}{/bold}`;
-          }
           return `{cyan-fg}${opt.label}{/cyan-fg}`;
         });
         content += `{gray-fg}Agent:{/gray-fg} ${providerParts.join("  ")}`;
@@ -1809,9 +1661,6 @@ async function runChat(projectRoot) {
         const resumeParts = resumeOptions.map((opt, i) => {
           if (i === selectedResumeIndex) {
             return `{inverse}${opt.label}{/inverse}`;
-          }
-          if (opt.value === autoResume) {
-            return `{bold}{cyan-fg}${opt.label}{/cyan-fg}{/bold}`;
           }
           return `{cyan-fg}${opt.label}{/cyan-fg}`;
         });
@@ -1836,7 +1685,7 @@ async function runChat(projectRoot) {
           const rightMore = end < activeAgents.length ? " {gray-fg}»{/gray-fg}" : "";
           content += `{gray-fg}Agents:{/gray-fg} ${agentParts.join("  ")}`;
           content = `${content.replace("{gray-fg}Agents:{/gray-fg} ", `{gray-fg}Agents:{/gray-fg} ${leftMore}`)}${rightMore}`;
-          content += "  {gray-fg}│ ←/→ select, Enter confirm, ^X close, ↓ mode, ↑ back{/gray-fg}";
+          content += "  {gray-fg}│ ←/→ select, Enter confirm, ↓ mode, ↑ back{/gray-fg}";
         } else {
           content += "{gray-fg}Agents:{/gray-fg} {cyan-fg}none{/cyan-fg}";
           content += "  {gray-fg}│ ↓ mode, ↑ back{/gray-fg}";
@@ -1887,26 +1736,6 @@ async function runChat(projectRoot) {
       }
     }
     clampAgentWindow();
-
-    // Check if viewed agent went offline
-    if (currentView === "agent" && viewingAgent && !activeAgents.includes(viewingAgent)) {
-      writeToAgentTerm("\r\n\x1b[1;31m[Agent went offline]\x1b[0m\r\n");
-      exitAgentView();
-      return;
-    }
-
-    // In agent view, only update the dashboard bar (via ANSI, blessed is frozen)
-    if (currentView === "agent") {
-      if (focusMode === "dashboard") {
-        const totalItems = 1 + activeAgents.length;
-        if (selectedAgentIndex < 0 || selectedAgentIndex >= totalItems) {
-          selectedAgentIndex = 0;
-        }
-      }
-      renderAgentDashboard();
-      return;
-    }
-
     if (focusMode === "dashboard") {
       if (dashboardView === "agents") {
         if (activeAgents.length === 0) {
@@ -1927,14 +1756,9 @@ async function runChat(projectRoot) {
     selectedAgentIndex = activeAgents.length > 0 ? 0 : -1;
     agentListWindowStart = 0;
     clampAgentWindow();
-    selectedModeIndex = modeToIndex(launchMode);
+    selectedModeIndex = launchMode === "internal" ? 1 : 0;
     selectedProviderIndex = agentProvider === "claude-cli" ? 1 : 0;
     selectedResumeIndex = autoResume ? 0 : 1;
-    // Immediately set @target when first agent is selected
-    if (selectedAgentIndex >= 0 && selectedAgentIndex < activeAgents.length) {
-      targetAgent = activeAgents[selectedAgentIndex];
-      updatePromptBox();
-    }
     screen.grabKeys = true;
     renderDashboard();
     screen.program.hideCursor();
@@ -1943,88 +1767,15 @@ async function runChat(projectRoot) {
 
   function handleDashboardKey(key) {
     if (!key || focusMode !== "dashboard") return false;
-
-    // Agent TTY view dashboard navigation
-    // Items: [ufoo(0), agent1(1), agent2(2), ...]
-    if (currentView === "agent") {
-      const totalItems = 1 + activeAgents.length; // ufoo + agents
-      if (key.name === "left") {
-        if (selectedAgentIndex > 0) {
-          selectedAgentIndex--;
-        }
-        renderAgentDashboard();
-        return true;
-      }
-      if (key.name === "right") {
-        if (selectedAgentIndex < totalItems - 1) {
-          selectedAgentIndex++;
-        }
-        renderAgentDashboard();
-        return true;
-      }
-      if (key.name === "enter" || key.name === "return") {
-        if (selectedAgentIndex === 0) {
-          // "ufoo" selected -> exit agent view back to main chat
-          exitAgentView();
-        } else {
-          // Another agent selected -> switch based on launch mode
-          const agentId = activeAgents[selectedAgentIndex - 1];
-          if (agentId && agentId !== viewingAgent) {
-            const meta = activeAgentMetaMap.get(agentId);
-            const agentLaunchMode = meta?.launch_mode || "";
-
-            if (agentLaunchMode === "tmux" || agentLaunchMode === "terminal") {
-              // Exit PTY view, then activate agent's terminal/pane
-              exitAgentView();
-              try {
-                const activator = new AgentActivator(projectRoot);
-                activator.activate(agentId).catch(() => {});
-              } catch { /* ignore */ }
-            } else {
-              // Internal mode: switch PTY view
-              focusMode = "input";
-              enterAgentView(agentId);
-            }
-          } else {
-            // Same agent, just exit dashboard
-            focusMode = "input";
-            renderAgentDashboard();
-          }
-        }
-        return true;
-      }
-      if (key.name === "up") {
-        // Up exits dashboard back to agent PTY view
-        focusMode = "input";
-        renderAgentDashboard();
-        return true;
-      }
-      if (key.name === "x" && key.ctrl) {
-        // Ctrl+x: close selected agent (not ufoo)
-        if (selectedAgentIndex > 0 && selectedAgentIndex <= activeAgents.length) {
-          const agentId = activeAgents[selectedAgentIndex - 1];
-          const label = getAgentLabel(agentId);
-          // If closing the currently viewed agent, exit view first
-          if (agentId === viewingAgent) {
-            exitAgentView();
-          }
-          closeAgentViaDaemon(agentId, label);
-        }
-        return true;
-      }
-      return true;
-    }
-
     if (dashboardView === "mode") {
-      const maxMode = launchModes.length - 1;
       if (key.name === "left") {
-        selectedModeIndex = selectedModeIndex <= 0 ? maxMode : selectedModeIndex - 1;
+        selectedModeIndex = selectedModeIndex <= 0 ? 2 : selectedModeIndex - 1;
         renderDashboard();
         screen.render();
         return true;
       }
       if (key.name === "right") {
-        selectedModeIndex = selectedModeIndex >= maxMode ? 0 : selectedModeIndex + 1;
+        selectedModeIndex = selectedModeIndex >= 2 ? 0 : selectedModeIndex + 1;
         renderDashboard();
         screen.render();
         return true;
@@ -2038,17 +1789,13 @@ async function runChat(projectRoot) {
       }
       if (key.name === "up") {
         dashboardView = "agents";
-        // Restore @target when returning to agents page
-        if (selectedAgentIndex >= 0 && selectedAgentIndex < activeAgents.length) {
-          targetAgent = activeAgents[selectedAgentIndex];
-          updatePromptBox();
-        }
         renderDashboard();
         screen.render();
         return true;
       }
       if (key.name === "enter" || key.name === "return") {
-        setLaunchMode(launchModes[selectedModeIndex]);
+        const modes = ["terminal", "tmux", "internal"];
+        setLaunchMode(modes[selectedModeIndex]);
         exitDashboardMode(false);
         return true;
       }
@@ -2119,8 +1866,8 @@ async function runChat(projectRoot) {
         const selected = resumeOptions[selectedResumeIndex];
         if (selected) {
           setAutoResume(selected.value);
-          const label = selected.value ? "Auto" : "Off";
-          logMessage("status", `{magenta-fg}⚙{/magenta-fg} Resume: ${label}`);
+          const label = selected.value ? "Resume previous session" : "Start new session";
+          logMessage("status", `{magenta-fg}⚙{/magenta-fg} Resume mode: ${label}`);
         }
         exitDashboardMode(false);
         return true;
@@ -2136,9 +1883,6 @@ async function runChat(projectRoot) {
       if (activeAgents.length > 0 && selectedAgentIndex > 0) {
         selectedAgentIndex--;
         clampAgentWindow();
-        // Update @target in real-time as user navigates
-        targetAgent = activeAgents[selectedAgentIndex];
-        updatePromptBox();
         renderDashboard();
         screen.render();
       }
@@ -2148,72 +1892,24 @@ async function runChat(projectRoot) {
       if (activeAgents.length > 0 && selectedAgentIndex < activeAgents.length - 1) {
         selectedAgentIndex++;
         clampAgentWindow();
-        // Update @target in real-time as user navigates
-        targetAgent = activeAgents[selectedAgentIndex];
-        updatePromptBox();
         renderDashboard();
         screen.render();
       }
       return true;
     }
     if (key.name === "down") {
-      // Leaving agents page: clear temporary @target
-      clearTargetAgent();
       dashboardView = "mode";
-      selectedModeIndex = modeToIndex(launchMode);
+      selectedModeIndex = launchMode === "internal" ? 2 : (launchMode === "tmux" ? 1 : 0);
       renderDashboard();
       screen.render();
       return true;
     }
     if (key.name === "up" || key.name === "escape") {
-      // Cancel: clear @target, back to normal chat
-      clearTargetAgent();
       exitDashboardMode(false);
-      return true;
-    }
-    if (key.name === "x" && key.ctrl) {
-      // Ctrl+x: close selected agent
-      if (selectedAgentIndex >= 0 && selectedAgentIndex < activeAgents.length) {
-        const agentId = activeAgents[selectedAgentIndex];
-        const label = getAgentLabel(agentId);
-        closeAgentViaDaemon(agentId, label);
-        clearTargetAgent();
-        exitDashboardMode(false);
-      }
       return true;
     }
     if (key.name === "enter" || key.name === "return") {
-      // Enter: action depends on agent's launch mode
-      if (selectedAgentIndex >= 0 && selectedAgentIndex < activeAgents.length) {
-        const agentId = activeAgents[selectedAgentIndex];
-        const meta = activeAgentMetaMap.get(agentId);
-        const agentLaunchMode = meta?.launch_mode || "";
-
-        if (agentLaunchMode === "tmux" || agentLaunchMode === "terminal") {
-          // Tmux: select pane; Terminal: activate tab/window by tty
-          clearTargetAgent();
-          exitDashboardMode(false);
-          try {
-            const activator = new AgentActivator(projectRoot);
-            activator.activate(agentId).catch(() => {});
-          } catch { /* ignore */ }
-          return true;
-        }
-
-        // Internal / internal-pty mode: enter PTY view if inject.sock exists
-        const sockPath = getInjectSockPath(agentId);
-        if (fs.existsSync(sockPath)) {
-          clearTargetAgent();
-          focusMode = "input";
-          dashboardView = "agents";
-          selectedAgentIndex = -1;
-          screen.grabKeys = false;
-          enterAgentView(agentId);
-          return true;
-        }
-      }
-      // Fallback: just exit dashboard, keep @target for messaging
-      exitDashboardMode(false);
+      exitDashboardMode(true);
       return true;
     }
     return false;
@@ -2237,312 +1933,6 @@ async function runChat(projectRoot) {
     targetAgent = null;
     updatePromptBox();
     screen.render();
-  }
-
-  function getInjectSockPath(agentId) {
-    const safeName = subscriberToSafeName(agentId);
-    return path.join(getUfooPaths(projectRoot).busQueuesDir, safeName, "inject.sock");
-  }
-
-  function closeAgentViaDaemon(agentId, label) {
-    logMessage("system", `{yellow-fg}⚙{/yellow-fg} Closing ${label}...`);
-    const sockFile = socketPath(projectRoot);
-    try {
-      const conn = net.createConnection(sockFile, () => {
-        conn.write(JSON.stringify({ type: "close_agent", agentId }) + "\n");
-      });
-      let buffer = "";
-      conn.on("data", (data) => {
-        buffer += data.toString("utf8");
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const res = JSON.parse(line);
-            if (res.type === "close_agent_ok") {
-              if (res.ok) {
-                logMessage("system", `{green-fg}✓{/green-fg} Closed ${label}`);
-              } else {
-                logMessage("system", `{red-fg}✗{/red-fg} Agent ${label} not found or already stopped`);
-              }
-            }
-          } catch { /* ignore */ }
-        }
-      });
-      conn.on("error", () => {
-        logMessage("error", `{red-fg}✗{/red-fg} Failed to connect to daemon`);
-      });
-      setTimeout(() => { try { conn.destroy(); } catch {} }, 3000);
-    } catch {
-      logMessage("error", `{red-fg}✗{/red-fg} Failed to close ${label}`);
-    }
-  }
-
-  // Freeze blessed rendering during agent PTY view (direct stdout mode)
-  const _originalRender = screen.render.bind(screen);
-  let renderFrozen = false;
-  screen.render = function() {
-    if (renderFrozen) return;
-    return _originalRender();
-  };
-
-  // Render agent view dashboard bar via ANSI — matches blessed dashboard style
-  function renderAgentDashboard() {
-    const rows = process.stdout.rows || 24;
-    const cols = process.stdout.columns || 80;
-    let bar = " ";
-
-    if (focusMode === "dashboard") {
-      // Dashboard mode: \x1b[90;7m = gray+inverse, matches blessed {inverse} on gray fg widget
-      const ufooItem = selectedAgentIndex === 0
-        ? "\x1b[90;7mufoo\x1b[0m"
-        : "\x1b[36mufoo\x1b[0m";
-      const agentParts = activeAgents.map((agent, i) => {
-        const label = getAgentLabel(agent);
-        const idx = i + 1; // +1 for ufoo at index 0
-        if (idx === selectedAgentIndex) return `\x1b[90;7m${label}\x1b[0m`;
-        if (agent === viewingAgent) return `\x1b[1;36m${label}\x1b[0m`;
-        return `\x1b[36m${label}\x1b[0m`;
-      });
-      bar += `${ufooItem}  ${agentParts.join("  ")}`;
-      bar += `  \x1b[90m│ ←/→ select, Enter switch, ^X close, ↑ back\x1b[0m`;
-    } else {
-      // Normal PTY mode: bold current viewing agent
-      const agentParts = activeAgents.map((agent) => {
-        const label = getAgentLabel(agent);
-        if (agent === viewingAgent) return `\x1b[1;36m${label}\x1b[0m`;
-        return `\x1b[36m${label}\x1b[0m`;
-      });
-      bar += `\x1b[36mufoo\x1b[0m  ${agentParts.join("  ")}`;
-      bar += `  \x1b[90m│ ↓: agents\x1b[0m`;
-    }
-
-    // Pad to full width
-    const plainLen = bar.replace(/\x1b\[[0-9;]*m/g, "").length;
-    const pad = Math.max(0, cols - plainLen);
-    // Save cursor → move to last row → write bar → restore cursor
-    process.stdout.write(`\x1b7\x1b[${rows};1H${bar}${" ".repeat(pad)}\x1b8`);
-  }
-
-  function enterAgentView(agentId) {
-    if (currentView === "agent" && viewingAgent === agentId) return;
-    if (currentView === "agent") {
-      disconnectAgentOutput();
-      disconnectAgentInput();
-    }
-
-    currentView = "agent";
-    viewingAgent = agentId;
-    focusMode = "input";
-
-    // Detach all blessed widgets from screen — nothing left to render
-    _detachedChildren = [...screen.children];
-    for (const child of _detachedChildren) screen.remove(child);
-
-    // Freeze blessed — we take over the terminal with direct stdout
-    renderFrozen = true;
-
-    const rows = process.stdout.rows || 24;
-    const cols = process.stdout.columns || 80;
-    process.stdout.write("\x1b[2J\x1b[H");                // Clear + home
-    process.stdout.write(`\x1b[1;${rows - 1}r`);          // Scroll region
-    process.stdout.write("\x1b[H");                         // Cursor to top
-    process.stdout.write("\x1b[?25h");                      // Show cursor
-
-    // Render dashboard bar
-    renderAgentDashboard();
-
-    // Suppress input forwarding briefly — prevents the Enter that triggered
-    // view switch and any terminal query responses (CPR etc) from leaking
-    agentInputSuppressUntil = Date.now() + 300;
-
-    // Connect to agent's inject.sock for output streaming and input
-    const sockPath = getInjectSockPath(agentId);
-    connectAgentOutput(sockPath);
-    connectAgentInput(sockPath);
-
-    // Resize agent PTY to match our viewport (rows-1 for status bar)
-    setTimeout(() => sendResizeToAgent(cols, rows - 1), 100);
-  }
-
-  function exitAgentView() {
-    if (currentView !== "agent") return;
-
-    // Restore agent PTY to full terminal size before disconnecting
-    const rows = process.stdout.rows || 24;
-    const cols = process.stdout.columns || 80;
-    sendResizeToAgent(cols, rows);
-
-    disconnectAgentOutput();
-    disconnectAgentInput();
-
-    currentView = "main";
-    viewingAgent = null;
-
-    // Reset scroll region to full screen
-    process.stdout.write(`\x1b[1;${rows}r`);
-    process.stdout.write("\x1b[2J\x1b[H");
-
-    // Re-attach all blessed widgets to screen
-    if (_detachedChildren) {
-      for (const child of _detachedChildren) screen.append(child);
-      _detachedChildren = null;
-    }
-
-    // Unfreeze blessed and force full redraw
-    renderFrozen = false;
-    focusMode = "input";
-    dashboardView = "agents";
-    selectedAgentIndex = -1;
-    screen.grabKeys = false;
-    clearTargetAgent();
-    renderDashboard();
-    focusInput();
-    resizeInput();
-    screen.alloc();
-    screen.render();
-  }
-
-  function connectAgentOutput(sockPath) {
-    if (agentOutputClient) {
-      disconnectAgentOutput();
-    }
-    agentOutputBuffer = "";
-
-    if (!fs.existsSync(sockPath)) {
-      writeToAgentTerm("\x1b[1;31m[Error]\x1b[0m inject.sock not found\r\n");
-      writeToAgentTerm("\x1b[33m[Hint]\x1b[0m Agent may not be running in terminal mode\r\n");
-      writeToAgentTerm("Press Esc to return\r\n");
-      return;
-    }
-
-    try {
-      agentOutputClient = net.createConnection(sockPath, () => {
-        agentOutputClient.write(JSON.stringify({ type: "subscribe" }) + "\n");
-      });
-
-      // Connection timeout
-      const connectTimeout = setTimeout(() => {
-        if (agentOutputClient && !agentOutputClient.connecting) return;
-        writeToAgentTerm("\x1b[1;31m[Timeout]\x1b[0m Could not connect\r\nPress Esc to return\r\n");
-        disconnectAgentOutput();
-      }, 5000);
-
-      agentOutputClient.on("connect", () => {
-        clearTimeout(connectTimeout);
-      });
-
-      agentOutputClient.on("data", (data) => {
-        agentOutputBuffer += data.toString("utf8");
-        const lines = agentOutputBuffer.split("\n");
-        agentOutputBuffer = lines.pop() || "";
-
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const msg = JSON.parse(line);
-            if (msg.type === "output" || msg.type === "replay") {
-              if (msg.data) {
-                writeToAgentTerm(msg.data);
-              }
-            }
-          } catch {
-            // ignore malformed messages
-          }
-        }
-      });
-
-      agentOutputClient.on("error", (err) => {
-        if (currentView === "agent") {
-          writeToAgentTerm(`\r\n\x1b[1;31m[Connection error]\x1b[0m ${err.message}\r\nPress Esc to return\r\n`);
-        }
-      });
-
-      agentOutputClient.on("close", () => {
-        agentOutputClient = null;
-        if (currentView === "agent") {
-          writeToAgentTerm("\r\n\x1b[1;33m[Agent disconnected]\x1b[0m\r\nPress Esc to return\r\n");
-        }
-      });
-    } catch (err) {
-      writeToAgentTerm(`\x1b[1;31m[Error]\x1b[0m ${err.message}\r\nPress Esc to return\r\n`);
-    }
-  }
-
-  function disconnectAgentOutput() {
-    if (agentOutputClient) {
-      try {
-        agentOutputClient.removeAllListeners();
-        agentOutputClient.destroy();
-      } catch { /* ignore */ }
-      agentOutputClient = null;
-    }
-    agentOutputBuffer = "";
-  }
-
-  function connectAgentInput(sockPath) {
-    if (agentInputClient) {
-      disconnectAgentInput();
-    }
-    try {
-      agentInputClient = net.createConnection(sockPath);
-      agentInputClient.on("error", () => {
-        agentInputClient = null;
-      });
-      agentInputClient.on("close", () => {
-        agentInputClient = null;
-      });
-    } catch {
-      agentInputClient = null;
-    }
-  }
-
-  function disconnectAgentInput() {
-    if (agentInputClient) {
-      try {
-        agentInputClient.removeAllListeners();
-        agentInputClient.destroy();
-      } catch { /* ignore */ }
-      agentInputClient = null;
-    }
-  }
-
-  function sendRawToAgent(data) {
-    if (!agentInputClient || agentInputClient.destroyed) return;
-    try {
-      agentInputClient.write(JSON.stringify({ type: "raw", data }) + "\n");
-    } catch {
-      // ignore write errors
-    }
-  }
-
-  function sendResizeToAgent(cols, rows) {
-    if (!agentInputClient || agentInputClient.destroyed) return;
-    try {
-      agentInputClient.write(JSON.stringify({ type: "resize", cols, rows }) + "\n");
-    } catch {
-      // ignore write errors
-    }
-  }
-
-  function writeToAgentTerm(text) {
-    if (!text) return;
-    if (currentView === "agent") {
-      // Strip sequences that cause the real terminal to respond, feeding
-      // garbage back into the agent's input:
-      // - OSC queries: \x1b]10;?\x07 etc (color queries)
-      // - CSI DSR: \x1b[6n / \x1b[?6n (cursor position query → CPR response)
-      // - CSI DSR: \x1b[5n (device status query)
-      // - CSI DA:  \x1b[c / \x1b[>c / \x1b[=c (device attributes query)
-      const cleaned = text
-        .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
-        .replace(/\x1b\[(?:[?>=]?[0-9]*c|[?]?6n|5n)/g, "");
-      if (cleaned) process.stdout.write(cleaned);
-      // Always re-render dashboard bar — PTY output may overwrite it
-      // via absolute cursor positioning before the resize takes effect
-      renderAgentDashboard();
-    }
   }
 
   function requestStatus() {
@@ -2574,84 +1964,73 @@ async function runChat(projectRoot) {
       for (const line of lines.filter((l) => l.trim())) {
         try {
         const msg = JSON.parse(line);
-            if (msg.type === "status") {
-              const data = msg.data || {};
-              if (typeof data.phase === "string") {
-            const rawText = data.text == null ? "" : String(data.text);
-            const item = { key: data.key, text: rawText };
-                if (data.phase === "start") {
-                  enqueueBusStatus(item);
-                } else if (data.phase === "done" || data.phase === "error") {
-                  resolveBusStatus(item);
-                  if (rawText) {
-                    const prefix = data.phase === "error"
-                      ? "{red-fg}✗{/red-fg}"
-                      : "{green-fg}✓{/green-fg}";
-                    logMessage("status", `${prefix} ${escapeBlessed(rawText)}`, data);
-                  }
-                } else {
-                  enqueueBusStatus(item);
-                }
-                screen.render();
-              } else {
-            // 收到 dashboard 状态更新
-            if (process.env.UFOO_DEBUG) {
-              logMessage("debug", `[status] active: ${(data.active || []).length}`);
+        if (msg.type === "status") {
+          const data = msg.data || {};
+          if (typeof data.phase === "string") {
+            const text = data.text || "";
+            const item = { key: data.key, text };
+            if (data.phase === "start") {
+              enqueueBusStatus(item);
+            } else if (data.phase === "done" || data.phase === "error") {
+              resolveBusStatus(item);
+              if (text) {
+                const prefix = data.phase === "error"
+                  ? "{red-fg}✗{/red-fg}"
+                  : "{green-fg}✓{/green-fg}";
+                logMessage("status", `${prefix} ${text}`, data);
+              }
+            } else {
+              enqueueBusStatus(item);
             }
+            screen.render();
+          } else {
             updateDashboard(data);
           }
-            } else if (msg.type === "response") {
-              const payload = msg.data || {};
-              if (payload.reply) {
-                resolveStatusLine(`{green-fg}←{/green-fg} ${escapeBlessed(payload.reply)}`);
-                logMessage("reply", `{green-fg}←{/green-fg} ${escapeBlessed(payload.reply)}`);
-              }
-              if (payload.dispatch && payload.dispatch.length > 0) {
-                const targets = payload.dispatch.map((d) => d.target || d).join(", ");
-                logMessage("dispatch", `{blue-fg}→{/blue-fg} Dispatched to: ${escapeBlessed(targets)}`);
-              }
-              if (payload.disambiguate && Array.isArray(payload.disambiguate.candidates) && payload.disambiguate.candidates.length > 0) {
-                pending = { disambiguate: payload.disambiguate, original: pending?.original };
-                const prompt = payload.disambiguate.prompt || "Choose target:";
-                resolveStatusLine(`{yellow-fg}?{/yellow-fg} ${escapeBlessed(prompt)}`);
-                logMessage("disambiguate", `{yellow-fg}?{/yellow-fg} ${escapeBlessed(prompt)}`);
-                payload.disambiguate.candidates.forEach((c, i) => {
-                  const agentId = c.agent_id || "";
-                  const reason = c.reason || "";
-                  logMessage(
-                    "disambiguate",
-                    `   {cyan-fg}${i + 1}){/cyan-fg} ${escapeBlessed(agentId)} {gray-fg}— ${escapeBlessed(reason)}{/gray-fg}`
-                  );
-                });
-              } else {
-                pending = null;
-              }
+        } else if (msg.type === "response") {
+          const payload = msg.data || {};
+          if (payload.reply) {
+            resolveStatusLine(`{green-fg}←{/green-fg} ${payload.reply}`);
+            logMessage("reply", `{green-fg}←{/green-fg} ${payload.reply}`);
+          }
+          if (payload.dispatch && payload.dispatch.length > 0) {
+            logMessage("dispatch", `{blue-fg}→{/blue-fg} Dispatched to: ${payload.dispatch.map(d => d.target || d).join(", ")}`);
+          }
+          if (payload.disambiguate && Array.isArray(payload.disambiguate.candidates) && payload.disambiguate.candidates.length > 0) {
+            pending = { disambiguate: payload.disambiguate, original: pending?.original };
+            resolveStatusLine(`{yellow-fg}?{/yellow-fg} ${payload.disambiguate.prompt || "Choose target:"}`);
+            logMessage("disambiguate", `{yellow-fg}?{/yellow-fg} ${payload.disambiguate.prompt || "Choose target:"}`);
+            payload.disambiguate.candidates.forEach((c, i) => {
+              logMessage("disambiguate", `   {cyan-fg}${i + 1}){/cyan-fg} ${c.agent_id} {gray-fg}— ${c.reason || ""}{/gray-fg}`);
+            });
+          } else {
+            pending = null;
+          }
           if (!payload.reply && !payload.disambiguate) {
             resolveStatusLine("{gray-fg}✓{/gray-fg} Done");
           }
           // opsResults are noisy JSON; keep them out of the log UI
           screen.render();
-            } else if (msg.type === "bus") {
-              const data = msg.data || {};
-              const prefix = data.event === "broadcast" ? "{magenta-fg}⇢{/magenta-fg}" : "{blue-fg}↔{/blue-fg}";
-              let publisher = data.publisher && data.publisher !== "unknown"
-                ? data.publisher
-                : (data.event === "broadcast" ? "broadcast" : "bus");
+        } else if (msg.type === "bus") {
+          const data = msg.data || {};
+          const prefix = data.event === "broadcast" ? "{magenta-fg}⇢{/magenta-fg}" : "{blue-fg}↔{/blue-fg}";
+          let publisher = data.publisher && data.publisher !== "unknown"
+            ? data.publisher
+            : (data.event === "broadcast" ? "broadcast" : "bus");
 
           // Try to parse message as JSON (from internal agents)
-              let displayMessage = data.message == null ? "" : String(data.message);
-              let isStream = false;
-              try {
-                const parsed = JSON.parse(data.message);
-                if (parsed && typeof parsed === "object" && parsed.reply) {
-                  displayMessage = parsed.reply == null ? "" : String(parsed.reply);
-                } else if (parsed && typeof parsed === "object" && parsed.stream) {
-                  displayMessage = typeof parsed.delta === "string" ? parsed.delta : "";
-                  isStream = true;
-                }
-              } catch {
-                // Not JSON, use as-is
-              }
+          let displayMessage = data.message || "";
+          let isStream = false;
+          try {
+            const parsed = JSON.parse(data.message);
+            if (parsed && typeof parsed === "object" && parsed.reply) {
+              displayMessage = parsed.reply;
+            } else if (parsed && typeof parsed === "object" && parsed.stream) {
+              displayMessage = typeof parsed.delta === "string" ? parsed.delta : "";
+              isStream = true;
+            }
+          } catch {
+            // Not JSON, use as-is
+          }
 
           // Convert literal \n to actual newlines for better display
           if (typeof displayMessage === "string") {
@@ -2659,8 +2038,8 @@ async function runChat(projectRoot) {
           }
 
           // Extract nickname if publisher is in subscriber:id format
-              let displayName = publisher;
-              if (publisher.includes(":")) {
+          let displayName = publisher;
+          if (publisher.includes(":")) {
             // Try to get nickname from activeAgentLabelMap or all-agents.json
             if (activeAgentLabelMap && activeAgentLabelMap.has(publisher)) {
               displayName = activeAgentLabelMap.get(publisher);
@@ -2677,24 +2056,24 @@ async function runChat(projectRoot) {
                 // Keep original publisher ID
               }
             }
-              }
+          }
 
-              const line = `${prefix} {gray-fg}${escapeBlessed(displayName)}{/gray-fg}: ${escapeBlessed(displayMessage)}`;
-              if (isStream) {
-                recordLog("bus_stream", line, data, true);
-              } else {
-                logMessage("bus", line, data);
-              }
+          const line = `${prefix} {gray-fg}${displayName}{/gray-fg}: ${displayMessage}`;
+          if (isStream) {
+            recordLog("bus_stream", line, data, true);
+          } else {
+            logMessage("bus", line, data);
+          }
           if (data.event === "agent_renamed" || data.event === "message") {
             // 收到消息时刷新 status，更新在线 agent 列表
             requestStatus();
           }
           screen.render();
-            } else if (msg.type === "error") {
-              resolveStatusLine(`{red-fg}✗{/red-fg} Error: ${escapeBlessed(msg.error)}`);
-              logMessage("error", `{red-fg}✗{/red-fg} Error: ${escapeBlessed(msg.error)}`);
-              screen.render();
-            }
+        } else if (msg.type === "error") {
+          resolveStatusLine(`{red-fg}✗{/red-fg} Error: ${msg.error}`);
+          logMessage("error", `{red-fg}✗{/red-fg} Error: ${msg.error}`);
+          screen.render();
+        }
       } catch {
         // ignore
       }
@@ -3097,16 +2476,6 @@ async function runChat(projectRoot) {
     input.clearValue();
     screen.render();
     if (!text) {
-      // Empty Enter with @target → enter TTY view
-      if (targetAgent) {
-        const agentId = targetAgent;
-        const sockPath = getInjectSockPath(agentId);
-        if (fs.existsSync(sockPath)) {
-          clearTargetAgent();
-          enterAgentView(agentId);
-          return;
-        }
-      }
       input.focus();
       return;
     }
@@ -3115,40 +2484,13 @@ async function runChat(projectRoot) {
     historyIndex = inputHistory.length;
     historyDraft = "";
 
-    // If target agent is selected, inject directly into agent's PTY
+    // If target agent is selected, send via daemon
     if (targetAgent) {
       const label = getAgentLabel(targetAgent);
-      logMessage("user", `{magenta-fg}${escapeBlessed(label)}{/magenta-fg}: ${escapeBlessed(text)}`);
+      logMessage("user", `{cyan-fg}→{/cyan-fg} {magenta-fg}@${label}{/magenta-fg} ${text}`);
 
-      const meta = activeAgentMetaMap.get(targetAgent);
-      const agentMode = meta?.launch_mode || "";
-
-      if (agentMode === "tmux" && meta?.tmux_pane) {
-        // Tmux mode: use tmux send-keys
-        // Send text first, then Enter after a delay (Claude Code needs time to process)
-        const pane = meta.tmux_pane;
-        const textProc = spawn("tmux", ["send-keys", "-t", pane, text]);
-        textProc.on("close", () => {
-          setTimeout(() => {
-            spawn("tmux", ["send-keys", "-t", pane, "Enter"]);
-          }, 150);
-        });
-      } else {
-        // Terminal / internal mode: inject via inject.sock
-        const sockPath = getInjectSockPath(targetAgent);
-        try {
-          const conn = net.createConnection(sockPath, () => {
-            conn.write(JSON.stringify({ type: "raw", data: text }) + "\n");
-            setTimeout(() => {
-              conn.write(JSON.stringify({ type: "raw", data: "\r" }) + "\n");
-              setTimeout(() => conn.destroy(), 500);
-            }, 100);
-          });
-          conn.on("error", () => {});
-        } catch {
-          // ignore connection errors
-        }
-      }
+      // Send via daemon socket to ensure proper publisher ID
+      send({ type: "bus_send", target: targetAgent, message: text });
 
       clearTargetAgent();
       input.focus();
@@ -3157,11 +2499,11 @@ async function runChat(projectRoot) {
 
     // Check if it's a command
     if (text.startsWith("/")) {
-      logMessage("user", `{cyan-fg}→{/cyan-fg} ${escapeBlessed(text)}`);
+      logMessage("user", `{cyan-fg}→{/cyan-fg} ${text}`);
       try {
         await executeCommand(text);
       } catch (err) {
-        logMessage("error", `{red-fg}✗{/red-fg} Command error: ${escapeBlessed(err.message)}`);
+        logMessage("error", `{red-fg}✗{/red-fg} Command error: ${err.message}`);
       }
       input.focus();
       return;
@@ -3178,87 +2520,25 @@ async function runChat(projectRoot) {
         });
         pending = null;
       } else {
-        logMessage("error", escapeBlessed("Invalid selection."));
+        logMessage("error", "Invalid selection.");
       }
     } else {
       pending = { original: text };
       queueStatusLine("ufoo-agent processing");
       send({ type: "prompt", text });
-      logMessage("user", `{cyan-fg}→{/cyan-fg} ${escapeBlessed(text)}`);
+      logMessage("user", `{cyan-fg}→{/cyan-fg} ${text}`);
     }
     input.focus();
   });
 
   screen.key(["C-c"], exitHandler);
 
-  // Agent TTY view: enter dashboard mode
-  function enterAgentDashboardMode() {
-    focusMode = "dashboard";
-    dashboardView = "agents";
-    // Find the current viewing agent's index in the [ufoo, ...agents] list
-    selectedAgentIndex = 0; // Default to ufoo for quick exit
-    renderAgentDashboard();
-  }
-
-  // Map key names to ANSI escape sequences for raw PTY passthrough
-  function keyToRaw(ch, key) {
-    if (ch && ch.length === 1) return ch;
-    if (!key) return null;
-    switch (key.name) {
-      case "return": case "enter": return "\r";
-      case "backspace": return "\x7f";
-      case "tab": return "\t";
-      case "escape": return "\x1b";
-      case "up": return "\x1b[A";
-      case "down": return "\x1b[B";
-      case "right": return "\x1b[C";
-      case "left": return "\x1b[D";
-      case "home": return "\x1b[H";
-      case "end": return "\x1b[F";
-      case "pageup": return "\x1b[5~";
-      case "pagedown": return "\x1b[6~";
-      case "delete": return "\x1b[3~";
-      case "insert": return "\x1b[2~";
-      default: return ch || null;
-    }
-  }
-
   // Dashboard navigation - use screen.on to capture even when input is focused
   screen.on("keypress", (ch, key) => {
-    // Agent TTY view: handle keystrokes
-    if (currentView === "agent") {
-      if (focusMode === "dashboard") {
-        handleDashboardKey(key);
-        return;
-      }
-      // Suppress input briefly after entering agent view (prevents Enter
-      // leak from dashboard selection and terminal query responses like CPR)
-      if (Date.now() < agentInputSuppressUntil) {
-        return;
-      }
-      // Ctrl+C exits entire app
-      if (key && key.ctrl && key.name === "c") {
-        return; // handled by screen.key(["C-c"])
-      }
-      // Down arrow: enter agents bar (same pattern as normal chat dashboard)
-      if (key && key.name === "down") {
-        enterAgentDashboardMode();
-        return;
-      }
-      // All other keys (including Esc) go to agent PTY
-      const raw = keyToRaw(ch, key);
-      if (raw) {
-        sendRawToAgent(raw);
-      }
-      return;
-    }
-
-    // Normal mode: dashboard key handling
     handleDashboardKey(key);
   });
 
   screen.key(["tab"], () => {
-    if (currentView === "agent") return; // Tab goes to PTY via keypress handler
     if (focusMode === "dashboard") {
       exitDashboardMode(false);
     } else {
@@ -3267,13 +2547,11 @@ async function runChat(projectRoot) {
   });
 
   screen.key(["C-k", "M-k"], () => {
-    if (currentView === "agent") return;
     clearLog();
   });
 
 
   screen.key(["i", "enter"], () => {
-    if (currentView === "agent") return;
     if (focusMode === "dashboard") return;
     if (screen.focused === input) return;
     focusInput();
@@ -3336,24 +2614,7 @@ async function runChat(projectRoot) {
   renderDashboard();
   resizeInput();
   requestStatus();
-
-  // 定期刷新 dashboard 状态（兜底，daemon 会主动推送变化）
-  setInterval(() => {
-    if (client && !client.destroyed) {
-      requestStatus();
-    }
-  }, 30000);
-
   screen.on("resize", () => {
-    if (currentView === "agent") {
-      // Update scroll region and agent PTY size for new terminal dimensions
-      const rows = process.stdout.rows || 24;
-      const cols = process.stdout.columns || 80;
-      process.stdout.write(`\x1b[1;${rows - 1}r`);
-      sendResizeToAgent(cols, rows - 1);
-      renderAgentDashboard();
-      return;
-    }
     resizeInput();
     if (completionActive) hideCompletion();
     input._updateCursor();

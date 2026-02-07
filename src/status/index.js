@@ -201,18 +201,35 @@ class StatusDisplay {
    * 显示横幅（如果存在）
    */
   showBanner(subscriber) {
-    if (!subscriber) {
+    const { spawnSync } = require("child_process");
+    const bannerScript = path.join(__dirname, "../../scripts/banner.sh");
+
+    const printSimple = () => {
       console.log("=== ufoo status ===");
-      console.log();
+      if (subscriber) {
+        console.log(`Agent: ${subscriber}`);
+      } else {
+        console.log();
+      }
+    };
+
+    if (!subscriber) {
+      printSimple();
       return;
     }
 
-    const { showBanner } = require("../utils/banner");
-    const agentType = subscriber.startsWith("codex:") ? "codex" : "claude";
-    const sessionId = subscriber.split(":")[1] || "unknown";
-    const nickname = this.getSubscriberNickname(subscriber);
+    if (fs.existsSync(bannerScript)) {
+      const agentType = subscriber.startsWith("codex:") ? "codex" : "claude";
+      const sessionId = subscriber.split(":")[1] || "unknown";
+      const nickname = this.getSubscriberNickname(subscriber) || "";
+      const script = `source "${bannerScript}"; show_banner "${agentType}" "${sessionId}" "${nickname}"`;
+      const res = spawnSync("bash", ["-c", script], { stdio: "inherit" });
+      if (res && res.status === 0) {
+        return;
+      }
+    }
 
-    showBanner({ agentType, sessionId, nickname });
+    printSimple();
   }
 
   /**

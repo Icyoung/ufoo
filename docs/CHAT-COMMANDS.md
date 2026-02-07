@@ -201,6 +201,7 @@ Ufoo Chat 中的命令通过 **ufoo-agent** 处理。当你输入命令时：
 **说明**:
 - 不带参数默认恢复全部可恢复的 agents
 - 带昵称时只恢复指定 agent
+- 你也可以在 Dashboard 里选择：**Resume previous session** 或 **Start new session**
 
 ---
 

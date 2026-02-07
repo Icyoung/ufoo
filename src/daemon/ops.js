@@ -1,11 +1,10 @@
-const { spawn, spawnSync } = require("child_process");
+const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const { loadConfig } = require("../config");
 const { getUfooPaths } = require("../ufoo/paths");
 const { loadAgentsData, saveAgentsData } = require("../ufoo/agentsStore");
-const { isAgentPidAlive } = require("../bus/utils");
-const { isITerm2 } = require("../terminal/detect");
+const { isAgentPidAlive, getTtyProcessInfo } = require("../bus/utils");
 
 function resolveAgentId(projectRoot, agentId) {
   if (!agentId) return agentId;
@@ -27,84 +26,136 @@ function resolveAgentId(projectRoot, agentId) {
   return agentId;
 }
 
+function runAppleScript(lines) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn("osascript", lines.flatMap((l) => ["-e", l]));
+    let stderr = "";
+    proc.stderr.on("data", (d) => {
+      stderr += d.toString("utf8");
+    });
+    proc.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(stderr || "osascript failed"));
+    });
+  });
+}
+
+function listSubscribers(projectRoot, agentType) {
+  const busPath = getUfooPaths(projectRoot).agentsFile;
+  try {
+    const bus = JSON.parse(fs.readFileSync(busPath, "utf8"));
+    return Object.entries(bus.agents || {})
+      .filter(([, meta]) => meta && meta.agent_type === agentType && meta.status === "active")
+      .map(([id]) => id);
+  } catch {
+    return [];
+  }
+}
+
+async function waitForNewSubscriber(projectRoot, agentType, existing, timeoutMs = 15000) {
+  const start = Date.now();
+  const seen = new Set(existing || []);
+  while (Date.now() - start < timeoutMs) {
+    const current = listSubscribers(projectRoot, agentType);
+    const diff = current.find((id) => !seen.has(id));
+    if (diff) return diff;
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return null;
+}
+
+function escapeCommand(cmd) {
+  return cmd.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
 function shellEscape(value) {
   const str = String(value);
   return `'${str.replace(/'/g, `'\\''`)}'`;
 }
 
-function escapeAppleScriptString(str) {
-  return String(str).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+function buildTitleCmd(title) {
+  if (!title) return "";
+  return `printf '\\033]0;%s\\007' ${shellEscape(title)}`;
+}
+
+function buildResumeCommand(projectRoot, agent, sessionId) {
+  const binary = agent === "codex" ? "./bin/ucodex.js" : "./bin/uclaude.js";
+  const args = buildResumeArgs(agent, sessionId);
+  const argText = args.length > 0 ? ` ${args.map(shellEscape).join(" ")}` : "";
+  const skipProbeEnv = "UFOO_SKIP_SESSION_PROBE=1 ";
+  return `cd ${shellEscape(projectRoot)} && ${skipProbeEnv}${binary}${argText}`;
+}
+
+async function tryReuseTerminal(projectRoot, subscriberId, meta, agent, sessionId) {
+  if (!meta || !meta.tty) return false;
+  const info = getTtyProcessInfo(meta.tty);
+  if (!info.alive || info.hasAgent || !info.idle) return false;
+  const titleCmd = buildTitleCmd(meta.nickname || "");
+  const baseCmd = buildResumeCommand(projectRoot, agent, sessionId);
+  const command = titleCmd ? `${titleCmd} && ${baseCmd}` : baseCmd;
+  try {
+    const EventBus = require("../bus");
+    const bus = new EventBus(projectRoot);
+    bus.ensureBus();
+    await bus.inject(subscriberId, command);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
- * 在 Terminal.app 中打开新窗口运行 agent
- * 使用简单的 AppleScript，只负责打开窗口执行命令
- * agent 进程的监控由 uclaude/ucodex 内部的 PTY wrapper 处理
+ * Spawn managed terminal agent - open a real Terminal session to run the agent
  */
-async function spawnTerminalAgent(projectRoot, agent, nickname = "") {
-  if (process.platform !== "darwin") {
-    throw new Error("Terminal mode is only supported on macOS");
-  }
+async function spawnManagedTerminalAgent(projectRoot, agent, nickname = "", processManager = null, extraArgs = [], extraEnv = "") {
+  const binary = agent === "codex" ? "./bin/ucodex.js" : "./bin/uclaude.js";
+  const agentType = agent === "codex" ? "codex" : "claude-code";
+  const existing = listSubscribers(projectRoot, agentType);
+  const runDir = getUfooPaths(projectRoot).runDir;
+  fs.mkdirSync(runDir, { recursive: true });
 
-  const binary = agent === "codex" ? "ucodex" : "uclaude";
+  const args = Array.isArray(extraArgs) ? extraArgs : [];
+  const argText = args.length > 0 ? ` ${args.map(shellEscape).join(" ")}` : "";
   const nickEnv = nickname ? `UFOO_NICKNAME=${shellEscape(nickname)} ` : "";
   const modeEnv = "UFOO_LAUNCH_MODE=terminal ";
-  const runCmd = `cd ${shellEscape(projectRoot)} && ${modeEnv}${nickEnv}${binary}`;
+  const envPrefix = extraEnv ? `${String(extraEnv).trim()} ` : "";
+  const titleCmd = buildTitleCmd(nickname);
+  const prefix = titleCmd ? `${titleCmd} && ` : "";
 
-  const script = [
-    'tell application "Terminal"',
-    `do script "${escapeAppleScriptString(runCmd)}"`,
-    "activate",
-    "end tell",
-  ];
+  const logFile = path.join(runDir, `terminal-${agent}-${Date.now()}.log`);
+  const runCmd = `cd ${shellEscape(projectRoot)} && ${prefix}${modeEnv}${nickEnv}${envPrefix}${binary}${argText}`;
 
-  return new Promise((resolve, reject) => {
-    const proc = spawn("osascript", script.flatMap((l) => ["-e", l]));
-    let stderr = "";
-    proc.stderr.on("data", (d) => {
-      stderr += d.toString("utf8");
-    });
-    proc.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(stderr || "Failed to open Terminal.app"));
-    });
+  // Spawn managed agent as daemon child using a PTY via `script`
+  const scriptCmd = `bash -lc ${shellEscape(runCmd)}`;
+  const child = spawn("script", ["-q", logFile, "-c", scriptCmd], {
+    detached: false,
+    stdio: ["ignore", "ignore", "ignore"],
+    cwd: projectRoot,
+    env: {
+      ...process.env,
+      UFOO_LAUNCH_MODE: "terminal",
+      UFOO_NICKNAME: nickname || "",
+    },
   });
-}
 
-/**
- * 在 iTerm2 中打开新 tab 运行 agent
- * 使用 AppleScript 控制 iTerm2，比 Terminal.app 更丰富的功能
- */
-async function spawnITerm2Agent(projectRoot, agent, nickname = "") {
-  if (process.platform !== "darwin") {
-    throw new Error("iTerm2 mode is only supported on macOS");
+  if (processManager) {
+    processManager.register(`terminal-${agent}-${child.pid}`, child);
   }
 
-  const binary = agent === "codex" ? "ucodex" : "uclaude";
-  const nickEnv = nickname ? `UFOO_NICKNAME=${shellEscape(nickname)} ` : "";
-  const modeEnv = "UFOO_LAUNCH_MODE=terminal ";
-  const runCmd = `cd ${shellEscape(projectRoot)} && ${modeEnv}${nickEnv}${binary}`;
+  // Open Terminal.app to tail logs for visibility
+  if (process.platform === "darwin") {
+    const script = [
+      'tell application "Terminal"',
+      `do script "${escapeCommand(`tail -n +1 -f ${logFile}`)}"`,
+      "activate",
+      "end tell",
+    ];
+    await runAppleScript(script);
+  }
 
-  const script = [
-    'tell application "iTerm2"',
-    "  tell current window",
-    `    create tab with default profile command "${escapeAppleScriptString(runCmd)}"`,
-    "  end tell",
-    "  activate",
-    "end tell",
-  ];
-
-  return new Promise((resolve, reject) => {
-    const proc = spawn("osascript", script.flatMap((l) => ["-e", l]));
-    let stderr = "";
-    proc.stderr.on("data", (d) => {
-      stderr += d.toString("utf8");
-    });
-    proc.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(stderr || "Failed to open iTerm2 tab"));
-    });
-  });
+  const subscriberId = await waitForNewSubscriber(projectRoot, agentType, existing, 15000);
+  return { child, subscriberId: subscriberId || null };
 }
 
 async function spawnInternalAgent(projectRoot, agent, count = 1, nickname = "", processManager = null) {
@@ -200,38 +251,6 @@ async function spawnInternalAgent(projectRoot, agent, count = 1, nickname = "", 
   return { children, subscriberIds };
 }
 
-/**
- * Find the first idle tmux pane in the SAME window as ufoo chat.
- * Looks for panes running a plain shell, excluding the chat pane itself.
- * Returns the pane target (e.g. "%5") or null.
- */
-function findIdleTmuxPane() {
-  const myPaneId = process.env.TMUX_PANE || "";
-  if (!myPaneId) return null;
-
-  // List panes in the same window as ufoo chat
-  const result = spawnSync("tmux", [
-    "list-panes", "-t", myPaneId,
-    "-F", "#{pane_id}\t#{pane_current_command}",
-  ], { stdio: "pipe", encoding: "utf8" });
-
-  if (result.status !== 0 || !result.stdout) return null;
-
-  const shells = new Set(["bash", "zsh", "fish", "sh", "dash", "ksh", "login"]);
-
-  for (const line of result.stdout.trim().split("\n")) {
-    const [paneId, cmd] = line.split("\t");
-    if (!paneId || !cmd) continue;
-    // Skip ufoo chat's own pane
-    if (paneId === myPaneId) continue;
-    // Only use panes running a plain shell
-    if (shells.has(path.basename(cmd))) {
-      return paneId;
-    }
-  }
-  return null;
-}
-
 function spawnTmuxWindow(projectRoot, agent, nickname = "", extraArgs = [], extraEnv = "") {
   return new Promise((resolve, reject) => {
     const binary = agent === "codex" ? "ucodex" : "uclaude";
@@ -242,61 +261,42 @@ function spawnTmuxWindow(projectRoot, agent, nickname = "", extraArgs = [], extr
     const envPrefix = extraEnv ? `${String(extraEnv).trim()} ` : "";
     const argText = args.length > 0 ? ` ${args.map(shellEscape).join(" ")}` : "";
 
-    // tmux natively sets $TMUX_PANE for each pane — no need to override
-    const runCmd = `cd ${shellEscape(projectRoot)} && ${modeEnv}${nickEnv}${ttyEnv}${envPrefix}${binary}${argText}`;
+    // IMPORTANT: Set TMUX_PANE inside the new window using tmux display-message
+    // This ensures the agent gets the correct pane ID for command injection
+    const setPaneEnv = `export TMUX_PANE=$(tmux display-message -p '#{pane_id}'); `;
+    const runCmd = `cd ${shellEscape(projectRoot)} && ${setPaneEnv}${modeEnv}${nickEnv}${ttyEnv}${envPrefix}${binary}${argText}`;
     const windowName = nickname || `${agent}-${Date.now()}`;
+
+    // Use detached mode (-d) to avoid stealing focus
+    // Use -a flag to insert after current window, avoiding index conflicts
+    // Use target session from env or current session
     const targetSession = process.env.UFOO_TMUX_SESSION || "";
-
-    // Find an idle pane in the same window, or split a new one
-    const idlePane = findIdleTmuxPane();
-    const myPane = process.env.TMUX_PANE || "";
-
-    if (idlePane) {
-      // Reuse idle pane: send the launch command there
-      const proc = spawn("tmux", ["send-keys", "-t", idlePane, runCmd, "Enter"]);
-      let stderr = "";
-      proc.stderr.on("data", (d) => { stderr += d.toString("utf8"); });
-      proc.on("close", (code) => {
-        if (code === 0) resolve();
-        else reject(new Error(stderr || "tmux send-keys failed"));
-      });
-    } else {
-      // No idle pane — split current window to create a new pane
-      const splitTarget = myPane || (targetSession ? `${targetSession}:` : "");
-      const splitArgs = ["split-window", "-d", "-h"];
-      if (splitTarget) splitArgs.push("-t", splitTarget);
-      splitArgs.push(runCmd);
-
-      const proc = spawn("tmux", splitArgs);
-      let stderr = "";
-      proc.stderr.on("data", (d) => { stderr += d.toString("utf8"); });
-      proc.on("close", (code) => {
-        if (code === 0) resolve();
-        else reject(new Error(stderr || "tmux split-window failed"));
-      });
+    const tmuxArgs = ["new-window", "-a", "-d", "-n", windowName];
+    if (targetSession) {
+      tmuxArgs.push("-t", targetSession);
     }
-  });
-}
+    tmuxArgs.push(runCmd);
 
-/**
- * Detect the effective launch mode based on the current environment.
- */
-function detectLaunchMode() {
-  // Inside tmux → use tmux mode
-  if (process.env.TMUX) return "tmux";
-  // macOS with Terminal.app / iTerm → use terminal mode
-  if (process.platform === "darwin") return "terminal";
-  // Fallback
-  return "internal";
+    const proc = spawn("tmux", tmuxArgs);
+    let stderr = "";
+    proc.stderr.on("data", (d) => {
+      stderr += d.toString("utf8");
+    });
+    proc.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(stderr || "tmux new-window failed"));
+    });
+  });
 }
 
 async function launchAgent(projectRoot, agent, count = 1, nickname = "", processManager = null) {
   const config = loadConfig(projectRoot);
-  let mode = config.launchMode || "auto";
-  if (mode === "auto") {
-    mode = detectLaunchMode();
-  }
+  const mode = config.launchMode || "terminal";
 
+  if (mode === "internal") {
+    const result = await spawnInternalAgent(projectRoot, agent, count, nickname, processManager);
+    return { mode: "internal", subscriberIds: result.subscriberIds };
+  }
   if (mode === "tmux") {
     // Check if tmux is available
     const tmuxCheck = spawn("tmux", ["list-sessions"], { stdio: "pipe" });
@@ -326,25 +326,20 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
     }
     return { mode: "tmux" };
   }
-
-  // terminal mode - 使用 AppleScript 打开窗口 (iTerm2 优先)
-  if (mode === "terminal") {
-    const useITerm = isITerm2();
-    for (let i = 0; i < count; i += 1) {
-      const nick = count > 1 ? `${nickname || agent}-${i + 1}` : (nickname || "");
-      // eslint-disable-next-line no-await-in-loop
-      if (useITerm) {
-        await spawnITerm2Agent(projectRoot, agent, nick);
-      } else {
-        await spawnTerminalAgent(projectRoot, agent, nick);
-      }
-    }
-    return { mode: "terminal" };
+  // terminal mode - daemon 作为父进程，输出到终端窗口
+  if (process.platform !== "darwin") {
+    throw new Error("launchAgent with terminal mode is only supported on macOS Terminal.app");
   }
 
-  // internal mode - 使用 PTY 方式启动
-  const result = await spawnInternalAgent(projectRoot, agent, count, nickname, processManager);
-  return { mode: "internal", subscriberIds: result.subscriberIds };
+  const subscriberIds = [];
+  for (let i = 0; i < count; i += 1) {
+    const nick = count > 1 ? `${nickname || agent}-${i + 1}` : (nickname || "");
+    // eslint-disable-next-line no-await-in-loop
+    const result = await spawnManagedTerminalAgent(projectRoot, agent, nick, processManager);
+    if (result.subscriberId) subscriberIds.push(result.subscriberId);
+  }
+
+  return { mode: "terminal", subscriberIds };
 }
 
 function normalizeAgentType(agentType) {
@@ -368,7 +363,7 @@ function isActiveAgent(meta) {
 
 async function resumeAgents(projectRoot, target = "", processManager = null) {
   const config = loadConfig(projectRoot);
-  const mode = config.launchMode || "internal";
+  const mode = config.launchMode || "terminal";
   const filePath = getUfooPaths(projectRoot).agentsFile;
   const data = loadAgentsData(filePath);
   const entries = Object.entries(data.agents || {});
@@ -419,29 +414,38 @@ async function resumeAgents(projectRoot, target = "", processManager = null) {
   }
 
   const resumed = [];
-
-  // tmux 模式使用 tmux new-window 恢复
-  if (mode === "tmux") {
+  if (mode === "internal") {
     for (const item of resumable) {
-      const nickname = item.meta.nickname || "";
-      const sessionId = item.meta.provider_session_id;
-      const args = buildResumeArgs(item.agent, sessionId);
-      const envPrefix = "UFOO_SKIP_SESSION_PROBE=1";
-      // eslint-disable-next-line no-await-in-loop
-      await spawnTmuxWindow(projectRoot, item.agent, nickname, args, envPrefix);
-      resumed.push({ id: item.id, nickname, agent: item.agent, sessionId, reused: false });
+      skipped.push({ id: item.id, reason: "internal mode not supported for resume" });
     }
     return { ok: true, resumed, skipped };
   }
 
-  // internal 模式暂不支持 resume（需要用户手动启动）
   for (const item of resumable) {
-    skipped.push({ id: item.id, reason: "internal mode requires manual restart" });
+    const nickname = item.meta.nickname || "";
+    const sessionId = item.meta.provider_session_id;
+    const reused = await tryReuseTerminal(projectRoot, item.id, item.meta, item.agent, sessionId);
+    if (!reused) {
+      const args = buildResumeArgs(item.agent, sessionId);
+      const envPrefix = "UFOO_SKIP_SESSION_PROBE=1";
+      if (mode === "tmux") {
+        // eslint-disable-next-line no-await-in-loop
+        await spawnTmuxWindow(projectRoot, item.agent, nickname, args, envPrefix);
+      } else {
+        // eslint-disable-next-line no-await-in-loop
+        await spawnManagedTerminalAgent(projectRoot, item.agent, nickname, processManager, args, envPrefix);
+      }
+    }
+    resumed.push({ id: item.id, nickname, agent: item.agent, sessionId, reused });
   }
+
   return { ok: true, resumed, skipped };
 }
 
 async function closeAgent(projectRoot, agentId) {
+  if (process.platform !== "darwin") {
+    return false;
+  }
   const resolvedId = resolveAgentId(projectRoot, agentId);
   const busPath = getUfooPaths(projectRoot).agentsFile;
   let pid = null;

@@ -7,7 +7,6 @@ const {
   appendJSONL,
   readLastLine,
   readJSON,
-  isMetaActive,
 } = require("./utils");
 const NicknameManager = require("./nickname");
 
@@ -75,10 +74,12 @@ class MessageManager {
       return [byNickname];
     }
 
-    // 3. 尝试作为代理类型（匹配所有该类型的活跃订阅者）
+    // 3. 尝试作为代理类型（匹配所有该类型的订阅者）
     const subscribers = this.busData.agents || {};
+    const isActive = (meta) => !meta || meta.status === "active";
+
     const byType = Object.entries(subscribers)
-      .filter(([, meta]) => meta.agent_type === target && isMetaActive(meta))
+      .filter(([, meta]) => meta.agent_type === target && isActive(meta))
       .map(([id]) => id);
 
     if (byType.length > 0) {
@@ -88,7 +89,7 @@ class MessageManager {
     // 4. 通配符（所有活跃订阅者）
     if (target === "*") {
       return Object.entries(subscribers)
-        .filter(([, meta]) => isMetaActive(meta))
+        .filter(([, meta]) => isActive(meta))
         .map(([id]) => id);
     }
 

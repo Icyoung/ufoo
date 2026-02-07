@@ -1,5 +1,5 @@
 const fs = require("fs");
-const { getTimestamp, isAgentPidAlive, isMetaActive, isValidTty, getTtyProcessInfo } = require("./utils");
+const { getTimestamp, isAgentPidAlive, isValidTty, getTtyProcessInfo } = require("./utils");
 const NicknameManager = require("./nickname");
 const { spawnSync } = require("child_process");
 
@@ -43,6 +43,10 @@ function tryTtyWithStdin(fd) {
 }
 
 function getTtyPath() {
+  // 0) Honor explicit ttyPath from node stdio if present (useful for tests)
+  const stdinTtyPath = normalizeTty(process.stdin?.ttyPath || "");
+  if (stdinTtyPath) return stdinTtyPath;
+
   // 1) Try stdin directly (inherits real tty if present)
   let ttyPath = tryTtyWithStdin(0);
   if (ttyPath) return ttyPath;
@@ -145,8 +149,9 @@ class SubscriberManager {
       }
       finalNickname = nickname;
     } else {
-      // 自动生成昵称
+      // 自动生成昵称（并标记占用，避免并发重复）
       finalNickname = nicknameManager.generateAutoNickname(agentType);
+      nicknameManager.setNickname(subscriber, finalNickname);
     }
 
     const launchMode = options.launchMode || process.env.UFOO_LAUNCH_MODE || "";
@@ -185,11 +190,6 @@ class SubscriberManager {
       tmux_pane: options.tmuxPane || process.env.TMUX_PANE || "",
       launch_mode: launchMode,
     };
-
-    // 如果传入了 providerSessionId（从旧 session 恢复），设置它
-    if (options.providerSessionId) {
-      this.busData.agents[subscriber].provider_session_id = options.providerSessionId;
-    }
 
     // 保存 tty 信息
     if (this.busData.agents[subscriber].tty) {
@@ -257,7 +257,16 @@ class SubscriberManager {
     if (!this.busData.agents) return [];
 
     return Object.entries(this.busData.agents)
-      .filter(([, meta]) => isMetaActive(meta))
+      .filter(([, meta]) => {
+        if (meta.status !== "active") return false;
+
+        // 检查进程是否存活（如果有 pid）
+        if (meta.pid && !isAgentPidAlive(meta.pid)) {
+          return false;
+        }
+
+        return true;
+      })
       .map(([id, meta]) => ({ id, ...meta }));
   }
 
@@ -284,10 +293,12 @@ class SubscriberManager {
     if (!this.busData.agents) return;
 
     for (const [id, meta] of Object.entries(this.busData.agents)) {
-      if (meta.status !== "active") continue;
-      // PID 已死则直接标记 inactive（不依赖 tty 检测，因为 tty 可能被新 agent 复用）
-      if (meta.pid && !isAgentPidAlive(meta.pid)) {
+      // 如果有 PID，检查进程是否存活
+      const ttyInfo = meta.tty ? getTtyProcessInfo(meta.tty) : null;
+      const ttyHasAgent = ttyInfo ? ttyInfo.hasAgent : false;
+      if (meta.pid && !isAgentPidAlive(meta.pid) && !ttyHasAgent && meta.status === "active") {
         meta.status = "inactive";
+        meta.last_seen = getTimestamp();
       }
     }
   }
