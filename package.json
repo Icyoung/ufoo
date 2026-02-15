@@ -1,6 +1,6 @@
 {
   "name": "u-foo",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "description": "Multi-Agent Workspace Protocol. Just add u. claude → uclaude, codex → ucodex.",
   "license": "SEE LICENSE IN LICENSE",
   "homepage": "https://ufoo.dev",
