@@ -1016,6 +1016,9 @@ async function runUbusCommand(state = {}, options = {}) {
   const formatNl = typeof options.formatNlResultImpl === "function"
     ? options.formatNlResultImpl
     : formatNlResult;
+  const onMessageReceived = typeof options.onMessageReceived === "function"
+    ? options.onMessageReceived
+    : null;
 
   const explicitSubscriber = String(options.subscriberId || "").trim();
   const envSubscriber = String(process.env.UFOO_SUBSCRIBER_ID || "").trim();
@@ -1074,6 +1077,14 @@ async function runUbusCommand(state = {}, options = {}) {
   try {
     for (const message of messages) {
       let nlResult;
+
+      // Notify that we received the message (for immediate display)
+      if (onMessageReceived) {
+        onMessageReceived({
+          from: message.publisher,
+          task: message.task,
+        });
+      }
 
       // Create progress reporter for this message
       const progressReporter = createBusProgressReporter(shell, message.publisher);
@@ -1138,6 +1149,14 @@ async function runUbusCommand(state = {}, options = {}) {
       };
     }
     for (const item of parsed) {
+      // Notify that we received the message (for immediate display)
+      if (onMessageReceived) {
+        onMessageReceived({
+          from: item.publisher,
+          task: item.task,
+        });
+      }
+
       const nlResult = await runNl(item.task, state);
       const reply = String(formatNl(nlResult, false) || "").replace(/\s+/g, " ").trim() || "Done.";
       const sendRes = shell(`ufoo bus send ${shellQuote(item.publisher)} ${shellQuote(reply.slice(0, 2000))}`);
@@ -1394,11 +1413,24 @@ async function runUcodeCoreAgent({
       if (result.kind === "ubus") {
         const ubusResult = await runUbusCommand(state, {
           workspaceRoot: runtimeWorkspace,
+          onMessageReceived: (msg) => {
+            // Display the incoming message immediately
+            const nickname = extractAgentNickname(msg.from) || msg.from;
+            stdout.write(`${nickname}: ${msg.task}\n`);
+          },
         });
         if (!ubusResult.ok) {
           stdout.write(`Error: ${ubusResult.error}\n`);
         } else {
-          stdout.write(`${ubusResult.summary}\n`);
+          // Display replies for each message
+          if (ubusResult.messageExchanges && ubusResult.messageExchanges.length > 0) {
+            for (const exchange of ubusResult.messageExchanges) {
+              const nickname = extractAgentNickname(exchange.from) || exchange.from;
+              stdout.write(`@${nickname} ${exchange.reply}\n`);
+            }
+          } else {
+            stdout.write(`${ubusResult.summary}\n`);
+          }
           persistSessionState(state);
         }
       }

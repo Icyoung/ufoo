@@ -1054,6 +1054,12 @@ function runUcodeTui({
       const ubusResult = await runUbusCommand(state, {
         workspaceRoot,
         subscriberId: autoBusSubscriberId,
+        onMessageReceived: (msg) => {
+          // Display the incoming message immediately
+          const { extractAgentNickname } = require("./agent");
+          const nickname = extractAgentNickname(msg.from) || msg.from;
+          logText(`${nickname}: ${msg.task}`);
+        },
       });
       if (!ubusResult.ok) {
         const nextError = String(ubusResult.error || "ubus failed");
@@ -1065,12 +1071,12 @@ function runUcodeTui({
       }
       autoBusError = "";
       if (ubusResult.handled > 0) {
-        // Display actual message exchanges instead of summary
+        // Display only the replies (tasks were already shown via onMessageReceived)
         if (ubusResult.messageExchanges && ubusResult.messageExchanges.length > 0) {
           const { extractAgentNickname } = require("./agent");
           for (const exchange of ubusResult.messageExchanges) {
             const nickname = extractAgentNickname(exchange.from) || exchange.from;
-            logText(`${nickname}: ${exchange.task}`);
+            // Only show the reply since task was already displayed
             logText(`@${nickname} ${exchange.reply}`);
           }
         }
@@ -1187,6 +1193,12 @@ function runUcodeTui({
         updateStatus("Checking bus messages...", "typing");
         const ubusResult = await runUbusCommand(state, {
           workspaceRoot,
+          onMessageReceived: (msg) => {
+            // Display the incoming message immediately
+            const { extractAgentNickname } = require("./agent");
+            const nickname = extractAgentNickname(msg.from) || msg.from;
+            logText(`${nickname}: ${msg.task}`);
+          },
         });
         updateStatus("", "none");
         if (!ubusResult.ok) {
@@ -1194,12 +1206,12 @@ function runUcodeTui({
           return;
         }
 
-        // Display actual message exchanges instead of summary
+        // Display only the replies (tasks were already shown via onMessageReceived)
         if (ubusResult.messageExchanges && ubusResult.messageExchanges.length > 0) {
           const { extractAgentNickname } = require("./agent");
           for (const exchange of ubusResult.messageExchanges) {
             const nickname = extractAgentNickname(exchange.from) || exchange.from;
-            logText(`${nickname}: ${exchange.task}`);
+            // Only show the reply since task was already displayed
             logText(`@${nickname} ${exchange.reply}`);
           }
         } else if (ubusResult.handled === 0) {
