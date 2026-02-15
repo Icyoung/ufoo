@@ -13,12 +13,15 @@ function showBanner(options) {
     "▀▀▀ ▀   ▀▀▀ ▀▀▀",
   ];
 
+  // Normalize agent type display name
+  const displayAgentType = agentType === "ufoo-code" ? "ucode" : agentType;
+
   // 准备右侧信息行
   const infoLines = [];
   if (nickname) {
     infoLines.push(`${chalk.dim("Nickname:")} ${chalk.cyan.bold(nickname)}`);
   }
-  infoLines.push(`${chalk.dim("Agent:")} ${chalk.green.bold(agentType)}${chalk.dim(":")}${chalk.yellow(sessionId)}`);
+  infoLines.push(`${chalk.dim("Agent:")} ${chalk.green.bold(displayAgentType)}${chalk.dim(":")}${chalk.yellow(sessionId)}`);
   if (daemonStatus) {
     const statusColor = daemonStatus === "running" ? chalk.green : chalk.blue;
     infoLines.push(`${chalk.dim("Daemon:")} ${statusColor(daemonStatus)}`);
