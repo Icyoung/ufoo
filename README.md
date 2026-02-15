@@ -26,7 +26,7 @@ ufoo solves the challenge of coordinating multiple AI coding agents:
   - Direct messaging to specific agents with `@agent-name`
 - **Event Bus** - Real-time inter-agent messaging (`ufoo bus`)
 - **Context Sharing** - Shared decisions and project context (`ufoo ctx`)
-- **Agent Wrappers** - Auto-initialization for Claude Code (`uclaude`), Codex (`ucodex`), and ufoo core (`ucode`)
+- **Agent Wrappers** - Auto-initialization for Claude Code (`uclaude`), Codex (`ucodex`), and ucode assistant (`ucode`)
   - **PTY Wrapper** - Intelligent terminal emulation with ready detection
   - **Smart Probe Injection** - Waits for agent initialization before injecting commands
   - **Consistent Branding** - Unified agent naming (e.g., ucode-1, claude-1, codex-1)
@@ -58,7 +58,7 @@ ufoo
 # Use agent wrappers (auto-init + bus join)
 uclaude   # Claude Code wrapper
 ucodex    # Codex wrapper
-ucode     # ufoo self-developed coding agent
+ucode     # ucode assistant (self-developed AI coding agent)
 ```
 
 ## Example Workflow
@@ -107,14 +107,48 @@ ucode-core run-once --json
 ucode-core list --json
 ```
 
-Configure `ucode` provider/model/API in `.ufoo/config.json` (ufoo-managed):
+## Agent Configuration
 
+Configure AI providers in `.ufoo/config.json`:
+
+### ucode Configuration (Self-developed Assistant)
 ```json
 {
-  "ucodeProvider": "openai",
-  "ucodeModel": "gpt-5.1-codex",
+  "ucodeProvider": "openai",          // or "anthropic", "azure", etc.
+  "ucodeModel": "gpt-4-turbo-preview",
   "ucodeBaseUrl": "https://api.openai.com/v1",
   "ucodeApiKey": "sk-***"
+}
+```
+
+### Claude Configuration
+```json
+{
+  "claudeProvider": "claude-cli",     // Uses Claude CLI
+  "claudeModel": "claude-3-opus"      // or "claude-3-sonnet"
+}
+```
+
+### Codex Configuration
+```json
+{
+  "codexProvider": "codex-cli",       // Uses Codex CLI
+  "codexModel": "gpt-4"               // or "gpt-4-turbo-preview"
+}
+```
+
+### Complete Example
+```json
+{
+  "launchMode": "internal",
+  "ucodeProvider": "openai",
+  "ucodeModel": "gpt-4-turbo-preview",
+  "ucodeBaseUrl": "https://api.openai.com/v1",
+  "ucodeApiKey": "sk-***",
+  "claudeProvider": "claude-cli",
+  "claudeModel": "claude-3-opus",
+  "codexProvider": "codex-cli",
+  "codexModel": "gpt-4"
 }
 ```
 
@@ -194,7 +228,7 @@ ufoo/
 │   ├── ufoo.js      # Node wrapper
 │   ├── uclaude      # Claude Code wrapper
 │   ├── ucodex       # Codex wrapper
-│   └── ucode        # ufoo core wrapper
+│   └── ucode        # ucode assistant wrapper
 ├── SKILLS/          # Global skills (uinit, ustatus)
 ├── src/
 │   ├── bus/         # Event bus implementation (JS)
