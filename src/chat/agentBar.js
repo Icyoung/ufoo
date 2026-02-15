@@ -21,8 +21,8 @@ function computeAgentBar(options = {}) {
   let windowItems = Math.max(1, Math.min(maxAgentWindow, activeAgents.length));
   let start = agentListWindowStart;
   const ufooItem = focusMode === "dashboard" && selectedAgentIndex === 0
-    ? "\x1b[90;7mufoo\x1b[0m"
-    : "\x1b[36mufoo\x1b[0m";
+    ? "\x1b[90;7mucode\x1b[0m"
+    : "\x1b[36mucode\x1b[0m";
   const ufooLen = stripAnsi(ufooItem).length;
 
   const computeStart = (items) => {
@@ -60,7 +60,7 @@ function computeAgentBar(options = {}) {
       agentParts = visible.map((agent, i) => {
         const rawLabel = getAgentLabel(agent);
         const label = maxLabelLen ? truncateLabel(rawLabel, maxLabelLen) : rawLabel;
-        const idx = s + i + 1; // +1 for ufoo at index 0
+        const idx = s + i + 1; // +1 for ucode at index 0
         if (focusMode === "dashboard" && idx === selectedAgentIndex) {
           return `\x1b[90;7m${label}\x1b[0m`;
         }

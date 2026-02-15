@@ -62,7 +62,12 @@ function createHarness(overrides = {}) {
       { label: "auto", value: "auto" },
       { label: "codex", value: "codex" },
       { label: "claude", value: "claude" },
-      { label: "ufoo", value: "ufoo" },
+      { label: "ucode", value: "ufoo" },
+    ],
+    providerOptions: [
+      { label: "codex", value: "codex-cli" },
+      { label: "claude", value: "claude-cli" },
+      { label: "ucode", value: "ucode" },
     ],
     getAutoResume: () => state.autoResume,
     setAutoResumeState: (value) => {

@@ -25,7 +25,9 @@ function normalizeLaunchMode(value) {
 }
 
 function normalizeAgentProvider(value) {
-  return value === "claude-cli" ? "claude-cli" : "codex-cli";
+  if (value === "claude-cli") return "claude-cli";
+  if (value === "ucode" || value === "ufoo" || value === "ufoo-code") return "ucode";
+  return "codex-cli";
 }
 
 function normalizeAssistantEngine(value) {

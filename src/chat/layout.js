@@ -58,7 +58,7 @@ function createChatLayout(options = {}) {
     tags: true,
     content: "",
   });
-  const bannerText = `{bold}UFOO{/bold} · Multi-Agent Manager{|}v${version}`;
+  const bannerText = `{bold}UFOO{/bold} · Chat Manager{|}v${version}`;
   statusLine.setContent(bannerText);
 
   // Command completion panel

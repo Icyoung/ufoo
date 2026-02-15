@@ -23,6 +23,7 @@ function createSettingsController(options = {}) {
     setAssistantEngineState = () => {},
     setSelectedAssistantIndex = () => {},
     assistantOptions = [],
+    providerOptions = [],
     getAutoResume = () => true,
     setAutoResumeState = () => {},
     setSelectedResumeIndex = () => {},
@@ -80,7 +81,7 @@ function createSettingsController(options = {}) {
     const next = normalizeAgentProvider(provider);
     if (next === getAgentProvider()) return false;
     setAgentProviderState(next);
-    setSelectedProviderIndex(next === "claude-cli" ? 1 : 0);
+    setSelectedProviderIndex(Math.max(0, providerOptions.findIndex((opt) => opt.value === next)));
     saveConfig(projectRoot, { agentProvider: next });
     clearUfooAgentIdentity();
     logMessage("status", `{white-fg}⚙{/white-fg} ufoo-agent: ${providerLabel(next)}`);

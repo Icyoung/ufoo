@@ -3,13 +3,16 @@ const { clampAgentWindowWithSelection } = require("./agentDirectory");
 const DEFAULT_MODE_OPTIONS = ["terminal", "tmux", "internal"];
 
 function providerLabel(value) {
-  return value === "claude-cli" ? "claude" : "codex";
+  if (value === "claude-cli") return "claude";
+  if (value === "ucode" || value === "ufoo" || value === "ufoo-code") return "ucode";
+  return "codex";
 }
 
 function assistantLabel(value) {
   if (value === "codex") return "codex";
   if (value === "claude") return "claude";
-  if (value === "ufoo") return "ufoo";
+  if (value === "ufoo") return "ucode";
+  if (value === "ucode") return "ucode";
   return "auto";
 }
 

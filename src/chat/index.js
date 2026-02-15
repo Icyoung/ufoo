@@ -483,13 +483,14 @@ async function runChat(projectRoot) {
   const providerOptions = [
     { label: "codex", value: "codex-cli" },
     { label: "claude", value: "claude-cli" },
+    { label: "ucode", value: "ucode" },
   ];
-  let selectedProviderIndex = agentProvider === "claude-cli" ? 1 : 0;
+  let selectedProviderIndex = Math.max(0, providerOptions.findIndex((opt) => opt.value === agentProvider));
   const assistantOptions = [
     { label: "auto", value: "auto" },
     { label: "codex", value: "codex" },
     { label: "claude", value: "claude" },
-    { label: "ufoo", value: "ufoo" },
+    { label: "ucode", value: "ufoo" },
   ];
   let selectedAssistantIndex = Math.max(
     0,
@@ -871,6 +872,7 @@ async function runChat(projectRoot) {
       selectedAssistantIndex = value;
     },
     assistantOptions,
+    providerOptions,
     getAutoResume: () => autoResume,
     setAutoResumeState: (value) => {
       autoResume = value;
@@ -981,7 +983,7 @@ async function runChat(projectRoot) {
     agentListWindowStart = 0;
     clampAgentWindow();
     selectedModeIndex = launchMode === "internal" ? 2 : (launchMode === "tmux" ? 1 : 0);
-    selectedProviderIndex = agentProvider === "claude-cli" ? 1 : 0;
+    selectedProviderIndex = Math.max(0, providerOptions.findIndex((opt) => opt.value === agentProvider));
     selectedAssistantIndex = Math.max(
       0,
       assistantOptions.findIndex((opt) => opt.value === assistantEngine)

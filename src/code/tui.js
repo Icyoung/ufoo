@@ -700,8 +700,15 @@ function runUcodeTui({
 
     // Override _listener to support cursor-aware editing
     const origDone = input._done ? input._done.bind(input) : null;
+    let lastKeyRef = null;
     input._listener = function (ch, key) {
       const keyName = key && key.name;
+
+      // Dedup: blessed delivers the same key object via element 'keypress' event
+      // from both readInput's __listener binding and screen's focused.emit('keypress').
+      // Use object identity to skip the duplicate delivery.
+      if (key && key === lastKeyRef) return;
+      lastKeyRef = key || null;
 
       // Let enter/return/escape pass through to blessed key handlers
       if (keyName === "return" || keyName === "enter" || keyName === "escape") return;

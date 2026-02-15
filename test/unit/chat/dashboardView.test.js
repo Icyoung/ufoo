@@ -23,7 +23,8 @@ describe("chat dashboardView", () => {
     expect(assistantLabel("auto")).toBe("auto");
     expect(assistantLabel("codex")).toBe("codex");
     expect(assistantLabel("claude")).toBe("claude");
-    expect(assistantLabel("ufoo")).toBe("ufoo");
+    expect(assistantLabel("ufoo")).toBe("ucode");
+    expect(assistantLabel("ucode")).toBe("ucode");
     expect(assistantLabel("unknown")).toBe("auto");
   });
 
@@ -44,7 +45,7 @@ describe("chat dashboardView", () => {
     expect(out.content).toContain("{gray-fg}Agents:{/gray-fg} {cyan-fg}@a, @b, @c +1{/cyan-fg}");
     expect(out.content).toContain("{gray-fg}Mode:{/gray-fg} {cyan-fg}tmux{/cyan-fg}");
     expect(out.content).toContain("{gray-fg}Agent:{/gray-fg} {cyan-fg}claude{/cyan-fg}");
-    expect(out.content).toContain("{gray-fg}Assistant:{/gray-fg} {cyan-fg}ufoo{/cyan-fg}");
+    expect(out.content).toContain("{gray-fg}Assistant:{/gray-fg} {cyan-fg}ucode{/cyan-fg}");
     expect(out.content).toContain("{gray-fg}Cron:{/gray-fg} {cyan-fg}2{/cyan-fg}");
     expect(out.content).not.toContain("{gray-fg}Reports:{/gray-fg}");
   });
@@ -111,12 +112,12 @@ describe("chat dashboardView", () => {
       assistantOptions: [
         { label: "auto", value: "auto" },
         { label: "codex", value: "codex" },
-        { label: "ufoo", value: "ufoo" },
+        { label: "ucode", value: "ufoo" },
       ],
       selectedAssistantIndex: 2,
       dashHints: { ...dashHints, assistant: "ASSISTANT" },
     });
-    expect(assistantOut.content).toContain("{inverse}ufoo{/inverse}");
+    expect(assistantOut.content).toContain("{inverse}ucode{/inverse}");
     expect(assistantOut.content).toContain("{gray-fg}│ ASSISTANT{/gray-fg}");
 
     const resumeOut = computeDashboardContent({

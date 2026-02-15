@@ -184,7 +184,7 @@ function createDashboardKeyController(options = {}) {
 
     if (key.name === "down") {
       state.dashboardView = "provider";
-      state.selectedProviderIndex = state.agentProvider === "claude-cli" ? 1 : 0;
+      state.selectedProviderIndex = Math.max(0, (state.providerOptions || []).findIndex((opt) => opt.value === state.agentProvider));
       renderDashboardAndScreen();
       return true;
     }

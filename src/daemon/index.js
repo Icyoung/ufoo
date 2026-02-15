@@ -494,7 +494,7 @@ function startBusBridge(projectRoot, provider, onEvent, onStatus, shouldDrain) {
       try {
         fs.writeFileSync(debugFile, `Attempting join at ${new Date().toISOString()}\n`, { flag: "a" });
         // Determine agent type based on provider configuration
-        const agentType = provider === "codex-cli" ? "codex" : "claude-code";
+        const agentType = provider === "codex-cli" ? "codex" : (provider === "ucode" ? "ufoo-code" : "claude-code");
         // Use fixed ID "ufoo-agent" for daemon's bus identity with explicit nickname
         const sub = await eventBus.join("ufoo-agent", agentType, "ufoo-agent");
         if (!sub) {

@@ -4,6 +4,11 @@ const { runCliAgent } = require("./cliRunner");
 const { normalizeCliOutput } = require("./normalizeOutput");
 const { buildStatus } = require("../daemon/status");
 const { getUfooPaths } = require("../ufoo/paths");
+const {
+  resolveRuntimeConfig,
+  resolveCompletionUrl,
+  resolveAnthropicMessagesUrl,
+} = require("../code/nativeRunner");
 
 function loadSessionState(projectRoot) {
   const dir = getUfooPaths(projectRoot).agentDir;
@@ -153,6 +158,111 @@ function extractNickname(prompt) {
   return "";
 }
 
+function isUcodeProvider(value = "") {
+  const text = String(value || "").trim().toLowerCase();
+  return text === "ucode" || text === "ufoo" || text === "ufoo-code";
+}
+
+function stripMarkdownFence(text = "") {
+  const raw = String(text || "").trim();
+  const match = raw.match(/^```(?:json)?\s*\n([\s\S]*?)\n```\s*$/);
+  if (match) return match[1].trim();
+  return raw;
+}
+
+function clipText(value = "", maxChars = 500) {
+  const text = String(value || "");
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}...[truncated]`;
+}
+
+async function runNativeRouterCall({ projectRoot, prompt, systemPrompt, model: requestedModel, timeoutMs = 120000 }) {
+  const runtime = resolveRuntimeConfig({
+    workspaceRoot: projectRoot,
+    provider: "",
+    model: requestedModel,
+  });
+
+  const requestModel = String(runtime.model || "").trim();
+  if (!requestModel) {
+    return { ok: false, error: "ucode model is not configured" };
+  }
+
+  const isAnthropic = runtime.transport === "anthropic-messages";
+  const url = isAnthropic
+    ? resolveAnthropicMessagesUrl(runtime.baseUrl)
+    : resolveCompletionUrl(runtime.baseUrl);
+
+  if (!url) {
+    return { ok: false, error: "ucode baseUrl is not configured" };
+  }
+
+  const headers = { "content-type": "application/json" };
+  let body;
+
+  if (isAnthropic) {
+    headers["anthropic-version"] = "2023-06-01";
+    if (runtime.apiKey) headers["x-api-key"] = runtime.apiKey;
+    body = JSON.stringify({
+      model: requestModel,
+      max_tokens: 4096,
+      system: String(systemPrompt || ""),
+      messages: [{ role: "user", content: String(prompt || "") }],
+      temperature: 0,
+    });
+  } else {
+    if (runtime.apiKey) headers.authorization = `Bearer ${runtime.apiKey}`;
+    const messages = [];
+    if (systemPrompt) messages.push({ role: "system", content: String(systemPrompt) });
+    messages.push({ role: "user", content: String(prompt || "") });
+    body = JSON.stringify({
+      model: requestModel,
+      messages,
+      temperature: 0,
+    });
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => { try { controller.abort(); } catch {} }, timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers,
+      body,
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const errBody = await response.text().catch(() => "");
+      return { ok: false, error: `provider request failed (${response.status}): ${clipText(errBody)}` };
+    }
+
+    const data = await response.json();
+
+    let text = "";
+    if (isAnthropic) {
+      const content = Array.isArray(data.content) ? data.content : [];
+      text = content
+        .filter((item) => item && item.type === "text")
+        .map((item) => String(item.text || ""))
+        .join("");
+    } else {
+      const choice = data.choices && data.choices[0];
+      text = choice && choice.message && typeof choice.message.content === "string"
+        ? choice.message.content
+        : "";
+    }
+
+    return { ok: true, output: text.trim() };
+  } catch (err) {
+    const message = err && err.message ? err.message : "native router call failed";
+    return { ok: false, error: message };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function runUfooAgent({ projectRoot, prompt, provider, model }) {
   const state = loadSessionState(projectRoot);
   const bus = loadBusSummary(projectRoot);
@@ -161,36 +271,57 @@ async function runUfooAgent({ projectRoot, prompt, provider, model }) {
   const historyPrompt = buildHistoryPrompt(history);
   const fullPrompt = historyPrompt ? `${historyPrompt}User: ${prompt}` : prompt;
 
-  let res = await runCliAgent({
-    provider,
-    model,
-    prompt: fullPrompt,
-    systemPrompt,
-    sessionId: state.data?.sessionId,
-    disableSession: provider === "claude-cli",
-    cwd: projectRoot,
-  });
+  let res;
 
-  if (!res.ok) {
-    const msg = (res.error || "").toLowerCase();
-    if (msg.includes("session id") || msg.includes("session-id") || msg.includes("already in use")) {
-      res = await runCliAgent({
-        provider,
-        model,
-        prompt: fullPrompt,
-        systemPrompt,
-        sessionId: undefined,
-        disableSession: provider === "claude-cli",
-        cwd: projectRoot,
-      });
+  if (isUcodeProvider(provider)) {
+    // Native path: direct HTTP to LLM API, no CLI binary needed
+    res = await runNativeRouterCall({
+      projectRoot,
+      prompt: fullPrompt,
+      systemPrompt,
+      model,
+    });
+    if (!res.ok) {
+      return { ok: false, error: res.error };
+    }
+    // Native path returns { ok, output } where output is raw text
+    res = { ok: true, output: res.output, sessionId: "" };
+  } else {
+    // CLI path: spawn codex/claude binary
+    res = await runCliAgent({
+      provider,
+      model,
+      prompt: fullPrompt,
+      systemPrompt,
+      sessionId: state.data?.sessionId,
+      disableSession: provider === "claude-cli",
+      cwd: projectRoot,
+    });
+
+    if (!res.ok) {
+      const msg = (res.error || "").toLowerCase();
+      if (msg.includes("session id") || msg.includes("session-id") || msg.includes("already in use")) {
+        res = await runCliAgent({
+          provider,
+          model,
+          prompt: fullPrompt,
+          systemPrompt,
+          sessionId: undefined,
+          disableSession: provider === "claude-cli",
+          cwd: projectRoot,
+        });
+      }
+    }
+
+    if (!res.ok) {
+      return { ok: false, error: res.error };
     }
   }
 
-  if (!res.ok) {
-    return { ok: false, error: res.error };
-  }
-
-  const text = normalizeCliOutput(res.output);
+  const rawText = isUcodeProvider(provider)
+    ? String(res.output || "").trim()
+    : normalizeCliOutput(res.output);
+  const text = stripMarkdownFence(rawText);
   let payload = null;
   try {
     payload = JSON.parse(text);
@@ -214,7 +345,7 @@ async function runUfooAgent({ projectRoot, prompt, provider, model }) {
   saveSessionState(projectRoot, {
     provider,
     model,
-    sessionId: res.sessionId,
+    sessionId: res.sessionId || "",
     updated_at: new Date().toISOString(),
   });
 

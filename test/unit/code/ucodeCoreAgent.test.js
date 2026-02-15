@@ -482,7 +482,7 @@ describe("ucode core agent nl path", () => {
 
       expect(result.ok).toBe(true);
       expect(result.handled).toBe(1);
-      expect(runNl).toHaveBeenCalledWith("run tests", state);
+      expect(runNl).toHaveBeenCalledWith("run tests", state, expect.objectContaining({ onProgress: expect.any(Function) }));
       expect(shellCalls.some((cmd) => cmd.startsWith("ufoo bus send"))).toBe(true);
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
