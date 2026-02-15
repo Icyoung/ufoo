@@ -2,7 +2,10 @@
 
 🤖 Multi-agent AI collaboration framework for orchestrating Claude Code, OpenAI Codex, and custom AI agents.
 
+📦 **npm**: [https://www.npmjs.com/package/u-foo](https://www.npmjs.com/package/u-foo)
+
 [![npm version](https://img.shields.io/npm/v/u-foo.svg)](https://www.npmjs.com/package/u-foo)
+[![npm downloads](https://img.shields.io/npm/dm/u-foo.svg)](https://www.npmjs.com/package/u-foo)
 [![License](https://img.shields.io/badge/license-UNLICENSED-red.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org)
 [![Platform](https://img.shields.io/badge/platform-macOS-blue.svg)](https://www.apple.com/macos)
@@ -35,13 +38,18 @@ ufoo solves the challenge of coordinating multiple AI coding agents:
 ## Installation
 
 ```bash
-# Install globally from npm
+# Install globally from npm (recommended)
 npm install -g u-foo
-
-# Or clone from source
-git clone https://github.com/Icyoung/ufoo.git ~/.ufoo
-cd ~/.ufoo && npm link
 ```
+
+Or install from source:
+
+```bash
+git clone https://github.com/Icyoung/ufoo.git ~/.ufoo
+cd ~/.ufoo && npm install && npm link
+```
+
+After installation, the following commands are available globally: `ufoo`, `uclaude`, `ucodex`, `ucode`.
 
 ## Quick Start
 
