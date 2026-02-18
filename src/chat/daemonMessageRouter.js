@@ -1,4 +1,5 @@
 const { IPC_RESPONSE_TYPES, BUS_STATUS_PHASES } = require("../shared/eventContract");
+const { renderMarkdownLines } = require("../shared/markdownRenderer");
 
 function createDaemonMessageRouter(options = {}) {
   const {
@@ -215,7 +216,12 @@ function createDaemonMessageRouter(options = {}) {
       if (hasStream(publisher)) {
         finalizeStream(publisher, data, "interrupted");
       }
-      const line = `${prefixLabel}${escapeBlessed(displayMessage)}`;
+      const mdState = {};
+      const renderedLines = renderMarkdownLines(displayMessage, mdState, escapeBlessed);
+      const line = renderedLines.map((l, i) => {
+        const p = i === 0 ? prefixLabel : continuationPrefix;
+        return `${p}${l}`;
+      }).join("\n");
       logMessage("bus", line, data);
       if (data.event === "message" && pendingBeforeMessage) {
         consumePendingDelivery(publisher, displayName);

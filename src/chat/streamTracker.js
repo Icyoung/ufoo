@@ -1,3 +1,5 @@
+const { renderMarkdownLines } = require("../shared/markdownRenderer");
+
 function createStreamTracker(options = {}) {
   const {
     logBox,
@@ -11,11 +13,17 @@ function createStreamTracker(options = {}) {
   const streamStates = new Map();
   const pendingDeliveries = new Map();
 
+  function renderLine(line, mdState) {
+    const rendered = renderMarkdownLines(line, mdState, escapeBlessed);
+    return rendered.length > 0 ? rendered[0] : escapeBlessed(line);
+  }
+
   function buildStreamDisplayText(fullText, prefix, continuationPrefix) {
+    const mdState = {};
     const lines = String(fullText || "").split("\n");
     return lines.map((line, i) => {
       const p = i === 0 ? prefix : continuationPrefix;
-      return `${p}${escapeBlessed(line)}`;
+      return `${p}${renderLine(line, mdState)}`;
     }).join("\n");
   }
 
@@ -36,6 +44,7 @@ function createStreamTracker(options = {}) {
       full: "",
       linesEmitted: 0,
       meta,
+      mdState: {},
     };
     streamStates.set(publisher, state);
     if (typeof onStreamStart === "function") {
@@ -53,7 +62,7 @@ function createStreamTracker(options = {}) {
       const completed = parts.slice(0, -1);
       for (const line of completed) {
         const prefix = state.linesEmitted === 0 ? state.prefix : state.continuationPrefix;
-        logBox.setLine(state.lineIndex, `${prefix}${escapeBlessed(line)}`);
+        logBox.setLine(state.lineIndex, `${prefix}${renderLine(line, state.mdState)}`);
         state.linesEmitted += 1;
         logBox.pushLine(state.continuationPrefix);
         state.lineIndex = logBox.getLines().length - 1;
@@ -61,7 +70,10 @@ function createStreamTracker(options = {}) {
       state.buffer = parts[parts.length - 1];
     }
     const prefix = state.linesEmitted === 0 ? state.prefix : state.continuationPrefix;
-    logBox.setLine(state.lineIndex, `${prefix}${escapeBlessed(state.buffer)}`);
+    // For the current incomplete line, render with a snapshot of mdState
+    // to avoid mutating state on partial lines
+    const snapState = { inCodeBlock: state.mdState.inCodeBlock };
+    logBox.setLine(state.lineIndex, `${prefix}${renderLine(state.buffer, snapState)}`);
   }
 
   function finalizeStream(publisher, meta, reason = "") {
