@@ -156,7 +156,7 @@ ucode-core list --json
 }
 ```
 
-`ucode` 会将配置写入专用运行时目录（`.ufoo/agent/ucode/pi-agent`），用于原生 planner/engine 调用。
+`ucode` 会将配置写入专用运行时目录（`.ufoo/agent/ucode/config`），用于原生 planner/engine 调用。
 
 ## 架构
 

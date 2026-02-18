@@ -156,7 +156,7 @@ Configure AI providers in `.ufoo/config.json`:
 }
 ```
 
-`ucode` writes these into a dedicated runtime directory (`.ufoo/agent/ucode/pi-agent`) and uses them for native planner/engine calls.
+`ucode` writes these into a dedicated runtime directory (`.ufoo/agent/ucode/config`) and uses them for native planner/engine calls.
 
 ## Architecture
 

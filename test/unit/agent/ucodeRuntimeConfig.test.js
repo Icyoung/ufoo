@@ -24,7 +24,7 @@ describe("ucode runtime config", () => {
     expect(result.model).toBe("gpt-5.1-codex");
     expect(result.baseUrl).toBe("https://example.invalid/v1");
     expect(result.apiKey).toBe("sk-test");
-    expect(result.agentDir).toContain(path.join(".ufoo", "agent", "ucode", "pi-agent"));
+    expect(result.agentDir).toContain(path.join(".ufoo", "agent", "ucode", "config"));
 
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
@@ -44,6 +44,7 @@ describe("ucode runtime config", () => {
       }),
     });
 
+    expect(result.env.UFOO_UCODE_CONFIG_DIR).toBe(agentDir);
     expect(result.env.PI_CODING_AGENT_DIR).toBe(agentDir);
 
     const settings = JSON.parse(fs.readFileSync(path.join(agentDir, "settings.json"), "utf8"));
