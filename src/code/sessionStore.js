@@ -4,7 +4,7 @@ const { randomUUID } = require("crypto");
 
 function getSessionsDir(workspaceRoot = process.cwd()) {
   const root = path.resolve(workspaceRoot || process.cwd());
-  return path.join(root, ".ufoo", "agent", "ucode-core", "sessions");
+  return path.join(root, ".ufoo", "agent", "ucode", "sessions");
 }
 
 function normalizeSessionId(value = "") {

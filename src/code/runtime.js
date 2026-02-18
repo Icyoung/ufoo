@@ -4,7 +4,7 @@ const { runToolCall } = require("./dispatch");
 
 function getRuntimePaths(projectRoot = process.cwd()) {
   const root = path.resolve(projectRoot || process.cwd());
-  const runtimeDir = path.join(root, ".ufoo", "agent", "ucode-core");
+  const runtimeDir = path.join(root, ".ufoo", "agent", "ucode");
   return {
     projectRoot: root,
     runtimeDir,
