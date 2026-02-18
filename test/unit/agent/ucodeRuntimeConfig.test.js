@@ -25,6 +25,8 @@ describe("ucode runtime config", () => {
     expect(result.baseUrl).toBe("https://example.invalid/v1");
     expect(result.apiKey).toBe("sk-test");
     expect(result.agentDir).toContain(path.join(".ufoo", "agent", "ucode", "config"));
+    // Default should resolve to global ~/.ufoo/ when no project-level config exists
+    expect(result.agentDir).toContain(os.homedir());
 
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });

@@ -30,7 +30,9 @@ function resolveRuntimeValues({
   const model = String(env.UFOO_UCODE_MODEL || config.ucodeModel || "").trim();
   const apiKey = String(env.UFOO_UCODE_API_KEY || config.ucodeApiKey || "").trim();
   const baseUrl = String(env.UFOO_UCODE_BASE_URL || config.ucodeBaseUrl || "").trim();
-  const newDefault = path.join(root, ".ufoo", "agent", "ucode", "config");
+  const os = require("os");
+  const globalDefault = path.join(os.homedir(), ".ufoo", "agent", "ucode", "config");
+  const projectDefault = path.join(root, ".ufoo", "agent", "ucode", "config");
   const legacyDefault = path.join(root, ".ufoo", "agent", "ucode", "pi-agent");
   const agentDir = path.resolve(
     String(
@@ -38,7 +40,9 @@ function resolveRuntimeValues({
         || env.PI_CODING_AGENT_DIR
         || env.UFOO_UCODE_AGENT_DIR
         || config.ucodeAgentDir
-        || (fs.existsSync(legacyDefault) && !fs.existsSync(newDefault) ? legacyDefault : newDefault)
+        || (fs.existsSync(legacyDefault) ? legacyDefault
+          : fs.existsSync(projectDefault) ? projectDefault
+          : globalDefault)
     ).trim()
   );
   return {

@@ -1,4 +1,5 @@
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 
 const DEFAULT_CONFIG = {
@@ -39,13 +40,27 @@ function normalizeAssistantEngine(value) {
   return "auto";
 }
 
+function globalConfigPath() {
+  return path.join(os.homedir(), ".ufoo", "config.json");
+}
+
 function configPath(projectRoot) {
   return path.join(projectRoot, ".ufoo", "config.json");
 }
 
+function loadJsonSafe(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
 function loadConfig(projectRoot) {
   try {
-    const raw = JSON.parse(fs.readFileSync(configPath(projectRoot), "utf8"));
+    const globalRaw = loadJsonSafe(globalConfigPath());
+    const projectRaw = loadJsonSafe(configPath(projectRoot));
+    const raw = { ...globalRaw, ...projectRaw };
     return {
       ...DEFAULT_CONFIG,
       ...raw,

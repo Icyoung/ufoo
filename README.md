@@ -156,7 +156,7 @@ Configure AI providers in `.ufoo/config.json`:
 }
 ```
 
-`ucode` writes these into a dedicated runtime directory (`.ufoo/agent/ucode/config`) and uses them for native planner/engine calls.
+`ucode` writes these into a global config directory (`~/.ufoo/agent/ucode/config`) and uses them for native planner/engine calls. Configure once, use across all projects. Project-level `.ufoo/config.json` can override global settings when needed.
 
 ## Architecture
 
