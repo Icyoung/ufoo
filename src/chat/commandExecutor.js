@@ -2,7 +2,7 @@ const path = require("path");
 const EventBus = require("../bus");
 const { IPC_REQUEST_TYPES } = require("../shared/eventContract");
 const UfooInit = require("../init");
-const { loadConfig: loadProjectConfig, saveConfig: saveProjectConfig } = require("../config");
+const { loadConfig: loadProjectConfig, saveConfig: saveProjectConfig, loadGlobalUcodeConfig, saveGlobalUcodeConfig } = require("../config");
 const { resolveTransport } = require("../code/nativeRunner");
 const { parseIntervalMs, formatIntervalMs } = require("./cronScheduler");
 
@@ -64,6 +64,8 @@ function createCommandExecutor(options = {}) {
     activateAgent = async () => {},
     loadConfig = loadProjectConfig,
     saveConfig = saveProjectConfig,
+    loadUcodeConfig = loadGlobalUcodeConfig,
+    saveUcodeConfig = saveGlobalUcodeConfig,
     createCronTask = () => null,
     listCronTasks = () => [],
     stopCronTask = () => false,
@@ -558,7 +560,7 @@ function createCommandExecutor(options = {}) {
     const action = (!first || hasInlineKv) ? "set" : first;
 
     if (action === "show" || action === "status") {
-      const config = loadConfig(projectRoot) || {};
+      const config = loadUcodeConfig() || {};
       const provider = String(config.ucodeProvider || "").trim();
       const model = String(config.ucodeModel || "").trim();
       const url = String(config.ucodeBaseUrl || "").trim();
@@ -592,8 +594,8 @@ function createCommandExecutor(options = {}) {
         logMessage("error", "{white-fg}✗{/white-fg} Usage: /settings ucode set provider=<openai|anthropic> model=<id> url=<baseUrl> key=<apiKey>");
         return;
       }
-      saveConfig(projectRoot, updates);
-      logMessage("system", "{white-fg}✓{/white-fg} ucode config updated");
+      saveUcodeConfig(updates);
+      logMessage("system", "{white-fg}✓{/white-fg} ucode config updated (global)");
       if (Object.prototype.hasOwnProperty.call(updates, "ucodeProvider")) {
         logMessage("system", `  • provider: ${updates.ucodeProvider || "(unset)"}`);
       }
@@ -606,7 +608,7 @@ function createCommandExecutor(options = {}) {
       if (Object.prototype.hasOwnProperty.call(updates, "ucodeApiKey")) {
         logMessage("system", `  • key: ${maskSecret(updates.ucodeApiKey)}`);
       }
-      const nextConfig = loadConfig(projectRoot) || {};
+      const nextConfig = loadUcodeConfig() || {};
       logMessage("system", `  • transport: ${inferUcodeTransport(nextConfig.ucodeProvider, nextConfig.ucodeBaseUrl)} (auto)`);
       return;
     }
@@ -624,8 +626,8 @@ function createCommandExecutor(options = {}) {
         logMessage("error", "{white-fg}✗{/white-fg} Usage: /settings ucode clear [provider|model|url|key|all]");
         return;
       }
-      saveConfig(projectRoot, updates);
-      logMessage("system", "{white-fg}✓{/white-fg} ucode config cleared");
+      saveUcodeConfig(updates);
+      logMessage("system", "{white-fg}✓{/white-fg} ucode config cleared (global)");
       return;
     }
 

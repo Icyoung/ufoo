@@ -2,6 +2,23 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
+jest.mock("../../../src/config", () => {
+  const actual = jest.requireActual("../../../src/config");
+  const emptyUcode = { ucodeProvider: "", ucodeModel: "", ucodeBaseUrl: "", ucodeApiKey: "", ucodeAgentDir: "" };
+  return {
+    ...actual,
+    loadGlobalUcodeConfig: () => emptyUcode,
+    loadConfig: (projectRoot) => {
+      try {
+        const _fs = require("fs");
+        const _path = require("path");
+        const raw = JSON.parse(_fs.readFileSync(_path.join(projectRoot, ".ufoo", "config.json"), "utf8"));
+        return { ...raw, ...emptyUcode };
+      } catch { return { ...emptyUcode }; }
+    },
+  };
+});
+
 jest.mock("../../../src/code/nativeRunner", () => ({
   runNativeAgentTask: jest.fn(async () => ({
     ok: true,

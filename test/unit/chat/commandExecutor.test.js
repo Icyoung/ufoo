@@ -49,13 +49,15 @@ function createHarness(overrides = {}) {
     createContext: jest.fn(() => context),
     createSkills: jest.fn(() => skills),
     activateAgent: jest.fn().mockResolvedValue(undefined),
-    loadConfig: jest.fn(() => ({
+    loadConfig: jest.fn(() => ({})),
+    saveConfig: jest.fn(),
+    loadUcodeConfig: jest.fn(() => ({
       ucodeProvider: "",
       ucodeModel: "",
       ucodeBaseUrl: "",
       ucodeApiKey: "",
     })),
-    saveConfig: jest.fn(),
+    saveUcodeConfig: jest.fn(),
     createCronTask: jest.fn((payload) => ({ id: "c1", ...payload, summary: "c1@10s->codex:1: run" })),
     listCronTasks: jest.fn(() => []),
     stopCronTask: jest.fn(() => false),
@@ -271,7 +273,7 @@ describe("chat commandExecutor", () => {
 
   test("handleUcodeConfigCommand show prints masked values", async () => {
     const { executor, options, logs } = createHarness({
-      loadConfig: jest.fn(() => ({
+      loadUcodeConfig: jest.fn(() => ({
         ucodeProvider: "anthropic",
         ucodeModel: "claude-opus-4-6",
         ucodeBaseUrl: "https://api.example.invalid",
@@ -281,7 +283,7 @@ describe("chat commandExecutor", () => {
 
     await executor.handleUcodeConfigCommand(["show"]);
 
-    expect(options.loadConfig).toHaveBeenCalledWith("/tmp/ufoo");
+    expect(options.loadUcodeConfig).toHaveBeenCalled();
     expect(logs.some((entry) => entry.text.includes("provider: anthropic"))).toBe(true);
     expect(logs.some((entry) => entry.text.includes("model: claude-opus-4-6"))).toBe(true);
     expect(logs.some((entry) => entry.text.includes("url: https://api.example.invalid"))).toBe(true);
@@ -301,7 +303,7 @@ describe("chat commandExecutor", () => {
       "key=sk-secret-0000",
     ]);
 
-    expect(options.saveConfig).toHaveBeenCalledWith("/tmp/ufoo", {
+    expect(options.saveUcodeConfig).toHaveBeenCalledWith({
       ucodeProvider: "openai",
       ucodeModel: "gpt-5.1-codex",
       ucodeBaseUrl: "https://api.openai.com/v1",
@@ -329,7 +331,7 @@ describe("chat commandExecutor", () => {
 
     await expect(executor.executeCommand("/settings ucode set provider=anthropic model=claude-opus-4-6")).resolves.toBe(true);
 
-    expect(options.saveConfig).toHaveBeenCalledWith("/tmp/ufoo", {
+    expect(options.saveUcodeConfig).toHaveBeenCalledWith({
       ucodeProvider: "anthropic",
       ucodeModel: "claude-opus-4-6",
     });
@@ -337,7 +339,7 @@ describe("chat commandExecutor", () => {
 
   test("handleSettingsCommand defaults /settings ucode to show", async () => {
     const { executor, options, logs } = createHarness({
-      loadConfig: jest.fn(() => ({
+      loadUcodeConfig: jest.fn(() => ({
         ucodeProvider: "anthropic",
         ucodeModel: "claude-opus-4-6",
         ucodeBaseUrl: "",
@@ -347,7 +349,7 @@ describe("chat commandExecutor", () => {
 
     await executor.handleSettingsCommand(["ucode"]);
 
-    expect(options.loadConfig).toHaveBeenCalledWith("/tmp/ufoo");
+    expect(options.loadUcodeConfig).toHaveBeenCalled();
     expect(logs.some((entry) => entry.text.includes("ucode config:"))).toBe(true);
   });
 });

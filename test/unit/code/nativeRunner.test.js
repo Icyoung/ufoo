@@ -6,6 +6,24 @@ jest.mock("../../../src/code/dispatch", () => ({
   runToolCall: jest.fn(() => ({ ok: true, content: "" })),
 }));
 
+jest.mock("../../../src/config", () => {
+  const fs = require("fs");
+  const path = require("path");
+  const actual = jest.requireActual("../../../src/config");
+  const emptyUcode = { ucodeProvider: "", ucodeModel: "", ucodeBaseUrl: "", ucodeApiKey: "", ucodeAgentDir: "" };
+  return {
+    ...actual,
+    loadGlobalUcodeConfig: () => emptyUcode,
+    loadConfig: (projectRoot) => {
+      // Read project config only, skip global
+      try {
+        const raw = JSON.parse(fs.readFileSync(path.join(projectRoot, ".ufoo", "config.json"), "utf8"));
+        return { ...raw, ...emptyUcode };
+      } catch { return { ...emptyUcode }; }
+    },
+  };
+});
+
 const { runToolCall } = require("../../../src/code/dispatch");
 const {
   runNativeAgentTask,

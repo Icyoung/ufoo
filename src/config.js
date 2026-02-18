@@ -2,6 +2,8 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
+const UCODE_FIELDS = ["ucodeProvider", "ucodeModel", "ucodeBaseUrl", "ucodeApiKey", "ucodeAgentDir"];
+
 const DEFAULT_CONFIG = {
   launchMode: "auto",
   agentProvider: "codex-cli",
@@ -9,12 +11,15 @@ const DEFAULT_CONFIG = {
   assistantEngine: "auto",
   assistantModel: "",
   assistantUfooCmd: "",
+  autoResume: false,
+};
+
+const DEFAULT_UCODE_CONFIG = {
   ucodeProvider: "",
   ucodeModel: "",
   ucodeBaseUrl: "",
   ucodeApiKey: "",
   ucodeAgentDir: "",
-  autoResume: false,
 };
 
 function normalizeLaunchMode(value) {
@@ -58,9 +63,7 @@ function loadJsonSafe(filePath) {
 
 function loadConfig(projectRoot) {
   try {
-    const globalRaw = loadJsonSafe(globalConfigPath());
-    const projectRaw = loadJsonSafe(configPath(projectRoot));
-    const raw = { ...globalRaw, ...projectRaw };
+    const raw = loadJsonSafe(configPath(projectRoot));
     return {
       ...DEFAULT_CONFIG,
       ...raw,
@@ -69,15 +72,12 @@ function loadConfig(projectRoot) {
       assistantEngine: normalizeAssistantEngine(raw.assistantEngine),
       assistantModel: typeof raw.assistantModel === "string" ? raw.assistantModel : "",
       assistantUfooCmd: typeof raw.assistantUfooCmd === "string" ? raw.assistantUfooCmd : "",
-      ucodeProvider: typeof raw.ucodeProvider === "string" ? raw.ucodeProvider : "",
-      ucodeModel: typeof raw.ucodeModel === "string" ? raw.ucodeModel : "",
-      ucodeBaseUrl: typeof raw.ucodeBaseUrl === "string" ? raw.ucodeBaseUrl : "",
-      ucodeApiKey: typeof raw.ucodeApiKey === "string" ? raw.ucodeApiKey : "",
-      ucodeAgentDir: typeof raw.ucodeAgentDir === "string" ? raw.ucodeAgentDir : "",
       autoResume: raw.autoResume !== false,
+      // Merge ucode fields from global config so callers still see them
+      ...loadGlobalUcodeConfig(),
     };
   } catch {
-    return { ...DEFAULT_CONFIG };
+    return { ...DEFAULT_CONFIG, ...DEFAULT_UCODE_CONFIG };
   }
 }
 
@@ -90,22 +90,53 @@ function saveConfig(projectRoot, config) {
   } catch {
     existing = {};
   }
+  // Strip ucode fields — they belong in global config only
+  const projectUpdates = {};
+  for (const [k, v] of Object.entries(config)) {
+    if (!UCODE_FIELDS.includes(k)) {
+      projectUpdates[k] = v;
+    }
+  }
   const merged = {
     ...DEFAULT_CONFIG,
     ...existing,
-    ...config,
+    ...projectUpdates,
   };
+  // Remove any stale ucode fields from project config
+  for (const f of UCODE_FIELDS) {
+    delete merged[f];
+  }
   merged.launchMode = normalizeLaunchMode(merged.launchMode);
   merged.agentProvider = normalizeAgentProvider(merged.agentProvider);
   merged.assistantEngine = normalizeAssistantEngine(merged.assistantEngine);
   merged.assistantModel = typeof merged.assistantModel === "string" ? merged.assistantModel : "";
   merged.assistantUfooCmd = typeof merged.assistantUfooCmd === "string" ? merged.assistantUfooCmd : "";
-  merged.ucodeProvider = typeof merged.ucodeProvider === "string" ? merged.ucodeProvider : "";
-  merged.ucodeModel = typeof merged.ucodeModel === "string" ? merged.ucodeModel : "";
-  merged.ucodeBaseUrl = typeof merged.ucodeBaseUrl === "string" ? merged.ucodeBaseUrl : "";
-  merged.ucodeApiKey = typeof merged.ucodeApiKey === "string" ? merged.ucodeApiKey : "";
-  merged.ucodeAgentDir = typeof merged.ucodeAgentDir === "string" ? merged.ucodeAgentDir : "";
   merged.autoResume = merged.autoResume !== false;
+  fs.writeFileSync(target, JSON.stringify(merged, null, 2));
+  return merged;
+}
+
+function loadGlobalUcodeConfig() {
+  const raw = loadJsonSafe(globalConfigPath());
+  return {
+    ucodeProvider: typeof raw.ucodeProvider === "string" ? raw.ucodeProvider : "",
+    ucodeModel: typeof raw.ucodeModel === "string" ? raw.ucodeModel : "",
+    ucodeBaseUrl: typeof raw.ucodeBaseUrl === "string" ? raw.ucodeBaseUrl : "",
+    ucodeApiKey: typeof raw.ucodeApiKey === "string" ? raw.ucodeApiKey : "",
+    ucodeAgentDir: typeof raw.ucodeAgentDir === "string" ? raw.ucodeAgentDir : "",
+  };
+}
+
+function saveGlobalUcodeConfig(updates = {}) {
+  const target = globalConfigPath();
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const existing = loadJsonSafe(target);
+  const merged = { ...existing };
+  for (const [k, v] of Object.entries(updates)) {
+    if (UCODE_FIELDS.includes(k)) {
+      merged[k] = typeof v === "string" ? v : "";
+    }
+  }
   fs.writeFileSync(target, JSON.stringify(merged, null, 2));
   return merged;
 }
@@ -113,6 +144,8 @@ function saveConfig(projectRoot, config) {
 module.exports = {
   loadConfig,
   saveConfig,
+  loadGlobalUcodeConfig,
+  saveGlobalUcodeConfig,
   normalizeLaunchMode,
   normalizeAgentProvider,
   normalizeAssistantEngine,
