@@ -1,6 +1,6 @@
 const fs = require("fs");
 const path = require("path");
-const { loadConfig } = require("../config");
+const { loadGlobalUcodeConfig } = require("../config");
 
 function readJson(filePath = "", fallback = {}) {
   if (!filePath) return fallback;
@@ -58,10 +58,10 @@ function resolveRuntimeValues({
 function inspectUcodeRuntimeConfig({
   projectRoot = process.cwd(),
   env = process.env,
-  loadConfigImpl = loadConfig,
+  loadConfigImpl = loadGlobalUcodeConfig,
 } = {}) {
   const root = path.resolve(projectRoot);
-  const config = loadConfigImpl(root);
+  const config = loadConfigImpl();
   const resolved = resolveRuntimeValues({
     env,
     config,
@@ -84,7 +84,7 @@ function inspectUcodeRuntimeConfig({
 function prepareUcodeRuntimeConfig({
   projectRoot = process.cwd(),
   env = process.env,
-  loadConfigImpl = loadConfig,
+  loadConfigImpl = loadGlobalUcodeConfig,
 } = {}) {
   const inspection = inspectUcodeRuntimeConfig({
     projectRoot,
