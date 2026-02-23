@@ -248,6 +248,45 @@ async function runCli(argv) {
         run(process.execPath, [path.join(repoRoot, "bin", "ufoo.js"), "chat"]);
       });
     program
+      .command("launch")
+      .description("Launch an agent (ucode, uclaude, ucodex)")
+      .argument("<agent>", "Agent type: ucode|uclaude|ucodex|claude|codex")
+      .argument("[nickname]", "Optional nickname for the agent")
+      .action(async (agent, nickname) => {
+        try {
+          const projectRoot = process.cwd();
+          await ensureDaemonRunning(projectRoot);
+
+          // Normalize agent type
+          const agentLower = agent.toLowerCase();
+          let normalizedAgent = "";
+          if (agentLower === "ucode" || agentLower === "ufoo-code" || agentLower === "ufoo") {
+            normalizedAgent = "ucode";
+          } else if (agentLower === "uclaude" || agentLower === "claude-code" || agentLower === "claude") {
+            normalizedAgent = "claude";
+          } else if (agentLower === "ucodex" || agentLower === "codex" || agentLower === "openai") {
+            normalizedAgent = "codex";
+          } else {
+            console.error(`Unknown agent type: ${agent}`);
+            console.error("Valid types: ucode, uclaude, ucodex, claude, codex");
+            process.exitCode = 1;
+            return;
+          }
+
+          const resp = await sendDaemonRequest(projectRoot, {
+            type: "launch_agent",
+            agent: normalizedAgent,
+            nickname: nickname || "",
+            count: 1,
+          });
+          const reply = resp?.data?.reply || `Launching ${normalizedAgent} agent...`;
+          console.log(reply);
+        } catch (err) {
+          console.error(err.message || String(err));
+          process.exitCode = 1;
+        }
+      });
+    program
       .command("resume")
       .description("Resume agent sessions (optional nickname)")
       .argument("[nickname]", "Nickname or subscriber ID to resume")
