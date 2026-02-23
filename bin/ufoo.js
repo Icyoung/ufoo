@@ -43,7 +43,7 @@ async function main() {
     return;
   }
 
-  // Handle resume command to connect to existing agent or launch new one
+  // Handle resume command to resume/launch agent sessions
   if (cmd === "resume") {
     const target = process.argv[3];
     if (!target) {
@@ -52,7 +52,7 @@ async function main() {
       console.error("");
       console.error("Examples:");
       console.error("  ufoo resume ucode      # Start new ucode agent");
-      console.error("  ufoo resume ucode-1    # Connect to existing agent with nickname");
+      console.error("  ufoo resume ucode-1    # Resume agent with nickname ucode-1");
       console.error("  ufoo resume uclaude    # Start new uclaude agent");
       process.exitCode = 1;
       return;
@@ -63,6 +63,7 @@ async function main() {
     const { spawn } = require("child_process");
 
     // First check if it's a nickname for an existing online agent
+    let targetAgent = null;
     try {
       const statusOutput = execSync("ufoo bus status", { encoding: "utf8", cwd: process.cwd() });
 
@@ -96,18 +97,61 @@ async function main() {
       // Check if target matches any online agent's nickname
       for (const agent of onlineAgents) {
         if (agent.nickname && agent.nickname === target) {
-          // Found an online agent with this nickname - connect to it via chat
-          console.log(`Connecting to existing agent: ${agent.subscriberId} (${agent.nickname})`);
-          console.log("Opening chat interface...");
-
-          // Set environment variable to auto-connect
-          process.env.UFOO_RESUME_TARGET = agent.subscriberId;
-          await runChat(process.cwd());
-          return;
+          targetAgent = agent;
+          break;
         }
       }
     } catch (err) {
       // Ignore errors from bus status check
+    }
+
+    if (targetAgent) {
+      // Found an online agent with this nickname
+      // Determine the agent type from subscriber ID
+      const subscriberId = targetAgent.subscriberId;
+      const [agentType, sessionId] = subscriberId.split(":");
+
+      let scriptName = "";
+      let displayName = "";
+
+      if (agentType === "ufoo-code") {
+        scriptName = "ucode.js";
+        displayName = "ucode";
+      } else if (agentType === "claude-code") {
+        scriptName = "uclaude.js";
+        displayName = "uclaude";
+      } else if (agentType === "codex") {
+        scriptName = "ucodex.js";
+        displayName = "ucodex";
+      } else {
+        console.error(`Error: Unable to determine agent type for ${subscriberId}`);
+        process.exitCode = 1;
+        return;
+      }
+
+      console.log(`Resuming ${displayName} session for ${targetAgent.nickname} (${subscriberId})`);
+
+      // Set environment variable to indicate this is a resume
+      const scriptPath = path.join(__dirname, scriptName);
+      const env = { ...process.env };
+
+      // Pass the subscriber ID so the agent can reuse it
+      if (sessionId) {
+        env.UFOO_SUBSCRIBER_ID = subscriberId;
+      }
+
+      // Spawn the agent process with the session info
+      const child = spawn(process.execPath, [scriptPath, "resume", sessionId || ""], {
+        stdio: "inherit",
+        cwd: process.cwd(),
+        env,
+      });
+
+      child.on("exit", (code) => {
+        process.exit(code || 0);
+      });
+
+      return;
     }
 
     // Not an existing online agent - check if it's an agent type to launch
