@@ -960,39 +960,63 @@ function runUcodeTui({
         autoBusError = "";
         return;
       }
-      const ubusResult = await runUbusCommand(state, {
-        workspaceRoot,
-        subscriberId: autoBusSubscriberId,
-        onMessageReceived: (msg) => {
-          // Display the incoming message immediately
-          const { extractAgentNickname } = require("./agent");
-          const nickname = extractAgentNickname(msg.from) || msg.from;
-          logText(`${nickname}: ${msg.task}`);
-        },
+
+      // Set pending state for autoBus tasks
+      const abortController = new AbortController();
+      pendingTask = {
+        abortController,
+        startedAt: Date.now(),
+      };
+      updateStatus("Processing bus messages...", "thinking", {
+        showTimer: true,
+        startedAt: pendingTask.startedAt,
       });
-      if (!ubusResult.ok) {
-        const nextError = String(ubusResult.error || "ubus failed");
-        if (nextError !== autoBusError) {
-          autoBusError = nextError;
-          logText(`Error: ${nextError}`);
+
+      try {
+        const ubusResult = await runUbusCommand(state, {
+          workspaceRoot,
+          subscriberId: autoBusSubscriberId,
+          onMessageReceived: (msg) => {
+            // Display the incoming message immediately
+            const { extractAgentNickname } = require("./agent");
+            const nickname = extractAgentNickname(msg.from) || msg.from;
+            logText(`${nickname}: ${msg.task}`);
+            // Update status to show we're working on this specific task
+            updateStatus("Working on task...", "thinking", {
+              showTimer: true,
+              startedAt: pendingTask.startedAt,
+            });
+          },
+        });
+
+        if (!ubusResult.ok) {
+          const nextError = String(ubusResult.error || "ubus failed");
+          if (nextError !== autoBusError) {
+            autoBusError = nextError;
+            logText(`Error: ${nextError}`);
+          }
+          return;
         }
-        return;
-      }
-      autoBusError = "";
-      if (ubusResult.handled > 0) {
-        // Display only the replies (tasks were already shown via onMessageReceived)
-        if (ubusResult.messageExchanges && ubusResult.messageExchanges.length > 0) {
-          const { extractAgentNickname } = require("./agent");
-          for (const exchange of ubusResult.messageExchanges) {
-            const nickname = extractAgentNickname(exchange.from) || exchange.from;
-            // Only show the reply since task was already displayed
-            logText(`@${nickname} ${exchange.reply}`);
+        autoBusError = "";
+        if (ubusResult.handled > 0) {
+          // Display only the replies (tasks were already shown via onMessageReceived)
+          if (ubusResult.messageExchanges && ubusResult.messageExchanges.length > 0) {
+            const { extractAgentNickname } = require("./agent");
+            for (const exchange of ubusResult.messageExchanges) {
+              const nickname = extractAgentNickname(exchange.from) || exchange.from;
+              // Only show the reply since task was already displayed
+              logText(`@${nickname} ${exchange.reply}`);
+            }
+          }
+          const persisted = persistSessionState(state);
+          if (!persisted || persisted.ok === false) {
+            logText(`Error: failed to persist session ${state.sessionId}: ${(persisted && persisted.error) || "unknown error"}`);
           }
         }
-        const persisted = persistSessionState(state);
-        if (!persisted || persisted.ok === false) {
-          logText(`Error: failed to persist session ${state.sessionId}: ${(persisted && persisted.error) || "unknown error"}`);
-        }
+      } finally {
+        // Clear pending state
+        pendingTask = null;
+        updateStatus("", "none");
       }
     };
 
