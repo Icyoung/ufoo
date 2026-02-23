@@ -135,13 +135,11 @@ async function main() {
       const scriptPath = path.join(__dirname, scriptName);
       const env = { ...process.env };
 
-      // Pass the subscriber ID so the agent can reuse it
-      if (sessionId) {
-        env.UFOO_SUBSCRIBER_ID = subscriberId;
-      }
+      // Pass the subscriber ID so the agent can reuse the same identity
+      env.UFOO_SUBSCRIBER_ID = subscriberId;
 
-      // Spawn the agent process with the session info
-      const child = spawn(process.execPath, [scriptPath, "resume", sessionId || ""], {
+      // Spawn the agent process - it will reuse the subscriber ID
+      const child = spawn(process.execPath, [scriptPath], {
         stdio: "inherit",
         cwd: process.cwd(),
         env,
