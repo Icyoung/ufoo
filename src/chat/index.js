@@ -1390,7 +1390,7 @@ async function runChat(projectRoot) {
         logMessage("system", `{cyan-fg}Connected to @${nickname}{/cyan-fg}`);
 
         // Focus input and show @ prefix
-        setPrompt();
+        updatePromptBox();
         renderDashboard();
         focusInput();
         screen.render();
