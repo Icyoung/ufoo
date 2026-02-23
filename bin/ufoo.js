@@ -43,7 +43,7 @@ async function main() {
     return;
   }
 
-  // Handle resume command as an alias for launch
+  // Handle resume command to launch agent in interactive mode
   if (cmd === "resume") {
     const target = process.argv[3];
     if (!target) {
@@ -58,9 +58,40 @@ async function main() {
       return;
     }
 
-    // Pass through to launch command
-    const args = ["launch", target];
-    await runCli(["node", "ufoo", ...args]);
+    // Map agent type to script path
+    const targetLower = target.toLowerCase();
+    const path = require("path");
+    const { spawn } = require("child_process");
+
+    let scriptName = "";
+    if (targetLower === "ucode" || targetLower === "ufoo-code" || targetLower === "ufoo") {
+      scriptName = "ucode.js";
+    } else if (targetLower === "uclaude" || targetLower === "claude-code" || targetLower === "claude") {
+      scriptName = "uclaude.js";
+    } else if (targetLower === "ucodex" || targetLower === "codex" || targetLower === "openai") {
+      scriptName = "ucodex.js";
+    } else {
+      console.error(`Error: Unknown agent type '${target}'`);
+      console.error("Valid types: ucode, uclaude, ucodex");
+      process.exitCode = 1;
+      return;
+    }
+
+    // Run the agent script directly
+    const scriptPath = path.join(__dirname, scriptName);
+    console.log(`Starting ${target} session...`);
+
+    // Spawn the agent process and inherit stdio for interactive mode
+    const child = spawn(process.execPath, [scriptPath], {
+      stdio: "inherit",
+      cwd: process.cwd(),
+      env: process.env,
+    });
+
+    child.on("exit", (code) => {
+      process.exit(code || 0);
+    });
+
     return;
   }
 
