@@ -1370,6 +1370,39 @@ async function runChat(projectRoot) {
   resizeInput();
   requestStatus();
 
+  // Auto-connect to target agent if specified via ufoo resume
+  if (process.env.UFOO_RESUME_TARGET) {
+    const resumeTarget = process.env.UFOO_RESUME_TARGET;
+
+    // Wait a bit for agents to be populated from daemon
+    setTimeout(() => {
+      // Find the agent in activeAgents list
+      const targetIndex = activeAgents.findIndex(id => id === resumeTarget);
+
+      if (targetIndex >= 0) {
+        // Set the target agent for @ messaging
+        targetAgent = resumeTarget;
+        selectedAgentIndex = targetIndex;
+
+        // Update UI to show connection
+        const meta = activeAgentMetaMap.get(resumeTarget);
+        const nickname = meta?.nickname || resumeTarget;
+        logMessage("system", `{cyan-fg}Connected to @${nickname}{/cyan-fg}`);
+
+        // Focus input and show @ prefix
+        setPrompt();
+        renderDashboard();
+        focusInput();
+        screen.render();
+      } else {
+        logMessage("error", `{red-fg}Failed to connect: Agent ${resumeTarget} not found{/red-fg}`);
+      }
+
+      // Clear the environment variable to avoid reconnecting on reload
+      delete process.env.UFOO_RESUME_TARGET;
+    }, 500);
+  }
+
   // 定期刷新 dashboard 状态（兜底，daemon 会主动推送变化）
   setInterval(() => {
     if (daemonCoordinator && daemonCoordinator.isConnected()) {

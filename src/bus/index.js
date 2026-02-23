@@ -308,9 +308,16 @@ class EventBus {
       const result = eventName === "message"
         ? await this.messageManager.send(target, message, publisher)
         : await this.messageManager.emit(target, eventName, data, publisher);
-      logOk(
-        `Message sent: seq=${result.seq} -> ${result.targets.join(", ")}`
-      );
+      const silent = options.silent === true;
+      if (!silent && eventName === "message") {
+        logOk(
+          `Message sent: seq=${result.seq} -> ${result.targets.join(", ")}`
+        );
+      } else if (!silent && process.env.UFOO_BUS_VERBOSE_EVENTS === "1") {
+        logInfo(
+          `Event sent: event=${eventName} seq=${result.seq} -> ${result.targets.join(", ")}`
+        );
+      }
       return result;
     } catch (err) {
       logError(err.message);

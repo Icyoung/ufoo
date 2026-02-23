@@ -74,31 +74,49 @@ function forceSymlink(target, linkPath) {
       fs.rmSync(linkPath, { recursive: true, force: true });
     }
   } catch {
-    // doesn't exist — fine
+    // doesn't exist - fine
   }
   fs.symlinkSync(target, linkPath);
 }
 
-// Install ufoo skills as Claude Code slash commands (~/.claude/commands/<name>.md)
-// and as skill directories (~/.claude/skills/<name>/)
+function installClaudeCommands(home, sources) {
+  const commandsDir = path.join(home, ".claude", "commands");
+  fs.mkdirSync(commandsDir, { recursive: true });
+
+  for (const { name, md } of sources) {
+    forceSymlink(md, path.join(commandsDir, `${name}.md`));
+  }
+
+  console.log(`[postinstall] Installed ${sources.length} ufoo command(s) to ${commandsDir}`);
+}
+
+function installSkillDirs(targetDir, sources, label) {
+  fs.mkdirSync(targetDir, { recursive: true });
+
+  for (const { name, dir } of sources) {
+    forceSymlink(dir, path.join(targetDir, name));
+  }
+
+  console.log(`[postinstall] Installed ${sources.length} ufoo skill(s) to ${label}`);
+}
+
+// Install ufoo skills for Claude and Codex at npm install time.
+// - Claude slash commands: ~/.claude/commands/<name>.md -> SKILL.md
+// - Claude skills: ~/.claude/skills/<name> -> skill dir
+// - Codex skills: ${CODEX_HOME:-~/.codex}/skills/<name> -> skill dir
 try {
   const pkgRoot = path.resolve(__dirname, "..");
   const home = os.homedir();
   const sources = collectSkillSources(pkgRoot);
 
   if (sources.length > 0) {
-    // Slash commands: ~/.claude/commands/<name>.md -> SKILL.md
-    const commandsDir = path.join(home, ".claude", "commands");
-    fs.mkdirSync(commandsDir, { recursive: true });
+    installClaudeCommands(home, sources);
+    installSkillDirs(path.join(home, ".claude", "skills"), sources, "~/.claude/skills");
 
-    let installed = 0;
-    for (const { name, md } of sources) {
-      forceSymlink(md, path.join(commandsDir, `${name}.md`));
-      installed += 1;
-    }
-    console.log(`[postinstall] Installed ${installed} ufoo command(s) to ${commandsDir}`);
+    const codexHome = process.env.CODEX_HOME || path.join(home, ".codex");
+    installSkillDirs(path.join(codexHome, "skills"), sources, `${codexHome}/skills`);
   }
 } catch (err) {
-  // Non-fatal — skills can be installed manually via `ufoo skills install`
+  // Non-fatal - skills can be installed manually via `ufoo skills install`
   console.log(`[postinstall] Skipped skills install: ${err.message}`);
 }

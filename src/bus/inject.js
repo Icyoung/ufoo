@@ -284,8 +284,11 @@ class Injector {
     // 读取 tty（tmux 需要）
     const tty = this.readTty(subscriber);
 
-    if (supportsNotifier) {
-      // 2. 尝试 tmux（无需权限）
+    // 2. 尝试 tmux（无需权限）
+    // Launch mode may be temporarily missing/stale (e.g. rejoin from non-interactive context).
+    // In that case still try tmux fallback by pane/tty.
+    const allowTmuxFallback = supportsNotifier || !launchMode || launchMode === "terminal" || launchMode === "tmux";
+    if (allowTmuxFallback) {
       const tmuxPane = meta.tmux_pane || this.getTmuxPane(subscriber);
       if (tmuxPane) {
         const paneExists = await this.checkTmuxPane(tmuxPane);
@@ -296,7 +299,7 @@ class Injector {
         }
       }
 
-      // 尝试通过 tty 查找 tmux pane
+      // Try resolving pane via tty when tmux pane metadata is missing.
       if (tty && isValidTty(tty)) {
         const fallbackPane = await this.findTmuxPaneByTty(tty);
         if (fallbackPane) {

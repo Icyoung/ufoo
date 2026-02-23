@@ -175,7 +175,11 @@ class AgentNotifier {
       data.message = `delivery failed to ${this.lastNickname || this.subscriber}: ${errorMessage || "unknown error"}`;
     }
     try {
-      await this.eventBus.send(publisher, "", this.subscriber, { event: "delivery", data });
+      await this.eventBus.send(publisher, "", this.subscriber, {
+        event: "delivery",
+        data,
+        silent: true,
+      });
     } catch {
       // ignore delivery emit failures
     }

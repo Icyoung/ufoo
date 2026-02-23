@@ -161,7 +161,15 @@ class SubscriberManager {
       nicknameManager.setNickname(subscriber, finalNickname);
     }
 
-    const launchMode = options.launchMode || process.env.UFOO_LAUNCH_MODE || "";
+    const explicitLaunchMode = typeof options.launchMode === "string"
+      ? options.launchMode.trim()
+      : "";
+    const envLaunchMode = typeof process.env.UFOO_LAUNCH_MODE === "string"
+      ? process.env.UFOO_LAUNCH_MODE.trim()
+      : "";
+    const preservedLaunchMode = existingMeta?.launch_mode || "";
+    const inferredLaunchMode = process.env.TMUX_PANE ? "tmux" : "";
+    const launchMode = explicitLaunchMode || envLaunchMode || preservedLaunchMode || inferredLaunchMode;
     const overridePid = Number.isFinite(options.parentPid) && options.parentPid > 0
       ? options.parentPid
       : null;
@@ -184,6 +192,11 @@ class SubscriberManager {
     const preserved = existingMeta && typeof existingMeta === "object"
       ? { ...existingMeta }
       : {};
+    const explicitTmuxPane = typeof options.tmuxPane === "string" ? options.tmuxPane.trim() : "";
+    const envTmuxPane = typeof process.env.TMUX_PANE === "string" ? process.env.TMUX_PANE.trim() : "";
+    const preservedTmuxPane = typeof existingMeta?.tmux_pane === "string" ? existingMeta.tmux_pane.trim() : "";
+    const tmuxPane = explicitTmuxPane || envTmuxPane || preservedTmuxPane;
+
     this.busData.agents[subscriber] = {
       ...preserved,
       agent_type: agentType,
@@ -194,7 +207,7 @@ class SubscriberManager {
       pid: overridePid || getJoinedPid(),
       tty: finalTty,
       tty_shell_pid: ttyInfo?.shellPid || 0,
-      tmux_pane: options.tmuxPane || process.env.TMUX_PANE || "",
+      tmux_pane: tmuxPane,
       launch_mode: launchMode,
     };
 
