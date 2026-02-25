@@ -299,6 +299,33 @@ describe('Security hardening', () => {
     expect(bridge.isRemoteTrusted({ from: 'remote:123' })).toBe(true);
   });
 
+  test('bridge decorates remote message with ufoo-online source + full sender id', () => {
+    const OnlineConnect = require('../../../src/online/bridge');
+    const bridge = new OnlineConnect({
+      projectRoot: process.cwd(),
+      nickname: 'test',
+      token: 'test-token',
+      room: 'room_1',
+      trustRemote: true,
+    });
+    bridge.eventBus = { send: jest.fn() };
+
+    bridge.handleOnlineMessage(null, {
+      type: 'event',
+      from: 'codex-3:e8fef28e',
+      payload: {
+        kind: 'message',
+        message: '@codex-4 please review ucode',
+      },
+    });
+
+    expect(bridge.eventBus.send).toHaveBeenCalledWith(
+      '*',
+      '[ufoo-online] codex-3:e8fef28e: @codex-4 please review ucode',
+      'remote:online'
+    );
+  });
+
   // Step 9: Token file permissions
   test('saveTokens creates files with restricted permissions', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ufoo-tokens-'));

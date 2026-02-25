@@ -9,6 +9,7 @@ describe("shared eventContract", () => {
     expect(IPC_REQUEST_TYPES).toMatchObject({
       STATUS: "status",
       PROMPT: "prompt",
+      CRON: "cron",
       BUS_SEND: "bus_send",
       CLOSE_AGENT: "close_agent",
       LAUNCH_AGENT: "launch_agent",

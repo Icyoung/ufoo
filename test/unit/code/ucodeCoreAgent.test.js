@@ -93,6 +93,46 @@ describe("ucode core agent nl path", () => {
     expect(runSingleCommand("/ubus", process.cwd())).toEqual({ kind: "ubus" });
   });
 
+  test("runSingleCommand parses background nl commands", () => {
+    expect(runSingleCommand("bg check ucode implementation", process.cwd())).toEqual({
+      kind: "nl_bg",
+      task: "check ucode implementation",
+    });
+    expect(runSingleCommand("/bg fix tests", process.cwd())).toEqual({
+      kind: "nl_bg",
+      task: "fix tests",
+    });
+  });
+
+  test("runSingleCommand returns usage error for empty background command", () => {
+    expect(runSingleCommand("bg", process.cwd())).toEqual({
+      kind: "error",
+      output: "usage: bg <task>",
+    });
+    expect(runSingleCommand("/bg", process.cwd())).toEqual({
+      kind: "error",
+      output: "usage: bg <task>",
+    });
+  });
+
+  test("runSingleCommand recognizes strict ufoo probe marker commands", () => {
+    expect(runSingleCommand("$ufoo codex-4", process.cwd())).toEqual({ kind: "probe", marker: "codex-4" });
+    expect(runSingleCommand("/ufoo codex-4", process.cwd())).toEqual({ kind: "probe", marker: "codex-4" });
+    expect(runSingleCommand("ufoo codex-4", process.cwd())).toEqual({ kind: "probe", marker: "codex-4" });
+  });
+
+  test("runSingleCommand does not intercept normal ufoo-prefixed natural language", () => {
+    const result = runSingleCommand("ufoo online connect room test", process.cwd());
+    expect(result.kind).toBe("nl");
+    expect(result.task).toBe("ufoo online connect room test");
+  });
+
+  test("runSingleCommand does not treat multi-token ufoo text as probe marker", () => {
+    const result = runSingleCommand("ufoo codex-4 please review this change", process.cwd());
+    expect(result.kind).toBe("nl");
+    expect(result.task).toBe("ufoo codex-4 please review this change");
+  });
+
   test("runNaturalLanguageTask uses native runner path and updates session", async () => {
     const state = {
       workspaceRoot: process.cwd(),

@@ -99,7 +99,7 @@ function buildSystemPrompt(context) {
     "- If multiple possible agents, use disambiguate with candidates and no dispatch.",
     "- If user specifies a nickname for a new agent, include ops.launch with nickname so daemon can rename.",
     "- If user requests rename, use ops.rename with agent_id and nickname (do NOT launch).",
-    "- For scheduled follow-up (cron/corn), use ops.cron with operation=start and include every+target(s)+prompt.",
+    "- For scheduled follow-up (cron), use ops.cron with operation=start and include every+target(s)+prompt (or at for one-time).",
     "- To check scheduled tasks, use ops.cron with operation=list.",
     "- To stop scheduled tasks, use ops.cron with operation=stop and id (or id=all).",
     "- Use top-level assistant_call for project exploration, temporary shell tasks, and quick execution support.",

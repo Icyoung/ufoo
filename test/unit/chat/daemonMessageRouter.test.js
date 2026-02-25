@@ -202,4 +202,31 @@ describe("chat daemonMessageRouter", () => {
 
     expect(options.requestStatus).toHaveBeenCalled();
   });
+
+  test("response with cron list renders cron summaries", () => {
+    const { router, options } = createHarness();
+
+    router.handleMessage({
+      type: IPC_RESPONSE_TYPES.RESPONSE,
+      data: {
+        cron: {
+          ok: true,
+          operation: "list",
+          count: 1,
+          tasks: [{ id: "c1", summary: "c1@once(2026-02-23 22:15)->codex:1: run once" }],
+        },
+        ops: [{ action: "cron", operation: "list" }],
+      },
+    });
+
+    expect(options.logMessage).toHaveBeenCalledWith(
+      "system",
+      "{cyan-fg}Cron:{/cyan-fg} 1 task(s)"
+    );
+    expect(options.logMessage).toHaveBeenCalledWith(
+      "system",
+      "  • ESC(c1@once(2026-02-23 22:15)->codex:1: run once)"
+    );
+    expect(options.requestStatus).toHaveBeenCalled();
+  });
 });

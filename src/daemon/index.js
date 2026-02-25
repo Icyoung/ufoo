@@ -673,6 +673,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
   providerSessions = loadProviderSessionCache(projectRoot);
   probeHandles = new Map();
   daemonCronController = createDaemonCronController({
+    projectRoot,
     dispatch: async ({ taskId, target, message }) => {
       await dispatchMessages(projectRoot, [{ target, message }]);
       log(`cron:${taskId} -> ${target}`);
@@ -826,6 +827,69 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
           `${JSON.stringify({
             type: IPC_RESPONSE_TYPES.ERROR,
             error: err.message || "bus_send failed",
+          })}
+`,
+        );
+      }
+      return;
+    }
+    if (req.type === IPC_REQUEST_TYPES.CRON) {
+      if (!daemonCronController) {
+        socket.write(
+          `${JSON.stringify({
+            type: IPC_RESPONSE_TYPES.ERROR,
+            error: "cron controller unavailable",
+          })}
+`,
+        );
+        return;
+      }
+
+      try {
+        const result = daemonCronController.handleCronOp(req);
+        let reply = "";
+        if (!result.ok) {
+          reply = `Cron failed: ${result.error || "unknown error"}`;
+        } else if (result.operation === "list") {
+          reply = result.count > 0
+            ? `Cron ${result.count} task(s)`
+            : "Cron none";
+        } else if (result.operation === "stop") {
+          if (result.id === "all") {
+            reply = `Stopped ${result.stopped || 0} cron task(s)`;
+          } else {
+            reply = `Stopped cron task ${result.id}`;
+          }
+        } else if (result.operation === "start" && result.task) {
+          if (result.task.mode === "once") {
+            reply = `Cron scheduled ${result.task.id} at ${result.task.onceAt || result.task.onceAtMs}`;
+          } else {
+            reply = `Cron started ${result.task.id}: every ${result.task.interval || result.task.intervalMs}`;
+          }
+        } else {
+          reply = "Cron updated";
+        }
+
+        socket.write(
+          `${JSON.stringify({
+            type: IPC_RESPONSE_TYPES.RESPONSE,
+            data: {
+              reply,
+              cron: result,
+              ops: [{ action: "cron", operation: result.operation || String(req.operation || "") }],
+            },
+          })}
+`,
+        );
+        ipcServer.sendToSockets({
+          type: IPC_RESPONSE_TYPES.STATUS,
+          data: buildRuntimeStatus(),
+        });
+      } catch (err) {
+        socket.write(
+          `${JSON.stringify({
+            type: IPC_RESPONSE_TYPES.ERROR,
+            error: err.message || "cron request failed",
           })}
 `,
         );

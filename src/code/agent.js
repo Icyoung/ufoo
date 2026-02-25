@@ -43,6 +43,14 @@ function normalizeLine(input = "") {
   return String(input || "").trim();
 }
 
+function parseProbeMarkerCommand(input = "") {
+  const text = String(input || "").trim();
+  if (!text) return "";
+  // Accept only strict probe markers: "<prefix> <single-marker-token>".
+  const match = text.match(/^(?:\$ufoo|\/ufoo|ufoo)\s+([A-Za-z0-9][A-Za-z0-9._:-]{0,63})$/);
+  return match ? String(match[1] || "").trim() : "";
+}
+
 function parseJson(text = "") {
   const raw = String(text || "").trim();
   if (!raw) return {};
@@ -1209,21 +1217,43 @@ function runSingleCommand(line = "", workspaceRoot = process.cwd()) {
         "  help",
         "  exit|quit",
         "  ubus|/ubus",
+        "  bg|/bg <task>",
         "  resume <session-id>",
         "  tool <read|write|edit|bash> <args-json>",
         "  run <read|write|edit|bash> <args-json>",
       ].join("\n"),
     };
   }
-  if (text.startsWith("$ufoo ") || text.startsWith("/ufoo ") || text.startsWith("ufoo ")) {
+  const probeMarker = parseProbeMarkerCommand(text);
+  if (probeMarker) {
     return {
       kind: "probe",
-      output: text.split(/\s+/).slice(1).join(" ").trim(),
+      marker: probeMarker,
     };
   }
   if (text === "ubus" || text === "/ubus") {
     return {
       kind: "ubus",
+    };
+  }
+  if (text === "bg" || text === "/bg") {
+    return {
+      kind: "error",
+      output: "usage: bg <task>",
+    };
+  }
+  const bgMatch = text.match(/^(?:\/bg|bg)\s+(.+)$/i);
+  if (bgMatch) {
+    const task = String(bgMatch[1] || "").trim();
+    if (!task) {
+      return {
+        kind: "error",
+        output: "usage: bg <task>",
+      };
+    }
+    return {
+      kind: "nl_bg",
+      task,
     };
   }
   const resumeMatch = text.match(/^resume(?:\s+(.+))?$/i);
@@ -1345,6 +1375,8 @@ async function runUcodeCoreAgent({
   });
   return new Promise((resolve) => {
     let chain = Promise.resolve();
+    let backgroundSeq = 0;
+    const backgroundRuns = new Map();
     const subscriberId = String(process.env.UFOO_SUBSCRIBER_ID || "").trim();
     const autoBusEnabled = shouldAutoConsumeBus(subscriberId);
     let autoBusTimer = null;
@@ -1400,6 +1432,38 @@ async function runUcodeCoreAgent({
       scheduleAutoBus();
     }
 
+    const startBackgroundTask = (task = "") => {
+      backgroundSeq += 1;
+      const jobId = `bg-${Date.now().toString(36)}-${backgroundSeq.toString(36)}`;
+      const bgState = {
+        workspaceRoot: state.workspaceRoot,
+        provider: state.provider,
+        model: state.model,
+        engine: state.engine,
+        context: state.context,
+        nlMessages: Array.isArray(state.nlMessages) ? state.nlMessages.slice() : [],
+        sessionId: "",
+        timeoutMs: state.timeoutMs,
+        jsonOutput: false,
+      };
+      const run = runNaturalLanguageTask(task, bgState)
+        .then((nlResult) => {
+          const summary = String(formatNlResult(nlResult, false) || "").trim();
+          const title = nlResult && nlResult.ok ? "done" : "failed";
+          stdout.write(`[${jobId}] ${title}: ${summary || "no summary"}\n`);
+          printPrompt();
+        })
+        .catch((err) => {
+          stdout.write(`[${jobId}] failed: ${err && err.message ? err.message : "background task failed"}\n`);
+          printPrompt();
+        })
+        .finally(() => {
+          backgroundRuns.delete(jobId);
+        });
+      backgroundRuns.set(jobId, run);
+      return jobId;
+    };
+
     const handleLine = async (line) => {
       const runtimeWorkspace = String(state.workspaceRoot || workspaceRoot || process.cwd());
       const result = runSingleCommand(line, runtimeWorkspace);
@@ -1407,7 +1471,10 @@ async function runUcodeCoreAgent({
         rl.close();
         return;
       }
-      if (result.kind === "help" || result.kind === "probe" || result.kind === "tool" || result.kind === "error") {
+      if (result.kind === "probe") {
+        return;
+      }
+      if (result.kind === "help" || result.kind === "tool" || result.kind === "error") {
         stdout.write(`${result.output}\n`);
       }
       if (result.kind === "ubus") {
@@ -1441,6 +1508,10 @@ async function runUcodeCoreAgent({
         } else {
           stdout.write(`Resumed session ${resumed.sessionId} (${resumed.restoredMessages} messages).\n`);
         }
+      }
+      if (result.kind === "nl_bg") {
+        const jobId = startBackgroundTask(result.task);
+        stdout.write(`[${jobId}] started in background.\n`);
       }
       if (result.kind === "nl") {
         let streamBuffer = null;

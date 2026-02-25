@@ -65,7 +65,7 @@ async function runOnlineToken(subscriber, opts = {}) {
   const { generateToken, setToken, defaultTokensPath } = require("../online/tokens");
   const filePath = opts.file || defaultTokensPath();
   const token = generateToken();
-  const entry = setToken(filePath, subscriber, token, opts.server || "", {
+  const entry = setToken(filePath, subscriber, token, opts.server || "https://online.ufoo.dev", {
     nickname: opts.nickname || "",
   });
   console.log(JSON.stringify({
@@ -79,7 +79,7 @@ async function runOnlineToken(subscriber, opts = {}) {
 }
 
 async function runOnlineRoom(action, opts = {}, onlineAuthHeaders) {
-  const base = opts.server || "http://127.0.0.1:8787";
+  const base = opts.server || "https://online.ufoo.dev";
   const endpoint = `${base.replace(/\/$/, "")}/ufoo/online/rooms`;
   const authHeaders = buildAuthHeaders(onlineAuthHeaders, {
     authToken: opts.authToken,
@@ -116,7 +116,7 @@ async function runOnlineRoom(action, opts = {}, onlineAuthHeaders) {
 }
 
 async function runOnlineChannel(action, opts = {}, onlineAuthHeaders) {
-  const base = opts.server || "http://127.0.0.1:8787";
+  const base = opts.server || "https://online.ufoo.dev";
   const endpoint = `${base.replace(/\/$/, "")}/ufoo/online/channels`;
   const authHeaders = buildAuthHeaders(onlineAuthHeaders, {
     authToken: opts.authToken,
@@ -160,7 +160,7 @@ async function runOnlineConnect(opts = {}) {
     projectRoot: opts.projectRoot || process.cwd(),
     nickname: opts.nickname,
     subscriberId: opts.subscriber || "",
-    url: opts.url || "ws://127.0.0.1:8787/ufoo/online",
+    url: opts.url || "wss://online.ufoo.dev/ufoo/online",
     token: opts.token || "",
     tokenHash: opts.tokenHash || "",
     tokenFile: opts.tokenFile || "",
@@ -220,12 +220,12 @@ async function runOnlineCommand(subcmd, payload = {}, options = {}) {
       case "token":
         return runOnlineToken(payload.subscriber, {
           nickname: opts.nickname || "",
-          server: opts.server || "",
+          server: opts.server || "https://online.ufoo.dev",
           file: opts.file || "",
         });
       case "room":
         return runOnlineRoom(payload.action, {
-          server: opts.server || "http://127.0.0.1:8787",
+          server: opts.server || "https://online.ufoo.dev",
           authToken: opts.authToken || "",
           tokenFile: opts.tokenFile || "",
           subscriber: opts.subscriber || "",
@@ -236,7 +236,7 @@ async function runOnlineCommand(subcmd, payload = {}, options = {}) {
         }, onlineAuthHeaders);
       case "channel":
         return runOnlineChannel(payload.action, {
-          server: opts.server || "http://127.0.0.1:8787",
+          server: opts.server || "https://online.ufoo.dev",
           authToken: opts.authToken || "",
           tokenFile: opts.tokenFile || "",
           subscriber: opts.subscriber || "",
@@ -297,14 +297,14 @@ async function runOnlineCommand(subcmd, payload = {}, options = {}) {
       const subscriber = argv[1];
       return runOnlineToken(subscriber, {
         nickname: getFallbackOpt(argv, "--nickname"),
-        server: getFallbackOpt(argv, "--server"),
+        server: getFallbackOpt(argv, "--server") || "https://online.ufoo.dev",
         file: getFallbackOpt(argv, "--file"),
       });
     }
     case "room": {
       const action = argv[1] || "";
       return runOnlineRoom(action, {
-        server: getFallbackOpt(argv, "--server") || "http://127.0.0.1:8787",
+        server: getFallbackOpt(argv, "--server") || "https://online.ufoo.dev",
         authToken: getFallbackOpt(argv, "--auth-token"),
         tokenFile: getFallbackOpt(argv, "--token-file"),
         subscriber: getFallbackOpt(argv, "--subscriber"),
@@ -318,7 +318,7 @@ async function runOnlineCommand(subcmd, payload = {}, options = {}) {
       const action = argv[1] || "";
       const defaultChannelType = options.defaultChannelType || "public";
       return runOnlineChannel(action, {
-        server: getFallbackOpt(argv, "--server") || "http://127.0.0.1:8787",
+        server: getFallbackOpt(argv, "--server") || "https://online.ufoo.dev",
         authToken: getFallbackOpt(argv, "--auth-token"),
         tokenFile: getFallbackOpt(argv, "--token-file"),
         subscriber: getFallbackOpt(argv, "--subscriber"),
@@ -339,7 +339,7 @@ async function runOnlineCommand(subcmd, payload = {}, options = {}) {
         projectRoot: options.projectRoot || process.cwd(),
         nickname: getFallbackOpt(argv, "--nickname"),
         subscriber: getFallbackOpt(argv, "--subscriber"),
-        url: getFallbackOpt(argv, "--url") || "ws://127.0.0.1:8787/ufoo/online",
+        url: getFallbackOpt(argv, "--url") || "wss://online.ufoo.dev/ufoo/online",
         token: getFallbackOpt(argv, "--token"),
         tokenHash: getFallbackOpt(argv, "--token-hash"),
         tokenFile: getFallbackOpt(argv, "--token-file"),

@@ -468,7 +468,7 @@ function runUcodeTui({
 } = {}) {
   return new Promise((resolve) => {
     const blessed = require("blessed");
-    const { execSync } = require("child_process");
+    const { execFileSync } = require("child_process");
     const { createChatLayout } = require("../chat/layout");
     const { computeDashboardContent } = require("../chat/dashboardView");
     const { escapeBlessed, stripBlessedTags } = require("../chat/text");
@@ -490,6 +490,8 @@ function runUcodeTui({
     let agentListWindowStart = 0;
     let agentSelectionMode = false;
     let pendingTask = null;
+    const backgroundTasks = new Map();
+    let backgroundSeq = 0;
     const logRenderState = { inCodeBlock: false };
     const inputHistory = [];
     let historyIndex = -1;
@@ -900,12 +902,27 @@ function runUcodeTui({
     };
 
     const updateStatus = (message = "", type = "thinking", options = {}) => {
+      const getBackgroundSuffix = () => {
+        if (!backgroundTasks || backgroundTasks.size === 0) return "";
+        let running = 0;
+        let done = 0;
+        let failed = 0;
+        for (const task of backgroundTasks.values()) {
+          const status = String(task && task.status || "").trim().toLowerCase();
+          if (status === "running") running += 1;
+          else if (status === "done") done += 1;
+          else if (status === "failed") failed += 1;
+        }
+        const total = running + done + failed;
+        if (total <= 0) return "";
+        return ` · BG ${running}/${done}/${failed}`;
+      };
       if (statusInterval) {
         clearInterval(statusInterval);
         statusInterval = null;
       }
       if (!message) {
-        statusLine.setContent("{bold}UCODE{/bold} · Ready");
+        statusLine.setContent(escapeBlessed(`UCODE · Ready${getBackgroundSuffix()}`));
         screen.render();
         return;
       }
@@ -918,7 +935,7 @@ function runUcodeTui({
         const timerText = showTimer
           ? ` (${formatPendingElapsed(Date.now() - startedAt)}，esc cancel)`
           : "";
-        statusLine.setContent(escapeBlessed(`${indicator} ${message}${timerText}`));
+        statusLine.setContent(escapeBlessed(`${indicator} ${message}${timerText}${getBackgroundSuffix()}`));
         statusIndex += 1;
         screen.render();
       };
@@ -1082,7 +1099,7 @@ function runUcodeTui({
       if (isBusMessage && targetAgent) {
         updateStatus("Sending message...", "typing");
         try {
-          execSync(`ufoo bus send "${targetAgent}" "${actualLine.replace(/"/g, '\\"')}"`, {
+          execFileSync("ufoo", ["bus", "send", targetAgent, actualLine], {
             cwd: workspaceRoot,
             encoding: "utf8",
           });
@@ -1118,7 +1135,10 @@ function runUcodeTui({
         }, payload);
         return;
       }
-      if (result.kind === "help" || result.kind === "probe" || result.kind === "error") {
+      if (result.kind === "probe") {
+        return;
+      }
+      if (result.kind === "help" || result.kind === "error") {
         logText(result.output || "");
         return;
       }
@@ -1163,6 +1183,54 @@ function runUcodeTui({
           return;
         }
         logText(`Resumed session ${resumed.sessionId} (${resumed.restoredMessages} messages).`);
+        return;
+      }
+
+      if (result.kind === "nl_bg") {
+        backgroundSeq += 1;
+        const jobId = `bg-${Date.now().toString(36)}-${backgroundSeq.toString(36)}`;
+        const taskRecord = {
+          id: jobId,
+          task: result.task,
+          status: "running",
+          startedAt: Date.now(),
+          summary: "",
+        };
+        backgroundTasks.set(jobId, taskRecord);
+        updateStatus("", "none");
+        logText(`[${jobId}] started in background.`);
+
+        const bgState = {
+          workspaceRoot: state.workspaceRoot,
+          provider: state.provider,
+          model: state.model,
+          engine: state.engine,
+          context: state.context,
+          nlMessages: Array.isArray(state.nlMessages) ? state.nlMessages.slice() : [],
+          sessionId: "",
+          timeoutMs: state.timeoutMs,
+          jsonOutput: false,
+        };
+
+        Promise.resolve()
+          .then(() => runNaturalLanguageTask(result.task, bgState))
+          .then((nlResult) => {
+            taskRecord.status = nlResult && nlResult.ok ? "done" : "failed";
+            taskRecord.finishedAt = Date.now();
+            taskRecord.summary = String(formatNlResult(nlResult, false) || "").trim();
+            const title = taskRecord.status === "done" ? "done" : "failed";
+            logText(`[${jobId}] ${title}: ${taskRecord.summary || "no summary"}`);
+          })
+          .catch((err) => {
+            taskRecord.status = "failed";
+            taskRecord.finishedAt = Date.now();
+            taskRecord.summary = err && err.message ? String(err.message) : "background task failed";
+            logText(`[${jobId}] failed: ${taskRecord.summary}`);
+          })
+          .finally(() => {
+            updateStatus("", "none");
+            screen.render();
+          });
         return;
       }
 

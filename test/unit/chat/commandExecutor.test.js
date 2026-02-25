@@ -210,12 +210,12 @@ describe("chat commandExecutor", () => {
     expect(logs.some((entry) => entry.text.includes("Listing recoverable agents (codex-3)"))).toBe(true);
   });
 
-  test("handleCornCommand creates cron task with interval/targets/prompt", async () => {
+  test("handleCronCommand creates cron task with interval/targets/prompt", async () => {
     const { executor, options, logs } = createHarness({
       createCronTask: jest.fn((payload) => ({ id: "c7", ...payload })),
     });
 
-    await executor.handleCornCommand([
+    await executor.handleCronCommand([
       "start",
       "every=10s",
       "target=codex:1,claude:2",
@@ -230,7 +230,7 @@ describe("chat commandExecutor", () => {
     expect(logs.some((entry) => entry.text.includes("Cron started c7: every 10s"))).toBe(true);
   });
 
-  test("handleCornCommand list and stop", async () => {
+  test("handleCronCommand list and stop", async () => {
     const { executor, options, logs } = createHarness({
       listCronTasks: jest.fn(() => [
         { id: "c1", summary: "c1@10s->codex:1: run smoke" },
@@ -238,8 +238,8 @@ describe("chat commandExecutor", () => {
       stopCronTask: jest.fn((id) => id === "c1"),
     });
 
-    await executor.handleCornCommand(["list"]);
-    await executor.handleCornCommand(["stop", "c1"]);
+    await executor.handleCronCommand(["list"]);
+    await executor.handleCronCommand(["stop", "c1"]);
 
     expect(options.listCronTasks).toHaveBeenCalled();
     expect(options.stopCronTask).toHaveBeenCalledWith("c1");
@@ -247,17 +247,40 @@ describe("chat commandExecutor", () => {
     expect(logs.some((entry) => entry.text.includes("Stopped cron task c1"))).toBe(true);
   });
 
-  test("executeCommand routes /corn", async () => {
+  test("executeCommand routes /cron", async () => {
     const { executor, options } = createHarness({
       parseCommand: jest.fn(() => ({
-        command: "corn",
+        command: "cron",
         args: ["start", "every=5s", "target=codex:1", "prompt=ping"],
       })),
       createCronTask: jest.fn(() => ({ id: "c9", intervalMs: 5000, targets: ["codex:1"], prompt: "ping" })),
     });
 
-    await expect(executor.executeCommand("/corn start every=5s target=codex:1 prompt=ping")).resolves.toBe(true);
+    await expect(executor.executeCommand("/cron start every=5s target=codex:1 prompt=ping")).resolves.toBe(true);
     expect(options.createCronTask).toHaveBeenCalled();
+  });
+
+  test("handleCronCommand sends one-time request to daemon cron controller", async () => {
+    const requestCron = jest.fn();
+    const { executor, options } = createHarness({
+      requestCron,
+    });
+
+    await executor.handleCronCommand([
+      "start",
+      "at=2026-02-23 22:15",
+      "target=codex:1",
+      "prompt=run once",
+    ]);
+
+    expect(requestCron).toHaveBeenCalledWith({
+      operation: "start",
+      once_at_ms: Date.parse("2026-02-23T22:15:00"),
+      targets: ["codex:1"],
+      prompt: "run once",
+    });
+    expect(options.schedule).toHaveBeenCalled();
+    expect(options.requestStatus).toHaveBeenCalled();
   });
 
   test("handleDoctorCommand escapes thrown errors", async () => {
@@ -351,5 +374,42 @@ describe("chat commandExecutor", () => {
 
     expect(options.loadUcodeConfig).toHaveBeenCalled();
     expect(logs.some((entry) => entry.text.includes("ucode config:"))).toBe(true);
+  });
+
+  test("handleUfooCommand with marker silently checks messages", async () => {
+    const createBus = jest.fn(() => ({
+      ensureBus: jest.fn(),
+      checkMessages: jest.fn().mockReturnValue([]),
+    }));
+    const { executor, logs } = createHarness({ createBus });
+
+    process.env.UFOO_SUBSCRIBER_ID = "claude-code:test123";
+    await executor.handleUfooCommand(["claude-2"]);
+
+    expect(createBus).toHaveBeenCalledWith("/tmp/ufoo");
+    // Should not log anything for probe markers
+    expect(logs.length).toBe(0);
+  });
+
+  test("handleUfooCommand without args shows protocol documentation", async () => {
+    const { executor, logs } = createHarness();
+
+    await executor.handleUfooCommand([]);
+
+    expect(logs.some((entry) => entry.text.includes("ufoo Protocol"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("This project uses ufoo for agent coordination"))).toBe(true);
+  });
+
+  test("executeCommand routes /ufoo to ufoo handler", async () => {
+    const { executor, options } = createHarness({
+      parseCommand: jest.fn(() => ({ command: "ufoo", args: ["claude-2"] })),
+      createBus: jest.fn(() => ({
+        ensureBus: jest.fn(),
+        checkMessages: jest.fn().mockReturnValue([]),
+      })),
+    });
+
+    const result = await executor.executeCommand("/ufoo claude-2");
+    expect(result).toBe(true);
   });
 });

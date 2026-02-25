@@ -69,6 +69,7 @@ function createCommandExecutor(options = {}) {
     createCronTask = () => null,
     listCronTasks = () => [],
     stopCronTask = () => false,
+    requestCron = null,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     schedule = (fn, ms) => setTimeout(fn, ms),
   } = options;
@@ -419,9 +420,44 @@ function createCommandExecutor(options = {}) {
       .filter(Boolean);
   }
 
-  async function handleCornCommand(args = []) {
+  function parseCronAtMs(raw = "") {
+    const text = String(raw || "").trim();
+    if (!text) return 0;
+
+    if (/^\d+$/.test(text)) {
+      const value = Number.parseInt(text, 10);
+      if (!Number.isFinite(value) || value <= 0) return 0;
+      return text.length <= 10 ? value * 1000 : value;
+    }
+
+    const normalized = text.replace(/\//g, "-");
+    const directMatch = normalized.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::(\d{2}))?$/);
+    if (directMatch) {
+      const seconds = directMatch[3] || "00";
+      const parsed = Date.parse(`${directMatch[1]}T${directMatch[2]}:${seconds}`);
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    const parsed = Date.parse(normalized);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function formatCronAt(ms = 0) {
+    const ts = Number(ms) || 0;
+    if (ts <= 0) return "";
+    const d = new Date(ts);
+    const pad = (v) => String(v).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  async function handleCronCommand(args = []) {
     const action = String(args[0] || "").trim().toLowerCase();
     if (action === "list" || action === "ls") {
+      if (typeof requestCron === "function") {
+        requestCron({ operation: "list" });
+        schedule(requestStatus, 200);
+        return;
+      }
       const tasks = Array.isArray(listCronTasks()) ? listCronTasks() : [];
       if (tasks.length === 0) {
         logMessage("system", "{cyan-fg}Cron:{/cyan-fg} none");
@@ -437,7 +473,12 @@ function createCommandExecutor(options = {}) {
     if (action === "stop" || action === "rm" || action === "remove") {
       const target = String(args[1] || "").trim();
       if (!target) {
-        logMessage("error", "{white-fg}✗{/white-fg} Usage: /corn stop <id|all>");
+        logMessage("error", "{white-fg}✗{/white-fg} Usage: /cron stop <id|all>");
+        return;
+      }
+      if (typeof requestCron === "function") {
+        requestCron({ operation: "stop", id: target });
+        schedule(requestStatus, 200);
         return;
       }
       if (target === "all") {
@@ -464,6 +505,16 @@ function createCommandExecutor(options = {}) {
     const intervalRaw = String(
       kv.every || kv.interval || kv.interval_ms || kv.ms || ""
     ).trim();
+    const atRaw = String(
+      kv.at ||
+      kv.once ||
+      kv.run_at ||
+      kv.runat ||
+      kv.datetime ||
+      kv.date_time ||
+      ((kv.date && kv.time) ? `${kv.date} ${kv.time}` : "") ||
+      ""
+    ).trim();
     const targetsRaw = String(
       kv.target || kv.targets || kv.agent || kv.agents || ""
     ).trim();
@@ -471,23 +522,63 @@ function createCommandExecutor(options = {}) {
       kv.prompt || kv.message || kv.msg || nonKvParts.join(" ") || ""
     ).trim();
 
-    if (!intervalRaw || !targetsRaw || !prompt) {
+    if ((!intervalRaw && !atRaw) || !targetsRaw || !prompt) {
       logMessage(
         "error",
-        "{white-fg}✗{/white-fg} Usage: /corn start every=<10s|5m> target=<agent1,agent2> prompt=\"...\""
+        "{white-fg}✗{/white-fg} Usage: /cron start every=<10s|5m> or at=\"YYYY-MM-DD HH:mm\" target=<agent1,agent2> prompt=\"...\""
       );
       return;
     }
 
-    const intervalMs = parseIntervalMs(intervalRaw);
-    if (!Number.isFinite(intervalMs) || intervalMs < 1000) {
+    if (intervalRaw && atRaw) {
+      logMessage("error", "{white-fg}✗{/white-fg} Use either every=... or at=..., not both");
+      return;
+    }
+
+    const intervalMs = intervalRaw ? parseIntervalMs(intervalRaw) : 0;
+    if (intervalRaw && (!Number.isFinite(intervalMs) || intervalMs < 1000)) {
       logMessage("error", "{white-fg}✗{/white-fg} Invalid interval (min 1s)");
+      return;
+    }
+
+    const atMs = atRaw ? parseCronAtMs(atRaw) : 0;
+    if (atRaw && (!Number.isFinite(atMs) || atMs <= 0)) {
+      logMessage("error", "{white-fg}✗{/white-fg} Invalid one-time schedule, use at=\"YYYY-MM-DD HH:mm\"");
+      return;
+    }
+    if (atMs > 0 && atMs <= Date.now()) {
+      logMessage("error", "{white-fg}✗{/white-fg} One-time schedule must be in the future");
       return;
     }
 
     const targets = parseCronTargets(targetsRaw);
     if (targets.length === 0) {
       logMessage("error", "{white-fg}✗{/white-fg} At least one target agent is required");
+      return;
+    }
+
+    if (typeof requestCron === "function") {
+      if (atMs > 0) {
+        requestCron({
+          operation: "start",
+          once_at_ms: atMs,
+          targets,
+          prompt,
+        });
+      } else {
+        requestCron({
+          operation: "start",
+          interval_ms: intervalMs,
+          targets,
+          prompt,
+        });
+      }
+      schedule(requestStatus, 200);
+      return;
+    }
+
+    if (atMs > 0) {
+      logMessage("error", "{white-fg}✗{/white-fg} One-time cron requires daemon-backed scheduler");
       return;
     }
 
@@ -503,7 +594,7 @@ function createCommandExecutor(options = {}) {
 
     logMessage(
       "system",
-      `{white-fg}✓{/white-fg} Cron started ${task.id}: every ${formatIntervalMs(intervalMs)} -> ${targets.join(", ")}`
+      `{white-fg}✓{/white-fg} Cron started ${task.id}: ${atMs > 0 ? `at ${formatCronAt(atMs)}` : `every ${formatIntervalMs(intervalMs)}`} -> ${targets.join(", ")}`
     );
   }
 
@@ -552,6 +643,39 @@ function createCommandExecutor(options = {}) {
       provider: String(provider || "").trim(),
       baseUrl: String(url || "").trim(),
     });
+  }
+
+  async function handleUfooCommand(args = []) {
+    // Handle /ufoo command (session marker from daemon)
+    // When daemon sends /ufoo <marker>, we should just check for pending messages
+    if (args.length > 0) {
+      // This is a probe marker, check for pending messages
+      const subscriberId = process.env.UFOO_SUBSCRIBER_ID;
+      if (subscriberId) {
+        try {
+          const bus = createBus(projectRoot);
+          bus.ensureBus();
+          const pendingMessages = bus.checkMessages(subscriberId);
+          if (pendingMessages && pendingMessages.length > 0) {
+            logMessage("system", `{cyan-fg}[bus]{/cyan-fg} ${pendingMessages.length} pending message(s)`);
+          }
+        } catch {
+          // Ignore errors when checking messages
+        }
+      }
+      // Don't log anything else for probe markers
+      return;
+    }
+
+    // Without arguments, show ufoo protocol documentation
+    logMessage("system", "{cyan-fg}ufoo Protocol{/cyan-fg}");
+    logMessage("system", "");
+    logMessage("system", "This project uses ufoo for agent coordination:");
+    logMessage("system", "  • Context decisions: /ctx");
+    logMessage("system", "  • Event bus: /bus");
+    logMessage("system", "  • Initialize: /init");
+    logMessage("system", "");
+    logMessage("system", "For detailed documentation, see .ufoo/docs/");
   }
 
   async function handleUcodeConfigCommand(args = []) {
@@ -668,11 +792,14 @@ function createCommandExecutor(options = {}) {
       case "resume":
         await handleResumeCommand(args);
         return true;
-      case "corn":
-        await handleCornCommand(args);
+      case "cron":
+        await handleCronCommand(args);
         return true;
       case "settings":
         await handleSettingsCommand(args);
+        return true;
+      case "ufoo":
+        await handleUfooCommand(args);
         return true;
       default:
         logMessage("error", `{white-fg}✗{/white-fg} Unknown command: /${command}`);
@@ -691,9 +818,10 @@ function createCommandExecutor(options = {}) {
     handleSkillsCommand,
     handleLaunchCommand,
     handleResumeCommand,
-    handleCornCommand,
+    handleCronCommand,
     handleSettingsCommand,
     handleUcodeConfigCommand,
+    handleUfooCommand,
   };
 }
 

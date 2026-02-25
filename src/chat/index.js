@@ -34,7 +34,6 @@ const { createInputListenerController } = require("./inputListenerController");
 const { createDaemonMessageRouter } = require("./daemonMessageRouter");
 const { createChatLogController } = require("./chatLogController");
 const { createPasteController } = require("./pasteController");
-const { createCronScheduler } = require("./cronScheduler");
 const { createAgentViewController } = require("./agentViewController");
 const { createSettingsController } = require("./settingsController");
 const { createChatLayout } = require("./layout");
@@ -87,12 +86,7 @@ async function runChat(projectRoot) {
   let agentProvider = config.agentProvider;
   let assistantEngine = normalizeAssistantEngine(config.assistantEngine);
   let autoResume = config.autoResume !== false;
-  let cronScheduler = {
-    addTask: () => null,
-    listTasks: () => [],
-    stopTask: () => false,
-    stopAll: () => 0,
-  };
+  let cronTasks = [];
 
   // Dynamic input height settings
   // Layout: topLine(1) + content + bottomLine(1) + dashboard(1)
@@ -319,7 +313,6 @@ async function runChat(projectRoot) {
     if (daemonCoordinator) {
       daemonCoordinator.markExit();
     }
-    cronScheduler.stopAll();
     exitAgentView();
     if (screen && screen.program && typeof screen.program.decrst === "function") {
       screen.program.decrst(2004);
@@ -724,21 +717,6 @@ async function runChat(projectRoot) {
     daemonCoordinator.send(req);
   }
 
-  cronScheduler = createCronScheduler({
-    dispatch: ({ taskId, target, message }) => {
-      send({
-        type: IPC_REQUEST_TYPES.BUS_SEND,
-        target,
-        message,
-      });
-      queueStatusLine(`cron:${taskId} -> ${target}`);
-    },
-    onChange: () => {
-      renderDashboard();
-      screen.render();
-    },
-  });
-
   function updatePromptBox() {
     if (targetAgent) {
       const label = getAgentLabel(targetAgent);
@@ -907,7 +885,7 @@ async function runChat(projectRoot) {
       selectedProviderIndex,
       selectedAssistantIndex,
       selectedResumeIndex,
-      cronTasks: cronScheduler.listTasks(),
+      cronTasks,
       providerOptions,
       assistantOptions,
       resumeOptions,
@@ -923,6 +901,7 @@ async function runChat(projectRoot) {
     reportPendingTotal = Number.isFinite(status?.reports?.pending_total)
       ? status.reports.pending_total
       : 0;
+    cronTasks = Array.isArray(status?.cron?.tasks) ? status.cron.tasks : [];
     const metaList = Array.isArray(status.active_meta) ? status.active_meta : [];
     let fallbackMap = null;
     if (metaList.length === 0 && activeAgents.length > 0) {
@@ -1018,7 +997,7 @@ async function runChat(projectRoot) {
     agentProvider: { get: () => agentProvider },
     assistantEngine: { get: () => assistantEngine },
     autoResume: { get: () => autoResume },
-    cronTasks: { get: () => cronScheduler.listTasks() },
+    cronTasks: { get: () => cronTasks },
     providerOptions: { get: () => providerOptions },
     assistantOptions: { get: () => assistantOptions },
     resumeOptions: { get: () => resumeOptions },
@@ -1225,10 +1204,12 @@ async function runChat(projectRoot) {
     restartDaemon,
     send,
     requestStatus,
-    createCronTask: ({ intervalMs, targets, prompt }) =>
-      cronScheduler.addTask({ intervalMs, targets, prompt }),
-    listCronTasks: () => cronScheduler.listTasks(),
-    stopCronTask: (id) => cronScheduler.stopTask(id),
+    requestCron: (payload = {}) => {
+      send({
+        type: IPC_REQUEST_TYPES.CRON,
+        ...payload,
+      });
+    },
     activateAgent: async (target) => {
       const activator = new AgentActivator(projectRoot);
       await activator.activate(target);

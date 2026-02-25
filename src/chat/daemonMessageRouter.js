@@ -110,6 +110,46 @@ function createDaemonMessageRouter(options = {}) {
       }
     }
 
+    if (payload.cron && typeof payload.cron === "object") {
+      const cron = payload.cron;
+      const operation = String(cron.operation || "").toLowerCase();
+      if (!cron.ok) {
+        logMessage("error", `{white-fg}✗{/white-fg} ${escapeBlessed(cron.error || "cron failed")}`);
+      } else if (operation === "list" || operation === "ls") {
+        const tasks = Array.isArray(cron.tasks) ? cron.tasks : [];
+        if (tasks.length === 0) {
+          logMessage("system", "{cyan-fg}Cron:{/cyan-fg} none");
+        } else {
+          logMessage("system", `{cyan-fg}Cron:{/cyan-fg} ${tasks.length} task(s)`);
+          tasks.forEach((task) => {
+            const summary = task && (task.summary || task.id) ? (task.summary || task.id) : "";
+            if (summary) {
+              logMessage("system", `  • ${escapeBlessed(summary)}`);
+            }
+          });
+        }
+      } else if (operation === "start" && cron.task) {
+        const task = cron.task;
+        if (task.mode === "once") {
+          logMessage(
+            "system",
+            `{white-fg}✓{/white-fg} Cron scheduled ${escapeBlessed(task.id)} at ${escapeBlessed(task.onceAt || String(task.onceAtMs || ""))}`
+          );
+        } else {
+          logMessage(
+            "system",
+            `{white-fg}✓{/white-fg} Cron started ${escapeBlessed(task.id)}: every ${escapeBlessed(task.interval || String(task.intervalMs || ""))}`
+          );
+        }
+      } else if (operation === "stop") {
+        if (cron.id === "all") {
+          logMessage("system", `{white-fg}✓{/white-fg} Stopped ${Number(cron.stopped) || 0} cron task(s)`);
+        } else if (cron.id) {
+          logMessage("system", `{white-fg}✓{/white-fg} Stopped cron task ${escapeBlessed(cron.id)}`);
+        }
+      }
+    }
+
     if (payload.dispatch && payload.dispatch.length > 0) {
       const targets = payload.dispatch.map((d) => d.target || d).join(", ");
       logMessage("dispatch", `{white-fg}→{/white-fg} Dispatched to: ${escapeBlessed(targets)}`);

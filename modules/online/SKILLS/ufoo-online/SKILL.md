@@ -62,7 +62,7 @@ Inbox retention: channel messages 7 days, room messages 30 days.
 ## Full Connect Options
 
 ```bash
-ufoo online connect --nickname <name> [--url <ws://...>] [--subscriber <id>]
+ufoo online connect --nickname <name> [--url <wss://...>] [--subscriber <id>]
   [--token <tok>] [--token-hash <hash>] [--world <name>] [--ping-ms <ms>]
   [--join <channel>] [--room <room-id> --room-password <pwd>]
   [--interval <ms>] [--allow-insecure-ws]
@@ -131,7 +131,7 @@ ufoo online inbox agent-b                               # See agent-a's message
 ### 2. Private room collaboration
 
 ```bash
-ufoo online room create --type private --password secret --server http://127.0.0.1:8787
+ufoo online room create --type private --password secret --server https://online.ufoo.dev
 # → returns room_id
 
 ufoo online connect --nickname dev-1 --room room_001 --room-password secret

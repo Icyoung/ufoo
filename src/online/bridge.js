@@ -129,6 +129,12 @@ function messageSource(msg) {
   return "channel";
 }
 
+function normalizeOnlineSender(from = "") {
+  const text = String(from || "").trim();
+  if (!text) return "remote";
+  return text;
+}
+
 function appendToInbox(nickname, msg) {
   const dir = inboxDir();
   fs.mkdirSync(dir, { recursive: true });
@@ -151,7 +157,7 @@ class OnlineConnect {
     this.projectRoot = options.projectRoot || process.cwd();
     this.nickname = options.nickname || "";
     this.subscriberId = options.subscriberId || autoSubscriberId(this.nickname);
-    this.url = options.url || "ws://127.0.0.1:8787/ufoo/online";
+    this.url = options.url || "wss://online.ufoo.dev/ufoo/online";
     this.world = options.world || "default";
     this.agentType = options.agentType || "ufoo";
     this.tokenFile = options.tokenFile || "";
@@ -322,7 +328,8 @@ class OnlineConnect {
       if (!this.eventBus) return;
       const from = msg.from || "remote";
       const text = msg.payload.message || "";
-      const decorated = `[${from}] ${text}`.trim();
+      const sender = normalizeOnlineSender(from);
+      const decorated = `[ufoo-online] ${sender}: ${String(text || "").trim()}`;
       try {
         this.eventBus.send("*", decorated, "remote:online");
       } catch {

@@ -33,17 +33,23 @@ describe("chat command helpers", () => {
     expect((settings.subcommands || []).some((sub) => sub.cmd === "ucode")).toBe(true);
   });
 
-  test("corn command is exposed", () => {
-    const corn = COMMAND_REGISTRY.find((item) => item.cmd === "/corn");
-    expect(corn).toBeTruthy();
-    expect((corn.subcommands || []).some((sub) => sub.cmd === "start")).toBe(true);
-    expect((corn.subcommands || []).some((sub) => sub.cmd === "list")).toBe(true);
-    expect((corn.subcommands || []).some((sub) => sub.cmd === "stop")).toBe(true);
+  test("cron command is exposed", () => {
+    const cron = COMMAND_REGISTRY.find((item) => item.cmd === "/cron");
+    expect(cron).toBeTruthy();
+    expect((cron.subcommands || []).some((sub) => sub.cmd === "start")).toBe(true);
+    expect((cron.subcommands || []).some((sub) => sub.cmd === "list")).toBe(true);
+    expect((cron.subcommands || []).some((sub) => sub.cmd === "stop")).toBe(true);
   });
 
   test("ucodeconfig command is not exposed", () => {
     const ucodeconfig = COMMAND_REGISTRY.find((item) => item.cmd === "/ucodeconfig");
     expect(ucodeconfig).toBeFalsy();
+  });
+
+  test("ufoo command is exposed", () => {
+    const ufoo = COMMAND_REGISTRY.find((item) => item.cmd === "/ufoo");
+    expect(ufoo).toBeTruthy();
+    expect(ufoo.desc).toBe("ufoo protocol (session marker)");
   });
 
   test("parseCommand handles quoted args", () => {

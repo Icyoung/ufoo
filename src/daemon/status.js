@@ -65,8 +65,11 @@ function normalizeCronTasks(raw = []) {
   const items = Array.isArray(raw) ? raw : [];
   return items.map((task) => ({
     id: String(task && task.id ? task.id : ""),
+    mode: String(task && task.mode ? task.mode : ((task && task.onceAtMs) ? "once" : "interval")),
     intervalMs: Number(task && task.intervalMs ? task.intervalMs : 0) || 0,
     interval: String(task && task.interval ? task.interval : ""),
+    onceAtMs: Number(task && task.onceAtMs ? task.onceAtMs : 0) || 0,
+    onceAt: String(task && task.onceAt ? task.onceAt : ""),
     targets: Array.isArray(task && task.targets) ? task.targets.slice() : [],
     prompt: String(task && task.prompt ? task.prompt : ""),
     summary: String(task && task.summary ? task.summary : ""),

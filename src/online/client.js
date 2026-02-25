@@ -20,7 +20,7 @@ function waitForOpen(ws, timeoutMs = 5000) {
 class OnlineClient extends EventEmitter {
   constructor(options = {}) {
     super();
-    this.url = options.url || "ws://127.0.0.1:8787/ufoo/online";
+    this.url = options.url || "wss://online.ufoo.dev/ufoo/online";
     this.subscriberId = options.subscriberId || "";
     this.nickname = options.nickname || "";
     this.world = options.world || "default";

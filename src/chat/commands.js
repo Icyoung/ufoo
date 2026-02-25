@@ -27,7 +27,7 @@ const COMMAND_TREE = {
     },
   },
   "/doctor": { desc: "Health check diagnostics" },
-  "/corn": {
+  "/cron": {
     desc: "Cron scheduler operations",
     children: {
       start: { desc: "Create cron task" },
@@ -64,6 +64,7 @@ const COMMAND_TREE = {
     },
   },
   "/status": { desc: "Status display" },
+  "/ufoo": { desc: "ufoo protocol (session marker)" },
 };
 
 const COMMAND_ORDER = ["/launch", "/bus", "/ctx"];
