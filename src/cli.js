@@ -6,6 +6,7 @@ const { socketPath, isRunning } = require("./daemon");
 const { runBusCoreCommand } = require("./cli/busCoreCommands");
 const { runCtxCommand } = require("./cli/ctxCoreCommands");
 const { runOnlineCommand } = require("./cli/onlineCoreCommands");
+const { runGroupCoreCommand } = require("./cli/groupCoreCommands");
 
 function getPackageRoot() {
   return path.resolve(__dirname, "..");
@@ -561,6 +562,189 @@ async function runCli(argv) {
         }
       });
 
+    const group = program.command("group").description("Agent group template commands");
+    group
+      .command("templates")
+      .description("List available group templates")
+      .argument("[action]", "list", "list")
+      .option("--json", "Output as JSON")
+      .action(async (action, opts) => {
+        const normalizedAction = String(action || "list").trim().toLowerCase();
+        if (normalizedAction !== "list" && normalizedAction !== "ls") {
+          console.error(`Unknown group templates action: ${normalizedAction}`);
+          process.exitCode = 1;
+          return;
+        }
+        try {
+          await runGroupCoreCommand("templates", [normalizedAction], {
+            cwd: process.cwd(),
+            json: opts.json,
+          });
+        } catch (err) {
+          console.error(err.message || String(err));
+          process.exitCode = 1;
+        }
+      });
+
+    group
+      .command("template")
+      .description("Group template operations")
+      .argument("<action>", "list|show|validate|new")
+      .argument("[target]", "Template alias (or path for validate)")
+      .option("--from <alias>", "Builtin template alias (for template new)")
+      .option("--global", "Create template in ~/.ufoo/templates/groups")
+      .option("--project", "Create template in .ufoo/templates/groups (default)")
+      .option("--force", "Overwrite existing file (for template new)")
+      .option("--json", "Output as JSON")
+      .action(async (action, target, opts) => {
+        const args = [action];
+        if (target) args.push(target);
+        if (opts.from) args.push("--from", opts.from);
+        if (opts.global) args.push("--global");
+        if (opts.project) args.push("--project");
+        if (opts.force) args.push("--force");
+        if (opts.json) args.push("--json");
+
+        try {
+          await runGroupCoreCommand("template", args, {
+            cwd: process.cwd(),
+            json: opts.json,
+          });
+        } catch (err) {
+          console.error(err.message || String(err));
+          process.exitCode = 1;
+        }
+      });
+
+    group
+      .command("run")
+      .description("Launch an agent group from template")
+      .argument("<alias>", "Template alias")
+      .option("--instance <name>", "Group instance ID")
+      .option("--dry-run", "Validate and compile launch plan without starting agents")
+      .option("--json", "Output daemon response as JSON")
+      .action(async (alias, opts) => {
+        try {
+          const projectRoot = process.cwd();
+          await ensureDaemonRunning(projectRoot);
+          const resp = await sendDaemonRequest(projectRoot, {
+            type: "launch_group",
+            alias,
+            instance: opts.instance || "",
+            dry_run: opts.dryRun === true,
+          });
+          if (opts.json) {
+            console.log(JSON.stringify(resp?.data || {}, null, 2));
+            return;
+          }
+          const reply = resp?.data?.reply || "Group run requested";
+          console.log(reply);
+          if (resp?.data?.group?.ok === false) {
+            process.exitCode = 1;
+          }
+        } catch (err) {
+          console.error(err.message || String(err));
+          process.exitCode = 1;
+        }
+      });
+
+    group
+      .command("status")
+      .description("Show group runtime status (single group or list)")
+      .argument("[groupId]", "Group ID (optional)")
+      .option("--json", "Output daemon response as JSON")
+      .action(async (groupId, opts) => {
+        try {
+          const projectRoot = process.cwd();
+          await ensureDaemonRunning(projectRoot);
+          const resp = await sendDaemonRequest(projectRoot, {
+            type: "group_status",
+            group_id: groupId || "",
+          });
+          if (opts.json) {
+            console.log(JSON.stringify(resp?.data || {}, null, 2));
+            return;
+          }
+          const reply = resp?.data?.reply || "Group status requested";
+          console.log(reply);
+          const group = resp?.data?.group || {};
+          if (groupId && group?.group) {
+            console.log(JSON.stringify(group.group, null, 2));
+          } else if (!groupId && Array.isArray(group?.groups)) {
+            group.groups.forEach((item) => {
+              console.log(`- ${item.group_id} [${item.status}] ${item.template_alias} active=${item.members_active}/${item.members_total}`);
+            });
+          }
+        } catch (err) {
+          console.error(err.message || String(err));
+          process.exitCode = 1;
+        }
+      });
+
+    group
+      .command("diagram")
+      .description("Render group diagram from template alias or group runtime ID")
+      .argument("<target>", "Template alias or group ID")
+      .option("--ascii", "Render ASCII diagram (default)")
+      .option("--mermaid", "Render Mermaid flowchart")
+      .option("--json", "Output daemon response as JSON")
+      .action(async (target, opts) => {
+        try {
+          const projectRoot = process.cwd();
+          await ensureDaemonRunning(projectRoot);
+          const format = opts.mermaid ? "mermaid" : "ascii";
+          const resp = await sendDaemonRequest(projectRoot, {
+            type: "group_diagram",
+            alias: target,
+            group_id: target,
+            format,
+          });
+          if (opts.json) {
+            console.log(JSON.stringify(resp?.data || {}, null, 2));
+            return;
+          }
+          const reply = resp?.data?.reply || "Group diagram requested";
+          console.log(reply);
+          if (resp?.data?.group?.diagram) {
+            console.log(resp.data.group.diagram);
+          }
+          if (resp?.data?.group?.ok === false) {
+            process.exitCode = 1;
+          }
+        } catch (err) {
+          console.error(err.message || String(err));
+          process.exitCode = 1;
+        }
+      });
+
+    group
+      .command("stop")
+      .description("Stop a running group instance")
+      .argument("<groupId>", "Group ID")
+      .option("--json", "Output daemon response as JSON")
+      .action(async (groupId, opts) => {
+        try {
+          const projectRoot = process.cwd();
+          await ensureDaemonRunning(projectRoot);
+          const resp = await sendDaemonRequest(projectRoot, {
+            type: "stop_group",
+            group_id: groupId,
+          });
+          if (opts.json) {
+            console.log(JSON.stringify(resp?.data || {}, null, 2));
+            return;
+          }
+          const reply = resp?.data?.reply || "Group stop requested";
+          console.log(reply);
+          if (resp?.data?.group?.ok === false) {
+            process.exitCode = 1;
+          }
+        } catch (err) {
+          console.error(err.message || String(err));
+          process.exitCode = 1;
+        }
+      });
+
     const online = program.command("online").description("ufoo online helpers");
     online
       .command("server")
@@ -616,6 +800,7 @@ async function runCli(argv) {
       .option("--name <room>", "Room name (optional)")
       .option("--type <type>", "Room type (public|private)")
       .option("--password <pwd>", "Room password (private only)")
+      .option("--created-by <name>", "Room creator nickname metadata")
       .action(async (action, opts) => {
         try {
           await runOnlineCommand("room", { action, opts }, {
@@ -640,6 +825,7 @@ async function runCli(argv) {
       .option("--nickname <name>", "Nickname to resolve token")
       .option("--name <name>", "Channel name (unique)")
       .option("--type <type>", "Channel type (world|public)")
+      .option("--created-by <name>", "Channel creator nickname metadata")
       .action(async (action, opts) => {
         try {
           await runOnlineCommand("channel", { action, opts }, {
@@ -934,11 +1120,17 @@ async function runCli(argv) {
     console.log("  ufoo init [--modules <list>] [--project <dir>]");
     console.log("  ufoo skills list");
     console.log("  ufoo skills install <name|all> [--target <dir> | --codex | --agents]");
+    console.log("  ufoo group templates [list|ls] [--json]");
+    console.log("  ufoo group template <list|show|validate|new> [target] [--from <builtin>] [--global] [--force] [--json]");
+    console.log("  ufoo group run <alias> [--instance <name>] [--dry-run] [--json]");
+    console.log("  ufoo group status [groupId] [--json]");
+    console.log("  ufoo group diagram <alias|groupId> [--ascii|--mermaid] [--json]");
+    console.log("  ufoo group stop <groupId> [--json]");
     console.log("  ufoo online server [--port 8787] [--host 127.0.0.1] [--token-file <path>]");
     console.log("  ufoo online token <subscriber> [--nickname <name>] [--server <url>] [--file <path>]");
-    console.log("  ufoo online room create [--name <room>] --type public|private [--password <pwd>] [--server <url>]");
+    console.log("  ufoo online room create [--name <room>] --type public|private [--password <pwd>] [--created-by <name>] [--server <url>]");
     console.log("  ufoo online room list [--server <url>]");
-    console.log("  ufoo online channel create --name <name> [--type world|public] [--server <url>]");
+    console.log("  ufoo online channel create --name <name> [--type world|public] [--created-by <name>] [--server <url>]");
     console.log("  ufoo online channel list [--server <url>]");
     console.log("  ufoo online connect --nickname <name> [--join <ch>] [--room <id> --room-password <pwd>] [...]");
     console.log("  ufoo online send --nickname <name> --text <msg> [--channel <ch>] [--room <id>]");
@@ -1269,6 +1461,137 @@ async function runCli(argv) {
     }
     help();
     process.exitCode = 1;
+    return;
+  }
+  if (cmd === "group") {
+    const sub = String(rest[0] || "").trim().toLowerCase();
+
+    (async () => {
+      try {
+        if (sub === "templates") {
+          const action = String(rest[1] || "list").trim().toLowerCase();
+          if (action !== "list" && action !== "ls") {
+            throw new Error(`Unknown group templates action: ${action}`);
+          }
+          const json = rest.includes("--json");
+          await runGroupCoreCommand("templates", [action], {
+            cwd: process.cwd(),
+            json,
+          });
+          return;
+        }
+
+        if (sub === "template") {
+          const action = String(rest[1] || "list").trim().toLowerCase();
+          const args = [action, ...rest.slice(2)];
+          const json = rest.includes("--json");
+          await runGroupCoreCommand("template", args, {
+            cwd: process.cwd(),
+            json,
+          });
+          return;
+        }
+
+        if (sub === "run") {
+          const alias = String(rest[1] || "").trim();
+          if (!alias) throw new Error("group run requires <alias>");
+          const instanceIdx = rest.indexOf("--instance");
+          const instance = instanceIdx !== -1 ? String(rest[instanceIdx + 1] || "").trim() : "";
+          const dryRun = rest.includes("--dry-run");
+          const outputJson = rest.includes("--json");
+
+          const projectRoot = process.cwd();
+          await ensureDaemonRunning(projectRoot);
+          const resp = await sendDaemonRequest(projectRoot, {
+            type: "launch_group",
+            alias,
+            instance,
+            dry_run: dryRun,
+          });
+          if (outputJson) {
+            console.log(JSON.stringify(resp?.data || {}, null, 2));
+            return;
+          }
+          console.log(resp?.data?.reply || "Group run requested");
+          if (resp?.data?.group?.ok === false) process.exitCode = 1;
+          return;
+        }
+
+        if (sub === "status") {
+          const groupId = rest[1] && !rest[1].startsWith("--") ? rest[1] : "";
+          const outputJson = rest.includes("--json");
+          const projectRoot = process.cwd();
+          await ensureDaemonRunning(projectRoot);
+          const resp = await sendDaemonRequest(projectRoot, {
+            type: "group_status",
+            group_id: groupId,
+          });
+          if (outputJson) {
+            console.log(JSON.stringify(resp?.data || {}, null, 2));
+            return;
+          }
+          console.log(resp?.data?.reply || "Group status requested");
+          const group = resp?.data?.group || {};
+          if (groupId && group?.group) {
+            console.log(JSON.stringify(group.group, null, 2));
+          } else if (!groupId && Array.isArray(group?.groups)) {
+            group.groups.forEach((item) => {
+              console.log(`- ${item.group_id} [${item.status}] ${item.template_alias} active=${item.members_active}/${item.members_total}`);
+            });
+          }
+          return;
+        }
+
+        if (sub === "stop") {
+          const groupId = String(rest[1] || "").trim();
+          if (!groupId) throw new Error("group stop requires <groupId>");
+          const outputJson = rest.includes("--json");
+          const projectRoot = process.cwd();
+          await ensureDaemonRunning(projectRoot);
+          const resp = await sendDaemonRequest(projectRoot, {
+            type: "stop_group",
+            group_id: groupId,
+          });
+          if (outputJson) {
+            console.log(JSON.stringify(resp?.data || {}, null, 2));
+            return;
+          }
+          console.log(resp?.data?.reply || "Group stop requested");
+          if (resp?.data?.group?.ok === false) process.exitCode = 1;
+          return;
+        }
+
+        if (sub === "diagram") {
+          const target = String(rest[1] || "").trim();
+          if (!target) throw new Error("group diagram requires <alias|groupId>");
+          const outputJson = rest.includes("--json");
+          const format = rest.includes("--mermaid") ? "mermaid" : "ascii";
+          const projectRoot = process.cwd();
+          await ensureDaemonRunning(projectRoot);
+          const resp = await sendDaemonRequest(projectRoot, {
+            type: "group_diagram",
+            alias: target,
+            group_id: target,
+            format,
+          });
+          if (outputJson) {
+            console.log(JSON.stringify(resp?.data || {}, null, 2));
+            return;
+          }
+          console.log(resp?.data?.reply || "Group diagram requested");
+          if (resp?.data?.group?.diagram) {
+            console.log(resp.data.group.diagram);
+          }
+          if (resp?.data?.group?.ok === false) process.exitCode = 1;
+          return;
+        }
+
+        throw new Error("group requires templates|template|run|status|diagram|stop subcommand");
+      } catch (err) {
+        console.error(err.message || String(err));
+        process.exitCode = 1;
+      }
+    })();
     return;
   }
   if (cmd === "online") {

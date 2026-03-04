@@ -1,6 +1,7 @@
 const { runCliAgent } = require("../agent/cliRunner");
 const { normalizeCliOutput } = require("../agent/normalizeOutput");
 const { loadConfig } = require("../config");
+const { DEFAULT_ASSISTANT_TIMEOUT_MS, normalizeAssistantTimeoutMs } = require("./constants");
 
 function normalizeProvider(value, fallback = "codex-cli") {
   const raw = String(value || "").trim().toLowerCase();
@@ -21,6 +22,7 @@ function parseAssistantTaskArgs(argv = []) {
     kind: "mixed",
     context: "",
     expect: "",
+    timeoutMs: DEFAULT_ASSISTANT_TIMEOUT_MS,
     task: "",
   };
 
@@ -62,6 +64,10 @@ function parseAssistantTaskArgs(argv = []) {
     }
     if (arg === "--expect") {
       options.expect = args[++i] || "";
+      continue;
+    }
+    if (arg === "--timeout-ms") {
+      options.timeoutMs = normalizeAssistantTimeoutMs(args[++i], DEFAULT_ASSISTANT_TIMEOUT_MS);
       continue;
     }
     rest.push(arg);
@@ -187,7 +193,7 @@ async function runEngineTask(taskInput, deps = {}) {
     task: taskInput.task,
     expect: taskInput.expect,
   });
-  const timeoutMs = Number.isFinite(taskInput.timeoutMs) ? taskInput.timeoutMs : 60000;
+  const timeoutMs = normalizeAssistantTimeoutMs(taskInput.timeoutMs, DEFAULT_ASSISTANT_TIMEOUT_MS);
 
   const runOnce = async (sessionId) => runCliAgentImpl({
     provider,
@@ -257,7 +263,7 @@ async function runUfooEngineCli({ argv = [], stdinText = "", deps = {} } = {}) {
       model: options.model,
       sessionId: options.sessionId,
       cwd: options.cwd,
-      timeoutMs: 60000,
+      timeoutMs: normalizeAssistantTimeoutMs(options.timeoutMs, DEFAULT_ASSISTANT_TIMEOUT_MS),
     };
   } else {
     const payload = parseStdinPayload(stdinText);
@@ -281,7 +287,7 @@ async function runUfooEngineCli({ argv = [], stdinText = "", deps = {} } = {}) {
       model: typeof payload.model === "string" ? payload.model : "",
       sessionId: typeof payload.session_id === "string" ? payload.session_id : "",
       cwd: typeof payload.project_root === "string" ? payload.project_root : "",
-      timeoutMs: Number.isFinite(payload.timeout_ms) ? payload.timeout_ms : 60000,
+      timeoutMs: normalizeAssistantTimeoutMs(payload.timeout_ms, DEFAULT_ASSISTANT_TIMEOUT_MS),
     };
   }
 

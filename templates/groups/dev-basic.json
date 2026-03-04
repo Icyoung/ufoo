@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "template": {
+    "id": "software-dev-basic",
+    "alias": "dev-basic",
+    "name": "Software Dev Basic"
+  },
+  "defaults": {
+    "launch_mode": "auto",
+    "start_timeout_ms": 15000
+  },
+  "agents": [
+    {
+      "id": "pm",
+      "nickname": "pm",
+      "type": "codex",
+      "role": "task coordinator",
+      "prompt_profile": "task-breakdown",
+      "accept_from": [],
+      "report_to": [],
+      "startup_order": 1,
+      "depends_on": []
+    },
+    {
+      "id": "architect",
+      "nickname": "architect",
+      "type": "claude",
+      "role": "system architect",
+      "prompt_profile": "architecture-review",
+      "accept_from": [
+        "pm"
+      ],
+      "report_to": [
+        "pm"
+      ],
+      "startup_order": 2,
+      "depends_on": [
+        "pm"
+      ]
+    },
+    {
+      "id": "builder",
+      "nickname": "builder",
+      "type": "codex",
+      "role": "implementation engineer",
+      "prompt_profile": "code-implement",
+      "accept_from": [
+        "pm",
+        "architect"
+      ],
+      "report_to": [
+        "pm"
+      ],
+      "startup_order": 3,
+      "depends_on": [
+        "pm",
+        "architect"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "pm",
+      "to": "architect",
+      "kind": "task"
+    },
+    {
+      "from": "pm",
+      "to": "builder",
+      "kind": "task"
+    },
+    {
+      "from": "architect",
+      "to": "builder",
+      "kind": "review"
+    }
+  ]
+}

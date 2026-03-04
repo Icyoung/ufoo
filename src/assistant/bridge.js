@@ -1,5 +1,10 @@
 const { spawn } = require("child_process");
 const path = require("path");
+const {
+  DEFAULT_ASSISTANT_TIMEOUT_MS,
+  DEFAULT_ASSISTANT_TIMEOUT_GRACE_MS,
+  normalizeAssistantTimeoutMs,
+} = require("./constants");
 
 function resolveAssistantCommand() {
   const raw = String(process.env.UFOO_ASSISTANT_CMD || "ufoo-assistant-agent").trim();
@@ -70,10 +75,11 @@ async function runAssistantTask({
   kind = "mixed",
   context = "",
   expect = "",
-  timeoutMs = 60000,
+  timeoutMs = DEFAULT_ASSISTANT_TIMEOUT_MS,
 } = {}) {
   return new Promise((resolve) => {
     const startedAt = Date.now();
+    const effectiveTimeoutMs = normalizeAssistantTimeoutMs(timeoutMs, DEFAULT_ASSISTANT_TIMEOUT_MS);
     const { command, args } = resolveAssistantCommand();
     const payload = {
       request_id: `assistant-${startedAt}`,
@@ -85,7 +91,7 @@ async function runAssistantTask({
       kind,
       context,
       expect,
-      timeout_ms: timeoutMs,
+      timeout_ms: effectiveTimeoutMs,
     };
 
     const child = spawn(command, args, {
@@ -117,7 +123,7 @@ async function runAssistantTask({
         error: "assistant timeout",
         metrics: { duration_ms: Date.now() - startedAt },
       });
-    }, timeoutMs);
+    }, effectiveTimeoutMs + DEFAULT_ASSISTANT_TIMEOUT_GRACE_MS);
 
     child.on("error", (err) => {
       clearTimeout(timer);

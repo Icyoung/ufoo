@@ -1,5 +1,6 @@
 const { spawn } = require("child_process");
 const { loadConfig, normalizeAssistantEngine } = require("../config");
+const { DEFAULT_ASSISTANT_TIMEOUT_MS, normalizeAssistantTimeoutMs } = require("./constants");
 
 function splitCommand(raw, fallback = "ufoo-engine") {
   const text = String(raw || "").trim();
@@ -103,6 +104,9 @@ function buildExternalEngineArgs(engine = {}, payload = {}) {
   if (payload.kind) args.push("--kind", String(payload.kind));
   if (payload.context) args.push("--context", String(payload.context));
   if (payload.expect) args.push("--expect", String(payload.expect));
+  if (Number.isFinite(payload.timeout_ms)) {
+    args.push("--timeout-ms", String(normalizeAssistantTimeoutMs(payload.timeout_ms)));
+  }
   args.push(String(payload.task || ""));
   return args;
 }
@@ -115,9 +119,10 @@ function extractSessionId(parsed) {
 async function runExternalAssistantEngine({
   engine,
   payload,
-  timeoutMs = 60000,
+  timeoutMs = DEFAULT_ASSISTANT_TIMEOUT_MS,
 }) {
   const startedAt = Date.now();
+  const effectiveTimeoutMs = normalizeAssistantTimeoutMs(timeoutMs, DEFAULT_ASSISTANT_TIMEOUT_MS);
 
   const runAttempt = (attempt = {}) => new Promise((resolve) => {
     const child = spawn(engine.command, attempt.args || [], {
@@ -149,7 +154,7 @@ async function runExternalAssistantEngine({
         stderr,
         error: "assistant engine timeout",
       });
-    }, timeoutMs);
+    }, effectiveTimeoutMs);
 
     child.on("error", (err) => {
       clearTimeout(timer);

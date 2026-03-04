@@ -61,6 +61,7 @@ function createHarness(overrides = {}) {
     createCronTask: jest.fn((payload) => ({ id: "c1", ...payload, summary: "c1@10s->codex:1: run" })),
     listCronTasks: jest.fn(() => []),
     stopCronTask: jest.fn(() => false),
+    runGroupCore: jest.fn().mockResolvedValue(undefined),
     sleep: jest.fn(() => Promise.resolve()),
     schedule: jest.fn((fn) => fn()),
   };
@@ -162,7 +163,21 @@ describe("chat commandExecutor", () => {
     });
     expect(options.schedule).toHaveBeenCalled();
     expect(options.requestStatus).toHaveBeenCalled();
-    expect(logs.some((entry) => entry.text.includes("Launching codex (neo)"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("Launching codex"))).toBe(false);
+  });
+
+  test("handleLaunchCommand reports send failure without scheduling refresh", async () => {
+    const { executor, options, logs } = createHarness({
+      send: jest.fn(() => {
+        throw new Error("socket closed");
+      }),
+    });
+
+    await executor.handleLaunchCommand(["codex"]);
+
+    expect(options.schedule).not.toHaveBeenCalled();
+    expect(options.requestStatus).not.toHaveBeenCalled();
+    expect(logs.some((entry) => entry.text.includes("Launch failed: ESC(socket closed)"))).toBe(true);
   });
 
   test("handleLaunchCommand rejects nickname with count > 1", async () => {
@@ -268,19 +283,106 @@ describe("chat commandExecutor", () => {
 
     await executor.handleCronCommand([
       "start",
-      "at=2026-02-23 22:15",
+      "at=2030-02-23 22:15",
       "target=codex:1",
       "prompt=run once",
     ]);
 
     expect(requestCron).toHaveBeenCalledWith({
       operation: "start",
-      once_at_ms: Date.parse("2026-02-23T22:15:00"),
+      once_at_ms: Date.parse("2030-02-23T22:15:00"),
       targets: ["codex:1"],
       prompt: "run once",
     });
     expect(options.schedule).toHaveBeenCalled();
     expect(options.requestStatus).toHaveBeenCalled();
+  });
+
+  test("handleGroupCommand run sends launch_group request", async () => {
+    const { executor, options } = createHarness();
+
+    await executor.handleGroupCommand(["run", "dev-basic", "instance=team-a", "dry_run=true"]);
+
+    expect(options.send).toHaveBeenCalledWith({
+      type: "launch_group",
+      alias: "dev-basic",
+      instance: "team-a",
+      dry_run: true,
+    });
+    expect(options.schedule).toHaveBeenCalled();
+    expect(options.requestStatus).toHaveBeenCalled();
+  });
+
+  test("handleGroupCommand status/stop/validate/diagram send daemon requests", async () => {
+    const { executor, options } = createHarness();
+
+    await executor.handleGroupCommand(["status", "dev-basic-abc"]);
+    await executor.handleGroupCommand(["stop", "dev-basic-abc"]);
+    await executor.handleGroupCommand(["template", "validate", "dev-basic"]);
+    await executor.handleGroupCommand(["diagram", "dev-basic", "format=mermaid"]);
+
+    expect(options.send).toHaveBeenNthCalledWith(1, {
+      type: "group_status",
+      group_id: "dev-basic-abc",
+    });
+    expect(options.send).toHaveBeenNthCalledWith(2, {
+      type: "stop_group",
+      group_id: "dev-basic-abc",
+    });
+    expect(options.send).toHaveBeenNthCalledWith(3, {
+      type: "group_template_validate",
+      target: "dev-basic",
+      alias: "dev-basic",
+      path: "dev-basic",
+    });
+    expect(options.send).toHaveBeenNthCalledWith(4, {
+      type: "group_diagram",
+      alias: "dev-basic",
+      group_id: "dev-basic",
+      format: "mermaid",
+    });
+  });
+
+  test("handleGroupCommand diagram requires target", async () => {
+    const { executor, options, logs } = createHarness();
+
+    await executor.handleGroupCommand(["diagram"]);
+
+    expect(options.send).not.toHaveBeenCalled();
+    expect(logs.some((entry) => entry.text.includes("Usage: /group diagram <alias|groupId>"))).toBe(true);
+  });
+
+  test("handleGroupCommand uses group core helper for template listing", async () => {
+    const runGroupCore = jest.fn(async (_sub, _args, runtime) => {
+      runtime.write("line one");
+      runtime.write("line two");
+    });
+    const { executor, options, logs } = createHarness({ runGroupCore });
+
+    await executor.handleGroupCommand(["templates"]);
+
+    expect(options.runGroupCore).toHaveBeenCalledWith(
+      "templates",
+      ["list"],
+      expect.objectContaining({
+        cwd: "/tmp/ufoo",
+        write: expect.any(Function),
+      })
+    );
+    expect(logs.some((entry) => entry.text.includes("ESC(line one)"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("ESC(line two)"))).toBe(true);
+  });
+
+  test("executeCommand routes /group", async () => {
+    const { executor, options } = createHarness({
+      parseCommand: jest.fn(() => ({ command: "group", args: ["status", "g1"] })),
+    });
+
+    await expect(executor.executeCommand("/group status g1")).resolves.toBe(true);
+    expect(options.send).toHaveBeenCalledWith({
+      type: "group_status",
+      group_id: "g1",
+    });
   });
 
   test("handleDoctorCommand escapes thrown errors", async () => {

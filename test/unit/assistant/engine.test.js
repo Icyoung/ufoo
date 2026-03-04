@@ -186,6 +186,7 @@ describe("assistant engine resolver", () => {
         project_root: "/repo",
         context: "ctx",
         expect: "exp",
+        timeout_ms: 90000,
       }
     );
 
@@ -205,6 +206,8 @@ describe("assistant engine resolver", () => {
       "ctx",
       "--expect",
       "exp",
+      "--timeout-ms",
+      "90000",
       "scan repo",
     ]);
   });

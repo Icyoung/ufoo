@@ -57,7 +57,10 @@ Value: cname.vercel-dns.com
 ```
 landing/
 ├── index.html      # Main landing page
+├── online.html     # ufoo online showcase page
 ├── style.css       # Styles (Terminal/Hacker aesthetic)
+├── online.css      # Styles (ufoo online preview)
+├── online.js       # Real online API + WebSocket binding
 ├── package.json    # Package config
 ├── vercel.json     # Vercel deployment config
 ├── scripts/

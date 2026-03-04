@@ -74,6 +74,109 @@ function createDaemonMessageRouter(options = {}) {
     return false;
   }
 
+  function logGroupMembers(members = []) {
+    if (!Array.isArray(members) || members.length === 0) return;
+    members.forEach((member) => {
+      const nickname = member && member.nickname ? member.nickname : (member && member.template_agent_id ? member.template_agent_id : "unknown");
+      const type = member && member.type ? ` [${member.type}]` : "";
+      const status = member && member.status ? ` (${member.status})` : "";
+      const subscriber = member && member.subscriber_id ? ` -> ${member.subscriber_id}` : "";
+      logMessage(
+        "system",
+        `  • ${escapeBlessed(`${nickname}${type}${status}${subscriber}`)}`
+      );
+    });
+  }
+
+  function parseGroupErrorEntry(err) {
+    const errPath = err && (err.path || err.filePath) ? (err.path || err.filePath) : "template";
+    const errMessage = err && (err.message || err.error) ? (err.message || err.error) : "validation error";
+    return { errPath, errMessage };
+  }
+
+  function logGroupPayload(group) {
+    if (!group || typeof group !== "object") return;
+
+    if (typeof group.diagram === "string" && group.diagram) {
+      const mode = group.mode ? ` ${group.mode}` : "";
+      const format = group.format ? ` ${group.format}` : "";
+      logMessage("system", `{cyan-fg}Group diagram:{/cyan-fg} ${escapeBlessed(`${mode}${format}`.trim())}`);
+      group.diagram.split(/\r?\n/).forEach((line) => {
+        logMessage("system", escapeBlessed(line));
+      });
+      return;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(group, "target") && Array.isArray(group.errors)) {
+      if (group.ok) {
+        const alias = group.alias || group.target || "";
+        const source = group.source ? ` (${group.source})` : "";
+        logMessage("system", `{white-fg}✓{/white-fg} Group template valid: ${escapeBlessed(`${alias}${source}`)}`);
+      } else {
+        logMessage("error", `{white-fg}✗{/white-fg} Group template invalid: ${escapeBlessed(group.target || group.alias || "unknown")}`);
+        group.errors.forEach((err) => {
+          const { errPath, errMessage } = parseGroupErrorEntry(err);
+          logMessage("error", `  - ${escapeBlessed(`${errPath}: ${errMessage}`)}`);
+        });
+      }
+      return;
+    }
+
+    if (Array.isArray(group.groups)) {
+      logMessage("system", `{cyan-fg}Groups:{/cyan-fg} ${group.groups.length}`);
+      group.groups.forEach((item) => {
+        const id = item && item.group_id ? item.group_id : "unknown";
+        const status = item && item.status ? item.status : "unknown";
+        const alias = item && item.template_alias ? item.template_alias : "-";
+        const active = Number(item && item.members_active) || 0;
+        const total = Number(item && item.members_total) || 0;
+        logMessage(
+          "system",
+          `  • ${escapeBlessed(id)} [${escapeBlessed(status)}] ${escapeBlessed(alias)} active=${active}/${total}`
+        );
+      });
+      return;
+    }
+
+    if (group.group && typeof group.group === "object") {
+      const runtime = group.group;
+      const id = runtime.group_id || group.group_id || "unknown";
+      const status = runtime.status || group.status || "unknown";
+      const alias = runtime.template_alias || group.template_alias || "-";
+      logMessage(
+        "system",
+        `{cyan-fg}Group:{/cyan-fg} ${escapeBlessed(id)} [${escapeBlessed(status)}] ${escapeBlessed(alias)}`
+      );
+      logGroupMembers(runtime.members);
+      if (Array.isArray(group.stopped_agents) && group.stopped_agents.length > 0) {
+        logMessage("system", `{white-fg}Stopped:{/white-fg} ${group.stopped_agents.length} agent(s)`);
+      }
+      return;
+    }
+
+    if (group.group_id && Array.isArray(group.members)) {
+      const status = group.dry_run ? "dry_run" : (group.status || "unknown");
+      const alias = group.template_alias || "-";
+      logMessage(
+        "system",
+        `{cyan-fg}Group:{/cyan-fg} ${escapeBlessed(group.group_id)} [${escapeBlessed(status)}] ${escapeBlessed(alias)}`
+      );
+      logGroupMembers(group.members);
+      return;
+    }
+
+    if (group.ok === false && group.error) {
+      logMessage("error", `{white-fg}✗{/white-fg} ${escapeBlessed(group.error)}`);
+      const validationErrors = Array.isArray(group.validationErrors)
+        ? group.validationErrors
+        : (Array.isArray(group.errors) ? group.errors : []);
+      validationErrors.forEach((err) => {
+        const { errPath, errMessage } = parseGroupErrorEntry(err);
+        logMessage("error", `  - ${escapeBlessed(`${errPath}: ${errMessage}`)}`);
+      });
+    }
+  }
+
   function handleResponseMessage(msg) {
     const payload = msg.data || {};
     if (payload.reply) {
@@ -148,6 +251,10 @@ function createDaemonMessageRouter(options = {}) {
           logMessage("system", `{white-fg}✓{/white-fg} Stopped cron task ${escapeBlessed(cron.id)}`);
         }
       }
+    }
+
+    if (payload.group && typeof payload.group === "object") {
+      logGroupPayload(payload.group);
     }
 
     if (payload.dispatch && payload.dispatch.length > 0) {

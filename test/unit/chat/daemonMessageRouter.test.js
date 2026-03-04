@@ -229,4 +229,121 @@ describe("chat daemonMessageRouter", () => {
     );
     expect(options.requestStatus).toHaveBeenCalled();
   });
+
+  test("response with group list renders group summaries", () => {
+    const { router, options } = createHarness();
+
+    router.handleMessage({
+      type: IPC_RESPONSE_TYPES.RESPONSE,
+      data: {
+        reply: "Group instances: 1",
+        group: {
+          ok: true,
+          count: 1,
+          groups: [
+            {
+              group_id: "dev-basic-ab12",
+              status: "active",
+              template_alias: "dev-basic",
+              members_active: 2,
+              members_total: 2,
+            },
+          ],
+        },
+      },
+    });
+
+    expect(options.logMessage).toHaveBeenCalledWith(
+      "system",
+      "{cyan-fg}Groups:{/cyan-fg} 1"
+    );
+    expect(options.logMessage).toHaveBeenCalledWith(
+      "system",
+      "  • ESC(dev-basic-ab12) [ESC(active)] ESC(dev-basic) active=2/2"
+    );
+  });
+
+  test("response with invalid group template renders validation errors", () => {
+    const { router, options } = createHarness();
+
+    router.handleMessage({
+      type: IPC_RESPONSE_TYPES.RESPONSE,
+      data: {
+        reply: "Template invalid",
+        group: {
+          ok: false,
+          target: "broken.json",
+          errors: [
+            { path: "agents[0].type", message: "type must be one of codex|claude|ucode" },
+          ],
+        },
+      },
+    });
+
+    expect(options.logMessage).toHaveBeenCalledWith(
+      "error",
+      "{white-fg}✗{/white-fg} Group template invalid: ESC(broken.json)"
+    );
+    expect(options.logMessage).toHaveBeenCalledWith(
+      "error",
+      "  - ESC(agents[0].type: type must be one of codex|claude|ucode)"
+    );
+  });
+
+  test("response with invalid group template renders loader errors {filePath,error}", () => {
+    const { router, options } = createHarness();
+
+    router.handleMessage({
+      type: IPC_RESPONSE_TYPES.RESPONSE,
+      data: {
+        reply: "Template invalid",
+        group: {
+          ok: false,
+          target: "dev-basic",
+          errors: [
+            { filePath: "/tmp/dev-basic.json", error: "invalid JSON: Unexpected end of JSON input" },
+          ],
+        },
+      },
+    });
+
+    expect(options.logMessage).toHaveBeenCalledWith(
+      "error",
+      "  - ESC(/tmp/dev-basic.json: invalid JSON: Unexpected end of JSON input)"
+    );
+  });
+
+  test("response with group diagram renders diagram lines", () => {
+    const { router, options } = createHarness();
+
+    router.handleMessage({
+      type: IPC_RESPONSE_TYPES.RESPONSE,
+      data: {
+        reply: "Group diagram",
+        group: {
+          ok: true,
+          mode: "template",
+          format: "ascii",
+          diagram: "Group Diagram (template: dev-basic)\nMembers (1):\n- pm [claude] order=1 deps=-",
+        },
+      },
+    });
+
+    expect(options.logMessage).toHaveBeenCalledWith(
+      "system",
+      "{cyan-fg}Group diagram:{/cyan-fg} ESC(template ascii)"
+    );
+    expect(options.logMessage).toHaveBeenCalledWith(
+      "system",
+      "ESC(Group Diagram (template: dev-basic))"
+    );
+    expect(options.logMessage).toHaveBeenCalledWith(
+      "system",
+      "ESC(Members (1):)"
+    );
+    expect(options.logMessage).toHaveBeenCalledWith(
+      "system",
+      "ESC(- pm [claude] order=1 deps=-)"
+    );
+  });
 });

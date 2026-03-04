@@ -21,6 +21,8 @@ describe("ufoo engine cli", () => {
       "ctx",
       "--expect",
       "exp",
+      "--timeout-ms",
+      "91000",
       "scan",
       "repo",
     ]);
@@ -32,6 +34,7 @@ describe("ufoo engine cli", () => {
       kind: "explore",
       context: "ctx",
       expect: "exp",
+      timeoutMs: 91000,
       task: "scan repo",
     }));
   });

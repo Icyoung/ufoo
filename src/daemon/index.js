@@ -14,6 +14,8 @@ const { getUfooPaths } = require("../ufoo/paths");
 const { scheduleProviderSessionProbe, loadProviderSessionCache } = require("./providerSessions");
 const { createTerminalAdapterRouter } = require("../terminal/adapterRouter");
 const { createDaemonCronController } = require("./cronOps");
+const { createGroupOrchestrator } = require("./groupOrchestrator");
+const { normalizeFormat, renderGroupDiagramFromTemplate, renderGroupDiagramFromRuntime } = require("../group/diagram");
 const { runAssistantTask } = require("../assistant/bridge");
 const { runPromptWithAssistant } = require("./promptLoop");
 const { handlePromptRequest } = require("./promptRequest");
@@ -22,6 +24,7 @@ const { recordAgentReport } = require("./reporting");
 let providerSessions = null;
 let probeHandles = new Map();
 let daemonCronController = null;
+let daemonGroupOrchestrator = null;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -314,6 +317,7 @@ async function handleOps(projectRoot, ops = [], processManager = null) {
             nickname: nickname || undefined,
             agent_id: existing,
             skipped: true,
+            cleaned: Boolean(cleaned),
             message: `Agent '${nickname}' already exists`,
           });
           continue;
@@ -354,7 +358,8 @@ async function handleOps(projectRoot, ops = [], processManager = null) {
           ok: true,
           agent,
           count,
-          nickname: nickname || undefined
+          nickname: nickname || undefined,
+          subscriber_ids: Array.isArray(launchResult.subscriberIds) ? launchResult.subscriberIds.slice() : [],
         });
         if (nickname) {
           // eslint-disable-next-line no-await-in-loop
@@ -680,6 +685,11 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
     },
     log,
   });
+  daemonGroupOrchestrator = createGroupOrchestrator({
+    projectRoot,
+    handleOps,
+    processManager,
+  });
 
   const buildRuntimeStatus = () =>
     buildStatus(projectRoot, {
@@ -991,6 +1001,313 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
           `${JSON.stringify({
             type: IPC_RESPONSE_TYPES.ERROR,
             error: err.message || "launch_agent failed",
+          })}
+`,
+        );
+      }
+      return;
+    }
+    if (req.type === IPC_REQUEST_TYPES.LAUNCH_GROUP) {
+      if (!daemonGroupOrchestrator) {
+        socket.write(
+          `${JSON.stringify({
+            type: IPC_RESPONSE_TYPES.ERROR,
+            error: "group orchestrator unavailable",
+          })}
+`,
+        );
+        return;
+      }
+      const alias = req.alias || req.template || "";
+      const instance = req.instance || req.group_id || "";
+      const dryRun = req.dry_run === true || req.dryRun === true;
+      try {
+        const result = await daemonGroupOrchestrator.runGroup({
+          alias,
+          instance,
+          dry_run: dryRun,
+        });
+        const ok = result && result.ok !== false;
+        let reply = "";
+        if (!ok) {
+          reply = `Group run failed: ${result?.error || "unknown error"}`;
+        } else if (result.dry_run) {
+          reply = `Group dry-run ${result.group_id}: ${Array.isArray(result.members) ? result.members.length : 0} member(s)`;
+        } else {
+          reply = `Group started ${result.group_id}`;
+        }
+        socket.write(
+          `${JSON.stringify({
+            type: IPC_RESPONSE_TYPES.RESPONSE,
+            data: {
+              reply,
+              group: result,
+            },
+          })}
+`,
+        );
+        if (!dryRun) {
+          cleanupInactiveSubscribers();
+          ipcServer.sendToSockets({
+            type: IPC_RESPONSE_TYPES.STATUS,
+            data: buildRuntimeStatus(),
+          });
+        }
+      } catch (err) {
+        socket.write(
+          `${JSON.stringify({
+            type: IPC_RESPONSE_TYPES.ERROR,
+            error: err.message || "launch_group failed",
+          })}
+`,
+        );
+      }
+      return;
+    }
+    if (req.type === IPC_REQUEST_TYPES.STOP_GROUP) {
+      if (!daemonGroupOrchestrator) {
+        socket.write(
+          `${JSON.stringify({
+            type: IPC_RESPONSE_TYPES.ERROR,
+            error: "group orchestrator unavailable",
+          })}
+`,
+        );
+        return;
+      }
+      const groupId = req.group_id || req.groupId || req.instance || "";
+      try {
+        const result = await daemonGroupOrchestrator.stopGroup({ group_id: groupId });
+        const ok = result && result.ok !== false;
+        const reply = ok
+          ? `Stopped group ${result.group_id}`
+          : `Group stop failed: ${result?.error || "unknown error"}`;
+        socket.write(
+          `${JSON.stringify({
+            type: IPC_RESPONSE_TYPES.RESPONSE,
+            data: {
+              reply,
+              group: result,
+            },
+          })}
+`,
+        );
+        cleanupInactiveSubscribers();
+        ipcServer.sendToSockets({
+          type: IPC_RESPONSE_TYPES.STATUS,
+          data: buildRuntimeStatus(),
+        });
+      } catch (err) {
+        socket.write(
+          `${JSON.stringify({
+            type: IPC_RESPONSE_TYPES.ERROR,
+            error: err.message || "stop_group failed",
+          })}
+`,
+        );
+      }
+      return;
+    }
+    if (req.type === IPC_REQUEST_TYPES.GROUP_STATUS) {
+      if (!daemonGroupOrchestrator) {
+        socket.write(
+          `${JSON.stringify({
+            type: IPC_RESPONSE_TYPES.ERROR,
+            error: "group orchestrator unavailable",
+          })}
+`,
+        );
+        return;
+      }
+      const groupId = req.group_id || req.groupId || req.instance || "";
+      try {
+        const result = daemonGroupOrchestrator.getStatus({ group_id: groupId });
+        const ok = result && result.ok !== false;
+        const reply = ok
+          ? (groupId
+            ? `Group ${groupId}: ${result.group?.status || "unknown"}`
+            : `Group instances: ${result.count || 0}`)
+          : `Group status failed: ${result?.error || "unknown error"}`;
+        socket.write(
+          `${JSON.stringify({
+            type: IPC_RESPONSE_TYPES.RESPONSE,
+            data: {
+              reply,
+              group: result,
+            },
+          })}
+`,
+        );
+      } catch (err) {
+        socket.write(
+          `${JSON.stringify({
+            type: IPC_RESPONSE_TYPES.ERROR,
+            error: err.message || "group_status failed",
+          })}
+`,
+        );
+      }
+      return;
+    }
+    if (req.type === IPC_REQUEST_TYPES.GROUP_TEMPLATE_VALIDATE) {
+      if (!daemonGroupOrchestrator) {
+        socket.write(
+          `${JSON.stringify({
+            type: IPC_RESPONSE_TYPES.ERROR,
+            error: "group orchestrator unavailable",
+          })}
+`,
+        );
+        return;
+      }
+      const target = req.alias || req.path || req.target || "";
+      try {
+        const result = daemonGroupOrchestrator.validateTemplateTarget(target);
+        const reply = result.ok
+          ? `Template valid: ${result.entry?.alias || target}`
+          : `Template invalid: ${result.error || "unknown error"}`;
+        socket.write(
+          `${JSON.stringify({
+            type: IPC_RESPONSE_TYPES.RESPONSE,
+            data: {
+              reply,
+              group: {
+                ok: result.ok,
+                target,
+                alias: result.entry?.alias || "",
+                source: result.entry?.source || "",
+                filePath: result.entry?.filePath || "",
+                errors: result.errors || [],
+              },
+            },
+          })}
+`,
+        );
+      } catch (err) {
+        socket.write(
+          `${JSON.stringify({
+            type: IPC_RESPONSE_TYPES.ERROR,
+            error: err.message || "group_template_validate failed",
+          })}
+`,
+        );
+      }
+      return;
+    }
+    if (req.type === IPC_REQUEST_TYPES.GROUP_DIAGRAM) {
+      if (!daemonGroupOrchestrator) {
+        socket.write(
+          `${JSON.stringify({
+            type: IPC_RESPONSE_TYPES.ERROR,
+            error: "group orchestrator unavailable",
+          })}
+`,
+        );
+        return;
+      }
+      const target = req.group_id || req.groupId || req.instance || req.alias || req.target || "";
+      if (!target) {
+        socket.write(
+          `${JSON.stringify({
+            type: IPC_RESPONSE_TYPES.ERROR,
+            error: "group diagram requires alias|group_id",
+          })}
+`,
+        );
+        return;
+      }
+      const format = normalizeFormat(req.format || (req.mermaid ? "mermaid" : "ascii"));
+      try {
+        const runtimeState = daemonGroupOrchestrator.getStatus({ group_id: target });
+        if (runtimeState && runtimeState.ok === false && runtimeState.error === "invalid group_id") {
+          socket.write(
+            `${JSON.stringify({
+              type: IPC_RESPONSE_TYPES.RESPONSE,
+              data: {
+                reply: "Group diagram failed: invalid group_id",
+                group: {
+                  ok: false,
+                  mode: "runtime",
+                  target,
+                  format,
+                  error: "invalid group_id",
+                },
+              },
+            })}
+`,
+          );
+          return;
+        }
+        if (runtimeState && runtimeState.ok && runtimeState.group) {
+          const diagram = renderGroupDiagramFromRuntime(runtimeState.group, { format });
+          socket.write(
+            `${JSON.stringify({
+              type: IPC_RESPONSE_TYPES.RESPONSE,
+              data: {
+                reply: `Group diagram (${format}) for runtime ${target}`,
+                group: {
+                  ok: true,
+                  mode: "runtime",
+                  target,
+                  format,
+                  diagram,
+                  group_id: runtimeState.group.group_id || target,
+                  status: runtimeState.group.status || "",
+                },
+              },
+            })}
+`,
+          );
+          return;
+        }
+
+        const templateState = daemonGroupOrchestrator.validateTemplateTarget(target, { allowPath: false });
+        if (!templateState || !templateState.ok || !templateState.entry) {
+          socket.write(
+            `${JSON.stringify({
+              type: IPC_RESPONSE_TYPES.RESPONSE,
+              data: {
+                reply: `Group diagram failed: ${templateState?.error || "template not found"}`,
+                group: {
+                  ok: false,
+                  mode: "template",
+                  target,
+                  format,
+                  error: templateState?.error || "template not found",
+                  errors: templateState?.errors || [],
+                },
+              },
+            })}
+`,
+          );
+          return;
+        }
+
+        const diagram = renderGroupDiagramFromTemplate(templateState.entry.data, { format });
+        socket.write(
+          `${JSON.stringify({
+            type: IPC_RESPONSE_TYPES.RESPONSE,
+            data: {
+              reply: `Group diagram (${format}) for template ${templateState.entry.alias || target}`,
+              group: {
+                ok: true,
+                mode: "template",
+                target,
+                format,
+                diagram,
+                alias: templateState.entry.alias || "",
+                source: templateState.entry.source || "",
+                filePath: templateState.entry.filePath || "",
+              },
+            },
+          })}
+`,
+        );
+      } catch (err) {
+        socket.write(
+          `${JSON.stringify({
+            type: IPC_RESPONSE_TYPES.ERROR,
+            error: err.message || "group_diagram failed",
           })}
 `,
         );
@@ -1309,6 +1626,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
       daemonCronController.stopAll();
       daemonCronController = null;
     }
+    daemonGroupOrchestrator = null;
 
     // 清理所有子进程
     processManager.cleanup();

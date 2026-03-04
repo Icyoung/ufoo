@@ -79,11 +79,58 @@ function normalizeCronTasks(raw = []) {
   }));
 }
 
+function readGroups(projectRoot) {
+  const groupsDir = getUfooPaths(projectRoot).groupsDir;
+  if (!groupsDir || !fs.existsSync(groupsDir)) {
+    return { count: 0, active: 0, failed: 0, stopped: 0, items: [] };
+  }
+
+  const items = [];
+  try {
+    const files = fs.readdirSync(groupsDir)
+      .filter((name) => name.endsWith(".json"))
+      .sort((a, b) => a.localeCompare(b, "en", { sensitivity: "base" }));
+    for (const file of files) {
+      const filePath = path.join(groupsDir, file);
+      try {
+        const raw = JSON.parse(fs.readFileSync(filePath, "utf8"));
+        const members = Array.isArray(raw.members) ? raw.members : [];
+        const membersActive = members.filter((item) => item && (item.status === "active" || item.status === "reused")).length;
+        items.push({
+          group_id: String(raw.group_id || path.basename(file, ".json")),
+          status: String(raw.status || "unknown"),
+          template_alias: String(raw.template_alias || ""),
+          updated_at: String(raw.updated_at || ""),
+          members_total: members.length,
+          members_active: membersActive,
+        });
+      } catch {
+        // ignore malformed group state
+      }
+    }
+  } catch {
+    return { count: 0, active: 0, failed: 0, stopped: 0, items: [] };
+  }
+
+  items.sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
+  const active = items.filter((item) => item.status === "active").length;
+  const failed = items.filter((item) => item.status === "failed").length;
+  const stopped = items.filter((item) => item.status === "stopped").length;
+  return {
+    count: items.length,
+    active,
+    failed,
+    stopped,
+    items,
+  };
+}
+
 function buildStatus(projectRoot, options = {}) {
   const bus = readBus(projectRoot);
   const decisions = readDecisions(projectRoot);
   const unread = readUnread(projectRoot);
   const reports = readReportSummary(projectRoot);
+  const groups = readGroups(projectRoot);
   const subscribers = bus ? Object.keys(bus.agents || {}) : [];
   const cronTasks = normalizeCronTasks(options.cronTasks || []);
 
@@ -115,6 +162,7 @@ function buildStatus(projectRoot, options = {}) {
       count: cronTasks.length,
       tasks: cronTasks,
     },
+    groups,
   };
 }
 

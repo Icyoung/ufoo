@@ -3,6 +3,7 @@ const path = require("path");
 const { runCliAgent } = require("../agent/cliRunner");
 const { normalizeCliOutput } = require("../agent/normalizeOutput");
 const { resolveAssistantEngine, runExternalAssistantEngine } = require("./engine");
+const { DEFAULT_ASSISTANT_TIMEOUT_MS, normalizeAssistantTimeoutMs } = require("./constants");
 const { getUfooPaths } = require("../ufoo/paths");
 
 const ASSISTANT_JSON_SCHEMA = {
@@ -36,7 +37,7 @@ function parseTaskPayload(payload = {}) {
   const kind = typeof payload.kind === "string" && payload.kind ? payload.kind : "mixed";
   const context = typeof payload.context === "string" ? payload.context : "";
   const expectText = typeof payload.expect === "string" ? payload.expect : "";
-  const timeoutMs = Number.isFinite(payload.timeout_ms) ? payload.timeout_ms : 60000;
+  const timeoutMs = normalizeAssistantTimeoutMs(payload.timeout_ms, DEFAULT_ASSISTANT_TIMEOUT_MS);
 
   return {
     projectRoot,

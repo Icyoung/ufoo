@@ -9,6 +9,7 @@ const {
   resolveCompletionUrl,
   resolveAnthropicMessagesUrl,
 } = require("../code/nativeRunner");
+const { DEFAULT_ASSISTANT_TIMEOUT_MS } = require("../assistant/constants");
 
 function loadSessionState(projectRoot) {
   const dir = getUfooPaths(projectRoot).agentDir;
@@ -89,7 +90,7 @@ function buildSystemPrompt(context) {
     "Schema:",
     "{",
     '  "reply": "string",',
-    '  "assistant_call": {"kind":"explore|bash|mixed","task":"string","context":"optional","expect":"optional","provider":"codex|claude|ufoo (optional)","model":"optional","timeout_ms":60000},',
+    `  "assistant_call": {"kind":"explore|bash|mixed","task":"string","context":"optional","expect":"optional","provider":"codex|claude|ufoo (optional)","model":"optional","timeout_ms":${DEFAULT_ASSISTANT_TIMEOUT_MS}},`,
     '  "dispatch": [{"target":"broadcast|<agent-id>|<nickname>","message":"string"}],',
     '  "ops": [{"action":"launch|close|rename|cron","agent":"codex|claude|ucode","count":1,"agent_id":"id","nickname":"optional","operation":"start|list|stop","every":"30m","interval_ms":1800000,"target":"agent-id|nickname|csv","targets":["agent-id"],"prompt":"message","id":"task-id|all"}],',
     '  "disambiguate": {"prompt":"string","candidates":[{"agent_id":"id","reason":"string"}]}',

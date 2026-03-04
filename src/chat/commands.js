@@ -35,6 +35,17 @@ const COMMAND_TREE = {
       stop: { desc: "Stop cron task by id or all" },
     },
   },
+  "/group": {
+    desc: "Agent group orchestration",
+    children: {
+      diagram: { desc: "Render group diagram (ascii|mermaid)" },
+      run: { desc: "Launch a group template" },
+      status: { desc: "Show group runtime status" },
+      stop: { desc: "Stop a running group" },
+      template: { desc: "Template ops (list/show/validate/new)" },
+      templates: { desc: "List available templates" },
+    },
+  },
   "/init": { desc: "Initialize modules" },
   "/launch": {
     desc: "Launch new agent",

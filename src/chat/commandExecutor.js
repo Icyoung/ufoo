@@ -2,6 +2,7 @@ const path = require("path");
 const EventBus = require("../bus");
 const { IPC_REQUEST_TYPES } = require("../shared/eventContract");
 const UfooInit = require("../init");
+const { runGroupCoreCommand } = require("../cli/groupCoreCommands");
 const { loadConfig: loadProjectConfig, saveConfig: saveProjectConfig, loadGlobalUcodeConfig, saveGlobalUcodeConfig } = require("../config");
 const { resolveTransport } = require("../code/nativeRunner");
 const { parseIntervalMs, formatIntervalMs } = require("./cronScheduler");
@@ -69,6 +70,7 @@ function createCommandExecutor(options = {}) {
     createCronTask = () => null,
     listCronTasks = () => [],
     stopCronTask = () => false,
+    runGroupCore = runGroupCoreCommand,
     requestCron = null,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     schedule = (fn, ms) => setTimeout(fn, ms),
@@ -381,8 +383,6 @@ function createCommandExecutor(options = {}) {
     }
 
     try {
-      const label = nickname ? ` (${nickname})` : "";
-      logMessage("system", `{white-fg}⚙{/white-fg} Launching ${normalizedAgent}${label}...`);
       send({
         type: IPC_REQUEST_TYPES.LAUNCH_AGENT,
         agent: normalizedAgent,
@@ -411,6 +411,19 @@ function createCommandExecutor(options = {}) {
     logMessage("system", `{white-fg}⚙{/white-fg} Resuming agents${label}...`);
     send({ type: IPC_REQUEST_TYPES.RESUME_AGENTS, target });
     schedule(requestStatus, 1000);
+  }
+
+  function parseKeyValueArgs(args = []) {
+    const parsed = {};
+    for (const raw of args) {
+      if (!raw || !String(raw).includes("=")) continue;
+      const [keyRaw, ...valueParts] = String(raw).split("=");
+      const key = String(keyRaw || "").trim().toLowerCase();
+      const value = valueParts.join("=").trim();
+      if (!key) continue;
+      parsed[key] = value;
+    }
+    return parsed;
   }
 
   function parseCronTargets(raw = "") {
@@ -499,7 +512,7 @@ function createCommandExecutor(options = {}) {
     }
 
     const startArgs = action === "start" ? args.slice(1) : args;
-    const kv = parseUcodeConfigKv(startArgs);
+    const kv = parseKeyValueArgs(startArgs);
     const nonKvParts = startArgs.filter((item) => !String(item || "").includes("="));
 
     const intervalRaw = String(
@@ -598,6 +611,173 @@ function createCommandExecutor(options = {}) {
     );
   }
 
+  function parseBooleanOption(value, fallback = false) {
+    const text = String(value || "").trim().toLowerCase();
+    if (!text) return fallback;
+    if (text === "1" || text === "true" || text === "yes" || text === "y" || text === "on") return true;
+    if (text === "0" || text === "false" || text === "no" || text === "n" || text === "off") return false;
+    return fallback;
+  }
+
+  function logGroupCoreOutput(text) {
+    const lines = String(text || "").split(/\r?\n/);
+    lines.forEach((line) => {
+      logMessage("system", escapeBlessed(line));
+    });
+  }
+
+  async function handleGroupCommand(args = []) {
+    const subcommand = String(args[0] || "").trim().toLowerCase();
+    if (!subcommand) {
+      logMessage(
+        "error",
+        "{white-fg}✗{/white-fg} Usage: /group <templates|template|run|status|stop|diagram> ..."
+      );
+      return;
+    }
+
+    if (subcommand === "templates") {
+      const action = String(args[1] || "list").trim().toLowerCase();
+      if (action !== "list" && action !== "ls") {
+        logMessage("error", `{white-fg}✗{/white-fg} Unknown group templates action: ${escapeBlessed(action)}`);
+        return;
+      }
+      try {
+        await runGroupCore("templates", [action], {
+          cwd: projectRoot,
+          write: logGroupCoreOutput,
+        });
+      } catch (err) {
+        logMessage("error", `{white-fg}✗{/white-fg} Group templates failed: ${escapeBlessed(err.message)}`);
+      }
+      return;
+    }
+
+    if (subcommand === "template") {
+      const action = String(args[1] || "list").trim().toLowerCase();
+      if (action === "validate") {
+        const target = String(args[2] || "").trim();
+        if (!target) {
+          logMessage("error", "{white-fg}✗{/white-fg} Usage: /group template validate <alias|path>");
+          return;
+        }
+        send({
+          type: IPC_REQUEST_TYPES.GROUP_TEMPLATE_VALIDATE,
+          target,
+          alias: target,
+          path: target,
+        });
+        return;
+      }
+      try {
+        await runGroupCore("template", [action, ...args.slice(2)], {
+          cwd: projectRoot,
+          write: logGroupCoreOutput,
+        });
+      } catch (err) {
+        logMessage("error", `{white-fg}✗{/white-fg} Group template failed: ${escapeBlessed(err.message)}`);
+      }
+      return;
+    }
+
+    if (subcommand === "run") {
+      const alias = String(args[1] || "").trim();
+      if (!alias) {
+        logMessage("error", "{white-fg}✗{/white-fg} Usage: /group run <alias> [instance=<name>] [dry_run=true]");
+        return;
+      }
+      const runArgs = args.slice(2);
+      const kv = parseKeyValueArgs(runArgs);
+      let instance = String(kv.instance || kv.group_id || "").trim();
+      const instanceIndex = runArgs.indexOf("--instance");
+      if (instanceIndex !== -1) {
+        instance = String(runArgs[instanceIndex + 1] || "").trim();
+      }
+      let dryRun = runArgs.includes("--dry-run");
+      if (!dryRun && Object.prototype.hasOwnProperty.call(kv, "dry_run")) {
+        dryRun = parseBooleanOption(kv.dry_run, false);
+      }
+      if (!dryRun && Object.prototype.hasOwnProperty.call(kv, "dryrun")) {
+        dryRun = parseBooleanOption(kv.dryrun, false);
+      }
+      send({
+        type: IPC_REQUEST_TYPES.LAUNCH_GROUP,
+        alias,
+        instance,
+        dry_run: dryRun,
+      });
+      schedule(requestStatus, 1000);
+      return;
+    }
+
+    if (subcommand === "status") {
+      const statusArgs = args.slice(1);
+      const kv = parseKeyValueArgs(statusArgs);
+      const groupId = String(
+        kv.group_id ||
+        kv.group ||
+        (statusArgs[0] && !String(statusArgs[0]).includes("=") ? statusArgs[0] : "")
+      ).trim();
+      send({
+        type: IPC_REQUEST_TYPES.GROUP_STATUS,
+        group_id: groupId,
+      });
+      return;
+    }
+
+    if (subcommand === "stop") {
+      const stopArgs = args.slice(1);
+      const kv = parseKeyValueArgs(stopArgs);
+      const groupId = String(
+        kv.group_id ||
+        kv.group ||
+        (stopArgs[0] && !String(stopArgs[0]).includes("=") ? stopArgs[0] : "")
+      ).trim();
+      if (!groupId) {
+        logMessage("error", "{white-fg}✗{/white-fg} Usage: /group stop <groupId>");
+        return;
+      }
+      send({
+        type: IPC_REQUEST_TYPES.STOP_GROUP,
+        group_id: groupId,
+      });
+      schedule(requestStatus, 1000);
+      return;
+    }
+
+    if (subcommand === "diagram") {
+      const diagramArgs = args.slice(1);
+      const kv = parseKeyValueArgs(diagramArgs);
+      const target = String(
+        kv.group_id ||
+        kv.group ||
+        kv.alias ||
+        (diagramArgs[0] && !String(diagramArgs[0]).includes("=") ? diagramArgs[0] : "")
+      ).trim();
+      if (!target) {
+        logMessage("error", "{white-fg}✗{/white-fg} Usage: /group diagram <alias|groupId> [format=ascii|mermaid]");
+        return;
+      }
+      const format = diagramArgs.includes("--mermaid")
+        ? "mermaid"
+        : (diagramArgs.includes("--ascii")
+          ? "ascii"
+          : String(kv.format || "ascii").trim().toLowerCase());
+      send({
+        type: IPC_REQUEST_TYPES.GROUP_DIAGRAM,
+        alias: target,
+        group_id: target,
+        format: format === "mermaid" ? "mermaid" : "ascii",
+      });
+      return;
+    }
+
+    logMessage(
+      "error",
+      "{white-fg}✗{/white-fg} Unknown group command. Use: templates, template, run, status, stop, diagram"
+    );
+  }
+
   async function handleSettingsCommand(args = []) {
     const section = String(args[0] || "").trim().toLowerCase();
     if (!section) {
@@ -619,16 +799,7 @@ function createCommandExecutor(options = {}) {
   }
 
   function parseUcodeConfigKv(args = []) {
-    const parsed = {};
-    for (const raw of args) {
-      if (!raw || !String(raw).includes("=")) continue;
-      const [keyRaw, ...valueParts] = String(raw).split("=");
-      const key = String(keyRaw || "").trim().toLowerCase();
-      const value = valueParts.join("=").trim();
-      if (!key) continue;
-      parsed[key] = value;
-    }
-    return parsed;
+    return parseKeyValueArgs(args);
   }
 
   function maskSecret(value = "") {
@@ -795,6 +966,9 @@ function createCommandExecutor(options = {}) {
       case "cron":
         await handleCronCommand(args);
         return true;
+      case "group":
+        await handleGroupCommand(args);
+        return true;
       case "settings":
         await handleSettingsCommand(args);
         return true;
@@ -819,6 +993,7 @@ function createCommandExecutor(options = {}) {
     handleLaunchCommand,
     handleResumeCommand,
     handleCronCommand,
+    handleGroupCommand,
     handleSettingsCommand,
     handleUcodeConfigCommand,
     handleUfooCommand,

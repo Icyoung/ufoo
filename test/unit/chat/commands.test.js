@@ -41,6 +41,15 @@ describe("chat command helpers", () => {
     expect((cron.subcommands || []).some((sub) => sub.cmd === "stop")).toBe(true);
   });
 
+  test("group command is exposed", () => {
+    const group = COMMAND_REGISTRY.find((item) => item.cmd === "/group");
+    expect(group).toBeTruthy();
+    expect((group.subcommands || []).some((sub) => sub.cmd === "run")).toBe(true);
+    expect((group.subcommands || []).some((sub) => sub.cmd === "status")).toBe(true);
+    expect((group.subcommands || []).some((sub) => sub.cmd === "stop")).toBe(true);
+    expect((group.subcommands || []).some((sub) => sub.cmd === "template")).toBe(true);
+  });
+
   test("ucodeconfig command is not exposed", () => {
     const ucodeconfig = COMMAND_REGISTRY.find((item) => item.cmd === "/ucodeconfig");
     expect(ucodeconfig).toBeFalsy();

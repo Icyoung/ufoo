@@ -332,16 +332,28 @@ async function runPtyRunner({ projectRoot, agentType = "codex" }) {
             const req = JSON.parse(line);
             if (req.type === "inject" && req.command) {
               if (ptyProcess && ptyAlive) {
+                const isClaude = agentType === "claude-code";
                 ptyProcess.write(String(req.command));
-                setTimeout(() => {
-                  if (!ptyProcess || !ptyAlive) return;
-                  ptyProcess.write("\x1b");
+                if (isClaude) {
+                  // Claude Code: send CR directly without ESC.
+                  // ESC before CR is interpreted as Alt+Enter (newline).
                   setTimeout(() => {
                     if (ptyProcess && ptyAlive) {
                       ptyProcess.write("\r");
                     }
-                  }, 100);
-                }, 200);
+                  }, 200);
+                } else {
+                  // Codex/others: ESC dismisses autocomplete, then CR submits.
+                  setTimeout(() => {
+                    if (!ptyProcess || !ptyAlive) return;
+                    ptyProcess.write("\x1b");
+                    setTimeout(() => {
+                      if (ptyProcess && ptyAlive) {
+                        ptyProcess.write("\r");
+                      }
+                    }, 100);
+                  }, 200);
+                }
                 client.write(JSON.stringify({ ok: true }) + "\n");
               } else {
                 client.write(JSON.stringify({ ok: false, error: "pty not ready" }) + "\n");
@@ -744,16 +756,11 @@ async function runPtyRunner({ projectRoot, agentType = "codex" }) {
         setTimeout(() => {
           if (ptyProcess && ptyAlive) {
             outputBuffer = "";
-            // Send ESC first to dismiss any auto-complete/suggestion overlay
-            // in Ink-based TUIs (Claude Code, Codex), then CR to submit.
-            // This matches the inject socket pattern in launcher.js.
-            ptyProcess.write("\x1b");
-            setTimeout(() => {
-              if (ptyProcess && ptyAlive) {
-                ptyProcess.write("\r");
-              }
-              // Fallback: if we never observe the marker in echoed output,
-              // stop suppressing after a short delay to avoid freezing output.
+            const isClaude = agentType === "claude-code";
+            if (isClaude) {
+              // Claude Code: send CR directly without ESC.
+              // ESC before CR is interpreted as Alt+Enter (newline).
+              ptyProcess.write("\r");
               suppressTimer = setTimeout(() => {
                 suppressTimer = null;
                 if (!suppressEcho) return;
@@ -762,7 +769,23 @@ async function runPtyRunner({ projectRoot, agentType = "codex" }) {
                 currentMarker = savedMarker;
                 outputBuffer = "";
               }, 1500);
-            }, 100);
+            } else {
+              // Codex/others: ESC dismisses autocomplete, then CR submits.
+              ptyProcess.write("\x1b");
+              setTimeout(() => {
+                if (ptyProcess && ptyAlive) {
+                  ptyProcess.write("\r");
+                }
+                suppressTimer = setTimeout(() => {
+                  suppressTimer = null;
+                  if (!suppressEcho) return;
+                  suppressEcho = false;
+                  echoMarker = "";
+                  currentMarker = savedMarker;
+                  outputBuffer = "";
+                }, 1500);
+              }, 100);
+            }
           }
         }, 200);
       }

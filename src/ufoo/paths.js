@@ -17,6 +17,7 @@ function getUfooPaths(projectRoot) {
   const busDaemonCountsDir = path.join(busDaemonDir, "counts");
 
   const runDir = path.join(ufooDir, "run");
+  const groupsDir = path.join(ufooDir, "groups");
   const ufooDaemonPid = path.join(runDir, "ufoo-daemon.pid");
   const ufooDaemonLog = path.join(runDir, "ufoo-daemon.log");
   const ufooSock = path.join(runDir, "ufoo.sock");
@@ -35,6 +36,7 @@ function getUfooPaths(projectRoot) {
     busDaemonLog,
     busDaemonCountsDir,
     runDir,
+    groupsDir,
     ufooDaemonPid,
     ufooDaemonLog,
     ufooSock,

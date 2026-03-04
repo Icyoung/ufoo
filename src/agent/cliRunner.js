@@ -678,7 +678,7 @@ async function runCliAgent(params) {
           cwd: params.cwd,
           env,
           input: retryStdin,
-          timeoutMs: params.timeoutMs || 60000,
+          timeoutMs: params.timeoutMs || 300000,
           onStdout: retryParser ? (chunk) => retryParser.onChunk(chunk) : null,
           signal: params.signal,
         });

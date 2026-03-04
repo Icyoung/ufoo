@@ -45,6 +45,9 @@ class OnlineServer extends EventEmitter {
 
     this.rooms = new Map();
     this.roomPasswords = new Map();
+    this.channelMessageHistory = new Map();
+    this.channelHistoryLimit = options.channelHistoryLimit ?? 200;
+    this.eventSeq = 0;
 
     // Step 2 + 3: Payload limits
     this.maxHttpBodyBytes = options.maxHttpBodyBytes ?? 65536; // 64 KB
@@ -77,6 +80,23 @@ class OnlineServer extends EventEmitter {
     // Step 7: TLS support
     this.tlsCert = options.tlsCert || null;
     this.tlsKey = options.tlsKey || null;
+  }
+
+  parseRequestUrl(rawUrl) {
+    try {
+      return new URL(rawUrl || "/", "http://localhost");
+    } catch {
+      return null;
+    }
+  }
+
+  corsHeaders(extra = {}) {
+    return {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Headers": "Authorization, Content-Type",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      ...extra,
+    };
   }
 
   loadTokens(options) {
@@ -117,27 +137,61 @@ class OnlineServer extends EventEmitter {
     }
 
     const requestHandler = (req, res) => {
-      if (!req.url) {
-        res.writeHead(404);
+      const parsedUrl = this.parseRequestUrl(req.url);
+      if (!parsedUrl) {
+        res.writeHead(404, this.corsHeaders());
         res.end();
         return;
       }
 
-      if (req.url.startsWith("/ufoo/online/rooms")) {
+      const pathname = parsedUrl.pathname || "/";
+      const publicMessagesMatch = pathname.match(/^\/ufoo\/online\/public\/channels\/([^/]+)\/messages$/);
+      const privateMessagesMatch = pathname.match(/^\/ufoo\/online\/channels\/([^/]+)\/messages$/);
+
+      if (req.method === "OPTIONS") {
+        res.writeHead(204, this.corsHeaders());
+        res.end();
+        return;
+      }
+
+      if (publicMessagesMatch) {
+        const channelRef = decodeURIComponent(publicMessagesMatch[1] || "");
+        this.handleChannelMessagesRequest(req, res, channelRef, parsedUrl);
+        return;
+      }
+
+      if (privateMessagesMatch) {
+        const channelRef = decodeURIComponent(privateMessagesMatch[1] || "");
+        if (!this.authenticateHttp(req, res)) return;
+        this.handleChannelMessagesRequest(req, res, channelRef, parsedUrl);
+        return;
+      }
+
+      if (pathname === "/ufoo/online/public/channels") {
+        this.handlePublicChannelsRequest(req, res, parsedUrl);
+        return;
+      }
+
+      if (pathname === "/ufoo/online/public/rooms") {
+        this.handlePublicRoomsRequest(req, res, parsedUrl);
+        return;
+      }
+
+      if (pathname.startsWith("/ufoo/online/rooms")) {
         // Step 4: HTTP auth
         if (!this.authenticateHttp(req, res)) return;
         this.handleRoomsRequest(req, res);
         return;
       }
 
-      if (req.url.startsWith("/ufoo/online/channels")) {
+      if (pathname.startsWith("/ufoo/online/channels")) {
         // Step 4: HTTP auth
         if (!this.authenticateHttp(req, res)) return;
         this.handleChannelsRequest(req, res);
         return;
       }
 
-      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.writeHead(200, this.corsHeaders({ "Content-Type": "text/plain" }));
       res.end("ufoo-online: running\n");
     };
 
@@ -258,7 +312,7 @@ class OnlineServer extends EventEmitter {
   }
 
   sendJson(res, statusCode, payload) {
-    res.writeHead(statusCode, { "Content-Type": "application/json" });
+    res.writeHead(statusCode, this.corsHeaders({ "Content-Type": "application/json" }));
     res.end(JSON.stringify(payload));
   }
 
@@ -286,17 +340,123 @@ class OnlineServer extends EventEmitter {
       type: room.type,
       members: room.members.size,
       created_at: room.created_at,
+      created_by: room.created_by || "",
+      password_required: room.type === "private",
     }));
   }
 
   listChannels() {
-    return Array.from(this.channels.entries()).map(([channelId, channel]) => ({
+    return Array.from(this.channels.entries()).map(([channelId, channel]) => {
+      const history = this.channelMessageHistory.get(channelId) || [];
+      const last = history.length > 0 ? history[history.length - 1] : null;
+      return {
+        channel_id: channelId,
+        name: channel.name || "",
+        type: channel.type || "public",
+        members: channel.members.size,
+        created_at: channel.created_at,
+        created_by: channel.created_by || "",
+        message_count: history.length,
+        last_message_at: channel.last_message_at || (last ? last.ts : null),
+      };
+    });
+  }
+
+  listPublicRooms(type = "") {
+    return this.listRooms()
+      .filter((room) => !type || room.type === type)
+      .map((room) => ({
+        room_id: room.room_id,
+        name: room.name || "",
+        type: room.type,
+        created_at: room.created_at,
+        created_by: room.created_by || "",
+        password_required: room.password_required !== false,
+      }));
+  }
+
+  listChannelMessages(channelRef, limit = 80) {
+    const resolved = this.resolveChannel(channelRef);
+    if (!resolved) return null;
+    const history = this.channelMessageHistory.get(resolved.channelId) || [];
+    const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(limit, 500)) : 80;
+    const start = Math.max(0, history.length - safeLimit);
+    return {
+      channel_id: resolved.channelId,
+      name: resolved.channel.name || "",
+      type: resolved.channel.type || "public",
+      messages: history.slice(start),
+    };
+  }
+
+  handlePublicRoomsRequest(req, res, parsedUrl) {
+    if (req.method !== "GET") {
+      this.sendJson(res, 405, { ok: false, error: "Method not allowed" });
+      return;
+    }
+    const type = String(parsedUrl.searchParams.get("type") || "").trim();
+    this.sendJson(res, 200, { ok: true, rooms: this.listPublicRooms(type) });
+  }
+
+  handlePublicChannelsRequest(req, res, parsedUrl) {
+    if (req.method !== "GET") {
+      this.sendJson(res, 405, { ok: false, error: "Method not allowed" });
+      return;
+    }
+    const type = String(parsedUrl.searchParams.get("type") || "").trim();
+    const channels = this.listChannels().filter((channel) => !type || channel.type === type);
+    this.sendJson(res, 200, { ok: true, channels });
+  }
+
+  handleChannelMessagesRequest(req, res, channelRef, parsedUrl) {
+    if (req.method !== "GET") {
+      this.sendJson(res, 405, { ok: false, error: "Method not allowed" });
+      return;
+    }
+    const limitRaw = Number.parseInt(String(parsedUrl.searchParams.get("limit") || "80"), 10);
+    const limit = Number.isFinite(limitRaw) ? limitRaw : 80;
+    const channelData = this.listChannelMessages(channelRef, limit);
+    if (!channelData) {
+      this.sendJson(res, 404, { ok: false, error: "Channel not found" });
+      return;
+    }
+    this.sendJson(res, 200, {
+      ok: true,
+      channel: {
+        channel_id: channelData.channel_id,
+        name: channelData.name,
+        type: channelData.type,
+      },
+      messages: channelData.messages,
+    });
+  }
+
+  recordChannelMessage(channelId, channel, client, eventPayload) {
+    const rawText = eventPayload?.payload?.message;
+    let text = "";
+    if (typeof rawText === "string") text = rawText;
+    else if (rawText !== null && rawText !== undefined) text = JSON.stringify(rawText);
+    if (!text) return;
+
+    const history = this.channelMessageHistory.get(channelId) || [];
+    const ts = eventPayload.ts || new Date().toISOString();
+    const entry = {
+      event_id: `event_${String(++this.eventSeq).padStart(8, "0")}`,
+      ts,
       channel_id: channelId,
-      name: channel.name || "",
-      type: channel.type || "public",
-      members: channel.members.size,
-      created_at: channel.created_at,
-    }));
+      channel_name: channel?.name || channelId,
+      from: client.subscriberId || "",
+      nickname: client.nickname || "",
+      text,
+    };
+    history.push(entry);
+    if (history.length > this.channelHistoryLimit) {
+      history.splice(0, history.length - this.channelHistoryLimit);
+    }
+    this.channelMessageHistory.set(channelId, history);
+    if (channel) {
+      channel.last_message_at = ts;
+    }
   }
 
   handleRoomsRequest(req, res) {
@@ -320,6 +480,7 @@ class OnlineServer extends EventEmitter {
           }
           const name = String(payload.name || "").trim();
           const type = String(payload.type).trim();
+          const createdBy = String(payload.created_by || payload.creator || "").trim();
           if (!["public", "private"].includes(type)) {
             this.sendJson(res, 400, { ok: false, error: "Invalid room type" });
             return;
@@ -327,6 +488,10 @@ class OnlineServer extends EventEmitter {
           if (name) {
             const nameErr = this.validateIdentifier(name, "name");
             if (nameErr) { this.sendJson(res, 400, { ok: false, error: nameErr }); return; }
+          }
+          if (createdBy) {
+            const creatorErr = this.validateIdentifier(createdBy, "created_by");
+            if (creatorErr) { this.sendJson(res, 400, { ok: false, error: creatorErr }); return; }
           }
           if (this.rooms.size >= this.maxRooms) {
             this.sendJson(res, 429, { ok: false, error: "Room limit reached" });
@@ -354,8 +519,12 @@ class OnlineServer extends EventEmitter {
             type,
             members: new Set(),
             created_at: new Date().toISOString(),
+            created_by: createdBy,
           });
-          this.sendJson(res, 200, { ok: true, room: { room_id: roomId, name, type } });
+          this.sendJson(res, 200, {
+            ok: true,
+            room: { room_id: roomId, name, type, created_by: createdBy, password_required: type === "private" },
+          });
         })
         .catch(() => {
           // Step 3: 413 on payload too large
@@ -388,12 +557,17 @@ class OnlineServer extends EventEmitter {
           }
           const name = String(payload.name || "").trim();
           const type = String(payload.type || "public").trim();
+          const createdBy = String(payload.created_by || payload.creator || "").trim();
           if (!name) {
             this.sendJson(res, 400, { ok: false, error: "Invalid channel name" });
             return;
           }
           const chNameErr = this.validateIdentifier(name, "name");
           if (chNameErr) { this.sendJson(res, 400, { ok: false, error: chNameErr }); return; }
+          if (createdBy) {
+            const creatorErr = this.validateIdentifier(createdBy, "created_by");
+            if (creatorErr) { this.sendJson(res, 400, { ok: false, error: creatorErr }); return; }
+          }
           if (!["world", "public"].includes(type)) {
             this.sendJson(res, 400, { ok: false, error: "Invalid channel type" });
             return;
@@ -420,9 +594,10 @@ class OnlineServer extends EventEmitter {
             type,
             members: new Set(),
             created_at: new Date().toISOString(),
+            created_by: createdBy,
           });
           this.channelNames.set(name, channelId);
-          this.sendJson(res, 200, { ok: true, channel: { channel_id: channelId, name, type } });
+          this.sendJson(res, 200, { ok: true, channel: { channel_id: channelId, name, type, created_by: createdBy } });
         })
         .catch(() => {
           // Step 3: 413 on payload too large
@@ -728,6 +903,7 @@ class OnlineServer extends EventEmitter {
       type: "public",
       members: new Set(),
       created_at: new Date().toISOString(),
+      created_by: "",
     };
     this.channels.set(channelRef, channel);
     this.channelNames.set(channelRef, channelRef);
@@ -877,6 +1053,9 @@ class OnlineServer extends EventEmitter {
       const members = channel ? channel.members : null;
       if (!members || members.size === 0) return;
       payload.channel = channelId;
+      if (kind === "message") {
+        this.recordChannelMessage(channelId, channel, client, payload);
+      }
       members.forEach((member) => {
         if (member !== client) {
           this.send(member.ws, payload);

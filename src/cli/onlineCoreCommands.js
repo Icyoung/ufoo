@@ -95,10 +95,12 @@ async function runOnlineRoom(action, opts = {}, onlineAuthHeaders) {
     return;
   }
   if (action === "create") {
+    const creator = String(opts.createdBy || opts.creator || opts.nickname || opts.subscriber || "").trim();
     const payload = {
       name: opts.name,
       type: opts.type,
       password: opts.password,
+      created_by: creator || undefined,
     };
     if (!payload.type) {
       throw new Error("online room create requires --type");
@@ -132,9 +134,11 @@ async function runOnlineChannel(action, opts = {}, onlineAuthHeaders) {
     return;
   }
   if (action === "create") {
+    const creator = String(opts.createdBy || opts.creator || opts.nickname || opts.subscriber || "").trim();
     const payload = {
       name: opts.name,
       type: opts.type,
+      created_by: creator || undefined,
     };
     if (!payload.name) {
       throw new Error("online channel create requires --name");
@@ -233,6 +237,7 @@ async function runOnlineCommand(subcmd, payload = {}, options = {}) {
           name: opts.name,
           type: opts.type,
           password: opts.password,
+          createdBy: opts.createdBy || "",
         }, onlineAuthHeaders);
       case "channel":
         return runOnlineChannel(payload.action, {
@@ -243,6 +248,7 @@ async function runOnlineCommand(subcmd, payload = {}, options = {}) {
           nickname: opts.nickname || "",
           name: opts.name,
           type: opts.type,
+          createdBy: opts.createdBy || "",
         }, onlineAuthHeaders);
       case "connect":
         return runOnlineConnect({
@@ -312,6 +318,7 @@ async function runOnlineCommand(subcmd, payload = {}, options = {}) {
         name: getFallbackOpt(argv, "--name"),
         type: getFallbackOpt(argv, "--type"),
         password: getFallbackOpt(argv, "--password"),
+        createdBy: getFallbackOpt(argv, "--created-by"),
       }, onlineAuthHeaders);
     }
     case "channel": {
@@ -325,6 +332,7 @@ async function runOnlineCommand(subcmd, payload = {}, options = {}) {
         nickname: getFallbackOpt(argv, "--nickname"),
         name: getFallbackOpt(argv, "--name"),
         type: getFallbackOpt(argv, "--type") || defaultChannelType,
+        createdBy: getFallbackOpt(argv, "--created-by"),
       }, onlineAuthHeaders);
     }
     case "connect": {

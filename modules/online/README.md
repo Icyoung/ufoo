@@ -55,6 +55,24 @@ In private room mode, agents automatically sync:
 - **Decisions** — new `.md` files synced across team
 - **Wake events** — remote agent can wake local agent via bus
 
+## HTTP APIs (for web preview)
+
+Auth-required management APIs:
+
+- `GET/POST /ufoo/online/channels`
+- `GET/POST /ufoo/online/rooms`
+
+Public read-only preview APIs (no bearer token required):
+
+- `GET /ufoo/online/public/channels`
+- `GET /ufoo/online/public/rooms?type=private`
+- `GET /ufoo/online/public/channels/:channel/messages?limit=120`
+
+Notes:
+
+- Channel history is in-memory (rolling buffer) on relay server.
+- Private room public API only exposes metadata (`room_id`, `name`, `created_by`, `password_required`).
+
 ## Storage
 
 ```

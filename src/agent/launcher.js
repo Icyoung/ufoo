@@ -522,6 +522,13 @@ class AgentLauncher {
           // 当检测到agent ready时，通知daemon可以提前inject probe
           const daemonSockPath = getUfooPaths(this.cwd).ufooSock;
           readyDetector.onReady(async () => {
+            // Claude Code's Ink TUI renders ❯ prompt before the input handler
+            // is fully mounted. Wait a short period for the TUI to be ready to
+            // accept injected text, otherwise only the trailing CR is processed
+            // and the probe command is lost.
+            if (this.agentType === "claude-code") {
+              await new Promise((r) => setTimeout(r, 800));
+            }
             const startTime = Date.now();
             try {
               const daemonSock = await connectWithRetry(daemonSockPath, 3, 100);
@@ -648,13 +655,25 @@ class AgentLauncher {
                       continue;
                     }
                     // 注入命令到PTY（带延迟确保输入完成）
+                    // Claude Code (Ink TUI) interprets ESC+CR within ~100ms as
+                    // Alt+Enter (newline) instead of two separate keys. Use a
+                    // longer gap so the escape sequence parser times out.
                     wrapper.write(req.command);
-                    setTimeout(() => {
-                      wrapper.write("\x1b");
+                    if (normalizedAgentType === "claude-code") {
+                      // Claude Code: send CR directly without ESC.
+                      // ESC before CR is interpreted as Alt+Enter (newline).
                       setTimeout(() => {
                         wrapper.write("\r");
-                      }, 100);
-                    }, 200);
+                      }, 200);
+                    } else {
+                      // Codex/others: ESC dismisses autocomplete, then CR submits.
+                      setTimeout(() => {
+                        wrapper.write("\x1b");
+                        setTimeout(() => {
+                          wrapper.write("\r");
+                        }, 100);
+                      }, 200);
+                    }
                     client.write(JSON.stringify({ ok: true }) + "\n");
                     if (wrapper.logger) {
                       const logEntry = {
