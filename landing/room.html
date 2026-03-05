@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title data-i18n="room.title">Private Room</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&amp;family=JetBrains+Mono:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="online.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a href="online.html" class="brand">
+        <span class="brand-mark">&gt;_</span>
+        <span class="brand-text"><span class="brand-u">u</span>foo online</span>
+      </a>
+      <div class="topbar-meta">
+        <a href="online.html" class="meta-link" data-i18n="room.back">&larr; Back to online</a>
+        <span class="meta-pill" id="roomMetaName">--</span>
+        <button id="langToggle" class="lang-toggle" type="button">EN</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Auth Dialog (shown when no password provided) -->
+  <dialog id="authGate" class="room-dialog room-auth-dialog">
+    <form id="authForm" method="dialog" class="room-form">
+      <header>
+        <p class="panel-eyebrow">PASSWORD REQUIRED</p>
+        <h2 data-i18n="room.auth.title">Enter Private Room</h2>
+        <p class="dialog-sub" data-i18n="room.auth.desc">This room requires a password to enter.</p>
+        <p class="dialog-sub" id="authRoomInfo"></p>
+      </header>
+
+      <label for="authPassword" data-i18n="room.auth.label">Password</label>
+      <input id="authPassword" type="password" autocomplete="off" data-i18n-placeholder="room.auth.placeholder" placeholder="Enter room password" required>
+      <p id="authMessage" class="form-message" aria-live="polite"></p>
+
+      <div class="dialog-actions">
+        <a href="online.html" class="btn-ghost" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;" data-i18n="online.dialog.cancel">Cancel</a>
+        <button type="submit" class="btn-primary" data-i18n="room.auth.submit">Enter Room</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Room View -->
+  <main class="workspace room-workspace" id="roomView">
+    <section class="panel panel-room-info">
+      <header class="panel-head panel-head-inline">
+        <div>
+          <p class="panel-eyebrow">PRIVATE ROOM</p>
+          <h2 id="roomTitle">--</h2>
+        </div>
+        <div class="room-info-meta">
+          <span><span data-i18n="room.info.creator">Creator</span>: <strong id="roomCreator">--</strong></span>
+          <span class="live-indicator"><i></i><span id="liveStatus">connecting</span></span>
+        </div>
+      </header>
+    </section>
+
+    <section class="panel panel-stream panel-room-stream">
+      <header class="panel-head panel-head-inline">
+        <div>
+          <p class="panel-eyebrow">MESSAGES</p>
+        </div>
+        <div class="mode-switch" role="tablist">
+          <button id="modeHistory" class="mode-btn active" role="tab" aria-selected="true" type="button" data-i18n="room.stream.history">History</button>
+          <button id="modeLive" class="mode-btn" role="tab" aria-selected="false" type="button" data-i18n="room.stream.live">Live</button>
+        </div>
+      </header>
+
+      <div class="stream-meta">
+        <span><span data-i18n="room.stream.historyLabel">History:</span> <strong id="historyCount">0</strong></span>
+        <span><span data-i18n="room.stream.liveLabel">Live:</span> <strong id="liveCount">0</strong></span>
+      </div>
+
+      <div class="stream-window stream-window-tall" id="streamWindow">
+        <ul id="messageList" class="message-list" aria-live="polite"></ul>
+      </div>
+    </section>
+
+    <section class="panel panel-wide">
+      <header class="panel-head panel-head-inline">
+        <div>
+          <p class="panel-eyebrow">LIVE EVENTS</p>
+          <h2 data-i18n="room.events.title">Events</h2>
+        </div>
+        <span class="event-tag" id="eventTag">--</span>
+      </header>
+      <ul id="eventLog" class="event-log" aria-live="polite"></ul>
+    </section>
+  </main>
+
+  <script src="i18n.js"></script>
+  <script src="room.js"></script>
+</body>
+</html>

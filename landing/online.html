@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ufoo online preview</title>
-  <meta name="description" content="ufoo online 预览：世界频道、公共频道历史与实时消息、私密房间目录与密码进入。">
+  <title data-i18n="online.title">ufoo online preview</title>
+  <meta name="description" content="ufoo online preview: world channels, public channel history & live messages, private room directory with password entry.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&amp;family=JetBrains+Mono:wght@400;500;600;700&amp;display=swap" rel="stylesheet">
@@ -13,7 +13,7 @@
 <body>
   <header class="topbar">
     <div class="topbar-inner">
-      <a href="index.html" class="brand" aria-label="返回 ufoo 首页">
+      <a href="index.html" class="brand" aria-label="Back to ufoo home">
         <span class="brand-mark">&gt;_</span>
         <span class="brand-text"><span class="brand-u">u</span>foo online</span>
       </a>
@@ -21,6 +21,7 @@
         <span class="meta-pill" id="metaChannelCount">public: -- channels</span>
         <span class="meta-pill" id="metaRoomCount">private: -- rooms</span>
         <a href="docs.html" class="meta-link">docs</a>
+        <button id="langToggle" class="lang-toggle" type="button">EN</button>
       </div>
     </div>
   </header>
@@ -29,15 +30,15 @@
     <section class="panel panel-channels" aria-labelledby="public-channels-title">
       <header class="panel-head">
         <p class="panel-eyebrow">PUBLIC</p>
-        <h2 id="public-channels-title">公共频道</h2>
-        <p class="panel-sub">真实接口：频道列表 + 历史消息 + 实时消息。</p>
+        <h2 id="public-channels-title" data-i18n="online.panel.public">Public Channels</h2>
+        <p class="panel-sub" data-i18n="online.panel.public.sub">Real API: channel list + history + live messages.</p>
       </header>
 
       <ul class="channel-list" id="channelList"></ul>
 
       <div class="channel-footnote">
-        <strong>说明</strong>
-        <p id="channelFootnote">公共频道默认可见，不提供输入框，仅展示历史与实时消息。</p>
+        <strong data-i18n="online.footnote.title">Note</strong>
+        <p id="channelFootnote" data-i18n="online.footnote.text">Public channels are visible by default. No input box — displays history and live messages only.</p>
       </div>
     </section>
 
@@ -45,17 +46,17 @@
       <header class="panel-head panel-head-inline">
         <div>
           <p class="panel-eyebrow">CHANNEL STREAM</p>
-          <h2 id="stream-title"><span id="activeChannelLabel">#-</span> 消息流</h2>
+          <h2 id="stream-title"><span id="activeChannelLabel">#-</span> <span data-i18n="online.stream.title">Message Stream</span></h2>
         </div>
-        <div class="mode-switch" role="tablist" aria-label="消息模式切换">
-          <button id="modeHistory" class="mode-btn active" role="tab" aria-selected="true" type="button">历史消息</button>
-          <button id="modeLive" class="mode-btn" role="tab" aria-selected="false" type="button">实时消息</button>
+        <div class="mode-switch" role="tablist" aria-label="Message mode switch">
+          <button id="modeHistory" class="mode-btn active" role="tab" aria-selected="true" type="button" data-i18n="online.mode.history">History</button>
+          <button id="modeLive" class="mode-btn" role="tab" aria-selected="false" type="button" data-i18n="online.mode.live">Live</button>
         </div>
       </header>
 
       <div class="stream-meta">
-        <span>历史条数：<strong id="historyCount">0</strong></span>
-        <span>实时条数：<strong id="liveCount">0</strong></span>
+        <span><span data-i18n="online.stream.historyCount">History:</span> <strong id="historyCount">0</strong></span>
+        <span><span data-i18n="online.stream.liveCount">Live:</span> <strong id="liveCount">0</strong></span>
         <span class="live-indicator"><i></i><span id="liveStatus">connecting</span></span>
       </div>
 
@@ -67,18 +68,18 @@
     <section class="panel panel-private" aria-labelledby="private-rooms-title">
       <header class="panel-head">
         <p class="panel-eyebrow">PRIVATE</p>
-        <h2 id="private-rooms-title">私密房间</h2>
-        <p class="panel-sub">只展示名称和创建者，进入必须输入密码。</p>
+        <h2 id="private-rooms-title" data-i18n="online.panel.private">Private Rooms</h2>
+        <p class="panel-sub" data-i18n="online.panel.private.sub">Only shows name and creator. Password required to enter.</p>
       </header>
 
       <ul class="room-list" id="roomList"></ul>
 
       <div class="private-note">
-        <h3>隐私规则</h3>
+        <h3 data-i18n="online.privacy.title">Privacy Rules</h3>
         <ul>
-          <li>公开可见: 房间名称、创建者。</li>
-          <li>默认隐藏: 房间内消息和成员上下文。</li>
-          <li>进入房间: 必须通过密码校验。</li>
+          <li data-i18n="online.privacy.1">Publicly visible: room name, creator.</li>
+          <li data-i18n="online.privacy.2">Hidden by default: room messages and member context.</li>
+          <li data-i18n="online.privacy.3">Enter room: must pass password verification.</li>
         </ul>
       </div>
     </section>
@@ -87,7 +88,7 @@
       <header class="panel-head panel-head-inline">
         <div>
           <p class="panel-eyebrow">LIVE EVENTS</p>
-          <h2 id="activity-log-title">实时事件日志</h2>
+          <h2 id="activity-log-title" data-i18n="online.events.title">Live Event Log</h2>
         </div>
         <span class="event-tag" id="eventTag">live relay</span>
       </header>
@@ -99,21 +100,22 @@
     <form id="roomForm" method="dialog" class="room-form">
       <header>
         <p class="panel-eyebrow">PASSWORD REQUIRED</p>
-        <h2>进入私密房间</h2>
+        <h2 data-i18n="online.dialog.title">Enter Private Room</h2>
         <p id="roomDialogInfo" class="dialog-sub"></p>
       </header>
 
-      <label for="roomPassword">房间密码</label>
-      <input id="roomPassword" name="roomPassword" type="password" autocomplete="off" placeholder="请输入房间密码" required>
+      <label for="roomPassword" data-i18n="online.dialog.label">Room Password</label>
+      <input id="roomPassword" name="roomPassword" type="password" autocomplete="off" data-i18n-placeholder="online.dialog.placeholder" placeholder="Enter room password" required>
       <p id="roomFormMessage" class="form-message" aria-live="polite"></p>
 
       <div class="dialog-actions">
-        <button type="button" id="closeDialog" class="btn-ghost">取消</button>
-        <button type="submit" class="btn-primary">验证并进入</button>
+        <button type="button" id="closeDialog" class="btn-ghost" data-i18n="online.dialog.cancel">Cancel</button>
+        <button type="submit" class="btn-primary" data-i18n="online.dialog.submit">Verify & Enter</button>
       </div>
     </form>
   </dialog>
 
+  <script src="i18n.js"></script>
   <script src="online.js"></script>
 </body>
 </html>

@@ -107,6 +107,26 @@ body {
   transition: border-color 0.18s ease, color 0.18s ease;
 }
 
+.lang-toggle {
+  border: none;
+  border-radius: 0;
+  background: none;
+  color: var(--text-dim);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  padding: 4px 2px;
+  margin-left: 4px;
+  cursor: pointer;
+  border-left: 1px solid var(--border-soft);
+  padding-left: 12px;
+  transition: color 0.18s ease;
+}
+.lang-toggle:hover {
+  color: var(--cyan);
+}
+
 .meta-link:hover,
 .meta-link:focus-visible {
   border-color: rgba(34, 211, 238, 0.55);
@@ -381,6 +401,7 @@ body {
 
 .room-list {
   display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 8px;
 }
 
@@ -389,8 +410,13 @@ body {
   border-radius: 11px;
   padding: 10px;
   background: var(--bg-elev-2);
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 10px;
+}
+
+.room-item > div {
+  flex: 1;
 }
 
 .room-item strong {
@@ -514,6 +540,12 @@ body {
 
 .room-dialog::backdrop {
   background: rgba(7, 7, 7, 0.72);
+}
+
+.room-auth-dialog::backdrop {
+  background: rgba(7, 7, 7, 0.5);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 .room-form {
@@ -699,6 +731,74 @@ a:focus-visible {
   .channel-item em {
     grid-area: desc;
   }
+}
+
+/* ── Room page ──────────────────────────────────── */
+.panel-auth {
+  max-width: 480px;
+  margin: 0 auto;
+}
+
+.room-auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 24px 24px;
+}
+
+.room-auth-form label {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.room-auth-form input {
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-elev-1);
+  color: var(--text-primary);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.85rem;
+  outline: none;
+  transition: border-color 0.18s ease;
+}
+
+.room-auth-form input:focus {
+  border-color: var(--cyan);
+}
+
+.room-auth-form .btn-primary {
+  align-self: flex-start;
+}
+
+.room-workspace {
+  grid-template-columns: 1fr;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.panel-room-info {
+  grid-column: 1 / -1;
+}
+
+.room-info-meta {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.panel-room-stream {
+  grid-column: 1 / -1;
+}
+
+.stream-window-tall {
+  max-height: 60vh;
 }
 
 @media (prefers-reduced-motion: reduce) {

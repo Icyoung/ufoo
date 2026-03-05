@@ -46,8 +46,10 @@
     if (!ts) return "--:--";
     const dt = new Date(ts);
     if (Number.isNaN(dt.getTime())) return String(ts).slice(11, 16) || String(ts);
-    return dt.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+    return dt.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
   }
+
+  function t(key, vars) { return window.__t ? window.__t(key, vars) : key; }
 
   function pushEvent(text) {
     const li = document.createElement("li");
@@ -114,7 +116,7 @@
     if (state.channels.length === 0) {
       const li = document.createElement("li");
       li.className = "empty-item";
-      li.textContent = "暂无公共频道";
+      li.textContent = t("online.empty.channels");
       channelList.appendChild(li);
       return;
     }
@@ -137,7 +139,7 @@
     if (state.rooms.length === 0) {
       const li = document.createElement("li");
       li.className = "empty-item";
-      li.textContent = "暂无私密房间";
+      li.textContent = t("online.empty.rooms");
       roomList.appendChild(li);
       return;
     }
@@ -150,14 +152,14 @@
       li.innerHTML = `
         <div>
           <strong>${roomName}</strong>
-          <span>创建者: ${owner}</span>
+          <span>${t("online.room.creator")}: ${owner}</span>
           <p class="room-flags"><span>locked</span><span>metadata only</span></p>
         </div>
       `;
       const btn = document.createElement("button");
       btn.className = "join-btn";
       btn.type = "button";
-      btn.textContent = "输入密码进入";
+      btn.textContent = t("online.room.enter");
       btn.addEventListener("click", () => openRoomDialog(room));
       li.appendChild(btn);
       roomList.appendChild(li);
@@ -170,7 +172,7 @@
       activeChannelLabel.textContent = "#-";
       historyCount.textContent = "0";
       liveCount.textContent = "0";
-      messageList.innerHTML = `<li class="empty-item">请选择频道</li>`;
+      messageList.innerHTML = `<li class="empty-item">${t("online.empty.select")}</li>`;
       return;
     }
 
@@ -183,7 +185,7 @@
     if (!currentList.length) {
       const li = document.createElement("li");
       li.className = "empty-item";
-      li.textContent = state.activeMode === "history" ? "暂无历史消息" : "暂无实时消息";
+      li.textContent = state.activeMode === "history" ? t("online.empty.history") : t("online.empty.live");
       messageList.appendChild(li);
       return;
     }
@@ -275,7 +277,7 @@
           nickname,
           world: "default",
           version: "online-preview-web",
-          capabilities: ["public.preview"],
+          capabilities: ["observer"],
         },
       });
     });
@@ -304,12 +306,18 @@
 
       if (msg.type === "join_ack" && msg.room && state.pendingRoomJoin && msg.room === state.pendingRoomJoin.roomId) {
         clearTimeout(state.pendingRoomJoin.timer);
+        const pwd = state.pendingRoomJoin.password;
         state.pendingRoomJoin = null;
-        roomFormMessage.textContent = `密码验证通过，已进入 ${state.selectedRoom.name || msg.room}`;
+        roomFormMessage.textContent = t("online.form.success", { name: state.selectedRoom.name || msg.room });
         roomFormMessage.classList.add("success");
         wsSend({ type: "leave", room: msg.room });
         pushEvent(`private-room join success: ${msg.room}`);
-        setTimeout(() => roomDialog.close(), 800);
+        // Redirect to room page
+        setTimeout(() => {
+          const params = new URLSearchParams({ id: msg.room, pwd: pwd });
+          if (query.get("api")) params.set("api", apiBase);
+          window.location.href = `room.html?${params.toString()}`;
+        }, 600);
         return;
       }
 
@@ -317,7 +325,7 @@
         if (state.pendingRoomJoin) {
           clearTimeout(state.pendingRoomJoin.timer);
           state.pendingRoomJoin = null;
-          roomFormMessage.textContent = msg.error || "密码验证失败";
+          roomFormMessage.textContent = msg.error || t("online.form.fail");
           roomFormMessage.classList.remove("success");
         }
         pushEvent(`ws error: ${msg.code || "UNKNOWN"} ${msg.error || ""}`.trim());
@@ -415,7 +423,7 @@
 
   function openRoomDialog(room) {
     state.selectedRoom = room;
-    roomDialogInfo.textContent = `房间: ${room.name || room.room_id} | 创建者: ${room.created_by || "unknown"}`;
+    roomDialogInfo.textContent = t("online.room.info", { name: room.name || room.room_id, owner: room.created_by || "unknown" });
     roomFormMessage.textContent = "";
     roomFormMessage.classList.remove("success");
     roomPassword.value = "";
@@ -428,17 +436,17 @@
     if (!state.selectedRoom) return;
     const pwd = roomPassword.value.trim();
     if (!pwd) {
-      roomFormMessage.textContent = "请输入密码。";
+      roomFormMessage.textContent = t("online.form.empty");
       roomFormMessage.classList.remove("success");
       return;
     }
     if (!state.wsAuthed) {
-      roomFormMessage.textContent = "实时连接未就绪，请稍后重试。";
+      roomFormMessage.textContent = t("online.form.noconn");
       roomFormMessage.classList.remove("success");
       return;
     }
     if (state.pendingRoomJoin) {
-      roomFormMessage.textContent = "正在验证密码，请稍候。";
+      roomFormMessage.textContent = t("online.form.pending");
       roomFormMessage.classList.remove("success");
       return;
     }
@@ -447,19 +455,19 @@
     const timer = setTimeout(() => {
       if (!state.pendingRoomJoin || state.pendingRoomJoin.roomId !== roomId) return;
       state.pendingRoomJoin = null;
-      roomFormMessage.textContent = "验证超时，请重试。";
+      roomFormMessage.textContent = t("online.form.timeout");
       roomFormMessage.classList.remove("success");
     }, 5000);
 
-    state.pendingRoomJoin = { roomId, timer };
-    roomFormMessage.textContent = "正在校验密码...";
+    state.pendingRoomJoin = { roomId, timer, password: pwd };
+    roomFormMessage.textContent = t("online.form.verifying");
     roomFormMessage.classList.remove("success");
     wsSend({ type: "join", room: roomId, password: pwd });
   }
 
   async function bootstrap() {
     eventTag.textContent = new URL(apiBase).host;
-    channelFootnote.textContent = `数据源: ${apiBase}/ufoo/online/public/*`;
+    channelFootnote.textContent = t("online.datasource", { url: `${apiBase}/ufoo/online/public/*` });
     pushEvent(`api base: ${apiBase}`);
     setMode("history");
 
@@ -481,6 +489,16 @@
   closeDialog.addEventListener("click", () => roomDialog.close());
   roomDialog.addEventListener("cancel", () => roomDialog.close());
   roomForm.addEventListener("submit", handleRoomSubmit);
+
+  document.getElementById("langToggle").addEventListener("click", function () {
+    window.__setLang(window.__lang() === "zh" ? "en" : "zh");
+  });
+  window.addEventListener("ufoo-lang-change", function () {
+    channelFootnote.textContent = t("online.datasource", { url: `${apiBase}/ufoo/online/public/*` });
+    renderChannelList();
+    renderRoomList();
+    renderStream();
+  });
 
   bootstrap().catch((error) => {
     pushEvent(`bootstrap failed: ${error.message}`);

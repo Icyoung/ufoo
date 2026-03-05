@@ -201,6 +201,8 @@ function runOnlineInbox(nickname, opts = {}) {
   checkInbox(nickname, {
     clear: !!opts.clear,
     unread: !!opts.unread,
+    room: opts.room || "",
+    channel: opts.channel || "",
   });
 }
 
@@ -280,6 +282,8 @@ async function runOnlineCommand(subcmd, payload = {}, options = {}) {
         return runOnlineInbox(payload.nickname, {
           clear: opts.clear,
           unread: opts.unread,
+          room: opts.room || "",
+          channel: opts.channel || "",
         });
       default:
         throw createUnknownOnlineError(subcmd);
@@ -374,6 +378,8 @@ async function runOnlineCommand(subcmd, payload = {}, options = {}) {
       return runOnlineInbox(argv[1], {
         clear: hasFallbackFlag(argv, "--clear"),
         unread: hasFallbackFlag(argv, "--unread"),
+        room: getFallbackOpt(argv, "--room"),
+        channel: getFallbackOpt(argv, "--channel"),
       });
     }
     default:

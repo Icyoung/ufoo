@@ -135,6 +135,15 @@ function normalizeOnlineSender(from = "") {
   return text;
 }
 
+function inboxFileName(nickname, route) {
+  // Namespace inbox by room/channel to prevent cross-room message leakage
+  if (route) {
+    const safe = String(route).replace(/[^a-zA-Z0-9_-]/g, "_");
+    return `${nickname}__${safe}.jsonl`;
+  }
+  return `${nickname}.jsonl`;
+}
+
 function appendToInbox(nickname, msg) {
   const dir = inboxDir();
   fs.mkdirSync(dir, { recursive: true });
@@ -143,7 +152,8 @@ function appendToInbox(nickname, msg) {
     _source: messageSource(msg),
     _receivedAt: new Date().toISOString(),
   };
-  fs.appendFileSync(path.join(dir, `${nickname}.jsonl`), JSON.stringify(entry) + "\n");
+  const route = msg.room || msg.channel || "";
+  fs.appendFileSync(path.join(dir, inboxFileName(nickname, route)), JSON.stringify(entry) + "\n");
 }
 
 // --- Helpers ---

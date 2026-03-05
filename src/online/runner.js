@@ -14,6 +14,28 @@ function inboxFilePath(nickname) {
   return path.join(inboxDir(), `${nickname}.jsonl`);
 }
 
+/**
+ * Find all inbox files for a given nickname (including room/channel-namespaced ones).
+ * Returns array of { file, route } objects.
+ */
+function findInboxFiles(nickname) {
+  const dir = inboxDir();
+  if (!fs.existsSync(dir)) return [];
+  const prefix = `${nickname}__`;
+  const exact = `${nickname}.jsonl`;
+  const results = [];
+  for (const name of fs.readdirSync(dir)) {
+    if (!name.endsWith(".jsonl")) continue;
+    if (name === exact) {
+      results.push({ file: path.join(dir, name), route: "" });
+    } else if (name.startsWith(prefix)) {
+      const route = name.slice(prefix.length, -".jsonl".length);
+      results.push({ file: path.join(dir, name), route });
+    }
+  }
+  return results;
+}
+
 function readMarkerPath(nickname) {
   return path.join(inboxDir(), `${nickname}.read`);
 }
@@ -80,6 +102,8 @@ function cleanupInbox(file) {
 function checkInbox(nickname, options = {}) {
   const clear = options.clear || false;
   const unreadOnly = options.unread || false;
+  const filterRoom = options.room || "";
+  const filterChannel = options.channel || "";
 
   if (!nickname) {
     console.error("nickname is required");
@@ -87,23 +111,24 @@ function checkInbox(nickname, options = {}) {
     return;
   }
 
-  const file = inboxFilePath(nickname);
   const markerFile = readMarkerPath(nickname);
 
+  // Gather all inbox files for this nickname
+  const inboxFiles = findInboxFiles(nickname);
+
   if (clear) {
-    if (fs.existsSync(file)) {
-      fs.unlinkSync(file);
-      console.log(`Inbox cleared for ${nickname}.`);
-    } else {
-      console.log(`No inbox file for ${nickname}.`);
+    let cleared = 0;
+    for (const { file } of inboxFiles) {
+      if (fs.existsSync(file)) { fs.unlinkSync(file); cleared++; }
     }
+    console.log(cleared > 0 ? `Inbox cleared for ${nickname} (${cleared} file(s)).` : `No inbox file for ${nickname}.`);
     return;
   }
 
-  cleanupInbox(file);
-
   let messages = [];
-  if (fs.existsSync(file)) {
+  for (const { file } of inboxFiles) {
+    cleanupInbox(file);
+    if (!fs.existsSync(file)) continue;
     const lines = fs.readFileSync(file, "utf-8").split("\n").filter(Boolean);
     for (const line of lines) {
       try {
@@ -112,6 +137,13 @@ function checkInbox(nickname, options = {}) {
         // skip malformed
       }
     }
+  }
+
+  // Filter by room/channel if specified
+  if (filterRoom) {
+    messages = messages.filter((m) => m.room === filterRoom);
+  } else if (filterChannel) {
+    messages = messages.filter((m) => m.channel === filterChannel);
   }
 
   function displayWidth(str) {

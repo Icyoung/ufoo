@@ -46,6 +46,7 @@ class OnlineServer extends EventEmitter {
     this.rooms = new Map();
     this.roomPasswords = new Map();
     this.channelMessageHistory = new Map();
+    this.roomMessageHistory = new Map();
     this.channelHistoryLimit = options.channelHistoryLimit ?? 200;
     this.eventSeq = 0;
 
@@ -147,6 +148,7 @@ class OnlineServer extends EventEmitter {
       const pathname = parsedUrl.pathname || "/";
       const publicMessagesMatch = pathname.match(/^\/ufoo\/online\/public\/channels\/([^/]+)\/messages$/);
       const privateMessagesMatch = pathname.match(/^\/ufoo\/online\/channels\/([^/]+)\/messages$/);
+      const roomMessagesMatch = pathname.match(/^\/ufoo\/online\/rooms\/([^/]+)\/messages$/);
 
       if (req.method === "OPTIONS") {
         res.writeHead(204, this.corsHeaders());
@@ -174,6 +176,20 @@ class OnlineServer extends EventEmitter {
 
       if (pathname === "/ufoo/online/public/rooms") {
         this.handlePublicRoomsRequest(req, res, parsedUrl);
+        return;
+      }
+
+      if (roomMessagesMatch) {
+        const roomId = decodeURIComponent(roomMessagesMatch[1] || "");
+        this.handleRoomMessagesRequest(req, res, roomId, parsedUrl);
+        return;
+      }
+
+      // DELETE /ufoo/online/rooms/:id
+      const roomDeleteMatch = pathname.match(/^\/ufoo\/online\/rooms\/([^/]+)$/);
+      if (roomDeleteMatch && req.method === "DELETE") {
+        if (!this.authenticateHttp(req, res)) return;
+        this.handleRoomDelete(req, res, decodeURIComponent(roomDeleteMatch[1]));
         return;
       }
 
@@ -431,6 +447,39 @@ class OnlineServer extends EventEmitter {
     });
   }
 
+  handleRoomMessagesRequest(req, res, roomId, parsedUrl) {
+    if (req.method !== "GET") {
+      this.sendJson(res, 405, { ok: false, error: "Method not allowed" });
+      return;
+    }
+    const room = this.rooms.get(roomId);
+    if (!room) {
+      this.sendJson(res, 404, { ok: false, error: "Room not found" });
+      return;
+    }
+    // Private rooms require password via query param
+    if (room.type === "private") {
+      const password = String(parsedUrl.searchParams.get("password") || "");
+      const stored = this.roomPasswords.get(roomId);
+      if (!stored || !this.verifyPassword(password, stored)) {
+        this.sendJson(res, 403, { ok: false, error: "Invalid room password" });
+        return;
+      }
+    }
+    const limitRaw = Number.parseInt(String(parsedUrl.searchParams.get("limit") || "80"), 10);
+    const limit = Number.isFinite(limitRaw) ? limitRaw : 80;
+    const roomData = this.listRoomMessages(roomId, limit);
+    if (!roomData) {
+      this.sendJson(res, 404, { ok: false, error: "Room not found" });
+      return;
+    }
+    this.sendJson(res, 200, {
+      ok: true,
+      room: { room_id: roomData.room_id, name: roomData.name, type: roomData.type },
+      messages: roomData.messages,
+    });
+  }
+
   recordChannelMessage(channelId, channel, client, eventPayload) {
     const rawText = eventPayload?.payload?.message;
     let text = "";
@@ -457,6 +506,45 @@ class OnlineServer extends EventEmitter {
     if (channel) {
       channel.last_message_at = ts;
     }
+  }
+
+  recordRoomMessage(roomId, room, client, eventPayload) {
+    const rawText = eventPayload?.payload?.message;
+    let text = "";
+    if (typeof rawText === "string") text = rawText;
+    else if (rawText !== null && rawText !== undefined) text = JSON.stringify(rawText);
+    if (!text) return;
+
+    const history = this.roomMessageHistory.get(roomId) || [];
+    const ts = eventPayload.ts || new Date().toISOString();
+    const entry = {
+      event_id: `event_${String(++this.eventSeq).padStart(8, "0")}`,
+      ts,
+      room_id: roomId,
+      room_name: room?.name || roomId,
+      from: client.subscriberId || "",
+      nickname: client.nickname || "",
+      text,
+    };
+    history.push(entry);
+    if (history.length > this.channelHistoryLimit) {
+      history.splice(0, history.length - this.channelHistoryLimit);
+    }
+    this.roomMessageHistory.set(roomId, history);
+  }
+
+  listRoomMessages(roomId, limit = 80) {
+    const room = this.rooms.get(roomId);
+    if (!room) return null;
+    const history = this.roomMessageHistory.get(roomId) || [];
+    const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(limit, 500)) : 80;
+    const start = Math.max(0, history.length - safeLimit);
+    return {
+      room_id: roomId,
+      name: room.name || "",
+      type: room.type,
+      messages: history.slice(start),
+    };
   }
 
   handleRoomsRequest(req, res) {
@@ -518,6 +606,7 @@ class OnlineServer extends EventEmitter {
             name,
             type,
             members: new Set(),
+            observers: new Set(),
             created_at: new Date().toISOString(),
             created_by: createdBy,
           });
@@ -534,6 +623,25 @@ class OnlineServer extends EventEmitter {
     }
 
     this.sendJson(res, 405, { ok: false, error: "Method not allowed" });
+  }
+
+  handleRoomDelete(req, res, roomId) {
+    const room = this.rooms.get(roomId);
+    if (!room) {
+      this.sendJson(res, 404, { ok: false, error: "Room not found" });
+      return;
+    }
+    // Disconnect all members and observers
+    const kick = (client) => {
+      client.rooms.delete(roomId);
+      this.sendError(client.ws, "Room deleted", true, "ROOM_DELETED");
+    };
+    room.members.forEach(kick);
+    if (room.observers) room.observers.forEach(kick);
+    this.rooms.delete(roomId);
+    this.roomPasswords.delete(roomId);
+    this.roomMessageHistory.delete(roomId);
+    this.sendJson(res, 200, { ok: true, deleted: roomId });
   }
 
   handleChannelsRequest(req, res) {
@@ -593,6 +701,7 @@ class OnlineServer extends EventEmitter {
             name,
             type,
             members: new Set(),
+            observers: new Set(),
             created_at: new Date().toISOString(),
             created_by: createdBy,
           });
@@ -650,6 +759,7 @@ class OnlineServer extends EventEmitter {
       authed: false,
       subscriberId: null,
       nickname: null,
+      role: "agent", // "agent" or "observer"
       channels: new Set(),
       helloReceived: false,
       connectedAt: Date.now(),
@@ -796,6 +906,12 @@ class OnlineServer extends EventEmitter {
     client.pendingWorld = world;
     client.rooms = new Set();
 
+    // Observer role: set from capabilities
+    const caps = Array.isArray(info.capabilities) ? info.capabilities : [];
+    if (caps.includes("observer")) {
+      client.role = "observer";
+    }
+
     this.send(client.ws, {
       type: "hello_ack",
       ok: true,
@@ -902,6 +1018,7 @@ class OnlineServer extends EventEmitter {
       name: channelRef,
       type: "public",
       members: new Set(),
+      observers: new Set(),
       created_at: new Date().toISOString(),
       created_by: "",
     };
@@ -938,7 +1055,12 @@ class OnlineServer extends EventEmitter {
     const channelId = resolved.channelId;
     const channelInfo = resolved.channel;
 
-    channelInfo.members.add(client);
+    if (client.role === "observer") {
+      if (!channelInfo.observers) channelInfo.observers = new Set();
+      channelInfo.observers.add(client);
+    } else {
+      channelInfo.members.add(client);
+    }
     client.channels.add(channelId);
     this.send(client.ws, { type: "join_ack", ok: true, channel: channelId });
   }
@@ -963,6 +1085,7 @@ class OnlineServer extends EventEmitter {
     const channelInfo = resolved?.channel || null;
     if (channelInfo) {
       channelInfo.members.delete(client);
+      if (channelInfo.observers) channelInfo.observers.delete(client);
     }
     client.channels.delete(channelId);
     this.send(client.ws, { type: "leave_ack", ok: true, channel: channelId });
@@ -970,6 +1093,10 @@ class OnlineServer extends EventEmitter {
 
   handleEvent(client, message) {
     if (!this.requireAuth(client)) return;
+    if (client.role === "observer") {
+      this.sendError(client.ws, "Observers are read-only", false, "EVENT_OBSERVER_READONLY");
+      return;
+    }
     if (!client.subscriberId) {
       this.sendError(client.ws, "Unknown subscriber", false, "SUBSCRIBER_UNKNOWN");
       return;
@@ -1026,14 +1153,19 @@ class OnlineServer extends EventEmitter {
         this.sendError(client.ws, "Room not found", false, "ROOM_NOT_FOUND");
         return;
       }
-      room.members.forEach((member) => {
-        if (member !== client) {
-          this.send(member.ws, payload);
+      const broadcastRoom = (recipient) => {
+        if (recipient !== client) {
+          this.send(recipient.ws, payload);
           if (payload.payload && payload.payload.kind === "wake") {
-            this.send(member.ws, { type: "wake", from: client.subscriberId });
+            this.send(recipient.ws, { type: "wake", from: client.subscriberId });
           }
         }
-      });
+      };
+      room.members.forEach(broadcastRoom);
+      if (room.observers) room.observers.forEach(broadcastRoom);
+      if (kind === "message") {
+        this.recordRoomMessage(payload.room, room, client, payload);
+      }
       return;
     }
 
@@ -1050,20 +1182,20 @@ class OnlineServer extends EventEmitter {
         this.sendError(client.ws, "Join channel first", false, "NOT_IN_CHANNEL");
         return;
       }
-      const members = channel ? channel.members : null;
-      if (!members || members.size === 0) return;
       payload.channel = channelId;
       if (kind === "message") {
         this.recordChannelMessage(channelId, channel, client, payload);
       }
-      members.forEach((member) => {
-        if (member !== client) {
-          this.send(member.ws, payload);
+      const broadcastChannel = (recipient) => {
+        if (recipient !== client) {
+          this.send(recipient.ws, payload);
           if (payload.payload && payload.payload.kind === "wake") {
-            this.send(member.ws, { type: "wake", from: client.subscriberId });
+            this.send(recipient.ws, { type: "wake", from: client.subscriberId });
           }
         }
-      });
+      };
+      if (channel.members) channel.members.forEach(broadcastChannel);
+      if (channel.observers) channel.observers.forEach(broadcastChannel);
       return;
     }
 
@@ -1113,7 +1245,12 @@ class OnlineServer extends EventEmitter {
       return;
     }
 
-    room.members.add(client);
+    if (client.role === "observer") {
+      if (!room.observers) room.observers = new Set();
+      room.observers.add(client);
+    } else {
+      room.members.add(client);
+    }
     client.rooms.add(roomId);
     this.send(client.ws, { type: "join_ack", ok: true, room: roomId });
   }
@@ -1127,6 +1264,7 @@ class OnlineServer extends EventEmitter {
     const room = this.rooms.get(roomId);
     if (room) {
       room.members.delete(client);
+      if (room.observers) room.observers.delete(client);
     }
     client.rooms.delete(roomId);
     this.send(client.ws, { type: "leave_ack", ok: true, room: roomId });
@@ -1144,6 +1282,7 @@ class OnlineServer extends EventEmitter {
       const channelInfo = this.channels.get(channel);
       if (channelInfo) {
         channelInfo.members.delete(client);
+        if (channelInfo.observers) channelInfo.observers.delete(client);
       }
     });
     client.channels.clear();
@@ -1153,6 +1292,7 @@ class OnlineServer extends EventEmitter {
         const room = this.rooms.get(roomId);
         if (room) {
           room.members.delete(client);
+          if (room.observers) room.observers.delete(client);
         }
       });
       client.rooms.clear();
