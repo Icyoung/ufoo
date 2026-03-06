@@ -6,24 +6,32 @@ const { runChat } = require("../src/chat");
 const { runInternalRunner } = require("../src/agent/internalRunner");
 const { runPtyRunner } = require("../src/agent/ptyRunner");
 
-const cmd = process.argv[2];
+const rawArgv = process.argv.slice(2);
+
+function hasGlobalModeFlag(args = []) {
+  return args.includes("-g") || args.includes("--global");
+}
 
 async function main() {
+  const globalMode = hasGlobalModeFlag(rawArgv);
+  const argv = rawArgv.filter((arg) => arg !== "-g" && arg !== "--global");
+  const cmd = argv[0];
+
   if (!cmd) {
-    await runChat(process.cwd());
+    await runChat(process.cwd(), { globalMode });
     return;
   }
   if (cmd === "daemon") {
-    runDaemonCli(process.argv.slice(2));
+    runDaemonCli(["daemon", ...argv.slice(1)]);
     return;
   }
   if (cmd === "agent-runner") {
-    const agentType = process.argv[3] || "codex";
+    const agentType = argv[1] || "codex";
     await runInternalRunner({ projectRoot: process.cwd(), agentType });
     return;
   }
   if (cmd === "agent-pty-runner") {
-    const agentType = process.argv[3] || "codex";
+    const agentType = argv[1] || "codex";
     try {
       await runPtyRunner({ projectRoot: process.cwd(), agentType });
     } catch (err) {
@@ -39,13 +47,13 @@ async function main() {
     return;
   }
   if (cmd === "chat") {
-    await runChat(process.cwd());
+    await runChat(process.cwd(), { globalMode });
     return;
   }
 
   // Handle resume command to resume/launch agent sessions
   if (cmd === "resume") {
-    const target = process.argv[3];
+    const target = argv[1];
     if (!target) {
       console.error("Error: resume requires an agent type or nickname");
       console.error("Usage: ufoo resume <ucode|uclaude|ucodex|nickname>");

@@ -22,6 +22,13 @@ function defaultCreateSkills(projectRoot) {
   return new UfooSkills(projectRoot);
 }
 
+function defaultResolveTerminalApp() {
+  const program = String(process.env.TERM_PROGRAM || "").trim();
+  if (program === "Apple_Terminal") return "terminal";
+  if (program === "iTerm.app" || process.env.ITERM_SESSION_ID) return "iterm2";
+  return "";
+}
+
 async function withCapturedConsole(capture, fn) {
   const originalLog = console.log;
   const originalError = console.error;
@@ -72,6 +79,10 @@ function createCommandExecutor(options = {}) {
     stopCronTask = () => false,
     runGroupCore = runGroupCoreCommand,
     requestCron = null,
+    listProjects = () => [],
+    getCurrentProject = () => ({ projectRoot }),
+    switchProject = async () => ({ ok: false, error: "project switching unavailable" }),
+    resolveTerminalApp = defaultResolveTerminalApp,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     schedule = (fn, ms) => setTimeout(fn, ms),
   } = options;
@@ -355,7 +366,10 @@ function createCommandExecutor(options = {}) {
 
   async function handleLaunchCommand(args = []) {
     if (args.length === 0) {
-      logMessage("error", "{white-fg}✗{/white-fg} Usage: /launch <claude|codex|ucode> [nickname=<name>] [count=<n>]");
+      logMessage(
+        "error",
+        "{white-fg}✗{/white-fg} Usage: /launch <claude|codex|ucode> [nickname=<name>] [count=<n>] [scope=inplace|window]"
+      );
       return;
     }
 
@@ -375,20 +389,68 @@ function createCommandExecutor(options = {}) {
       }
     }
 
+    function normalizeLaunchScopeOption(value, fallback = "inplace") {
+      const raw = String(value || "").trim().toLowerCase();
+      if (!raw) return fallback;
+      if (raw === "inplace" || raw === "same" || raw === "current" || raw === "tab" || raw === "pane") {
+        return "inplace";
+      }
+      if (
+        raw === "window"
+        || raw === "separate"
+        || raw === "new"
+        || raw === "new-window"
+        || raw === "external"
+        || raw === "1"
+        || raw === "true"
+        || raw === "yes"
+        || raw === "y"
+        || raw === "on"
+      ) {
+        return "window";
+      }
+      if (raw === "0" || raw === "false" || raw === "no" || raw === "n" || raw === "off") {
+        return "inplace";
+      }
+      return "";
+    }
+
     const nickname = parsedOptions.nickname || "";
     const count = parseInt(parsedOptions.count || "1", 10);
+    const scopeRaw = parsedOptions.scope || parsedOptions.launch_scope || parsedOptions.window || "";
+    let launchScope = normalizeLaunchScopeOption(scopeRaw, "inplace");
+    if (scopeRaw && !launchScope) {
+      logMessage("error", "{white-fg}✗{/white-fg} scope must be inplace|window");
+      return;
+    }
+    const rawFlags = args
+      .slice(1)
+      .filter((arg) => !String(arg || "").includes("="))
+      .map((arg) => String(arg || "").trim().toLowerCase())
+      .filter(Boolean);
+    for (const flag of rawFlags) {
+      const normalized = normalizeLaunchScopeOption(flag, "");
+      if (normalized) launchScope = normalized;
+    }
+    if (!launchScope) launchScope = "inplace";
     if (nickname && count > 1) {
       logMessage("error", "{white-fg}✗{/white-fg} nickname requires count=1");
       return;
     }
 
     try {
-      send({
+      const request = {
         type: IPC_REQUEST_TYPES.LAUNCH_AGENT,
         agent: normalizedAgent,
         count: Number.isFinite(count) ? count : 1,
         nickname,
-      });
+        launch_scope: launchScope,
+      };
+      const terminalApp = String(resolveTerminalApp() || "").trim().toLowerCase();
+      if (terminalApp === "terminal" || terminalApp === "iterm2") {
+        request.terminal_app = terminalApp;
+      }
+      send(request);
       schedule(requestStatus, 1000);
     } catch (err) {
       logMessage("error", `{white-fg}✗{/white-fg} Launch failed: ${escapeBlessed(err.message)}`);
@@ -411,6 +473,64 @@ function createCommandExecutor(options = {}) {
     logMessage("system", `{white-fg}⚙{/white-fg} Resuming agents${label}...`);
     send({ type: IPC_REQUEST_TYPES.RESUME_AGENTS, target });
     schedule(requestStatus, 1000);
+  }
+
+  async function handleProjectCommand(args = []) {
+    const subcommand = String(args[0] || "list").trim().toLowerCase();
+
+    if (subcommand === "list") {
+      const rowsRaw = await Promise.resolve(listProjects());
+      const rows = Array.isArray(rowsRaw) ? rowsRaw : [];
+      const current = await Promise.resolve(getCurrentProject());
+      const currentRoot = current && current.project_root ? String(current.project_root) : "";
+      if (rows.length === 0) {
+        logMessage("system", "{white-fg}No projects found{/white-fg}");
+        return;
+      }
+      logMessage("system", `{cyan-fg}Projects:{/cyan-fg} ${rows.length}`);
+      rows.forEach((item, idx) => {
+        const row = item || {};
+        const root = String(row.project_root || "");
+        const name = String(row.project_name || root || "-");
+        const status = String(row.status || "unknown");
+        const marker = root && root === currentRoot ? "*" : " ";
+        logMessage(
+          "system",
+          `${marker}${idx + 1}. {cyan-fg}${escapeBlessed(name)}{/cyan-fg} [{white-fg}${escapeBlessed(status)}{/white-fg}] ${escapeBlessed(root)}`
+        );
+      });
+      return;
+    }
+
+    if (subcommand === "current") {
+      const current = await Promise.resolve(getCurrentProject());
+      if (!current || !current.project_root) {
+        logMessage("error", "{white-fg}✗{/white-fg} Current project unavailable");
+        return;
+      }
+      logMessage("system", `{cyan-fg}Current:{/cyan-fg} ${escapeBlessed(current.project_root)}`);
+      return;
+    }
+
+    if (subcommand === "switch") {
+      const target = String(args[1] || "").trim();
+      if (!target) {
+        logMessage("error", "{white-fg}✗{/white-fg} Usage: /project switch <index|path>");
+        return;
+      }
+      logMessage("system", `{white-fg}⚙{/white-fg} Switching project: ${escapeBlessed(target)}`);
+      const result = await Promise.resolve(switchProject({ target }));
+      if (!result || result.ok !== true) {
+        const reason = result && result.error ? String(result.error) : "switch failed";
+        logMessage("error", `{white-fg}✗{/white-fg} Switch failed: ${escapeBlessed(reason)}`);
+        return;
+      }
+      const nextRoot = result.project_root || result.projectRoot || "";
+      logMessage("system", `{white-fg}✓{/white-fg} Switched project: ${escapeBlessed(nextRoot)}`);
+      return;
+    }
+
+    logMessage("error", "{white-fg}✗{/white-fg} Unknown project command. Use: list, current, switch");
   }
 
   function parseKeyValueArgs(args = []) {
@@ -963,6 +1083,9 @@ function createCommandExecutor(options = {}) {
       case "resume":
         await handleResumeCommand(args);
         return true;
+      case "project":
+        await handleProjectCommand(args);
+        return true;
       case "cron":
         await handleCronCommand(args);
         return true;
@@ -992,6 +1115,7 @@ function createCommandExecutor(options = {}) {
     handleSkillsCommand,
     handleLaunchCommand,
     handleResumeCommand,
+    handleProjectCommand,
     handleCronCommand,
     handleGroupCommand,
     handleSettingsCommand,

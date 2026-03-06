@@ -55,6 +55,14 @@ const COMMAND_TREE = {
       ucode: { desc: "Launch ucode core agent" },
     },
   },
+  "/project": {
+    desc: "Project switch operations (spike)",
+    children: {
+      current: { desc: "Show current chat project" },
+      list: { desc: "List running projects from registry" },
+      switch: { desc: "Switch daemon connection to project index/path" },
+    },
+  },
   "/resume": {
     desc: "Resume agents (optional nickname) or list recoverable targets",
     children: {

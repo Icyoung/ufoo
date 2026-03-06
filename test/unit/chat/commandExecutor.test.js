@@ -62,6 +62,10 @@ function createHarness(overrides = {}) {
     listCronTasks: jest.fn(() => []),
     stopCronTask: jest.fn(() => false),
     runGroupCore: jest.fn().mockResolvedValue(undefined),
+    listProjects: jest.fn(() => []),
+    getCurrentProject: jest.fn(() => ({ project_root: "/tmp/ufoo", project_name: "ufoo" })),
+    switchProject: jest.fn(async () => ({ ok: true, project_root: "/tmp/other" })),
+    resolveTerminalApp: jest.fn(() => ""),
     sleep: jest.fn(() => Promise.resolve()),
     schedule: jest.fn((fn) => fn()),
   };
@@ -160,6 +164,7 @@ describe("chat commandExecutor", () => {
       agent: "codex",
       count: 1,
       nickname: "neo",
+      launch_scope: "inplace",
     });
     expect(options.schedule).toHaveBeenCalled();
     expect(options.requestStatus).toHaveBeenCalled();
@@ -199,7 +204,55 @@ describe("chat commandExecutor", () => {
       agent: "ufoo",
       count: 1,
       nickname: "core",
+      launch_scope: "inplace",
     });
+  });
+
+  test("handleLaunchCommand supports separate window scope", async () => {
+    const { executor, options } = createHarness();
+
+    await executor.handleLaunchCommand(["codex", "scope=window"]);
+    expect(options.send).toHaveBeenCalledWith({
+      type: "launch_agent",
+      agent: "codex",
+      count: 1,
+      nickname: "",
+      launch_scope: "window",
+    });
+
+    options.send.mockClear();
+    await executor.handleLaunchCommand(["codex", "window"]);
+    expect(options.send).toHaveBeenCalledWith({
+      type: "launch_agent",
+      agent: "codex",
+      count: 1,
+      nickname: "",
+      launch_scope: "window",
+    });
+  });
+
+  test("handleLaunchCommand forwards terminal app preference when available", async () => {
+    const { executor, options } = createHarness({
+      resolveTerminalApp: jest.fn(() => "terminal"),
+    });
+
+    await executor.handleLaunchCommand(["claude"]);
+    expect(options.send).toHaveBeenCalledWith({
+      type: "launch_agent",
+      agent: "claude",
+      count: 1,
+      nickname: "",
+      launch_scope: "inplace",
+      terminal_app: "terminal",
+    });
+  });
+
+  test("handleLaunchCommand rejects invalid scope", async () => {
+    const { executor, options, logs } = createHarness();
+
+    await executor.handleLaunchCommand(["codex", "scope=weird"]);
+    expect(options.send).not.toHaveBeenCalled();
+    expect(logs.some((entry) => entry.text.includes("scope must be inplace|window"))).toBe(true);
   });
 
   test("handleLaunchCommand rejects ufoo alias input", async () => {
@@ -383,6 +436,38 @@ describe("chat commandExecutor", () => {
       type: "group_status",
       group_id: "g1",
     });
+  });
+
+  test("handleProjectCommand list/current/switch", async () => {
+    const { executor, options, logs } = createHarness({
+      listProjects: jest.fn(() => [
+        { project_root: "/tmp/ufoo", project_name: "ufoo", status: "running" },
+        { project_root: "/tmp/other", project_name: "other", status: "stale" },
+      ]),
+      getCurrentProject: jest.fn(() => ({ project_root: "/tmp/ufoo", project_name: "ufoo" })),
+      switchProject: jest.fn(async () => ({ ok: true, project_root: "/tmp/other" })),
+    });
+
+    await executor.handleProjectCommand(["list"]);
+    await executor.handleProjectCommand(["current"]);
+    await executor.handleProjectCommand(["switch", "2"]);
+
+    expect(options.listProjects).toHaveBeenCalled();
+    expect(options.getCurrentProject).toHaveBeenCalled();
+    expect(options.switchProject).toHaveBeenCalledWith({ target: "2" });
+    expect(logs.some((entry) => entry.text.includes("Projects:"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("Current:"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("Switched project:"))).toBe(true);
+  });
+
+  test("executeCommand routes /project", async () => {
+    const { executor, options } = createHarness({
+      parseCommand: jest.fn(() => ({ command: "project", args: ["switch", "1"] })),
+      switchProject: jest.fn(async () => ({ ok: true, project_root: "/tmp/new" })),
+    });
+
+    await expect(executor.executeCommand("/project switch 1")).resolves.toBe(true);
+    expect(options.switchProject).toHaveBeenCalledWith({ target: "1" });
   });
 
   test("handleDoctorCommand escapes thrown errors", async () => {

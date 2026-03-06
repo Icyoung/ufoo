@@ -11,6 +11,7 @@ const { generateInstanceId, subscriberToSafeName } = require("../bus/utils");
 const { createDaemonIpcServer } = require("./ipcServer");
 const { IPC_REQUEST_TYPES, IPC_RESPONSE_TYPES, BUS_STATUS_PHASES } = require("../shared/eventContract");
 const { getUfooPaths } = require("../ufoo/paths");
+const { upsertProjectRuntime, markProjectStopped } = require("../projects/registry");
 const { scheduleProviderSessionProbe, loadProviderSessionCache } = require("./providerSessions");
 const { createTerminalAdapterRouter } = require("../terminal/adapterRouter");
 const { createDaemonCronController } = require("./cronOps");
@@ -25,6 +26,7 @@ let providerSessions = null;
 let probeHandles = new Map();
 let daemonCronController = null;
 let daemonGroupOrchestrator = null;
+const PROJECT_RUNTIME_HEARTBEAT_MS = 10 * 1000;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -323,7 +325,10 @@ async function handleOps(projectRoot, ops = [], processManager = null) {
           continue;
         }
         // eslint-disable-next-line no-await-in-loop
-        const launchResult = await launchAgent(projectRoot, agent, count, nickname, processManager);
+        const launchResult = await launchAgent(projectRoot, agent, count, nickname, processManager, {
+          launchScope: op.launch_scope || "",
+          terminalApp: op.terminal_app || "",
+        });
         if (launchResult.mode === "internal" && launchResult.subscriberIds && launchResult.subscriberIds.length > 0) {
           const probeAgentType = agent === "codex"
             ? "codex"
@@ -359,6 +364,7 @@ async function handleOps(projectRoot, ops = [], processManager = null) {
           agent,
           count,
           nickname: nickname || undefined,
+          launch_scope: launchResult.launchScope || undefined,
           subscriber_ids: Array.isArray(launchResult.subscriberIds) ? launchResult.subscriberIds.slice() : [],
         });
         if (nickname) {
@@ -669,6 +675,19 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
   const log = (msg) => {
     logFile.write(`[daemon] ${new Date().toISOString()} ${msg}\n`);
   };
+  const publishProjectRuntime = (status = "running") => {
+    try {
+      upsertProjectRuntime({
+        projectRoot,
+        daemonPid: process.pid,
+        socketPath: socketPath(projectRoot),
+        status,
+        lastSeen: new Date().toISOString(),
+      });
+    } catch (err) {
+      log(`project runtime update failed (${status}): ${err.message || err}`);
+    }
+  };
 
   // 创建进程管理器 - daemon 作为父进程监控所有 internal agents
   const processManager = new AgentProcessManager(projectRoot);
@@ -952,7 +971,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
     }
     if (req.type === IPC_REQUEST_TYPES.LAUNCH_AGENT) {
       log(`launch_agent received: agent=${req.agent} count=${req.count}`);
-      const { agent, count, nickname } = req;
+      const { agent, count, nickname, launch_scope, terminal_app } = req;
       const normalizedAgent = normalizeLaunchAgent(agent);
       if (!normalizedAgent) {
         socket.write(
@@ -971,6 +990,8 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
         agent: normalizedAgent,
         count: finalCount,
         nickname: nickname || "",
+        launch_scope: launch_scope || "",
+        terminal_app: terminal_app || "",
       };
       try {
         const opsResults = await handleOps(projectRoot, [op], processManager);
@@ -1515,6 +1536,10 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
   };
 
   ipcServer.listen(socketPath(projectRoot));
+  publishProjectRuntime("running");
+  const runtimeHeartbeat = setInterval(() => {
+    publishProjectRuntime("running");
+  }, PROJECT_RUNTIME_HEARTBEAT_MS);
 
   log(`Started pid=${process.pid}`);
 
@@ -1619,8 +1644,17 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
     }, 1500);
   }
 
+  let cleanedUp = false;
   const cleanup = () => {
+    if (cleanedUp) return;
+    cleanedUp = true;
     log(`Shutting down daemon (managed agents: ${processManager.count()})`);
+    clearInterval(runtimeHeartbeat);
+    try {
+      markProjectStopped(projectRoot);
+    } catch {
+      // ignore cleanup errors
+    }
 
     if (daemonCronController) {
       daemonCronController.stopAll();
@@ -1702,6 +1736,12 @@ function stopDaemon(projectRoot) {
     if (fs.existsSync(lockFile)) {
       fs.unlinkSync(lockFile);
     }
+  } catch {
+    // ignore
+  }
+
+  try {
+    markProjectStopped(projectRoot);
   } catch {
     // ignore
   }

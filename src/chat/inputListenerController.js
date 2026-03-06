@@ -204,23 +204,33 @@ function createInputListenerController(options = {}) {
 
     if (keyName === "up" || keyName === "down") {
       const innerWidth = getWrapWidth();
-      if (innerWidth > 0) {
-        const cursorPos = getCursorPos();
-        const value = (textarea && textarea.value) || "";
-        const { row, col } = getCursorRowCol(value, cursorPos, innerWidth);
-        if (getPreferredCol() === null) setPreferredCol(col);
-        const totalRows = countLines(value, innerWidth);
-
-        if (keyName === "down" && row >= totalRows - 1) {
+      if (innerWidth <= 0) {
+        if (keyName === "down") {
           enterDashboardMode();
           return;
         }
-
-        const targetRow = keyName === "up"
-          ? Math.max(0, row - 1)
-          : Math.min(totalRows - 1, row + 1);
-        setCursorPos(getCursorPosForRowCol(value, targetRow, getPreferredCol(), innerWidth));
+        ensureInputCursorVisible();
+        updateCursor(textarea);
+        render(textarea);
+        return;
       }
+
+      const cursorPos = getCursorPos();
+      const value = (textarea && textarea.value) || "";
+      const { row, col } = getCursorRowCol(value, cursorPos, innerWidth);
+      if (getPreferredCol() === null) setPreferredCol(col);
+      const totalRows = countLines(value, innerWidth);
+
+      if (keyName === "down" && row >= totalRows - 1) {
+        enterDashboardMode();
+        return;
+      }
+
+      const targetRow = keyName === "up"
+        ? Math.max(0, row - 1)
+        : Math.min(totalRows - 1, row + 1);
+      setCursorPos(getCursorPosForRowCol(value, targetRow, getPreferredCol(), innerWidth));
+
       ensureInputCursorVisible();
       updateCursor(textarea);
       render(textarea);

@@ -7,10 +7,14 @@ const {
 describe("chat dashboardView", () => {
   const dashHints = {
     agents: "AGENTS",
+    agentsGlobal: "AGENTS_GLOBAL",
     agentsEmpty: "EMPTY",
     mode: "MODE",
     provider: "PROVIDER",
     resume: "RESUME",
+    projects: "PROJECTS",
+    projectsFocus: "PROJECTS_FOCUS",
+    projectsEmpty: "NO_PROJECTS",
   };
 
   test("providerLabel maps provider ids", () => {
@@ -148,5 +152,82 @@ describe("chat dashboardView", () => {
     expect(out.content).toContain("c1@10s->codex:1: run smoke");
     expect(out.content).toContain("c2@1m->claude:2: check logs");
     expect(out.content).toContain("{gray-fg}│ CRON{/gray-fg}");
+  });
+
+  test("global mode renders project rail with normal summary on second line", () => {
+    const out = computeDashboardContent({
+      globalMode: true,
+      focusMode: "input",
+      projects: [
+        { project_name: "alpha", project_root: "/tmp/alpha", status: "running" },
+        { project_name: "beta", project_root: "/tmp/beta", status: "stale" },
+        { project_name: "gamma", project_root: "/tmp/gamma", status: "stopped" },
+      ],
+      selectedProjectIndex: 1,
+      projectListWindowStart: 0,
+      maxProjectWindow: 2,
+      activeProjectRoot: "/tmp/alpha",
+      activeAgents: ["codex:1", "claude:2"],
+      dashHints,
+    });
+
+    expect(out.windowStart).toBe(0);
+    expect(out.content).toContain("{gray-fg}Projects:{/gray-fg}");
+    expect(out.content).toContain("{cyan-fg}[alpha]{/cyan-fg}");
+    expect(out.content).toContain("{inverse}beta{/inverse}");
+    expect(out.content).toContain("\n");
+    expect(out.content).toContain("{gray-fg}Agents:{/gray-fg} {cyan-fg}@codex:1, @claude:2{/cyan-fg}");
+    expect(out.content).toContain("{gray-fg}Mode:{/gray-fg} {cyan-fg}terminal{/cyan-fg}");
+    expect(out.content).toContain("{gray-fg}Agent:{/gray-fg} {cyan-fg}codex{/cyan-fg}");
+    expect(out.content).toContain("{gray-fg}Assistant:{/gray-fg} {cyan-fg}auto{/cyan-fg}");
+    expect(out.content).toContain("{gray-fg}Cron:{/gray-fg} {cyan-fg}0{/cyan-fg}");
+  });
+
+  test("global mode renders empty state when registry has no projects", () => {
+    const out = computeDashboardContent({
+      globalMode: true,
+      focusMode: "input",
+      projects: [],
+      dashHints,
+    });
+
+    expect(out.windowStart).toBe(0);
+    expect(out.content).toContain("{gray-fg}Projects:{/gray-fg} {cyan-fg}none{/cyan-fg}");
+    expect(out.content).toContain("{gray-fg}NO_PROJECTS{/gray-fg}");
+  });
+
+  test("global dashboard projects focus keeps normal summary second line", () => {
+    const out = computeDashboardContent({
+      globalMode: true,
+      focusMode: "dashboard",
+      dashboardView: "projects",
+      projects: [{ project_name: "alpha", project_root: "/tmp/alpha", status: "running" }],
+      selectedProjectIndex: 0,
+      activeProjectRoot: "/tmp/alpha",
+      activeAgents: ["codex:1"],
+      dashHints,
+    });
+
+    expect(out.content).toContain("{inverse}[alpha]{/inverse}");
+    expect(out.content).toContain("{gray-fg}Agents:{/gray-fg} {cyan-fg}@codex:1{/cyan-fg}");
+  });
+
+  test("global dashboard agents view uses agentsGlobal hint", () => {
+    const out = computeDashboardContent({
+      globalMode: true,
+      focusMode: "dashboard",
+      dashboardView: "agents",
+      projects: [{ project_name: "alpha", project_root: "/tmp/alpha", status: "running" }],
+      selectedProjectIndex: 0,
+      activeProjectRoot: "/tmp/alpha",
+      activeAgents: ["codex:1"],
+      selectedAgentIndex: 0,
+      getAgentLabel: (id) => id,
+      dashHints,
+    });
+
+    expect(out.content).toContain("{gray-fg}Projects:{/gray-fg}");
+    expect(out.content).toContain("{cyan-fg}[alpha]{/cyan-fg}");
+    expect(out.content).toContain("{gray-fg}│ AGENTS_GLOBAL{/gray-fg}");
   });
 });

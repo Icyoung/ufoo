@@ -78,4 +78,27 @@ describe("chat streamTracker", () => {
     expect(tracker.getPendingState("codex:1", null)).toBeNull();
     expect(tracker.getPendingState(null, "agent-1")).toBeNull();
   });
+
+  test("discardAll clears in-flight streams without writing history", () => {
+    const history = [];
+    const tracker = createStreamTracker({
+      logBox: createMockLogBox(),
+      writeSpacer: () => {},
+      appendHistory: (entry) => history.push(entry),
+      escapeBlessed: (s) => String(s),
+    });
+
+    const state = tracker.beginStream("codex:1", "P: ", "   ", {});
+    tracker.appendStreamDelta(state, "partial");
+    expect(tracker.hasStream("codex:1")).toBe(true);
+    tracker.markPendingDelivery("codex:1", "agent-1");
+    expect(tracker.getPendingState("codex:1", "agent-1")).not.toBeNull();
+
+    tracker.discardAll();
+    expect(tracker.hasStream("codex:1")).toBe(false);
+    expect(tracker.getPendingState("codex:1", "agent-1")).toBeNull();
+
+    tracker.finalizeStream("codex:1", {}, "done");
+    expect(history).toEqual([]);
+  });
 });

@@ -2,8 +2,8 @@ function createChatLogController(options = {}) {
   const {
     logBox,
     fsModule,
-    historyDir,
-    historyFile,
+    historyDir: historyDirOption,
+    historyFile: historyFileOption,
     now = () => new Date().toISOString(),
   } = options;
 
@@ -13,9 +13,11 @@ function createChatLogController(options = {}) {
   if (!fsModule) {
     throw new Error("createChatLogController requires fsModule");
   }
-  if (!historyDir || !historyFile) {
+  if (!historyDirOption || !historyFileOption) {
     throw new Error("createChatLogController requires historyDir/historyFile");
   }
+  let historyDir = historyDirOption;
+  let historyFile = historyFileOption;
 
   const SPACED_TYPES = new Set(["user", "reply", "bus", "dispatch", "error"]);
   let lastLogWasSpacer = false;
@@ -95,9 +97,28 @@ function createChatLogController(options = {}) {
           recordLog(item.type || "unknown", item.text, item.meta || {}, false);
         }
       }
-    } catch {
-      // Ignore missing/invalid history.
+    } catch (err) {
+      if (err && err.code === "ENOENT") {
+        return;
+      }
+      if (err && typeof console !== "undefined" && typeof console.warn === "function") {
+        console.warn(`chat history load failed (${historyFile}): ${err.message || err}`);
+      }
     }
+  }
+
+  function setHistoryTarget(next = {}) {
+    if (!next.historyDir || !next.historyFile) {
+      throw new Error("setHistoryTarget requires historyDir/historyFile");
+    }
+    historyDir = next.historyDir;
+    historyFile = next.historyFile;
+  }
+
+  function resetViewState() {
+    // Callers are expected to clear logBox separately; this only resets spacing trackers.
+    lastLogWasSpacer = false;
+    hasLoggedAny = false;
   }
 
   return {
@@ -107,6 +128,8 @@ function createChatLogController(options = {}) {
     logMessage,
     markStreamStart,
     loadHistory,
+    setHistoryTarget,
+    resetViewState,
   };
 }
 

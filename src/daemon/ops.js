@@ -37,6 +37,44 @@ function toTmuxBinary(agent = "") {
   return "";
 }
 
+function normalizeLaunchScope(value, fallback = "inplace") {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return fallback;
+  if (raw === "inplace" || raw === "same" || raw === "current" || raw === "tab" || raw === "pane") {
+    return "inplace";
+  }
+  if (
+    raw === "window"
+    || raw === "separate"
+    || raw === "new"
+    || raw === "new-window"
+    || raw === "external"
+    || raw === "1"
+    || raw === "true"
+    || raw === "yes"
+    || raw === "y"
+    || raw === "on"
+  ) {
+    return "window";
+  }
+  if (raw === "0" || raw === "false" || raw === "no" || raw === "n" || raw === "off") {
+    return "inplace";
+  }
+  return fallback;
+}
+
+function normalizeTerminalAppPreference(value = "") {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "";
+  if (raw === "terminal" || raw === "apple_terminal" || raw === "apple-terminal") {
+    return "terminal";
+  }
+  if (raw === "iterm2" || raw === "iterm" || raw === "iterm.app") {
+    return "iterm2";
+  }
+  return "";
+}
+
 function resolveAgentId(projectRoot, agentId) {
   if (!agentId) return agentId;
   if (agentId.includes(":")) return agentId;
@@ -130,23 +168,40 @@ function runAppleScript(lines) {
   });
 }
 
-async function openTerminalWindow(runCmd) {
+async function openTerminalWindow(runCmd, options = {}) {
   if (process.platform !== "darwin") {
     throw new Error("Terminal mode is only supported on macOS");
   }
 
+  const launchScope = normalizeLaunchScope(options.launchScope, "inplace");
+  const terminalApp = normalizeTerminalAppPreference(options.terminalApp);
+  const preferSeparateWindow = launchScope === "window";
   const escaped = escapeAppleScriptString(runCmd);
+  const shouldTryITerm2 = terminalApp
+    ? terminalApp === "iterm2"
+    : isITerm2();
 
-  if (isITerm2()) {
+  if (shouldTryITerm2) {
     try {
-      const script = [
-        'tell application "iTerm2"',
-        "  tell current window",
-        `    create tab with default profile command "${escaped}"`,
-        "  end tell",
-        "  activate",
-        "end tell",
-      ];
+      const script = preferSeparateWindow
+        ? [
+          'tell application "iTerm2"',
+          `  create window with default profile command "${escaped}"`,
+          "  activate",
+          "end tell",
+        ]
+        : [
+          'tell application "iTerm2"',
+          "  if (count of windows) is 0 then",
+          `    create window with default profile command "${escaped}"`,
+          "  else",
+          "    tell current window",
+          `      create tab with default profile command "${escaped}"`,
+          "    end tell",
+          "  end if",
+          "  activate",
+          "end tell",
+        ];
       await runAppleScript(script);
       return;
     } catch {
@@ -154,13 +209,55 @@ async function openTerminalWindow(runCmd) {
     }
   }
 
-  const script = [
+  if (preferSeparateWindow) {
+    const script = [
+      'tell application "Terminal"',
+      `  do script "${escaped}"`,
+      "  activate",
+      "end tell",
+    ];
+    await runAppleScript(script);
+    return;
+  }
+
+  const preferredScript = [
     'tell application "Terminal"',
-    `do script "${escaped}"`,
-    "activate",
+    "  activate",
+    "  if (count of windows) is 0 then",
+    `    do script "${escaped}"`,
+    "  else",
+    '    tell application "System Events"',
+    '      tell process "Terminal"',
+    '        keystroke "t" using command down',
+    "      end tell",
+    "    end tell",
+    "    delay 0.08",
+    `    do script "${escaped}" in selected tab of front window`,
+    "  end if",
+    "  activate",
     "end tell",
   ];
-  await runAppleScript(script);
+
+  try {
+    await runAppleScript(preferredScript);
+    return;
+  } catch {
+    // Accessibility can block System Events key events; fall back to pure Terminal AppleScript.
+  }
+
+  const fallbackScript = [
+    'tell application "Terminal"',
+    "  activate",
+    "  if (count of windows) is 0 then",
+    `    do script "${escaped}"`,
+    "  else",
+    "    set newTab to (do script \"\" in front window)",
+    `    do script "${escaped}" in newTab`,
+    "  end if",
+    "  activate",
+    "end tell",
+  ];
+  await runAppleScript(fallbackScript);
 }
 
 async function closeTerminalWindowByTty(ttyPath, preferApp = "") {
@@ -262,7 +359,16 @@ async function tryReuseTerminal(projectRoot, subscriberId, meta, agent, sessionI
 /**
  * Spawn managed terminal agent - open a real Terminal session to run the agent
  */
-async function spawnManagedTerminalAgent(projectRoot, agent, nickname = "", processManager = null, extraArgs = [], extraEnv = "") {
+async function spawnManagedTerminalAgent(
+  projectRoot,
+  agent,
+  nickname = "",
+  processManager = null,
+  extraArgs = [],
+  extraEnv = "",
+  launchScope = "window",
+  terminalApp = ""
+) {
   const normalizedAgent = normalizeLaunchAgent(agent);
   const binary = toTerminalBinary(normalizedAgent);
   const agentType = toBusAgentType(normalizedAgent);
@@ -283,7 +389,7 @@ async function spawnManagedTerminalAgent(projectRoot, agent, nickname = "", proc
 
   const runCmd = `cd ${shellEscape(projectRoot)} && ${prefix}${modeEnv}${nickEnv}${envPrefix}${binary}${argText}`;
 
-  await openTerminalWindow(runCmd);
+  await openTerminalWindow(runCmd, { launchScope, terminalApp });
 
   const subscriberId = await waitForNewSubscriber(projectRoot, agentType, existing, 15000);
   return { child: null, subscriberId: subscriberId || null };
@@ -455,9 +561,57 @@ function spawnTmuxWindow(projectRoot, agent, nickname = "", extraArgs = [], extr
   });
 }
 
-async function launchAgent(projectRoot, agent, count = 1, nickname = "", processManager = null) {
+function resolveTmuxPaneTarget() {
+  const explicit = String(process.env.UFOO_TMUX_TARGET || "").trim();
+  if (explicit) return explicit;
+  const preferredPane = String(process.env.UFOO_TMUX_PANE || "").trim();
+  if (preferredPane) return preferredPane;
+  const currentPane = String(process.env.TMUX_PANE || "").trim();
+  if (currentPane) return currentPane;
+  return "";
+}
+
+function spawnTmuxPane(projectRoot, agent, nickname = "", extraArgs = [], extraEnv = "", target = "") {
+  return new Promise((resolve, reject) => {
+    const normalizedAgent = normalizeLaunchAgent(agent);
+    const binary = toTmuxBinary(normalizedAgent);
+    if (!binary) {
+      reject(new Error(`unsupported agent type: ${agent}`));
+      return;
+    }
+    const nickEnv = nickname ? `UFOO_NICKNAME=${shellEscape(nickname)} ` : "";
+    const modeEnv = "UFOO_LAUNCH_MODE=tmux ";
+    const ttyEnv = "UFOO_TTY_OVERRIDE=$(tty) ";
+    const args = Array.isArray(extraArgs) ? extraArgs : [];
+    const envPrefix = extraEnv ? `${String(extraEnv).trim()} ` : "";
+    const argText = args.length > 0 ? ` ${args.map(shellEscape).join(" ")}` : "";
+    const setPaneEnv = `export TMUX_PANE=$(tmux display-message -p '#{pane_id}'); `;
+    const runCmd = `cd ${shellEscape(projectRoot)} && ${setPaneEnv}${modeEnv}${nickEnv}${ttyEnv}${envPrefix}${binary}${argText}`;
+
+    const tmuxArgs = ["split-window", "-d"];
+    const normalizedTarget = String(target || "").trim();
+    if (normalizedTarget) {
+      tmuxArgs.push("-t", normalizedTarget);
+    }
+    tmuxArgs.push(runCmd);
+
+    const proc = spawn("tmux", tmuxArgs);
+    let stderr = "";
+    proc.stderr.on("data", (d) => {
+      stderr += d.toString("utf8");
+    });
+    proc.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(stderr || "tmux split-window failed"));
+    });
+  });
+}
+
+async function launchAgent(projectRoot, agent, count = 1, nickname = "", processManager = null, options = {}) {
   const config = loadConfig(projectRoot);
   const mode = config.launchMode || "terminal";
+  const launchScope = normalizeLaunchScope(options.launchScope, "inplace");
+  const terminalApp = normalizeTerminalAppPreference(options.terminalApp);
   const normalizedAgent = normalizeLaunchAgent(agent);
   if (!normalizedAgent) {
     throw new Error(`unsupported agent type: ${agent}`);
@@ -465,7 +619,7 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
 
   if (mode === "internal") {
     const result = await spawnInternalAgent(projectRoot, normalizedAgent, count, nickname, processManager);
-    return { mode: "internal", subscriberIds: result.subscriberIds };
+    return { mode: "internal", launchScope, subscriberIds: result.subscriberIds };
   }
   if (mode === "tmux") {
     // Check if tmux is available
@@ -489,14 +643,27 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
         process.env.UFOO_TMUX_SESSION = firstSession;
       }
     }
+    const paneTarget = resolveTmuxPaneTarget();
+    const useSeparateWindow = launchScope === "window";
     for (let i = 0; i < count; i += 1) {
       // Use "ucode" as default nickname for ufoo/ucode agents
       const defaultNick = normalizedAgent === "ufoo" ? "ucode" : normalizedAgent;
       const nick = count > 1 ? `${nickname || defaultNick}-${i + 1}` : (nickname || "");
-      // eslint-disable-next-line no-await-in-loop
-      await spawnTmuxWindow(projectRoot, normalizedAgent, nick);
+      if (useSeparateWindow) {
+        // eslint-disable-next-line no-await-in-loop
+        await spawnTmuxWindow(projectRoot, normalizedAgent, nick);
+      } else {
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          await spawnTmuxPane(projectRoot, normalizedAgent, nick, [], "", paneTarget);
+        } catch {
+          // Fallback to new window when current pane target cannot be resolved.
+          // eslint-disable-next-line no-await-in-loop
+          await spawnTmuxWindow(projectRoot, normalizedAgent, nick);
+        }
+      }
     }
-    return { mode: "tmux" };
+    return { mode: "tmux", launchScope, subscriberIds: [] };
   }
   // terminal mode - daemon 作为父进程，输出到终端窗口
   if (process.platform !== "darwin") {
@@ -509,11 +676,20 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
     const defaultNick = normalizedAgent === "ufoo" ? "ucode" : normalizedAgent;
     const nick = count > 1 ? `${nickname || defaultNick}-${i + 1}` : (nickname || "");
     // eslint-disable-next-line no-await-in-loop
-    const result = await spawnManagedTerminalAgent(projectRoot, normalizedAgent, nick, processManager);
+    const result = await spawnManagedTerminalAgent(
+      projectRoot,
+      normalizedAgent,
+      nick,
+      processManager,
+      [],
+      "",
+      launchScope,
+      terminalApp
+    );
     if (result.subscriberId) subscriberIds.push(result.subscriberId);
   }
 
-  return { mode: "terminal", subscriberIds };
+  return { mode: "terminal", launchScope, subscriberIds };
 }
 
 function normalizeAgentType(agentType) {

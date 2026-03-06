@@ -42,6 +42,7 @@
         <div class="docs-nav-section">
           <h5>CLI Reference</h5>
           <a href="#commands" class="docs-nav-link">Commands</a>
+          <a href="#global-chat" class="docs-nav-link">Global Chat</a>
           <a href="#uclaude" class="docs-nav-link">uclaude</a>
           <a href="#ucodex" class="docs-nav-link">ucodex</a>
           <a href="#ucode" class="docs-nav-link">ucode</a>
@@ -90,11 +91,11 @@
         <p>Verify installation:</p>
         <div class="docs-code">
           <pre><code><span class="prompt">$</span> ufoo --version
-<span class="success">1.2.3</span>
+<span class="success">1.5.0</span>
 
 <span class="prompt">$</span> ufoo doctor
 <span class="success">&#x2713;</span> Node.js v22.x detected
-<span class="success">&#x2713;</span> u-foo@1.2.3 installed globally
+<span class="success">&#x2713;</span> u-foo@1.5.0 installed globally
 <span class="success">&#x2713;</span> claude CLI found
 <span class="success">&#x2713;</span> codex CLI found</code></pre>
         </div>
@@ -143,6 +144,49 @@
           <div>
             <strong>That's it.</strong> Agents communicate via the event bus, share decisions via context files, and coordinate automatically. No config files needed.
           </div>
+        </div>
+      </section>
+
+      <!-- Global Chat -->
+      <section id="global-chat" class="docs-section">
+        <h1>Global Chat</h1>
+        <p>Use <code>ufoo -g</code> to manage multiple running projects in one chat dashboard.</p>
+
+        <div class="docs-code">
+          <pre><code><span class="prompt">$</span> ufoo -g
+<span class="dim">&gt;</span> /project list
+<span class="dim">&gt;</span> /project switch 2
+<span class="dim">&gt;</span> /launch claude scope=inplace
+<span class="dim">&gt;</span> /launch codex scope=window</code></pre>
+        </div>
+
+        <div class="docs-table-wrap">
+          <table class="docs-table">
+            <thead>
+              <tr>
+                <th>Command</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>/project list</code></td>
+                <td>List running projects from global runtime registry</td>
+              </tr>
+              <tr>
+                <td><code>/project switch &lt;index|path&gt;</code></td>
+                <td>Switch active project daemon connection and chat context</td>
+              </tr>
+              <tr>
+                <td><code>/launch &lt;agent&gt; scope=inplace</code></td>
+                <td>Launch in current workspace context (tab or pane)</td>
+              </tr>
+              <tr>
+                <td><code>/launch &lt;agent&gt; scope=window</code></td>
+                <td>Launch in a separate terminal window</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </section>
 
@@ -591,7 +635,7 @@
 
       <!-- Footer inside docs -->
       <div class="docs-footer">
-        <p>UFOO v1.2.3 &mdash; <a href="https://github.com/Icyoung/ufoo">GitHub</a> &middot; <a href="https://www.npmjs.com/package/u-foo">npm</a></p>
+        <p>UFOO v1.5.0 &mdash; <a href="https://github.com/Icyoung/ufoo">GitHub</a> &middot; <a href="https://www.npmjs.com/package/u-foo">npm</a></p>
       </div>
     </main>
   </div>

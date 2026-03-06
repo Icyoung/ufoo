@@ -14,7 +14,7 @@ jest.mock("child_process", () => {
   return { spawn };
 });
 
-const { getRecoverableAgents, closeAgent } = require("../../../src/daemon/ops");
+const { launchAgent, getRecoverableAgents, closeAgent } = require("../../../src/daemon/ops");
 const { getUfooPaths } = require("../../../src/ufoo/paths");
 
 describe("daemon ops recoverable agents", () => {
@@ -113,6 +113,58 @@ describe("daemon ops recoverable agents", () => {
     const missingResult = getRecoverableAgents(projectRoot, "missing-target");
     expect(missingResult.recoverable).toHaveLength(0);
     expect(missingResult.skipped).toEqual([{ id: "missing-target", reason: "target not found" }]);
+  });
+});
+
+describe("daemon ops launch scope (tmux)", () => {
+  const projectRoot = "/tmp/ufoo-daemon-launchscope-test";
+  let tmuxPaneOriginal;
+
+  function writeConfig(config) {
+    const configPath = path.join(projectRoot, ".ufoo", "config.json");
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+  }
+
+  beforeEach(() => {
+    if (fs.existsSync(projectRoot)) {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+    fs.mkdirSync(projectRoot, { recursive: true });
+    tmuxPaneOriginal = process.env.TMUX_PANE;
+    process.env.TMUX_PANE = "%9";
+    spawn.mockClear();
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(projectRoot)) {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+    if (tmuxPaneOriginal === undefined) {
+      delete process.env.TMUX_PANE;
+    } else {
+      process.env.TMUX_PANE = tmuxPaneOriginal;
+    }
+  });
+
+  test("defaults to split-window (in-place pane)", async () => {
+    writeConfig({ launchMode: "tmux" });
+
+    await launchAgent(projectRoot, "codex", 1, "");
+
+    const tmuxCalls = spawn.mock.calls.filter((call) => call[0] === "tmux");
+    expect(tmuxCalls.some(([, args]) => Array.isArray(args) && args[0] === "list-sessions")).toBe(true);
+    expect(tmuxCalls.some(([, args]) => Array.isArray(args) && args[0] === "split-window")).toBe(true);
+    expect(tmuxCalls.some(([, args]) => Array.isArray(args) && args[0] === "new-window")).toBe(false);
+  });
+
+  test("scope=window uses tmux new-window", async () => {
+    writeConfig({ launchMode: "tmux" });
+
+    await launchAgent(projectRoot, "codex", 1, "", null, { launchScope: "window" });
+
+    const tmuxCalls = spawn.mock.calls.filter((call) => call[0] === "tmux");
+    expect(tmuxCalls.some(([, args]) => Array.isArray(args) && args[0] === "new-window")).toBe(true);
   });
 });
 

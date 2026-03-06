@@ -92,4 +92,31 @@ describe("chat daemonTransport", () => {
     expect(connectWithRetry).toHaveBeenCalledTimes(2);
     expect(startDaemon).not.toHaveBeenCalled();
   });
+
+  test("setTarget updates future connect target without mutating call contract", async () => {
+    const connectWithRetry = jest.fn().mockResolvedValue({ id: "c3" });
+    const transport = createDaemonTransport({
+      projectRoot: "/tmp/project-a",
+      sockPath: "/tmp/a.sock",
+      isRunning: jest.fn(() => true),
+      startDaemon: jest.fn(),
+      connectWithRetry,
+    });
+
+    transport.setTarget({
+      projectRoot: "/tmp/project-b",
+      sockPath: "/tmp/b.sock",
+    });
+    await transport.connectClient();
+
+    expect(connectWithRetry).toHaveBeenCalledWith(
+      "/tmp/b.sock",
+      DAEMON_TRANSPORT_DEFAULTS.primaryRetries,
+      DAEMON_TRANSPORT_DEFAULTS.retryDelayMs
+    );
+    expect(transport.getTarget()).toEqual({
+      projectRoot: "/tmp/project-b",
+      sockPath: "/tmp/b.sock",
+    });
+  });
 });

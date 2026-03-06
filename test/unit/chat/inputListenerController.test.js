@@ -152,6 +152,15 @@ describe("chat inputListenerController", () => {
     expect(options.enterDashboardMode).toHaveBeenCalled();
   });
 
+  test("down enters dashboard mode when wrap width is unavailable", () => {
+    const { controller, options, textarea } = createHarness({
+      getWrapWidth: jest.fn(() => 0),
+    });
+    textarea.value = "abc";
+    controller.handleKey("", { name: "down" }, textarea);
+    expect(options.enterDashboardMode).toHaveBeenCalled();
+  });
+
   test("backspace mutates text and refreshes completion", () => {
     const { controller, options, completionController, state, textarea } = createHarness();
     textarea.value = "/ab";

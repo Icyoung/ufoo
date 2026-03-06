@@ -50,6 +50,14 @@ describe("chat command helpers", () => {
     expect((group.subcommands || []).some((sub) => sub.cmd === "template")).toBe(true);
   });
 
+  test("project command is exposed for switch spike", () => {
+    const project = COMMAND_REGISTRY.find((item) => item.cmd === "/project");
+    expect(project).toBeTruthy();
+    expect((project.subcommands || []).some((sub) => sub.cmd === "list")).toBe(true);
+    expect((project.subcommands || []).some((sub) => sub.cmd === "current")).toBe(true);
+    expect((project.subcommands || []).some((sub) => sub.cmd === "switch")).toBe(true);
+  });
+
   test("ucodeconfig command is not exposed", () => {
     const ucodeconfig = COMMAND_REGISTRY.find((item) => item.cmd === "/ucodeconfig");
     expect(ucodeconfig).toBeFalsy();

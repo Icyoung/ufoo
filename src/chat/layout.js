@@ -2,8 +2,13 @@ function createChatLayout(options = {}) {
   const {
     blessed,
     currentInputHeight = 4,
+    dashboardHeight = 1,
     version = "unknown",
   } = options;
+  const normalizedDashboardHeight = Number.isFinite(dashboardHeight) && dashboardHeight > 0
+    ? Math.floor(dashboardHeight)
+    : 1;
+  const reservedBottomLines = Math.max(2, currentInputHeight + 1);
 
   const screen = blessed.screen({
     smartCSR: true,
@@ -33,7 +38,7 @@ function createChatLayout(options = {}) {
     top: 0,
     left: 0,
     width: "100%",
-    height: "100%-5", // Will be adjusted dynamically
+    height: `100%-${reservedBottomLines}`, // Will be adjusted dynamically
     tags: true,
     scrollable: true,
     alwaysScroll: true,
@@ -97,7 +102,7 @@ function createChatLayout(options = {}) {
     bottom: 0,
     left: 0,
     width: "100%",
-    height: 1,
+    height: normalizedDashboardHeight,
     style: { fg: "gray" },
     tags: true,
   });
@@ -105,7 +110,7 @@ function createChatLayout(options = {}) {
   // Bottom border line for input area (above dashboard)
   const inputBottomLine = blessed.line({
     parent: screen,
-    bottom: 1,
+    bottom: normalizedDashboardHeight,
     left: 1,
     width: "100%-2",
     orientation: "horizontal",
@@ -115,10 +120,10 @@ function createChatLayout(options = {}) {
   // Prompt indicator
   const promptBox = blessed.box({
     parent: screen,
-    bottom: 2,
+    bottom: normalizedDashboardHeight + 1,
     left: 0,
     width: 2,
-    height: currentInputHeight - 3,
+    height: Math.max(1, currentInputHeight - normalizedDashboardHeight - 2),
     content: ">",
     style: { fg: "cyan" },
   });
@@ -126,10 +131,10 @@ function createChatLayout(options = {}) {
   // Input area without left/right border
   const input = blessed.textarea({
     parent: screen,
-    bottom: 2,
+    bottom: normalizedDashboardHeight + 1,
     left: 2,
     width: "100%-2",
-    height: currentInputHeight - 3,
+    height: Math.max(1, currentInputHeight - normalizedDashboardHeight - 2),
     inputOnFocus: true,
     keys: true,
   });

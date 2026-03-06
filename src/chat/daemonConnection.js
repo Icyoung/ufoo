@@ -2,13 +2,14 @@ const { IPC_REQUEST_TYPES } = require("../shared/eventContract");
 
 function createDaemonConnection(options = {}) {
   const {
-    connectClient,
+    connectClient: connectClientOption,
     handleMessage,
     queueStatusLine,
     resolveStatusLine,
     logMessage,
   } = options;
 
+  let connectClient = connectClientOption;
   let client = null;
   let reconnectPromise = null;
   let exitRequested = false;
@@ -120,6 +121,39 @@ function createDaemonConnection(options = {}) {
     return true;
   }
 
+  async function switchConnection(next = {}) {
+    const nextConnectClient = typeof next.connectClient === "function"
+      ? next.connectClient
+      : null;
+    if (!nextConnectClient) {
+      return { ok: false, error: "switchConnection requires connectClient" };
+    }
+    const previousClient = client;
+    try {
+      queueStatusLine("Switching daemon connection");
+      const nextClient = await nextConnectClient();
+      if (!nextClient) {
+        return { ok: false, error: "Failed to connect target daemon" };
+      }
+      connectClient = nextConnectClient;
+      attachClient(nextClient);
+      if (next.callRequestStatus !== false) {
+        requestStatus();
+      }
+      resolveStatusLine("{gray-fg}✓{/gray-fg} Daemon switched");
+      return { ok: true };
+    } catch (err) {
+      // Keep existing connection alive on switch failures.
+      if (previousClient && (!client || client.destroyed)) {
+        client = previousClient;
+      }
+      const message = err && err.message ? err.message : String(err || "switch failed");
+      resolveStatusLine("{gray-fg}✗{/gray-fg} Switch failed");
+      logMessage("error", `{white-fg}✗{/white-fg} ${message}`);
+      return { ok: false, error: message };
+    }
+  }
+
   function send(req) {
     if (!client || client.destroyed) {
       enqueueRequest(req);
@@ -155,6 +189,7 @@ function createDaemonConnection(options = {}) {
     connect,
     send,
     requestStatus,
+    switchConnection,
     close,
     markExit,
     getState,

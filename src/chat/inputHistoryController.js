@@ -2,16 +2,18 @@ const fs = require("fs");
 
 function createInputHistoryController(options = {}) {
   const {
-    inputHistoryFile,
-    historyDir,
+    inputHistoryFile: inputHistoryFileOption,
+    historyDir: historyDirOption,
     setInputValue = () => {},
     getInputValue = () => "",
     fsMod = fs,
   } = options;
 
-  if (!inputHistoryFile || !historyDir) {
+  if (!inputHistoryFileOption || !historyDirOption) {
     throw new Error("createInputHistoryController requires inputHistoryFile and historyDir");
   }
+  let inputHistoryFile = inputHistoryFileOption;
+  let historyDir = historyDirOption;
 
   const inputHistory = [];
   let historyIndex = 0;
@@ -24,6 +26,9 @@ function createInputHistoryController(options = {}) {
   }
 
   function loadInputHistory(limit = 2000) {
+    inputHistory.length = 0;
+    historyIndex = 0;
+    historyDraft = "";
     try {
       const raw = fsMod.readFileSync(inputHistoryFile, "utf8");
       const lines = String(raw || "").trim().split(/\r?\n/).filter(Boolean);
@@ -85,6 +90,28 @@ function createInputHistoryController(options = {}) {
     setIndexToEnd();
   }
 
+  function setHistoryTarget(next = {}) {
+    if (!next.inputHistoryFile || !next.historyDir) {
+      throw new Error("setHistoryTarget requires inputHistoryFile and historyDir");
+    }
+    inputHistoryFile = next.inputHistoryFile;
+    historyDir = next.historyDir;
+  }
+
+  function restoreDraft(draft = "") {
+    const nextDraft = String(draft || "");
+    setInputValue(nextDraft);
+    historyIndex = inputHistory.length;
+    historyDraft = nextDraft;
+  }
+
+  function getDraftForPersistence() {
+    if (historyIndex === inputHistory.length) {
+      return String(getInputValue() || "");
+    }
+    return String(historyDraft || "");
+  }
+
   return {
     loadInputHistory,
     updateDraftFromInput,
@@ -92,6 +119,9 @@ function createInputHistoryController(options = {}) {
     historyDown,
     commitSubmittedText,
     setIndexToEnd,
+    setHistoryTarget,
+    restoreDraft,
+    getDraftForPersistence,
     getState: () => ({
       history: [...inputHistory],
       historyIndex,

@@ -115,4 +115,56 @@ describe("chat daemonConnection", () => {
 
     expect(connectClient).toHaveBeenCalledTimes(1);
   });
+
+  test("switchConnection keeps old client when target connect fails", async () => {
+    const first = new FakeClient();
+    const { connection, connectClient } = createHarness();
+    connectClient.mockResolvedValueOnce(first);
+
+    await connection.connect();
+    const result = await connection.switchConnection({
+      connectClient: async () => null,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(connection.getState().client).toBe(first);
+    connection.send({ type: "status_after_fail" });
+    expect(first.writes).toContain('{"type":"status_after_fail"}\n');
+  });
+
+  test("switchConnection swaps to new client and requests status", async () => {
+    const first = new FakeClient();
+    const second = new FakeClient();
+    const { connection, connectClient } = createHarness();
+    connectClient.mockResolvedValueOnce(first);
+
+    await connection.connect();
+    const result = await connection.switchConnection({
+      connectClient: async () => second,
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(connection.getState().client).toBe(second);
+    expect(second.writes).toContain('{"type":"status"}\n');
+  });
+
+  test("switchConnection handles thrown errors and keeps old client alive", async () => {
+    const first = new FakeClient();
+    const { connection, connectClient, resolveStatusLine, logMessage } = createHarness();
+    connectClient.mockResolvedValueOnce(first);
+
+    await connection.connect();
+    const result = await connection.switchConnection({
+      connectClient: async () => {
+        throw new Error("boom");
+      },
+    });
+
+    expect(result).toEqual({ ok: false, error: "boom" });
+    expect(connection.getState().client).toBe(first);
+    expect(resolveStatusLine).toHaveBeenCalledWith("{gray-fg}✗{/gray-fg} Switch failed");
+    expect(logMessage).toHaveBeenCalledWith("error", "{white-fg}✗{/white-fg} boom");
+    connection.send({ type: "status_after_throw" });
+    expect(first.writes).toContain('{"type":"status_after_throw"}\n');
+  });
 });

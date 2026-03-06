@@ -3,6 +3,7 @@ const DEFAULT_MODE_OPTIONS = ["terminal", "tmux", "internal"];
 function createDashboardKeyController(options = {}) {
   const {
     state,
+    globalMode = false,
     existsSync = () => false,
     getInjectSockPath = () => "",
     getAgentAdapter = () => null,
@@ -21,6 +22,7 @@ function createDashboardKeyController(options = {}) {
     setAutoResume = () => {},
     clampAgentWindow = () => {},
     clampAgentWindowWithSelection = () => {},
+    requestProjectSwitch = () => {},
     renderDashboard = () => {},
     renderAgentDashboard = () => {},
     renderScreen = () => {},
@@ -374,6 +376,65 @@ function createDashboardKeyController(options = {}) {
     return true;
   }
 
+  function handleProjectsKey(key) {
+    const projects = Array.isArray(state.projects) ? state.projects : [];
+    if (projects.length === 0) {
+      if (key.name === "up" || key.name === "enter" || key.name === "return" || key.name === "escape") {
+        exitDashboardMode(false);
+      }
+      return true;
+    }
+
+    if (key.name === "down") {
+      state.dashboardView = "agents";
+      if (!Array.isArray(state.activeAgents) || state.activeAgents.length === 0) {
+        state.selectedAgentIndex = -1;
+      } else if (!Number.isFinite(state.selectedAgentIndex) || state.selectedAgentIndex < 0) {
+        state.selectedAgentIndex = 0;
+      } else if (state.selectedAgentIndex >= state.activeAgents.length) {
+        state.selectedAgentIndex = state.activeAgents.length - 1;
+      }
+      clampAgentWindow();
+      syncTargetFromSelection();
+      renderDashboardAndScreen();
+      return true;
+    }
+
+    if (key.name === "left") {
+      const current = Number.isFinite(state.selectedProjectIndex) ? state.selectedProjectIndex : 0;
+      if (current > 0) {
+        const next = current - 1;
+        state.selectedProjectIndex = next;
+        renderDashboardAndScreen();
+        requestProjectSwitch(next);
+      }
+      return true;
+    }
+
+    if (key.name === "right") {
+      const current = Number.isFinite(state.selectedProjectIndex) ? state.selectedProjectIndex : 0;
+      if (current < projects.length - 1) {
+        const next = current + 1;
+        state.selectedProjectIndex = next;
+        renderDashboardAndScreen();
+        requestProjectSwitch(next);
+      }
+      return true;
+    }
+
+    if (key.name === "up" || key.name === "escape") {
+      exitDashboardMode(false);
+      return true;
+    }
+
+    if (key.name === "enter" || key.name === "return") {
+      exitDashboardMode(false);
+      return true;
+    }
+
+    return true;
+  }
+
   function handleAgentsKey(key) {
     if (key.name === "left") {
       if (state.activeAgents.length > 0 && state.selectedAgentIndex > 0) {
@@ -403,7 +464,18 @@ function createDashboardKeyController(options = {}) {
       return true;
     }
 
-    if (key.name === "up" || key.name === "escape") {
+    if (key.name === "up") {
+      clearTargetAgent();
+      if (globalMode) {
+        state.dashboardView = "projects";
+        renderDashboardAndScreen();
+        return true;
+      }
+      exitDashboardMode(false);
+      return true;
+    }
+
+    if (key.name === "escape") {
       clearTargetAgent();
       exitDashboardMode(false);
       return true;
@@ -459,6 +531,13 @@ function createDashboardKeyController(options = {}) {
 
     if (state.currentView === "agent") {
       return handleAgentDashboardKey(key);
+    }
+
+    if (globalMode && state.dashboardView === "projects") {
+      return handleProjectsKey(key);
+    }
+    if (!globalMode && state.dashboardView === "projects") {
+      return true;
     }
 
     if (state.dashboardView === "mode") return handleModeKey(key);

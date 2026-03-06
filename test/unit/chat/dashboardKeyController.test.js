@@ -6,6 +6,12 @@ function createState(overrides = {}) {
     currentView: "main",
     focusMode: "dashboard",
     dashboardView: "agents",
+    selectedProjectIndex: 0,
+    projects: [
+      { project_name: "alpha", project_root: "/tmp/alpha" },
+      { project_name: "beta", project_root: "/tmp/beta" },
+    ],
+    activeProjectRoot: "/tmp/alpha",
     selectedAgentIndex: 0,
     activeAgents: ["codex:1", "claude:2"],
     viewingAgent: "codex:1",
@@ -67,6 +73,7 @@ function createController(stateOverrides = {}, optionOverrides = {}) {
     setAutoResume: jest.fn(),
     clampAgentWindow: jest.fn(),
     clampAgentWindowWithSelection: jest.fn(),
+    requestProjectSwitch: jest.fn(),
     renderDashboard: jest.fn(),
     renderAgentDashboard: jest.fn(),
     renderScreen: jest.fn(),
@@ -217,5 +224,103 @@ describe("chat dashboardKeyController", () => {
     expect(deps.setAgentBarVisible).toHaveBeenCalledWith(true);
     expect(deps.renderAgentDashboard).toHaveBeenCalled();
     expect(deps.requestAgentSnapshot).toHaveBeenCalled();
+  });
+
+  test("global projects view switches project on left/right and enters second-row controls on down", () => {
+    const requestProjectSwitch = jest.fn();
+    const { state, deps, controller } = createController(
+      {
+        dashboardView: "projects",
+        selectedProjectIndex: 0,
+        projects: [
+          { project_name: "alpha", project_root: "/tmp/alpha" },
+          { project_name: "beta", project_root: "/tmp/beta" },
+        ],
+      },
+      {
+        globalMode: true,
+        requestProjectSwitch,
+      }
+    );
+
+    expect(controller.handleDashboardKey({ name: "right" })).toBe(true);
+    expect(state.selectedProjectIndex).toBe(1);
+    expect(requestProjectSwitch).toHaveBeenCalledWith(1);
+    expect(deps.renderDashboard).toHaveBeenCalled();
+
+    expect(controller.handleDashboardKey({ name: "left" })).toBe(true);
+    expect(state.selectedProjectIndex).toBe(0);
+    expect(requestProjectSwitch).toHaveBeenCalledWith(0);
+
+    expect(controller.handleDashboardKey({ name: "down" })).toBe(true);
+    expect(state.dashboardView).toBe("agents");
+    expect(deps.clampAgentWindow).toHaveBeenCalled();
+
+    expect(controller.handleDashboardKey({ name: "down" })).toBe(true);
+    expect(state.dashboardView).toBe("mode");
+
+    state.dashboardView = "projects";
+    expect(controller.handleDashboardKey({ name: "up" })).toBe(true);
+    expect(deps.exitDashboardMode).toHaveBeenCalledWith(false);
+  });
+
+  test("global projects view clamps at boundaries (no wrap-around)", () => {
+    const requestProjectSwitch = jest.fn();
+    const { state, controller } = createController(
+      {
+        dashboardView: "projects",
+        selectedProjectIndex: 0,
+        projects: [
+          { project_name: "alpha", project_root: "/tmp/alpha" },
+          { project_name: "beta", project_root: "/tmp/beta" },
+        ],
+      },
+      {
+        globalMode: true,
+        requestProjectSwitch,
+      }
+    );
+
+    expect(controller.handleDashboardKey({ name: "left" })).toBe(true);
+    expect(state.selectedProjectIndex).toBe(0);
+    expect(requestProjectSwitch).not.toHaveBeenCalled();
+
+    expect(controller.handleDashboardKey({ name: "right" })).toBe(true);
+    expect(state.selectedProjectIndex).toBe(1);
+    expect(requestProjectSwitch).toHaveBeenCalledWith(1);
+
+    requestProjectSwitch.mockClear();
+    expect(controller.handleDashboardKey({ name: "right" })).toBe(true);
+    expect(state.selectedProjectIndex).toBe(1);
+    expect(requestProjectSwitch).not.toHaveBeenCalled();
+  });
+
+  test("projects view is a no-op when globalMode is disabled", () => {
+    const { state, deps, controller } = createController({
+      dashboardView: "projects",
+      selectedProjectIndex: 1,
+    });
+
+    expect(controller.handleDashboardKey({ name: "left" })).toBe(true);
+    expect(state.selectedProjectIndex).toBe(1);
+    expect(deps.requestProjectSwitch).not.toHaveBeenCalled();
+    expect(deps.renderDashboard).not.toHaveBeenCalled();
+  });
+
+  test("global agents view up returns to projects instead of exiting", () => {
+    const { state, deps, controller } = createController(
+      {
+        dashboardView: "agents",
+        selectedAgentIndex: 0,
+      },
+      {
+        globalMode: true,
+      }
+    );
+
+    expect(controller.handleDashboardKey({ name: "up" })).toBe(true);
+    expect(state.dashboardView).toBe("projects");
+    expect(deps.exitDashboardMode).not.toHaveBeenCalled();
+    expect(deps.renderDashboard).toHaveBeenCalled();
   });
 });

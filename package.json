@@ -1,6 +1,6 @@
 {
   "name": "u-foo",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "description": "Multi-Agent Workspace Protocol. Just add u. claude → uclaude, codex → ucodex.",
   "license": "SEE LICENSE IN LICENSE",
   "homepage": "https://ufoo.dev",
@@ -43,7 +43,8 @@
     "postinstall": "node scripts/postinstall.js",
     "test": "jest",
     "test:watch": "jest --watch",
-    "test:coverage": "jest --coverage"
+    "test:coverage": "jest --coverage",
+    "bench:global-switch": "node scripts/global-chat-switch-benchmark.js"
   },
   "dependencies": {
     "blessed": "^0.1.81",

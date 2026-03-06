@@ -125,4 +125,104 @@ describe("chat inputHistoryController", () => {
     expect(state.historyIndex).toBe(state.history.length);
     expect(state.historyDraft).toBe("");
   });
+
+  test("loadInputHistory replaces prior in-memory entries", () => {
+    const fsMod = {
+      readFileSync: jest
+        .fn()
+        .mockReturnValueOnce(`${JSON.stringify({ text: "one" })}\n`)
+        .mockReturnValueOnce(`${JSON.stringify({ text: "two" })}\n`),
+      mkdirSync: jest.fn(),
+      appendFileSync: jest.fn(),
+    };
+
+    const controller = createInputHistoryController({
+      inputHistoryFile: "/tmp/history-a.jsonl",
+      historyDir: "/tmp",
+      setInputValue: jest.fn(),
+      getInputValue: jest.fn(() => ""),
+      fsMod,
+    });
+
+    controller.loadInputHistory();
+    controller.loadInputHistory();
+
+    expect(controller.getState().history).toEqual(["two"]);
+  });
+
+  test("setHistoryTarget and restoreDraft switch context state", () => {
+    let currentValue = "";
+    const setInputValue = jest.fn((value) => {
+      currentValue = value;
+    });
+    const fsMod = {
+      readFileSync: jest
+        .fn()
+        .mockImplementation((filePath) => {
+          if (filePath === "/tmp/history-a.jsonl") {
+            return `${JSON.stringify({ text: "one" })}\n`;
+          }
+          if (filePath === "/tmp/history-b.jsonl") {
+            return `${JSON.stringify({ text: "two" })}\n`;
+          }
+          return "";
+        }),
+      mkdirSync: jest.fn(),
+      appendFileSync: jest.fn(),
+    };
+
+    const controller = createInputHistoryController({
+      inputHistoryFile: "/tmp/history-a.jsonl",
+      historyDir: "/tmp/a",
+      setInputValue,
+      getInputValue: () => currentValue,
+      fsMod,
+    });
+
+    controller.loadInputHistory();
+    expect(controller.getState().history).toEqual(["one"]);
+
+    controller.setHistoryTarget({
+      inputHistoryFile: "/tmp/history-b.jsonl",
+      historyDir: "/tmp/b",
+    });
+    controller.loadInputHistory();
+    controller.restoreDraft("draft-b");
+
+    const state = controller.getState();
+    expect(state.history).toEqual(["two"]);
+    expect(state.historyIndex).toBe(1);
+    expect(state.historyDraft).toBe("draft-b");
+    expect(setInputValue).toHaveBeenCalledWith("draft-b");
+  });
+
+  test("getDraftForPersistence prefers preserved draft while browsing history", () => {
+    let currentValue = "draft-a";
+    const setInputValue = jest.fn((value) => {
+      currentValue = value;
+    });
+    const controller = createInputHistoryController({
+      inputHistoryFile: "/tmp/history.jsonl",
+      historyDir: "/tmp",
+      setInputValue,
+      getInputValue: () => currentValue,
+      fsMod: {
+        readFileSync: jest.fn(() =>
+          `${JSON.stringify({ text: "one" })}\n${JSON.stringify({ text: "two" })}\n`
+        ),
+        mkdirSync: jest.fn(),
+        appendFileSync: jest.fn(),
+      },
+    });
+
+    controller.loadInputHistory();
+    expect(controller.getDraftForPersistence()).toBe("draft-a");
+
+    controller.historyUp();
+    expect(currentValue).toBe("two");
+    expect(controller.getDraftForPersistence()).toBe("draft-a");
+
+    controller.historyDown();
+    expect(controller.getDraftForPersistence()).toBe("draft-a");
+  });
 });

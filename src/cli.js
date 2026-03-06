@@ -7,6 +7,9 @@ const { runBusCoreCommand } = require("./cli/busCoreCommands");
 const { runCtxCommand } = require("./cli/ctxCoreCommands");
 const { runOnlineCommand } = require("./cli/onlineCoreCommands");
 const { runGroupCoreCommand } = require("./cli/groupCoreCommands");
+const { listProjectRuntimes, getCurrentProjectRuntime } = require("./projects/registry");
+const { canonicalProjectRoot, buildProjectId } = require("./projects/projectId");
+const { getUfooPaths } = require("./ufoo/paths");
 
 function getPackageRoot() {
   return path.resolve(__dirname, "..");
@@ -161,6 +164,111 @@ function parseJsonObject(text, fallback = {}) {
   return parsed;
 }
 
+function formatProjectRuntimeLine(row, index = 0) {
+  const idx = String(index + 1).padStart(2, " ");
+  const name = String(row.project_name || "-");
+  const status = String(row.status || "-");
+  const seen = row.last_seen || "-";
+  const projectRoot = String(row.project_root || "-");
+  return `${idx}. ${name}  [${status}]  last_seen=${seen}  ${projectRoot}`;
+}
+
+function printProjectList(rows = [], write = (line) => console.log(line)) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    write("No projects found.");
+    return;
+  }
+  write("=== Projects ===");
+  rows.forEach((row, index) => {
+    write(formatProjectRuntimeLine(row, index));
+  });
+}
+
+function buildCurrentProjectFallback(projectRoot) {
+  let canonical = "";
+  let projectId = "";
+  try {
+    canonical = canonicalProjectRoot(projectRoot);
+  } catch {
+    canonical = path.resolve(projectRoot || process.cwd());
+  }
+  try {
+    projectId = buildProjectId(canonical);
+  } catch {
+    projectId = "";
+  }
+  const paths = getUfooPaths(canonical);
+  return {
+    version: 1,
+    project_id: projectId || null,
+    project_root: canonical,
+    project_name: path.basename(canonical) || canonical,
+    daemon_pid: null,
+    socket_path: paths.ufooSock,
+    status: "untracked",
+    last_seen: null,
+  };
+}
+
+function printCurrentProject(runtime, write = (line) => console.log(line)) {
+  const row = runtime || {};
+  write("=== Current Project ===");
+  write(`name: ${row.project_name || "-"}`);
+  write(`status: ${row.status || "-"}`);
+  write(`path: ${row.project_root || "-"}`);
+  write(`daemon_pid: ${row.daemon_pid || "-"}`);
+  write(`socket: ${row.socket_path || "-"}`);
+  write(`last_seen: ${row.last_seen || "-"}`);
+}
+
+function projectSwitchV1Error() {
+  const err = new Error("project switch is chat-only in v1");
+  err.code = "UFOO_PROJECT_SWITCH_CHAT_ONLY";
+  err.exitCode = 2;
+  return err;
+}
+
+function runProjectCommand({
+  subcommand = "list",
+  outputJson = false,
+  cwd = process.cwd(),
+  write = (line) => console.log(line),
+  writeError = (line) => console.error(line),
+} = {}) {
+  const sub = String(subcommand || "list").trim().toLowerCase();
+  try {
+    if (sub === "list") {
+      const rows = listProjectRuntimes({ validate: true, cleanupTmp: true });
+      if (outputJson) {
+        write(JSON.stringify(rows, null, 2));
+        return 0;
+      }
+      printProjectList(rows, write);
+      return 0;
+    }
+    if (sub === "current") {
+      const current = getCurrentProjectRuntime(cwd, { validate: true })
+        || buildCurrentProjectFallback(cwd);
+      if (outputJson) {
+        write(JSON.stringify(current, null, 2));
+        return 0;
+      }
+      printCurrentProject(current, write);
+      return 0;
+    }
+    if (sub === "switch") {
+      const err = projectSwitchV1Error();
+      writeError(err.message);
+      return err.exitCode || 2;
+    }
+    writeError("project requires list|current|switch subcommand");
+    return 1;
+  } catch (err) {
+    writeError(err.message || String(err));
+    return 1;
+  }
+}
+
 function normalizeReportPhase(action = "") {
   const value = String(action || "").trim().toLowerCase();
   if (value === "start") return "start";
@@ -244,9 +352,46 @@ async function runCli(argv) {
     program
       .command("chat")
       .description("Launch ufoo chat UI")
-      .action(() => {
+      .option("-g, --global", "Launch in global multi-project mode")
+      .action((opts) => {
         const repoRoot = getPackageRoot();
-        run(process.execPath, [path.join(repoRoot, "bin", "ufoo.js"), "chat"]);
+        const args = ["chat"];
+        if (opts.global === true) args.push("-g");
+        run(process.execPath, [path.join(repoRoot, "bin", "ufoo.js"), ...args]);
+      });
+    const project = program.command("project").description("Project runtime commands");
+    project
+      .command("list")
+      .description("List runtime projects discovered from global registry")
+      .option("--json", "Output as JSON")
+      .action((opts) => {
+        process.exitCode = runProjectCommand({
+          subcommand: "list",
+          outputJson: opts.json === true,
+          cwd: process.cwd(),
+        });
+      });
+    project
+      .command("current")
+      .description("Show current project runtime context")
+      .option("--json", "Output as JSON")
+      .action((opts) => {
+        process.exitCode = runProjectCommand({
+          subcommand: "current",
+          outputJson: opts.json === true,
+          cwd: process.cwd(),
+        });
+      });
+    project
+      .command("switch")
+      .description("Switch active project (chat-only in v1)")
+      .argument("<indexOrPath>", "Project index from list output or absolute path")
+      .action(() => {
+        process.exitCode = runProjectCommand({
+          subcommand: "switch",
+          outputJson: false,
+          cwd: process.cwd(),
+        });
       });
     program
       .command("launch")
@@ -1112,7 +1257,11 @@ async function runCli(argv) {
     console.log("  ufoo doctor");
     console.log("  ufoo status");
     console.log("  ufoo daemon --start|--stop|--status");
-    console.log("  ufoo chat");
+    console.log("  ufoo -g");
+    console.log("  ufoo chat [-g]");
+    console.log("  ufoo project list [--json]");
+    console.log("  ufoo project current [--json]");
+    console.log("  ufoo project switch <index|path>");
     console.log("  ufoo resume [nickname]");
     console.log("  ufoo recover [list [target] | run <target>] [--json]");
     console.log("  ufoo report <start|progress|done|error|list> [message] [--task <id>] [--agent <id>]");
@@ -1175,7 +1324,21 @@ async function runCli(argv) {
     return;
   }
   if (cmd === "chat") {
-    run(process.execPath, [path.join(repoRoot, "bin", "ufoo.js"), "chat"]);
+    const chatArgs = ["chat"];
+    if (rest.includes("-g") || rest.includes("--global")) {
+      chatArgs.push("-g");
+    }
+    run(process.execPath, [path.join(repoRoot, "bin", "ufoo.js"), ...chatArgs]);
+    return;
+  }
+  if (cmd === "project") {
+    const sub = String(rest[0] || "list").trim().toLowerCase();
+    const outputJson = rest.includes("--json");
+    process.exitCode = runProjectCommand({
+      subcommand: sub,
+      outputJson,
+      cwd: process.cwd(),
+    });
     return;
   }
   if (cmd === "resume") {

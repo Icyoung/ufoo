@@ -136,11 +136,17 @@ function createStreamTracker(options = {}) {
     return true;
   }
 
+  function discardAll() {
+    streamStates.clear();
+    pendingDeliveries.clear();
+  }
+
   return {
     beginStream,
     appendStreamDelta,
     finalizeStream,
     hasStream,
+    discardAll,
     markPendingDelivery,
     getPendingState,
     consumePendingDelivery,

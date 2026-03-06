@@ -1,4 +1,6 @@
 const path = require("path");
+const os = require("os");
+const crypto = require("crypto");
 const blessed = require("blessed");
 const { execSync } = require("child_process");
 const fs = require("fs");
@@ -41,8 +43,19 @@ const { createDaemonCoordinator } = require("./daemonCoordinator");
 const { IPC_REQUEST_TYPES } = require("../shared/eventContract");
 const { createTerminalAdapterRouter } = require("../terminal/adapterRouter");
 const { createDaemonTransport } = require("./daemonTransport");
+const { listProjectRuntimes } = require("../projects/registry");
+const { canonicalProjectRoot, buildProjectId } = require("../projects/projectId");
 
-async function runChat(projectRoot) {
+async function runChat(projectRoot, options = {}) {
+  const globalMode = options && options.globalMode === true;
+  const DASHBOARD_HEIGHT = globalMode ? 2 : 1;
+  let activeProjectRoot = projectRoot;
+  try {
+    activeProjectRoot = canonicalProjectRoot(projectRoot);
+  } catch {
+    activeProjectRoot = path.resolve(projectRoot || process.cwd());
+  }
+
   if (!fs.existsSync(getUfooPaths(projectRoot).ufooDir)) {
     const repoRoot = path.join(__dirname, "..", "..");
     const init = new UfooInit(repoRoot);
@@ -51,7 +64,6 @@ async function runChat(projectRoot) {
 
   // Ensure subscriber ID exists for chat (persistent across restarts)
   if (!process.env.UFOO_SUBSCRIBER_ID) {
-    const crypto = require("crypto");
     const sessionFile = path.join(getUfooPaths(projectRoot).ufooDir, "chat", "session-id.txt");
     const sessionDir = path.dirname(sessionFile);
     fs.mkdirSync(sessionDir, { recursive: true });
@@ -88,10 +100,12 @@ async function runChat(projectRoot) {
   let autoResume = config.autoResume !== false;
   let cronTasks = [];
 
-  // Dynamic input height settings
-  // Layout: topLine(1) + content + bottomLine(1) + dashboard(1)
-  const MIN_INPUT_HEIGHT = 4;  // 1 content + 3
-  const MAX_INPUT_HEIGHT = 9;  // 6 content + 3
+  // Dynamic input height settings.
+  // Layout: dashboard(N) + inputBottom(1) + content + inputTop(1) + status(1)
+  const MIN_INPUT_CONTENT_HEIGHT = 1;
+  const MAX_INPUT_CONTENT_HEIGHT = 6;
+  const MIN_INPUT_HEIGHT = MIN_INPUT_CONTENT_HEIGHT + DASHBOARD_HEIGHT + 2;
+  const MAX_INPUT_HEIGHT = MAX_INPUT_CONTENT_HEIGHT + DASHBOARD_HEIGHT + 2;
   let currentInputHeight = MIN_INPUT_HEIGHT;
   const pkg = require("../../package.json");
   const {
@@ -108,18 +122,136 @@ async function runChat(projectRoot) {
   } = createChatLayout({
     blessed,
     currentInputHeight,
+    dashboardHeight: DASHBOARD_HEIGHT,
     version: pkg.version,
   });
 
-  const historyDir = path.join(getUfooPaths(projectRoot).ufooDir, "chat");
-  const historyFile = path.join(historyDir, "history.jsonl");
-  const inputHistoryFile = path.join(historyDir, "input-history.jsonl");
+  const globalChatRoot = path.join(os.homedir(), ".ufoo", "chat");
+  const globalDraftsFile = path.join(globalChatRoot, "global-drafts.json");
+  const GLOBAL_DRAFT_PERSIST_DEBOUNCE_MS = 150;
+  let globalDraftsLoaded = false;
+  let globalDraftPersistTimer = null;
+  const globalDraftMap = new Map();
 
-  const chatLogController = createChatLogController({
+  function safeCanonicalProjectRoot(targetRoot) {
+    try {
+      return canonicalProjectRoot(targetRoot);
+    } catch {
+      return path.resolve(targetRoot || process.cwd());
+    }
+  }
+
+  function resolveHistoryContext(targetProjectRoot) {
+    const canonicalRoot = safeCanonicalProjectRoot(targetProjectRoot);
+    if (!globalMode) {
+      const localHistoryDir = path.join(getUfooPaths(canonicalRoot).ufooDir, "chat");
+      return {
+        projectRoot: canonicalRoot,
+        historyDir: localHistoryDir,
+        historyFile: path.join(localHistoryDir, "history.jsonl"),
+        inputHistoryDir: localHistoryDir,
+        inputHistoryFile: path.join(localHistoryDir, "input-history.jsonl"),
+      };
+    }
+    let projectId = "";
+    try {
+      projectId = buildProjectId(canonicalRoot);
+    } catch {
+      projectId = crypto.createHash("sha256").update(canonicalRoot).digest("hex").slice(0, 16);
+    }
+    const globalHistoryDir = path.join(globalChatRoot, "global-history");
+    const globalInputHistoryDir = path.join(globalChatRoot, "global-input-history");
+    return {
+      projectRoot: canonicalRoot,
+      projectId,
+      historyDir: globalHistoryDir,
+      historyFile: path.join(globalHistoryDir, `${projectId}.jsonl`),
+      inputHistoryDir: globalInputHistoryDir,
+      inputHistoryFile: path.join(globalInputHistoryDir, `${projectId}.jsonl`),
+    };
+  }
+
+  function loadGlobalDraftsOnce() {
+    if (!globalMode || globalDraftsLoaded) return;
+    globalDraftsLoaded = true;
+    try {
+      const raw = fs.readFileSync(globalDraftsFile, "utf8");
+      const parsed = JSON.parse(String(raw || "{}"));
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+      Object.entries(parsed).forEach(([projectRootKey, draft]) => {
+        if (typeof draft !== "string") return;
+        const canonicalKey = safeCanonicalProjectRoot(projectRootKey);
+        if (!canonicalKey) return;
+        globalDraftMap.set(canonicalKey, draft);
+      });
+    } catch {
+      // Ignore missing/invalid drafts file.
+    }
+  }
+
+  function writeGlobalDraftsToDisk() {
+    if (!globalMode) return;
+    const out = {};
+    for (const [projectRootKey, draft] of globalDraftMap.entries()) {
+      if (!projectRootKey) continue;
+      if (typeof draft !== "string" || draft.length === 0) continue;
+      out[projectRootKey] = draft;
+    }
+    try {
+      fs.mkdirSync(path.dirname(globalDraftsFile), { recursive: true });
+      fs.writeFileSync(globalDraftsFile, `${JSON.stringify(out, null, 2)}\n`, "utf8");
+    } catch {
+      // Ignore draft persistence failures.
+    }
+  }
+
+  function persistGlobalDrafts(options = {}) {
+    if (!globalMode) return;
+    const immediate = Boolean(options.immediate);
+    if (immediate) {
+      if (globalDraftPersistTimer) {
+        clearTimeout(globalDraftPersistTimer);
+        globalDraftPersistTimer = null;
+      }
+      writeGlobalDraftsToDisk();
+      return;
+    }
+    if (globalDraftPersistTimer) {
+      clearTimeout(globalDraftPersistTimer);
+    }
+    globalDraftPersistTimer = setTimeout(() => {
+      globalDraftPersistTimer = null;
+      writeGlobalDraftsToDisk();
+    }, GLOBAL_DRAFT_PERSIST_DEBOUNCE_MS);
+  }
+
+  function getProjectDraft(targetProjectRoot) {
+    if (!globalMode) return "";
+    loadGlobalDraftsOnce();
+    const canonicalRoot = safeCanonicalProjectRoot(targetProjectRoot);
+    return globalDraftMap.get(canonicalRoot) || "";
+  }
+
+  function setProjectDraft(targetProjectRoot, draft, options = {}) {
+    if (!globalMode) return;
+    loadGlobalDraftsOnce();
+    const canonicalRoot = safeCanonicalProjectRoot(targetProjectRoot);
+    const text = String(draft || "");
+    if (!text) {
+      globalDraftMap.delete(canonicalRoot);
+    } else {
+      globalDraftMap.set(canonicalRoot, text);
+    }
+    persistGlobalDrafts(options);
+  }
+
+  let currentHistoryContext = resolveHistoryContext(activeProjectRoot);
+
+  let chatLogController = createChatLogController({
     logBox,
     fsModule: fs,
-    historyDir,
-    historyFile,
+    historyDir: currentHistoryContext.historyDir,
+    historyFile: currentHistoryContext.historyFile,
   });
 
   const streamTracker = createStreamTracker({
@@ -293,11 +425,66 @@ async function runChat(projectRoot) {
   }
 
   inputHistoryController = createInputHistoryController({
-    inputHistoryFile,
-    historyDir,
+    inputHistoryFile: currentHistoryContext.inputHistoryFile,
+    historyDir: currentHistoryContext.inputHistoryDir,
     setInputValue,
     getInputValue: () => input.value || "",
   });
+
+  function captureCurrentProjectDraft() {
+    if (!inputHistoryController || typeof inputHistoryController.getDraftForPersistence !== "function") {
+      return input.value || "";
+    }
+    return inputHistoryController.getDraftForPersistence();
+  }
+
+  function seedGlobalHistoryFromProject(nextContext) {
+    if (!globalMode || !nextContext || !nextContext.projectRoot) return;
+    const projectUfooDir = getUfooPaths(nextContext.projectRoot).ufooDir;
+    const projectChatDir = path.join(projectUfooDir, "chat");
+    const projectHistoryFile = path.join(projectChatDir, "history.jsonl");
+    const projectInputHistoryFile = path.join(projectChatDir, "input-history.jsonl");
+    try {
+      if (!fs.existsSync(nextContext.historyFile) && fs.existsSync(projectHistoryFile)) {
+        fs.mkdirSync(path.dirname(nextContext.historyFile), { recursive: true });
+        fs.copyFileSync(projectHistoryFile, nextContext.historyFile);
+      }
+    } catch {
+      // best-effort seed only
+    }
+    try {
+      if (!fs.existsSync(nextContext.inputHistoryFile) && fs.existsSync(projectInputHistoryFile)) {
+        fs.mkdirSync(path.dirname(nextContext.inputHistoryFile), { recursive: true });
+        fs.copyFileSync(projectInputHistoryFile, nextContext.inputHistoryFile);
+      }
+    } catch {
+      // best-effort seed only
+    }
+  }
+
+  function applyProjectHistoryContext(nextProjectRoot) {
+    streamTracker.discardAll();
+    const nextContext = resolveHistoryContext(nextProjectRoot);
+    seedGlobalHistoryFromProject(nextContext);
+    currentHistoryContext = nextContext;
+    chatLogController.setHistoryTarget({
+      historyDir: nextContext.historyDir,
+      historyFile: nextContext.historyFile,
+    });
+    chatLogController.resetViewState();
+
+    inputHistoryController.setHistoryTarget({
+      inputHistoryFile: nextContext.inputHistoryFile,
+      historyDir: nextContext.inputHistoryDir,
+    });
+    inputHistoryController.loadInputHistory();
+    const nextDraft = getProjectDraft(nextContext.projectRoot);
+    inputHistoryController.restoreDraft(nextDraft);
+
+    clearLog();
+    loadHistory();
+    pending = null;
+  }
 
   function historyUp() {
     if (!inputHistoryController) return false;
@@ -310,6 +497,9 @@ async function runChat(projectRoot) {
   }
 
   function exitHandler() {
+    if (globalMode) {
+      setProjectDraft(activeProjectRoot, captureCurrentProjectDraft(), { immediate: true });
+    }
     if (daemonCoordinator) {
       daemonCoordinator.markExit();
     }
@@ -396,8 +586,8 @@ async function runChat(projectRoot) {
     if (innerWidth <= 0) return;
 
     const numLines = countLines(input.value, innerWidth);
-    const contentHeight = Math.min(MAX_INPUT_HEIGHT - 3, Math.max(1, numLines));
-    const targetHeight = contentHeight + 3; // +1 topLine +1 bottomLine +1 dashboard
+    const contentHeight = Math.min(MAX_INPUT_CONTENT_HEIGHT, Math.max(MIN_INPUT_CONTENT_HEIGHT, numLines));
+    const targetHeight = contentHeight + DASHBOARD_HEIGHT + 2;
 
     if (targetHeight !== currentInputHeight) {
       currentInputHeight = targetHeight;
@@ -408,7 +598,7 @@ async function runChat(projectRoot) {
     statusLine.bottom = currentInputHeight;
     // Reposition completion panel if active
     if (completionController.isActive()) completionController.reflow();
-    // dashboard and inputBottomLine stay fixed at bottom 0 and 1
+    // dashboard and inputBottomLine stay fixed at the bottom region.
     logBox.height = Math.max(1, screen.height - currentInputHeight - 1);
     ensureInputCursorVisible();
   }
@@ -450,7 +640,7 @@ async function runChat(projectRoot) {
     currentInputHeight = MIN_INPUT_HEIGHT;
     if (inputHistoryController) inputHistoryController.setIndexToEnd();
     completionController.hide();
-    const contentHeight = 1; // MIN content height
+    const contentHeight = MIN_INPUT_CONTENT_HEIGHT;
     input.height = contentHeight;
     promptBox.height = contentHeight;
     inputTopLine.bottom = currentInputHeight - 1;
@@ -467,10 +657,14 @@ async function runChat(projectRoot) {
   let activeAgentMetaMap = new Map(); // Store full meta including launch_mode
   let agentListWindowStart = 0;
   const MAX_AGENT_WINDOW = 4;
+  let projectRuntimes = [];
+  let projectListWindowStart = 0;
+  const MAX_PROJECT_WINDOW = 5;
+  let selectedProjectIndex = -1;
   let selectedAgentIndex = -1;  // -1 = not in dashboard selection mode
   let targetAgent = null;       // Selected agent for direct messaging
   let focusMode = "input";      // "input" or "dashboard"
-  let dashboardView = "agents"; // "agents" | "mode" | "provider" | "assistant" | "cron"
+  let dashboardView = "agents"; // "projects" | "agents" | "mode" | "provider" | "assistant" | "cron"
   let reportPendingTotal = 0;
   let selectedModeIndex = launchMode === "internal" ? 2 : (launchMode === "tmux" ? 1 : 0);
   const providerOptions = [
@@ -496,12 +690,16 @@ async function runChat(projectRoot) {
   let selectedResumeIndex = autoResume ? 0 : 1;
   const DASH_HINTS = {
     agents: "←/→ select · Enter · ↓ mode · ↑ back",
+    agentsGlobal: "←/→ select · Enter · ↓ mode · ↑ projects",
     agentsEmpty: "↓ mode · ↑ back",
     mode: "←/→ select · Enter · ↓ provider · ↑ back",
     provider: "←/→ select · Enter · ↓ assistant · ↑ back",
     assistant: "←/→ select · Enter · ↓ cron · ↑ back",
     cron: "Ctrl+X close · ↑ back",
     resume: "",
+    projects: "Use /project switch <index|path>",
+    projectsFocus: "←/→ switch · ↓ second row · Enter confirm · ↑ back",
+    projectsEmpty: "Run ufoo chat or ufoo daemon start in project directories",
   };
   const AGENT_BAR_HINTS = {
     normal: "↓ agents",
@@ -668,7 +866,7 @@ async function runChat(projectRoot) {
       labelMap: activeAgentLabelMap,
       lookupNickname: (nickname) => {
         try {
-          const busPath = getUfooPaths(projectRoot).agentsFile;
+          const busPath = getUfooPaths(activeProjectRoot).agentsFile;
           const bus = JSON.parse(fs.readFileSync(busPath, "utf8"));
           for (const [id, meta] of Object.entries(bus.agents || {})) {
             if (meta && meta.nickname === nickname) return id;
@@ -687,7 +885,7 @@ async function runChat(projectRoot) {
       labelMap: activeAgentLabelMap,
       lookupNicknameById: (id) => {
         try {
-          const busPath = getUfooPaths(projectRoot).agentsFile;
+          const busPath = getUfooPaths(activeProjectRoot).agentsFile;
           const bus = JSON.parse(fs.readFileSync(busPath, "utf8"));
           const meta = bus.agents && bus.agents[id];
           if (meta && meta.nickname) return meta.nickname;
@@ -710,6 +908,60 @@ async function runChat(projectRoot) {
 
   function clampAgentWindow() {
     clampAgentWindowWithSelection(selectedAgentIndex);
+  }
+
+  function resolveRuntimeProjectRoot(row = {}) {
+    const raw = row && row.project_root ? String(row.project_root) : "";
+    if (!raw) return "";
+    try {
+      return canonicalProjectRoot(raw);
+    } catch {
+      return path.resolve(raw);
+    }
+  }
+
+  function refreshProjectRuntimes() {
+    let rows = [];
+    try {
+      rows = listProjectRuntimes({ validate: true, cleanupTmp: true });
+    } catch {
+      rows = [];
+    }
+    const normalizedActive = String(activeProjectRoot || "");
+    if (
+      normalizedActive
+      && !rows.some((row) => resolveRuntimeProjectRoot(row) === normalizedActive)
+    ) {
+      rows.unshift({
+        project_root: normalizedActive,
+        project_name: path.basename(normalizedActive) || normalizedActive,
+        status: "untracked",
+        last_seen: null,
+      });
+    }
+    projectRuntimes = rows;
+
+    if (projectRuntimes.length === 0) {
+      selectedProjectIndex = -1;
+      projectListWindowStart = 0;
+      return;
+    }
+    const activeIndex = projectRuntimes.findIndex(
+      (row) => resolveRuntimeProjectRoot(row) === normalizedActive
+    );
+    if (selectedProjectIndex < 0 || selectedProjectIndex >= projectRuntimes.length) {
+      selectedProjectIndex = activeIndex >= 0 ? activeIndex : 0;
+    }
+  }
+
+  function syncSelectedProjectToActive() {
+    if (!Array.isArray(projectRuntimes) || projectRuntimes.length === 0) return;
+    const activeIndex = projectRuntimes.findIndex(
+      (row) => resolveRuntimeProjectRoot(row) === String(activeProjectRoot || "")
+    );
+    if (activeIndex >= 0) {
+      selectedProjectIndex = activeIndex;
+    }
   }
 
   function send(req) {
@@ -870,9 +1122,15 @@ async function runChat(projectRoot) {
 
   function renderDashboard() {
     const computed = computeDashboardContent({
+      globalMode,
       focusMode,
       dashboardView,
       activeAgents,
+      projects: projectRuntimes,
+      selectedProjectIndex,
+      projectListWindowStart,
+      maxProjectWindow: MAX_PROJECT_WINDOW,
+      activeProjectRoot,
       selectedAgentIndex,
       agentListWindowStart,
       maxAgentWindow: MAX_AGENT_WINDOW,
@@ -892,12 +1150,23 @@ async function runChat(projectRoot) {
       pendingReports: reportPendingTotal,
       dashHints: DASH_HINTS,
     });
-    agentListWindowStart = computed.windowStart;
-    dashboard.setContent(computed.content);
+    if (globalMode && (focusMode !== "dashboard" || dashboardView === "projects")) {
+      projectListWindowStart = computed.windowStart;
+    } else {
+      agentListWindowStart = computed.windowStart;
+    }
+    let dashboardContent = computed.content;
+    if (globalMode && !String(dashboardContent || "").includes("\n")) {
+      dashboardContent = `${dashboardContent}\n `;
+    }
+    dashboard.setContent(dashboardContent);
   }
 
   function updateDashboard(status) {
     activeAgents = status.active || [];
+    if (globalMode) {
+      refreshProjectRuntimes();
+    }
     reportPendingTotal = Number.isFinite(status?.reports?.pending_total)
       ? status.reports.pending_total
       : 0;
@@ -906,7 +1175,7 @@ async function runChat(projectRoot) {
     let fallbackMap = null;
     if (metaList.length === 0 && activeAgents.length > 0) {
       try {
-        const busPath = getUfooPaths(projectRoot).agentsFile;
+        const busPath = getUfooPaths(activeProjectRoot).agentsFile;
         const bus = JSON.parse(fs.readFileSync(busPath, "utf8"));
         fallbackMap = new Map();
         for (const [id, meta] of Object.entries(bus.agents || {})) {
@@ -957,10 +1226,15 @@ async function runChat(projectRoot) {
 
   function enterDashboardMode() {
     focusMode = "dashboard";
-    dashboardView = "agents";
-    selectedAgentIndex = activeAgents.length > 0 ? 0 : -1;
-    agentListWindowStart = 0;
-    clampAgentWindow();
+    dashboardView = globalMode ? "projects" : "agents";
+    if (globalMode) {
+      refreshProjectRuntimes();
+      syncSelectedProjectToActive();
+    } else {
+      selectedAgentIndex = activeAgents.length > 0 ? 0 : -1;
+      agentListWindowStart = 0;
+      clampAgentWindow();
+    }
     selectedModeIndex = launchMode === "internal" ? 2 : (launchMode === "tmux" ? 1 : 0);
     selectedProviderIndex = Math.max(0, providerOptions.findIndex((opt) => opt.value === agentProvider));
     selectedAssistantIndex = Math.max(
@@ -968,8 +1242,8 @@ async function runChat(projectRoot) {
       assistantOptions.findIndex((opt) => opt.value === assistantEngine)
     );
     selectedResumeIndex = autoResume ? 0 : 1;
-    // Immediately set @target when first agent is selected
-    if (selectedAgentIndex >= 0 && selectedAgentIndex < activeAgents.length) {
+    // Immediately set @target when first agent is selected.
+    if (!globalMode && selectedAgentIndex >= 0 && selectedAgentIndex < activeAgents.length) {
       targetAgent = activeAgents[selectedAgentIndex];
       updatePromptBox();
     }
@@ -985,6 +1259,9 @@ async function runChat(projectRoot) {
     currentView: { get: () => getCurrentView() },
     focusMode: { get: () => focusMode, set: (value) => { focusMode = value; } },
     dashboardView: { get: () => dashboardView, set: (value) => { dashboardView = value; } },
+    selectedProjectIndex: { get: () => selectedProjectIndex, set: (value) => { selectedProjectIndex = value; } },
+    projects: { get: () => projectRuntimes },
+    activeProjectRoot: { get: () => activeProjectRoot },
     selectedAgentIndex: { get: () => selectedAgentIndex, set: (value) => { selectedAgentIndex = value; } },
     activeAgents: { get: () => activeAgents },
     viewingAgent: { get: () => getViewingAgent() },
@@ -1009,7 +1286,7 @@ async function runChat(projectRoot) {
 
   function activateAgent(agentId) {
     if (!agentId) return;
-    const activator = new AgentActivator(projectRoot);
+    const activator = new AgentActivator(activeProjectRoot);
     activator.activate(agentId).catch(() => {});
   }
 
@@ -1022,6 +1299,7 @@ async function runChat(projectRoot) {
 
   const dashboardController = createDashboardKeyController({
     state: dashboardState,
+    globalMode,
     existsSync: fs.existsSync,
     getInjectSockPath,
     getAgentAdapter,
@@ -1041,6 +1319,7 @@ async function runChat(projectRoot) {
     setAutoResume,
     clampAgentWindow,
     clampAgentWindowWithSelection,
+    requestProjectSwitch: requestProjectSwitchByIndex,
     renderDashboard,
     renderAgentDashboard,
     renderScreen: () => screen.render(),
@@ -1059,8 +1338,9 @@ async function runChat(projectRoot) {
       updatePromptBox();
     }
     focusMode = "input";
-    dashboardView = "agents";
+    dashboardView = globalMode ? "projects" : "agents";
     selectedAgentIndex = -1;
+    // Keep selectedProjectIndex across focus transitions so global rail preserves context.
     screen.grabKeys = false;
     renderDashboard();
     focusInput();
@@ -1075,7 +1355,7 @@ async function runChat(projectRoot) {
 
   function getInjectSockPath(agentId) {
     const safeName = subscriberToSafeName(agentId);
-    return path.join(getUfooPaths(projectRoot).busQueuesDir, safeName, "inject.sock");
+    return path.join(getUfooPaths(activeProjectRoot).busQueuesDir, safeName, "inject.sock");
   }
 
   agentViewController = createAgentViewController({
@@ -1180,13 +1460,221 @@ async function runChat(projectRoot) {
   const connected = await daemonCoordinator.connect();
   if (!connected) {
     // Check if daemon failed to start
-    if (!isRunning(projectRoot)) {
-      const logFile = getUfooPaths(projectRoot).ufooDaemonLog;
+    if (!isRunning(activeProjectRoot)) {
+      const logFile = getUfooPaths(activeProjectRoot).ufooDaemonLog;
       // eslint-disable-next-line no-console
       console.error("Failed to start ufoo daemon. Check logs at:", logFile);
       throw new Error("Daemon failed to start. Check the daemon log for details.");
     }
     throw new Error("Failed to connect to ufoo daemon (timeout). The daemon may still be starting.");
+  }
+
+  function resolveProjectSwitchTarget(rawTarget) {
+    const target = String(rawTarget || "").trim();
+    if (!target) {
+      throw new Error("missing target");
+    }
+    if (/^\d+$/.test(target)) {
+      const index = Number.parseInt(target, 10);
+      if (!Number.isFinite(index) || index <= 0) {
+        throw new Error("invalid project index");
+      }
+      const rows = listProjectRuntimes({ validate: true, cleanupTmp: true });
+      const item = rows[index - 1];
+      if (!item || !item.project_root) {
+        throw new Error("project index out of range");
+      }
+      return {
+        projectRoot: canonicalProjectRoot(item.project_root),
+        source: `index ${index}`,
+      };
+    }
+    return {
+      projectRoot: canonicalProjectRoot(target),
+      source: target,
+    };
+  }
+
+  async function switchProjectConnection(targetInput) {
+    let targetInfo;
+    try {
+      targetInfo = resolveProjectSwitchTarget(targetInput);
+    } catch (err) {
+      return {
+        ok: false,
+        error: err && err.message ? err.message : "invalid project target",
+      };
+    }
+    const nextProjectRoot = targetInfo.projectRoot;
+    if (!nextProjectRoot) {
+      return { ok: false, error: "invalid project target" };
+    }
+    if (nextProjectRoot === activeProjectRoot) {
+      return { ok: true, project_root: activeProjectRoot, unchanged: true };
+    }
+    const outgoingDraftSnapshot = captureCurrentProjectDraft();
+
+    try {
+      const nextPaths = getUfooPaths(nextProjectRoot);
+      if (!fs.existsSync(nextPaths.ufooDir)) {
+        const repoRoot = path.join(__dirname, "..", "..");
+        const init = new UfooInit(repoRoot);
+        await init.init({ modules: "context,bus", project: nextProjectRoot });
+      }
+      if (!isRunning(nextProjectRoot)) {
+        startDaemon(nextProjectRoot);
+      }
+      const result = await daemonCoordinator.switchProject({
+        projectRoot: nextProjectRoot,
+        sockPath: socketPath(nextProjectRoot),
+      });
+      if (!result || result.ok !== true) {
+        return {
+          ok: false,
+          error: (result && result.error) || "switch failed",
+        };
+      }
+      const previousProjectRoot = activeProjectRoot;
+      if (previousProjectRoot && previousProjectRoot !== nextProjectRoot) {
+        setProjectDraft(previousProjectRoot, outgoingDraftSnapshot);
+      }
+      activeProjectRoot = nextProjectRoot;
+      applyProjectHistoryContext(nextProjectRoot);
+      if (globalMode) {
+        refreshProjectRuntimes();
+        syncSelectedProjectToActive();
+        renderDashboard();
+        screen.render();
+      }
+      return {
+        ok: true,
+        project_root: activeProjectRoot,
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        error: err && err.message ? err.message : "switch failed",
+      };
+    }
+  }
+
+  let projectSwitching = false;
+  let pendingProjectSwitchRoot = null;
+  let projectSwitchDebounceTimer = null;
+  let projectSwitchFlushPromise = null;
+  const PROJECT_SWITCH_DEBOUNCE_MS = 200;
+
+  function cancelProjectSwitchDebounce() {
+    if (!projectSwitchDebounceTimer) return;
+    clearTimeout(projectSwitchDebounceTimer);
+    projectSwitchDebounceTimer = null;
+  }
+
+  function scheduleProjectSwitchFlush(delayMs = PROJECT_SWITCH_DEBOUNCE_MS) {
+    cancelProjectSwitchDebounce();
+    projectSwitchDebounceTimer = setTimeout(() => {
+      projectSwitchDebounceTimer = null;
+      flushPendingProjectSwitch().catch((err) => {
+        const message = err && err.message ? err.message : String(err || "switch failed");
+        logMessage("error", `{white-fg}✗{/white-fg} Switch failed: ${escapeBlessed(message)}`);
+      });
+    }, Math.max(0, Number.isFinite(delayMs) ? delayMs : PROJECT_SWITCH_DEBOUNCE_MS));
+  }
+
+  async function flushPendingProjectSwitch() {
+    if (projectSwitchFlushPromise) {
+      return projectSwitchFlushPromise;
+    }
+    projectSwitchFlushPromise = (async () => {
+      projectSwitching = true;
+      let lastResult = { ok: true, project_root: activeProjectRoot, unchanged: true };
+      try {
+        while (pendingProjectSwitchRoot) {
+          const nextProjectRoot = pendingProjectSwitchRoot;
+          pendingProjectSwitchRoot = null;
+          if (!nextProjectRoot || nextProjectRoot === activeProjectRoot) continue;
+          const result = await switchProjectConnection(nextProjectRoot);
+          lastResult = result || { ok: false, error: "switch failed" };
+          if (!result || result.ok !== true) {
+            const reason = (result && result.error) || "switch failed";
+            logMessage("error", `{white-fg}✗{/white-fg} Switch failed: ${escapeBlessed(reason)}`);
+          }
+        }
+        return lastResult;
+      } finally {
+        projectSwitching = false;
+        if (globalMode) {
+          refreshProjectRuntimes();
+          syncSelectedProjectToActive();
+          renderDashboard();
+          screen.render();
+        }
+      }
+    })();
+    try {
+      return await projectSwitchFlushPromise;
+    } finally {
+      projectSwitchFlushPromise = null;
+      if (pendingProjectSwitchRoot && !projectSwitchDebounceTimer) {
+        scheduleProjectSwitchFlush(0);
+      }
+    }
+  }
+
+  function requestProjectSwitchByIndex(index) {
+    if (!globalMode) return;
+    const numericIndex = Number(index);
+    const nextIndex = Number.isFinite(numericIndex) ? Math.trunc(numericIndex) : Number.NaN;
+    if (!Number.isFinite(nextIndex) || nextIndex < 0 || nextIndex >= projectRuntimes.length) {
+      return;
+    }
+    selectedProjectIndex = nextIndex;
+    const selected = projectRuntimes[nextIndex] || {};
+    const nextProjectRoot = resolveRuntimeProjectRoot(selected);
+    renderDashboard();
+    screen.render();
+    if (!nextProjectRoot) return;
+    pendingProjectSwitchRoot = nextProjectRoot;
+    scheduleProjectSwitchFlush();
+  }
+
+  async function requestProjectSwitchByTarget(targetInput) {
+    let targetInfo;
+    try {
+      targetInfo = resolveProjectSwitchTarget(targetInput);
+    } catch (err) {
+      return {
+        ok: false,
+        error: err && err.message ? err.message : "invalid project target",
+      };
+    }
+    const nextProjectRoot = targetInfo && targetInfo.projectRoot ? targetInfo.projectRoot : "";
+    if (!nextProjectRoot) {
+      return { ok: false, error: "invalid project target" };
+    }
+    if (nextProjectRoot === activeProjectRoot) {
+      return { ok: true, project_root: activeProjectRoot, unchanged: true };
+    }
+
+    pendingProjectSwitchRoot = nextProjectRoot;
+    cancelProjectSwitchDebounce();
+
+    let attempts = 0;
+    while (attempts < 4) {
+      attempts += 1;
+      const result = await flushPendingProjectSwitch();
+      if (activeProjectRoot === nextProjectRoot) {
+        return { ok: true, project_root: activeProjectRoot };
+      }
+      if (!pendingProjectSwitchRoot) {
+        if (result && result.ok !== true) return result;
+        return { ok: false, error: "switch failed" };
+      }
+      if (pendingProjectSwitchRoot !== nextProjectRoot) {
+        pendingProjectSwitchRoot = nextProjectRoot;
+      }
+    }
+    return { ok: false, error: "switch did not complete" };
   }
 
   const commandExecutor = createCommandExecutor({
@@ -1211,9 +1699,15 @@ async function runChat(projectRoot) {
       });
     },
     activateAgent: async (target) => {
-      const activator = new AgentActivator(projectRoot);
+      const activator = new AgentActivator(activeProjectRoot);
       await activator.activate(target);
     },
+    listProjects: () => listProjectRuntimes({ validate: true, cleanupTmp: true }),
+    getCurrentProject: () => ({
+      project_root: activeProjectRoot,
+      project_name: path.basename(activeProjectRoot),
+    }),
+    switchProject: async ({ target } = {}) => requestProjectSwitchByTarget(target),
   });
 
   async function executeCommand(text) {
@@ -1246,7 +1740,7 @@ async function runChat(projectRoot) {
     },
     enterAgentView,
     activateAgent: async (agentId) => {
-      const activator = new AgentActivator(projectRoot);
+      const activator = new AgentActivator(activeProjectRoot);
       await activator.activate(agentId);
     },
     getInjectSockPath,
@@ -1347,6 +1841,12 @@ async function runChat(projectRoot) {
   }
   loadHistory();
   loadInputHistory();
+  if (globalMode) {
+    inputHistoryController.restoreDraft(getProjectDraft(activeProjectRoot));
+  }
+  if (globalMode) {
+    refreshProjectRuntimes();
+  }
   renderDashboard();
   resizeInput();
   requestStatus();

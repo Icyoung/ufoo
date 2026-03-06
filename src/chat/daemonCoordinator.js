@@ -40,6 +40,41 @@ function createDaemonCoordinator(options = {}) {
     daemonConnection: connection,
     logMessage,
   });
+  let switchProjectChain = Promise.resolve();
+
+  function switchProject(target = {}) {
+    const runSwitch = async () => {
+      if (!daemonTransport || typeof daemonTransport.connectClientForTarget !== "function") {
+        return { ok: false, error: "project switching requires daemonTransport.connectClientForTarget" };
+      }
+      if (!target || !target.projectRoot || !target.sockPath) {
+        return { ok: false, error: "switchProject requires projectRoot and sockPath" };
+      }
+      if (!connection || typeof connection.switchConnection !== "function") {
+        return { ok: false, error: "daemon connection does not support switching" };
+      }
+
+      const result = await connection.switchConnection({
+        connectClient: () => daemonTransport.connectClientForTarget(target),
+        callRequestStatus: false,
+      });
+      if (!result || result.ok !== true) {
+        return {
+          ok: false,
+          error: (result && result.error) || "switch failed",
+        };
+      }
+      if (typeof daemonTransport.setTarget === "function") {
+        daemonTransport.setTarget(target);
+      }
+      connection.requestStatus();
+      return { ok: true, target };
+    };
+
+    const scheduled = switchProjectChain.then(runSwitch, runSwitch);
+    switchProjectChain = scheduled.catch(() => {});
+    return scheduled;
+  }
 
   function isConnected() {
     if (!connection || typeof connection.getState !== "function") return false;
@@ -54,6 +89,7 @@ function createDaemonCoordinator(options = {}) {
     restart: () => restart(),
     close: () => connection.close(),
     markExit: () => connection.markExit(),
+    switchProject,
     isConnected,
     getState: () => (typeof connection.getState === "function" ? connection.getState() : null),
   };
