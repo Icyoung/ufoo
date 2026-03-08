@@ -23,6 +23,7 @@ function createDashboardKeyController(options = {}) {
     clampAgentWindow = () => {},
     clampAgentWindowWithSelection = () => {},
     requestProjectSwitch = () => {},
+    requestCloseProject = () => {},
     renderDashboard = () => {},
     renderAgentDashboard = () => {},
     renderScreen = () => {},
@@ -381,6 +382,14 @@ function createDashboardKeyController(options = {}) {
     if (projects.length === 0) {
       if (key.name === "up" || key.name === "enter" || key.name === "return" || key.name === "escape") {
         exitDashboardMode(false);
+      }
+      return true;
+    }
+
+    if (key.name === "x" && key.ctrl) {
+      const current = Number.isFinite(state.selectedProjectIndex) ? state.selectedProjectIndex : 0;
+      if (current >= 0 && current < projects.length) {
+        requestCloseProject(current);
       }
       return true;
     }

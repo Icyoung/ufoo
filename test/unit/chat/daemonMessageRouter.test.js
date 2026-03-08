@@ -28,6 +28,9 @@ function createHarness(overrides = {}) {
     appendStreamDelta: jest.fn(),
     finalizeStream: jest.fn(),
     hasStream: jest.fn(() => false),
+    setTransientAgentState: jest.fn(),
+    clearTransientAgentState: jest.fn(),
+    refreshDashboard: jest.fn(),
     ...overrides,
   };
 
@@ -47,6 +50,26 @@ describe("chat daemonMessageRouter", () => {
     expect(stop).toBe(false);
     expect(options.enqueueBusStatus).toHaveBeenCalledWith({ key: "k1", text: "processing" });
     expect(options.renderScreen).toHaveBeenCalled();
+  });
+
+  test("status START marks transient agent working for subscriber key", () => {
+    const { router, options } = createHarness();
+    router.handleMessage({
+      type: IPC_RESPONSE_TYPES.STATUS,
+      data: { phase: BUS_STATUS_PHASES.START, key: "codex:1", text: "processing" },
+    });
+    expect(options.setTransientAgentState).toHaveBeenCalledWith("codex:1", "working");
+    expect(options.refreshDashboard).toHaveBeenCalled();
+  });
+
+  test("status DONE clears transient agent state for subscriber key", () => {
+    const { router, options } = createHarness();
+    router.handleMessage({
+      type: IPC_RESPONSE_TYPES.STATUS,
+      data: { phase: BUS_STATUS_PHASES.DONE, key: "codex:1", text: "done" },
+    });
+    expect(options.clearTransientAgentState).toHaveBeenCalledWith("codex:1");
+    expect(options.refreshDashboard).toHaveBeenCalled();
   });
 
   test("handles response disambiguate payload", () => {
@@ -117,6 +140,23 @@ describe("chat daemonMessageRouter", () => {
     );
     expect(options.requestStatus).toHaveBeenCalled();
     expect(options.renderScreen).toHaveBeenCalled();
+  });
+
+  test("activity_state_changed bus event triggers status refresh without logging", () => {
+    const { router, options } = createHarness();
+
+    const stop = router.handleMessage({
+      type: IPC_RESPONSE_TYPES.BUS,
+      data: {
+        event: "activity_state_changed",
+        publisher: "codex:1",
+        state: "waiting_input",
+      },
+    });
+
+    expect(stop).toBe(true);
+    expect(options.requestStatus).toHaveBeenCalledTimes(1);
+    expect(options.logMessage).not.toHaveBeenCalled();
   });
 
   test("stream payload routes through stream tracker methods", () => {

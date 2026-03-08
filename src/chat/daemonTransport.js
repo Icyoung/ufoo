@@ -11,6 +11,7 @@ function createDaemonTransport(options = {}) {
     secondaryRetries = DAEMON_TRANSPORT_DEFAULTS.secondaryRetries,
     retryDelayMs = DAEMON_TRANSPORT_DEFAULTS.retryDelayMs,
     restartDelayMs = DAEMON_TRANSPORT_DEFAULTS.restartDelayMs,
+    connectTimeoutMs = DAEMON_TRANSPORT_DEFAULTS.connectTimeoutMs,
   } = options;
 
   let activeProjectRoot = projectRoot;
@@ -25,14 +26,24 @@ function createDaemonTransport(options = {}) {
 
   async function connectClientForTarget(override = {}) {
     const target = resolveTarget(override);
-    let client = await connectWithRetry(target.sockPath, primaryRetries, retryDelayMs);
+    let client = await connectWithRetry(
+      target.sockPath,
+      primaryRetries,
+      retryDelayMs,
+      { timeoutMs: connectTimeoutMs }
+    );
     if (!client) {
       // Retry once with a fresh daemon start and longer wait.
       if (!isRunning(target.projectRoot)) {
         startDaemon(target.projectRoot);
         await new Promise((resolve) => setTimeout(resolve, restartDelayMs));
       }
-      client = await connectWithRetry(target.sockPath, secondaryRetries, retryDelayMs);
+      client = await connectWithRetry(
+        target.sockPath,
+        secondaryRetries,
+        retryDelayMs,
+        { timeoutMs: connectTimeoutMs }
+      );
     }
     return client;
   }

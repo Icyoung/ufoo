@@ -107,20 +107,66 @@ function createStatusLineController(options = {}) {
     renderStatusLine();
   }
 
-  function queueStatusLine(text) {
-    pendingStatusLines.push(text || "");
+  function normalizePendingItem(text, options = {}) {
+    const key = options && typeof options.key === "string"
+      ? options.key.trim()
+      : "";
+    return {
+      text: text || "",
+      key,
+    };
+  }
+
+  function headPendingText() {
+    if (pendingStatusLines.length === 0) return "";
+    const item = pendingStatusLines[0];
+    return item && typeof item.text === "string" ? item.text : "";
+  }
+
+  function queueStatusLine(text, options = {}) {
+    const item = normalizePendingItem(text, options);
+    if (item.key) {
+      const existingIndex = pendingStatusLines.findIndex((entry) => entry.key === item.key);
+      if (existingIndex >= 0) {
+        pendingStatusLines[existingIndex] = item;
+        if (existingIndex === 0) {
+          setPrimaryStatus(item.text, { pending: true });
+          renderScreen();
+        }
+        return;
+      }
+    }
+
+    pendingStatusLines.push(item);
     if (pendingStatusLines.length === 1) {
-      setPrimaryStatus(pendingStatusLines[0], { pending: true });
+      setPrimaryStatus(item.text, { pending: true });
       renderScreen();
     }
   }
 
-  function resolveStatusLine(text) {
+  function resolveStatusLine(text, options = {}) {
+    const key = options && typeof options.key === "string"
+      ? options.key.trim()
+      : "";
+    let removedHead = false;
+
     if (pendingStatusLines.length > 0) {
-      pendingStatusLines.shift();
+      if (key) {
+        const index = pendingStatusLines.findIndex((entry) => entry.key === key);
+        if (index >= 0) {
+          pendingStatusLines.splice(index, 1);
+          removedHead = index === 0;
+        }
+      } else {
+        pendingStatusLines.shift();
+        removedHead = true;
+      }
     }
+
     if (pendingStatusLines.length > 0) {
-      setPrimaryStatus(pendingStatusLines[0], { pending: true });
+      if (removedHead || !primaryStatusPending) {
+        setPrimaryStatus(headPendingText(), { pending: true });
+      }
     } else {
       setPrimaryStatus(text || "", { pending: false });
     }

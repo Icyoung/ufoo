@@ -57,6 +57,22 @@ describe("chat statusLineController", () => {
     expect(clearIntervalFn).toHaveBeenCalledTimes(1);
   });
 
+  test("keyed resolve removes only matching pending status", () => {
+    const { controller, statusLine } = createHarness();
+
+    controller.queueStatusLine("first", { key: "one" });
+    controller.queueStatusLine("second", { key: "two" });
+
+    controller.resolveStatusLine("ignored", { key: "two" });
+    const stillFirstContent = statusLine.setContent.mock.calls.at(-1)[0];
+    const stillFirstPlain = stillFirstContent.replace(/\{[^}]+\}/g, "");
+    expect(stillFirstPlain).toContain("first");
+    expect(stillFirstPlain).not.toContain("second");
+
+    controller.resolveStatusLine("done", { key: "one" });
+    expect(statusLine.setContent).toHaveBeenLastCalledWith("done");
+  });
+
   test("bus queue appends and resolves status indicators", () => {
     const { controller, statusLine } = createHarness();
 

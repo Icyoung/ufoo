@@ -173,8 +173,9 @@ describe("chat dashboardView", () => {
 
     expect(out.windowStart).toBe(0);
     expect(out.content).toContain("{gray-fg}Projects:{/gray-fg}");
-    expect(out.content).toContain("{cyan-fg}[alpha]{/cyan-fg}");
-    expect(out.content).toContain("{inverse}beta{/inverse}");
+    expect(out.content).toContain("{bold}{cyan-fg}alpha{/cyan-fg}{/bold}");
+    expect(out.content).toContain("{cyan-fg}beta{/cyan-fg}");
+    expect(out.content).not.toContain("{inverse}beta{/inverse}");
     expect(out.content).toContain("\n");
     expect(out.content).toContain("{gray-fg}Agents:{/gray-fg} {cyan-fg}@codex:1, @claude:2{/cyan-fg}");
     expect(out.content).toContain("{gray-fg}Mode:{/gray-fg} {cyan-fg}terminal{/cyan-fg}");
@@ -208,8 +209,34 @@ describe("chat dashboardView", () => {
       dashHints,
     });
 
-    expect(out.content).toContain("{inverse}[alpha]{/inverse}");
+    expect(out.content).toContain("{inverse}alpha{/inverse}");
+    expect(out.content).not.toContain("{bold}");
     expect(out.content).toContain("{gray-fg}Agents:{/gray-fg} {cyan-fg}@codex:1{/cyan-fg}");
+  });
+
+  test("global projects rail keeps selected project visible when list is folded", () => {
+    const out = computeDashboardContent({
+      globalMode: true,
+      focusMode: "dashboard",
+      dashboardView: "projects",
+      projects: [
+        { project_name: "alpha", project_root: "/tmp/alpha", status: "running" },
+        { project_name: "beta", project_root: "/tmp/beta", status: "running" },
+        { project_name: "gamma", project_root: "/tmp/gamma", status: "running" },
+        { project_name: "delta", project_root: "/tmp/delta", status: "running" },
+        { project_name: "epsilon", project_root: "/tmp/epsilon", status: "running" },
+      ],
+      selectedProjectIndex: 4,
+      projectListWindowStart: 0,
+      maxProjectWindow: 2,
+      activeProjectRoot: "/tmp/alpha",
+      activeAgents: ["codex:1"],
+      dashHints,
+    });
+
+    expect(out.windowStart).toBe(3);
+    expect(out.content).toContain("{gray-fg}<{/gray-fg}");
+    expect(out.content).toContain("{inverse}epsilon{/inverse}");
   });
 
   test("global dashboard agents view uses agentsGlobal hint", () => {
@@ -227,7 +254,39 @@ describe("chat dashboardView", () => {
     });
 
     expect(out.content).toContain("{gray-fg}Projects:{/gray-fg}");
-    expect(out.content).toContain("{cyan-fg}[alpha]{/cyan-fg}");
+    expect(out.content).toContain("{bold}{cyan-fg}alpha{/cyan-fg}{/bold}");
     expect(out.content).toContain("{gray-fg}│ AGENTS_GLOBAL{/gray-fg}");
+  });
+
+  test("dashboard renders activity markers for agents", () => {
+    const states = {
+      "codex:1": "working",
+      "claude:2": "waiting_input",
+      "ucode:3": "blocked",
+    };
+
+    const summary = computeDashboardContent({
+      focusMode: "input",
+      activeAgents: ["codex:1", "claude:2", "ucode:3"],
+      getAgentLabel: (id) => id,
+      getAgentState: (id) => states[id] || "",
+      dashHints,
+    });
+    expect(summary.content).toContain("*@codex:1");
+    expect(summary.content).toContain("?@claude:2");
+    expect(summary.content).toContain("!@ucode:3");
+
+    const detail = computeDashboardContent({
+      focusMode: "dashboard",
+      dashboardView: "agents",
+      activeAgents: ["codex:1", "claude:2", "ucode:3"],
+      selectedAgentIndex: 1,
+      getAgentLabel: (id) => id,
+      getAgentState: (id) => states[id] || "",
+      dashHints,
+    });
+    expect(detail.content).toContain("{cyan-fg}*@codex:1{/cyan-fg}");
+    expect(detail.content).toContain("{inverse}?@claude:2{/inverse}");
+    expect(detail.content).toContain("{cyan-fg}!@ucode:3{/cyan-fg}");
   });
 });

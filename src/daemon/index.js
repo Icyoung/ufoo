@@ -378,8 +378,15 @@ async function handleOps(projectRoot, ops = [], processManager = null) {
         results.push({ action: "launch", ok: false, agent, count, error: err.message });
       }
     } else if (op.action === "close") {
-      const ok = await closeAgent(projectRoot, op.agent_id);
-      results.push({ action: "close", ok, agent_id: op.agent_id });
+      const closeResult = await closeAgent(projectRoot, op.agent_id);
+      const normalizedClose = closeResult && typeof closeResult === "object"
+        ? closeResult
+        : { ok: Boolean(closeResult) };
+      results.push({
+        action: "close",
+        agent_id: op.agent_id,
+        ...normalizedClose,
+      });
     } else if (op.action === "rename") {
       const agentId = op.agent_id || "";
       const nickname = op.nickname || "";
@@ -943,7 +950,9 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
         const closeResult = opsResults.find((r) => r.action === "close");
         const ok = closeResult ? closeResult.ok !== false : true;
         const reply = ok
-          ? `Closed ${agent_id}`
+          ? (closeResult && closeResult.already_stopped
+            ? `Closed ${agent_id} (already stopped)`
+            : `Closed ${agent_id}`)
           : `Close failed: ${closeResult?.error || "unknown error"}`;
         socket.write(
           `${JSON.stringify({

@@ -28,6 +28,7 @@ function createDaemonIpcServer(options = {}) {
   };
 
   let lastActiveJson = "";
+  let lastMetaJson = "";
   const statusSyncInterval = setInterval(() => {
     if (sockets.size === 0) return;
     try {
@@ -38,8 +39,12 @@ function createDaemonIpcServer(options = {}) {
     try {
       const status = buildStatus(projectRoot);
       const currentActiveJson = JSON.stringify(status.active);
-      if (currentActiveJson !== lastActiveJson) {
+      const currentMetaJson = JSON.stringify(
+        (status.active_meta || []).map((m) => `${m.id}:${m.activity_state || ""}`)
+      );
+      if (currentActiveJson !== lastActiveJson || currentMetaJson !== lastMetaJson) {
         lastActiveJson = currentActiveJson;
+        lastMetaJson = currentMetaJson;
         sendToSockets({ type: IPC_RESPONSE_TYPES.STATUS, data: status });
         log(`status sync: active agents changed to ${status.active.length}`);
       }

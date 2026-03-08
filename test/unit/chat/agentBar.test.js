@@ -55,4 +55,100 @@ describe("chat agentBar", () => {
 
     expect(stripAnsi(result.bar).length).toBe(24);
   });
+
+  describe("activity state indicators", () => {
+    test("shows * for working agent", () => {
+      const result = computeAgentBar({
+        cols: 80,
+        hintText: "",
+        focusMode: "input",
+        activeAgents: ["a:1"],
+        agentStates: { "a:1": "working" },
+        getAgentLabel: () => "builder",
+      });
+      expect(stripAnsi(result.bar)).toContain("*builder");
+    });
+
+    test("shows ? for waiting_input agent", () => {
+      const result = computeAgentBar({
+        cols: 80,
+        hintText: "",
+        focusMode: "input",
+        activeAgents: ["a:1"],
+        agentStates: { "a:1": "waiting_input" },
+        getAgentLabel: () => "builder",
+      });
+      expect(stripAnsi(result.bar)).toContain("?builder");
+      // Should have yellow color
+      expect(result.bar).toContain("\x1b[33m?");
+    });
+
+    test("shows ! for blocked agent", () => {
+      const result = computeAgentBar({
+        cols: 80,
+        hintText: "",
+        focusMode: "input",
+        activeAgents: ["a:1"],
+        agentStates: { "a:1": "blocked" },
+        getAgentLabel: () => "builder",
+      });
+      expect(stripAnsi(result.bar)).toContain("!builder");
+      // Should have red color
+      expect(result.bar).toContain("\x1b[31m!");
+    });
+
+    test("shows no indicator for idle/ready agents", () => {
+      const result = computeAgentBar({
+        cols: 80,
+        hintText: "",
+        focusMode: "input",
+        activeAgents: ["a:1"],
+        agentStates: { "a:1": "idle" },
+        getAgentLabel: () => "builder",
+      });
+      const bar = stripAnsi(result.bar);
+      expect(bar).toContain("builder");
+      expect(bar).not.toContain("*builder");
+      expect(bar).not.toContain("?builder");
+      expect(bar).not.toContain("!builder");
+    });
+
+    test("clears indicator when state returns to idle", () => {
+      // Simulate: first render with blocked, then re-render with idle
+      const blocked = computeAgentBar({
+        cols: 80,
+        hintText: "",
+        focusMode: "input",
+        activeAgents: ["a:1"],
+        agentStates: { "a:1": "blocked" },
+        getAgentLabel: () => "builder",
+      });
+      expect(stripAnsi(blocked.bar)).toContain("!builder");
+
+      const idle = computeAgentBar({
+        cols: 80,
+        hintText: "",
+        focusMode: "input",
+        activeAgents: ["a:1"],
+        agentStates: { "a:1": "idle" },
+        getAgentLabel: () => "builder",
+      });
+      expect(stripAnsi(idle.bar)).not.toContain("!builder");
+      expect(stripAnsi(idle.bar)).toContain("builder");
+    });
+
+    test("handles multiple agents with different states", () => {
+      const result = computeAgentBar({
+        cols: 120,
+        hintText: "",
+        focusMode: "input",
+        activeAgents: ["a:1", "b:2"],
+        agentStates: { "a:1": "working", "b:2": "blocked" },
+        getAgentLabel: (id) => id === "a:1" ? "alpha" : "beta",
+      });
+      const bar = stripAnsi(result.bar);
+      expect(bar).toContain("*alpha");
+      expect(bar).toContain("!beta");
+    });
+  });
 });

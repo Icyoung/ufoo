@@ -180,21 +180,50 @@ class UfooInit {
 
     let content = fs.readFileSync(filePath, "utf8");
     const marker = "<!-- ufoo-template -->";
+    const block = `${marker}\n${template}\n${marker}`;
+
     if (content.includes(marker)) {
+      // Replace existing marker block in-place
       const startIdx = content.indexOf(marker);
       const endIdx = content.indexOf(marker, startIdx + marker.length);
       if (endIdx !== -1) {
         content =
           content.slice(0, startIdx) +
-          `${marker}\n${template}\n${marker}` +
+          block +
           content.slice(endIdx + marker.length);
       } else {
-        content += `\n${marker}\n${template}\n${marker}\n`;
+        content =
+          content.slice(0, startIdx) + block + content.slice(startIdx + marker.length);
       }
     } else {
-      content += `\n${marker}\n${template}\n${marker}\n`;
+      // Insert after first heading line for visibility (not buried at end)
+      const headingEnd = this.findFirstHeadingEnd(content);
+      if (headingEnd !== -1) {
+        content =
+          content.slice(0, headingEnd) +
+          `\n${block}\n\n` +
+          content.slice(headingEnd);
+      } else {
+        content = `${block}\n\n${content}`;
+      }
     }
     fs.writeFileSync(filePath, content, "utf8");
+  }
+
+  findFirstHeadingEnd(content) {
+    // ATX heading: # ... (allow leading indentation and EOF without trailing newline)
+    const atxHeading = content.match(/^(?:[ \t]{0,3})#{1,6}[ \t]*[^\n]*(?:\n|$)/m);
+    // Setext heading: text line + underline (=== or ---)
+    const setextHeading = content.match(/^[^\n]+\n(?:=+|-+)[ \t]*(?:\n|$)/m);
+
+    let bestMatch = null;
+    if (atxHeading && setextHeading) {
+      bestMatch = atxHeading.index <= setextHeading.index ? atxHeading : setextHeading;
+    } else {
+      bestMatch = atxHeading || setextHeading;
+    }
+    if (!bestMatch) return -1;
+    return bestMatch.index + bestMatch[0].length;
   }
 
   /**

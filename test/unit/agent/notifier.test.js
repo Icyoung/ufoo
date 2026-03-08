@@ -31,6 +31,11 @@ describe("AgentNotifier delivery strategy", () => {
   beforeEach(() => {
     projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-notifier-"));
     fs.mkdirSync(path.join(projectRoot, ".ufoo", "agent"), { recursive: true });
+    fs.mkdirSync(path.join(projectRoot, ".ufoo", "bus", "queues"), { recursive: true });
+    fs.mkdirSync(path.join(projectRoot, ".ufoo", "bus", "events"), { recursive: true });
+    fs.mkdirSync(path.join(projectRoot, ".ufoo", "bus", "logs"), { recursive: true });
+    fs.mkdirSync(path.join(projectRoot, ".ufoo", "bus", "offsets"), { recursive: true });
+    fs.mkdirSync(path.join(projectRoot, ".ufoo", "bus", "daemon", "counts"), { recursive: true });
     fs.writeFileSync(path.join(projectRoot, ".ufoo", "agent", "all-agents.json"), JSON.stringify({ agents: {} }, null, 2));
   });
 
@@ -65,6 +70,17 @@ describe("AgentNotifier delivery strategy", () => {
 
   test("non-ufoo-code drains pending and injects message text", async () => {
     const subscriber = "codex:abc123";
+    fs.writeFileSync(
+      path.join(projectRoot, ".ufoo", "agent", "all-agents.json"),
+      JSON.stringify({
+        agents: {
+          [subscriber]: {
+            status: "active",
+            activity_state: "idle",
+          },
+        },
+      }, null, 2)
+    );
     const pendingFile = writePending(projectRoot, subscriber, [
       {
         seq: 1,
@@ -89,6 +105,156 @@ describe("AgentNotifier delivery strategy", () => {
     expect(delivered).toBe(1);
     expect(notifier.injector.inject).toHaveBeenCalledTimes(1);
     expect(notifier.injector.inject).toHaveBeenCalledWith(subscriber, "legacy payload");
+    // Verify activity_state written to disk via publisher
+    const agentsData = JSON.parse(fs.readFileSync(
+      path.join(projectRoot, ".ufoo", "agent", "all-agents.json"), "utf8"
+    ));
+    expect(agentsData.agents[subscriber].activity_state).toBe("working");
     expect(fs.existsSync(pendingFile)).toBe(false);
+  });
+
+  test("busy activity state defers delivery and keeps queue intact", async () => {
+    const subscriber = "codex:busy1";
+    fs.writeFileSync(
+      path.join(projectRoot, ".ufoo", "agent", "all-agents.json"),
+      JSON.stringify({
+        agents: {
+          [subscriber]: {
+            status: "active",
+            activity_state: "working",
+          },
+        },
+      }, null, 2)
+    );
+    const pendingFile = writePending(projectRoot, subscriber, [
+      {
+        seq: 1,
+        event: "message",
+        publisher: "ufoo-agent",
+        target: subscriber,
+        data: { message: "task-a" },
+      },
+    ]);
+
+    const notifier = new AgentNotifier(projectRoot, subscriber);
+    notifier.injector = {
+      inject: jest.fn().mockResolvedValue(undefined),
+      readTty: jest.fn(() => ""),
+    };
+
+    const delivered = await notifier.deliverPending();
+
+    expect(delivered).toBe(0);
+    expect(notifier.injector.inject).not.toHaveBeenCalled();
+    expect(fs.readFileSync(pendingFile, "utf8")).toContain("task-a");
+  });
+
+  test("deliverPending injects only one message and requeues the rest", async () => {
+    const subscriber = "codex:queue1";
+    fs.writeFileSync(
+      path.join(projectRoot, ".ufoo", "agent", "all-agents.json"),
+      JSON.stringify({
+        agents: {
+          [subscriber]: {
+            status: "active",
+            activity_state: "idle",
+          },
+        },
+      }, null, 2)
+    );
+    const pendingFile = writePending(projectRoot, subscriber, [
+      {
+        seq: 1,
+        event: "message",
+        publisher: "ufoo-agent",
+        target: subscriber,
+        data: { message: "task-a" },
+      },
+      {
+        seq: 2,
+        event: "message",
+        publisher: "ufoo-agent",
+        target: subscriber,
+        data: { message: "task-b" },
+      },
+    ]);
+
+    const notifier = new AgentNotifier(projectRoot, subscriber);
+    notifier.injector = {
+      inject: jest.fn().mockResolvedValue(undefined),
+      readTty: jest.fn(() => ""),
+    };
+    notifier.eventBus = {
+      send: jest.fn().mockResolvedValue({ ok: true }),
+    };
+
+    const delivered = await notifier.deliverPending();
+
+    expect(delivered).toBe(1);
+    expect(notifier.injector.inject).toHaveBeenCalledTimes(1);
+    expect(notifier.injector.inject).toHaveBeenCalledWith(subscriber, "task-a");
+    const pendingRaw = fs.readFileSync(pendingFile, "utf8");
+    expect(pendingRaw).toContain("task-b");
+    expect(pendingRaw).not.toContain("task-a");
+  });
+
+  test("poll keeps working state for hold window before downgrading to idle", async () => {
+    const subscriber = "codex:hold1";
+    fs.writeFileSync(
+      path.join(projectRoot, ".ufoo", "agent", "all-agents.json"),
+      JSON.stringify({
+        agents: {
+          [subscriber]: {
+            status: "active",
+            activity_state: "working",
+          },
+        },
+      }, null, 2)
+    );
+
+    const notifier = new AgentNotifier(projectRoot, subscriber);
+    notifier.workingHoldMs = 1000;
+    notifier.lastWorkingAt = Date.now();
+    notifier.getMessageCount = jest.fn(() => 0);
+    notifier.notify = jest.fn();
+    notifier.refreshTitle = jest.fn();
+    notifier.updateHeartbeat = jest.fn();
+    const stateSpy = jest.spyOn(notifier, "updateActivityState");
+
+    await notifier.poll();
+    expect(stateSpy).not.toHaveBeenCalledWith("idle");
+
+    notifier.lastWorkingAt = Date.now() - 1500;
+    await notifier.poll();
+    expect(stateSpy).toHaveBeenCalledWith("idle");
+  });
+
+  test("poll does not force working state on queue growth", async () => {
+    const subscriber = "codex:work1";
+    fs.writeFileSync(
+      path.join(projectRoot, ".ufoo", "agent", "all-agents.json"),
+      JSON.stringify({
+        agents: {
+          [subscriber]: {
+            status: "active",
+            activity_state: "ready",
+          },
+        },
+      }, null, 2)
+    );
+
+    const notifier = new AgentNotifier(projectRoot, subscriber);
+    notifier.autoTrigger = false;
+    notifier.lastCount = 0;
+    notifier.getMessageCount = jest.fn()
+      .mockReturnValueOnce(1)
+      .mockReturnValueOnce(1);
+    notifier.notify = jest.fn();
+    notifier.refreshTitle = jest.fn();
+    notifier.updateHeartbeat = jest.fn();
+    const stateSpy = jest.spyOn(notifier, "updateActivityState");
+
+    await notifier.poll();
+    expect(stateSpy).not.toHaveBeenCalledWith("working");
   });
 });

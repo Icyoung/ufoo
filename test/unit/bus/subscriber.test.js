@@ -108,6 +108,14 @@ describe('SubscriberManager', () => {
       expect(meta.last_seen).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     });
 
+    it('should initialize activity state timestamp on join', async () => {
+      await manager.join('abc123', 'claude-code');
+
+      const meta = busData.agents['claude-code:abc123'];
+      expect(meta.activity_state).toBe('starting');
+      expect(meta.activity_since).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    });
+
     it('should store process PID', async () => {
       await manager.join('abc123', 'claude-code');
 

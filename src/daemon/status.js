@@ -147,7 +147,9 @@ function buildStatus(projectRoot, options = {}) {
     const launch_mode = meta?.launch_mode || "unknown";
     const tmux_pane = meta?.tmux_pane || "";
     const tty = meta?.tty || "";
-    return { id, nickname, display, launch_mode, tmux_pane, tty };
+    const activity_state = meta?.activity_state || "";
+    const activity_since = meta?.activity_since || "";
+    return { id, nickname, display, launch_mode, tmux_pane, tty, activity_state, activity_since };
   });
 
   return {

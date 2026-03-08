@@ -3,10 +3,46 @@ const path = require("path");
 const fs = require("fs");
 const { spawn, spawnSync } = require("child_process");
 
-function connectSocket(sockPath) {
+function connectSocket(sockPath, options = {}) {
+  const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+    ? Math.trunc(options.timeoutMs)
+    : 0;
   return new Promise((resolve, reject) => {
-    const client = net.createConnection(sockPath, () => resolve(client));
-    client.on("error", reject);
+    let timeoutHandle = null;
+    const client = net.createConnection(sockPath, () => {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+      resolve(client);
+    });
+
+    const cleanup = () => {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+        timeoutHandle = null;
+      }
+    };
+
+    client.on("error", (err) => {
+      cleanup();
+      reject(err);
+    });
+
+    if (timeoutMs > 0) {
+      timeoutHandle = setTimeout(() => {
+        const err = new Error(`connect timeout after ${timeoutMs}ms`);
+        err.code = "ETIMEDOUT";
+        try {
+          client.destroy(err);
+        } catch {
+          // ignore
+        }
+        reject(err);
+      }, timeoutMs);
+      if (typeof timeoutHandle.unref === "function") {
+        timeoutHandle.unref();
+      }
+    }
   });
 }
 
@@ -38,11 +74,11 @@ function stopDaemon(projectRoot) {
   });
 }
 
-async function connectWithRetry(sockPath, retries, delayMs) {
+async function connectWithRetry(sockPath, retries, delayMs, options = {}) {
   for (let i = 0; i < retries; i += 1) {
     try {
       // eslint-disable-next-line no-await-in-loop
-      const client = await connectSocket(sockPath);
+      const client = await connectSocket(sockPath, options);
       return client;
     } catch {
       // eslint-disable-next-line no-await-in-loop

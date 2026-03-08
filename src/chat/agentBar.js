@@ -1,5 +1,16 @@
 const { stripAnsi, truncateAnsi } = require("./text");
 
+const ACTIVITY_INDICATORS = {
+  working: "*",
+  waiting_input: "?",
+  blocked: "!",
+};
+
+const ACTIVITY_COLORS = {
+  waiting_input: "\x1b[33m", // yellow
+  blocked: "\x1b[31m",       // red
+};
+
 function computeAgentBar(options = {}) {
   const {
     cols = 80,
@@ -11,6 +22,7 @@ function computeAgentBar(options = {}) {
     agentListWindowStart = 0,
     maxAgentWindow = 4,
     getAgentLabel = (id) => id,
+    agentStates = {},
   } = options;
 
   const hintAnsi = `\x1b[90m│ ${hintText}\x1b[0m`;
@@ -60,12 +72,18 @@ function computeAgentBar(options = {}) {
       agentParts = visible.map((agent, i) => {
         const rawLabel = getAgentLabel(agent);
         const label = maxLabelLen ? truncateLabel(rawLabel, maxLabelLen) : rawLabel;
+        const actState = agentStates[agent] || "";
+        const indicator = ACTIVITY_INDICATORS[actState] || "";
+        const indicatorColor = ACTIVITY_COLORS[actState] || "";
+        const prefix = indicator
+          ? `${indicatorColor}${indicator}\x1b[0m`
+          : "";
         const idx = s + i + 1; // +1 for ucode at index 0
         if (focusMode === "dashboard" && idx === selectedAgentIndex) {
-          return `\x1b[90;7m${label}\x1b[0m`;
+          return `${prefix}\x1b[90;7m${label}\x1b[0m`;
         }
-        if (agent === viewingAgent) return `\x1b[1;36m${label}\x1b[0m`;
-        return `\x1b[36m${label}\x1b[0m`;
+        if (agent === viewingAgent) return `${prefix}\x1b[1;36m${label}\x1b[0m`;
+        return `${prefix}\x1b[36m${label}\x1b[0m`;
       });
     }
     const agentsText = activeAgents.length > 0

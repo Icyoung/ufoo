@@ -6,6 +6,7 @@ const { getUfooPaths } = require("../ufoo/paths");
 const { shakeTerminalByTty } = require("../bus/shake");
 const { isITerm2 } = require("../terminal/detect");
 const iterm2 = require("../terminal/iterm2");
+const { createActivityStatePublisher } = require("./activityStatePublisher");
 
 /**
  * Agent 消息通知监听器
@@ -16,7 +17,9 @@ class AgentNotifier {
     this.projectRoot = projectRoot;
     this.subscriber = subscriber;
     this.interval = 2000; // 2秒轮询一次
+    this.workingHoldMs = Number.parseInt(process.env.UFOO_ACTIVITY_WORKING_HOLD_MS || "", 10) || 5000;
     this.lastCount = 0;
+    this.lastWorkingAt = 0;
     this.timer = null;
     this.stopped = false;
     this.autoTrigger = process.env.UFOO_AUTO_TRIGGER !== "0"; // 默认启用自动触发
@@ -37,6 +40,12 @@ class AgentNotifier {
     const busDir = paths.busDir;
     this.injector = new Injector(busDir, paths.agentsFile);
     this.eventBus = new EventBus(projectRoot);
+    this.activityPublisher = createActivityStatePublisher({
+      agentsFile: paths.agentsFile,
+      subscriber,
+      projectRoot,
+      force: false, // notifier is low-priority; don't overwrite working/waiting_input/blocked
+    });
   }
 
   isUfooCodeSubscriber() {
@@ -95,6 +104,36 @@ class AgentNotifier {
     } catch {
       // 心跳更新失败时静默忽略
     }
+  }
+
+  /**
+   * 更新 activity_state（terminal/tmux agent 基础支持）
+   * 基于消息投递推断 WORKING，无 pending 时推断 IDLE
+   */
+  updateActivityState(state) {
+    return this.activityPublisher.publish(state);
+  }
+
+  getCurrentActivityState() {
+    try {
+      if (!this.agentsFile || !fs.existsSync(this.agentsFile)) return "";
+      const data = JSON.parse(fs.readFileSync(this.agentsFile, "utf8"));
+      const meta = data.agents && data.agents[this.subscriber];
+      return meta && typeof meta.activity_state === "string"
+        ? String(meta.activity_state).trim().toLowerCase()
+        : "";
+    } catch {
+      return "";
+    }
+  }
+
+  isBusyState(state = "") {
+    const value = String(state || "").trim().toLowerCase();
+    return value === "working"
+      || value === "starting"
+      || value === "running"
+      || value === "waiting_input"
+      || value === "blocked";
   }
 
   /**
@@ -191,12 +230,22 @@ class AgentNotifier {
       return 0;
     }
 
+    const activityState = this.getCurrentActivityState();
+    if (this.isBusyState(activityState)) {
+      return 0;
+    }
+
     const events = this.drainPending();
     if (events.length === 0) return 0;
-    const failed = [];
+    const requeue = [];
     let delivered = 0;
+    let consumedOne = false;
     for (const evt of events) {
       if (!evt || evt.event !== "message" || !evt.data || typeof evt.data.message !== "string") {
+        continue;
+      }
+      if (consumedOne) {
+        requeue.push(evt);
         continue;
       }
       const message = String(evt.data.message);
@@ -206,21 +255,27 @@ class AgentNotifier {
         // eslint-disable-next-line no-await-in-loop
         await this.injector.inject(this.subscriber, message);
         delivered += 1;
+        consumedOne = true;
+        this.updateActivityState("working");
         // eslint-disable-next-line no-await-in-loop
         await this.emitDelivery(evt, "ok");
       } catch (err) {
-        failed.push(evt);
+        consumedOne = true;
+        requeue.push(evt);
         // eslint-disable-next-line no-await-in-loop
         await this.emitDelivery(evt, "error", err.message || "inject failed");
       }
     }
-    if (failed.length > 0) {
+    if (requeue.length > 0) {
       try {
-        const content = failed.map((e) => JSON.stringify(e)).join("\n") + "\n";
+        const content = requeue.map((e) => JSON.stringify(e)).join("\n") + "\n";
         fs.appendFileSync(this.queueFile, content, "utf8");
       } catch {
         // ignore requeue failures
       }
+    }
+    if (delivered > 0) {
+      this.lastWorkingAt = Date.now();
     }
     return delivered;
   }
@@ -261,6 +316,7 @@ class AgentNotifier {
     if (this.stopped) return;
 
     const currentCount = this.getMessageCount();
+    const nowMs = Date.now();
 
     // 有新消息
     if (currentCount > this.lastCount) {
@@ -297,6 +353,9 @@ class AgentNotifier {
     }
 
     this.lastCount = this.getMessageCount();
+    if (!this.lastWorkingAt || nowMs - this.lastWorkingAt >= this.workingHoldMs) {
+      this.updateActivityState("idle");
+    }
     this.refreshTitle();
     this.updateHeartbeat();
   }
@@ -311,6 +370,7 @@ class AgentNotifier {
     if (this.lastNickname) {
       this.setTitle(this.lastNickname);
     }
+    this.updateActivityState("ready");
 
     // 启动轮询
     this.timer = setInterval(() => {

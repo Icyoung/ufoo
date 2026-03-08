@@ -75,7 +75,6 @@ describe("chat daemonConnection", () => {
     await flushPromises();
     await flushPromises();
 
-    expect(queueStatusLine).toHaveBeenCalledWith("Reconnecting to daemon");
     expect(logMessage).toHaveBeenCalledWith(
       "status",
       "{white-fg}✗{/white-fg} Daemon disconnected"
@@ -84,7 +83,11 @@ describe("chat daemonConnection", () => {
       "status",
       "{white-fg}⚙{/white-fg} Reconnecting to daemon..."
     );
-    expect(resolveStatusLine).toHaveBeenCalledWith("{gray-fg}✓{/gray-fg} Daemon reconnected");
+    expect(queueStatusLine).toHaveBeenCalledWith("Reconnecting to daemon", { key: "daemon-reconnect" });
+    expect(resolveStatusLine).toHaveBeenCalledWith(
+      "{gray-fg}✓{/gray-fg} Daemon reconnected",
+      { key: "daemon-reconnect" }
+    );
     expect(second.writes).toContain('{"type":"status"}\n');
   });
 
@@ -118,7 +121,7 @@ describe("chat daemonConnection", () => {
 
   test("switchConnection keeps old client when target connect fails", async () => {
     const first = new FakeClient();
-    const { connection, connectClient } = createHarness();
+    const { connection, connectClient, resolveStatusLine } = createHarness();
     connectClient.mockResolvedValueOnce(first);
 
     await connection.connect();
@@ -127,6 +130,7 @@ describe("chat daemonConnection", () => {
     });
 
     expect(result.ok).toBe(false);
+    expect(resolveStatusLine).toHaveBeenCalledWith("{gray-fg}✗{/gray-fg} Switch failed", { key: "daemon-switch" });
     expect(connection.getState().client).toBe(first);
     connection.send({ type: "status_after_fail" });
     expect(first.writes).toContain('{"type":"status_after_fail"}\n');
@@ -162,9 +166,31 @@ describe("chat daemonConnection", () => {
 
     expect(result).toEqual({ ok: false, error: "boom" });
     expect(connection.getState().client).toBe(first);
-    expect(resolveStatusLine).toHaveBeenCalledWith("{gray-fg}✗{/gray-fg} Switch failed");
+    expect(resolveStatusLine).toHaveBeenCalledWith("{gray-fg}✗{/gray-fg} Switch failed", { key: "daemon-switch" });
     expect(logMessage).toHaveBeenCalledWith("error", "{white-fg}✗{/white-fg} boom");
     connection.send({ type: "status_after_throw" });
     expect(first.writes).toContain('{"type":"status_after_throw"}\n');
+  });
+
+  test("switchConnection times out and resolves switch pending status", async () => {
+    const first = new FakeClient();
+    const deferred = new Promise(() => {});
+    const { connection, connectClient, resolveStatusLine } = createHarness({
+      switchConnectionTimeoutMs: 5,
+    });
+    connectClient.mockResolvedValueOnce(first);
+
+    await connection.connect();
+    const result = await connection.switchConnection({
+      connectClient: () => deferred,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(String(result.error || "")).toContain("timed out");
+    expect(resolveStatusLine).toHaveBeenCalledWith(
+      "{gray-fg}✗{/gray-fg} Switch failed",
+      { key: "daemon-switch" }
+    );
+    expect(connection.getState().client).toBe(first);
   });
 });

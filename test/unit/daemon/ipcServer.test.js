@@ -92,6 +92,52 @@ describe("daemon ipcServer", () => {
     expect(buildStatus).toHaveBeenCalled();
   });
 
+  test("pushes status when active_meta activity_state changes", () => {
+    jest.useFakeTimers();
+    let callCount = 0;
+    const buildStatus = jest.fn(() => {
+      callCount += 1;
+      // Same active list, but activity_state changes on 2nd call
+      const state = callCount <= 1 ? "starting" : "working";
+      return {
+        active: ["claude-code:abc123"],
+        active_meta: [{ id: "claude-code:abc123", activity_state: state }],
+      };
+    });
+    const { server } = createServerHarness({ buildStatus });
+
+    const socket = createFakeSocket();
+    server.server._handler(socket);
+
+    // First tick — initial push
+    jest.advanceTimersByTime(25);
+    expect(socket.write).toHaveBeenCalledTimes(1);
+
+    // Second tick — same active list, but meta changed
+    jest.advanceTimersByTime(25);
+    expect(socket.write).toHaveBeenCalledTimes(2);
+  });
+
+  test("does NOT push when active and meta are both unchanged", () => {
+    jest.useFakeTimers();
+    const buildStatus = jest.fn(() => ({
+      active: ["claude-code:abc123"],
+      active_meta: [{ id: "claude-code:abc123", activity_state: "working" }],
+    }));
+    const { server } = createServerHarness({ buildStatus });
+
+    const socket = createFakeSocket();
+    server.server._handler(socket);
+
+    // First tick — initial push
+    jest.advanceTimersByTime(25);
+    expect(socket.write).toHaveBeenCalledTimes(1);
+
+    // Second tick — nothing changed
+    jest.advanceTimersByTime(25);
+    expect(socket.write).toHaveBeenCalledTimes(1);
+  });
+
   test("routes requests to handler", async () => {
     const handleRequest = jest.fn();
     const { server } = createServerHarness({ handleRequest });

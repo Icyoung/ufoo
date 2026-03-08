@@ -202,6 +202,8 @@ class SubscriberManager {
       agent_type: agentType,
       nickname: finalNickname,
       status: "active",
+      activity_state: "starting",
+      activity_since: getTimestamp(),
       joined_at: existingMeta?.joined_at || getTimestamp(),
       last_seen: getTimestamp(),
       pid: overridePid || getJoinedPid(),

@@ -10,6 +10,7 @@ const {
   resolveAnthropicMessagesUrl,
 } = require("../code/nativeRunner");
 const { DEFAULT_ASSISTANT_TIMEOUT_MS } = require("../assistant/constants");
+const { normalizeAgentTypeAlias } = require("../bus/utils");
 
 function loadSessionState(projectRoot) {
   const dir = getUfooPaths(projectRoot).agentDir;
@@ -28,13 +29,165 @@ function saveSessionState(projectRoot, state) {
   fs.writeFileSync(path.join(dir, "ufoo-agent.json"), JSON.stringify(state, null, 2));
 }
 
+function toReportAgentSnapshot(value = {}) {
+  const last = value && typeof value.last === "object" ? value.last : null;
+  return {
+    agent_id: String(value && value.agent_id ? value.agent_id : ""),
+    pending_count: Number(value && value.pending_count ? value.pending_count : 0) || 0,
+    updated_at: String(value && value.updated_at ? value.updated_at : ""),
+    last: last
+      ? {
+        phase: String(last.phase || ""),
+        task_id: String(last.task_id || ""),
+        ok: last.ok !== false,
+      }
+      : null,
+  };
+}
+
+function isBusyActivityState(value = "") {
+  const state = String(value || "").trim().toLowerCase();
+  return state === "working" || state === "starting" || state === "running";
+}
+
+function clipPromptText(value = "", maxChars = 240) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}...[truncated]`;
+}
+
+function resolveHistoryAgentId(rawTarget, activeIdSet, nicknames) {
+  const target = String(rawTarget || "").trim();
+  if (!target) return "";
+  if (target === "*" || target === "broadcast") return "";
+  if (activeIdSet.has(target)) return target;
+  if (nicknames[target]) return nicknames[target];
+
+  const targetAlias = normalizeAgentTypeAlias(target);
+  if (!targetAlias) return "";
+
+  const matches = [];
+  for (const id of activeIdSet) {
+    const prefix = String(id).split(":")[0] || "";
+    const alias = normalizeAgentTypeAlias(prefix);
+    if (alias === targetAlias) matches.push(id);
+  }
+  return matches.length === 1 ? matches[0] : "";
+}
+
+function buildAgentPromptHistory(projectRoot, agents = [], nicknames = {}, options = {}) {
+  const perAgentLimit = Number.isFinite(options.perAgentLimit) && options.perAgentLimit > 0
+    ? Math.floor(options.perAgentLimit)
+    : 6;
+  const maxFiles = Number.isFinite(options.maxFiles) && options.maxFiles > 0
+    ? Math.floor(options.maxFiles)
+    : 3;
+  const eventsDir = getUfooPaths(projectRoot).busEventsDir;
+  const activeIds = new Set((Array.isArray(agents) ? agents : []).map((item) => String(item.id || "")).filter(Boolean));
+  if (activeIds.size === 0) {
+    return { per_agent: [], scanned_files: 0, matched_events: 0 };
+  }
+
+  const entries = new Map();
+  for (const item of agents) {
+    if (!item || !item.id) continue;
+    entries.set(item.id, {
+      agent_id: String(item.id),
+      nickname: String(item.nickname || ""),
+      samples: [],
+      sample_count: 0,
+      total_count: 0,
+      first_ts: "",
+      last_ts: "",
+    });
+  }
+
+  let files = [];
+  try {
+    files = fs
+      .readdirSync(eventsDir)
+      .filter((name) => name.endsWith(".jsonl"))
+      .sort()
+      .slice(-maxFiles)
+      .reverse();
+  } catch {
+    return { per_agent: [], scanned_files: 0, matched_events: 0 };
+  }
+
+  let matchedEvents = 0;
+  for (const file of files) {
+    let lines = [];
+    try {
+      const raw = fs.readFileSync(path.join(eventsDir, file), "utf8");
+      lines = raw.split(/\r?\n/).filter(Boolean).reverse();
+    } catch {
+      continue;
+    }
+
+    for (const line of lines) {
+      let evt = null;
+      try {
+        evt = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!evt || evt.event !== "message") continue;
+      const targetAgentId = resolveHistoryAgentId(evt.target, activeIds, nicknames);
+      if (!targetAgentId) continue;
+      const prompt = evt.data && typeof evt.data.message === "string"
+        ? clipPromptText(evt.data.message)
+        : "";
+      if (!prompt) continue;
+
+      const row = entries.get(targetAgentId);
+      if (!row) continue;
+      matchedEvents += 1;
+      row.total_count += 1;
+      const ts = String(evt.timestamp || evt.ts || "");
+      if (!row.last_ts) row.last_ts = ts;
+      row.first_ts = ts || row.first_ts;
+      if (row.samples.length < perAgentLimit) {
+        row.samples.push({
+          ts,
+          publisher: String(evt.publisher || ""),
+          prompt,
+        });
+        row.sample_count = row.samples.length;
+      }
+    }
+  }
+
+  const perAgent = Array.from(entries.values())
+    .filter((row) => row.total_count > 0)
+    .sort((a, b) => {
+      const left = String(a.last_ts || "");
+      const right = String(b.last_ts || "");
+      return right.localeCompare(left);
+    });
+
+  return {
+    per_agent: perAgent,
+    scanned_files: files.length,
+    matched_events: matchedEvents,
+  };
+}
+
 function loadBusSummary(projectRoot, maxLines = 20) {
-  // Use daemon's buildStatus as the single source of truth
+  // Use daemon's buildStatus as the single source of truth.
   let agents = [];
   let nicknames = {};
+  let reports = { pending_total: 0, agents: [] };
+  let promptHistory = { per_agent: [], scanned_files: 0, matched_events: 0 };
+  let summary = {
+    active_count: 0,
+    busy_count: 0,
+    ready_count: 0,
+    pending_total: 0,
+  };
   try {
     const status = buildStatus(projectRoot);
-    const activeMeta = status.active_meta || [];
+    const activeMeta = Array.isArray(status && status.active_meta) ? status.active_meta : [];
     agents = activeMeta.map((item) => {
       const nickname = item.nickname || "";
       if (nickname) {
@@ -42,16 +195,45 @@ function loadBusSummary(projectRoot, maxLines = 20) {
       }
       return {
         id: item.id,
+        nickname,
         status: "active",
         online: true,
-        agent_type: "", // Not included in active_meta, but not needed
-        nickname,
-        last_heartbeat: "",
+        launch_mode: String(item.launch_mode || ""),
+        activity_state: String(item.activity_state || ""),
+        activity_since: String(item.activity_since || ""),
       };
     });
+
+    const reportState = status && status.reports && typeof status.reports === "object"
+      ? status.reports
+      : {};
+    const reportAgents = Array.isArray(reportState.agents)
+      ? reportState.agents.slice(0, 50).map((item) => toReportAgentSnapshot(item))
+      : [];
+    reports = {
+      pending_total: Number(reportState.pending_total || 0) || 0,
+      agents: reportAgents,
+    };
+
+    const busyCount = agents.filter((item) => isBusyActivityState(item.activity_state)).length;
+    summary = {
+      active_count: agents.length,
+      busy_count: busyCount,
+      ready_count: Math.max(agents.length - busyCount, 0),
+      pending_total: reports.pending_total,
+    };
+    promptHistory = buildAgentPromptHistory(projectRoot, agents, nicknames);
   } catch {
     agents = [];
     nicknames = {};
+    reports = { pending_total: 0, agents: [] };
+    promptHistory = { per_agent: [], scanned_files: 0, matched_events: 0 };
+    summary = {
+      active_count: 0,
+      busy_count: 0,
+      ready_count: 0,
+      pending_total: 0,
+    };
   }
 
   const eventsDir = getUfooPaths(projectRoot).busEventsDir;
@@ -74,7 +256,7 @@ function loadBusSummary(projectRoot, maxLines = 20) {
     recent = [];
   }
 
-  return { agents, nicknames, recent };
+  return { agents, nicknames, reports, agent_prompt_history: promptHistory, summary, recent };
 }
 
 function buildSystemPrompt(context) {
@@ -106,6 +288,9 @@ function buildSystemPrompt(context) {
     "- Use top-level assistant_call for project exploration, temporary shell tasks, and quick execution support.",
     "- assistant_call fields: kind (explore|bash|mixed), task (required), context/expect (optional), provider (codex|claude|ufoo, optional), model/timeout_ms (optional).",
     "- Prefer assistant_call over launching coding agents when the task is short-lived.",
+    "- Primary routing signal is semantic continuity from agent_prompt_history; prefer the agent that already handled similar prompts.",
+    "- Launch a new coding agent when the request is a new topic without clear ownership in existing histories.",
+    "- If best-matching target agent is busy, keep routing to that same agent (queue semantics) instead of rerouting only by idle status.",
     "- Legacy compatibility: if model emits ops.assistant_call, daemon will still process it.",
     "- If no action needed, return reply with empty dispatch/ops.",
     agentGuidance,

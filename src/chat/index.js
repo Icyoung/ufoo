@@ -38,6 +38,7 @@ const { createChatLogController } = require("./chatLogController");
 const { createPasteController } = require("./pasteController");
 const { createAgentViewController } = require("./agentViewController");
 const { createSettingsController } = require("./settingsController");
+const { createProjectCloseController } = require("./projectCloseController");
 const { createChatLayout } = require("./layout");
 const { createDaemonCoordinator } = require("./daemonCoordinator");
 const { IPC_REQUEST_TYPES } = require("../shared/eventContract");
@@ -45,6 +46,11 @@ const { createTerminalAdapterRouter } = require("../terminal/adapterRouter");
 const { createDaemonTransport } = require("./daemonTransport");
 const { listProjectRuntimes } = require("../projects/registry");
 const { canonicalProjectRoot, buildProjectId } = require("../projects/projectId");
+const {
+  sortProjectRuntimes,
+  parseTimestampMs,
+  filterVisibleProjectRuntimes,
+} = require("./projectRuntimes");
 
 async function runChat(projectRoot, options = {}) {
   const globalMode = options && options.globalMode === true;
@@ -655,6 +661,7 @@ async function runChat(projectRoot, options = {}) {
   let activeAgents = [];
   let activeAgentLabelMap = new Map();
   let activeAgentMetaMap = new Map(); // Store full meta including launch_mode
+  const transientAgentStateMap = new Map();
   let agentListWindowStart = 0;
   const MAX_AGENT_WINDOW = 4;
   let projectRuntimes = [];
@@ -698,7 +705,7 @@ async function runChat(projectRoot, options = {}) {
     cron: "Ctrl+X close · ↑ back",
     resume: "",
     projects: "Use /project switch <index|path>",
-    projectsFocus: "←/→ switch · ↓ second row · Enter confirm · ↑ back",
+    projectsFocus: "←/→ switch · Ctrl+X close · ↓ second row · Enter confirm · ↑ back",
     projectsEmpty: "Run ufoo chat or ufoo daemon start in project directories",
   };
   const AGENT_BAR_HINTS = {
@@ -927,6 +934,7 @@ async function runChat(projectRoot, options = {}) {
     } catch {
       rows = [];
     }
+    rows = filterVisibleProjectRuntimes(rows);
     const normalizedActive = String(activeProjectRoot || "");
     if (
       normalizedActive
@@ -939,7 +947,27 @@ async function runChat(projectRoot, options = {}) {
         last_seen: null,
       });
     }
-    projectRuntimes = rows;
+    projectRuntimes = sortProjectRuntimes({
+      rows,
+      activeProjectRoot: normalizedActive,
+      resolveProjectRoot: resolveRuntimeProjectRoot,
+      getInteractionMs: (row) => {
+        const rowRoot = resolveRuntimeProjectRoot(row);
+        if (!rowRoot) return 0;
+        try {
+          const historyContext = resolveHistoryContext(rowRoot);
+          if (historyContext && historyContext.historyFile && fs.existsSync(historyContext.historyFile)) {
+            const stat = fs.statSync(historyContext.historyFile);
+            if (Number.isFinite(stat.mtimeMs) && stat.mtimeMs > 0) {
+              return stat.mtimeMs;
+            }
+          }
+        } catch {
+          // fall through
+        }
+        return parseTimestampMs(row && row.last_seen);
+      },
+    });
 
     if (projectRuntimes.length === 0) {
       selectedProjectIndex = -1;
@@ -1040,8 +1068,6 @@ async function runChat(projectRoot, options = {}) {
       logMessage("error", "{white-fg}✗{/white-fg} No agent selected");
       return;
     }
-    const label = getAgentLabel(agentId);
-    logMessage("status", `{white-fg}⚙{/white-fg} Closing ${label}...`);
     send({ type: IPC_REQUEST_TYPES.CLOSE_AGENT, agent_id: agentId });
   }
 
@@ -1135,6 +1161,18 @@ async function runChat(projectRoot, options = {}) {
       agentListWindowStart,
       maxAgentWindow: MAX_AGENT_WINDOW,
       getAgentLabel,
+      getAgentState: (agentId) => {
+        let metaState = "";
+        if (activeAgentMetaMap) {
+          const meta = activeAgentMetaMap.get(agentId);
+          metaState = meta && typeof meta.activity_state === "string"
+            ? String(meta.activity_state).trim()
+            : "";
+        }
+        if (metaState) return metaState;
+        const transientState = transientAgentStateMap.get(agentId);
+        return typeof transientState === "string" ? transientState : "";
+      },
       launchMode,
       agentProvider,
       assistantEngine,
@@ -1162,8 +1200,36 @@ async function runChat(projectRoot, options = {}) {
     dashboard.setContent(dashboardContent);
   }
 
+  function readDiskMetaForActiveAgents(activeList = []) {
+    const map = new Map();
+    const ids = Array.isArray(activeList) ? activeList : [];
+    if (ids.length === 0) return map;
+    try {
+      const busPath = getUfooPaths(activeProjectRoot).agentsFile;
+      if (!fs.existsSync(busPath)) return map;
+      const bus = JSON.parse(fs.readFileSync(busPath, "utf8"));
+      const agents = bus && bus.agents && typeof bus.agents === "object" ? bus.agents : {};
+      for (const id of ids) {
+        const meta = agents[id];
+        if (!meta || typeof meta !== "object") continue;
+        map.set(id, meta);
+      }
+    } catch {
+      // ignore disk fallback errors
+    }
+    return map;
+  }
+
   function updateDashboard(status) {
     activeAgents = status.active || [];
+    if (transientAgentStateMap.size > 0) {
+      const activeSet = new Set(activeAgents);
+      for (const id of transientAgentStateMap.keys()) {
+        if (!activeSet.has(id)) {
+          transientAgentStateMap.delete(id);
+        }
+      }
+    }
     if (globalMode) {
       refreshProjectRuntimes();
     }
@@ -1187,7 +1253,35 @@ async function runChat(projectRoot, options = {}) {
     }
     const maps = agentDirectory.buildAgentMaps(activeAgents, metaList, fallbackMap);
     activeAgentLabelMap = maps.labelMap;
-    activeAgentMetaMap = maps.metaMap;
+    const diskMetaMap = readDiskMetaForActiveAgents(activeAgents);
+    if (diskMetaMap.size > 0) {
+      const mergedMetaMap = new Map(maps.metaMap);
+      for (const id of activeAgents) {
+        const currentMeta = mergedMetaMap.get(id);
+        const diskMeta = diskMetaMap.get(id);
+        if (!currentMeta && diskMeta) {
+          mergedMetaMap.set(id, { id, ...diskMeta });
+          continue;
+        }
+        if (!currentMeta || !diskMeta) continue;
+        const currentState = typeof currentMeta.activity_state === "string"
+          ? String(currentMeta.activity_state).trim()
+          : "";
+        const diskState = typeof diskMeta.activity_state === "string"
+          ? String(diskMeta.activity_state).trim()
+          : "";
+        if (!currentState && diskState) {
+          mergedMetaMap.set(id, {
+            ...currentMeta,
+            activity_state: diskState,
+            activity_since: currentMeta.activity_since || diskMeta.activity_since || "",
+          });
+        }
+      }
+      activeAgentMetaMap = mergedMetaMap;
+    } else {
+      activeAgentMetaMap = maps.metaMap;
+    }
     clampAgentWindow();
     // If viewing agent went offline, exit view
     const currentView = getCurrentView();
@@ -1320,6 +1414,7 @@ async function runChat(projectRoot, options = {}) {
     clampAgentWindow,
     clampAgentWindowWithSelection,
     requestProjectSwitch: requestProjectSwitchByIndex,
+    requestCloseProject: requestCloseProjectByIndex,
     renderDashboard,
     renderAgentDashboard,
     renderScreen: () => screen.render(),
@@ -1379,6 +1474,15 @@ async function runChat(projectRoot, options = {}) {
       agentListWindowStart = value;
     },
     getAgentLabel,
+    getAgentStates: () => {
+      const states = {};
+      if (activeAgentMetaMap) {
+        for (const [id, meta] of activeAgentMetaMap) {
+          if (meta && meta.activity_state) states[id] = meta.activity_state;
+        }
+      }
+      return states;
+    },
     setDashboardView: (value) => {
       dashboardView = value;
     },
@@ -1444,6 +1548,21 @@ async function runChat(projectRoot, options = {}) {
     appendStreamDelta,
     finalizeStream,
     hasStream: (publisher) => streamTracker.hasStream(publisher),
+    setTransientAgentState: (agentId, state) => {
+      if (!agentId || !state) return;
+      transientAgentStateMap.set(agentId, state);
+    },
+    clearTransientAgentState: (agentId) => {
+      if (!agentId) return;
+      transientAgentStateMap.delete(agentId);
+    },
+    refreshDashboard: () => {
+      if (getCurrentView() === "agent") {
+        renderAgentDashboard();
+        return;
+      }
+      renderDashboard();
+    },
   });
 
   daemonCoordinator = createDaemonCoordinator({
@@ -1677,6 +1796,29 @@ async function runChat(projectRoot, options = {}) {
     return { ok: false, error: "switch did not complete" };
   }
 
+  const projectCloseController = createProjectCloseController({
+    getProjects: () => projectRuntimes,
+    getActiveProjectRoot: () => activeProjectRoot,
+    resolveProjectRoot: resolveRuntimeProjectRoot,
+    isRunning,
+    stopDaemon,
+    switchProject: (targetProjectRoot) => requestProjectSwitchByTarget(targetProjectRoot),
+    refreshProjects: () => {
+      if (!globalMode) return;
+      refreshProjectRuntimes();
+      syncSelectedProjectToActive();
+    },
+    renderDashboard,
+    renderScreen: () => screen.render(),
+    logMessage,
+    escapeBlessed,
+  });
+
+  function requestCloseProjectByIndex(index) {
+    if (!globalMode) return;
+    void projectCloseController.requestCloseProject(index);
+  }
+
   const commandExecutor = createCommandExecutor({
     projectRoot,
     parseCommand,
@@ -1856,7 +1998,7 @@ async function runChat(projectRoot, options = {}) {
     if (daemonCoordinator && daemonCoordinator.isConnected()) {
       requestStatus();
     }
-  }, 30000);
+  }, 5000);
   screen.on("resize", () => {
     if (handleResizeInAgentView()) {
       return;

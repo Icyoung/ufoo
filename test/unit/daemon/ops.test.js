@@ -1,6 +1,6 @@
 const fs = require("fs");
 const path = require("path");
-const { spawn } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 
 jest.mock("child_process", () => {
   const { EventEmitter } = require("events");
@@ -11,7 +11,8 @@ jest.mock("child_process", () => {
     process.nextTick(() => proc.emit("close", 0));
     return proc;
   });
-  return { spawn };
+  const spawnSync = jest.fn(() => ({ status: 0, stdout: "", stderr: "" }));
+  return { spawn, spawnSync };
 });
 
 const { launchAgent, getRecoverableAgents, closeAgent } = require("../../../src/daemon/ops");
@@ -198,6 +199,7 @@ describe("daemon ops closeAgent window close gate", () => {
     Object.defineProperty(process, "platform", { value: "darwin" });
     killSpy = jest.spyOn(process, "kill").mockImplementation(() => true);
     spawn.mockClear();
+    spawnSync.mockClear();
   });
 
   afterEach(() => {
@@ -225,14 +227,14 @@ describe("daemon ops closeAgent window close gate", () => {
     });
 
     const result = await closeAgent(projectRoot, "codex:a1");
-    expect(result).toBe(true);
+    expect(result).toMatchObject({ ok: true });
     expect(spawn.mock.calls.length).toBeGreaterThan(0);
     expect(killSpy).toHaveBeenCalledWith(12345, "SIGTERM");
     const data = readAgents();
     expect(data.agents["codex:a1"].status).toBe("inactive");
   });
 
-  test("tmux mode skips window close even when tty is present", async () => {
+  test("tmux mode skips window close but kills pane", async () => {
     writeAgents({
       "codex:a2": {
         agent_type: "codex",
@@ -240,13 +242,45 @@ describe("daemon ops closeAgent window close gate", () => {
         pid: 54321,
         launch_mode: "tmux",
         tty: "/dev/ttys002",
+        tmux_pane: "%3",
         terminal_app: "Terminal",
       },
     });
 
     const result = await closeAgent(projectRoot, "codex:a2");
-    expect(result).toBe(true);
+    expect(result).toMatchObject({ ok: true });
+    // AppleScript window close should NOT be called for tmux
     expect(spawn).not.toHaveBeenCalled();
     expect(killSpy).toHaveBeenCalledWith(54321, "SIGTERM");
+    // tmux kill-pane should be called
+    expect(spawnSync).toHaveBeenCalledWith(
+      "tmux",
+      ["kill-pane", "-t", "%3"],
+      expect.objectContaining({ stdio: "ignore" }),
+    );
+  });
+
+  test("stale active agent (dead pid) is downgraded to inactive and treated as already stopped", async () => {
+    writeAgents({
+      "codex:a3": {
+        agent_type: "codex",
+        status: "active",
+        pid: 99999,
+        launch_mode: "internal",
+      },
+    });
+    killSpy.mockImplementation((pid) => {
+      if (pid === 99999) {
+        const err = new Error("No such process");
+        err.code = "ESRCH";
+        throw err;
+      }
+      return true;
+    });
+
+    const result = await closeAgent(projectRoot, "codex:a3");
+    expect(result).toMatchObject({ ok: true, already_stopped: true });
+    const data = readAgents();
+    expect(data.agents["codex:a3"].status).toBe("inactive");
   });
 });

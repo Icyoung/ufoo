@@ -1,4 +1,4 @@
-const { spawn } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const { loadConfig } = require("../config");
@@ -827,43 +827,55 @@ async function resumeAgents(projectRoot, target = "", processManager = null) {
 }
 
 async function closeAgent(projectRoot, agentId) {
-  if (process.platform !== "darwin") {
-    return false;
-  }
   const resolvedId = resolveAgentId(projectRoot, agentId);
   const busPath = getUfooPaths(projectRoot).agentsFile;
-  let pid = null;
+  let pid = 0;
   let launchMode = "";
   let tty = "";
   let terminalApp = "";
+  let tmuxPane = "";
+  let found = false;
   try {
     const bus = JSON.parse(fs.readFileSync(busPath, "utf8"));
     const entry = bus.agents?.[resolvedId];
     if (entry) {
-      if (entry.pid) pid = entry.pid;
+      found = true;
+      const parsedPid = Number.parseInt(entry.pid, 10);
+      pid = Number.isFinite(parsedPid) && parsedPid > 0 ? parsedPid : 0;
       launchMode = entry.launch_mode || "";
       tty = entry.tty || "";
       terminalApp = entry.terminal_app || "";
+      tmuxPane = entry.tmux_pane || "";
     }
   } catch {
-    pid = null;
+    found = false;
   }
+
+  if (!found) {
+    return { ok: true, already_stopped: true, resolved_agent_id: resolvedId };
+  }
+
   const adapterRouter = createTerminalAdapterRouter();
   const adapter = adapterRouter.getAdapter({ launchMode, agentId: resolvedId });
-  const canCloseWindow = adapter.capabilities.supportsWindowClose && tty;
+  const canCloseWindow = process.platform === "darwin"
+    && Boolean(adapter.capabilities.supportsWindowClose)
+    && Boolean(tty);
 
   // Close process first for faster state transition in chat.
   let sentSignal = false;
-  if (pid) {
+  let killErr = null;
+  if (pid > 0) {
     try {
       process.kill(pid, "SIGTERM");
       sentSignal = true;
-    } catch {
+    } catch (err) {
+      killErr = err || null;
       sentSignal = false;
     }
   }
 
-  if (sentSignal || (!pid && canCloseWindow)) {
+  const pidGone = pid > 0 && !sentSignal && !isAgentPidAlive(pid);
+  if (sentSignal || pid === 0 || pidGone) {
     markAgentInactive(projectRoot, resolvedId);
   }
 
@@ -872,7 +884,29 @@ async function closeAgent(projectRoot, agentId) {
     void closeTerminalWindowByTty(tty, terminalApp).catch(() => false);
   }
 
-  return sentSignal || (!pid && canCloseWindow);
+  // Tmux pane cleanup: kill the pane after sending SIGTERM to the process.
+  if (launchMode === "tmux" && tmuxPane) {
+    try {
+      spawnSync("tmux", ["kill-pane", "-t", tmuxPane], { stdio: "ignore", timeout: 3000 });
+    } catch {
+      // ignore - pane may already be gone
+    }
+  }
+
+  if (sentSignal) {
+    return { ok: true, resolved_agent_id: resolvedId };
+  }
+  if (pid === 0 || pidGone) {
+    return { ok: true, already_stopped: true, resolved_agent_id: resolvedId };
+  }
+  const reason = killErr && killErr.message
+    ? killErr.message
+    : "failed to stop process";
+  return {
+    ok: false,
+    error: reason,
+    resolved_agent_id: resolvedId,
+  };
 }
 
 module.exports = { launchAgent, closeAgent, getRecoverableAgents, resumeAgents };

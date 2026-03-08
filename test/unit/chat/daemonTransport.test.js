@@ -8,6 +8,7 @@ describe("chat daemonTransport", () => {
       secondaryRetries: 50,
       retryDelayMs: 200,
       restartDelayMs: 1000,
+      connectTimeoutMs: 2000,
     });
   });
 
@@ -31,7 +32,8 @@ describe("chat daemonTransport", () => {
     expect(connectWithRetry).toHaveBeenCalledWith(
       "/tmp/ufoo.sock",
       DAEMON_TRANSPORT_DEFAULTS.primaryRetries,
-      DAEMON_TRANSPORT_DEFAULTS.retryDelayMs
+      DAEMON_TRANSPORT_DEFAULTS.retryDelayMs,
+      { timeoutMs: DAEMON_TRANSPORT_DEFAULTS.connectTimeoutMs }
     );
     expect(startDaemon).not.toHaveBeenCalled();
   });
@@ -60,13 +62,15 @@ describe("chat daemonTransport", () => {
       1,
       "/tmp/ufoo.sock",
       DAEMON_TRANSPORT_DEFAULTS.primaryRetries,
-      DAEMON_TRANSPORT_DEFAULTS.retryDelayMs
+      DAEMON_TRANSPORT_DEFAULTS.retryDelayMs,
+      { timeoutMs: DAEMON_TRANSPORT_DEFAULTS.connectTimeoutMs }
     );
     expect(connectWithRetry).toHaveBeenNthCalledWith(
       2,
       "/tmp/ufoo.sock",
       DAEMON_TRANSPORT_DEFAULTS.secondaryRetries,
-      DAEMON_TRANSPORT_DEFAULTS.retryDelayMs
+      DAEMON_TRANSPORT_DEFAULTS.retryDelayMs,
+      { timeoutMs: DAEMON_TRANSPORT_DEFAULTS.connectTimeoutMs }
     );
     expect(startDaemon).toHaveBeenCalledTimes(1);
     expect(startDaemon).toHaveBeenCalledWith("/tmp/project");
@@ -112,7 +116,8 @@ describe("chat daemonTransport", () => {
     expect(connectWithRetry).toHaveBeenCalledWith(
       "/tmp/b.sock",
       DAEMON_TRANSPORT_DEFAULTS.primaryRetries,
-      DAEMON_TRANSPORT_DEFAULTS.retryDelayMs
+      DAEMON_TRANSPORT_DEFAULTS.retryDelayMs,
+      { timeoutMs: DAEMON_TRANSPORT_DEFAULTS.connectTimeoutMs }
     );
     expect(transport.getTarget()).toEqual({
       projectRoot: "/tmp/project-b",

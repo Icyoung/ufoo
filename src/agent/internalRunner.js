@@ -5,6 +5,7 @@ const { spawnSync } = require("child_process");
 const EventBus = require("../bus");
 const { runCliAgent } = require("./cliRunner");
 const { normalizeCliOutput } = require("./normalizeOutput");
+const { createActivityStatePublisher } = require("./activityStatePublisher");
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -220,6 +221,16 @@ async function runInternalRunner({ projectRoot, agentType = "codex" }) {
   process.on("SIGINT", stop);
 
   const cliSessionState = { cliSessionId, needsSave: false };
+  const agentsFile = getUfooPaths(projectRoot).agentsFile;
+  const activityPublisher = createActivityStatePublisher({
+    agentsFile, subscriber, projectRoot,
+  });
+
+  function setActivityState(state) {
+    activityPublisher.publish(state);
+  }
+
+  setActivityState("ready");
 
   // 心跳更新函数
   const updateHeartbeat = () => {
@@ -248,6 +259,7 @@ async function runInternalRunner({ projectRoot, agentType = "codex" }) {
       try {
         const lines = drainQueue(queueFile);
         if (lines.length > 0) {
+          setActivityState("working");
           const events = [];
           for (const line of lines) {
             try {
@@ -289,6 +301,7 @@ async function runInternalRunner({ projectRoot, agentType = "codex" }) {
           // 处理消息后更新心跳
           updateHeartbeat();
           lastHeartbeat = now;
+          setActivityState("idle");
         }
       } finally {
         processing = false;

@@ -64,6 +64,105 @@ describe("ufooAgent prompt schema", () => {
     expect(call.systemPrompt).toContain("\"assistant_call\": {\"kind\":\"explore|bash|mixed\"");
   });
 
+  test("injects activity and report summaries into system prompt context", async () => {
+    buildStatus.mockReturnValue({
+      active_meta: [
+        {
+          id: "codex:a1",
+          nickname: "worker-1",
+          launch_mode: "terminal",
+          activity_state: "working",
+          activity_since: "2026-03-08T00:00:00.000Z",
+        },
+        {
+          id: "codex:a2",
+          nickname: "worker-2",
+          launch_mode: "internal",
+          activity_state: "ready",
+          activity_since: "2026-03-08T00:00:01.000Z",
+        },
+      ],
+      reports: {
+        pending_total: 2,
+        agents: [
+          {
+            agent_id: "codex:a1",
+            pending_count: 2,
+            updated_at: "2026-03-08T00:00:10.000Z",
+            last: { phase: "progress", task_id: "task-1", ok: true },
+          },
+        ],
+      },
+    });
+
+    const res = await runUfooAgent({
+      projectRoot,
+      prompt: "assign task",
+      provider: "codex-cli",
+      model: "",
+    });
+
+    expect(res.ok).toBe(true);
+    const call = runCliAgent.mock.calls[0][0];
+    expect(call.systemPrompt).toContain("\"activity_state\":\"working\"");
+    expect(call.systemPrompt).toContain("\"pending_total\":2");
+    expect(call.systemPrompt).toContain("\"busy_count\":1");
+    expect(call.systemPrompt).toContain("\"ready_count\":1");
+  });
+
+  test("injects per-agent prompt history summary from bus events", async () => {
+    buildStatus.mockReturnValue({
+      active_meta: [
+        {
+          id: "codex:a1",
+          nickname: "worker-1",
+          launch_mode: "terminal",
+          activity_state: "idle",
+          activity_since: "2026-03-08T00:00:00.000Z",
+        },
+      ],
+      reports: { pending_total: 0, agents: [] },
+    });
+
+    const eventsDir = `${projectRoot}/.ufoo/bus/events`;
+    fs.mkdirSync(eventsDir, { recursive: true });
+    const eventFile = `${eventsDir}/2026-03-08.jsonl`;
+    fs.writeFileSync(
+      eventFile,
+      [
+        JSON.stringify({
+          timestamp: "2026-03-08T01:00:00.000Z",
+          event: "message",
+          publisher: "ufoo-agent",
+          target: "worker-1",
+          data: { message: "Continue fixing daemon reconnection edge case" },
+        }),
+        JSON.stringify({
+          timestamp: "2026-03-08T00:30:00.000Z",
+          event: "message",
+          publisher: "ufoo-agent",
+          target: "worker-1",
+          data: { message: "Review previous reconnect patch and add tests" },
+        }),
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const res = await runUfooAgent({
+      projectRoot,
+      prompt: "route new follow-up",
+      provider: "codex-cli",
+      model: "",
+    });
+
+    expect(res.ok).toBe(true);
+    const call = runCliAgent.mock.calls[0][0];
+    expect(call.systemPrompt).toContain("\"agent_prompt_history\"");
+    expect(call.systemPrompt).toContain("\"agent_id\":\"codex:a1\"");
+    expect(call.systemPrompt).toContain("Continue fixing daemon reconnection edge case");
+  });
+
   test("ucode provider uses native HTTP path instead of CLI", async () => {
     const responsePayload = { reply: "native ok", dispatch: [], ops: [] };
     const mockResponse = {

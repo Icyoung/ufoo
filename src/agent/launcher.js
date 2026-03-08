@@ -8,6 +8,8 @@ const EventBus = require("../bus");
 const { isAgentPidAlive } = require("../bus/utils");
 const { showBanner } = require("../utils/banner");
 const AgentNotifier = require("./notifier");
+const { ActivityDetector } = require("./activityDetector");
+const { createActivityStatePublisher } = require("./activityStatePublisher");
 const { getUfooPaths } = require("../ufoo/paths");
 const { createTerminalAdapterRouter } = require("../terminal/adapterRouter");
 const PtyWrapper = require("./ptyWrapper");
@@ -488,11 +490,10 @@ class AgentLauncher {
       } else if (process.env.UFOO_FORCE_PTY === "1") {
         shouldUsePty = true;   // 强制使用PTY (测试/调试)
       } else {
-        // 自动检测：Terminal模式 + 非tmux + 非internal
+        // 自动检测：Terminal/tmux模式 + 非internal
         shouldUsePty =
           process.stdin.isTTY &&
           process.stdout.isTTY &&
-          !process.env.TMUX &&              // tmux已有PTY，避免套嵌
           !process.env.UFOO_INTERNAL_AGENT; // internal有专用runner（当前阶段）
       }
 
@@ -515,13 +516,32 @@ class AgentLauncher {
 
           // 启用Ready检测（监控agent初始化状态）
           const readyDetector = new ReadyDetector(this.agentType);
+          // 启用ActivityDetector（持续活动状态监控）
+          const launcherActivityDetector = new ActivityDetector(this.agentType, {
+            mode: resolveLaunchMode(),
+            startOnOutput: true,
+          });
+          const launcherPublisher = createActivityStatePublisher({
+            agentsFile: getUfooPaths(this.cwd).agentsFile,
+            subscriber: subscriberId,
+            projectRoot: this.cwd,
+          });
+          const daemonSockPath = getUfooPaths(this.cwd).ufooSock;
+          launcherActivityDetector.onChange((newState, oldState) => {
+            const snap = launcherActivityDetector.getState();
+            launcherPublisher.publish(newState, {
+              since: snap.since,
+              previous: oldState,
+              detail: snap.detail,
+            });
+          });
           wrapper.enableMonitoring((data) => {
             readyDetector.processOutput(data);
+            const text = typeof data === "string" ? data : Buffer.from(data).toString("utf8");
+            launcherActivityDetector.processOutput(text);
           });
-
-          // 当检测到agent ready时，通知daemon可以提前inject probe
-          const daemonSockPath = getUfooPaths(this.cwd).ufooSock;
           readyDetector.onReady(async () => {
+            launcherActivityDetector.markReady();
             // Claude Code's Ink TUI renders ❯ prompt before the input handler
             // is fully mounted. Wait a short period for the TUI to be ready to
             // accept injected text, otherwise only the trailing CR is processed
@@ -563,8 +583,9 @@ class AgentLauncher {
 
           // 设置退出回调（复用清理逻辑）
           wrapper.onExit = async ({ exitCode, signal }) => {
-            // 清理forceReady timer
+            // 清理 timers
             clearTimeout(forceReadyTimer);
+            launcherActivityDetector.destroy();
 
             // 清理 bus 状态
             try {
@@ -613,7 +634,7 @@ class AgentLauncher {
           const originalMonitor = wrapper.monitor;
           wrapper.monitor = {
             onOutput: (data) => {
-              // Call original monitor (ReadyDetector)
+              // Call original monitor (ReadyDetector + ActivityDetector)
               if (originalMonitor && originalMonitor.onOutput) {
                 originalMonitor.onOutput(data);
               }
@@ -755,6 +776,25 @@ class AgentLauncher {
               await originalOnExit(exitInfo);
             }
           };
+
+          // Handle external SIGTERM/SIGINT (e.g. daemon closeAgent)
+          // Without this, the PTY child may survive as an orphan process
+          // and the terminal window stays open.
+          let termSignalHandled = false;
+          const handleTermSignal = (sig) => {
+            if (termSignalHandled) return;
+            termSignalHandled = true;
+            // Save onExit ref before cleanup() nulls it
+            const exitHandler = wrapper.onExit;
+            wrapper.cleanup();
+            if (exitHandler) {
+              exitHandler({ exitCode: null, signal: sig });
+            } else {
+              process.exit(sig === "SIGTERM" ? 143 : 130);
+            }
+          };
+          process.on("SIGTERM", () => handleTermSignal("SIGTERM"));
+          process.on("SIGINT", () => handleTermSignal("SIGINT"));
         } catch (err) {
           console.error(`[PTY] Failed to start, falling back to spawn:`, err.message);
           this._spawnDirect(args, subscriberId);

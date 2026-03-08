@@ -22,17 +22,35 @@ function ensureAtPrefix(value) {
   return text.startsWith("@") ? text : `@${text}`;
 }
 
+function activityMarker(state = "") {
+  const normalized = String(state || "").trim().toLowerCase();
+  if (normalized === "working") return "*";
+  if (normalized === "waiting_input") return "?";
+  if (normalized === "blocked") return "!";
+  return "";
+}
+
+function withActivityMarker(label = "", state = "") {
+  const marker = activityMarker(state);
+  if (!marker) return label;
+  return `${marker}${label}`;
+}
+
 function buildSummaryLine(options = {}) {
   const {
     activeAgents = [],
     getAgentLabel = (id) => id,
+    getAgentState = () => "",
     launchMode = "terminal",
     agentProvider = "codex-cli",
     assistantEngine = "auto",
     cronTasks = [],
   } = options;
   const agents = activeAgents.length > 0
-    ? activeAgents.slice(0, 3).map((id) => ensureAtPrefix(getAgentLabel(id))).join(", ") + (activeAgents.length > 3 ? ` +${activeAgents.length - 3}` : "")
+    ? activeAgents.slice(0, 3)
+      .map((id) => withActivityMarker(ensureAtPrefix(getAgentLabel(id)), getAgentState(id)))
+      .join(", ")
+      + (activeAgents.length > 3 ? ` +${activeAgents.length - 3}` : "")
     : "none";
   return `{gray-fg}Agents:{/gray-fg} {cyan-fg}${agents}{/cyan-fg}`
     + `  {gray-fg}Mode:{/gray-fg} {cyan-fg}${launchMode}{/cyan-fg}`
@@ -86,17 +104,13 @@ function buildProjectRailLine(options = {}) {
     const rowRoot = String((row && row.project_root) || "");
     const isActiveProject = Boolean(activeRoot && rowRoot === activeRoot);
     const isSelected = absoluteIndex === safeSelectedIndex;
-    const displayName = isActiveProject ? `[${name}]` : name;
     if (projectsFocused && isSelected) {
-      return `{inverse}${displayName}{/inverse}`;
+      return `{inverse}${name}{/inverse}`;
     }
     if (isActiveProject) {
-      return `{cyan-fg}${displayName}{/cyan-fg}`;
+      return `{bold}{cyan-fg}${name}{/cyan-fg}{/bold}`;
     }
-    if (isSelected) {
-      return `{inverse}${displayName}{/inverse}`;
-    }
-    return `{cyan-fg}${displayName}{/cyan-fg}`;
+    return `{cyan-fg}${name}{/cyan-fg}`;
   });
 
   const leftMore = start > 0 ? "{gray-fg}<{/gray-fg} " : "";
@@ -117,6 +131,7 @@ function buildDashboardDetailLine(options = {}) {
     agentListWindowStart = 0,
     maxAgentWindow = 4,
     getAgentLabel = (id) => id,
+    getAgentState = () => "",
     selectedModeIndex = 0,
     selectedProviderIndex = 0,
     selectedAssistantIndex = 0,
@@ -203,7 +218,10 @@ function buildDashboardDetailLine(options = {}) {
     const visibleAgents = activeAgents.slice(start, end);
     const agentParts = visibleAgents.map((agent, i) => {
       const absoluteIndex = start + i;
-      const label = ensureAtPrefix(getAgentLabel(agent));
+      const label = withActivityMarker(
+        ensureAtPrefix(getAgentLabel(agent)),
+        getAgentState(agent)
+      );
       if (absoluteIndex === selectedAgentIndex) {
         return `{inverse}${label}{/inverse}`;
       }
@@ -238,6 +256,7 @@ function computeDashboardContent(options = {}) {
     agentListWindowStart = 0,
     maxAgentWindow = 4,
     getAgentLabel = (id) => id,
+    getAgentState = () => "",
     launchMode = "terminal",
     agentProvider = "codex-cli",
     assistantEngine = "auto",
@@ -275,6 +294,7 @@ function computeDashboardContent(options = {}) {
       const line2 = buildSummaryLine({
         activeAgents,
         getAgentLabel,
+        getAgentState,
         launchMode,
         agentProvider,
         assistantEngine,
@@ -294,6 +314,7 @@ function computeDashboardContent(options = {}) {
       agentListWindowStart,
       maxAgentWindow,
       getAgentLabel,
+      getAgentState,
       selectedModeIndex,
       selectedProviderIndex,
       selectedAssistantIndex,
@@ -320,6 +341,7 @@ function computeDashboardContent(options = {}) {
       agentListWindowStart,
       maxAgentWindow,
       getAgentLabel,
+      getAgentState,
       selectedModeIndex,
       selectedProviderIndex,
       selectedAssistantIndex,
@@ -337,6 +359,7 @@ function computeDashboardContent(options = {}) {
   content += buildSummaryLine({
     activeAgents,
     getAgentLabel,
+    getAgentState,
     launchMode,
     agentProvider,
     assistantEngine,

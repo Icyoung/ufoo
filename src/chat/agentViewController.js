@@ -16,6 +16,7 @@ function createAgentViewController(options = {}) {
     getAgentListWindowStart = () => 0,
     setAgentListWindowStart = () => {},
     getAgentLabel = (id) => id,
+    getAgentStates = () => ({}),
     setDashboardView = () => {},
     setScreenGrabKeys = (value) => {
       if (screen) screen.grabKeys = Boolean(value);
@@ -79,6 +80,7 @@ function createAgentViewController(options = {}) {
       agentListWindowStart: getAgentListWindowStart(),
       maxAgentWindow,
       getAgentLabel,
+      agentStates: getAgentStates(),
     });
     setAgentListWindowStart(computed.windowStart);
     processStdout.write(`\x1b7\x1b[${rows};1H${computed.bar}\x1b8`);

@@ -94,8 +94,52 @@ function loadAgentsData(filePath) {
   return normalizeAgentsData(data);
 }
 
+function parseTimestampMs(value) {
+  const ms = Date.parse(String(value || ""));
+  return Number.isFinite(ms) ? ms : Number.NaN;
+}
+
+function mergeExternalActivityFields(targetMeta, diskMeta) {
+  if (!targetMeta || !diskMeta) return;
+
+  const diskState = toSafeString(diskMeta.activity_state);
+  if (!diskState) return;
+
+  const memoryState = toSafeString(targetMeta.activity_state);
+  const diskSince = toSafeString(diskMeta.activity_since);
+  const memorySince = toSafeString(targetMeta.activity_since);
+  const diskSinceMs = parseTimestampMs(diskSince);
+  const memorySinceMs = parseTimestampMs(memorySince);
+
+  if (!memoryState) {
+    targetMeta.activity_state = diskState;
+    if (diskSince) targetMeta.activity_since = diskSince;
+    return;
+  }
+
+  const preferDisk = Number.isFinite(diskSinceMs)
+    && (!Number.isFinite(memorySinceMs) || diskSinceMs > memorySinceMs);
+  if (preferDisk) {
+    targetMeta.activity_state = diskState;
+    targetMeta.activity_since = diskSince;
+  }
+}
+
 function saveAgentsData(filePath, data) {
   const normalized = normalizeAgentsData(data);
+
+  // Merge externally-managed fields from disk to avoid daemon in-memory writes
+  // overwriting fresher runner/notifier state updates.
+  const disk = readJSON(filePath, null);
+  if (disk && disk.agents && normalized.agents) {
+    for (const [id, diskMeta] of Object.entries(disk.agents)) {
+      if (!diskMeta || typeof diskMeta !== "object") continue;
+      const targetMeta = normalized.agents[id];
+      if (!targetMeta || typeof targetMeta !== "object") continue;
+      mergeExternalActivityFields(targetMeta, diskMeta);
+    }
+  }
+
   writeJSON(filePath, normalized);
 }
 

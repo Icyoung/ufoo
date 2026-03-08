@@ -4,8 +4,9 @@ const net = require("net");
 const { spawnSync } = require("child_process");
 const EventBus = require("../bus");
 const { PTY_SOCKET_MESSAGE_TYPES, PTY_SOCKET_SUBSCRIBE_MODES } = require("../shared/ptySocketContract");
-const { runInternalRunner } = require("./internalRunner");
 const { getUfooPaths } = require("../ufoo/paths");
+const { ActivityDetector } = require("./activityDetector");
+const { createActivityStatePublisher } = require("./activityStatePublisher");
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -140,6 +141,10 @@ async function runPtyRunner({ projectRoot, agentType = "codex" }) {
   };
 
   const eventBus = new EventBus(projectRoot);
+  const activityDetector = new ActivityDetector(agentType, {
+    mode: "internal-pty",
+  });
+  const agentsFilePath = getUfooPaths(projectRoot).agentsFile;
 
   let running = true;
   let busy = false;
@@ -156,13 +161,13 @@ async function runPtyRunner({ projectRoot, agentType = "codex" }) {
   let suppressEcho = false;
   let echoMarker = "";
   let suppressTimer = null;
-  let fallbackInProgress = false;
   let ptyProcess = null;
   let restartCount = 0;
   let lastSpawnTime = 0;
-  const MAX_RESTARTS = 3;
+  const MAX_RESTARTS = 10;
   const RESTART_STABLE_MS = 30000; // reset counter if process ran > 30s
   const RESTART_DELAY_MS = 2000;
+  const RESTART_BACKOFF_CAP_MS = 30000;
   const READY_QUIET_MS = 3000; // TUI is "ready" after 3s of no output
   const messageQueue = [];
   const injectServer = setupInjectServer();
@@ -171,7 +176,6 @@ async function runPtyRunner({ projectRoot, agentType = "codex" }) {
   const idleMs = 30000;
   const watchdogMs = 120000;
   const maxQueue = 200;
-  const watchdogAction = String(process.env.UFOO_PTY_WATCHDOG_ACTION || "restart").toLowerCase();
   let sendQueue = Promise.resolve();
   const DROP_LINE_PATTERNS = [
     /__UFOO_DONE_/,
@@ -503,6 +507,48 @@ async function runPtyRunner({ projectRoot, agentType = "codex" }) {
     }
   }
 
+  // Unified activity state publisher (write + broadcast)
+  const activityPublisher = createActivityStatePublisher({
+    agentsFile: agentsFilePath,
+    subscriber,
+    projectRoot,
+  });
+
+  function writeActivityState() {
+    const snap = activityDetector.getState();
+    activityPublisher.publish(snap.state, {
+      since: snap.since,
+      detail: snap.detail,
+    });
+  }
+
+  activityDetector.onChange((newState, oldState) => {
+    const snap = activityDetector.getState();
+    activityPublisher.publish(newState, {
+      since: snap.since,
+      previous: oldState,
+      detail: snap.detail,
+    });
+    // Quiet-window detector may classify IDLE sooner than stream fallback timer.
+    // Release queue only when no explicit marker is being awaited.
+    if (newState === "idle" && busy && !currentMarker && !suppressEcho) {
+      if (idleTimer) {
+        clearTimeout(idleTimer);
+        idleTimer = null;
+      }
+      if (watchdogTimer) {
+        clearTimeout(watchdogTimer);
+        watchdogTimer = null;
+      }
+      if (currentPublisher) {
+        enqueueSend(currentPublisher, JSON.stringify({ stream: true, done: true, reason: "idle" }));
+      }
+      busy = false;
+      currentPublisher = "";
+      processQueue();
+    }
+  });
+
   function attachPty(proc) {
     proc.onData((data) => {
       const raw = String(data || "");
@@ -516,6 +562,7 @@ async function runPtyRunner({ projectRoot, agentType = "codex" }) {
       const clean = stripAnsi(raw).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
       if (!clean) return;
       outputBuffer += clean;
+      activityDetector.processOutput(clean);
       if (suppressEcho) {
         if (echoMarker && outputBuffer.includes(echoMarker)) {
           const idx = outputBuffer.indexOf(echoMarker);
@@ -545,6 +592,7 @@ async function runPtyRunner({ projectRoot, agentType = "codex" }) {
           }
           currentMarker = "";
           busy = false;
+          activityDetector.markIdle();
           currentPublisher = "";
           if (watchdogTimer) {
             clearTimeout(watchdogTimer);
@@ -567,6 +615,7 @@ async function runPtyRunner({ projectRoot, agentType = "codex" }) {
           readyTimer = null;
           if (!ptyReady) {
             ptyReady = true;
+            activityDetector.markReady();
             // Discard TUI startup noise accumulated before ready
             outputBuffer = "";
             pendingOutput = [];
@@ -583,6 +632,7 @@ async function runPtyRunner({ projectRoot, agentType = "codex" }) {
             enqueueSend(currentPublisher, JSON.stringify({ stream: true, done: true, reason: "idle" }));
           }
           busy = false;
+          activityDetector.markIdle();
           currentPublisher = "";
           processQueue();
         }, idleMs);
@@ -620,6 +670,7 @@ async function runPtyRunner({ projectRoot, agentType = "codex" }) {
 
       // Reset busy state
       busy = false;
+      activityDetector.markIdle();
       currentPublisher = "";
       currentMarker = "";
 
@@ -634,7 +685,7 @@ async function runPtyRunner({ projectRoot, agentType = "codex" }) {
       restartCount++;
 
       if (restartCount <= MAX_RESTARTS) {
-        const delay = Math.min(restartCount * RESTART_DELAY_MS, 10000);
+        const delay = Math.min(restartCount * RESTART_DELAY_MS, RESTART_BACKOFF_CAP_MS);
         logNote(`Auto-restarting PTY in ${delay}ms (attempt ${restartCount}/${MAX_RESTARTS})`);
         setTimeout(() => {
           if (!running) return;
@@ -643,12 +694,26 @@ async function runPtyRunner({ projectRoot, agentType = "codex" }) {
             processQueue();
           } catch (err) {
             logNote(`Restart failed: ${err.message || err}`);
-            void fallbackHeadless(`restart failed: ${err.message || err}`);
+            // Keep retrying instead of falling back
+            restartCount++;
+            if (restartCount <= MAX_RESTARTS) {
+              const retryDelay = Math.min(restartCount * RESTART_DELAY_MS, RESTART_BACKOFF_CAP_MS);
+              setTimeout(() => {
+                if (!running) return;
+                try {
+                  ptyProcess = spawnPtyProcess();
+                  processQueue();
+                } catch {
+                  logNote(`PTY spawn keeps failing after ${restartCount} attempts. Agent is offline.`);
+                }
+              }, retryDelay);
+            } else {
+              logNote(`PTY spawn failed after ${MAX_RESTARTS} attempts. Agent is offline. Fix the issue and re-launch.`);
+            }
           }
         }, delay);
       } else {
-        logNote(`Max PTY restarts (${MAX_RESTARTS}) reached, falling back to headless runner`);
-        void fallbackHeadless("max PTY restarts exceeded");
+        logNote(`PTY crashed ${MAX_RESTARTS} times within ${RESTART_STABLE_MS}ms. Agent is offline. Fix the issue and re-launch.`);
       }
     });
   }
@@ -691,24 +756,6 @@ async function runPtyRunner({ projectRoot, agentType = "codex" }) {
     ptyProcess = spawnPtyProcess();
   }
 
-  async function fallbackHeadless(reason) {
-    if (fallbackInProgress) return;
-    fallbackInProgress = true;
-    logNote(`Fallback to headless: ${reason}`);
-    if (outputBuffer) {
-      flushOutput();
-    }
-    cleanupInjectServer(injectServer);
-    try {
-      if (ptyProcess) ptyProcess.kill();
-    } catch {
-      // ignore
-    }
-    running = false;
-    await runInternalRunner({ projectRoot, agentType });
-    process.exit(0);
-  }
-
   const stop = () => {
     running = false;
     cleanupInjectServer(injectServer);
@@ -732,6 +779,7 @@ async function runPtyRunner({ projectRoot, agentType = "codex" }) {
     const next = messageQueue.shift();
     if (!next) return;
     busy = true;
+    activityDetector.markWorking();
     currentPublisher = next.publisher;
     currentMarker = next.marker || "";
     if (suppressTimer) {
@@ -794,21 +842,16 @@ async function runPtyRunner({ projectRoot, agentType = "codex" }) {
     watchdogTimer = setTimeout(() => {
       watchdogTimer = null;
       if (!busy) return;
-      const timeoutNote = `[internal-pty] marker timeout; action=${watchdogAction}`;
+      const timeoutNote = `[internal-pty] marker timeout; restarting PTY`;
       if (currentPublisher) enqueueSend(currentPublisher, timeoutNote);
       if (currentPublisher) {
         enqueueSend(currentPublisher, JSON.stringify({ stream: true, done: true, reason: "timeout" }));
       }
       logNote(timeoutNote);
-      if (watchdogAction === "fallback") {
-        void fallbackHeadless("marker timeout");
-        return;
-      }
-      if (watchdogAction === "restart") {
-        restartPty("marker timeout");
-      }
+      restartPty("marker timeout");
       currentMarker = "";
       busy = false;
+      activityDetector.markIdle();
       currentPublisher = "";
       processQueue();
     }, watchdogMs);
@@ -828,6 +871,7 @@ async function runPtyRunner({ projectRoot, agentType = "codex" }) {
     } catch {
       // ignore heartbeat errors
     }
+    writeActivityState();
   };
 
   while (running) {

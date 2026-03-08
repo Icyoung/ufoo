@@ -25,7 +25,16 @@ function createDaemonMessageRouter(options = {}) {
     appendStreamDelta = () => {},
     finalizeStream = () => {},
     hasStream = () => false,
+    setTransientAgentState = () => {},
+    clearTransientAgentState = () => {},
+    refreshDashboard = () => {},
   } = options;
+
+  function isLikelySubscriberId(value) {
+    const text = String(value || "");
+    if (!text) return false;
+    return text.includes(":") && !text.includes(" ");
+  }
 
   function normalizeDisplayMessage(raw) {
     let displayMessage = raw || "";
@@ -53,6 +62,14 @@ function createDaemonMessageRouter(options = {}) {
     if (typeof data.phase === "string") {
       const text = data.text || "";
       const item = { key: data.key, text };
+      const key = typeof data.key === "string" ? data.key : "";
+      if (isLikelySubscriberId(key)) {
+        if (data.phase === BUS_STATUS_PHASES.START) {
+          setTransientAgentState(key, "working");
+        } else if (data.phase === BUS_STATUS_PHASES.DONE || data.phase === BUS_STATUS_PHASES.ERROR) {
+          clearTransientAgentState(key);
+        }
+      }
       if (data.phase === BUS_STATUS_PHASES.START) {
         enqueueBusStatus(item);
       } else if (data.phase === BUS_STATUS_PHASES.DONE || data.phase === BUS_STATUS_PHASES.ERROR) {
@@ -66,6 +83,7 @@ function createDaemonMessageRouter(options = {}) {
       } else {
         enqueueBusStatus(item);
       }
+      refreshDashboard();
       renderScreen();
       return false;
     }
@@ -301,6 +319,10 @@ function createDaemonMessageRouter(options = {}) {
 
   function handleBusMessage(msg) {
     const data = msg.data || {};
+    if (data.event === "activity_state_changed") {
+      requestStatus();
+      return true;
+    }
     const prefix = data.event === "broadcast" ? "{gray-fg}⇢{/gray-fg}" : "{gray-fg}↔{/gray-fg}";
     const publisher = data.publisher && data.publisher !== "unknown"
       ? data.publisher

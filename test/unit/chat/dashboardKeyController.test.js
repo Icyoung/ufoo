@@ -74,6 +74,7 @@ function createController(stateOverrides = {}, optionOverrides = {}) {
     clampAgentWindow: jest.fn(),
     clampAgentWindowWithSelection: jest.fn(),
     requestProjectSwitch: jest.fn(),
+    requestCloseProject: jest.fn(),
     renderDashboard: jest.fn(),
     renderAgentDashboard: jest.fn(),
     renderScreen: jest.fn(),
@@ -293,6 +294,28 @@ describe("chat dashboardKeyController", () => {
     expect(controller.handleDashboardKey({ name: "right" })).toBe(true);
     expect(state.selectedProjectIndex).toBe(1);
     expect(requestProjectSwitch).not.toHaveBeenCalled();
+  });
+
+  test("global projects view ctrl+x closes selected project", () => {
+    const requestCloseProject = jest.fn();
+    const { state, controller } = createController(
+      {
+        dashboardView: "projects",
+        selectedProjectIndex: 1,
+        projects: [
+          { project_name: "alpha", project_root: "/tmp/alpha" },
+          { project_name: "beta", project_root: "/tmp/beta" },
+        ],
+      },
+      {
+        globalMode: true,
+        requestCloseProject,
+      }
+    );
+
+    expect(controller.handleDashboardKey({ name: "x", ctrl: true })).toBe(true);
+    expect(state.selectedProjectIndex).toBe(1);
+    expect(requestCloseProject).toHaveBeenCalledWith(1);
   });
 
   test("projects view is a no-op when globalMode is disabled", () => {

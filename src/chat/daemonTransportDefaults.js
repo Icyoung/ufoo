@@ -3,6 +3,7 @@ const DAEMON_TRANSPORT_DEFAULTS = {
   secondaryRetries: 50,
   retryDelayMs: 200,
   restartDelayMs: 1000,
+  connectTimeoutMs: 2000,
 };
 
 module.exports = {

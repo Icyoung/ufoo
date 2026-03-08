@@ -157,8 +157,11 @@ describe("chat daemonCoordinator", () => {
     await flushPromises();
     await flushPromises();
 
-    expect(queueStatusLine).toHaveBeenCalledWith("Reconnecting to daemon");
-    expect(resolveStatusLine).toHaveBeenCalledWith("{gray-fg}✓{/gray-fg} Daemon reconnected");
+    expect(queueStatusLine).toHaveBeenCalledWith("Reconnecting to daemon", { key: "daemon-reconnect" });
+    expect(resolveStatusLine).toHaveBeenCalledWith(
+      "{gray-fg}✓{/gray-fg} Daemon reconnected",
+      { key: "daemon-reconnect" }
+    );
 
     await coordinator.restart();
 
