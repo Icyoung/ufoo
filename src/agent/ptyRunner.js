@@ -548,6 +548,9 @@ async function runPtyRunner({ projectRoot, agentType = "codex" }) {
       processQueue();
     }
   });
+  // Ensure daemon/dashboard can read initial state immediately after runner boots,
+  // instead of waiting for the next 30s heartbeat tick.
+  writeActivityState();
 
   function attachPty(proc) {
     proc.onData((data) => {
