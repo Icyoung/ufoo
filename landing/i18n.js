@@ -22,7 +22,7 @@
       zh: '<span class="cmd">claude</span> → <span class="cmd highlight">u</span><span class="cmd">claude</span>，<span class="cmd">codex</span> → <span class="cmd highlight">u</span><span class="cmd">codex</span><br>即刻解锁多智能体协作，零配置。'
     },
     "landing.hero.note":             { en: "# npm install -g u-foo && uclaude. that's the entire learning curve.", zh: "# npm install -g u-foo && uclaude，这就是全部学习曲线。" },
-    "landing.badge":                 { en: "v1.5.0 // works with Claude Code, Codex CLI & ucode", zh: "v1.5.0 // 支持 Claude Code、Codex CLI 和 ucode" },
+    "landing.badge.html":            { en: "<span class=\"npm-version\">v1.6.0</span> // works with Claude Code, Codex CLI &amp; ucode", zh: "<span class=\"npm-version\">v1.6.0</span> // 支持 Claude Code、Codex CLI 和 ucode" },
     "landing.core.title.html":       { en: 'Two ways to <span class="u">u</span>foo.', zh: '两种 <span class="u">u</span>foo 用法。' },
     "landing.core.sub":              { en: "Pick your style. Both just work.", zh: "选你喜欢的风格，都能用。" },
     "landing.style1.label":          { en: "// style 1", zh: "// 风格 1" },

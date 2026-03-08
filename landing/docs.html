@@ -91,11 +91,11 @@
         <p>Verify installation:</p>
         <div class="docs-code">
           <pre><code><span class="prompt">$</span> ufoo --version
-<span class="success">1.5.0</span>
+<span class="success npm-version-bare">1.6.0</span>
 
 <span class="prompt">$</span> ufoo doctor
 <span class="success">&#x2713;</span> Node.js v22.x detected
-<span class="success">&#x2713;</span> u-foo@1.5.0 installed globally
+<span class="success">&#x2713;</span> u-foo@<span class="npm-version-bare">1.6.0</span> installed globally
 <span class="success">&#x2713;</span> claude CLI found
 <span class="success">&#x2713;</span> codex CLI found</code></pre>
         </div>
@@ -149,17 +149,38 @@
 
       <!-- Global Chat -->
       <section id="global-chat" class="docs-section">
-        <h1>Global Chat</h1>
-        <p>Use <code>ufoo -g</code> to manage multiple running projects in one chat dashboard.</p>
+        <h1>Global Chat <span class="badge-inline">ufoo -g</span></h1>
+        <p>Use <code>ufoo -g</code> (or <code>ufoo --global</code>) to launch a <strong>cross-project</strong> chat dashboard. Instead of being scoped to a single project, global mode connects to all running ufoo daemons and lets you switch between projects on the fly.</p>
 
-        <div class="docs-code">
-          <pre><code><span class="prompt">$</span> ufoo -g
-<span class="dim">&gt;</span> /project list
-<span class="dim">&gt;</span> /project switch 2
-<span class="dim">&gt;</span> /launch claude scope=inplace
-<span class="dim">&gt;</span> /launch codex scope=window</code></pre>
+        <div class="docs-callout">
+          <span class="docs-callout-icon">&gt;</span>
+          <div>
+            <strong>When to use:</strong> You have multiple projects running ufoo daemons simultaneously and want a single terminal to monitor and control all of them.
+          </div>
         </div>
 
+        <h3>Quick Start</h3>
+        <div class="docs-code">
+          <div class="docs-code-header">
+            <span>Terminal</span>
+            <button class="copy-btn" data-copy="ufoo -g">Copy</button>
+          </div>
+          <pre><code><span class="prompt">$</span> ufoo -g
+<span class="dim">[global]</span> <span class="success">Connected to 3 project daemons</span>
+
+<span class="dim">&gt;</span> /project list
+  <span class="green">1.</span> ~/Code/api-server    <span class="dim">(2 agents online)</span>
+  <span class="green">2.</span> ~/Code/web-app       <span class="dim">(1 agent online)</span>
+  <span class="green">3.</span> ~/Code/ml-pipeline   <span class="dim">(3 agents online)</span>
+
+<span class="dim">&gt;</span> /project switch 2
+<span class="success">&#x2713;</span> Switched to ~/Code/web-app
+
+<span class="dim">&gt;</span> /launch claude scope=inplace
+<span class="dim">&gt;</span> @claude-1 Review the login page component</code></pre>
+        </div>
+
+        <h3>Global Chat Commands</h3>
         <div class="docs-table-wrap">
           <table class="docs-table">
             <thead>
@@ -170,6 +191,10 @@
             </thead>
             <tbody>
               <tr>
+                <td><code>ufoo -g</code></td>
+                <td>Launch global chat mode (alias: <code>ufoo --global</code>)</td>
+              </tr>
+              <tr>
                 <td><code>/project list</code></td>
                 <td>List running projects from global runtime registry</td>
               </tr>
@@ -179,15 +204,23 @@
               </tr>
               <tr>
                 <td><code>/launch &lt;agent&gt; scope=inplace</code></td>
-                <td>Launch in current workspace context (tab or pane)</td>
+                <td>Launch agent in current workspace context (tab or pane)</td>
               </tr>
               <tr>
                 <td><code>/launch &lt;agent&gt; scope=window</code></td>
-                <td>Launch in a separate terminal window</td>
+                <td>Launch agent in a separate terminal window</td>
               </tr>
             </tbody>
           </table>
         </div>
+
+        <h3>How It Works</h3>
+        <ul class="docs-list">
+          <li>Global mode scans <code>~/.ufoo/chat/</code> for registered project daemons</li>
+          <li>Chat history and input history are stored per-project under the global directory</li>
+          <li>Switching projects reconnects the chat UI to the target project's daemon</li>
+          <li>All standard chat commands (<code>/agents</code>, <code>@nickname</code>, <code>/bus</code>) work within the active project scope</li>
+        </ul>
       </section>
 
       <!-- Architecture -->
@@ -269,6 +302,10 @@
               <tr>
                 <td><code>ufoo chat</code></td>
                 <td>Launch interactive chat UI (default command)</td>
+              </tr>
+              <tr>
+                <td><code>ufoo -g</code></td>
+                <td>Launch global chat mode (cross-project dashboard)</td>
               </tr>
               <tr>
                 <td><code>ufoo resume [nickname]</code></td>
@@ -635,7 +672,7 @@
 
       <!-- Footer inside docs -->
       <div class="docs-footer">
-        <p>UFOO v1.5.0 &mdash; <a href="https://github.com/Icyoung/ufoo">GitHub</a> &middot; <a href="https://www.npmjs.com/package/u-foo">npm</a></p>
+        <p>UFOO <span class="npm-version">v1.6.0</span> &mdash; <a href="https://github.com/Icyoung/ufoo">GitHub</a> &middot; <a href="https://www.npmjs.com/package/u-foo">npm</a></p>
       </div>
     </main>
   </div>
@@ -666,6 +703,17 @@
     }, { rootMargin: '-80px 0px -60% 0px' });
 
     sections.forEach(section => observer.observe(section));
+
+    // Fetch latest version from npm registry
+    fetch('https://registry.npmjs.org/u-foo/latest')
+      .then(r => r.json())
+      .then(pkg => {
+        const v = pkg.version;
+        if (!v) return;
+        document.querySelectorAll('.npm-version').forEach(el => { el.textContent = 'v' + v; });
+        document.querySelectorAll('.npm-version-bare').forEach(el => { el.textContent = v; });
+      })
+      .catch(() => {});
   </script>
 </body>
 </html>

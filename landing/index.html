@@ -40,7 +40,7 @@
 
       <div class="badge">
         <span class="badge-dot"></span>
-        <span data-i18n="landing.badge">v1.5.0 // works with Claude Code, Codex CLI &amp; ucode</span>
+        <span data-i18n="landing.badge.html"><span class="npm-version">v1.6.0</span> // works with Claude Code, Codex CLI &amp; ucode</span>
       </div>
 
       <h1 class="hero-title" data-i18n="landing.hero.title.html">Just Add <span class="highlight">u</span>.<br>That's It.</h1>
@@ -63,7 +63,7 @@
         </div>
         <div class="terminal-content">
           <div class="line"><span class="prompt">$</span> npm install <span class="u">u</span><span class="white">-foo</span></div>
-          <div class="line success">+ u-foo@1.5.0 installed in 0.8s</div>
+          <div class="line success">+ u-foo@<span class="npm-version-bare">1.6.0</span> installed in 0.8s</div>
           <div class="line"><span class="prompt">$</span> <span class="u">u</span><span class="white">foo</span><span class="dim"> init</span></div>
           <div class="line success">✓ Workspace ready at .ufoo/</div>
           <div class="line spacer"></div>
@@ -247,7 +247,7 @@
 
     <div class="footer-bottom">
       <span data-i18n="landing.footer.copy">© 2026 UFOO Protocol // Built by humans, orchestrated by agents</span>
-      <span>git:master @ v1.5.0</span>
+      <span>git:master @ <span class="npm-version">v1.6.0</span></span>
     </div>
   </footer>
 
@@ -269,6 +269,17 @@
         setTimeout(() => el.classList.remove('copied'), 1000);
       });
     });
+
+    // Fetch latest version from npm registry
+    fetch('https://registry.npmjs.org/u-foo/latest')
+      .then(r => r.json())
+      .then(pkg => {
+        const v = pkg.version;
+        if (!v) return;
+        document.querySelectorAll('.npm-version').forEach(el => { el.textContent = 'v' + v; });
+        document.querySelectorAll('.npm-version-bare').forEach(el => { el.textContent = v; });
+      })
+      .catch(() => {});
   </script>
 </body>
 </html>
