@@ -47,7 +47,8 @@ function toReportAgentSnapshot(value = {}) {
 
 function isBusyActivityState(value = "") {
   const state = String(value || "").trim().toLowerCase();
-  return state === "working" || state === "starting" || state === "running";
+  return state === "working" || state === "starting" || state === "running"
+    || state === "waiting_input" || state === "blocked";
 }
 
 function clipPromptText(value = "", maxChars = 240) {
