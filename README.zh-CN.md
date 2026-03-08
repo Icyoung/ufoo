@@ -111,6 +111,26 @@ ucode-core run-once --json
 ucode-core list --json
 ```
 
+## 全局聊天（`ufoo -g`）
+
+使用 `ufoo -g`（或 `ufoo --global`）启动跨项目聊天仪表盘。全局模式会连接所有正在运行的 ufoo 守护进程，支持在不同项目之间快速切换。
+
+```bash
+$ ufoo -g
+
+> /project list          # 列出所有运行中的项目守护进程
+> /project switch 2      # 切换到第 2 个项目
+> /launch claude scope=inplace   # 在当前上下文启动 Agent
+> @claude-1 开始审查 auth 模块
+```
+
+| 命令 | 说明 |
+|------|------|
+| `/project list` | 列出全局运行时注册的项目 |
+| `/project switch <序号\|路径>` | 切换活动项目的 daemon 连接 |
+| `/launch <agent> scope=inplace` | 在当前工作区启动 Agent |
+| `/launch <agent> scope=window` | 在独立终端窗口启动 Agent |
+
 ## Agent 配置
 
 在 `.ufoo/config.json` 中配置 AI 提供商：
@@ -187,6 +207,7 @@ Bus 状态存放于 `.ufoo/agent/all-agents.json`（元数据）、`.ufoo/bus/*`
 |------|------|
 | `ufoo` | 启动聊天界面（默认） |
 | `ufoo chat` | 启动交互式多 Agent 聊天 UI |
+| `ufoo -g` | 启动全局聊天模式（跨项目仪表盘） |
 | `ufoo init` | 在当前项目初始化 .ufoo |
 | `ufoo status` | 显示 banner、未读消息和未处理决策 |
 | `ufoo doctor` | 检查安装状态 |

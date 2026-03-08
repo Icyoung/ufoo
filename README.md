@@ -111,6 +111,26 @@ ucode-core run-once --json
 ucode-core list --json
 ```
 
+## Global Chat (`ufoo -g`)
+
+Use `ufoo -g` (or `ufoo --global`) to launch a cross-project chat dashboard. Instead of being scoped to a single project, global mode connects to all running ufoo daemons and lets you switch between projects on the fly.
+
+```bash
+$ ufoo -g
+
+> /project list          # List all running project daemons
+> /project switch 2      # Switch to project #2
+> /launch claude scope=inplace   # Launch agent in current context
+> @claude-1 Start reviewing the auth module
+```
+
+| Command | Description |
+|---------|-------------|
+| `/project list` | List running projects from global runtime registry |
+| `/project switch <index\|path>` | Switch active project daemon connection |
+| `/launch <agent> scope=inplace` | Launch agent in current workspace |
+| `/launch <agent> scope=window` | Launch agent in separate terminal window |
+
 ## Agent Configuration
 
 Configure AI providers in `.ufoo/config.json`:
@@ -187,6 +207,7 @@ Bus state lives in `.ufoo/agent/all-agents.json` (metadata), `.ufoo/bus/*` (queu
 |---------|-------------|
 | `ufoo` | Launch chat interface (default) |
 | `ufoo chat` | Launch interactive multi-agent chat UI |
+| `ufoo -g` | Launch global chat mode (cross-project dashboard) |
 | `ufoo init` | Initialize .ufoo in current project |
 | `ufoo status` | Show banner, unread bus messages, open decisions |
 | `ufoo doctor` | Check installation health |
