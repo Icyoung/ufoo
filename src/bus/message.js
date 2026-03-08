@@ -7,21 +7,13 @@ const {
   appendJSONL,
   readLastLine,
   isPidAlive,
+  normalizeAgentTypeAlias,
 } = require("./utils");
 const NicknameManager = require("./nickname");
 
 const SEQ_LOCK_TIMEOUT_MS = 5000;
 const SEQ_LOCK_POLL_MS = 25;
 const SEQ_LOCK_STALE_MS = 30000;
-
-function normalizeAgentTypeAlias(value = "") {
-  const text = String(value || "").trim().toLowerCase();
-  if (!text) return "";
-  if (text === "codex") return "codex";
-  if (text === "claude" || text === "claude-code") return "claude-code";
-  if (text === "ufoo" || text === "ucode" || text === "ufoo-code") return "ufoo-code";
-  return text;
-}
 
 /**
  * 消息管理器

@@ -331,7 +331,17 @@ function isMetaActive(meta) {
   return false;
 }
 
+function normalizeAgentTypeAlias(value = "") {
+  const text = String(value || "").trim().toLowerCase();
+  if (!text) return "";
+  if (text === "codex") return "codex";
+  if (text === "claude" || text === "claude-code") return "claude-code";
+  if (text === "ufoo" || text === "ucode" || text === "ufoo-code") return "ufoo-code";
+  return text;
+}
+
 module.exports = {
+  normalizeAgentTypeAlias,
   getTimestamp,
   getDate,
   generateInstanceId,
