@@ -20,6 +20,8 @@ class AgentNotifier {
     this.workingHoldMs = Number.parseInt(process.env.UFOO_ACTIVITY_WORKING_HOLD_MS || "", 10) || 5000;
     this.lastCount = 0;
     this.lastWorkingAt = 0;
+    this.injectFailCount = 0;
+    this.maxInjectRetries = 5;
     this.timer = null;
     this.stopped = false;
     this.autoTrigger = process.env.UFOO_AUTO_TRIGGER !== "0"; // 默认启用自动触发
@@ -235,6 +237,11 @@ class AgentNotifier {
       return 0;
     }
 
+    // Back off on consecutive inject failures to avoid tight retry loop
+    if (this.injectFailCount >= this.maxInjectRetries) {
+      return 0;
+    }
+
     const events = this.drainPending();
     if (events.length === 0) return 0;
     const requeue = [];
@@ -256,11 +263,13 @@ class AgentNotifier {
         await this.injector.inject(this.subscriber, message);
         delivered += 1;
         consumedOne = true;
+        this.injectFailCount = 0;
         this.updateActivityState("working");
         // eslint-disable-next-line no-await-in-loop
         await this.emitDelivery(evt, "ok");
       } catch (err) {
         consumedOne = true;
+        this.injectFailCount += 1;
         requeue.push(evt);
         // eslint-disable-next-line no-await-in-loop
         await this.emitDelivery(evt, "error", err.message || "inject failed");
