@@ -133,6 +133,19 @@ function requireOptional(name) {
   }
 }
 
+function collectHostLaunchRequestContext(env = process.env) {
+  const hostInjectSock = String(env.UFOO_HOST_INJECT_SOCK || env.HORIZON_INJECT_SOCK || "").trim();
+  const hostDaemonSock = String(env.UFOO_HOST_DAEMON_SOCK || "").trim();
+  const hostName = String(env.UFOO_HOST_NAME || "").trim();
+  const hostSessionId = String(env.UFOO_HOST_SESSION_ID || env.HORIZON_SESSION_ID || "").trim();
+  const context = {};
+  if (hostInjectSock) context.host_inject_sock = hostInjectSock;
+  if (hostDaemonSock) context.host_daemon_sock = hostDaemonSock;
+  if (hostName) context.host_name = hostName;
+  if (hostSessionId) context.host_session_id = hostSessionId;
+  return context;
+}
+
 function collectOption(value, previous) {
   const next = Array.isArray(previous) ? previous.slice() : [];
   const parts = String(value || "")
@@ -424,6 +437,7 @@ async function runCli(argv) {
             agent: normalizedAgent,
             nickname: nickname || "",
             count: 1,
+            ...collectHostLaunchRequestContext(),
           });
           const reply = resp?.data?.reply || `Launching ${normalizedAgent} agent...`;
           console.log(reply);

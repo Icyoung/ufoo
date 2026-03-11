@@ -218,7 +218,7 @@ class BusDaemon {
       // - notifier/injector: terminal/tmux
       // - internal queue loop: internal/internal-pty
       // Bus daemon only handles legacy/unknown launch modes.
-      const adapter = this.adapterRouter.getAdapter({ launchMode, agentId: subscriber });
+      const adapter = this.adapterRouter.getAdapter({ launchMode, agentId: subscriber, meta });
       const { supportsNotifierInjector, supportsInternalQueueLoop } = adapter.capabilities;
       if (launchMode && (supportsNotifierInjector || supportsInternalQueueLoop)) {
         continue;

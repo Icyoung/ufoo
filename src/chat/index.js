@@ -44,7 +44,7 @@ const { createDaemonCoordinator } = require("./daemonCoordinator");
 const { IPC_REQUEST_TYPES } = require("../shared/eventContract");
 const { createTerminalAdapterRouter } = require("../terminal/adapterRouter");
 const { createDaemonTransport } = require("./daemonTransport");
-const { listProjectRuntimes } = require("../projects/registry");
+const { listProjectRuntimes, resolveRuntimeDir } = require("../projects/registry");
 const { canonicalProjectRoot, buildProjectId } = require("../projects/projectId");
 const {
   sortProjectRuntimes,
@@ -725,7 +725,7 @@ async function runChat(projectRoot, options = {}) {
     if (!terminalAdapterRouter) return null;
     const meta = activeAgentMetaMap ? activeAgentMetaMap.get(agentId) : null;
     const agentLaunchMode = (meta && meta.launch_mode) || launchMode || "";
-    return terminalAdapterRouter.getAdapter({ launchMode: agentLaunchMode, agentId });
+    return terminalAdapterRouter.getAdapter({ launchMode: agentLaunchMode, agentId, meta });
   }
 
   function getViewingAgentAdapter() {
@@ -1999,6 +1999,32 @@ async function runChat(projectRoot, options = {}) {
       requestStatus();
     }
   }, 5000);
+
+  // Global mode: watch runtime registry for new/removed projects
+  if (globalMode) {
+    const runtimeDir = resolveRuntimeDir();
+    if (!fs.existsSync(runtimeDir)) {
+      fs.mkdirSync(runtimeDir, { recursive: true });
+    }
+    let runtimeWatchDebounce = null;
+    try {
+      const watcher = fs.watch(runtimeDir, () => {
+        if (runtimeWatchDebounce) return;
+        runtimeWatchDebounce = setTimeout(() => {
+          runtimeWatchDebounce = null;
+          const prevCount = projectRuntimes.length;
+          refreshProjectRuntimes();
+          if (projectRuntimes.length !== prevCount) {
+            renderDashboard();
+            screen.render();
+          }
+        }, 300);
+      });
+      screen.on("destroy", () => watcher.close());
+    } catch {
+      // Fallback: ignore if fs.watch not supported
+    }
+  }
   screen.on("resize", () => {
     if (handleResizeInAgentView()) {
       return;

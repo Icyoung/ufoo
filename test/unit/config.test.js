@@ -17,4 +17,16 @@ describe("config save/load", () => {
 
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
+
+  test("saveConfig preserves host launch mode", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-config-host-"));
+    fs.mkdirSync(path.join(projectRoot, ".ufoo"), { recursive: true });
+
+    saveConfig(projectRoot, { launchMode: "host" });
+
+    const loaded = loadConfig(projectRoot);
+    expect(loaded.launchMode).toBe("host");
+
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
 });

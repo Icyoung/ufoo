@@ -184,18 +184,11 @@ class Injector {
   }
 
   /**
-   * 使用 PTY socket 直接注入命令（无需macOS权限）
+   * 使用指定路径的 PTY socket 注入命令
    */
-  async injectPty(subscriber, command) {
-    const sockPath = this.getInjectSockPath(subscriber);
-
-    if (!fs.existsSync(sockPath)) {
-      throw new Error(`Inject socket not found: ${sockPath}`);
-    }
-
+  async injectPtyAtPath(sockPath, command) {
     return new Promise((resolve, reject) => {
       const client = net.createConnection(sockPath, () => {
-        // 发送inject请求
         client.write(JSON.stringify({ type: "inject", command }) + "\n");
       });
 
@@ -241,6 +234,19 @@ class Injector {
   }
 
   /**
+   * 使用 PTY socket 直接注入命令（无需macOS权限）
+   */
+  async injectPty(subscriber, command) {
+    const sockPath = this.getInjectSockPath(subscriber);
+
+    if (!fs.existsSync(sockPath)) {
+      throw new Error(`Inject socket not found: ${sockPath}`);
+    }
+
+    return this.injectPtyAtPath(sockPath, command);
+  }
+
+  /**
    * 注入命令到订阅者的终端
    *
    * 优先级：
@@ -260,9 +266,22 @@ class Injector {
     const meta = this.getAgentMeta(subscriber) || {};
     const launchMode = meta.launch_mode || "";
     const adapterRouter = createTerminalAdapterRouter();
-    const adapter = adapterRouter.getAdapter({ launchMode, agentId: subscriber });
+    const adapter = adapterRouter.getAdapter({ launchMode, agentId: subscriber, meta });
     const supportsSocket = adapter.capabilities.supportsSocketProtocol;
     const supportsNotifier = adapter.capabilities.supportsNotifierInjector;
+
+    // 0. Try Terminal Host inject socket (ufoo Terminal Host Protocol)
+    const hostSock = (meta.host_inject_sock || "").toString();
+    if (hostSock && fs.existsSync(hostSock)) {
+      try {
+        logInject(`[inject] Using host inject socket: ${hostSock}`);
+        await this.injectPtyAtPath(hostSock, command);
+        logInject("[inject] Host inject success");
+        return;
+      } catch (err) {
+        logInject(`[inject] Host inject failed: ${err.message}, trying PTY socket`);
+      }
+    }
 
     // 1. 优先尝试 PTY socket（无需任何macOS权限）
     const injectSockPath = this.getInjectSockPath(subscriber);

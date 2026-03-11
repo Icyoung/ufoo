@@ -149,7 +149,21 @@ function buildStatus(projectRoot, options = {}) {
     const tty = meta?.tty || "";
     const activity_state = meta?.activity_state || "";
     const activity_since = meta?.activity_since || "";
-    return { id, nickname, display, launch_mode, tmux_pane, tty, activity_state, activity_since };
+    return {
+      id,
+      nickname,
+      display,
+      launch_mode,
+      tmux_pane,
+      tty,
+      activity_state,
+      activity_since,
+      host_inject_sock: meta?.host_inject_sock || "",
+      host_daemon_sock: meta?.host_daemon_sock || "",
+      host_name: meta?.host_name || "",
+      host_session_id: meta?.host_session_id || "",
+      host_capabilities: meta?.host_capabilities || null,
+    };
   });
 
   return {

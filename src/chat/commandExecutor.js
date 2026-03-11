@@ -29,6 +29,19 @@ function defaultResolveTerminalApp() {
   return "";
 }
 
+function collectHostLaunchRequestContext(env = process.env) {
+  const hostInjectSock = String(env.UFOO_HOST_INJECT_SOCK || env.HORIZON_INJECT_SOCK || "").trim();
+  const hostDaemonSock = String(env.UFOO_HOST_DAEMON_SOCK || "").trim();
+  const hostName = String(env.UFOO_HOST_NAME || "").trim();
+  const hostSessionId = String(env.UFOO_HOST_SESSION_ID || env.HORIZON_SESSION_ID || "").trim();
+  const context = {};
+  if (hostInjectSock) context.host_inject_sock = hostInjectSock;
+  if (hostDaemonSock) context.host_daemon_sock = hostDaemonSock;
+  if (hostName) context.host_name = hostName;
+  if (hostSessionId) context.host_session_id = hostSessionId;
+  return context;
+}
+
 async function withCapturedConsole(capture, fn) {
   const originalLog = console.log;
   const originalError = console.error;
@@ -445,6 +458,7 @@ function createCommandExecutor(options = {}) {
         count: Number.isFinite(count) ? count : 1,
         nickname,
         launch_scope: launchScope,
+        ...collectHostLaunchRequestContext(),
       };
       const terminalApp = String(resolveTerminalApp() || "").trim().toLowerCase();
       if (terminalApp === "terminal" || terminalApp === "iterm2") {
@@ -1126,4 +1140,5 @@ function createCommandExecutor(options = {}) {
 
 module.exports = {
   createCommandExecutor,
+  collectHostLaunchRequestContext,
 };

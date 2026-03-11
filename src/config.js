@@ -27,6 +27,7 @@ function normalizeLaunchMode(value) {
   if (value === "internal") return "internal";
   if (value === "tmux") return "tmux";
   if (value === "terminal") return "terminal";
+  if (value === "host") return "host";
   return "auto";
 }
 

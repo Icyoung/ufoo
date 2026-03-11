@@ -7,6 +7,11 @@ const { loadAgentsData, saveAgentsData } = require("../ufoo/agentsStore");
 const { isAgentPidAlive, getTtyProcessInfo } = require("../bus/utils");
 const { isITerm2 } = require("../terminal/detect");
 const { createTerminalAdapterRouter } = require("../terminal/adapterRouter");
+const {
+  createSession: createHostSession,
+  closeSession: closeHostSession,
+  sendToSocket: sendHostSocketRequest,
+} = require("../terminal/adapters/hostAdapter");
 
 function normalizeLaunchAgent(agent = "") {
   const value = String(agent || "").trim().toLowerCase();
@@ -73,6 +78,44 @@ function normalizeTerminalAppPreference(value = "") {
     return "iterm2";
   }
   return "";
+}
+
+function normalizeOptionalString(value = "") {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function resolveHostLaunchContext(options = {}) {
+  return {
+    hostInjectSock:
+      normalizeOptionalString(options.hostInjectSock)
+      || normalizeOptionalString(process.env.UFOO_HOST_INJECT_SOCK)
+      || normalizeOptionalString(process.env.HORIZON_INJECT_SOCK),
+    hostDaemonSock:
+      normalizeOptionalString(options.hostDaemonSock)
+      || normalizeOptionalString(process.env.UFOO_HOST_DAEMON_SOCK),
+    hostName:
+      normalizeOptionalString(options.hostName)
+      || normalizeOptionalString(process.env.UFOO_HOST_NAME),
+    hostSessionId:
+      normalizeOptionalString(options.hostSessionId)
+      || normalizeOptionalString(process.env.UFOO_HOST_SESSION_ID)
+      || normalizeOptionalString(process.env.HORIZON_SESSION_ID),
+    hostCapabilities:
+      options.hostCapabilities && typeof options.hostCapabilities === "object"
+        ? { ...options.hostCapabilities }
+        : null,
+  };
+}
+
+function resolveConfiguredLaunchMode(configuredMode = "", options = {}) {
+  const mode = normalizeOptionalString(configuredMode);
+  if (mode === "internal" || mode === "tmux" || mode === "terminal" || mode === "host") {
+    return mode;
+  }
+  const hostContext = resolveHostLaunchContext(options);
+  if (hostContext.hostDaemonSock) return "host";
+  if (process.env.TMUX_PANE) return "tmux";
+  return "terminal";
 }
 
 function resolveAgentId(projectRoot, agentId) {
@@ -395,6 +438,82 @@ async function spawnManagedTerminalAgent(
   return { child: null, subscriberId: subscriberId || null };
 }
 
+async function spawnManagedHostAgent(
+  projectRoot,
+  agent,
+  nickname = "",
+  processManager = null,
+  extraArgs = [],
+  extraEnv = "",
+  hostOptions = {}
+) {
+  void processManager;
+  const normalizedAgent = normalizeLaunchAgent(agent);
+  const binary = toTerminalBinary(normalizedAgent);
+  const agentType = toBusAgentType(normalizedAgent);
+  if (!binary || !agentType) {
+    throw new Error(`unsupported agent type: ${agent}`);
+  }
+
+  const hostContext = resolveHostLaunchContext(hostOptions);
+  if (!hostContext.hostDaemonSock) {
+    throw new Error("host launch requires UFOO_HOST_DAEMON_SOCK");
+  }
+
+  const existing = listSubscribers(projectRoot, agentType);
+  const createOptions = {};
+  if (hostOptions.groupId) {
+    createOptions.group_id = String(hostOptions.groupId).trim();
+  } else if (hostContext.hostSessionId) {
+    createOptions.source_session_id = hostContext.hostSessionId;
+  }
+
+  const created = await createHostSession(hostContext.hostDaemonSock, createOptions);
+  const sessionId = normalizeOptionalString(created?.session_id);
+  const injectSock = normalizeOptionalString(created?.inject_sock);
+  if (!sessionId || !injectSock) {
+    throw new Error("host create_session returned incomplete session info");
+  }
+
+  const args = Array.isArray(extraArgs) ? extraArgs : [];
+  const argText = args.length > 0 ? ` ${args.map(shellEscape).join(" ")}` : "";
+  const envParts = [
+    "UFOO_LAUNCH_MODE=host",
+    `UFOO_HOST_DAEMON_SOCK=${shellEscape(hostContext.hostDaemonSock)}`,
+    `UFOO_HOST_SESSION_ID=${shellEscape(sessionId)}`,
+    `UFOO_HOST_INJECT_SOCK=${shellEscape(injectSock)}`,
+  ];
+  if (nickname) {
+    envParts.push(`UFOO_NICKNAME=${shellEscape(nickname)}`);
+  }
+  if (hostContext.hostName) {
+    envParts.push(`UFOO_HOST_NAME=${shellEscape(hostContext.hostName)}`);
+  }
+  if (extraEnv) {
+    envParts.push(String(extraEnv).trim());
+  }
+
+  const titleCmd = buildTitleCmd(nickname);
+  const launchCmd = `${envParts.join(" ")} ${binary}${argText}`.trim();
+  const runCmd = titleCmd
+    ? `cd ${shellEscape(projectRoot)} && ${titleCmd} && ${launchCmd}`
+    : `cd ${shellEscape(projectRoot)} && ${launchCmd}`;
+
+  try {
+    await sendHostSocketRequest(injectSock, { type: "inject", command: runCmd });
+  } catch (err) {
+    try {
+      await closeHostSession(sessionId, hostContext.hostDaemonSock);
+    } catch {
+      // ignore cleanup failures
+    }
+    throw err;
+  }
+
+  const subscriberId = await waitForNewSubscriber(projectRoot, agentType, existing, 20000);
+  return { child: null, subscriberId: subscriberId || null, sessionId, injectSock };
+}
+
 async function spawnInternalAgent(projectRoot, agent, count = 1, nickname = "", processManager = null) {
   const runner = path.join(projectRoot, "bin", "ufoo.js");
   const logDir = getUfooPaths(projectRoot).runDir;
@@ -609,7 +728,7 @@ function spawnTmuxPane(projectRoot, agent, nickname = "", extraArgs = [], extraE
 
 async function launchAgent(projectRoot, agent, count = 1, nickname = "", processManager = null, options = {}) {
   const config = loadConfig(projectRoot);
-  const mode = config.launchMode || "terminal";
+  const mode = resolveConfiguredLaunchMode(config.launchMode, options);
   const launchScope = normalizeLaunchScope(options.launchScope, "inplace");
   const terminalApp = normalizeTerminalAppPreference(options.terminalApp);
   const normalizedAgent = normalizeLaunchAgent(agent);
@@ -664,6 +783,26 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
       }
     }
     return { mode: "tmux", launchScope, subscriberIds: [] };
+  }
+  if (mode === "host") {
+    const subscriberIds = [];
+    const hostContext = resolveHostLaunchContext(options);
+    for (let i = 0; i < count; i += 1) {
+      const defaultNick = normalizedAgent === "ufoo" ? "ucode" : normalizedAgent;
+      const nick = count > 1 ? `${nickname || defaultNick}-${i + 1}` : (nickname || "");
+      // eslint-disable-next-line no-await-in-loop
+      const result = await spawnManagedHostAgent(
+        projectRoot,
+        normalizedAgent,
+        nick,
+        processManager,
+        [],
+        "",
+        hostContext
+      );
+      if (result.subscriberId) subscriberIds.push(result.subscriberId);
+    }
+    return { mode: "host", launchScope, subscriberIds };
   }
   // terminal mode - daemon 作为父进程，输出到终端窗口
   if (process.platform !== "darwin") {
@@ -834,12 +973,14 @@ async function closeAgent(projectRoot, agentId) {
   let tty = "";
   let terminalApp = "";
   let tmuxPane = "";
+  let meta = null;
   let found = false;
   try {
     const bus = JSON.parse(fs.readFileSync(busPath, "utf8"));
     const entry = bus.agents?.[resolvedId];
     if (entry) {
       found = true;
+      meta = entry;
       const parsedPid = Number.parseInt(entry.pid, 10);
       pid = Number.isFinite(parsedPid) && parsedPid > 0 ? parsedPid : 0;
       launchMode = entry.launch_mode || "";
@@ -856,7 +997,7 @@ async function closeAgent(projectRoot, agentId) {
   }
 
   const adapterRouter = createTerminalAdapterRouter();
-  const adapter = adapterRouter.getAdapter({ launchMode, agentId: resolvedId });
+  const adapter = adapterRouter.getAdapter({ launchMode, agentId: resolvedId, meta });
   const canCloseWindow = process.platform === "darwin"
     && Boolean(adapter.capabilities.supportsWindowClose)
     && Boolean(tty);

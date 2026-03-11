@@ -40,6 +40,11 @@ class AgentActivator {
         tty: meta.tty || "",
         tmux_pane: meta.tmux_pane || "",
         launch_mode: meta.launch_mode || "",
+        host_inject_sock: meta.host_inject_sock || "",
+        host_daemon_sock: meta.host_daemon_sock || "",
+        host_name: meta.host_name || "",
+        host_session_id: meta.host_session_id || "",
+        host_capabilities: meta.host_capabilities || null,
       };
     } catch (err) {
       throw new Error(`Failed to get agent info: ${err.message}`);
@@ -156,7 +161,19 @@ end tell`;
       activateTerminal,
       activateTmux,
     });
-    const adapter = adapterRouter.getAdapter({ launchMode: info.launch_mode, agentId });
+    const adapter = adapterRouter.getAdapter({
+      launchMode: info.launch_mode,
+      agentId,
+      meta: info,
+    });
+
+    if (info.launch_mode === "host" && typeof adapter.connect === "function") {
+      try {
+        await adapter.connect();
+      } catch {
+        // fall back to seeded capabilities from bus metadata
+      }
+    }
 
     if (!adapter.capabilities.supportsActivate) {
       if (adapter.capabilities.supportsInternalQueueLoop) {
@@ -165,7 +182,10 @@ end tell`;
       throw new Error("Cannot activate: missing tty or tmux_pane for agent");
     }
 
-    await adapter.activate();
+    const activated = await adapter.activate();
+    if (activated === false) {
+      throw new Error("Host activation request was rejected");
+    }
   }
 }
 

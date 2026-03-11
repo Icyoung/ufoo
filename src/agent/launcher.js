@@ -12,6 +12,7 @@ const { ActivityDetector } = require("./activityDetector");
 const { createActivityStatePublisher } = require("./activityStatePublisher");
 const { getUfooPaths } = require("../ufoo/paths");
 const { createTerminalAdapterRouter } = require("../terminal/adapterRouter");
+const { probeHostCapabilities } = require("../terminal/adapters/hostAdapter");
 const PtyWrapper = require("./ptyWrapper");
 const ReadyDetector = require("./readyDetector");
 
@@ -152,6 +153,14 @@ function findPreviousSession(cwd, agentType, tty, tmuxPane) {
 function resolveLaunchMode() {
   const explicit = process.env.UFOO_LAUNCH_MODE || "";
   if (explicit) return explicit;
+  if (process.env.UFOO_HOST_SESSION_ID) return "host";
+  // Deprecated: HORIZON_SESSION_ID fallback (remove after migration)
+  if (process.env.HORIZON_SESSION_ID) {
+    if (process.env.UFOO_DEBUG) {
+      console.error("[launcher] HORIZON_SESSION_ID is deprecated, use UFOO_HOST_SESSION_ID");
+    }
+    return "host";
+  }
   if (process.env.TMUX_PANE) return "tmux";
   return "terminal";
 }
@@ -160,6 +169,48 @@ function shouldShowLaunchBanner(agentType = "") {
   if (process.env.UFOO_SUPPRESS_LAUNCHER_BANNER === "1") return false;
   void agentType;
   return true;
+}
+
+async function resolveHostRegistrationData(launchMode) {
+  if (launchMode !== "host") {
+    return {
+      hostInjectSock: "",
+      hostDaemonSock: "",
+      hostName: "",
+      hostSessionId: "",
+      hostCapabilities: null,
+    };
+  }
+
+  const hostInjectSock = process.env.UFOO_HOST_INJECT_SOCK
+    || process.env.HORIZON_INJECT_SOCK
+    || "";
+  const hostDaemonSock = process.env.UFOO_HOST_DAEMON_SOCK || "";
+  const hostName = process.env.UFOO_HOST_NAME || "";
+  const hostSessionId = process.env.UFOO_HOST_SESSION_ID
+    || process.env.HORIZON_SESSION_ID
+    || "";
+
+  let hostCapabilities = null;
+  if (hostInjectSock || hostDaemonSock) {
+    try {
+      hostCapabilities = await probeHostCapabilities({
+        injectSock: hostInjectSock,
+        daemonSock: hostDaemonSock,
+        timeoutMs: 1000,
+      });
+    } catch {
+      hostCapabilities = null;
+    }
+  }
+
+  return {
+    hostInjectSock,
+    hostDaemonSock,
+    hostName,
+    hostSessionId,
+    hostCapabilities,
+  };
 }
 
 /**
@@ -314,6 +365,13 @@ class AgentLauncher {
     const previousSession = shouldReuse
       ? findPreviousSession(this.cwd, this.agentType, tty, tmuxPane)
       : null;
+    const {
+      hostInjectSock,
+      hostDaemonSock,
+      hostName,
+      hostSessionId,
+      hostCapabilities,
+    } = await resolveHostRegistrationData(launchMode);
 
     const req = {
       type: IPC_REQUEST_TYPES.REGISTER_AGENT,
@@ -323,6 +381,11 @@ class AgentLauncher {
       launchMode,
       tmuxPane,
       tty,
+      hostInjectSock,
+      hostDaemonSock,
+      hostName,
+      hostSessionId,
+      hostCapabilities,
       skipProbe: process.env.UFOO_SKIP_SESSION_PROBE === "1",
       // 传递旧 session 信息用于复用（仅 terminal/tmux 模式）
       reuseSession: previousSession ? {

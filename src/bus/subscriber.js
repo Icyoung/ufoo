@@ -197,6 +197,22 @@ class SubscriberManager {
     const preservedTmuxPane = typeof existingMeta?.tmux_pane === "string" ? existingMeta.tmux_pane.trim() : "";
     const tmuxPane = explicitTmuxPane || envTmuxPane || preservedTmuxPane;
 
+    const hostInjectSock = typeof options.hostInjectSock === "string"
+      ? options.hostInjectSock.trim()
+      : "";
+    const hostDaemonSock = typeof options.hostDaemonSock === "string"
+      ? options.hostDaemonSock.trim()
+      : "";
+    const hostName = typeof options.hostName === "string"
+      ? options.hostName.trim()
+      : "";
+    const hostSessionId = typeof options.hostSessionId === "string"
+      ? options.hostSessionId.trim()
+      : "";
+    const hostCapabilities = options.hostCapabilities && typeof options.hostCapabilities === "object"
+      ? { ...options.hostCapabilities }
+      : null;
+
     this.busData.agents[subscriber] = {
       ...preserved,
       agent_type: agentType,
@@ -212,6 +228,22 @@ class SubscriberManager {
       tmux_pane: tmuxPane,
       launch_mode: launchMode,
     };
+
+    if (hostInjectSock) {
+      this.busData.agents[subscriber].host_inject_sock = hostInjectSock;
+    }
+    if (hostDaemonSock) {
+      this.busData.agents[subscriber].host_daemon_sock = hostDaemonSock;
+    }
+    if (hostName) {
+      this.busData.agents[subscriber].host_name = hostName;
+    }
+    if (hostSessionId) {
+      this.busData.agents[subscriber].host_session_id = hostSessionId;
+    }
+    if (hostCapabilities) {
+      this.busData.agents[subscriber].host_capabilities = hostCapabilities;
+    }
 
     const terminalApp = options.terminalApp || detectTerminalAppFromEnv();
     if (terminalApp) {

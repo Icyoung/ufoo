@@ -328,6 +328,16 @@ async function handleOps(projectRoot, ops = [], processManager = null) {
         const launchResult = await launchAgent(projectRoot, agent, count, nickname, processManager, {
           launchScope: op.launch_scope || "",
           terminalApp: op.terminal_app || "",
+          hostInjectSock: op.host_inject_sock || op.hostInjectSock || "",
+          hostDaemonSock: op.host_daemon_sock || op.hostDaemonSock || "",
+          hostName: op.host_name || op.hostName || "",
+          hostSessionId: op.host_session_id || op.hostSessionId || "",
+          hostCapabilities:
+            (op.host_capabilities && typeof op.host_capabilities === "object")
+            ? op.host_capabilities
+            : ((op.hostCapabilities && typeof op.hostCapabilities === "object")
+              ? op.hostCapabilities
+              : null),
         });
         if (launchResult.mode === "internal" && launchResult.subscriberIds && launchResult.subscriberIds.length > 0) {
           const probeAgentType = agent === "codex"
@@ -980,7 +990,18 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
     }
     if (req.type === IPC_REQUEST_TYPES.LAUNCH_AGENT) {
       log(`launch_agent received: agent=${req.agent} count=${req.count}`);
-      const { agent, count, nickname, launch_scope, terminal_app } = req;
+      const {
+        agent,
+        count,
+        nickname,
+        launch_scope,
+        terminal_app,
+        host_inject_sock,
+        host_daemon_sock,
+        host_name,
+        host_session_id,
+        host_capabilities,
+      } = req;
       const normalizedAgent = normalizeLaunchAgent(agent);
       if (!normalizedAgent) {
         socket.write(
@@ -1001,6 +1022,14 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
         nickname: nickname || "",
         launch_scope: launch_scope || "",
         terminal_app: terminal_app || "",
+        host_inject_sock: host_inject_sock || "",
+        host_daemon_sock: host_daemon_sock || "",
+        host_name: host_name || "",
+        host_session_id: host_session_id || "",
+        host_capabilities:
+          host_capabilities && typeof host_capabilities === "object"
+            ? host_capabilities
+            : null,
       };
       try {
         const opsResults = await handleOps(projectRoot, [op], processManager);
@@ -1403,7 +1432,20 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
     }
     if (req.type === IPC_REQUEST_TYPES.REGISTER_AGENT) {
       // Manual agent launch requests daemon to register it
-      const { agentType, nickname, parentPid, launchMode, tmuxPane, tty, skipProbe } = req;
+      const {
+        agentType,
+        nickname,
+        parentPid,
+        launchMode,
+        tmuxPane,
+        tty,
+        hostInjectSock,
+        hostDaemonSock,
+        hostName,
+        hostSessionId,
+        hostCapabilities,
+        skipProbe,
+      } = req;
       if (!agentType) {
         socket.write(
           `${JSON.stringify({
@@ -1451,6 +1493,13 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
           launchMode: launchMode || "",
           tmuxPane: tmuxPane || "",
           tty: tty || "",
+          hostInjectSock: hostInjectSock || "",
+          hostDaemonSock: hostDaemonSock || "",
+          hostName: hostName || "",
+          hostSessionId: hostSessionId || "",
+          hostCapabilities: hostCapabilities && typeof hostCapabilities === "object"
+            ? hostCapabilities
+            : null,
           reuseSessionId,
           reuseProviderSessionId,
         };

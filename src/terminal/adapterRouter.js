@@ -6,6 +6,7 @@ const { createTerminalAdapter } = require("./adapters/terminalAdapter");
 const { createTmuxAdapter } = require("./adapters/tmuxAdapter");
 const { createInternalQueueAdapter } = require("./adapters/internalQueueAdapter");
 const { createInternalPtyAdapter } = require("./adapters/internalPtyAdapter");
+const { createHostAdapter } = require("./adapters/hostAdapter");
 
 function createTerminalAdapterRouter(options = {}) {
   const {
@@ -35,7 +36,7 @@ function createTerminalAdapterRouter(options = {}) {
   }
 
   function getAdapter(params = {}) {
-    const { launchMode = "", agentId = "" } = params;
+    const { launchMode = "", agentId = "", meta = null } = params;
 
     if (launchMode === "terminal") {
       return createTerminalAdapter({
@@ -50,6 +51,17 @@ function createTerminalAdapterRouter(options = {}) {
         agentId,
         activateAgent: activateTmux || activateAgent,
         createAdapter,
+      });
+    }
+
+    if (launchMode === "host") {
+      return createHostAdapter({
+        createAdapter,
+        injectSock: meta?.host_inject_sock || meta?.hostInjectSock || "",
+        daemonSock: meta?.host_daemon_sock || meta?.hostDaemonSock || "",
+        hostName: meta?.host_name || meta?.hostName || "",
+        sessionId: meta?.host_session_id || meta?.hostSessionId || "",
+        hostCapabilities: meta?.host_capabilities || meta?.hostCapabilities || null,
       });
     }
 
