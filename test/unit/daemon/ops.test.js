@@ -15,8 +15,15 @@ jest.mock("child_process", () => {
   return { spawn, spawnSync };
 });
 
+jest.mock("../../../src/terminal/adapters/hostAdapter", () => ({
+  createSession: jest.fn(),
+  closeSession: jest.fn(),
+  sendToSocket: jest.fn(),
+}));
+
 const { launchAgent, getRecoverableAgents, closeAgent } = require("../../../src/daemon/ops");
 const { getUfooPaths } = require("../../../src/ufoo/paths");
+const hostAdapter = require("../../../src/terminal/adapters/hostAdapter");
 
 describe("daemon ops recoverable agents", () => {
   const projectRoot = "/tmp/ufoo-daemon-ops-test";
@@ -166,6 +173,101 @@ describe("daemon ops launch scope (tmux)", () => {
 
     const tmuxCalls = spawn.mock.calls.filter((call) => call[0] === "tmux");
     expect(tmuxCalls.some(([, args]) => Array.isArray(args) && args[0] === "new-window")).toBe(true);
+  });
+});
+
+describe("daemon ops host launch", () => {
+  const projectRoot = "/tmp/ufoo-daemon-hostlaunch-test";
+
+  function writeConfig(config) {
+    const configPath = path.join(projectRoot, ".ufoo", "config.json");
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+  }
+
+  function writeAgents(agents) {
+    const paths = getUfooPaths(projectRoot);
+    fs.mkdirSync(path.dirname(paths.agentsFile), { recursive: true });
+    fs.writeFileSync(paths.agentsFile, JSON.stringify({
+      created_at: new Date().toISOString(),
+      agents,
+      schema_version: 1,
+    }, null, 2));
+  }
+
+  beforeEach(() => {
+    if (fs.existsSync(projectRoot)) {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+    fs.mkdirSync(projectRoot, { recursive: true });
+    hostAdapter.createSession.mockReset();
+    hostAdapter.closeSession.mockReset();
+    hostAdapter.sendToSocket.mockReset();
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(projectRoot)) {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("auto mode launches into host session using request-scoped context", async () => {
+    writeConfig({ launchMode: "auto" });
+    writeAgents({});
+
+    hostAdapter.createSession.mockImplementation(async (_sockPath, opts) => {
+      expect(opts.source_session_id).toBe("HS-SRC");
+      expect(opts.command).toContain("ucodex");
+      writeAgents({
+        "codex:host-new": {
+          agent_type: "codex",
+          nickname: "neo",
+          status: "active",
+          launch_mode: "host",
+        },
+      });
+      return {
+        session_id: "HS-NEW",
+        inject_sock: "/tmp/horizon-created.sock",
+      };
+    });
+
+    const result = await launchAgent(projectRoot, "codex", 1, "neo", null, {
+      hostDaemonSock: "/tmp/horizon-daemon.sock",
+      hostSessionId: "HS-SRC",
+      hostName: "horizon",
+    });
+
+    expect(result).toMatchObject({
+      mode: "host",
+      subscriberIds: ["codex:host-new"],
+    });
+    expect(hostAdapter.createSession).toHaveBeenCalledWith("/tmp/horizon-daemon.sock", {
+      source_session_id: "HS-SRC",
+      command: expect.stringContaining("ucodex"),
+    });
+    const command = hostAdapter.createSession.mock.calls[0][1].command;
+    expect(command).toContain("UFOO_LAUNCH_MODE=host");
+    expect(command).toContain("UFOO_NICKNAME='neo'");
+    expect(command).not.toContain("UFOO_HOST_DAEMON_SOCK=");
+    expect(command).not.toContain("UFOO_HOST_SESSION_ID=");
+    expect(command).not.toContain("UFOO_HOST_INJECT_SOCK=");
+    expect(hostAdapter.sendToSocket).not.toHaveBeenCalled();
+  });
+
+  test("host launch surfaces create_session failures without follow-up injects", async () => {
+    writeConfig({ launchMode: "host" });
+    writeAgents({});
+
+    hostAdapter.createSession.mockRejectedValue(new Error("create failed"));
+
+    await expect(launchAgent(projectRoot, "codex", 1, "", null, {
+      hostDaemonSock: "/tmp/horizon-daemon.sock",
+      hostSessionId: "HS-SRC",
+    })).rejects.toThrow("create failed");
+
+    expect(hostAdapter.sendToSocket).not.toHaveBeenCalled();
+    expect(hostAdapter.closeSession).not.toHaveBeenCalled();
   });
 });
 

@@ -247,6 +247,43 @@ describe("chat commandExecutor", () => {
     });
   });
 
+  test("handleLaunchCommand forwards host launch context from environment", async () => {
+    const originalDaemonSock = process.env.UFOO_HOST_DAEMON_SOCK;
+    const originalSessionId = process.env.UFOO_HOST_SESSION_ID;
+    const originalInjectSock = process.env.UFOO_HOST_INJECT_SOCK;
+    const originalHostName = process.env.UFOO_HOST_NAME;
+    process.env.UFOO_HOST_DAEMON_SOCK = "/tmp/horizon-daemon.sock";
+    process.env.UFOO_HOST_SESSION_ID = "HS-SRC";
+    process.env.UFOO_HOST_INJECT_SOCK = "/tmp/horizon-current.sock";
+    process.env.UFOO_HOST_NAME = "horizon";
+
+    try {
+      const { executor, options } = createHarness();
+
+      await executor.handleLaunchCommand(["codex"]);
+      expect(options.send).toHaveBeenCalledWith({
+        type: "launch_agent",
+        agent: "codex",
+        count: 1,
+        nickname: "",
+        launch_scope: "inplace",
+        host_inject_sock: "/tmp/horizon-current.sock",
+        host_daemon_sock: "/tmp/horizon-daemon.sock",
+        host_name: "horizon",
+        host_session_id: "HS-SRC",
+      });
+    } finally {
+      if (originalDaemonSock === undefined) delete process.env.UFOO_HOST_DAEMON_SOCK;
+      else process.env.UFOO_HOST_DAEMON_SOCK = originalDaemonSock;
+      if (originalSessionId === undefined) delete process.env.UFOO_HOST_SESSION_ID;
+      else process.env.UFOO_HOST_SESSION_ID = originalSessionId;
+      if (originalInjectSock === undefined) delete process.env.UFOO_HOST_INJECT_SOCK;
+      else process.env.UFOO_HOST_INJECT_SOCK = originalInjectSock;
+      if (originalHostName === undefined) delete process.env.UFOO_HOST_NAME;
+      else process.env.UFOO_HOST_NAME = originalHostName;
+    }
+  });
+
   test("handleLaunchCommand rejects invalid scope", async () => {
     const { executor, options, logs } = createHarness();
 

@@ -334,7 +334,7 @@ async function requestCloseSession(sockPath) {
 /**
  * Create a new terminal session via the daemon management socket.
  * @param {string} [daemonSock] - Override daemon socket path (defaults to env)
- * @param {object} [opts] - Options: { group_id, source_session_id }
+ * @param {object} [opts] - Options: { group_id, source_session_id, command }
  * @returns {Promise<{session_id: string, inject_sock: string}>}
  */
 async function createSession(daemonSock, opts = {}) {
@@ -342,6 +342,7 @@ async function createSession(daemonSock, opts = {}) {
   const req = { type: "create_session" };
   if (opts.group_id) req.group_id = opts.group_id;
   if (opts.source_session_id) req.source_session_id = opts.source_session_id;
+  if (opts.command) req.command = opts.command;
   return sendToSocket(sock, req);
 }
 

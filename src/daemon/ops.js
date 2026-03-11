@@ -9,8 +9,6 @@ const { isITerm2 } = require("../terminal/detect");
 const { createTerminalAdapterRouter } = require("../terminal/adapterRouter");
 const {
   createSession: createHostSession,
-  closeSession: closeHostSession,
-  sendToSocket: sendHostSocketRequest,
 } = require("../terminal/adapters/hostAdapter");
 
 function normalizeLaunchAgent(agent = "") {
@@ -468,26 +466,11 @@ async function spawnManagedHostAgent(
     createOptions.source_session_id = hostContext.hostSessionId;
   }
 
-  const created = await createHostSession(hostContext.hostDaemonSock, createOptions);
-  const sessionId = normalizeOptionalString(created?.session_id);
-  const injectSock = normalizeOptionalString(created?.inject_sock);
-  if (!sessionId || !injectSock) {
-    throw new Error("host create_session returned incomplete session info");
-  }
-
   const args = Array.isArray(extraArgs) ? extraArgs : [];
   const argText = args.length > 0 ? ` ${args.map(shellEscape).join(" ")}` : "";
-  const envParts = [
-    "UFOO_LAUNCH_MODE=host",
-    `UFOO_HOST_DAEMON_SOCK=${shellEscape(hostContext.hostDaemonSock)}`,
-    `UFOO_HOST_SESSION_ID=${shellEscape(sessionId)}`,
-    `UFOO_HOST_INJECT_SOCK=${shellEscape(injectSock)}`,
-  ];
+  const envParts = ["UFOO_LAUNCH_MODE=host"];
   if (nickname) {
     envParts.push(`UFOO_NICKNAME=${shellEscape(nickname)}`);
-  }
-  if (hostContext.hostName) {
-    envParts.push(`UFOO_HOST_NAME=${shellEscape(hostContext.hostName)}`);
   }
   if (extraEnv) {
     envParts.push(String(extraEnv).trim());
@@ -498,16 +481,13 @@ async function spawnManagedHostAgent(
   const runCmd = titleCmd
     ? `cd ${shellEscape(projectRoot)} && ${titleCmd} && ${launchCmd}`
     : `cd ${shellEscape(projectRoot)} && ${launchCmd}`;
+  createOptions.command = runCmd;
 
-  try {
-    await sendHostSocketRequest(injectSock, { type: "inject", command: runCmd });
-  } catch (err) {
-    try {
-      await closeHostSession(sessionId, hostContext.hostDaemonSock);
-    } catch {
-      // ignore cleanup failures
-    }
-    throw err;
+  const created = await createHostSession(hostContext.hostDaemonSock, createOptions);
+  const sessionId = normalizeOptionalString(created?.session_id);
+  const injectSock = normalizeOptionalString(created?.inject_sock);
+  if (!sessionId || !injectSock) {
+    throw new Error("host create_session returned incomplete session info");
   }
 
   const subscriberId = await waitForNewSubscriber(projectRoot, agentType, existing, 20000);

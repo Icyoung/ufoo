@@ -162,6 +162,7 @@ describe("host daemon helpers", () => {
     try {
       const result = await createSession(mock.sockPath, {
         source_session_id: "SRC456",
+        command: "cd /tmp && ucodex",
       });
 
       expect(result).toMatchObject({
@@ -171,6 +172,7 @@ describe("host daemon helpers", () => {
       expect(mock.requests[0]).toMatchObject({
         type: "create_session",
         source_session_id: "SRC456",
+        command: "cd /tmp && ucodex",
       });
     } finally {
       await mock.close();
