@@ -90,16 +90,17 @@ class UfooInit {
       fs.mkdirSync(ufooDir, { recursive: true });
     }
 
-    // 创建 docs 符号链接
+    // 创建 docs 符号链接：项目的 docs/ -> .ufoo/docs
     const docsLink = path.join(ufooDir, "docs");
-    const docsTarget = path.join(this.repoRoot, "docs");
+    const projectDocs = path.join(project, "docs");
 
-    if (fs.existsSync(docsTarget)) {
-      if (fs.existsSync(docsLink)) {
+    if (fs.existsSync(projectDocs)) {
+      const linkStat = this.safeLstat(docsLink);
+      if (linkStat) {
         fs.unlinkSync(docsLink);
       }
-      fs.symlinkSync(docsTarget, docsLink);
-      console.log(`[core] Created docs symlink: .ufoo/docs -> ${docsTarget}`);
+      fs.symlinkSync(projectDocs, docsLink);
+      console.log(`[core] Created docs symlink: .ufoo/docs -> docs/`);
     }
 
     console.log("[core] Done");
