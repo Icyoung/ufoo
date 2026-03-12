@@ -18,16 +18,11 @@ function resolveAssistantEngine({
 } = {}) {
   const config = loadConfig(projectRoot);
 
-  const hasRequestedProvider = String(requestedProvider || "").trim().length > 0;
   const requested = normalizeAssistantEngine(requestedProvider);
-  const configEngine = normalizeAssistantEngine(config.assistantEngine);
   const fallback = normalizeAssistantEngine(fallbackProvider) || "codex";
 
   let selected = requested;
-  if (selected === "auto") {
-    // Explicit assistant_call provider=auto should inherit current main agent provider.
-    selected = hasRequestedProvider ? fallback : configEngine;
-  }
+  // Omitted/auto assistant providers inherit the active ufoo-agent provider.
   if (selected === "auto") selected = fallback;
   if (selected === "auto") selected = "codex";
 

@@ -9,7 +9,6 @@ const {
   saveConfig,
   normalizeLaunchMode,
   normalizeAgentProvider,
-  normalizeAssistantEngine,
 } = require("../config");
 const { socketPath, isRunning } = require("../daemon");
 const UfooInit = require("../init");
@@ -104,7 +103,6 @@ async function runChat(projectRoot, options = {}) {
   const config = loadConfig(projectRoot);
   let launchMode = config.launchMode;
   let agentProvider = config.agentProvider;
-  let assistantEngine = normalizeAssistantEngine(config.assistantEngine);
   let autoResume = config.autoResume !== false;
   let cronTasks = [];
 
@@ -675,7 +673,7 @@ async function runChat(projectRoot, options = {}) {
   let selectedAgentIndex = -1;  // -1 = not in dashboard selection mode
   let targetAgent = null;       // Selected agent for direct messaging
   let focusMode = "input";      // "input" or "dashboard"
-  let dashboardView = "agents"; // "projects" | "agents" | "mode" | "provider" | "assistant" | "cron"
+  let dashboardView = "agents"; // "projects" | "agents" | "mode" | "provider" | "cron"
   let reportPendingTotal = 0;
   let selectedModeIndex = Math.max(0, MODE_OPTIONS.indexOf(launchMode));
   const providerOptions = [
@@ -684,16 +682,6 @@ async function runChat(projectRoot, options = {}) {
     { label: "ucode", value: "ucode" },
   ];
   let selectedProviderIndex = Math.max(0, providerOptions.findIndex((opt) => opt.value === agentProvider));
-  const assistantOptions = [
-    { label: "auto", value: "auto" },
-    { label: "codex", value: "codex" },
-    { label: "claude", value: "claude" },
-    { label: "ucode", value: "ufoo" },
-  ];
-  let selectedAssistantIndex = Math.max(
-    0,
-    assistantOptions.findIndex((opt) => opt.value === assistantEngine)
-  );
   const resumeOptions = [
     { label: "Resume previous session", value: true },
     { label: "Start new session", value: false },
@@ -704,8 +692,7 @@ async function runChat(projectRoot, options = {}) {
     agentsGlobal: "←/→ select · Enter · ↓ mode · ↑ projects",
     agentsEmpty: "↓ mode · ↑ back",
     mode: "←/→ select · Enter · ↓ provider · ↑ back",
-    provider: "←/→ select · Enter · ↓ assistant · ↑ back",
-    assistant: "←/→ select · Enter · ↓ cron · ↑ back",
+    provider: "←/→ select · Enter · ↓ cron · ↑ back",
     cron: "Ctrl+X close · ↑ back",
     resume: "",
     projects: "Use /project switch <index|path>",
@@ -1081,12 +1068,6 @@ async function runChat(projectRoot, options = {}) {
     }
   }
 
-  function setAssistantEngine(value) {
-    if (settingsController) {
-      settingsController.setAssistantEngine(value);
-    }
-  }
-
   function setAutoResume(value) {
     if (settingsController) {
       settingsController.setAutoResume(value);
@@ -1103,7 +1084,6 @@ async function runChat(projectRoot, options = {}) {
     saveConfig,
     normalizeLaunchMode,
     normalizeAgentProvider,
-    normalizeAssistantEngine,
     fsModule: fs,
     getUfooPaths,
     logMessage,
@@ -1124,14 +1104,6 @@ async function runChat(projectRoot, options = {}) {
     setSelectedProviderIndex: (value) => {
       selectedProviderIndex = value;
     },
-    getAssistantEngine: () => assistantEngine,
-    setAssistantEngineState: (value) => {
-      assistantEngine = value;
-    },
-    setSelectedAssistantIndex: (value) => {
-      selectedAssistantIndex = value;
-    },
-    assistantOptions,
     providerOptions,
     modeOptions: MODE_OPTIONS,
     getAutoResume: () => autoResume,
@@ -1180,15 +1152,12 @@ async function runChat(projectRoot, options = {}) {
       },
       launchMode,
       agentProvider,
-      assistantEngine,
       autoResume,
       selectedModeIndex,
       selectedProviderIndex,
-      selectedAssistantIndex,
       selectedResumeIndex,
       cronTasks,
       providerOptions,
-      assistantOptions,
       resumeOptions,
       pendingReports: reportPendingTotal,
       dashHints: DASH_HINTS,
@@ -1337,10 +1306,6 @@ async function runChat(projectRoot, options = {}) {
     }
     selectedModeIndex = Math.max(0, MODE_OPTIONS.indexOf(launchMode));
     selectedProviderIndex = Math.max(0, providerOptions.findIndex((opt) => opt.value === agentProvider));
-    selectedAssistantIndex = Math.max(
-      0,
-      assistantOptions.findIndex((opt) => opt.value === assistantEngine)
-    );
     selectedResumeIndex = autoResume ? 0 : 1;
     // Immediately set @target when first agent is selected.
     if (!globalMode && selectedAgentIndex >= 0 && selectedAgentIndex < activeAgents.length) {
@@ -1368,15 +1333,12 @@ async function runChat(projectRoot, options = {}) {
     activeAgentMetaMap: { get: () => activeAgentMetaMap },
     selectedModeIndex: { get: () => selectedModeIndex, set: (value) => { selectedModeIndex = value; } },
     selectedProviderIndex: { get: () => selectedProviderIndex, set: (value) => { selectedProviderIndex = value; } },
-    selectedAssistantIndex: { get: () => selectedAssistantIndex, set: (value) => { selectedAssistantIndex = value; } },
     selectedResumeIndex: { get: () => selectedResumeIndex, set: (value) => { selectedResumeIndex = value; } },
     launchMode: { get: () => launchMode },
     agentProvider: { get: () => agentProvider },
-    assistantEngine: { get: () => assistantEngine },
     autoResume: { get: () => autoResume },
     cronTasks: { get: () => cronTasks },
     providerOptions: { get: () => providerOptions },
-    assistantOptions: { get: () => assistantOptions },
     resumeOptions: { get: () => resumeOptions },
     agentOutputSuppressed: {
       get: () => getAgentOutputSuppressed(),
@@ -1415,7 +1377,6 @@ async function runChat(projectRoot, options = {}) {
     exitDashboardMode,
     setLaunchMode,
     setAgentProvider,
-    setAssistantEngine,
     setAutoResume,
     clampAgentWindow,
     clampAgentWindowWithSelection,

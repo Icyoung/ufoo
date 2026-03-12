@@ -21,21 +21,13 @@ function createState(overrides = {}) {
     ]),
     selectedModeIndex: 0,
     selectedProviderIndex: 0,
-    selectedAssistantIndex: 0,
     selectedResumeIndex: 0,
     launchMode: "terminal",
     agentProvider: "codex-cli",
-    assistantEngine: "auto",
     autoResume: true,
     providerOptions: [
       { label: "codex", value: "codex-cli" },
       { label: "claude", value: "claude-cli" },
-    ],
-    assistantOptions: [
-      { label: "auto", value: "auto" },
-      { label: "codex", value: "codex" },
-      { label: "claude", value: "claude" },
-      { label: "ufoo", value: "ufoo" },
     ],
     resumeOptions: [
       { label: "Resume previous session", value: true },
@@ -69,7 +61,6 @@ function createController(stateOverrides = {}, optionOverrides = {}) {
     exitDashboardMode: jest.fn(),
     setLaunchMode: jest.fn(),
     setAgentProvider: jest.fn(),
-    setAssistantEngine: jest.fn(),
     setAutoResume: jest.fn(),
     clampAgentWindow: jest.fn(),
     clampAgentWindowWithSelection: jest.fn(),
@@ -111,8 +102,7 @@ describe("chat dashboardKeyController", () => {
     expect(state.selectedProviderIndex).toBe(1);
 
     expect(controller.handleDashboardKey({ name: "down" })).toBe(true);
-    expect(state.dashboardView).toBe("assistant");
-    expect(state.selectedAssistantIndex).toBe(0);
+    expect(state.dashboardView).toBe("cron");
 
     state.dashboardView = "mode";
     state.selectedModeIndex = 3;
@@ -139,34 +129,27 @@ describe("chat dashboardKeyController", () => {
     expect(state.focusMode).toBe("dashboard");
   });
 
-  test("assistant view applies selected engine", () => {
+  test("provider view applies selected provider", () => {
     const { state, deps, controller } = createController({
-      dashboardView: "assistant",
-      selectedAssistantIndex: 1,
-      assistantOptions: [
-        { label: "auto", value: "auto" },
-        { label: "codex", value: "codex" },
-      ],
+      dashboardView: "provider",
+      selectedProviderIndex: 1,
     });
 
     expect(controller.handleDashboardKey({ name: "enter" })).toBe(true);
-    expect(deps.setAssistantEngine).toHaveBeenCalledWith("codex");
+    expect(deps.setAgentProvider).toHaveBeenCalledWith("claude-cli");
     expect(deps.exitDashboardMode).toHaveBeenCalledWith(false);
-    expect(state.dashboardView).toBe("assistant");
+    expect(state.dashboardView).toBe("provider");
   });
 
-  test("assistant down enters cron view and ctrl+x closes dashboard", () => {
+  test("cron up returns to provider and ctrl+x closes dashboard", () => {
     const { state, deps, controller } = createController({
-      dashboardView: "assistant",
-      selectedAssistantIndex: 0,
-      assistantOptions: [
-        { label: "auto", value: "auto" },
-      ],
+      dashboardView: "cron",
     });
 
-    expect(controller.handleDashboardKey({ name: "down" })).toBe(true);
-    expect(state.dashboardView).toBe("cron");
+    expect(controller.handleDashboardKey({ name: "up" })).toBe(true);
+    expect(state.dashboardView).toBe("provider");
 
+    state.dashboardView = "cron";
     expect(controller.handleDashboardKey({ name: "x", ctrl: true })).toBe(true);
     expect(deps.exitDashboardMode).toHaveBeenCalledWith(false);
   });

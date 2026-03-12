@@ -6,7 +6,6 @@ function createSettingsController(options = {}) {
     saveConfig = () => {},
     normalizeLaunchMode = (value) => value,
     normalizeAgentProvider = (value) => value,
-    normalizeAssistantEngine = (value) => value,
     fsModule,
     getUfooPaths = () => ({ agentDir: "" }),
     logMessage = () => {},
@@ -19,10 +18,6 @@ function createSettingsController(options = {}) {
     getAgentProvider = () => "codex-cli",
     setAgentProviderState = () => {},
     setSelectedProviderIndex = () => {},
-    getAssistantEngine = () => "auto",
-    setAssistantEngineState = () => {},
-    setSelectedAssistantIndex = () => {},
-    assistantOptions = [],
     providerOptions = [],
     modeOptions = [],
     getAutoResume = () => true,
@@ -39,14 +34,6 @@ function createSettingsController(options = {}) {
 
   function providerLabel(value) {
     return value === "claude-cli" ? "claude" : "codex";
-  }
-
-  function assistantLabel(value) {
-    const normalized = normalizeAssistantEngine(value);
-    if (normalized === "codex") return "codex";
-    if (normalized === "claude") return "claude";
-    if (normalized === "ufoo") return "ufoo";
-    return "auto";
   }
 
   function clearUfooAgentIdentity() {
@@ -106,26 +93,11 @@ function createSettingsController(options = {}) {
     return true;
   }
 
-  function setAssistantEngine(engine) {
-    const next = normalizeAssistantEngine(engine);
-    if (next === getAssistantEngine()) return false;
-    setAssistantEngineState(next);
-    const idx = assistantOptions.findIndex((opt) => opt && opt.value === next);
-    setSelectedAssistantIndex(idx >= 0 ? idx : 0);
-    saveConfig(projectRoot, { assistantEngine: next });
-    logMessage("status", `{white-fg}⚙{/white-fg} assistant-engine: ${assistantLabel(next)}`);
-    renderDashboard();
-    renderScreen();
-    return true;
-  }
-
   return {
     providerLabel,
-    assistantLabel,
     clearUfooAgentIdentity,
     setLaunchMode,
     setAgentProvider,
-    setAssistantEngine,
     setAutoResume,
   };
 }

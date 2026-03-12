@@ -34,8 +34,8 @@ describe("assistant engine resolver", () => {
     fs.writeFileSync(file, JSON.stringify(config, null, 2), "utf8");
   }
 
-  test("uses fallback provider when assistantEngine is auto", () => {
-    writeConfig({ assistantEngine: "auto" });
+  test("omitted assistant provider follows fallback provider", () => {
+    writeConfig({ assistantEngine: "ufoo" });
     const resolved = resolveAssistantEngine({
       projectRoot,
       requestedProvider: "",
@@ -65,16 +65,15 @@ describe("assistant engine resolver", () => {
     });
   });
 
-  test("prefers configured ufoo engine command", () => {
+  test("requested ufoo provider uses configured engine command", () => {
     writeConfig({
-      assistantEngine: "ufoo",
       assistantUfooCmd: "pi-mono --assistant",
       assistantModel: "ufoo-core",
     });
 
     const resolved = resolveAssistantEngine({
       projectRoot,
-      requestedProvider: "",
+      requestedProvider: "ufoo",
       requestedModel: "",
       fallbackProvider: "codex-cli",
     });
