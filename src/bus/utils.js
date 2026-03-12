@@ -310,23 +310,44 @@ function isMetaActive(meta) {
   // 2. PID 存活（最可靠）
   if (meta.pid && isAgentPidAlive(meta.pid)) return true;
 
-  // 3. TTY 上有 agent 进程
-  if (meta.tty) {
-    const ttyInfo = getTtyProcessInfo(meta.tty);
-    if (ttyInfo && ttyInfo.hasAgent) return true;
-  }
-
-  // 4. PID 存在但 dead（且 TTY 也没有 agent）→ 离线
+  // 3. PID 已记录但进程已死 → 确定离线
   if (meta.pid) return false;
 
-  // 5. 无 PID，用 last_seen 心跳超时兜底
+  // 4. 无 PID（如 codex）— TTY 交叉校验
+  //    仅当 tty_shell_pid 也还活着时才信任 TTY 检查，
+  //    防止 TTY 上残留的僵尸进程导致误判存活
+  if (meta.tty) {
+    const ttyInfo = getTtyProcessInfo(meta.tty);
+    if (ttyInfo && ttyInfo.hasAgent) {
+      // 如果记录了 tty_shell_pid，验证它还在
+      if (meta.tty_shell_pid) {
+        if (isPidAlive(meta.tty_shell_pid)) return true;
+        // shell pid 已死，TTY 上的进程是残留
+        return false;
+      }
+      // 无 tty_shell_pid，用 last_seen 超时兜底
+      if (meta.last_seen) {
+        const age = Date.now() - new Date(meta.last_seen).getTime();
+        return age <= HEARTBEAT_TIMEOUT_MS;
+      }
+      return true;
+    }
+  }
+
+  // 5. 无 PID 无 TTY agent，用 last_seen 心跳超时兜底
   if (meta.status === "active" && meta.last_seen) {
     const age = Date.now() - new Date(meta.last_seen).getTime();
     return age <= HEARTBEAT_TIMEOUT_MS;
   }
 
-  // 6. status=active 但无任何信息
-  if (meta.status === "active") return true;
+  // 6. status=active 但无任何可靠信息 → 超时后判定离线
+  if (meta.status === "active") {
+    if (meta.joined_at) {
+      const age = Date.now() - new Date(meta.joined_at).getTime();
+      return age <= HEARTBEAT_TIMEOUT_MS;
+    }
+    return true;
+  }
 
   return false;
 }

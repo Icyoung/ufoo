@@ -791,6 +791,7 @@ async function runCli(argv) {
             alias,
             instance: opts.instance || "",
             dry_run: opts.dryRun === true,
+            ...collectHostLaunchRequestContext(),
           });
           if (opts.json) {
             console.log(JSON.stringify(resp?.data || {}, null, 2));
@@ -1684,6 +1685,7 @@ async function runCli(argv) {
             alias,
             instance,
             dry_run: dryRun,
+            ...collectHostLaunchRequestContext(),
           });
           if (outputJson) {
             console.log(JSON.stringify(resp?.data || {}, null, 2));

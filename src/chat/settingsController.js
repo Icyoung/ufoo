@@ -24,6 +24,7 @@ function createSettingsController(options = {}) {
     setSelectedAssistantIndex = () => {},
     assistantOptions = [],
     providerOptions = [],
+    modeOptions = [],
     getAutoResume = () => true,
     setAutoResumeState = () => {},
     setSelectedResumeIndex = () => {},
@@ -68,7 +69,8 @@ function createSettingsController(options = {}) {
     const next = normalizeLaunchMode(mode);
     if (next === getLaunchMode()) return false;
     setLaunchModeState(next);
-    setSelectedModeIndex(next === "internal" ? 2 : (next === "tmux" ? 1 : 0));
+    const nextIndex = modeOptions.findIndex((opt) => opt === next);
+    setSelectedModeIndex(nextIndex >= 0 ? nextIndex : 0);
     saveConfig(projectRoot, { launchMode: next });
     logMessage("status", `{white-fg}⚙{/white-fg} Launch mode: ${next}`);
     renderDashboard();

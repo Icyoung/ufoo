@@ -1,4 +1,4 @@
-const DEFAULT_MODE_OPTIONS = ["terminal", "tmux", "internal"];
+const DEFAULT_MODE_OPTIONS = ["auto", "host", "terminal", "tmux", "internal"];
 
 function createDashboardKeyController(options = {}) {
   const {
@@ -468,7 +468,8 @@ function createDashboardKeyController(options = {}) {
     if (key.name === "down") {
       clearTargetAgent();
       state.dashboardView = "mode";
-      state.selectedModeIndex = state.launchMode === "internal" ? 2 : (state.launchMode === "tmux" ? 1 : 0);
+      const launchModeIndex = modeOptions.indexOf(state.launchMode);
+      state.selectedModeIndex = launchModeIndex >= 0 ? launchModeIndex : 0;
       renderDashboardAndScreen();
       return true;
     }

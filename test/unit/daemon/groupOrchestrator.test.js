@@ -113,6 +113,40 @@ describe("daemon groupOrchestrator", () => {
     expect(runtime.members[1].subscriber_id).toBe("claude-code:arch1");
   });
 
+  test("runGroup forwards host launch context to member launches", async () => {
+    const handleOps = jest.fn(async () => [{ action: "launch", ok: true, subscriber_ids: ["codex:pm1"], mode: "host" }]);
+    const orchestrator = createGroupOrchestrator({
+      projectRoot,
+      handleOps,
+      templatesOptions: { builtinDir, globalDir, projectDir },
+    });
+
+    await orchestrator.runGroup({
+      alias: "dev-basic",
+      instance: "grp-host",
+      host_inject_sock: "/tmp/host-inject.sock",
+      host_daemon_sock: "/tmp/host-daemon.sock",
+      host_name: "horizon",
+      host_session_id: "HS123",
+      host_capabilities: { supportsSnapshot: true },
+    });
+
+    expect(handleOps).toHaveBeenNthCalledWith(
+      1,
+      projectRoot,
+      [expect.objectContaining({
+        action: "launch",
+        nickname: "pm",
+        host_inject_sock: "/tmp/host-inject.sock",
+        host_daemon_sock: "/tmp/host-daemon.sock",
+        host_name: "horizon",
+        host_session_id: "HS123",
+        host_capabilities: { supportsSnapshot: true },
+      })],
+      null,
+    );
+  });
+
   test("runGroup rolls back launched members when a later launch fails", async () => {
     const handleOps = jest.fn(async (_root, ops) => {
       const op = ops[0];

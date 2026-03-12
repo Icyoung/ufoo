@@ -58,7 +58,7 @@ describe("chat dashboardView", () => {
     const out = computeDashboardContent({
       focusMode: "dashboard",
       dashboardView: "mode",
-      selectedModeIndex: 1,
+      selectedModeIndex: 3,
       dashHints,
     });
 

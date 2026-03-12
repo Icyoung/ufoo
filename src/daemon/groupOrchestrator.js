@@ -190,6 +190,24 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function buildLaunchHostContext(params = {}) {
+  const hostInjectSock = asTrimmedString(params.host_inject_sock || params.hostInjectSock);
+  const hostDaemonSock = asTrimmedString(params.host_daemon_sock || params.hostDaemonSock);
+  const hostName = asTrimmedString(params.host_name || params.hostName);
+  const hostSessionId = asTrimmedString(params.host_session_id || params.hostSessionId);
+  const context = {};
+  if (hostInjectSock) context.host_inject_sock = hostInjectSock;
+  if (hostDaemonSock) context.host_daemon_sock = hostDaemonSock;
+  if (hostName) context.host_name = hostName;
+  if (hostSessionId) context.host_session_id = hostSessionId;
+  if (params.host_capabilities && typeof params.host_capabilities === "object") {
+    context.host_capabilities = { ...params.host_capabilities };
+  } else if (params.hostCapabilities && typeof params.hostCapabilities === "object") {
+    context.host_capabilities = { ...params.hostCapabilities };
+  }
+  return context;
+}
+
 function buildDefaultRuntime({
   groupId,
   instance,
@@ -309,6 +327,7 @@ function createGroupOrchestrator(options = {}) {
     const alias = asTrimmedString(params.alias);
     const instance = asTrimmedString(params.instance);
     const dryRun = params.dry_run === true || params.dryRun === true;
+    const launchHostContext = buildLaunchHostContext(params);
 
     if (!alias) {
       return { ok: false, error: "group run requires alias", status: "failed" };
@@ -377,6 +396,7 @@ function createGroupOrchestrator(options = {}) {
         agent: item.type,
         count: 1,
         nickname: item.nickname,
+        ...launchHostContext,
       };
 
       // eslint-disable-next-line no-await-in-loop

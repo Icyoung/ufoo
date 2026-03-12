@@ -1,6 +1,6 @@
 const { clampAgentWindowWithSelection } = require("./agentDirectory");
 
-const DEFAULT_MODE_OPTIONS = ["terminal", "tmux", "internal"];
+const DEFAULT_MODE_OPTIONS = ["auto", "host", "terminal", "tmux", "internal"];
 
 function providerLabel(value) {
   if (value === "claude-cli") return "claude";

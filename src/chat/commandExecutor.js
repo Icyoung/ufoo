@@ -839,6 +839,7 @@ function createCommandExecutor(options = {}) {
         alias,
         instance,
         dry_run: dryRun,
+        ...collectHostLaunchRequestContext(),
       });
       schedule(requestStatus, 1000);
       return;

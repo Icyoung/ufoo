@@ -104,7 +104,7 @@ describe("chat dashboardKeyController", () => {
     });
 
     expect(controller.handleDashboardKey({ name: "left" })).toBe(true);
-    expect(state.selectedModeIndex).toBe(2);
+    expect(state.selectedModeIndex).toBe(4);
 
     expect(controller.handleDashboardKey({ name: "down" })).toBe(true);
     expect(state.dashboardView).toBe("provider");
@@ -115,7 +115,7 @@ describe("chat dashboardKeyController", () => {
     expect(state.selectedAssistantIndex).toBe(0);
 
     state.dashboardView = "mode";
-    state.selectedModeIndex = 1;
+    state.selectedModeIndex = 3;
     expect(controller.handleDashboardKey({ name: "enter" })).toBe(true);
     expect(deps.setLaunchMode).toHaveBeenCalledWith("tmux");
     expect(deps.exitDashboardMode).toHaveBeenCalledWith(false);

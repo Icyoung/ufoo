@@ -1080,11 +1080,26 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
       const alias = req.alias || req.template || "";
       const instance = req.instance || req.group_id || "";
       const dryRun = req.dry_run === true || req.dryRun === true;
+      const hostInjectSock = req.host_inject_sock || req.hostInjectSock || "";
+      const hostDaemonSock = req.host_daemon_sock || req.hostDaemonSock || "";
+      const hostName = req.host_name || req.hostName || "";
+      const hostSessionId = req.host_session_id || req.hostSessionId || "";
+      const hostCapabilities =
+        req.host_capabilities && typeof req.host_capabilities === "object"
+          ? req.host_capabilities
+          : ((req.hostCapabilities && typeof req.hostCapabilities === "object")
+            ? req.hostCapabilities
+            : null);
       try {
         const result = await daemonGroupOrchestrator.runGroup({
           alias,
           instance,
           dry_run: dryRun,
+          host_inject_sock: hostInjectSock,
+          host_daemon_sock: hostDaemonSock,
+          host_name: hostName,
+          host_session_id: hostSessionId,
+          host_capabilities: hostCapabilities,
         });
         const ok = result && result.ok !== false;
         let reply = "";

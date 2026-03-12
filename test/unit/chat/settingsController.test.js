@@ -64,6 +64,7 @@ function createHarness(overrides = {}) {
       { label: "claude", value: "claude" },
       { label: "ucode", value: "ufoo" },
     ],
+    modeOptions: ["auto", "host", "terminal", "tmux", "internal"],
     providerOptions: [
       { label: "codex", value: "codex-cli" },
       { label: "claude", value: "claude-cli" },
@@ -103,7 +104,7 @@ describe("chat settingsController", () => {
 
     expect(changed).toBe(true);
     expect(state.launchMode).toBe("tmux");
-    expect(state.selectedModeIndex).toBe(1);
+    expect(state.selectedModeIndex).toBe(3);
     expect(saveConfig).toHaveBeenCalledWith("/repo", { launchMode: "tmux" });
     expect(restartDaemon).toHaveBeenCalledTimes(1);
   });

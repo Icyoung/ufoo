@@ -52,6 +52,8 @@ const {
   filterVisibleProjectRuntimes,
 } = require("./projectRuntimes");
 
+const MODE_OPTIONS = ["auto", "host", "terminal", "tmux", "internal"];
+
 async function runChat(projectRoot, options = {}) {
   const globalMode = options && options.globalMode === true;
   const DASHBOARD_HEIGHT = globalMode ? 2 : 1;
@@ -673,7 +675,7 @@ async function runChat(projectRoot, options = {}) {
   let focusMode = "input";      // "input" or "dashboard"
   let dashboardView = "agents"; // "projects" | "agents" | "mode" | "provider" | "assistant" | "cron"
   let reportPendingTotal = 0;
-  let selectedModeIndex = launchMode === "internal" ? 2 : (launchMode === "tmux" ? 1 : 0);
+  let selectedModeIndex = Math.max(0, MODE_OPTIONS.indexOf(launchMode));
   const providerOptions = [
     { label: "codex", value: "codex-cli" },
     { label: "claude", value: "claude-cli" },
@@ -1129,6 +1131,7 @@ async function runChat(projectRoot, options = {}) {
     },
     assistantOptions,
     providerOptions,
+    modeOptions: MODE_OPTIONS,
     getAutoResume: () => autoResume,
     setAutoResumeState: (value) => {
       autoResume = value;
@@ -1187,6 +1190,7 @@ async function runChat(projectRoot, options = {}) {
       resumeOptions,
       pendingReports: reportPendingTotal,
       dashHints: DASH_HINTS,
+      modeOptions: MODE_OPTIONS,
     });
     if (globalMode && (focusMode !== "dashboard" || dashboardView === "projects")) {
       projectListWindowStart = computed.windowStart;
@@ -1329,7 +1333,7 @@ async function runChat(projectRoot, options = {}) {
       agentListWindowStart = 0;
       clampAgentWindow();
     }
-    selectedModeIndex = launchMode === "internal" ? 2 : (launchMode === "tmux" ? 1 : 0);
+    selectedModeIndex = Math.max(0, MODE_OPTIONS.indexOf(launchMode));
     selectedProviderIndex = Math.max(0, providerOptions.findIndex((opt) => opt.value === agentProvider));
     selectedAssistantIndex = Math.max(
       0,
@@ -1421,6 +1425,7 @@ async function runChat(projectRoot, options = {}) {
     setScreenGrabKeys: (value) => {
       screen.grabKeys = Boolean(value);
     },
+    modeOptions: MODE_OPTIONS,
   });
 
   function handleDashboardKey(key) {

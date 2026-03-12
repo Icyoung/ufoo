@@ -389,18 +389,39 @@ describe("chat commandExecutor", () => {
   });
 
   test("handleGroupCommand run sends launch_group request", async () => {
-    const { executor, options } = createHarness();
+    const previousEnv = {
+      UFOO_HOST_INJECT_SOCK: process.env.UFOO_HOST_INJECT_SOCK,
+      UFOO_HOST_DAEMON_SOCK: process.env.UFOO_HOST_DAEMON_SOCK,
+      UFOO_HOST_NAME: process.env.UFOO_HOST_NAME,
+      UFOO_HOST_SESSION_ID: process.env.UFOO_HOST_SESSION_ID,
+    };
+    process.env.UFOO_HOST_INJECT_SOCK = "/tmp/host-inject.sock";
+    process.env.UFOO_HOST_DAEMON_SOCK = "/tmp/host-daemon.sock";
+    process.env.UFOO_HOST_NAME = "horizon";
+    process.env.UFOO_HOST_SESSION_ID = "HS123";
+    try {
+      const { executor, options } = createHarness();
 
-    await executor.handleGroupCommand(["run", "dev-basic", "instance=team-a", "dry_run=true"]);
+      await executor.handleGroupCommand(["run", "dev-basic", "instance=team-a", "dry_run=true"]);
 
-    expect(options.send).toHaveBeenCalledWith({
-      type: "launch_group",
-      alias: "dev-basic",
-      instance: "team-a",
-      dry_run: true,
-    });
-    expect(options.schedule).toHaveBeenCalled();
-    expect(options.requestStatus).toHaveBeenCalled();
+      expect(options.send).toHaveBeenCalledWith({
+        type: "launch_group",
+        alias: "dev-basic",
+        instance: "team-a",
+        dry_run: true,
+        host_inject_sock: "/tmp/host-inject.sock",
+        host_daemon_sock: "/tmp/host-daemon.sock",
+        host_name: "horizon",
+        host_session_id: "HS123",
+      });
+      expect(options.schedule).toHaveBeenCalled();
+      expect(options.requestStatus).toHaveBeenCalled();
+    } finally {
+      process.env.UFOO_HOST_INJECT_SOCK = previousEnv.UFOO_HOST_INJECT_SOCK;
+      process.env.UFOO_HOST_DAEMON_SOCK = previousEnv.UFOO_HOST_DAEMON_SOCK;
+      process.env.UFOO_HOST_NAME = previousEnv.UFOO_HOST_NAME;
+      process.env.UFOO_HOST_SESSION_ID = previousEnv.UFOO_HOST_SESSION_ID;
+    }
   });
 
   test("handleGroupCommand status/stop/validate/diagram send daemon requests", async () => {

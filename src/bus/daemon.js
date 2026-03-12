@@ -1,6 +1,6 @@
 const fs = require("fs");
 const path = require("path");
-const { readJSON, writeJSON, isPidAlive, isAgentPidAlive, ensureDir, safeNameToSubscriber, subscriberToSafeName } = require("./utils");
+const { readJSON, writeJSON, isPidAlive, isAgentPidAlive, isMetaActive, ensureDir, safeNameToSubscriber, subscriberToSafeName } = require("./utils");
 const Injector = require("./inject");
 const QueueManager = require("./queue");
 const MessageManager = require("./message");
@@ -405,12 +405,13 @@ class BusDaemon {
         continue;
       }
 
-      // 检查 PID 是否仍然存活
-      if (meta.pid && !isAgentPidAlive(meta.pid)) {
+      // 检查 agent 是否仍然存活（PID + TTY 交叉检查）
+      if (!isMetaActive(meta)) {
         const now = new Date().toISOString().split("T")[1].slice(0, 8);
-        console.log(`[daemon] ${now} Agent ${subscriber} (pid=${meta.pid}) is dead, marking inactive`);
+        console.log(`[daemon] ${now} Agent ${subscriber} (pid=${meta.pid || 0}) is dead, marking inactive`);
 
         meta.status = "inactive";
+        meta.activity_state = "";
         changed = true;
 
         // 清理队列目录和 offset
