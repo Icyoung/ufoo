@@ -62,6 +62,8 @@ describe("ufooAgent prompt schema", () => {
     expect(call.systemPrompt).toContain("assistant_call");
     expect(call.systemPrompt).toContain("Use top-level assistant_call for project exploration");
     expect(call.systemPrompt).toContain("\"assistant_call\": {\"kind\":\"explore|bash|mixed\"");
+    expect(call.systemPrompt).toContain("\"injection_mode\":\"immediate|queued (optional)\"");
+    expect(call.systemPrompt).toContain("dispatch.injection_mode defaults to immediate when omitted.");
   });
 
   test("injects activity and report summaries into system prompt context", async () => {

@@ -241,13 +241,36 @@ function createCommandExecutor(options = {}) {
 
     try {
       if (subcommand === "send") {
-        if (args.length < 3) {
-          logMessage("error", "{white-fg}✗{/white-fg} Usage: /bus send <target> <message>");
+        let injectionMode = "immediate";
+        let index = 1;
+        while (index < args.length) {
+          const arg = args[index];
+          if (arg === "--queued") {
+            injectionMode = "queued";
+            index += 1;
+            continue;
+          }
+          if (arg === "--immediate") {
+            injectionMode = "immediate";
+            index += 1;
+            continue;
+          }
+          break;
+        }
+        const positionals = args.slice(index);
+        if (positionals.length < 2) {
+          logMessage("error", "{white-fg}✗{/white-fg} Usage: /bus send [--queued|--immediate] <target> <message>");
           return;
         }
-        const target = args[1];
-        const message = args.slice(2).join(" ");
-        send({ type: IPC_REQUEST_TYPES.BUS_SEND, target, message });
+        const target = positionals[0];
+        const message = positionals.slice(1).join(" ");
+        send({
+          type: IPC_REQUEST_TYPES.BUS_SEND,
+          target,
+          message,
+          injection_mode: injectionMode,
+          source: "chat-command",
+        });
         logMessage("system", `{white-fg}✓{/white-fg} Message sent to ${target}`);
         return;
       }

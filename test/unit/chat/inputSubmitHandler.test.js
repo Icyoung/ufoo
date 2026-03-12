@@ -78,6 +78,8 @@ describe("chat inputSubmitHandler", () => {
       type: "bus_send",
       target: "codex:1",
       message: "hello",
+      injection_mode: "immediate",
+      source: "chat-direct",
     });
     expect(options.clearTargetAgent).toHaveBeenCalled();
     expect(options.focusInput).toHaveBeenCalled();
@@ -132,6 +134,8 @@ describe("chat inputSubmitHandler", () => {
       type: "bus_send",
       target: "codex:1",
       message: "ping",
+      injection_mode: "immediate",
+      source: "chat-direct",
     });
     expect(options.focusInput).toHaveBeenCalled();
   });
@@ -169,6 +173,11 @@ describe("chat inputSubmitHandler", () => {
     expect(options.send).toHaveBeenCalledWith({
       type: "prompt",
       text: "Use agent codex:1 to handle: analyze this",
+      request_meta: {
+        source: "chat-dialog",
+        dispatch_default_injection_mode: "immediate",
+        allow_relevance_queue: true,
+      },
     });
     expect(state.pending).toBeNull();
     expect(options.focusInput).toHaveBeenCalled();
@@ -180,7 +189,15 @@ describe("chat inputSubmitHandler", () => {
     await handler.handleSubmit("run analysis");
 
     expect(options.queueStatusLine).toHaveBeenCalledWith("ufoo-agent processing");
-    expect(options.send).toHaveBeenCalledWith({ type: "prompt", text: "run analysis" });
+    expect(options.send).toHaveBeenCalledWith({
+      type: "prompt",
+      text: "run analysis",
+      request_meta: {
+        source: "chat-dialog",
+        dispatch_default_injection_mode: "immediate",
+        allow_relevance_queue: true,
+      },
+    });
     expect(state.pending).toEqual({ original: "run analysis" });
     expect(options.logMessage).toHaveBeenCalledWith(
       "user",

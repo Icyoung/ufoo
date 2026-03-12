@@ -220,7 +220,25 @@ describe('MessageManager', () => {
           seq: 1,
           type: 'message/targeted',
           publisher: 'sender:123',
-          data: { message: 'Hello' },
+          data: { message: 'Hello', injection_mode: 'immediate' },
+        })
+      );
+    });
+
+    it('should persist explicit queued injection mode metadata', async () => {
+      await manager.send('architect', 'Hello', 'sender:123', {
+        injectionMode: 'queued',
+        source: 'chat-agent',
+      });
+
+      expect(mockQueueManager.appendPending).toHaveBeenCalledWith(
+        'claude-code:abc123',
+        expect.objectContaining({
+          data: {
+            message: 'Hello',
+            injection_mode: 'queued',
+            source: 'chat-agent',
+          },
         })
       );
     });

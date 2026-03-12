@@ -306,7 +306,11 @@ class EventBus {
       const eventName = options.event || "message";
       const data = options.data || { message };
       const result = eventName === "message"
-        ? await this.messageManager.send(target, message, publisher)
+        ? await this.messageManager.send(target, message, publisher, {
+          data,
+          injectionMode: options.injectionMode,
+          source: options.source,
+        })
         : await this.messageManager.emit(target, eventName, data, publisher);
       const silent = options.silent === true;
       if (!silent && eventName === "message") {

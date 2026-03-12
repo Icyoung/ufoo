@@ -6,13 +6,30 @@ const {
   consumeControllerInboxEntries,
 } = require("../report/store");
 
-function buildPromptWithPrivateReports(prompt = "", reports = []) {
+function buildPromptWithPrivateReports(prompt = "", reports = [], requestMeta = {}) {
+  const meta = requestMeta && typeof requestMeta === "object" ? requestMeta : {};
+  const hasMeta = Object.keys(meta).length > 0;
   if (!Array.isArray(reports) || reports.length === 0) {
-    return prompt;
+    if (!hasMeta) return prompt;
+    const lines = [];
+    lines.push(prompt || "");
+    lines.push("");
+    lines.push("Routing request metadata (JSON):");
+    lines.push(JSON.stringify(meta, null, 2));
+    lines.push("");
+    lines.push("Honor this metadata when choosing dispatch targets and injection_mode.");
+    return lines.join("\n");
   }
   const lines = [];
   lines.push(prompt || "");
   lines.push("");
+  if (hasMeta) {
+    lines.push("Routing request metadata (JSON):");
+    lines.push(JSON.stringify(meta, null, 2));
+    lines.push("");
+    lines.push("Honor this metadata when choosing dispatch targets and injection_mode.");
+    lines.push("");
+  }
   lines.push("Private runtime reports for ufoo-agent (JSON):");
   lines.push(JSON.stringify(reports, null, 2));
   lines.push("");
@@ -40,7 +57,7 @@ async function handlePromptRequest(options = {}) {
 
   log(`prompt ${String(req.text || "").slice(0, 200)}`);
   const privateReports = listControllerInboxEntries(projectRoot, "ufoo-agent", { num: 100 });
-  const promptText = buildPromptWithPrivateReports(req.text || "", privateReports);
+  const promptText = buildPromptWithPrivateReports(req.text || "", privateReports, req.request_meta);
 
   try {
     const handled = await runPromptWithAssistant({

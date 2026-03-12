@@ -135,6 +135,36 @@ describe("chat commandExecutor", () => {
       type: "bus_send",
       target: "codex:1",
       message: "hello world",
+      injection_mode: "immediate",
+      source: "chat-command",
+    });
+  });
+
+  test("handleBusCommand send supports queued flag", async () => {
+    const { executor, options } = createHarness();
+
+    await executor.handleBusCommand(["send", "--queued", "codex:1", "follow", "up"]);
+
+    expect(options.send).toHaveBeenCalledWith({
+      type: "bus_send",
+      target: "codex:1",
+      message: "follow up",
+      injection_mode: "queued",
+      source: "chat-command",
+    });
+  });
+
+  test("handleBusCommand send keeps flag-like tokens inside message body", async () => {
+    const { executor, options } = createHarness();
+
+    await executor.handleBusCommand(["send", "codex:1", "please", "run", "--queued", "tests"]);
+
+    expect(options.send).toHaveBeenCalledWith({
+      type: "bus_send",
+      target: "codex:1",
+      message: "please run --queued tests",
+      injection_mode: "immediate",
+      source: "chat-command",
     });
   });
 

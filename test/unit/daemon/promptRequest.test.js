@@ -155,6 +155,43 @@ describe("daemon promptRequest", () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
+  test("appends request metadata for chat dialog routing", async () => {
+    const socket = { write: jest.fn() };
+    const runPromptWithAssistant = jest.fn().mockResolvedValue({
+      ok: true,
+      payload: { reply: "done", dispatch: [], ops: [] },
+      opsResults: [],
+    });
+
+    const ok = await handlePromptRequest({
+      projectRoot: "/tmp/project",
+      req: {
+        text: "route this",
+        request_meta: {
+          source: "chat-dialog",
+          dispatch_default_injection_mode: "immediate",
+          allow_relevance_queue: true,
+        },
+      },
+      socket,
+      provider: "codex-cli",
+      model: "",
+      runPromptWithAssistant,
+      runUfooAgent: jest.fn(),
+      runAssistantTask: jest.fn(),
+      dispatchMessages: jest.fn(),
+      handleOps: jest.fn(),
+      markPending: jest.fn(),
+      log: jest.fn(),
+    });
+
+    expect(ok).toBe(true);
+    const calledPrompt = runPromptWithAssistant.mock.calls[0][0].prompt;
+    expect(calledPrompt).toContain("Routing request metadata (JSON)");
+    expect(calledPrompt).toContain("\"source\": \"chat-dialog\"");
+    expect(calledPrompt).toContain("\"dispatch_default_injection_mode\": \"immediate\"");
+  });
+
   test("keeps in-flight private reports appended during handling", async () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-prompt-report-inflight-"));
     appendControllerInboxEntry(projectRoot, "ufoo-agent", normalizeReportInput({

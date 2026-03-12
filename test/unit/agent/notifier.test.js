@@ -113,7 +113,7 @@ describe("AgentNotifier delivery strategy", () => {
     expect(fs.existsSync(pendingFile)).toBe(false);
   });
 
-  test("busy activity state defers delivery and keeps queue intact", async () => {
+  test("busy activity state still delivers immediate messages", async () => {
     const subscriber = "codex:busy1";
     fs.writeFileSync(
       path.join(projectRoot, ".ufoo", "agent", "all-agents.json"),
@@ -132,7 +132,46 @@ describe("AgentNotifier delivery strategy", () => {
         event: "message",
         publisher: "ufoo-agent",
         target: subscriber,
-        data: { message: "task-a" },
+        data: { message: "task-a", injection_mode: "immediate" },
+      },
+    ]);
+
+    const notifier = new AgentNotifier(projectRoot, subscriber);
+    notifier.injector = {
+      inject: jest.fn().mockResolvedValue(undefined),
+      readTty: jest.fn(() => ""),
+    };
+    notifier.eventBus = {
+      send: jest.fn().mockResolvedValue({ ok: true }),
+    };
+
+    const delivered = await notifier.deliverPending();
+
+    expect(delivered).toBe(1);
+    expect(notifier.injector.inject).toHaveBeenCalledWith(subscriber, "task-a");
+    expect(fs.existsSync(pendingFile)).toBe(false);
+  });
+
+  test("busy activity state defers queued delivery and keeps queue intact", async () => {
+    const subscriber = "codex:busy2";
+    fs.writeFileSync(
+      path.join(projectRoot, ".ufoo", "agent", "all-agents.json"),
+      JSON.stringify({
+        agents: {
+          [subscriber]: {
+            status: "active",
+            activity_state: "working",
+          },
+        },
+      }, null, 2)
+    );
+    const pendingFile = writePending(projectRoot, subscriber, [
+      {
+        seq: 1,
+        event: "message",
+        publisher: "ufoo-agent",
+        target: subscriber,
+        data: { message: "task-b", injection_mode: "queued" },
       },
     ]);
 
@@ -146,7 +185,7 @@ describe("AgentNotifier delivery strategy", () => {
 
     expect(delivered).toBe(0);
     expect(notifier.injector.inject).not.toHaveBeenCalled();
-    expect(fs.readFileSync(pendingFile, "utf8")).toContain("task-a");
+    expect(fs.readFileSync(pendingFile, "utf8")).toContain("task-b");
   });
 
   test("deliverPending injects only one message and requeues the rest", async () => {

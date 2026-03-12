@@ -1,5 +1,44 @@
 "use strict";
 
+function parseSendArgs(cmdArgs = []) {
+  let injectionMode = "immediate";
+  let source = "";
+  let index = 0;
+
+  while (index < cmdArgs.length) {
+    const arg = cmdArgs[index];
+    if (arg === "--queued") {
+      injectionMode = "queued";
+      index += 1;
+      continue;
+    }
+    if (arg === "--immediate") {
+      injectionMode = "immediate";
+      index += 1;
+      continue;
+    }
+    if (arg === "--source") {
+      source = String(cmdArgs[index + 1] || "").trim();
+      index += 2;
+      continue;
+    }
+    break;
+  }
+
+  const positionals = cmdArgs.slice(index);
+
+  if (positionals.length < 2) {
+    throw new Error("send requires <target> <message>");
+  }
+
+  return {
+    target: positionals[0],
+    message: positionals.slice(1).join(" "),
+    injectionMode,
+    source,
+  };
+}
+
 async function runBusCoreCommand(eventBus, cmd, cmdArgs = []) {
   switch (cmd) {
     case "init":
@@ -15,7 +54,11 @@ async function runBusCoreCommand(eventBus, cmd, cmdArgs = []) {
     case "send":
       {
         const publisher = await eventBus.ensureJoined();
-        await eventBus.send(cmdArgs[0], cmdArgs[1], publisher);
+        const parsed = parseSendArgs(cmdArgs);
+        await eventBus.send(parsed.target, parsed.message, publisher, {
+          injectionMode: parsed.injectionMode,
+          source: parsed.source,
+        });
       }
       return {};
     case "broadcast":

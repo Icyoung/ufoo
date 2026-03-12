@@ -7,6 +7,7 @@ const { shakeTerminalByTty } = require("../bus/shake");
 const { isITerm2 } = require("../terminal/detect");
 const iterm2 = require("../terminal/iterm2");
 const { createActivityStatePublisher } = require("./activityStatePublisher");
+const { INJECTION_MODES, getInjectionModeFromEvent } = require("../bus/messageMeta");
 
 /**
  * Agent 消息通知监听器
@@ -232,11 +233,6 @@ class AgentNotifier {
       return 0;
     }
 
-    const activityState = this.getCurrentActivityState();
-    if (this.isBusyState(activityState)) {
-      return 0;
-    }
-
     // Back off on consecutive inject failures to avoid tight retry loop
     if (this.injectFailCount >= this.maxInjectRetries) {
       return 0;
@@ -249,6 +245,12 @@ class AgentNotifier {
     let consumedOne = false;
     for (const evt of events) {
       if (!evt || evt.event !== "message" || !evt.data || typeof evt.data.message !== "string") {
+        continue;
+      }
+      const injectionMode = getInjectionModeFromEvent(evt, INJECTION_MODES.IMMEDIATE);
+      const activityState = this.getCurrentActivityState();
+      if (injectionMode === INJECTION_MODES.QUEUED && this.isBusyState(activityState)) {
+        requeue.push(evt);
         continue;
       }
       if (consumedOne) {

@@ -10,6 +10,7 @@ const {
   normalizeAgentTypeAlias,
 } = require("./utils");
 const NicknameManager = require("./nickname");
+const { buildMessageData } = require("./messageMeta");
 
 const SEQ_LOCK_TIMEOUT_MS = 5000;
 const SEQ_LOCK_POLL_MS = 25;
@@ -241,7 +242,7 @@ class MessageManager {
   /**
    * 发送消息
    */
-  async send(target, message, publisher = "unknown") {
+  async send(target, message, publisher = "unknown", options = {}) {
     const seq = await this.getNextSeq();
     const timestamp = getTimestamp();
     const date = getDate();
@@ -252,6 +253,8 @@ class MessageManager {
       throw new Error(`Target "${target}" not found`);
     }
 
+    const data = buildMessageData(message, options);
+
     // 构建事件
     const event = {
       seq,
@@ -260,7 +263,7 @@ class MessageManager {
       event: "message",
       publisher,
       target,
-      data: { message },
+      data,
     };
 
     // 写入事件日志

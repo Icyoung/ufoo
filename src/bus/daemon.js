@@ -5,6 +5,15 @@ const Injector = require("./inject");
 const QueueManager = require("./queue");
 const MessageManager = require("./message");
 const { createTerminalAdapterRouter } = require("../terminal/adapterRouter");
+const { INJECTION_MODES, getInjectionModeFromEvent } = require("./messageMeta");
+
+function isBusyActivityState(value = "") {
+  const state = String(value || "").trim().toLowerCase();
+  return state === "working"
+    || state === "running"
+    || state === "waiting_input"
+    || state === "blocked";
+}
 
 /**
  * Bus Daemon - 监控消息并自动注入命令
@@ -25,6 +34,49 @@ class BusDaemon {
     this.queueManager = new QueueManager(busDir);
     this.injector = new Injector(busDir, agentsFile);
     this.adapterRouter = createTerminalAdapterRouter();
+    this.workingHoldMs = Number.parseInt(process.env.UFOO_ACTIVITY_WORKING_HOLD_MS || "", 10) || 5000;
+    this.lastWorkingAt = new Map();
+  }
+
+  setLegacyActivityState(subscriber, state) {
+    const busData = readJSON(this.agentsFile) || { agents: {} };
+    if (!busData.agents || !busData.agents[subscriber]) return;
+    busData.agents[subscriber].activity_state = state;
+    busData.agents[subscriber].activity_since = new Date().toISOString();
+    writeJSON(this.agentsFile, busData);
+  }
+
+  refreshLegacyActivityState(subscriber, meta, hasPending) {
+    const now = Date.now();
+    const current = String(meta?.activity_state || "").trim().toLowerCase();
+    const lastWorkingAt = this.lastWorkingAt.get(subscriber) || 0;
+    const holdActive = lastWorkingAt > 0 && (now - lastWorkingAt) < this.workingHoldMs;
+    const daemonManagedWorking = lastWorkingAt > 0;
+
+    if (holdActive) {
+      if (current !== "working") {
+        this.setLegacyActivityState(subscriber, "working");
+      }
+      return "working";
+    }
+
+    if (lastWorkingAt > 0) {
+      this.lastWorkingAt.delete(subscriber);
+    }
+
+    if (current === "starting") {
+      const next = hasPending ? "ready" : "idle";
+      this.setLegacyActivityState(subscriber, next);
+      return next;
+    }
+
+    if (current === "working" && daemonManagedWorking) {
+      const next = hasPending ? "ready" : "idle";
+      this.setLegacyActivityState(subscriber, next);
+      return next;
+    }
+
+    return current;
   }
 
   /**
@@ -257,15 +309,26 @@ class BusDaemon {
             continue;
           }
 
+          let currentActivityState = this.refreshLegacyActivityState(subscriber, meta, count > 0);
           const events = this.drainPending(pendingFile);
           const failed = [];
+          let deliveredCount = 0;
           for (const evt of events) {
             if (!evt || evt.event !== "message" || !evt.data || typeof evt.data.message !== "string") {
+              continue;
+            }
+            const injectionMode = getInjectionModeFromEvent(evt, INJECTION_MODES.IMMEDIATE);
+            if (injectionMode === INJECTION_MODES.QUEUED && isBusyActivityState(currentActivityState)) {
+              failed.push(evt);
               continue;
             }
             try {
               // eslint-disable-next-line no-await-in-loop
               await this.injector.inject(subscriber, String(evt.data.message));
+              deliveredCount += 1;
+              currentActivityState = "working";
+              this.lastWorkingAt.set(subscriber, Date.now());
+              this.setLegacyActivityState(subscriber, "working");
             } catch (err) {
               failed.push(evt);
               try {
@@ -312,7 +375,7 @@ class BusDaemon {
               // ignore requeue failures
             }
           }
-          console.log(`[daemon] Delivered ${events.length} message(s) to ${subscriber}`);
+          console.log(`[daemon] Delivered ${deliveredCount} message(s) to ${subscriber}`);
           if (wakeActive) fs.rmSync(wakePath, { force: true });
         } catch (err) {
           console.error(`[daemon] Failed to inject: ${err.message}`);

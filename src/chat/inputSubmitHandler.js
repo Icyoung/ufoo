@@ -90,7 +90,13 @@ function createInputSubmitHandler(options = {}) {
       );
       renderScreen();  // Immediately render the user message
       markPendingDelivery(state.targetAgent);
-      send({ type: IPC_REQUEST_TYPES.BUS_SEND, target: state.targetAgent, message: text });
+      send({
+        type: IPC_REQUEST_TYPES.BUS_SEND,
+        target: state.targetAgent,
+        message: text,
+        injection_mode: "immediate",
+        source: "chat-direct",
+      });
       clearTargetAgent();
       focusInput();
       return;
@@ -120,7 +126,13 @@ function createInputSubmitHandler(options = {}) {
       );
       renderScreen();  // Immediately render the user message
       markPendingDelivery(resolvedTarget);
-      send({ type: IPC_REQUEST_TYPES.BUS_SEND, target: resolvedTarget, message: atTarget.message });
+      send({
+        type: IPC_REQUEST_TYPES.BUS_SEND,
+        target: resolvedTarget,
+        message: atTarget.message,
+        injection_mode: "immediate",
+        source: "chat-direct",
+      });
       focusInput();
       return;
     }
@@ -145,6 +157,11 @@ function createInputSubmitHandler(options = {}) {
         send({
           type: IPC_REQUEST_TYPES.PROMPT,
           text: `Use agent ${choice.agent_id} to handle: ${state.pending.original || "the request"}`,
+          request_meta: {
+            source: "chat-dialog",
+            dispatch_default_injection_mode: "immediate",
+            allow_relevance_queue: true,
+          },
         });
         state.pending = null;
       } else {
@@ -153,7 +170,15 @@ function createInputSubmitHandler(options = {}) {
     } else {
       state.pending = { original: text };
       queueStatusLine("ufoo-agent processing");
-      send({ type: IPC_REQUEST_TYPES.PROMPT, text });
+      send({
+        type: IPC_REQUEST_TYPES.PROMPT,
+        text,
+        request_meta: {
+          source: "chat-dialog",
+          dispatch_default_injection_mode: "immediate",
+          allow_relevance_queue: true,
+        },
+      });
       logMessage("user", `{white-fg}→{/white-fg} ${escapeBlessed(text)}`);
       renderScreen();  // Render plain text message immediately
     }

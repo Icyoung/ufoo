@@ -478,11 +478,15 @@ async function dispatchMessages(projectRoot, dispatch = []) {
   for (const item of dispatch) {
     if (!item || !item.target || !item.message) continue;
     const pub = item.publisher || defaultPublisher;
+    const sendOptions = {
+      injectionMode: item.injection_mode,
+      source: item.source,
+    };
     try {
       if (item.target === "broadcast") {
-        await eventBus.broadcast(item.message, pub);
+        await eventBus.broadcast(item.message, pub, sendOptions);
       } else {
-        await eventBus.send(item.target, item.message, pub);
+        await eventBus.send(item.target, item.message, pub, sendOptions);
       }
     } catch {
       // ignore dispatch failures
@@ -844,7 +848,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
     }
     if (req.type === IPC_REQUEST_TYPES.BUS_SEND) {
       // Direct bus send request from chat UI
-      const { target, message } = req;
+      const { target, message, injection_mode, source } = req;
       if (!target || !message) {
         socket.write(
           `${JSON.stringify({
@@ -858,7 +862,10 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
       try {
         const publisher = busBridge.getSubscriber() || "ufoo-agent";
         const eventBus = new EventBus(projectRoot);
-        await eventBus.send(target, message, publisher);
+        await eventBus.send(target, message, publisher, {
+          injectionMode: injection_mode,
+          source,
+        });
         busBridge.markPending(target);
         log(`bus_send target=${target} publisher=${publisher}`);
         socket.write(

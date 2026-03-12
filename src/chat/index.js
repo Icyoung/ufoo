@@ -316,6 +316,8 @@ async function runChat(projectRoot, options = {}) {
         type: IPC_REQUEST_TYPES.BUS_SEND,
         target,
         message: JSON.stringify({ raw: true, data }),
+        injection_mode: "immediate",
+        source: "chat-agent-view",
       });
     },
   });
