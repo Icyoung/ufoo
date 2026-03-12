@@ -915,9 +915,9 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
           }
         } else if (result.operation === "start" && result.task) {
           if (result.task.mode === "once") {
-            reply = `Cron scheduled ${result.task.id} at ${result.task.onceAt || result.task.onceAtMs}`;
+            reply = `Cron scheduled ${result.task.id}: ${result.task.label || result.task.onceAt || result.task.onceAtMs}`;
           } else {
-            reply = `Cron started ${result.task.id}: every ${result.task.interval || result.task.intervalMs}`;
+            reply = `Cron started ${result.task.id}: ${result.task.label || result.task.interval || result.task.intervalMs}`;
           }
         } else {
           reply = "Cron updated";

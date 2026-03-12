@@ -128,18 +128,41 @@ function sanitizeSummaryText(value = "") {
     .trim();
 }
 
+function truncateCronText(value = "", maxLength = 24) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(1, maxLength - 3))}...`;
+}
+
+function normalizeCronTitle(value = "", prompt = "") {
+  const explicitTitle = truncateCronText(
+    sanitizeSummaryText(value || "").replace(/:/g, "-"),
+    24
+  );
+  if (explicitTitle) return explicitTitle;
+  const fallbackTitle = truncateCronText(
+    sanitizeSummaryText(prompt || "").replace(/:/g, "-"),
+    24
+  );
+  return fallbackTitle || "(empty)";
+}
+
+function buildCronLabel(task = {}) {
+  const targets = Array.isArray(task.targets) && task.targets.length > 0
+    ? task.targets.join("+")
+    : "unknown";
+  const title = normalizeCronTitle(task.title || "", task.prompt || "");
+  const schedule = Number(task.onceAtMs) > 0
+    ? formatCronAtMs(task.onceAtMs)
+    : formatIntervalMs(task.intervalMs || 0);
+  return `${targets}:${title}:${schedule || "0s"}`;
+}
+
 function summarizeCronTask(task = {}) {
   const id = String(task.id || "");
-  const targets = Array.isArray(task.targets) ? task.targets.join("+") : "";
-  const promptRaw = sanitizeSummaryText(task.prompt || "");
-  const prompt = promptRaw.length > 24 ? `${promptRaw.slice(0, 24)}...` : promptRaw;
-
-  if (Number(task.onceAtMs) > 0) {
-    return `${id}@once(${formatCronAtMs(task.onceAtMs)})->${targets}: ${prompt || "(empty)"}`;
-  }
-
-  const interval = formatIntervalMs(task.intervalMs || 0);
-  return `${id}@${interval}->${targets}: ${prompt || "(empty)"}`;
+  const label = buildCronLabel(task);
+  return id ? `${id} ${label}` : label;
 }
 
 function formatCronTask(task = {}) {
@@ -153,11 +176,17 @@ function formatCronTask(task = {}) {
     onceAt: onceAtMs > 0 ? formatCronAtMs(onceAtMs) : "",
     targets: Array.isArray(task.targets) ? task.targets.slice() : [],
     prompt: String(task.prompt || ""),
+    title: normalizeCronTitle(task.title || "", task.prompt || ""),
+    label: buildCronLabel(task),
     createdAt: Number(task.createdAt) || 0,
     lastRunAt: Number(task.lastRunAt) || 0,
     tickCount: Number(task.tickCount) || 0,
     summary: summarizeCronTask(task),
   };
+}
+
+function resolveCronTitle(op = {}) {
+  return String(op.title || op.name || op.label || "").trim();
 }
 
 function createDaemonCronController(options = {}) {
@@ -198,6 +227,7 @@ function createDaemonCronController(options = {}) {
         onceAtMs: task.onceAtMs,
         targets: task.targets.slice(),
         prompt: task.prompt,
+        title: task.title,
         createdAt: task.createdAt,
         lastRunAt: task.lastRunAt,
         tickCount: task.tickCount,
@@ -275,13 +305,14 @@ function createDaemonCronController(options = {}) {
     }, task.intervalMs);
   }
 
-  function addTask({ intervalMs = 0, onceAtMs = 0, targets = [], prompt = "" } = {}) {
+  function addTask({ intervalMs = 0, onceAtMs = 0, targets = [], prompt = "", title = "" } = {}) {
     const safeInterval = Number.parseInt(intervalMs, 10);
     const safeOnceAt = Number.parseInt(onceAtMs, 10);
     const safeTargets = Array.isArray(targets)
       ? targets.map((item) => String(item || "").trim()).filter(Boolean)
       : [];
     const safePrompt = String(prompt || "").trim();
+    const safeTitle = normalizeCronTitle(title, safePrompt);
 
     if (!safePrompt || safeTargets.length === 0) return null;
 
@@ -296,6 +327,7 @@ function createDaemonCronController(options = {}) {
       onceAtMs: useOnce ? safeOnceAt : 0,
       targets: Array.from(new Set(safeTargets)),
       prompt: safePrompt,
+      title: safeTitle,
       createdAt: nowFn(),
       lastRunAt: 0,
       tickCount: 0,
@@ -367,6 +399,7 @@ function createDaemonCronController(options = {}) {
         ? item.targets.map((v) => String(v || "").trim()).filter(Boolean)
         : [];
       const prompt = String(item && item.prompt ? item.prompt : "").trim();
+      const title = normalizeCronTitle(item && item.title ? item.title : "", prompt);
 
       if (!prompt || targets.length === 0) {
         changed = true;
@@ -389,6 +422,7 @@ function createDaemonCronController(options = {}) {
         onceAtMs: Number.isFinite(onceAtMs) ? Math.floor(onceAtMs) : 0,
         targets: Array.from(new Set(targets)),
         prompt,
+        title,
         createdAt: Number(item && item.createdAt) || now,
         lastRunAt: Number(item && item.lastRunAt) || 0,
         tickCount: Number(item && item.tickCount) || 0,
@@ -535,6 +569,7 @@ function createDaemonCronController(options = {}) {
       onceAtMs,
       targets,
       prompt,
+      title: resolveCronTitle(op),
     });
 
     if (!task) {
@@ -567,8 +602,10 @@ module.exports = {
   resolveCronOperation,
   resolveCronIntervalMs,
   resolveCronOnceAtMs,
+  resolveCronTitle,
   resolveCronPrompt,
   resolveCronTaskId,
   parseCronAtMs,
+  buildCronLabel,
   formatCronTask,
 };

@@ -74,7 +74,18 @@ describe("chat cronScheduler", () => {
       targets: ["a:1", "b:2"],
       prompt: "this is a very long prompt for test summary",
     });
-    expect(summary).toContain("c3@10s->a:1+b:2:");
+    expect(summary).toContain("c3 a:1+b:2:this is a very long p...");
     expect(summary).toContain("...");
+  });
+
+  test("uses explicit title when provided", () => {
+    const summary = summarizeTask({
+      id: "c4",
+      intervalMs: 30000,
+      targets: ["codex:1"],
+      title: "Nightly Smoke",
+      prompt: "run the full nightly smoke suite",
+    });
+    expect(summary).toBe("c4 codex:1:Nightly Smoke:30s");
   });
 });

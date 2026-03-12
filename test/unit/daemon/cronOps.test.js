@@ -4,6 +4,7 @@ const {
   resolveCronOperation,
   resolveCronIntervalMs,
   resolveCronOnceAtMs,
+  resolveCronTitle,
   parseCronAtMs,
 } = require("../../../src/daemon/cronOps");
 const os = require("os");
@@ -40,6 +41,8 @@ describe("daemon cronOps", () => {
     expect(started.ok).toBe(true);
     expect(started.task.id).toBe("c1");
     expect(started.task.interval).toBe("30m");
+    expect(started.task.title).toBe("follow up");
+    expect(started.task.label).toBe("codex-3:follow up:30m");
     expect(setIntervalFn).toHaveBeenCalledWith(expect.any(Function), 1800000);
 
     timers[0].fn();
@@ -109,6 +112,7 @@ describe("daemon cronOps", () => {
     expect(resolveCronIntervalMs({ interval_ms: 10000 })).toBe(10000);
     expect(resolveCronIntervalMs({ every: "5m" })).toBe(300000);
     expect(resolveCronOnceAtMs({ once_at_ms: 1700000000000 })).toBe(1700000000000);
+    expect(resolveCronTitle({ title: "Nightly Smoke" })).toBe("Nightly Smoke");
     expect(parseCronAtMs("2026-02-23 22:15")).toBe(Date.parse("2026-02-23T22:15:00"));
 
     expect(normalizeCronTargets({ targets: ["codex:1", " codex:1 ", "claude:2"] })).toEqual([
@@ -189,5 +193,7 @@ describe("daemon cronOps", () => {
     expect(listed.ok).toBe(true);
     expect(listed.count).toBe(1);
     expect(listed.tasks[0].id).toBe(started.task.id);
+    expect(listed.tasks[0].title).toBe("persist me");
+    expect(listed.tasks[0].label).toBe("codex:1:persist me:10s");
   });
 });

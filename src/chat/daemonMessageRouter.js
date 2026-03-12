@@ -254,12 +254,12 @@ function createDaemonMessageRouter(options = {}) {
         if (task.mode === "once") {
           logMessage(
             "system",
-            `{white-fg}✓{/white-fg} Cron scheduled ${escapeBlessed(task.id)} at ${escapeBlessed(task.onceAt || String(task.onceAtMs || ""))}`
+            `{white-fg}✓{/white-fg} Cron scheduled ${escapeBlessed(task.id)}: ${escapeBlessed(task.label || task.onceAt || String(task.onceAtMs || ""))}`
           );
         } else {
           logMessage(
             "system",
-            `{white-fg}✓{/white-fg} Cron started ${escapeBlessed(task.id)}: every ${escapeBlessed(task.interval || String(task.intervalMs || ""))}`
+            `{white-fg}✓{/white-fg} Cron started ${escapeBlessed(task.id)}: ${escapeBlessed(task.label || task.interval || String(task.intervalMs || ""))}`
           );
         }
       } else if (operation === "stop") {

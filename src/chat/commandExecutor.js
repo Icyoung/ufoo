@@ -688,6 +688,9 @@ function createCommandExecutor(options = {}) {
     const targetsRaw = String(
       kv.target || kv.targets || kv.agent || kv.agents || ""
     ).trim();
+    const title = String(
+      kv.title || kv.name || kv.label || ""
+    ).trim();
     const prompt = String(
       kv.prompt || kv.message || kv.msg || nonKvParts.join(" ") || ""
     ).trim();
@@ -695,7 +698,7 @@ function createCommandExecutor(options = {}) {
     if ((!intervalRaw && !atRaw) || !targetsRaw || !prompt) {
       logMessage(
         "error",
-        "{white-fg}✗{/white-fg} Usage: /cron start every=<10s|5m> or at=\"YYYY-MM-DD HH:mm\" target=<agent1,agent2> prompt=\"...\""
+        "{white-fg}✗{/white-fg} Usage: /cron start every=<10s|5m> or at=\"YYYY-MM-DD HH:mm\" target=<agent1,agent2> [title=\"...\"] prompt=\"...\""
       );
       return;
     }
@@ -728,21 +731,18 @@ function createCommandExecutor(options = {}) {
     }
 
     if (typeof requestCron === "function") {
+      const request = {
+        operation: "start",
+        targets,
+        prompt,
+      };
+      if (title) request.title = title;
       if (atMs > 0) {
-        requestCron({
-          operation: "start",
-          once_at_ms: atMs,
-          targets,
-          prompt,
-        });
+        request.once_at_ms = atMs;
       } else {
-        requestCron({
-          operation: "start",
-          interval_ms: intervalMs,
-          targets,
-          prompt,
-        });
+        request.interval_ms = intervalMs;
       }
+      requestCron(request);
       schedule(requestStatus, 200);
       return;
     }
@@ -752,11 +752,13 @@ function createCommandExecutor(options = {}) {
       return;
     }
 
-    const task = createCronTask({
+    const taskPayload = {
       intervalMs,
       targets,
       prompt,
-    });
+    };
+    if (title) taskPayload.title = title;
+    const task = createCronTask(taskPayload);
     if (!task) {
       logMessage("error", "{white-fg}✗{/white-fg} Failed to create cron task");
       return;
@@ -764,7 +766,7 @@ function createCommandExecutor(options = {}) {
 
     logMessage(
       "system",
-      `{white-fg}✓{/white-fg} Cron started ${task.id}: ${atMs > 0 ? `at ${formatCronAt(atMs)}` : `every ${formatIntervalMs(intervalMs)}`} -> ${targets.join(", ")}`
+      `{white-fg}✓{/white-fg} Cron started ${task.id}: ${task.label || `${atMs > 0 ? `at ${formatCronAt(atMs)}` : `every ${formatIntervalMs(intervalMs)}`} -> ${targets.join(", ")}`}`
     );
   }
 

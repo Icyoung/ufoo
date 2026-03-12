@@ -1,7 +1,6 @@
 const {
   computeDashboardContent,
   providerLabel,
-  assistantLabel,
 } = require("../../../src/chat/dashboardView");
 
 describe("chat dashboardView", () => {
@@ -23,15 +22,6 @@ describe("chat dashboardView", () => {
     expect(providerLabel("unknown")).toBe("codex");
   });
 
-  test("assistantLabel maps assistant engine ids", () => {
-    expect(assistantLabel("auto")).toBe("auto");
-    expect(assistantLabel("codex")).toBe("codex");
-    expect(assistantLabel("claude")).toBe("claude");
-    expect(assistantLabel("ufoo")).toBe("ucode");
-    expect(assistantLabel("ucode")).toBe("ucode");
-    expect(assistantLabel("unknown")).toBe("auto");
-  });
-
   test("normal mode renders summary line without reports counter", () => {
     const out = computeDashboardContent({
       focusMode: "input",
@@ -39,7 +29,6 @@ describe("chat dashboardView", () => {
       getAgentLabel: (id) => `@${id}`,
       launchMode: "tmux",
       agentProvider: "claude-cli",
-      assistantEngine: "ufoo",
       cronTasks: [{ id: "c1", summary: "c1@10s->a: smoke" }, { id: "c2", summary: "c2@5m->b: check" }],
       autoResume: false,
       dashHints,
@@ -49,7 +38,6 @@ describe("chat dashboardView", () => {
     expect(out.content).toContain("{gray-fg}Agents:{/gray-fg} {cyan-fg}@a, @b, @c +1{/cyan-fg}");
     expect(out.content).toContain("{gray-fg}Mode:{/gray-fg} {cyan-fg}tmux{/cyan-fg}");
     expect(out.content).toContain("{gray-fg}Agent:{/gray-fg} {cyan-fg}claude{/cyan-fg}");
-    expect(out.content).toContain("{gray-fg}Assistant:{/gray-fg} {cyan-fg}ucode{/cyan-fg}");
     expect(out.content).toContain("{gray-fg}Cron:{/gray-fg} {cyan-fg}2{/cyan-fg}");
     expect(out.content).not.toContain("{gray-fg}Reports:{/gray-fg}");
   });
@@ -96,7 +84,7 @@ describe("chat dashboardView", () => {
     expect(out.content).toContain("{gray-fg}│ EMPTY{/gray-fg}");
   });
 
-  test("provider/assistant/resume pages highlight selected options", () => {
+  test("provider/resume pages highlight selected options", () => {
     const providerOut = computeDashboardContent({
       focusMode: "dashboard",
       dashboardView: "provider",
@@ -109,20 +97,6 @@ describe("chat dashboardView", () => {
     });
     expect(providerOut.content).toContain("{inverse}claude{/inverse}");
     expect(providerOut.content).toContain("{gray-fg}│ PROVIDER{/gray-fg}");
-
-    const assistantOut = computeDashboardContent({
-      focusMode: "dashboard",
-      dashboardView: "assistant",
-      assistantOptions: [
-        { label: "auto", value: "auto" },
-        { label: "codex", value: "codex" },
-        { label: "ucode", value: "ufoo" },
-      ],
-      selectedAssistantIndex: 2,
-      dashHints: { ...dashHints, assistant: "ASSISTANT" },
-    });
-    expect(assistantOut.content).toContain("{inverse}ucode{/inverse}");
-    expect(assistantOut.content).toContain("{gray-fg}│ ASSISTANT{/gray-fg}");
 
     const resumeOut = computeDashboardContent({
       focusMode: "dashboard",
@@ -143,14 +117,13 @@ describe("chat dashboardView", () => {
       focusMode: "dashboard",
       dashboardView: "cron",
       cronTasks: [
-        { id: "c1", summary: "c1@10s->codex:1: run smoke" },
-        { id: "c2", summary: "c2@1m->claude:2: check logs" },
+        { id: "c1", label: "codex:1:run smoke:10s", summary: "c1 codex:1:run smoke:10s" },
+        { id: "c2", label: "claude:2:check logs:1m", summary: "c2 claude:2:check logs:1m" },
       ],
       dashHints: { ...dashHints, cron: "CRON" },
     });
     expect(out.content).toContain("{gray-fg}Cron:{/gray-fg}");
-    expect(out.content).toContain("c1@10s->codex:1: run smoke");
-    expect(out.content).toContain("c2@1m->claude:2: check logs");
+    expect(out.content).toContain("{inverse}codex:1:run smoke:10s, claude:2:check logs:1m{/inverse}");
     expect(out.content).toContain("{gray-fg}│ CRON{/gray-fg}");
   });
 
@@ -180,7 +153,6 @@ describe("chat dashboardView", () => {
     expect(out.content).toContain("{gray-fg}Agents:{/gray-fg} {cyan-fg}@codex:1, @claude:2{/cyan-fg}");
     expect(out.content).toContain("{gray-fg}Mode:{/gray-fg} {cyan-fg}terminal{/cyan-fg}");
     expect(out.content).toContain("{gray-fg}Agent:{/gray-fg} {cyan-fg}codex{/cyan-fg}");
-    expect(out.content).toContain("{gray-fg}Assistant:{/gray-fg} {cyan-fg}auto{/cyan-fg}");
     expect(out.content).toContain("{gray-fg}Cron:{/gray-fg} {cyan-fg}0{/cyan-fg}");
   });
 

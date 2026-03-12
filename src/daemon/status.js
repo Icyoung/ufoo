@@ -72,6 +72,8 @@ function normalizeCronTasks(raw = []) {
     onceAt: String(task && task.onceAt ? task.onceAt : ""),
     targets: Array.isArray(task && task.targets) ? task.targets.slice() : [],
     prompt: String(task && task.prompt ? task.prompt : ""),
+    title: String(task && task.title ? task.title : ""),
+    label: String(task && task.label ? task.label : ""),
     summary: String(task && task.summary ? task.summary : ""),
     createdAt: Number(task && task.createdAt ? task.createdAt : 0) || 0,
     lastRunAt: Number(task && task.lastRunAt ? task.lastRunAt : 0) || 0,

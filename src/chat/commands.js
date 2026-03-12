@@ -30,7 +30,7 @@ const COMMAND_TREE = {
   "/cron": {
     desc: "Cron scheduler operations",
     children: {
-      start: { desc: "Create cron task" },
+      start: { desc: "Create cron task (optional title)" },
       list: { desc: "List cron tasks" },
       stop: { desc: "Stop cron task by id or all" },
     },

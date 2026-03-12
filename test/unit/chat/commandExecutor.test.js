@@ -58,7 +58,7 @@ function createHarness(overrides = {}) {
       ucodeApiKey: "",
     })),
     saveUcodeConfig: jest.fn(),
-    createCronTask: jest.fn((payload) => ({ id: "c1", ...payload, summary: "c1@10s->codex:1: run" })),
+    createCronTask: jest.fn((payload) => ({ id: "c1", ...payload, label: "codex:1:run:10s", summary: "c1 codex:1:run:10s" })),
     listCronTasks: jest.fn(() => []),
     stopCronTask: jest.fn(() => false),
     runGroupCore: jest.fn().mockResolvedValue(undefined),
@@ -416,6 +416,29 @@ describe("chat commandExecutor", () => {
     });
     expect(options.schedule).toHaveBeenCalled();
     expect(options.requestStatus).toHaveBeenCalled();
+  });
+
+  test("handleCronCommand forwards explicit title", async () => {
+    const requestCron = jest.fn();
+    const { executor } = createHarness({
+      requestCron,
+    });
+
+    await executor.handleCronCommand([
+      "start",
+      "every=30m",
+      "target=codex:1",
+      "title=Nightly Smoke",
+      "prompt=run nightly smoke suite",
+    ]);
+
+    expect(requestCron).toHaveBeenCalledWith({
+      operation: "start",
+      interval_ms: 1800000,
+      targets: ["codex:1"],
+      title: "Nightly Smoke",
+      prompt: "run nightly smoke suite",
+    });
   });
 
   test("handleGroupCommand run sends launch_group request", async () => {

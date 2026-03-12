@@ -8,14 +8,6 @@ function providerLabel(value) {
   return "codex";
 }
 
-function assistantLabel(value) {
-  if (value === "codex") return "codex";
-  if (value === "claude") return "claude";
-  if (value === "ufoo") return "ucode";
-  if (value === "ucode") return "ucode";
-  return "auto";
-}
-
 function ensureAtPrefix(value) {
   const text = String(value || "").trim();
   if (!text) return text;
@@ -43,7 +35,6 @@ function buildSummaryLine(options = {}) {
     getAgentState = () => "",
     launchMode = "terminal",
     agentProvider = "codex-cli",
-    assistantEngine = "auto",
     cronTasks = [],
   } = options;
   const agents = activeAgents.length > 0
@@ -55,7 +46,6 @@ function buildSummaryLine(options = {}) {
   return `{gray-fg}Agents:{/gray-fg} {cyan-fg}${agents}{/cyan-fg}`
     + `  {gray-fg}Mode:{/gray-fg} {cyan-fg}${launchMode}{/cyan-fg}`
     + `  {gray-fg}Agent:{/gray-fg} {cyan-fg}${providerLabel(agentProvider)}{/cyan-fg}`
-    + `  {gray-fg}Assistant:{/gray-fg} {cyan-fg}${assistantLabel(assistantEngine)}{/cyan-fg}`
     + `  {gray-fg}Cron:{/gray-fg} {cyan-fg}${Array.isArray(cronTasks) ? cronTasks.length : 0}{/cyan-fg}`;
 }
 
@@ -134,11 +124,9 @@ function buildDashboardDetailLine(options = {}) {
     getAgentState = () => "",
     selectedModeIndex = 0,
     selectedProviderIndex = 0,
-    selectedAssistantIndex = 0,
     selectedResumeIndex = 0,
     cronTasks = [],
     providerOptions = [],
-    assistantOptions = [],
     resumeOptions = [],
     dashHints = {},
     modeOptions = DEFAULT_MODE_OPTIONS,
@@ -171,18 +159,6 @@ function buildDashboardDetailLine(options = {}) {
     return { content, windowStart };
   }
 
-  if (dashboardView === "assistant") {
-    const assistantParts = assistantOptions.map((opt, i) => {
-      if (i === selectedAssistantIndex) {
-        return `{inverse}${opt.label}{/inverse}`;
-      }
-      return `{cyan-fg}${opt.label}{/cyan-fg}`;
-    });
-    content += `{gray-fg}Assistant:{/gray-fg} ${assistantParts.join("  ")}`;
-    content += `  {gray-fg}│ ${dashHints.assistant || ""}{/gray-fg}`;
-    return { content, windowStart };
-  }
-
   if (dashboardView === "resume") {
     const resumeParts = resumeOptions.map((opt, i) => {
       if (i === selectedResumeIndex) {
@@ -198,9 +174,9 @@ function buildDashboardDetailLine(options = {}) {
   if (dashboardView === "cron") {
     const items = Array.isArray(cronTasks) ? cronTasks : [];
     const summary = items.length > 0
-      ? items.map((item) => item.summary || item.id || "").filter(Boolean).join(", ")
+      ? items.map((item) => item.label || item.summary || item.id || "").filter(Boolean).join(", ")
       : "none";
-    content += `{gray-fg}Cron:{/gray-fg} {cyan-fg}${summary}{/cyan-fg}`;
+    content += `{gray-fg}Cron:{/gray-fg} {inverse}${summary}{/inverse}`;
     content += `  {gray-fg}│ ${dashHints.cron || ""}{/gray-fg}`;
     return { content, windowStart };
   }
@@ -259,14 +235,11 @@ function computeDashboardContent(options = {}) {
     getAgentState = () => "",
     launchMode = "terminal",
     agentProvider = "codex-cli",
-    assistantEngine = "auto",
     selectedModeIndex = 0,
     selectedProviderIndex = 0,
-    selectedAssistantIndex = 0,
     selectedResumeIndex = 0,
     cronTasks = [],
     providerOptions = [],
-    assistantOptions = [],
     resumeOptions = [],
     dashHints = {},
     modeOptions = DEFAULT_MODE_OPTIONS,
@@ -297,7 +270,6 @@ function computeDashboardContent(options = {}) {
         getAgentState,
         launchMode,
         agentProvider,
-        assistantEngine,
         cronTasks,
       });
       return {
@@ -317,11 +289,9 @@ function computeDashboardContent(options = {}) {
       getAgentState,
       selectedModeIndex,
       selectedProviderIndex,
-      selectedAssistantIndex,
       selectedResumeIndex,
       cronTasks,
       providerOptions,
-      assistantOptions,
       resumeOptions,
       dashHints,
       modeOptions,
@@ -344,11 +314,9 @@ function computeDashboardContent(options = {}) {
       getAgentState,
       selectedModeIndex,
       selectedProviderIndex,
-      selectedAssistantIndex,
       selectedResumeIndex,
       cronTasks,
       providerOptions,
-      assistantOptions,
       resumeOptions,
       dashHints,
       modeOptions,
@@ -362,7 +330,6 @@ function computeDashboardContent(options = {}) {
     getAgentState,
     launchMode,
     agentProvider,
-    assistantEngine,
     cronTasks,
   });
 
@@ -372,5 +339,4 @@ function computeDashboardContent(options = {}) {
 module.exports = {
   computeDashboardContent,
   providerLabel,
-  assistantLabel,
 };

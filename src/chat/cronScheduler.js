@@ -29,13 +29,39 @@ function sanitizeSummaryText(value = "") {
     .trim();
 }
 
+function truncateCronText(value = "", maxLength = 24) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(1, maxLength - 3))}...`;
+}
+
+function resolveTaskTitle(task = {}) {
+  const explicitTitle = truncateCronText(
+    sanitizeSummaryText(task.title || "").replace(/:/g, "-"),
+    24
+  );
+  if (explicitTitle) return explicitTitle;
+  const fallbackTitle = truncateCronText(
+    sanitizeSummaryText(task.prompt || "").replace(/:/g, "-"),
+    24
+  );
+  return fallbackTitle || "(empty)";
+}
+
+function buildTaskLabel(task = {}) {
+  const targets = Array.isArray(task.targets) && task.targets.length > 0
+    ? task.targets.join("+")
+    : "unknown";
+  const title = resolveTaskTitle(task);
+  const interval = formatIntervalMs(task.intervalMs || 0);
+  return `${targets}:${title}:${interval}`;
+}
+
 function summarizeTask(task = {}) {
   const id = String(task.id || "");
-  const interval = formatIntervalMs(task.intervalMs || 0);
-  const targets = Array.isArray(task.targets) ? task.targets.join("+") : "";
-  const promptRaw = sanitizeSummaryText(task.prompt || "");
-  const prompt = promptRaw.length > 24 ? `${promptRaw.slice(0, 24)}...` : promptRaw;
-  return `${id}@${interval}->${targets}: ${prompt || "(empty)"}`;
+  const label = buildTaskLabel(task);
+  return id ? `${id} ${label}` : label;
 }
 
 function createCronScheduler(options = {}) {
@@ -58,7 +84,7 @@ function createCronScheduler(options = {}) {
     }
   }
 
-  function addTask({ intervalMs = 0, targets = [], prompt = "" } = {}) {
+  function addTask({ intervalMs = 0, targets = [], prompt = "", title = "" } = {}) {
     const safeInterval = Number.parseInt(intervalMs, 10);
     const safeTargets = Array.isArray(targets)
       ? targets.map((item) => String(item || "").trim()).filter(Boolean)
@@ -74,6 +100,7 @@ function createCronScheduler(options = {}) {
       intervalMs: safeInterval,
       targets: Array.from(new Set(safeTargets)),
       prompt: safePrompt,
+      title: resolveTaskTitle({ title, prompt: safePrompt }),
       createdAt: nowFn(),
       lastRunAt: 0,
       tickCount: 0,
@@ -100,6 +127,7 @@ function createCronScheduler(options = {}) {
     notifyChange();
     return {
       ...task,
+      label: buildTaskLabel(task),
       summary: summarizeTask(task),
     };
   }
@@ -110,9 +138,11 @@ function createCronScheduler(options = {}) {
       intervalMs: task.intervalMs,
       targets: task.targets.slice(),
       prompt: task.prompt,
+      title: task.title,
       createdAt: task.createdAt,
       lastRunAt: task.lastRunAt,
       tickCount: task.tickCount,
+      label: buildTaskLabel(task),
       summary: summarizeTask(task),
     }));
   }
@@ -155,6 +185,7 @@ function createCronScheduler(options = {}) {
 module.exports = {
   parseIntervalMs,
   formatIntervalMs,
+  buildTaskLabel,
   summarizeTask,
   createCronScheduler,
 };
