@@ -22,9 +22,14 @@ function createState(overrides = {}) {
     selectedModeIndex: 0,
     selectedProviderIndex: 0,
     selectedResumeIndex: 0,
+    selectedCronIndex: 0,
     launchMode: "terminal",
     agentProvider: "codex-cli",
     autoResume: true,
+    cronTasks: [
+      { id: "c1", label: "cron one" },
+      { id: "c2", label: "cron two" },
+    ],
     providerOptions: [
       { label: "codex", value: "codex-cli" },
       { label: "claude", value: "claude-cli" },
@@ -66,6 +71,7 @@ function createController(stateOverrides = {}, optionOverrides = {}) {
     clampAgentWindowWithSelection: jest.fn(),
     requestProjectSwitch: jest.fn(),
     requestCloseProject: jest.fn(),
+    requestCron: jest.fn(),
     renderDashboard: jest.fn(),
     renderAgentDashboard: jest.fn(),
     renderScreen: jest.fn(),
@@ -141,9 +147,10 @@ describe("chat dashboardKeyController", () => {
     expect(state.dashboardView).toBe("provider");
   });
 
-  test("cron up returns to provider and ctrl+x closes dashboard", () => {
+  test("cron up returns to provider and ctrl+x stops selected cron", () => {
     const { state, deps, controller } = createController({
       dashboardView: "cron",
+      selectedCronIndex: 1,
     });
 
     expect(controller.handleDashboardKey({ name: "up" })).toBe(true);
@@ -151,7 +158,21 @@ describe("chat dashboardKeyController", () => {
 
     state.dashboardView = "cron";
     expect(controller.handleDashboardKey({ name: "x", ctrl: true })).toBe(true);
-    expect(deps.exitDashboardMode).toHaveBeenCalledWith(false);
+    expect(deps.requestCron).toHaveBeenCalledWith({ operation: "stop", id: "c2" });
+    expect(deps.exitDashboardMode).not.toHaveBeenCalled();
+  });
+
+  test("cron left/right updates selected cron", () => {
+    const { state, controller } = createController({
+      dashboardView: "cron",
+      selectedCronIndex: 0,
+    });
+
+    expect(controller.handleDashboardKey({ name: "right" })).toBe(true);
+    expect(state.selectedCronIndex).toBe(1);
+
+    expect(controller.handleDashboardKey({ name: "left" })).toBe(true);
+    expect(state.selectedCronIndex).toBe(0);
   });
 
   test("agents view enter opens internal agent when inject socket exists", () => {
@@ -224,6 +245,7 @@ describe("chat dashboardKeyController", () => {
       {
         globalMode: true,
         requestProjectSwitch,
+        getGlobalScope: jest.fn(() => "project"),
       }
     );
 
@@ -262,6 +284,7 @@ describe("chat dashboardKeyController", () => {
       {
         globalMode: true,
         requestProjectSwitch,
+        getGlobalScope: jest.fn(() => "project"),
       }
     );
 
@@ -313,6 +336,97 @@ describe("chat dashboardKeyController", () => {
     expect(deps.renderDashboard).not.toHaveBeenCalled();
   });
 
+  test("global projects enter calls setGlobalScope with selected project root", () => {
+    const setGlobalScope = jest.fn();
+    const { state, deps, controller } = createController(
+      {
+        dashboardView: "projects",
+        selectedProjectIndex: 1,
+        projects: [
+          { project_name: "alpha", project_root: "/tmp/alpha" },
+          { project_name: "beta", project_root: "/tmp/beta" },
+        ],
+      },
+      {
+        globalMode: true,
+        setGlobalScope,
+      }
+    );
+
+    expect(controller.handleDashboardKey({ name: "enter" })).toBe(true);
+    expect(setGlobalScope).toHaveBeenCalledWith("project", "/tmp/beta");
+    expect(deps.exitDashboardMode).toHaveBeenCalledWith(false);
+  });
+
+  test("global projects escape in project scope calls setGlobalScope controller", () => {
+    const setGlobalScope = jest.fn();
+    const getGlobalScope = jest.fn(() => "project");
+    const { deps, controller } = createController(
+      {
+        dashboardView: "projects",
+        selectedProjectIndex: 0,
+        projects: [
+          { project_name: "alpha", project_root: "/tmp/alpha" },
+        ],
+      },
+      {
+        globalMode: true,
+        setGlobalScope,
+        getGlobalScope,
+      }
+    );
+
+    expect(controller.handleDashboardKey({ name: "escape" })).toBe(true);
+    expect(setGlobalScope).toHaveBeenCalledWith("controller");
+    expect(deps.exitDashboardMode).toHaveBeenCalledWith(false);
+  });
+
+  test("global projects escape in controller scope does not call setGlobalScope", () => {
+    const setGlobalScope = jest.fn();
+    const getGlobalScope = jest.fn(() => "controller");
+    const { deps, controller } = createController(
+      {
+        dashboardView: "projects",
+        selectedProjectIndex: 0,
+        projects: [
+          { project_name: "alpha", project_root: "/tmp/alpha" },
+        ],
+      },
+      {
+        globalMode: true,
+        setGlobalScope,
+        getGlobalScope,
+      }
+    );
+
+    expect(controller.handleDashboardKey({ name: "escape" })).toBe(true);
+    expect(setGlobalScope).not.toHaveBeenCalled();
+    expect(deps.exitDashboardMode).toHaveBeenCalledWith(false);
+  });
+
+  test("global projects up exits dashboard without changing scope", () => {
+    const setGlobalScope = jest.fn();
+    const getGlobalScope = jest.fn(() => "project");
+    const { deps, controller } = createController(
+      {
+        dashboardView: "projects",
+        selectedProjectIndex: 0,
+        projects: [
+          { project_name: "alpha", project_root: "/tmp/alpha" },
+        ],
+      },
+      {
+        globalMode: true,
+        setGlobalScope,
+        getGlobalScope,
+      }
+    );
+
+    expect(controller.handleDashboardKey({ name: "up" })).toBe(true);
+    expect(setGlobalScope).not.toHaveBeenCalled();
+    expect(deps.exitDashboardMode).toHaveBeenCalledWith(false);
+  });
+
   test("global agents view up returns to projects instead of exiting", () => {
     const { state, deps, controller } = createController(
       {
@@ -328,5 +442,60 @@ describe("chat dashboardKeyController", () => {
     expect(state.dashboardView).toBe("projects");
     expect(deps.exitDashboardMode).not.toHaveBeenCalled();
     expect(deps.renderDashboard).toHaveBeenCalled();
+  });
+
+  test("controller scope left/right only moves cursor without switching daemon", () => {
+    const requestProjectSwitch = jest.fn();
+    const { state, controller } = createController(
+      {
+        dashboardView: "projects",
+        selectedProjectIndex: 0,
+        projects: [
+          { project_name: "alpha", project_root: "/tmp/alpha" },
+          { project_name: "beta", project_root: "/tmp/beta" },
+        ],
+      },
+      {
+        globalMode: true,
+        requestProjectSwitch,
+        getGlobalScope: jest.fn(() => "controller"),
+      }
+    );
+
+    expect(controller.handleDashboardKey({ name: "right" })).toBe(true);
+    expect(state.selectedProjectIndex).toBe(1);
+    expect(requestProjectSwitch).not.toHaveBeenCalled();
+
+    expect(controller.handleDashboardKey({ name: "left" })).toBe(true);
+    expect(state.selectedProjectIndex).toBe(0);
+    expect(requestProjectSwitch).not.toHaveBeenCalled();
+  });
+
+  test("project scope left/right moves cursor and switches daemon", () => {
+    const requestProjectSwitch = jest.fn();
+    const { state, controller } = createController(
+      {
+        dashboardView: "projects",
+        selectedProjectIndex: 0,
+        projects: [
+          { project_name: "alpha", project_root: "/tmp/alpha" },
+          { project_name: "beta", project_root: "/tmp/beta" },
+          { project_name: "gamma", project_root: "/tmp/gamma" },
+        ],
+      },
+      {
+        globalMode: true,
+        requestProjectSwitch,
+        getGlobalScope: jest.fn(() => "project"),
+      }
+    );
+
+    expect(controller.handleDashboardKey({ name: "right" })).toBe(true);
+    expect(state.selectedProjectIndex).toBe(1);
+    expect(requestProjectSwitch).toHaveBeenCalledWith(1);
+
+    expect(controller.handleDashboardKey({ name: "right" })).toBe(true);
+    expect(state.selectedProjectIndex).toBe(2);
+    expect(requestProjectSwitch).toHaveBeenCalledWith(2);
   });
 });

@@ -18,7 +18,7 @@ describe("bin group command contracts", () => {
     const result = runCli(["group", "templates", "list"]);
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("- dev-basic [builtin]");
+    expect(result.stdout).toContain("- build-lane [builtin]");
   });
 
   test("template validate path surfaces invalid JSON diagnostics", () => {

@@ -98,6 +98,32 @@ describe("chat daemonMessageRouter", () => {
     expect(options.logMessage).toHaveBeenCalled();
   });
 
+  test("response disambiguate payload preserves routed project root", () => {
+    const { router, getPending } = createHarness({
+      getPending: jest.fn(() => ({ original: "task" })),
+    });
+
+    router.handleMessage({
+      type: IPC_RESPONSE_TYPES.RESPONSE,
+      data: {
+        routed_project: { project_root: "/tmp/project-a", project_name: "alpha" },
+        disambiguate: {
+          prompt: "Pick",
+          candidates: [{ agent_id: "codex:1", reason: "best" }],
+        },
+      },
+    });
+
+    expect(getPending()).toEqual({
+      disambiguate: {
+        prompt: "Pick",
+        candidates: [{ agent_id: "codex:1", reason: "best" }],
+      },
+      original: "task",
+      project_root: "/tmp/project-a",
+    });
+  });
+
   test("agent view bus passthrough writes to term and stops processing", () => {
     const { router, options } = createHarness({
       getCurrentView: jest.fn(() => "agent"),
@@ -157,6 +183,31 @@ describe("chat daemonMessageRouter", () => {
     expect(stop).toBe(true);
     expect(options.requestStatus).toHaveBeenCalledTimes(1);
     expect(options.logMessage).not.toHaveBeenCalled();
+  });
+
+  test("controller_report bus event inserts chat record and refreshes status", () => {
+    const { router, options } = createHarness();
+
+    const stop = router.handleMessage({
+      type: IPC_RESPONSE_TYPES.BUS,
+      data: {
+        event: "controller_report",
+        publisher: "codex:1",
+        report: {
+          agent_id: "codex:1",
+          summary: "Discovery brief delivered",
+          task_id: "brief-1",
+        },
+      },
+    });
+
+    expect(stop).toBe(true);
+    expect(options.logMessage).toHaveBeenCalledWith(
+      "system",
+      "{gray-fg}↥{/gray-fg} {cyan-fg}ESC(name:codex:1){/cyan-fg} {gray-fg}→ ufoo-agent{/gray-fg} ESC(Discovery brief delivered)"
+    );
+    expect(options.requestStatus).toHaveBeenCalledTimes(1);
+    expect(options.renderScreen).toHaveBeenCalledTimes(1);
   });
 
   test("stream payload routes through stream tracker methods", () => {

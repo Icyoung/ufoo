@@ -1,6 +1,7 @@
 "use strict";
 
-const ALLOWED_AGENT_TYPES = new Set(["codex", "claude", "ucode"]);
+const ALLOWED_AGENT_TYPES = new Set(["auto", "codex", "claude", "ucode"]);
+const { resolvePromptProfileReference } = require("./promptProfiles");
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -93,12 +94,14 @@ function detectDependsCycle(agents = []) {
   return null;
 }
 
-function validateTemplate(doc) {
+function validateTemplate(doc, options = {}) {
   const errors = [];
+  const promptProfiles = [];
+  const promptProfileRegistry = options.promptProfileRegistry || null;
 
   if (!isPlainObject(doc)) {
     addError(errors, "$", "template document must be a JSON object");
-    return { ok: false, errors };
+    return { ok: false, errors, promptProfiles };
   }
 
   if (!Number.isInteger(doc.schema_version) || doc.schema_version < 1) {
@@ -121,7 +124,7 @@ function validateTemplate(doc) {
 
   if (!Array.isArray(doc.agents) || doc.agents.length === 0) {
     addError(errors, "agents", "agents must be a non-empty array");
-    return { ok: false, errors };
+    return { ok: false, errors, promptProfiles };
   }
 
   const knownNicknames = new Set();
@@ -155,6 +158,34 @@ function validateTemplate(doc) {
 
     if (!Number.isInteger(agent.startup_order) || agent.startup_order < 0) {
       addError(errors, `${basePath}.startup_order`, "startup_order must be an integer >= 0");
+    }
+
+    if (agent.prompt_profile !== undefined) {
+      const requestedProfile = asTrimmedString(agent.prompt_profile);
+      if (!requestedProfile) {
+        addError(errors, `${basePath}.prompt_profile`, "prompt_profile must be a non-empty string");
+      } else if (promptProfileRegistry) {
+        const resolvedProfile = resolvePromptProfileReference(promptProfileRegistry, requestedProfile);
+        if (!resolvedProfile) {
+          addError(
+            errors,
+            `${basePath}.prompt_profile`,
+            `unknown prompt_profile "${requestedProfile}"`
+          );
+        } else {
+          promptProfiles.push({
+            index: i,
+            agent_id: asTrimmedString(agent.id),
+            nickname,
+            requested_profile: requestedProfile,
+            resolved_profile: resolvedProfile.id,
+            display_name: resolvedProfile.display_name || resolvedProfile.id,
+            short_name: resolvedProfile.short_name || "",
+            profile_source: resolvedProfile.source || "",
+            deprecated: resolvedProfile.deprecated === true,
+          });
+        }
+      }
     }
   }
 
@@ -225,7 +256,7 @@ function validateTemplate(doc) {
     );
   }
 
-  return { ok: errors.length === 0, errors };
+  return { ok: errors.length === 0, errors, promptProfiles };
 }
 
 module.exports = {

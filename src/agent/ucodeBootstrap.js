@@ -77,18 +77,20 @@ function buildBootstrapContent({
 function prepareUcodeBootstrap({
   projectRoot = process.cwd(),
   promptFile = "",
+  promptText = "",
   targetFile = "",
 } = {}) {
   const resolvedProjectRoot = path.resolve(projectRoot);
   const resolvedPrompt = String(promptFile || "").trim();
   const resolvedTarget = String(targetFile || "").trim() || defaultBootstrapPath(resolvedProjectRoot);
 
-  const promptText = readFileSafe(resolvedPrompt);
+  const inlinePromptText = String(promptText || "").trim();
+  const resolvedPromptText = inlinePromptText || readFileSafe(resolvedPrompt);
   const rules = resolveProjectRules(resolvedProjectRoot);
   const content = buildBootstrapContent({
     projectRoot: resolvedProjectRoot,
     promptFile: resolvedPrompt,
-    promptText,
+    promptText: resolvedPromptText,
     rules,
   });
 
@@ -99,7 +101,7 @@ function prepareUcodeBootstrap({
     ok: true,
     file: resolvedTarget,
     promptFile: resolvedPrompt,
-    hasPrompt: Boolean(promptText.trim()),
+    hasPrompt: Boolean(resolvedPromptText.trim()),
     rulesCount: rules.length,
   };
 }

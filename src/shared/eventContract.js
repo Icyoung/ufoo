@@ -17,6 +17,7 @@ const IPC_REQUEST_TYPES = {
   REGISTER_AGENT: "register_agent",
   AGENT_READY: "agent_ready",
   AGENT_REPORT: "agent_report",
+  ASSIGN_ROLE: "assign_role",
 };
 
 const IPC_RESPONSE_TYPES = {

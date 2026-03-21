@@ -211,4 +211,41 @@ describe("chat inputListenerController", () => {
     expect(textarea.value).toBe("@ab");
     expect(completionController.show).toHaveBeenCalledWith("@ab");
   });
+
+  test("escape layer 1: clears @target without cancelling input", () => {
+    const clearTargetAgent = jest.fn();
+    const { controller, textarea } = createHarness({
+      getTargetAgent: jest.fn(() => "codex:1"),
+      clearTargetAgent,
+      getGlobalScope: jest.fn(() => "project"),
+      exitProjectScope: jest.fn(),
+    });
+    controller.handleKey("", { name: "escape" }, textarea);
+    expect(clearTargetAgent).toHaveBeenCalled();
+    expect(textarea._done).not.toHaveBeenCalled();
+  });
+
+  test("escape layer 2: exits project scope when no @target", () => {
+    const exitProjectScope = jest.fn();
+    const { controller, textarea } = createHarness({
+      getTargetAgent: jest.fn(() => null),
+      getGlobalScope: jest.fn(() => "project"),
+      exitProjectScope,
+    });
+    controller.handleKey("", { name: "escape" }, textarea);
+    expect(exitProjectScope).toHaveBeenCalled();
+    expect(textarea._done).not.toHaveBeenCalled();
+  });
+
+  test("escape layer 3: cancels input when no @target and controller scope", () => {
+    const exitProjectScope = jest.fn();
+    const { controller, textarea } = createHarness({
+      getTargetAgent: jest.fn(() => null),
+      getGlobalScope: jest.fn(() => "controller"),
+      exitProjectScope,
+    });
+    controller.handleKey("", { name: "escape" }, textarea);
+    expect(exitProjectScope).not.toHaveBeenCalled();
+    expect(textarea._done).toHaveBeenCalledWith(null, null);
+  });
 });

@@ -41,4 +41,21 @@ describe("ucode bootstrap preparation", () => {
     const file = defaultBootstrapPath("/tmp/project-x");
     expect(file).toBe(path.join("/tmp/project-x", ".ufoo", "agent", "ucode", "bootstrap.md"));
   });
+
+  test("prepareUcodeBootstrap accepts inline prompt text", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-inline-bootstrap-"));
+    fs.writeFileSync(path.join(projectRoot, "AGENTS.md"), "Project rule line");
+
+    const result = prepareUcodeBootstrap({
+      projectRoot,
+      promptText: "Inline prompt body",
+      targetFile: path.join(projectRoot, ".ufoo", "agent", "ucode", "inline.md"),
+    });
+
+    expect(result.ok).toBe(true);
+    const content = fs.readFileSync(result.file, "utf8");
+    expect(content).toContain("Inline prompt body");
+
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
 });

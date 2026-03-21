@@ -23,6 +23,9 @@ function createDashboardKeyController(options = {}) {
     clampAgentWindowWithSelection = () => {},
     requestProjectSwitch = () => {},
     requestCloseProject = () => {},
+    requestCron = () => {},
+    setGlobalScope = () => {},
+    getGlobalScope = () => "",
     renderDashboard = () => {},
     renderAgentDashboard = () => {},
     renderScreen = () => {},
@@ -232,6 +235,8 @@ function createDashboardKeyController(options = {}) {
 
     if (key.name === "down") {
       state.dashboardView = "cron";
+      const cronTasks = Array.isArray(state.cronTasks) ? state.cronTasks : [];
+      state.selectedCronIndex = cronTasks.length > 0 ? 0 : -1;
       renderDashboardAndScreen();
       return true;
     }
@@ -258,6 +263,25 @@ function createDashboardKeyController(options = {}) {
   }
 
   function handleCronKey(key) {
+    const cronTasks = Array.isArray(state.cronTasks) ? state.cronTasks : [];
+    const maxIndex = cronTasks.length - 1;
+
+    if (key.name === "left") {
+      if (maxIndex >= 0 && state.selectedCronIndex > 0) {
+        state.selectedCronIndex -= 1;
+        renderDashboardAndScreen();
+      }
+      return true;
+    }
+
+    if (key.name === "right") {
+      if (maxIndex >= 0 && state.selectedCronIndex < maxIndex) {
+        state.selectedCronIndex += 1;
+        renderDashboardAndScreen();
+      }
+      return true;
+    }
+
     if (key.name === "up") {
       state.dashboardView = "provider";
       renderDashboardAndScreen();
@@ -265,6 +289,14 @@ function createDashboardKeyController(options = {}) {
     }
 
     if (key.name === "x" && key.ctrl) {
+      if (maxIndex >= 0 && state.selectedCronIndex >= 0 && state.selectedCronIndex <= maxIndex) {
+        const task = cronTasks[state.selectedCronIndex];
+        const id = task && task.id ? String(task.id).trim() : "";
+        if (id) {
+          requestCron({ operation: "stop", id });
+          return true;
+        }
+      }
       exitDashboardMode(false);
       return true;
     }
@@ -353,7 +385,9 @@ function createDashboardKeyController(options = {}) {
         const next = current - 1;
         state.selectedProjectIndex = next;
         renderDashboardAndScreen();
-        requestProjectSwitch(next);
+        if (getGlobalScope() === "project") {
+          requestProjectSwitch(next);
+        }
       }
       return true;
     }
@@ -364,17 +398,35 @@ function createDashboardKeyController(options = {}) {
         const next = current + 1;
         state.selectedProjectIndex = next;
         renderDashboardAndScreen();
-        requestProjectSwitch(next);
+        if (getGlobalScope() === "project") {
+          requestProjectSwitch(next);
+        }
       }
       return true;
     }
 
-    if (key.name === "up" || key.name === "escape") {
+    if (key.name === "up") {
+      exitDashboardMode(false);
+      return true;
+    }
+
+    if (key.name === "escape") {
+      if (getGlobalScope() === "project") {
+        setGlobalScope("controller");
+      }
       exitDashboardMode(false);
       return true;
     }
 
     if (key.name === "enter" || key.name === "return") {
+      const current = Number.isFinite(state.selectedProjectIndex) ? state.selectedProjectIndex : 0;
+      if (current >= 0 && current < projects.length) {
+        const selectedRow = projects[current];
+        const selectedProjectRoot = String((selectedRow && selectedRow.project_root) || "");
+        if (selectedProjectRoot) {
+          setGlobalScope("project", selectedProjectRoot);
+        }
+      }
       exitDashboardMode(false);
       return true;
     }

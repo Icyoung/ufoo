@@ -36,7 +36,7 @@ describe("assistant agent task runner", () => {
     expect(parsed.provider).toBe("");
     expect(parsed.fallbackProvider).toBe("");
     expect(parsed.kind).toBe("mixed");
-    expect(parsed.timeoutMs).toBe(300000);
+    expect(parsed.timeoutMs).toBe(600000);
   });
 
   test("returns error when task is missing", async () => {

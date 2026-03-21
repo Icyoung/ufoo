@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "template": {
+    "id": "build-lane",
+    "alias": "build-lane",
+    "name": "Build Lane"
+  },
+  "defaults": {
+    "launch_mode": "auto",
+    "start_timeout_ms": 15000
+  },
+  "agents": [
+    {
+      "id": "architect",
+      "nickname": "architect",
+      "type": "auto",
+      "role": "define slices and architecture constraints",
+      "prompt_profile": "system-architect",
+      "accept_from": [],
+      "report_to": [
+        "builder",
+        "reviewer"
+      ],
+      "startup_order": 1,
+      "depends_on": []
+    },
+    {
+      "id": "builder",
+      "nickname": "builder",
+      "type": "auto",
+      "role": "implement approved slices",
+      "prompt_profile": "implementation-lead",
+      "accept_from": [
+        "architect",
+        "reviewer"
+      ],
+      "report_to": [
+        "reviewer"
+      ],
+      "startup_order": 2,
+      "depends_on": [
+        "architect"
+      ]
+    },
+    {
+      "id": "reviewer",
+      "nickname": "reviewer",
+      "type": "auto",
+      "role": "review correctness and risk",
+      "prompt_profile": "review-critic",
+      "accept_from": [
+        "architect",
+        "builder"
+      ],
+      "report_to": [
+        "builder"
+      ],
+      "startup_order": 3,
+      "depends_on": [
+        "architect",
+        "builder"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "architect",
+      "to": "builder",
+      "kind": "task"
+    },
+    {
+      "from": "builder",
+      "to": "reviewer",
+      "kind": "review"
+    },
+    {
+      "from": "reviewer",
+      "to": "builder",
+      "kind": "task"
+    }
+  ]
+}

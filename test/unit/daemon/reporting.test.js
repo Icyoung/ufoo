@@ -2,6 +2,13 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
+jest.mock("../../../src/bus", () => {
+  return jest.fn().mockImplementation(() => ({
+    wake: jest.fn().mockResolvedValue({ ok: true, targets: ["ufoo-agent"] }),
+  }));
+});
+
+const EventBus = require("../../../src/bus");
 const { getUfooPaths } = require("../../../src/ufoo/paths");
 const { recordAgentReport } = require("../../../src/daemon/reporting");
 const { listControllerInboxEntries } = require("../../../src/report/store");
@@ -10,6 +17,7 @@ describe("daemon reporting", () => {
   let projectRoot;
 
   beforeEach(() => {
+    EventBus.mockClear();
     projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-daemon-reporting-"));
     const paths = getUfooPaths(projectRoot);
     fs.mkdirSync(path.dirname(paths.agentsFile), { recursive: true });
@@ -77,5 +85,28 @@ describe("daemon reporting", () => {
       agent_id: "ufoo-assistant-agent",
       scope: "private",
     }));
+    expect(EventBus).toHaveBeenCalledWith(projectRoot);
+    const instance = EventBus.mock.results[0].value;
+    expect(instance.wake).toHaveBeenCalledWith("ufoo-agent", expect.objectContaining({
+      reason: "agent-report:start",
+      shake: false,
+    }));
+  });
+
+  test("public report does not wake private controller", async () => {
+    await recordAgentReport({
+      projectRoot,
+      report: {
+        phase: "done",
+        task_id: "task-3",
+        agent_id: "codex:abc",
+        summary: "complete",
+        scope: "public",
+      },
+      onStatus: jest.fn(),
+      log: jest.fn(),
+    });
+
+    expect(EventBus).not.toHaveBeenCalled();
   });
 });

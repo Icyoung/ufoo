@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "template": {
+    "id": "verify-ship",
+    "alias": "verify-ship",
+    "name": "Verify and Ship"
+  },
+  "defaults": {
+    "launch_mode": "auto",
+    "start_timeout_ms": 15000
+  },
+  "agents": [
+    {
+      "id": "qa",
+      "nickname": "qa",
+      "type": "auto",
+      "role": "validate user flows and capture defects",
+      "prompt_profile": "qa-driver",
+      "accept_from": [],
+      "report_to": [
+        "debugger",
+        "release"
+      ],
+      "startup_order": 1,
+      "depends_on": []
+    },
+    {
+      "id": "debugger",
+      "nickname": "debugger",
+      "type": "auto",
+      "role": "identify root cause for hard failures",
+      "prompt_profile": "debug-investigator",
+      "accept_from": [
+        "qa"
+      ],
+      "report_to": [
+        "release"
+      ],
+      "startup_order": 2,
+      "depends_on": [
+        "qa"
+      ]
+    },
+    {
+      "id": "release",
+      "nickname": "release",
+      "type": "auto",
+      "role": "judge release readiness and blockers",
+      "prompt_profile": "release-coordinator",
+      "accept_from": [
+        "qa",
+        "debugger"
+      ],
+      "report_to": [],
+      "startup_order": 3,
+      "depends_on": [
+        "qa",
+        "debugger"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "qa",
+      "to": "debugger",
+      "kind": "task"
+    },
+    {
+      "from": "qa",
+      "to": "release",
+      "kind": "task"
+    },
+    {
+      "from": "debugger",
+      "to": "release",
+      "kind": "review"
+    }
+  ]
+}

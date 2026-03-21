@@ -21,9 +21,13 @@ jest.mock("../../../src/code/nativeRunner", () => ({
   resolveCompletionUrl: jest.fn(() => "https://api.openai.com/v1/chat/completions"),
   resolveAnthropicMessagesUrl: jest.fn(() => "https://api.anthropic.com/v1/messages"),
 }));
+jest.mock("../../../src/projects/registry", () => ({
+  listProjectRuntimes: jest.fn(() => []),
+}));
 
 const { runCliAgent } = require("../../../src/agent/cliRunner");
 const { buildStatus } = require("../../../src/daemon/status");
+const { listProjectRuntimes } = require("../../../src/projects/registry");
 
 describe("ufooAgent prompt schema", () => {
   const projectRoot = "/tmp/ufoo-agent-schema-test";
@@ -163,6 +167,54 @@ describe("ufooAgent prompt schema", () => {
     expect(call.systemPrompt).toContain("\"agent_prompt_history\"");
     expect(call.systemPrompt).toContain("\"agent_id\":\"codex:a1\"");
     expect(call.systemPrompt).toContain("Continue fixing daemon reconnection edge case");
+  });
+
+  test("global-router mode injects registered project routing context", async () => {
+    listProjectRuntimes.mockReturnValue([
+      {
+        project_root: "/tmp/project-alpha",
+        project_name: "alpha",
+        status: "running",
+        last_seen: "2026-03-16T08:00:00.000Z",
+      },
+    ]);
+    buildStatus.mockImplementation((root) => {
+      if (root === "/tmp/project-alpha") {
+        return {
+          active_meta: [
+            {
+              id: "codex:a1",
+              nickname: "alpha-coder",
+              launch_mode: "terminal",
+              activity_state: "working",
+              activity_since: "2026-03-16T08:10:00.000Z",
+            },
+          ],
+          unread: { total: 3 },
+          decisions: { open: 2 },
+          reports: { pending_total: 1, agents: [] },
+          groups: { active: 0 },
+        };
+      }
+      return { active_meta: [], unread: { total: 0 }, decisions: { open: 0 }, reports: { pending_total: 0, agents: [] }, groups: { active: 0 } };
+    });
+
+    const res = await runUfooAgent({
+      projectRoot,
+      prompt: "Fix the billing issue",
+      provider: "codex-cli",
+      model: "",
+      routingMode: "global-router",
+    });
+
+    expect(res.ok).toBe(true);
+    const call = runCliAgent.mock.calls[0][0];
+    expect(call.systemPrompt).toContain("global project router");
+    expect(call.systemPrompt).toContain("\"project_route\": {\"project_root\":\"absolute-path\"");
+    expect(call.systemPrompt).toContain("Keep dispatch empty in global-router mode");
+    expect(call.systemPrompt).toContain("\"project_root\":\"/tmp/project-alpha\"");
+    expect(call.systemPrompt).toContain("\"project_name\":\"alpha\"");
+    expect(call.systemPrompt).toContain("\"active_count\":1");
   });
 
   test("ucode provider uses native HTTP path instead of CLI", async () => {

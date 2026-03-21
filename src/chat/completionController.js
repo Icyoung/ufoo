@@ -11,6 +11,7 @@ function createCompletionController(options = {}) {
     completionPanel,
     promptBox,
     commandRegistry = [],
+    getGroupTemplateCandidates = () => [],
     getMentionCandidates = () => [],
     normalizeCommandPrefix = () => {},
     truncateText = (text) => String(text || ""),
@@ -141,7 +142,32 @@ function createCompletionController(options = {}) {
     const parts = trimmed.split(/\s+/);
     const mainCmd = parts[0];
     const isLaunch = mainCmd && mainCmd.toLowerCase() === "/launch";
+    const isGroup = mainCmd && mainCmd.toLowerCase() === "/group";
     const wantsSubcommands = (parts.length > 1 || (endsWithSpace && parts.length === 1));
+
+    if (isGroup) {
+      const groupSubcommand = String(parts[1] || "").trim().toLowerCase();
+      const wantsGroupRunArgs = groupSubcommand === "run" && (parts.length > 2 || endsWithSpace);
+      if (wantsGroupRunArgs) {
+        const aliasFilter = String(parts[2] || "").trim().toLowerCase();
+        return (Array.isArray(getGroupTemplateCandidates()) ? getGroupTemplateCandidates() : [])
+          .map((item) => {
+            const alias = String(item && item.alias ? item.alias : item && item.cmd ? item.cmd : "").trim();
+            if (!alias) return null;
+            const desc = String(item && item.desc ? item.desc : item && item.name ? item.name : "").trim();
+            const source = String(item && item.source ? item.source : "").trim();
+            const detail = [desc, source].filter(Boolean).join(" · ");
+            return {
+              cmd: alias,
+              desc: detail,
+              isArgumentSuggestion: true,
+              argumentPrefix: "/group run",
+            };
+          })
+          .filter((item) => item && (!aliasFilter || item.cmd.toLowerCase().startsWith(aliasFilter)))
+          .sort((a, b) => a.cmd.localeCompare(b.cmd, "en", { sensitivity: "base" }));
+      }
+    }
 
     if ((wantsSubcommands || isLaunch) && mainCmd && mainCmd.startsWith("/")) {
       const subFilter = parts[1] || "";
@@ -261,6 +287,13 @@ function createCompletionController(options = {}) {
       return { text: `${completedCore} `, isComplete };
     }
 
+    if (selected.isArgumentSuggestion) {
+      const prefix = String(selected.argumentPrefix || "").trim();
+      const completedCore = prefix ? `${prefix} ${selected.cmd}` : selected.cmd;
+      const isComplete = trimmed === completedCore || trimmed.startsWith(`${completedCore} `);
+      return { text: `${completedCore} `, isComplete };
+    }
+
     const completedCore = selected.cmd;
     const hasChildren = selected.subcommands && selected.subcommands.length > 0;
     const isComplete =
@@ -291,6 +324,9 @@ function createCompletionController(options = {}) {
       const parts = input.value.split(/\s+/);
       parts[parts.length - 1] = selected.cmd;
       input.value = `${parts.join(" ")} `;
+    } else if (selected.isArgumentSuggestion) {
+      const prefix = String(selected.argumentPrefix || "").trim();
+      input.value = prefix ? `${prefix} ${selected.cmd} ` : `${selected.cmd} `;
     } else {
       input.value = `${selected.cmd} `;
     }
@@ -303,6 +339,8 @@ function createCompletionController(options = {}) {
     updateDraftFromInput();
 
     if (!selected.isSubcommand && selected.subcommands && selected.subcommands.length > 0) {
+      show(input.value);
+    } else if (selected.isSubcommand && selected.parentCmd === "/group" && selected.cmd === "run") {
       show(input.value);
     } else {
       hide();
@@ -345,6 +383,8 @@ function createCompletionController(options = {}) {
         if (!nextPreview.isComplete) {
           applyPreview(nextPreview);
           if (!selected.isSubcommand && selected.subcommands && selected.subcommands.length > 0) {
+            show(input.value);
+          } else if (selected.isSubcommand && selected.parentCmd === "/group" && selected.cmd === "run") {
             show(input.value);
           } else {
             hide();

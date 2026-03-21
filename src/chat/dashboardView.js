@@ -36,6 +36,7 @@ function buildSummaryLine(options = {}) {
     launchMode = "terminal",
     agentProvider = "codex-cli",
     cronTasks = [],
+    pendingReports = 0,
   } = options;
   const agents = activeAgents.length > 0
     ? activeAgents.slice(0, 3)
@@ -46,6 +47,7 @@ function buildSummaryLine(options = {}) {
   return `{gray-fg}Agents:{/gray-fg} {cyan-fg}${agents}{/cyan-fg}`
     + `  {gray-fg}Mode:{/gray-fg} {cyan-fg}${launchMode}{/cyan-fg}`
     + `  {gray-fg}Agent:{/gray-fg} {cyan-fg}${providerLabel(agentProvider)}{/cyan-fg}`
+    + `  {gray-fg}Reports:{/gray-fg} {cyan-fg}${Number.isFinite(pendingReports) ? pendingReports : 0}{/cyan-fg}`
     + `  {gray-fg}Cron:{/gray-fg} {cyan-fg}${Array.isArray(cronTasks) ? cronTasks.length : 0}{/cyan-fg}`;
 }
 
@@ -57,6 +59,8 @@ function buildProjectRailLine(options = {}) {
     maxProjectWindow = 5,
     activeProjectRoot = "",
     projectsFocused = false,
+    globalScope = "",
+    dashboardHint = "",
   } = options;
   const rows = Array.isArray(projects) ? projects : [];
   let windowStart = projectListWindowStart;
@@ -92,7 +96,7 @@ function buildProjectRailLine(options = {}) {
     const absoluteIndex = start + i;
     const name = String((row && row.project_name) || (row && row.project_root) || "-");
     const rowRoot = String((row && row.project_root) || "");
-    const isActiveProject = Boolean(activeRoot && rowRoot === activeRoot);
+    const isActiveProject = globalScope !== "controller" && Boolean(activeRoot && rowRoot === activeRoot);
     const isSelected = absoluteIndex === safeSelectedIndex;
     if (projectsFocused && isSelected) {
       return `{inverse}${name}{/inverse}`;
@@ -105,9 +109,10 @@ function buildProjectRailLine(options = {}) {
 
   const leftMore = start > 0 ? "{gray-fg}<{/gray-fg} " : "";
   const rightMore = end < rows.length ? " {gray-fg}>{/gray-fg}" : "";
+  const hintPart = dashboardHint ? `{|}{gray-fg}${dashboardHint}{/gray-fg}` : "";
   return {
     hasProjects: true,
-    line: ` {gray-fg}Projects:{/gray-fg} ${leftMore}${projectParts.join("  ")}${rightMore}`,
+    line: ` {gray-fg}Projects:{/gray-fg} ${leftMore}${projectParts.join("  ")}${rightMore}${hintPart}`,
     windowStart,
   };
 }
@@ -125,7 +130,9 @@ function buildDashboardDetailLine(options = {}) {
     selectedModeIndex = 0,
     selectedProviderIndex = 0,
     selectedResumeIndex = 0,
+    selectedCronIndex = -1,
     cronTasks = [],
+    pendingReports = 0,
     providerOptions = [],
     resumeOptions = [],
     dashHints = {},
@@ -174,9 +181,15 @@ function buildDashboardDetailLine(options = {}) {
   if (dashboardView === "cron") {
     const items = Array.isArray(cronTasks) ? cronTasks : [];
     const summary = items.length > 0
-      ? items.map((item) => item.label || item.summary || item.id || "").filter(Boolean).join(", ")
-      : "none";
-    content += `{gray-fg}Cron:{/gray-fg} {inverse}${summary}{/inverse}`;
+      ? items.map((item, index) => {
+        const label = item.label || item.summary || item.id || "";
+        if (!label) return "";
+        return index === selectedCronIndex
+          ? `{inverse}${label}{/inverse}`
+          : `{cyan-fg}${label}{/cyan-fg}`;
+      }).filter(Boolean).join(", ")
+      : "{cyan-fg}none{/cyan-fg}";
+    content += `{gray-fg}Cron:{/gray-fg} ${summary}`;
     content += `  {gray-fg}│ ${dashHints.cron || ""}{/gray-fg}`;
     return { content, windowStart };
   }
@@ -220,6 +233,7 @@ function buildDashboardDetailLine(options = {}) {
 function computeDashboardContent(options = {}) {
   const {
     globalMode = false,
+    globalScope = "controller",
     focusMode = "input",
     dashboardView = "agents",
     activeAgents = [],
@@ -238,7 +252,9 @@ function computeDashboardContent(options = {}) {
     selectedModeIndex = 0,
     selectedProviderIndex = 0,
     selectedResumeIndex = 0,
+    selectedCronIndex = -1,
     cronTasks = [],
+    pendingReports = 0,
     providerOptions = [],
     resumeOptions = [],
     dashHints = {},
@@ -247,6 +263,10 @@ function computeDashboardContent(options = {}) {
 
   if (globalMode) {
     const projectsFocused = focusMode === "dashboard" && dashboardView === "projects";
+    let dashboardHint = "";
+    if (projectsFocused) {
+      dashboardHint = globalScope === "controller" ? "Enter\u2192project" : "Esc\u2192global";
+    }
     const rail = buildProjectRailLine({
       projects,
       selectedProjectIndex,
@@ -254,6 +274,8 @@ function computeDashboardContent(options = {}) {
       maxProjectWindow,
       activeProjectRoot,
       projectsFocused,
+      globalScope,
+      dashboardHint,
     });
     if (!rail.hasProjects) {
       const line2 = ` {gray-fg}${dashHints.projectsEmpty || "Run ufoo chat/daemon in projects to populate registry"}{/gray-fg}`;
@@ -271,6 +293,7 @@ function computeDashboardContent(options = {}) {
         launchMode,
         agentProvider,
         cronTasks,
+        pendingReports,
       });
       return {
         content: `${rail.line}\n ${line2}`,
@@ -290,6 +313,7 @@ function computeDashboardContent(options = {}) {
       selectedModeIndex,
       selectedProviderIndex,
       selectedResumeIndex,
+      selectedCronIndex,
       cronTasks,
       providerOptions,
       resumeOptions,
@@ -315,6 +339,7 @@ function computeDashboardContent(options = {}) {
       selectedModeIndex,
       selectedProviderIndex,
       selectedResumeIndex,
+      selectedCronIndex,
       cronTasks,
       providerOptions,
       resumeOptions,
@@ -331,6 +356,7 @@ function computeDashboardContent(options = {}) {
     launchMode,
     agentProvider,
     cronTasks,
+    pendingReports,
   });
 
   return { content, windowStart: agentListWindowStart };

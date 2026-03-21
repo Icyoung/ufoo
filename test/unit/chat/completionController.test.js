@@ -41,10 +41,22 @@ function createHarness(overrides = {}) {
         ],
       },
       {
+        cmd: "/group",
+        desc: "Group ops",
+        subcommands: [
+          { cmd: "run", desc: "Launch a group template" },
+          { cmd: "status", desc: "Show group status" },
+        ],
+      },
+      {
         cmd: "/status",
         desc: "Show status",
       },
     ],
+    getGroupTemplateCandidates: jest.fn(() => [
+      { alias: "product-discovery", name: "Product Discovery", source: "builtin" },
+      { alias: "build-lane", name: "Build Lane", source: "builtin" },
+    ]),
     getMentionCandidates: jest.fn(() => [
       { id: "codex:1", label: "codex-1" },
       { id: "claude:2", label: "claude-2" },
@@ -113,6 +125,42 @@ describe("chat completionController", () => {
     expect(completionPanel.setContent).toHaveBeenLastCalledWith(expect.stringContaining("claude"));
     expect(completionPanel.setContent).toHaveBeenLastCalledWith(expect.stringContaining("ucode"));
     expect(completionPanel.setContent).not.toHaveBeenLastCalledWith(expect.stringContaining("ufoo"));
+  });
+
+  test("group run shows template candidates after subcommand confirmation", () => {
+    const { controller, input, completionPanel } = createHarness();
+    input.value = "/group ";
+
+    controller.show(input.value);
+    const handled = controller.handleKey("", { name: "enter" });
+
+    expect(handled).toBe(true);
+    expect(input.value).toBe("/group run ");
+    expect(controller.isActive()).toBe(true);
+    expect(completionPanel.setContent).toHaveBeenLastCalledWith(expect.stringContaining("product-discovery"));
+  });
+
+  test("group run with trailing space lists group templates", () => {
+    const { controller, input, completionPanel } = createHarness();
+    input.value = "/group run ";
+
+    controller.show(input.value);
+
+    expect(controller.isActive()).toBe(true);
+    expect(controller.getCommandCount()).toBe(2);
+    expect(completionPanel.setContent).toHaveBeenLastCalledWith(expect.stringContaining("build-lane"));
+  });
+
+  test("group template candidate confirms alias with trailing space", () => {
+    const { controller, input } = createHarness();
+    input.value = "/group run pr";
+
+    controller.show(input.value);
+    const handled = controller.handleKey("", { name: "tab" });
+
+    expect(handled).toBe(true);
+    expect(input.value).toBe("/group run product-discovery ");
+    expect(controller.isActive()).toBe(false);
   });
 
   test("tab confirms selected command", () => {

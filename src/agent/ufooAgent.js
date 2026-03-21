@@ -11,6 +11,8 @@ const {
 } = require("../code/nativeRunner");
 const { DEFAULT_ASSISTANT_TIMEOUT_MS } = require("../assistant/constants");
 const { normalizeAgentTypeAlias } = require("../bus/utils");
+const { listProjectRuntimes } = require("../projects/registry");
+const { isGlobalControllerProjectRoot } = require("../globalMode");
 
 function loadSessionState(projectRoot) {
   const dir = getUfooPaths(projectRoot).agentDir;
@@ -260,7 +262,180 @@ function loadBusSummary(projectRoot, maxLines = 20) {
   return { agents, nicknames, reports, agent_prompt_history: promptHistory, summary, recent };
 }
 
-function buildSystemPrompt(context) {
+function slicePromptHistoryForProject(value = {}) {
+  const input = value && typeof value === "object" ? value : {};
+  const perAgent = Array.isArray(input.per_agent) ? input.per_agent.slice(0, 3) : [];
+  return {
+    scanned_files: Number(input.scanned_files || 0) || 0,
+    matched_events: Number(input.matched_events || 0) || 0,
+    per_agent: perAgent.map((row) => ({
+      agent_id: String(row && row.agent_id ? row.agent_id : ""),
+      nickname: String(row && row.nickname ? row.nickname : ""),
+      total_count: Number(row && row.total_count ? row.total_count : 0) || 0,
+      sample_count: Number(row && row.sample_count ? row.sample_count : 0) || 0,
+      last_ts: String(row && row.last_ts ? row.last_ts : ""),
+      samples: Array.isArray(row && row.samples)
+        ? row.samples.slice(0, 2).map((sample) => ({
+          ts: String(sample && sample.ts ? sample.ts : ""),
+          publisher: String(sample && sample.publisher ? sample.publisher : ""),
+          prompt: String(sample && sample.prompt ? sample.prompt : ""),
+        }))
+        : [],
+    })),
+  };
+}
+
+function buildGlobalProjectRouterContext(projectRoot, options = {}) {
+  const maxProjects = Number.isFinite(options.maxProjects) && options.maxProjects > 0
+    ? Math.floor(options.maxProjects)
+    : 12;
+
+  let rows = [];
+  try {
+    rows = listProjectRuntimes({ validate: true, cleanupTmp: true });
+  } catch {
+    rows = [];
+  }
+
+  rows = rows
+    .filter((row) => {
+      const status = String((row && row.status) || "").trim().toLowerCase();
+      if (status === "stopped") return false;
+      return !isGlobalControllerProjectRoot(row && row.project_root ? row.project_root : "");
+    })
+    .slice(0, maxProjects);
+
+  let activeAgentTotal = 0;
+  let busyAgentTotal = 0;
+  let unreadTotal = 0;
+  let decisionsOpenTotal = 0;
+
+  const projects = rows.map((row) => {
+    const targetRoot = String(row && row.project_root ? row.project_root : "");
+    const fallbackName = String(row && row.project_name ? row.project_name : targetRoot);
+    let topDirs = [];
+    try {
+      const entries = fs.readdirSync(targetRoot, { withFileTypes: true });
+      topDirs = entries
+        .filter((e) => e.isDirectory() && !e.name.startsWith(".") && e.name !== "node_modules")
+        .map((e) => e.name)
+        .slice(0, 20);
+    } catch {
+      // ignore unreadable directories
+    }
+    try {
+      const status = buildStatus(targetRoot);
+      const activeMeta = Array.isArray(status && status.active_meta) ? status.active_meta : [];
+      const agents = activeMeta.map((item) => ({
+        id: String(item && item.id ? item.id : ""),
+        nickname: String(item && item.nickname ? item.nickname : ""),
+        display: String(item && item.display ? item.display : ""),
+        launch_mode: String(item && item.launch_mode ? item.launch_mode : ""),
+        activity_state: String(item && item.activity_state ? item.activity_state : ""),
+        activity_since: String(item && item.activity_since ? item.activity_since : ""),
+      }));
+      const nicknames = {};
+      agents.forEach((item) => {
+        if (item.nickname) nicknames[item.nickname] = item.id;
+      });
+      const promptHistory = buildAgentPromptHistory(targetRoot, agents, nicknames, {
+        perAgentLimit: 2,
+        maxFiles: 2,
+      });
+      const busyCount = agents.filter((item) => isBusyActivityState(item.activity_state)).length;
+      activeAgentTotal += agents.length;
+      busyAgentTotal += busyCount;
+      const unread = Number(status && status.unread && status.unread.total ? status.unread.total : 0) || 0;
+      const decisionsOpen = Number(status && status.decisions && status.decisions.open ? status.decisions.open : 0) || 0;
+      unreadTotal += unread;
+      decisionsOpenTotal += decisionsOpen;
+      return {
+        project_root: targetRoot,
+        project_name: fallbackName,
+        top_dirs: topDirs,
+        status: String(row && row.status ? row.status : "unknown"),
+        last_seen: String(row && row.last_seen ? row.last_seen : ""),
+        active_count: agents.length,
+        busy_count: busyCount,
+        ready_count: Math.max(agents.length - busyCount, 0),
+        unread_total: unread,
+        decisions_open: decisionsOpen,
+        reports_pending_total: Number(status && status.reports && status.reports.pending_total ? status.reports.pending_total : 0) || 0,
+        groups_active: Number(status && status.groups && status.groups.active ? status.groups.active : 0) || 0,
+        agents: agents.slice(0, 6),
+        agent_prompt_history: slicePromptHistoryForProject(promptHistory),
+      };
+    } catch {
+      return {
+        project_root: targetRoot,
+        project_name: fallbackName,
+        top_dirs: topDirs,
+        status: String(row && row.status ? row.status : "unknown"),
+        last_seen: String(row && row.last_seen ? row.last_seen : ""),
+        active_count: 0,
+        busy_count: 0,
+        ready_count: 0,
+        unread_total: 0,
+        decisions_open: 0,
+        reports_pending_total: 0,
+        groups_active: 0,
+        agents: [],
+        agent_prompt_history: { scanned_files: 0, matched_events: 0, per_agent: [] },
+      };
+    }
+  });
+
+  const runningCount = projects.filter((item) => item.status === "running").length;
+  const staleCount = projects.filter((item) => item.status === "stale").length;
+
+  return {
+    mode: "global-router",
+    controller_project_root: projectRoot,
+    summary: {
+      project_count: projects.length,
+      running_count: runningCount,
+      stale_count: staleCount,
+      active_agent_total: activeAgentTotal,
+      busy_agent_total: busyAgentTotal,
+      unread_total: unreadTotal,
+      decisions_open_total: decisionsOpenTotal,
+    },
+    projects,
+  };
+}
+
+function buildSystemPrompt(context, options = {}) {
+  const mode = String(options.routingMode || (context && context.mode) || "").trim().toLowerCase();
+  if (mode === "global-router") {
+    return [
+      "You are ufoo-agent, the global project router for `ufoo chat -g`.",
+      "You run inside the home-scoped controller runtime and must choose the right project before any project-local routing happens.",
+      "Return ONLY valid JSON. No extra text.",
+      "Schema:",
+      "{",
+      '  "reply": "string",',
+      `  "assistant_call": {"kind":"explore|bash|mixed","task":"string","context":"optional","expect":"optional","provider":"codex|claude|ufoo (optional)","model":"optional","timeout_ms":${DEFAULT_ASSISTANT_TIMEOUT_MS}},`,
+      '  "project_route": {"project_root":"absolute-path","project_name":"string","prompt":"string","reason":"string"},',
+      '  "dispatch": [],',
+      '  "ops": []',
+      "}",
+      "Rules:",
+      "- Use project_route when the request should be handed to one specific registered project.",
+      "- project_route.prompt should usually preserve the user request, optionally rewritten only to clarify project context for the next router.",
+      "- Each project entry has top_dirs: the immediate subdirectories of project_root. Use these to match sub-project or component names mentioned by the user (e.g. if user says 'voyager' and a project has 'voyager' in top_dirs, route there).",
+      "- Keep dispatch empty in global-router mode. Do NOT send directly to coding agents from the global controller.",
+      "- Keep ops empty in global-router mode. Do NOT launch/rename/close/cron project-local agents from the global controller.",
+      "- The target project's ufoo-agent will do the second-hop routing to a concrete agent.",
+      "- If the user asks for a global comparison, registry overview, or other controller-level answer, reply directly and omit project_route.",
+      "- If no registered project is a clear match, reply with a concise clarification request or tell the user to use /open <path> first.",
+      "- assistant_call is allowed for lightweight controller-side inspection when the registry/context is insufficient.",
+      "- Prefer continuity: if a project's recent prompt history clearly matches the current request, route there.",
+      "",
+      "Context: registered projects and project activity summaries:",
+      JSON.stringify(context),
+    ].join("\n");
+  }
+
   const hasAgents = context.agents && context.agents.length > 0;
   const agentGuidance = hasAgents
     ? ""
@@ -275,7 +450,7 @@ function buildSystemPrompt(context) {
     '  "reply": "string",',
     `  "assistant_call": {"kind":"explore|bash|mixed","task":"string","context":"optional","expect":"optional","provider":"codex|claude|ufoo (optional)","model":"optional","timeout_ms":${DEFAULT_ASSISTANT_TIMEOUT_MS}},`,
     '  "dispatch": [{"target":"broadcast|<agent-id>|<nickname>","message":"string","injection_mode":"immediate|queued (optional)","source":"optional"}],',
-    '  "ops": [{"action":"launch|close|rename|cron","agent":"codex|claude|ucode","count":1,"agent_id":"id","nickname":"optional","operation":"start|list|stop","every":"30m","interval_ms":1800000,"at":"YYYY-MM-DD HH:mm","once_at_ms":1700000000000,"target":"agent-id|nickname|csv","targets":["agent-id"],"title":"optional short title","prompt":"message","id":"task-id|all"}],',
+    '  "ops": [{"action":"launch|close|rename|role|cron","agent":"codex|claude|ucode","count":1,"agent_id":"id","nickname":"optional","prompt_profile":"profile-id (for role)","operation":"start|list|stop","every":"30m","interval_ms":1800000,"at":"YYYY-MM-DD HH:mm","once_at_ms":1700000000000,"target":"agent-id|nickname|csv","targets":["agent-id"],"title":"optional short title","prompt":"message","id":"task-id|all"}],',
     '  "disambiguate": {"prompt":"string","candidates":[{"agent_id":"id","reason":"string"}]}',
     "}",
     "Rules:",
@@ -286,6 +461,7 @@ function buildSystemPrompt(context) {
     "- For scheduled follow-up (cron), use ops.cron with operation=start and include target(s)+prompt, plus optional title; use every/interval_ms for recurring or at/once_at_ms for one-time.",
     "- To check scheduled tasks, use ops.cron with operation=list.",
     "- To stop scheduled tasks, use ops.cron with operation=stop and id (or id=all).",
+    "- To assign a preset role to an existing agent, use ops.role with target (agent-id or nickname) and prompt_profile (profile id or alias). Available profiles: discovery-facilitator, scope-challenger, system-architect, implementation-lead, frontend-refiner, design-critic, review-critic, qa-driver, debug-investigator, release-coordinator, task-breakdown, research-scan, rapid-prototype.",
     "- Use top-level assistant_call for project exploration, temporary shell tasks, and quick execution support.",
     "- assistant_call fields: kind (explore|bash|mixed), task (required), context/expect (optional), provider (codex|claude|ufoo, optional), model/timeout_ms (optional).",
     "- Prefer assistant_call over launching coding agents when the task is short-lived.",
@@ -453,10 +629,13 @@ async function runNativeRouterCall({ projectRoot, prompt, systemPrompt, model: r
   }
 }
 
-async function runUfooAgent({ projectRoot, prompt, provider, model }) {
+async function runUfooAgent({ projectRoot, prompt, provider, model, routingMode = "", routingContext = null }) {
   const state = loadSessionState(projectRoot);
-  const bus = loadBusSummary(projectRoot);
-  const systemPrompt = buildSystemPrompt(bus);
+  const mode = String(routingMode || (routingContext && routingContext.mode) || "").trim().toLowerCase();
+  const bus = routingContext || (mode === "global-router"
+    ? buildGlobalProjectRouterContext(projectRoot)
+    : loadBusSummary(projectRoot));
+  const systemPrompt = buildSystemPrompt(bus, { routingMode: mode });
   const history = loadHistory(projectRoot);
   const historyPrompt = buildHistoryPrompt(history);
   const fullPrompt = historyPrompt ? `${historyPrompt}User: ${prompt}` : prompt;

@@ -1,4 +1,5 @@
 const { validateTemplate } = require("../../../src/group/validateTemplate");
+const { loadPromptProfileRegistry } = require("../../../src/group/promptProfiles");
 
 function buildValidTemplate() {
   return {
@@ -83,6 +84,13 @@ describe("group validateTemplate", () => {
     expect(result.errors.some((item) => item.path === "agents[1].startup_order")).toBe(true);
   });
 
+  test("accepts auto as an agent type", () => {
+    const sample = buildValidTemplate();
+    sample.agents[0].type = "auto";
+    const result = validateTemplate(sample);
+    expect(result.ok).toBe(true);
+  });
+
   test("rejects unresolved depends_on/accept_from/report_to refs", () => {
     const sample = buildValidTemplate();
     sample.agents[1].depends_on = ["missing-a"];
@@ -103,5 +111,35 @@ describe("group validateTemplate", () => {
     expect(result.ok).toBe(false);
     expect(result.errors.some((item) => item.path === "agents[0].depends_on[0]")).toBe(true);
     expect(result.errors.some((item) => item.path === "agents[1].accept_from")).toBe(true);
+  });
+
+  test("resolves prompt_profile aliases through the registry", () => {
+    const sample = buildValidTemplate();
+    sample.agents[0].prompt_profile = "architecture-review";
+    const registry = loadPromptProfileRegistry(process.cwd());
+
+    const result = validateTemplate(sample, { promptProfileRegistry: registry });
+    expect(result.ok).toBe(true);
+    expect(result.promptProfiles).toEqual([
+      expect.objectContaining({
+        nickname: "pm",
+        requested_profile: "architecture-review",
+        resolved_profile: "system-architect",
+      }),
+    ]);
+  });
+
+  test("rejects unknown prompt_profile with an explicit path", () => {
+    const sample = buildValidTemplate();
+    sample.agents[1].prompt_profile = "missing-profile";
+    const registry = loadPromptProfileRegistry(process.cwd());
+
+    const result = validateTemplate(sample, { promptProfileRegistry: registry });
+    expect(result.ok).toBe(false);
+    expect(
+      result.errors.some(
+        (item) => item.path === "agents[1].prompt_profile" && item.message.includes("missing-profile")
+      )
+    ).toBe(true);
   });
 });

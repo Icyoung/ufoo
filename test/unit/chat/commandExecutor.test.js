@@ -1,3 +1,4 @@
+const os = require("os");
 const { createCommandExecutor } = require("../../../src/chat/commandExecutor");
 
 function createHarness(overrides = {}) {
@@ -194,6 +195,7 @@ describe("chat commandExecutor", () => {
       agent: "codex",
       count: 1,
       nickname: "neo",
+      prompt_profile: "",
       launch_scope: "inplace",
     });
     expect(options.schedule).toHaveBeenCalled();
@@ -234,6 +236,7 @@ describe("chat commandExecutor", () => {
       agent: "ufoo",
       count: 1,
       nickname: "core",
+      prompt_profile: "",
       launch_scope: "inplace",
     });
   });
@@ -247,6 +250,7 @@ describe("chat commandExecutor", () => {
       agent: "codex",
       count: 1,
       nickname: "",
+      prompt_profile: "",
       launch_scope: "window",
     });
 
@@ -257,6 +261,7 @@ describe("chat commandExecutor", () => {
       agent: "codex",
       count: 1,
       nickname: "",
+      prompt_profile: "",
       launch_scope: "window",
     });
   });
@@ -272,6 +277,7 @@ describe("chat commandExecutor", () => {
       agent: "claude",
       count: 1,
       nickname: "",
+      prompt_profile: "",
       launch_scope: "inplace",
       terminal_app: "terminal",
     });
@@ -296,6 +302,7 @@ describe("chat commandExecutor", () => {
         agent: "codex",
         count: 1,
         nickname: "",
+        prompt_profile: "",
         launch_scope: "inplace",
         host_inject_sock: "/tmp/horizon-current.sock",
         host_daemon_sock: "/tmp/horizon-daemon.sock",
@@ -329,6 +336,75 @@ describe("chat commandExecutor", () => {
 
     expect(options.send).not.toHaveBeenCalled();
     expect(logs.some((entry) => entry.text.includes("Unknown agent type. Use: claude, codex, or ucode"))).toBe(true);
+  });
+
+  test("handleLaunchCommand forwards prompt profile", async () => {
+    const { executor, options } = createHarness();
+
+    await executor.handleLaunchCommand(["codex", "nickname=neo", "profile=design-critic"]);
+
+    expect(options.send).toHaveBeenCalledWith({
+      type: "launch_agent",
+      agent: "codex",
+      count: 1,
+      nickname: "neo",
+      prompt_profile: "design-critic",
+      launch_scope: "inplace",
+    });
+  });
+
+  test("handleLaunchCommand rejects profile with count > 1", async () => {
+    const { executor, options, logs } = createHarness();
+
+    await executor.handleLaunchCommand(["codex", "profile=design-critic", "count=2"]);
+
+    expect(options.send).not.toHaveBeenCalled();
+    expect(logs.some((entry) => entry.text.includes("profile requires count=1"))).toBe(true);
+  });
+
+  test("handleRoleCommand sends assign_role request", async () => {
+    const { executor, options } = createHarness();
+
+    await executor.handleRoleCommand(["designer", "design-critic"]);
+
+    expect(options.send).toHaveBeenCalledWith({
+      type: "assign_role",
+      target: "designer",
+      prompt_profile: "design-critic",
+    });
+    expect(options.schedule).toHaveBeenCalled();
+    expect(options.requestStatus).toHaveBeenCalled();
+  });
+
+  test("handleRoleCommand list shows available prompt profiles", async () => {
+    const { executor, logs } = createHarness();
+
+    await executor.handleRoleCommand(["list"]);
+
+    const header = logs.find((entry) => entry.text.includes("Available prompt profiles"));
+    expect(header).toBeTruthy();
+    const ids = logs.filter((entry) => entry.text.includes("implementation-lead"));
+    expect(ids.length).toBeGreaterThan(0);
+  });
+
+  test("handleRoleCommand ls is alias for list", async () => {
+    const { executor, logs } = createHarness();
+
+    await executor.handleRoleCommand(["ls"]);
+
+    const header = logs.find((entry) => entry.text.includes("Available prompt profiles"));
+    expect(header).toBeTruthy();
+  });
+
+  test("handleRoleCommand shows usage when no args", async () => {
+    const { executor, logs } = createHarness();
+
+    await executor.handleRoleCommand([]);
+
+    const usage = logs.find((entry) => entry.text.includes("Usage:"));
+    expect(usage).toBeTruthy();
+    const listHint = logs.find((entry) => entry.text.includes("/role list"));
+    expect(listHint).toBeTruthy();
   });
 
   test("handleResumeCommand supports list subcommand", async () => {
@@ -571,6 +647,64 @@ describe("chat commandExecutor", () => {
     expect(logs.some((entry) => entry.text.includes("Switched project:"))).toBe(true);
   });
 
+  test("handleProjectCommand list hides global controller row in global mode", async () => {
+    const home = os.homedir();
+    const { executor, logs } = createHarness({
+      globalMode: true,
+      listProjects: jest.fn(() => [
+        { project_root: home, project_name: "home", status: "running" },
+        { project_root: "/tmp/other", project_name: "other", status: "running" },
+      ]),
+      getCurrentProject: jest.fn(() => ({ project_root: home, project_name: "global-controller" })),
+    });
+
+    await executor.handleProjectCommand(["list"]);
+
+    expect(logs.some((entry) => entry.text.includes("/tmp/other"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes(home))).toBe(false);
+  });
+
+  test("handleProjectCommand current reports global controller in global mode", async () => {
+    const { executor, logs } = createHarness({
+      globalMode: true,
+      getCurrentProject: jest.fn(() => ({ project_root: os.homedir(), project_name: "global-controller" })),
+    });
+
+    await executor.handleProjectCommand(["current"]);
+
+    expect(logs.some((entry) => entry.text.includes("global controller"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes(".ufoo"))).toBe(true);
+  });
+
+  test("handleProjectCommand switch joins spaced path arguments", async () => {
+    const { executor, options } = createHarness();
+
+    await executor.handleProjectCommand(["switch", "/tmp/with", "space"]);
+
+    expect(options.switchProject).toHaveBeenCalledWith({ target: "/tmp/with space" });
+  });
+
+  test("handleOpenCommand requires global mode", async () => {
+    const { executor, options, logs } = createHarness();
+
+    await executor.handleOpenCommand(["/tmp/project"]);
+
+    expect(options.switchProject).not.toHaveBeenCalled();
+    expect(logs.some((entry) => entry.text.includes("/open is only available in global mode"))).toBe(true);
+  });
+
+  test("handleOpenCommand opens target path in global mode", async () => {
+    const { executor, options, logs } = createHarness({
+      globalMode: true,
+      switchProject: jest.fn(async () => ({ ok: true, project_root: "/tmp/project with space" })),
+    });
+
+    await executor.handleOpenCommand(["/tmp/project", "with", "space"]);
+
+    expect(options.switchProject).toHaveBeenCalledWith({ target: "/tmp/project with space" });
+    expect(logs.some((entry) => entry.text.includes("Opened project:"))).toBe(true);
+  });
+
   test("executeCommand routes /project", async () => {
     const { executor, options } = createHarness({
       parseCommand: jest.fn(() => ({ command: "project", args: ["switch", "1"] })),
@@ -579,6 +713,17 @@ describe("chat commandExecutor", () => {
 
     await expect(executor.executeCommand("/project switch 1")).resolves.toBe(true);
     expect(options.switchProject).toHaveBeenCalledWith({ target: "1" });
+  });
+
+  test("executeCommand routes /open", async () => {
+    const { executor, options } = createHarness({
+      globalMode: true,
+      parseCommand: jest.fn(() => ({ command: "open", args: ["/tmp/project"] })),
+      switchProject: jest.fn(async () => ({ ok: true, project_root: "/tmp/project" })),
+    });
+
+    await expect(executor.executeCommand("/open /tmp/project")).resolves.toBe(true);
+    expect(options.switchProject).toHaveBeenCalledWith({ target: "/tmp/project" });
   });
 
   test("handleDoctorCommand escapes thrown errors", async () => {

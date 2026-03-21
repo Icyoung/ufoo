@@ -1,5 +1,6 @@
 const { spawn } = require("child_process");
 const { randomUUID } = require("crypto");
+const { DEFAULT_ASSISTANT_TIMEOUT_MS } = require("../assistant/constants");
 
 const ROUTER_JSON_SCHEMA = JSON.stringify({
   type: "object",
@@ -616,7 +617,7 @@ async function runCliAgent(params) {
       cwd: params.cwd,
       env,
       input: stdin,
-      timeoutMs: params.timeoutMs || 300000,  // 5 minutes for complex tasks
+      timeoutMs: params.timeoutMs || DEFAULT_ASSISTANT_TIMEOUT_MS,
       onStdout: codexParser ? (chunk) => codexParser.onChunk(chunk) : null,
       signal: params.signal,
     });
@@ -678,7 +679,7 @@ async function runCliAgent(params) {
           cwd: params.cwd,
           env,
           input: retryStdin,
-          timeoutMs: params.timeoutMs || 300000,
+          timeoutMs: params.timeoutMs || DEFAULT_ASSISTANT_TIMEOUT_MS,
           onStdout: retryParser ? (chunk) => retryParser.onChunk(chunk) : null,
           signal: params.signal,
         });

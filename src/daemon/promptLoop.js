@@ -120,7 +120,16 @@ async function finalizePromptRun({
   dispatchMessages,
   handleOps,
   markPending,
+  finalizeLocally = true,
 }) {
+  if (finalizeLocally === false) {
+    return {
+      ok: true,
+      payload,
+      opsResults: [],
+    };
+  }
+
   for (const item of payload.dispatch || []) {
     if (item && item.target && item.target !== "broadcast") {
       markPending(item.target);
@@ -151,12 +160,15 @@ async function runPromptWithAssistant({
   reportTaskStatus = () => {},
   maxAssistantLoops = 2,
   log = () => {},
+  ufooAgentOptions = {},
+  finalizeLocally = true,
 }) {
   const firstResult = await runUfooAgent({
     projectRoot,
     prompt: prompt || "",
     provider,
     model,
+    ...ufooAgentOptions,
   });
 
   if (!firstResult || !firstResult.ok) {
@@ -183,6 +195,7 @@ async function runPromptWithAssistant({
       dispatchMessages,
       handleOps,
       markPending,
+      finalizeLocally,
     });
   }
 
@@ -275,6 +288,7 @@ async function runPromptWithAssistant({
     prompt: continuationPrompt,
     provider,
     model,
+    ...ufooAgentOptions,
   });
 
   if (!secondResult || !secondResult.ok) {
@@ -286,6 +300,7 @@ async function runPromptWithAssistant({
       dispatchMessages,
       handleOps,
       markPending,
+      finalizeLocally,
     });
   }
 
@@ -305,6 +320,7 @@ async function runPromptWithAssistant({
     dispatchMessages,
     handleOps,
     markPending,
+    finalizeLocally,
   });
 }
 

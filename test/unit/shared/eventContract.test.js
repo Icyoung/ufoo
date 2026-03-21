@@ -23,6 +23,7 @@ describe("shared eventContract", () => {
       REGISTER_AGENT: "register_agent",
       AGENT_READY: "agent_ready",
       AGENT_REPORT: "agent_report",
+      ASSIGN_ROLE: "assign_role",
     });
   });
 

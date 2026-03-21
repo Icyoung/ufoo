@@ -22,13 +22,14 @@ describe("chat dashboardView", () => {
     expect(providerLabel("unknown")).toBe("codex");
   });
 
-  test("normal mode renders summary line without reports counter", () => {
+  test("normal mode renders summary line with reports counter", () => {
     const out = computeDashboardContent({
       focusMode: "input",
       activeAgents: ["a", "b", "c", "d"],
       getAgentLabel: (id) => `@${id}`,
       launchMode: "tmux",
       agentProvider: "claude-cli",
+      pendingReports: 3,
       cronTasks: [{ id: "c1", summary: "c1@10s->a: smoke" }, { id: "c2", summary: "c2@5m->b: check" }],
       autoResume: false,
       dashHints,
@@ -38,8 +39,8 @@ describe("chat dashboardView", () => {
     expect(out.content).toContain("{gray-fg}Agents:{/gray-fg} {cyan-fg}@a, @b, @c +1{/cyan-fg}");
     expect(out.content).toContain("{gray-fg}Mode:{/gray-fg} {cyan-fg}tmux{/cyan-fg}");
     expect(out.content).toContain("{gray-fg}Agent:{/gray-fg} {cyan-fg}claude{/cyan-fg}");
+    expect(out.content).toContain("{gray-fg}Reports:{/gray-fg} {cyan-fg}3{/cyan-fg}");
     expect(out.content).toContain("{gray-fg}Cron:{/gray-fg} {cyan-fg}2{/cyan-fg}");
-    expect(out.content).not.toContain("{gray-fg}Reports:{/gray-fg}");
   });
 
   test("dashboard mode page highlights selected mode", () => {
@@ -116,6 +117,7 @@ describe("chat dashboardView", () => {
     const out = computeDashboardContent({
       focusMode: "dashboard",
       dashboardView: "cron",
+      selectedCronIndex: 1,
       cronTasks: [
         { id: "c1", label: "codex:1:run smoke:10s", summary: "c1 codex:1:run smoke:10s" },
         { id: "c2", label: "claude:2:check logs:1m", summary: "c2 claude:2:check logs:1m" },
@@ -123,13 +125,15 @@ describe("chat dashboardView", () => {
       dashHints: { ...dashHints, cron: "CRON" },
     });
     expect(out.content).toContain("{gray-fg}Cron:{/gray-fg}");
-    expect(out.content).toContain("{inverse}codex:1:run smoke:10s, claude:2:check logs:1m{/inverse}");
+    expect(out.content).toContain("{cyan-fg}codex:1:run smoke:10s{/cyan-fg}");
+    expect(out.content).toContain("{inverse}claude:2:check logs:1m{/inverse}");
     expect(out.content).toContain("{gray-fg}│ CRON{/gray-fg}");
   });
 
   test("global mode renders project rail with normal summary on second line", () => {
     const out = computeDashboardContent({
       globalMode: true,
+      globalScope: "project",
       focusMode: "input",
       projects: [
         { project_name: "alpha", project_root: "/tmp/alpha", status: "running" },
@@ -214,6 +218,7 @@ describe("chat dashboardView", () => {
   test("global dashboard agents view uses agentsGlobal hint", () => {
     const out = computeDashboardContent({
       globalMode: true,
+      globalScope: "project",
       focusMode: "dashboard",
       dashboardView: "agents",
       projects: [{ project_name: "alpha", project_root: "/tmp/alpha", status: "running" }],
@@ -228,6 +233,52 @@ describe("chat dashboardView", () => {
     expect(out.content).toContain("{gray-fg}Projects:{/gray-fg}");
     expect(out.content).toContain("{bold}{cyan-fg}alpha{/cyan-fg}{/bold}");
     expect(out.content).toContain("{gray-fg}│ AGENTS_GLOBAL{/gray-fg}");
+  });
+
+  test("global controller scope shows Enter→project hint when projects focused", () => {
+    const out = computeDashboardContent({
+      globalMode: true,
+      globalScope: "controller",
+      focusMode: "dashboard",
+      dashboardView: "projects",
+      projects: [{ project_name: "alpha", project_root: "/tmp/alpha", status: "running" }],
+      selectedProjectIndex: 0,
+      activeProjectRoot: "/home/user",
+      dashHints: {},
+    });
+
+    expect(out.content).toContain("Enter\u2192project");
+    expect(out.content).not.toContain("{bold}");
+  });
+
+  test("global project scope shows Esc→global hint when projects focused", () => {
+    const out = computeDashboardContent({
+      globalMode: true,
+      globalScope: "project",
+      focusMode: "dashboard",
+      dashboardView: "projects",
+      projects: [{ project_name: "alpha", project_root: "/tmp/alpha", status: "running" }],
+      selectedProjectIndex: 0,
+      activeProjectRoot: "/tmp/alpha",
+      dashHints: {},
+    });
+
+    expect(out.content).toContain("Esc\u2192global");
+  });
+
+  test("global mode shows no hint when projects row is not focused", () => {
+    const out = computeDashboardContent({
+      globalMode: true,
+      globalScope: "controller",
+      focusMode: "input",
+      projects: [{ project_name: "alpha", project_root: "/tmp/alpha", status: "running" }],
+      selectedProjectIndex: 0,
+      activeProjectRoot: "/home/user",
+      dashHints: {},
+    });
+
+    expect(out.content).not.toContain("Enter\u2192project");
+    expect(out.content).not.toContain("Esc\u2192global");
   });
 
   test("dashboard renders activity markers for agents", () => {

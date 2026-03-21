@@ -113,13 +113,16 @@ ucode-core list --json
 
 ## Global Chat (`ufoo -g`)
 
-Use `ufoo -g` (or `ufoo --global`) to launch a cross-project chat dashboard. Instead of being scoped to a single project, global mode connects to all running ufoo daemons and lets you switch between projects on the fly.
+Use `ufoo -g` (or `ufoo --global`) to launch a cross-project chat dashboard. Instead of being scoped to the current working directory, global mode runs from a home-scoped controller context and stores its runtime under `~/.ufoo`, then connects to project daemons on demand.
+
+When global chat stays on the home-scoped controller, plain prompts first go through the controller's `ufoo-agent`, which picks the best registered project and forwards the prompt to that project's `ufoo-agent` for agent-level routing.
 
 ```bash
 $ ufoo -g
 
 > /project list          # List all running project daemons
 > /project switch 2      # Switch to project #2
+> /open ~/Code/my-app    # Initialize/start/switch to a project by path
 > /launch claude scope=inplace   # Launch agent in current context
 > @claude-1 Start reviewing the auth module
 ```
@@ -128,8 +131,13 @@ $ ufoo -g
 |---------|-------------|
 | `/project list` | List running projects from global runtime registry |
 | `/project switch <index\|path>` | Switch active project daemon connection |
+| `/open <path>` | Global-mode shortcut to initialize/start/open a project daemon by path |
 | `/launch <agent> scope=inplace` | Launch agent in current workspace |
 | `/launch <agent> scope=window` | Launch agent in separate terminal window |
+
+Notes:
+- If you just type a normal message in the controller view, global `ufoo-agent` will try to route it to the most relevant registered project first.
+- The selected project's `ufoo-agent` then continues the second-hop routing to a concrete coding agent.
 
 ## Agent Configuration
 

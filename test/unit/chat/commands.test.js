@@ -58,6 +58,19 @@ describe("chat command helpers", () => {
     expect((project.subcommands || []).some((sub) => sub.cmd === "switch")).toBe(true);
   });
 
+  test("role command is exposed with list subcommand", () => {
+    const role = COMMAND_REGISTRY.find((item) => item.cmd === "/role");
+    expect(role).toBeTruthy();
+    expect(role.desc).toBe("Assign preset role to an existing agent");
+    expect((role.subcommands || []).some((sub) => sub.cmd === "list")).toBe(true);
+  });
+
+  test("open command is exposed", () => {
+    const open = COMMAND_REGISTRY.find((item) => item.cmd === "/open");
+    expect(open).toBeTruthy();
+    expect(open.desc).toBe("Open project path in global mode");
+  });
+
   test("ucodeconfig command is not exposed", () => {
     const ucodeconfig = COMMAND_REGISTRY.find((item) => item.cmd === "/ucodeconfig");
     expect(ucodeconfig).toBeFalsy();

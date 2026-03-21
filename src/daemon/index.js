@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
-const { spawnSync } = require("child_process");
+const net = require("net");
+const { spawn, spawnSync } = require("child_process");
 const { runUfooAgent } = require("../agent/ufooAgent");
 const { launchAgent, closeAgent, getRecoverableAgents, resumeAgents } = require("./ops");
 const { buildStatus } = require("./status");
@@ -21,6 +22,16 @@ const { runAssistantTask } = require("../assistant/bridge");
 const { runPromptWithAssistant } = require("./promptLoop");
 const { handlePromptRequest } = require("./promptRequest");
 const { recordAgentReport } = require("./reporting");
+const { isGlobalControllerProjectRoot } = require("../globalMode");
+const {
+  assignSoloRoleToExistingAgent,
+  resolveSoloPromptProfile,
+  buildSoloBootstrap,
+  prepareSoloUcodeBootstrap,
+  persistSoloRoleMetadata,
+  buildSoloBootstrapFingerprint,
+  rollbackLaunchAfterRoleAssignmentFailure,
+} = require("./soloBootstrap");
 
 let providerSessions = null;
 let probeHandles = new Map();
@@ -81,6 +92,16 @@ async function renameSpawnedAgent(projectRoot, agentType, nickname, startIso) {
     await sleep(200);
   }
   return { ok: false, nickname, error: lastError || "rename timeout" };
+}
+
+function pickLaunchSubscriber(projectRoot, launchResult = {}, fallbackTarget = "") {
+  if (launchResult && Array.isArray(launchResult.subscriber_ids) && launchResult.subscriber_ids.length > 0) {
+    return String(launchResult.subscriber_ids[0] || "").trim();
+  }
+  if (launchResult && launchResult.agent_id) {
+    return String(launchResult.agent_id || "").trim();
+  }
+  return String(fallbackTarget || "").trim();
 }
 
 function ensureDir(dir) {
@@ -194,6 +215,129 @@ function isRunning(projectRoot) {
 function removeSocket(projectRoot) {
   const sock = socketPath(projectRoot);
   if (fs.existsSync(sock)) fs.unlinkSync(sock);
+}
+
+function connectProjectSocket(sockPath, timeoutMs = 8000) {
+  return new Promise((resolve, reject) => {
+    let timeoutHandle = null;
+    const client = net.createConnection(sockPath, () => {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+        timeoutHandle = null;
+      }
+      resolve(client);
+    });
+    client.on("error", (err) => {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+        timeoutHandle = null;
+      }
+      reject(err);
+    });
+    timeoutHandle = setTimeout(() => {
+      const err = new Error(`connect timeout after ${timeoutMs}ms`);
+      err.code = "ETIMEDOUT";
+      try {
+        client.destroy(err);
+      } catch {
+        // ignore
+      }
+      reject(err);
+    }, timeoutMs);
+    if (typeof timeoutHandle.unref === "function") timeoutHandle.unref();
+  });
+}
+
+async function connectProjectSocketWithRetry(sockPath, retries = 25, delayMs = 200, timeoutMs = 8000) {
+  for (let i = 0; i < retries; i += 1) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      return await connectProjectSocket(sockPath, timeoutMs);
+    } catch {
+      // eslint-disable-next-line no-await-in-loop
+      await sleep(delayMs);
+    }
+  }
+  return null;
+}
+
+async function sendPromptRequestToProject(targetProjectRoot, payload, timeoutMs = 12000) {
+  const sock = socketPath(targetProjectRoot);
+  const client = await connectProjectSocketWithRetry(sock, 25, 200, 8000);
+  if (!client) {
+    return { ok: false, error: "Failed to connect target project daemon" };
+  }
+
+  return new Promise((resolve) => {
+    let buffer = "";
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try {
+        client.destroy();
+      } catch {
+        // ignore
+      }
+      resolve({ ok: false, error: "Target project daemon request timeout" });
+    }, timeoutMs);
+    if (typeof timeout.unref === "function") timeout.unref();
+
+    const cleanup = () => {
+      clearTimeout(timeout);
+      client.removeAllListeners();
+      try {
+        client.end();
+      } catch {
+        // ignore
+      }
+    };
+
+    client.on("data", (data) => {
+      buffer += data.toString("utf8");
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let msg = null;
+        try {
+          msg = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (msg.type === IPC_RESPONSE_TYPES.RESPONSE) {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolve({
+            ok: true,
+            payload: msg.data || {},
+            opsResults: msg.opsResults || [],
+          });
+          return;
+        }
+        if (msg.type === IPC_RESPONSE_TYPES.ERROR) {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolve({
+            ok: false,
+            error: msg.error || "Target project daemon error",
+          });
+          return;
+        }
+      }
+    });
+
+    client.on("error", (err) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve({ ok: false, error: err && err.message ? err.message : "Target project daemon error" });
+    });
+
+    client.write(`${JSON.stringify(payload)}\n`);
+  });
 }
 
 function parseJsonLines(buffer) {
@@ -328,6 +472,10 @@ async function handleOps(projectRoot, ops = [], processManager = null) {
         const launchResult = await launchAgent(projectRoot, agent, count, nickname, processManager, {
           launchScope: op.launch_scope || "",
           terminalApp: op.terminal_app || "",
+          extraEnv:
+            op.extra_env && typeof op.extra_env === "object"
+              ? op.extra_env
+              : ((op.extraEnv && typeof op.extraEnv === "object") ? op.extraEnv : null),
           hostInjectSock: op.host_inject_sock || op.hostInjectSock || "",
           hostDaemonSock: op.host_daemon_sock || op.hostDaemonSock || "",
           hostName: op.host_name || op.hostName || "",
@@ -445,6 +593,44 @@ async function handleOps(projectRoot, ops = [], processManager = null) {
           agent_id: agentId,
           nickname,
           error: err && err.message ? err.message : String(err || "rename failed"),
+        });
+      }
+    } else if (op.action === "role") {
+      const roleTarget = String(op.target || op.agent_id || "").trim();
+      const roleProfile = String(op.prompt_profile || op.profile || "").trim();
+      if (!roleTarget || !roleProfile) {
+        results.push({
+          action: "role",
+          ok: false,
+          error: "role requires target and prompt_profile",
+        });
+        continue;
+      }
+      try {
+        const roleResult = await assignSoloRoleToExistingAgent(projectRoot, roleTarget, roleProfile, {
+          bootstrapOptions: {
+            timeoutMs: 15000,
+            retryDelayMs: 250,
+            protectionMs: 3000,
+            workingGraceMs: 10000,
+          },
+        });
+        results.push({
+          action: "role",
+          ok: roleResult.ok !== false,
+          target: roleTarget,
+          prompt_profile: roleProfile,
+          resolved_profile: roleResult.resolved_profile || "",
+          skipped: roleResult.skipped || false,
+          error: roleResult.error || "",
+        });
+      } catch (err) {
+        results.push({
+          action: "role",
+          ok: false,
+          target: roleTarget,
+          prompt_profile: roleProfile,
+          error: err && err.message ? err.message : String(err || "role assignment failed"),
         });
       }
     } else if (op.action === "cron") {
@@ -697,6 +883,9 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
     logFile.write(`[daemon] ${new Date().toISOString()} ${msg}\n`);
   };
   const publishProjectRuntime = (status = "running") => {
+    if (isGlobalControllerProjectRoot(projectRoot)) {
+      return;
+    }
     try {
       upsertProjectRuntime({
         projectRoot,
@@ -800,6 +989,54 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
             log,
           });
         },
+        forwardProjectPrompt: async ({
+          targetProjectRoot,
+          targetProjectName,
+          prompt,
+          routeReason,
+          requestMeta = {},
+        }) => {
+          const root = String(targetProjectRoot || "").trim();
+          if (!root) {
+            return { ok: false, error: "target project root is required" };
+          }
+          if (!fs.existsSync(root)) {
+            return { ok: false, error: `target project not found: ${root}` };
+          }
+          const targetPaths = getUfooPaths(root);
+          if (!fs.existsSync(targetPaths.ufooDir)) {
+            const repoRoot = path.join(__dirname, "..", "..");
+            const init = new (require("../init"))(repoRoot);
+            await init.init({ modules: "context,bus", project: root });
+          }
+          if (!isRunning(root)) {
+            const daemonBin = path.join(__dirname, "..", "..", "bin", "ufoo.js");
+            const child = spawn(process.execPath, [daemonBin, "daemon", "--start"], {
+              detached: true,
+              stdio: "ignore",
+              cwd: root,
+              env: process.env,
+            });
+            child.unref();
+          }
+
+          const nextMeta = {
+            ...(requestMeta && typeof requestMeta === "object" ? requestMeta : {}),
+            via_global_router: true,
+            global_controller_project_root: projectRoot,
+            routed_project_root: root,
+            routed_project_name: targetProjectName || path.basename(root),
+            routed_reason: routeReason || "",
+          };
+          delete nextMeta.force_project_root;
+          delete nextMeta.force_project_name;
+
+          return sendPromptRequestToProject(root, {
+            type: IPC_REQUEST_TYPES.PROMPT,
+            text: String(prompt || ""),
+            request_meta: nextMeta,
+          });
+        },
         log,
       });
       return;
@@ -831,6 +1068,15 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
           })}
 `,
         );
+        ipcServer.sendToSockets({
+          type: IPC_RESPONSE_TYPES.BUS,
+          data: {
+            event: "controller_report",
+            publisher: entry.agent_id,
+            message: entry.summary || entry.message || entry.task_id,
+            report: entry,
+          },
+        });
         ipcServer.sendToSockets({
           type: IPC_RESPONSE_TYPES.STATUS,
           data: buildRuntimeStatus(),
@@ -1001,6 +1247,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
         agent,
         count,
         nickname,
+        prompt_profile,
         launch_scope,
         terminal_app,
         host_inject_sock,
@@ -1022,6 +1269,17 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
       }
       const parsedCount = parseInt(count, 10);
       const finalCount = Number.isFinite(parsedCount) && parsedCount > 0 ? parsedCount : 1;
+      const requestedProfile = String(prompt_profile || "").trim();
+      if (requestedProfile && finalCount > 1) {
+        socket.write(
+          `${JSON.stringify({
+            type: IPC_RESPONSE_TYPES.ERROR,
+            error: "prompt_profile requires count=1",
+          })}
+`,
+        );
+        return;
+      }
       const op = {
         action: "launch",
         agent: normalizedAgent,
@@ -1038,9 +1296,101 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
             ? host_capabilities
             : null,
       };
+      let soloLaunchBootstrap = null;
+      if (requestedProfile && normalizedAgent === "ufoo") {
+        const profileResult = resolveSoloPromptProfile(projectRoot, requestedProfile);
+        if (!profileResult.ok) {
+          socket.write(
+            `${JSON.stringify({
+              type: IPC_RESPONSE_TYPES.ERROR,
+              error: profileResult.error || "prompt profile resolution failed",
+            })}
+`,
+          );
+          return;
+        }
+        const built = buildSoloBootstrap({
+          nickname: nickname || "ucode",
+          agentType: "ufoo-code",
+          requestedProfile: profileResult.requested_profile,
+          profile: profileResult.profile,
+        });
+        if (built.required) {
+          try {
+            const prepared = prepareSoloUcodeBootstrap(projectRoot, nickname || "ucode", built.promptText);
+            op.extra_env = {
+              ...(op.extra_env && typeof op.extra_env === "object" ? op.extra_env : {}),
+              UFOO_UCODE_BOOTSTRAP_FILE: prepared.file,
+            };
+            soloLaunchBootstrap = {
+              requested_profile: profileResult.requested_profile,
+              resolved_profile: profileResult.profile.id,
+              promptText: built.promptText,
+            };
+          } catch (err) {
+            socket.write(
+              `${JSON.stringify({
+                type: IPC_RESPONSE_TYPES.ERROR,
+                error: err.message || "failed to prepare ucode bootstrap",
+              })}
+`,
+            );
+            return;
+          }
+        }
+      }
       try {
         const opsResults = await handleOps(projectRoot, [op], processManager);
         const launchResult = opsResults.find((r) => r.action === "launch");
+        if (soloLaunchBootstrap && launchResult && launchResult.ok !== false) {
+          const subscriberId = pickLaunchSubscriber(projectRoot, launchResult, nickname || "");
+          if (subscriberId) {
+            persistSoloRoleMetadata(projectRoot, subscriberId, {
+              requested_profile: soloLaunchBootstrap.requested_profile,
+              resolved_profile: soloLaunchBootstrap.resolved_profile,
+              bootstrap_fingerprint: buildSoloBootstrapFingerprint({
+                subscriberId,
+                requestedProfile: soloLaunchBootstrap.requested_profile,
+                resolvedProfile: soloLaunchBootstrap.resolved_profile,
+                promptText: soloLaunchBootstrap.promptText,
+              }),
+              bootstrapped_subscriber_id: subscriberId,
+            });
+          }
+        } else if (requestedProfile && launchResult && launchResult.ok !== false) {
+          const roleTarget = pickLaunchSubscriber(projectRoot, launchResult, nickname || "");
+          const roleResult = await assignSoloRoleToExistingAgent(projectRoot, roleTarget, requestedProfile, {
+            bootstrapOptions: {
+              timeoutMs: 15000,
+              retryDelayMs: 250,
+              protectionMs: 3000,
+              workingGraceMs: 10000,
+            },
+          });
+          if (!roleResult.ok) {
+            const rollback = await rollbackLaunchAfterRoleAssignmentFailure(
+              projectRoot,
+              launchResult,
+              roleTarget,
+              handleOps,
+              processManager
+            );
+            const roleError = roleResult.error || "role assignment failed";
+            const error = rollback.skipped
+              ? roleError
+              : (rollback.ok
+                ? `${roleError}; launched agent rolled back: ${rollback.target}`
+                : `${roleError}; rollback failed for ${rollback.target || "unknown"}: ${rollback.error || "close failed"}`);
+            socket.write(
+              `${JSON.stringify({
+                type: IPC_RESPONSE_TYPES.ERROR,
+                error,
+              })}
+`,
+            );
+            return;
+          }
+        }
         const ok = launchResult ? launchResult.ok !== false : true;
         const reply = ok
           ? `Launched ${op.count} ${agent} agent(s)`
@@ -1067,6 +1417,66 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
           `${JSON.stringify({
             type: IPC_RESPONSE_TYPES.ERROR,
             error: err.message || "launch_agent failed",
+          })}
+`,
+        );
+      }
+      return;
+    }
+    if (req.type === IPC_REQUEST_TYPES.ASSIGN_ROLE) {
+      const target = String(req.target || "").trim();
+      const promptProfile = String(req.prompt_profile || req.profile || "").trim();
+      if (!target || !promptProfile) {
+        socket.write(
+          `${JSON.stringify({
+            type: IPC_RESPONSE_TYPES.ERROR,
+            error: "assign_role requires target and prompt_profile",
+          })}
+`,
+        );
+        return;
+      }
+      try {
+        const result = await assignSoloRoleToExistingAgent(projectRoot, target, promptProfile, {
+          bootstrapOptions: {
+            timeoutMs: 15000,
+            retryDelayMs: 250,
+            protectionMs: 3000,
+            workingGraceMs: 10000,
+          },
+        });
+        if (!result.ok) {
+          socket.write(
+            `${JSON.stringify({
+              type: IPC_RESPONSE_TYPES.ERROR,
+              error: result.error || "role assignment failed",
+            })}
+`,
+          );
+          return;
+        }
+        const reply = result.skipped
+          ? `Role already applied: ${result.resolved_profile}`
+          : `Assigned role ${result.resolved_profile} to ${result.subscriber_id}`;
+        socket.write(
+          `${JSON.stringify({
+            type: IPC_RESPONSE_TYPES.RESPONSE,
+            data: {
+              reply,
+              role: result,
+            },
+          })}
+`,
+        );
+        ipcServer.sendToSockets({
+          type: IPC_RESPONSE_TYPES.STATUS,
+          data: buildRuntimeStatus(),
+        });
+      } catch (err) {
+        socket.write(
+          `${JSON.stringify({
+            type: IPC_RESPONSE_TYPES.ERROR,
+            error: err.message || "assign_role failed",
           })}
 `,
         );
@@ -1259,6 +1669,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
                 source: result.entry?.source || "",
                 filePath: result.entry?.filePath || "",
                 errors: result.errors || [],
+                prompt_profiles: result.promptProfiles || [],
               },
             },
           })}
@@ -1731,7 +2142,9 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
     log(`Shutting down daemon (managed agents: ${processManager.count()})`);
     clearInterval(runtimeHeartbeat);
     try {
-      markProjectStopped(projectRoot);
+      if (!isGlobalControllerProjectRoot(projectRoot)) {
+        markProjectStopped(projectRoot);
+      }
     } catch {
       // ignore cleanup errors
     }
@@ -1821,7 +2234,9 @@ function stopDaemon(projectRoot) {
   }
 
   try {
-    markProjectStopped(projectRoot);
+    if (!isGlobalControllerProjectRoot(projectRoot)) {
+      markProjectStopped(projectRoot);
+    }
   } catch {
     // ignore
   }

@@ -1,6 +1,14 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+
+jest.mock("../../../src/bus", () => jest.fn());
+jest.mock("../../../src/agent/ucodeBootstrap", () => ({
+  prepareUcodeBootstrap: jest.fn(),
+}));
+
+const EventBus = require("../../../src/bus");
+const { prepareUcodeBootstrap } = require("../../../src/agent/ucodeBootstrap");
 const { createGroupOrchestrator } = require("../../../src/daemon/groupOrchestrator");
 const { getUfooPaths } = require("../../../src/ufoo/paths");
 
@@ -9,6 +17,23 @@ const TEST_ROOT = path.join(os.tmpdir(), "ufoo-group-orchestrator-test");
 function writeJson(filePath, data) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+}
+
+function writeProjectConfig(projectRoot, data) {
+  writeJson(path.join(projectRoot, ".ufoo", "config.json"), data);
+}
+
+function upsertAgentMeta(projectRoot, subscriberId, patch) {
+  const filePath = getUfooPaths(projectRoot).agentsFile;
+  const current = fs.existsSync(filePath)
+    ? JSON.parse(fs.readFileSync(filePath, "utf8"))
+    : { schema_version: 1, created_at: new Date().toISOString(), agents: {} };
+  current.agents = current.agents || {};
+  current.agents[subscriberId] = {
+    ...(current.agents[subscriberId] || {}),
+    ...patch,
+  };
+  writeJson(filePath, current);
 }
 
 function buildTemplate(alias = "dev-basic") {
@@ -24,22 +49,51 @@ function buildTemplate(alias = "dev-basic") {
         id: "pm",
         nickname: "pm",
         type: "codex",
+        role: "task coordinator",
+        prompt_profile: "task-breakdown",
         startup_order: 1,
         depends_on: [],
         accept_from: [],
-        report_to: [],
+        report_to: ["architect"],
       },
       {
         id: "architect",
         nickname: "architect",
         type: "claude",
+        role: "system architect",
+        prompt_profile: "architecture-review",
         startup_order: 2,
         depends_on: ["pm"],
         accept_from: ["pm"],
-        report_to: ["pm"],
+        report_to: [],
       },
     ],
     edges: [{ from: "pm", to: "architect", kind: "task" }],
+  };
+}
+
+function buildUcodeTemplate(alias = "ucode-group") {
+  return {
+    schema_version: 1,
+    template: {
+      id: alias,
+      alias,
+      name: alias,
+    },
+    agents: [
+      {
+        id: "ucode",
+        nickname: "ucode",
+        type: "ucode",
+        role: "prototype",
+        prompt_profile: "rapid-prototype",
+        startup_order: 1,
+        depends_on: [],
+        accept_from: [],
+        report_to: [],
+      },
+    ],
+    edges: [],
   };
 }
 
@@ -48,29 +102,48 @@ describe("daemon groupOrchestrator", () => {
   const builtinDir = path.join(TEST_ROOT, "builtin");
   const globalDir = path.join(TEST_ROOT, "global");
   const projectDir = path.join(projectRoot, ".ufoo", "templates", "groups");
+  let injectMock;
+
+  function createTestOrchestrator(handleOps) {
+    return createGroupOrchestrator({
+      projectRoot,
+      handleOps,
+      templatesOptions: { builtinDir, globalDir, projectDir },
+      bootstrapTimeoutMs: 25,
+      bootstrapRetryDelayMs: 1,
+      bootstrapProtectionMs: 3,
+      bootstrapWorkingGraceMs: 8,
+    });
+  }
 
   beforeEach(() => {
     fs.rmSync(TEST_ROOT, { recursive: true, force: true });
     fs.mkdirSync(projectRoot, { recursive: true });
     writeJson(path.join(builtinDir, "dev-basic.json"), buildTemplate("dev-basic"));
+    writeJson(path.join(builtinDir, "ucode-group.json"), buildUcodeTemplate("ucode-group"));
     writeJson(getUfooPaths(projectRoot).agentsFile, {
       schema_version: 1,
       created_at: new Date().toISOString(),
       agents: {},
     });
+
+    injectMock = jest.fn().mockResolvedValue(undefined);
+    EventBus.mockReset();
+    EventBus.mockImplementation(() => ({ inject: injectMock }));
+    prepareUcodeBootstrap.mockReset();
+    prepareUcodeBootstrap.mockImplementation(({ targetFile }) => ({
+      ok: true,
+      file: targetFile,
+    }));
   });
 
   afterEach(() => {
     fs.rmSync(TEST_ROOT, { recursive: true, force: true });
   });
 
-  test("runGroup supports dry-run without launching agents", async () => {
+  test("runGroup supports dry-run and exposes resolved bootstrap metadata", async () => {
     const handleOps = jest.fn();
-    const orchestrator = createGroupOrchestrator({
-      projectRoot,
-      handleOps,
-      templatesOptions: { builtinDir, globalDir, projectDir },
-    });
+    const orchestrator = createTestOrchestrator(handleOps);
 
     const result = await orchestrator.runGroup({ alias: "dev-basic", dry_run: true });
     expect(result.ok).toBe(true);
@@ -78,48 +151,84 @@ describe("daemon groupOrchestrator", () => {
     expect(result.status).toBe("dry_run");
     expect(Array.isArray(result.members)).toBe(true);
     expect(result.members).toHaveLength(2);
+    expect(result.members[0]).toEqual(
+      expect.objectContaining({
+        nickname: "pm",
+        resolved_profile: "task-breakdown",
+        bootstrap_strategy: "post-launch-inject",
+      })
+    );
+    expect(result.members[1].group_members).toHaveLength(2);
     expect(handleOps).not.toHaveBeenCalled();
   });
 
-  test("runGroup launches members and persists active runtime state", async () => {
+  test("runGroup launches members, injects bootstrap prompts, and persists runtime state", async () => {
     const handleOps = jest.fn(async (_root, ops) => {
       const op = ops[0];
       if (op.action === "launch" && op.nickname === "pm") {
+        upsertAgentMeta(projectRoot, "codex:pm1", {
+          nickname: "pm",
+          status: "active",
+          activity_state: "ready",
+        });
         return [{ action: "launch", ok: true, subscriber_ids: ["codex:pm1"], mode: "internal" }];
       }
       if (op.action === "launch" && op.nickname === "architect") {
+        upsertAgentMeta(projectRoot, "claude-code:arch1", {
+          nickname: "architect",
+          status: "active",
+          activity_state: "ready",
+        });
         return [{ action: "launch", ok: true, subscriber_ids: ["claude-code:arch1"], mode: "internal" }];
       }
       throw new Error(`unexpected op: ${JSON.stringify(op)}`);
     });
 
-    const orchestrator = createGroupOrchestrator({
-      projectRoot,
-      handleOps,
-      templatesOptions: { builtinDir, globalDir, projectDir },
-    });
+    const orchestrator = createTestOrchestrator(handleOps);
 
     const result = await orchestrator.runGroup({ alias: "dev-basic", instance: "grp-dev" });
     expect(result.ok).toBe(true);
     expect(result.group_id).toBe("grp-dev");
     expect(result.group.status).toBe("active");
     expect(result.group.members.map((item) => item.status)).toEqual(["active", "active"]);
+    expect(injectMock).toHaveBeenCalledTimes(2);
+    expect(injectMock.mock.calls[0][0]).toBe("codex:pm1");
+    expect(injectMock.mock.calls[0][1]).toContain('"group_id": "grp-dev"');
+    expect(injectMock.mock.calls[0][1]).toContain('"group_members"');
+    expect(injectMock.mock.calls[1][0]).toBe("claude-code:arch1");
 
     const runtimeFile = path.join(getUfooPaths(projectRoot).groupsDir, "grp-dev.json");
     expect(fs.existsSync(runtimeFile)).toBe(true);
     const runtime = JSON.parse(fs.readFileSync(runtimeFile, "utf8"));
     expect(runtime.status).toBe("active");
-    expect(runtime.members[0].subscriber_id).toBe("codex:pm1");
-    expect(runtime.members[1].subscriber_id).toBe("claude-code:arch1");
+    expect(runtime.roster_version).toBeTruthy();
+    expect(runtime.members[0]).toEqual(
+      expect.objectContaining({
+        subscriber_id: "codex:pm1",
+        bootstrap_status: "applied",
+        bootstrapped_subscriber_id: "codex:pm1",
+        resolved_profile: "task-breakdown",
+      })
+    );
+    expect(runtime.members[1]).toEqual(
+      expect.objectContaining({
+        subscriber_id: "claude-code:arch1",
+        bootstrap_status: "applied",
+        upstream: ["pm"],
+      })
+    );
   });
 
   test("runGroup forwards host launch context to member launches", async () => {
-    const handleOps = jest.fn(async () => [{ action: "launch", ok: true, subscriber_ids: ["codex:pm1"], mode: "host" }]);
-    const orchestrator = createGroupOrchestrator({
-      projectRoot,
-      handleOps,
-      templatesOptions: { builtinDir, globalDir, projectDir },
+    const handleOps = jest.fn(async () => {
+      upsertAgentMeta(projectRoot, "codex:pm1", {
+        nickname: "pm",
+        status: "active",
+        activity_state: "ready",
+      });
+      return [{ action: "launch", ok: true, subscriber_ids: ["codex:pm1"], mode: "host" }];
     });
+    const orchestrator = createTestOrchestrator(handleOps);
 
     await orchestrator.runGroup({
       alias: "dev-basic",
@@ -143,7 +252,7 @@ describe("daemon groupOrchestrator", () => {
         host_session_id: "HS123",
         host_capabilities: { supportsSnapshot: true },
       })],
-      null,
+      null
     );
   });
 
@@ -151,6 +260,11 @@ describe("daemon groupOrchestrator", () => {
     const handleOps = jest.fn(async (_root, ops) => {
       const op = ops[0];
       if (op.action === "launch" && op.nickname === "pm") {
+        upsertAgentMeta(projectRoot, "codex:pm1", {
+          nickname: "pm",
+          status: "active",
+          activity_state: "ready",
+        });
         return [{ action: "launch", ok: true, subscriber_ids: ["codex:pm1"], mode: "internal" }];
       }
       if (op.action === "launch" && op.nickname === "architect") {
@@ -162,11 +276,7 @@ describe("daemon groupOrchestrator", () => {
       throw new Error(`unexpected op: ${JSON.stringify(op)}`);
     });
 
-    const orchestrator = createGroupOrchestrator({
-      projectRoot,
-      handleOps,
-      templatesOptions: { builtinDir, globalDir, projectDir },
-    });
+    const orchestrator = createTestOrchestrator(handleOps);
 
     const result = await orchestrator.runGroup({ alias: "dev-basic", instance: "grp-fail" });
     expect(result.ok).toBe(false);
@@ -178,6 +288,251 @@ describe("daemon groupOrchestrator", () => {
     expect(runtime.status).toBe("failed");
     expect(runtime.members[0].status).toBe("rolled_back");
     expect(runtime.members[1].status).toBe("failed");
+  });
+
+  test("runGroup rolls back when bootstrap injection fails", async () => {
+    injectMock.mockRejectedValue(new Error("inject down"));
+    const handleOps = jest.fn(async (_root, ops) => {
+      const op = ops[0];
+      if (op.action === "launch" && op.nickname === "pm") {
+        upsertAgentMeta(projectRoot, "codex:pm1", {
+          nickname: "pm",
+          status: "active",
+          activity_state: "ready",
+        });
+        return [{ action: "launch", ok: true, subscriber_ids: ["codex:pm1"], mode: "internal" }];
+      }
+      if (op.action === "close" && op.agent_id === "codex:pm1") {
+        return [{ action: "close", ok: true, agent_id: "codex:pm1" }];
+      }
+      throw new Error(`unexpected op: ${JSON.stringify(op)}`);
+    });
+
+    const orchestrator = createTestOrchestrator(handleOps);
+
+    const result = await orchestrator.runGroup({ alias: "dev-basic", instance: "grp-bootstrap-fail" });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("inject down");
+
+    const runtime = JSON.parse(
+      fs.readFileSync(path.join(getUfooPaths(projectRoot).groupsDir, "grp-bootstrap-fail.json"), "utf8")
+    );
+    expect(runtime.status).toBe("failed");
+    expect(runtime.members[0].status).toBe("rolled_back");
+    expect(runtime.members[0].bootstrap_status).toBe("failed");
+  });
+
+  test("runGroup re-injects bootstrap for reused post-launch members when no matching bootstrap record exists", async () => {
+    const handleOps = jest.fn(async (_root, ops) => {
+      const op = ops[0];
+      if (op.action === "launch" && op.nickname === "pm") {
+        upsertAgentMeta(projectRoot, "codex:pm1", {
+          nickname: "pm",
+          status: "active",
+          activity_state: "idle",
+        });
+        return [{
+          action: "launch",
+          ok: true,
+          agent_id: "codex:pm1",
+          skipped: true,
+          message: "Agent 'pm' already exists",
+        }];
+      }
+      if (op.action === "launch" && op.nickname === "architect") {
+        upsertAgentMeta(projectRoot, "claude-code:arch1", {
+          nickname: "architect",
+          status: "active",
+          activity_state: "ready",
+        });
+        return [{ action: "launch", ok: true, subscriber_ids: ["claude-code:arch1"], mode: "internal" }];
+      }
+      throw new Error(`unexpected op: ${JSON.stringify(op)}`);
+    });
+
+    const orchestrator = createTestOrchestrator(handleOps);
+    const result = await orchestrator.runGroup({ alias: "dev-basic", instance: "grp-reused-ok" });
+
+    expect(result.ok).toBe(true);
+    expect(result.group.members[0]).toEqual(
+      expect.objectContaining({
+        nickname: "pm",
+        status: "reused",
+        bootstrap_status: "applied",
+        bootstrapped_subscriber_id: "codex:pm1",
+        bootstrap_fingerprint: expect.any(String),
+      })
+    );
+    expect(injectMock).toHaveBeenCalledTimes(2);
+    expect(injectMock.mock.calls[0][0]).toBe("codex:pm1");
+    expect(injectMock.mock.calls[1][0]).toBe("claude-code:arch1");
+  });
+
+  test("runGroup prepares ucode bootstrap files and forwards launch env", async () => {
+    const handleOps = jest.fn(async (_root, ops) => {
+      const op = ops[0];
+      if (op.action === "launch") {
+        return [{ action: "launch", ok: true, subscriber_ids: ["ufoo-code:uc1"], mode: "internal" }];
+      }
+      throw new Error(`unexpected op: ${JSON.stringify(op)}`);
+    });
+
+    const orchestrator = createTestOrchestrator(handleOps);
+
+    const result = await orchestrator.runGroup({ alias: "ucode-group", instance: "grp-ucode" });
+    expect(result.ok).toBe(true);
+    expect(prepareUcodeBootstrap).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectRoot,
+        targetFile: expect.stringContaining(path.join("ucode", "groups", "grp-ucode", "ucode.bootstrap.md")),
+        promptText: expect.stringContaining("rapid prototype lead"),
+      })
+    );
+    expect(handleOps).toHaveBeenCalledWith(
+      projectRoot,
+      [expect.objectContaining({
+        action: "launch",
+        extra_env: expect.objectContaining({
+          UFOO_UCODE_BOOTSTRAP_FILE: expect.stringContaining("ucode.bootstrap.md"),
+        }),
+      })],
+      null
+    );
+    expect(injectMock).not.toHaveBeenCalled();
+  });
+
+  test("runGroup resolves auto agent types from the current ufoo provider", async () => {
+    writeJson(path.join(builtinDir, "auto-group.json"), {
+      schema_version: 1,
+      template: {
+        id: "auto-group",
+        alias: "auto-group",
+        name: "auto-group",
+      },
+      agents: [
+        {
+          id: "lead",
+          nickname: "lead",
+          type: "auto",
+          role: "ship work",
+          prompt_profile: "implementation-lead",
+          startup_order: 1,
+          depends_on: [],
+          accept_from: [],
+          report_to: [],
+        },
+      ],
+      edges: [],
+    });
+    writeProjectConfig(projectRoot, { agentProvider: "claude-cli" });
+
+    const handleOps = jest.fn(async (_root, ops) => {
+      const op = ops[0];
+      if (op.action === "launch") {
+        upsertAgentMeta(projectRoot, "claude-code:auto1", {
+          nickname: "lead",
+          status: "active",
+          activity_state: "ready",
+        });
+        return [{ action: "launch", ok: true, subscriber_ids: ["claude-code:auto1"], mode: "internal" }];
+      }
+      throw new Error(`unexpected op: ${JSON.stringify(op)}`);
+    });
+
+    const orchestrator = createTestOrchestrator(handleOps);
+    const result = await orchestrator.runGroup({ alias: "auto-group", instance: "grp-auto-provider" });
+
+    expect(result.ok).toBe(true);
+    expect(handleOps).toHaveBeenCalledWith(
+      projectRoot,
+      [expect.objectContaining({
+        action: "launch",
+        agent: "claude",
+        nickname: "lead",
+      })],
+      null
+    );
+    expect(result.group.members[0]).toEqual(
+      expect.objectContaining({
+        requested_type: "auto",
+        type: "claude",
+        subscriber_id: "claude-code:auto1",
+      })
+    );
+  });
+
+  test("runGroup waits for startup to settle before bootstrap inject", async () => {
+    const handleOps = jest.fn(async (_root, ops) => {
+      const op = ops[0];
+      if (op.action === "launch" && op.nickname === "pm") {
+        upsertAgentMeta(projectRoot, "codex:pm1", {
+          nickname: "pm",
+          status: "active",
+          activity_state: "working",
+        });
+        setTimeout(() => {
+          upsertAgentMeta(projectRoot, "codex:pm1", {
+            nickname: "pm",
+            status: "active",
+            activity_state: "idle",
+          });
+        }, 5);
+        return [{ action: "launch", ok: true, subscriber_ids: ["codex:pm1"], mode: "internal" }];
+      }
+      if (op.action === "launch" && op.nickname === "architect") {
+        upsertAgentMeta(projectRoot, "claude-code:arch1", {
+          nickname: "architect",
+          status: "active",
+          activity_state: "ready",
+        });
+        return [{ action: "launch", ok: true, subscriber_ids: ["claude-code:arch1"], mode: "internal" }];
+      }
+      throw new Error(`unexpected op: ${JSON.stringify(op)}`);
+    });
+
+    const orchestrator = createTestOrchestrator(handleOps);
+    const result = await orchestrator.runGroup({ alias: "dev-basic", instance: "grp-wait-ready" });
+
+    expect(result.ok).toBe(true);
+    expect(injectMock).toHaveBeenCalledTimes(2);
+    expect(injectMock.mock.calls[0][0]).toBe("codex:pm1");
+  });
+
+  test("runGroup allows bootstrap after prolonged working state", async () => {
+    const handleOps = jest.fn(async (_root, ops) => {
+      const op = ops[0];
+      if (op.action === "launch" && op.nickname === "pm") {
+        upsertAgentMeta(projectRoot, "codex:pm1", {
+          nickname: "pm",
+          status: "active",
+          activity_state: "working",
+          activity_since: new Date(Date.now() - 20).toISOString(),
+        });
+        return [{ action: "launch", ok: true, subscriber_ids: ["codex:pm1"], mode: "internal" }];
+      }
+      if (op.action === "launch" && op.nickname === "architect") {
+        upsertAgentMeta(projectRoot, "claude-code:arch1", {
+          nickname: "architect",
+          status: "active",
+          activity_state: "ready",
+        });
+        return [{ action: "launch", ok: true, subscriber_ids: ["claude-code:arch1"], mode: "internal" }];
+      }
+      throw new Error(`unexpected op: ${JSON.stringify(op)}`);
+    });
+
+    const orchestrator = createTestOrchestrator(handleOps);
+    const result = await orchestrator.runGroup({ alias: "dev-basic", instance: "grp-working-grace" });
+
+    expect(result.ok).toBe(true);
+    expect(injectMock).toHaveBeenCalledTimes(2);
+    expect(result.group.members[0]).toEqual(
+      expect.objectContaining({
+        nickname: "pm",
+        bootstrap_status: "applied",
+        subscriber_id: "codex:pm1",
+      })
+    );
   });
 
   test("stopGroup stops only managed active members in reverse order", async () => {
@@ -206,11 +561,7 @@ describe("daemon groupOrchestrator", () => {
       throw new Error(`unexpected op: ${JSON.stringify(op)}`);
     });
 
-    const orchestrator = createGroupOrchestrator({
-      projectRoot,
-      handleOps,
-      templatesOptions: { builtinDir, globalDir, projectDir },
-    });
+    const orchestrator = createTestOrchestrator(handleOps);
 
     const result = await orchestrator.stopGroup({ group_id: "grp-stop" });
     expect(result.ok).toBe(true);
@@ -234,11 +585,7 @@ describe("daemon groupOrchestrator", () => {
       members: [{ status: "failed" }],
     });
 
-    const orchestrator = createGroupOrchestrator({
-      projectRoot,
-      handleOps: async () => [],
-      templatesOptions: { builtinDir, globalDir, projectDir },
-    });
+    const orchestrator = createTestOrchestrator(async () => []);
 
     const list = orchestrator.getStatus({});
     expect(list.ok).toBe(true);
@@ -251,11 +598,7 @@ describe("daemon groupOrchestrator", () => {
   });
 
   test("rejects invalid group_id for status and stop", async () => {
-    const orchestrator = createGroupOrchestrator({
-      projectRoot,
-      handleOps: async () => [],
-      templatesOptions: { builtinDir, globalDir, projectDir },
-    });
+    const orchestrator = createTestOrchestrator(async () => []);
 
     const statusResult = orchestrator.getStatus({ group_id: "../outside" });
     expect(statusResult.ok).toBe(false);

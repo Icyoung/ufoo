@@ -183,6 +183,32 @@ describe("chat inputSubmitHandler", () => {
     expect(options.focusInput).toHaveBeenCalled();
   });
 
+  test("disambiguation selection preserves routed project hint", async () => {
+    const { state, options, handler } = createHarness({
+      pending: {
+        original: "analyze this",
+        project_root: "/tmp/project-a",
+        disambiguate: {
+          candidates: [{ agent_id: "codex:1" }],
+        },
+      },
+    });
+
+    await handler.handleSubmit("1");
+
+    expect(options.send).toHaveBeenCalledWith({
+      type: "prompt",
+      text: "Use agent codex:1 to handle: analyze this",
+      request_meta: {
+        source: "chat-dialog",
+        dispatch_default_injection_mode: "immediate",
+        allow_relevance_queue: true,
+        force_project_root: "/tmp/project-a",
+      },
+    });
+    expect(state.pending).toBeNull();
+  });
+
   test("default prompt path sets pending and forwards text", async () => {
     const { state, options, handler } = createHarness();
 

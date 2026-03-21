@@ -277,4 +277,43 @@ describe("daemon prompt loop", () => {
     expect(result.payload.ops).toEqual([]);
     expect(result.payload.assistant_call).toBeUndefined();
   });
+
+  test("passes ufooAgentOptions and skips local execution when finalizeLocally is false", async () => {
+    const runUfooAgent = jest.fn().mockResolvedValue({
+      ok: true,
+      payload: {
+        reply: "route to project",
+        dispatch: [{ target: "codex:1", message: "should not send" }],
+        ops: [{ action: "launch", agent: "codex", count: 1 }],
+        project_route: { project_root: "/tmp/project-a", prompt: "handle billing bug" },
+      },
+    });
+    const dispatchMessages = jest.fn().mockResolvedValue(undefined);
+    const handleOps = jest.fn().mockResolvedValue([]);
+
+    const result = await runPromptWithAssistant({
+      projectRoot: "/tmp/project",
+      prompt: "route it",
+      provider: "codex-cli",
+      model: "",
+      runUfooAgent,
+      runAssistantTask: jest.fn(),
+      dispatchMessages,
+      handleOps,
+      markPending: jest.fn(),
+      finalizeLocally: false,
+      ufooAgentOptions: { routingMode: "global-router" },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(runUfooAgent).toHaveBeenCalledWith(expect.objectContaining({
+      routingMode: "global-router",
+    }));
+    expect(dispatchMessages).not.toHaveBeenCalled();
+    expect(handleOps).not.toHaveBeenCalled();
+    expect(result.payload.project_route).toEqual({
+      project_root: "/tmp/project-a",
+      prompt: "handle billing bug",
+    });
+  });
 });

@@ -6,7 +6,7 @@ const {
   resolveTemplateReference,
   createTemplateFromBuiltin,
 } = require("../group/templates");
-const { validateTemplate } = require("../group/validateTemplate");
+const { validateTemplateTarget } = require("../group/templateValidation");
 
 function parseTemplateNewArgs(args = []) {
   const alias = String(args[0] || "").trim();
@@ -97,15 +97,13 @@ function printList({ templates, errors }, { write, json, cwd }) {
 function formatResolveErrors(errors = []) {
   if (!Array.isArray(errors) || errors.length === 0) return "";
   return errors
-    .map((item) => `${item.filePath}: ${item.error}`)
+    .map((item) => `${item.filePath}: ${item.error || item.message || "unknown error"}`)
     .join("; ");
 }
 
 function throwResolveFailure(target, resolved = {}) {
   const details = formatResolveErrors(resolved.errors || []);
-  if (details) {
-    throw new Error(`Failed to load template "${target}": ${details}`);
-  }
+  if (details) throw new Error(`Failed to load template "${target}": ${details}`);
   throw new Error(`Template not found: ${target}`);
 }
 
@@ -120,6 +118,7 @@ function printValidation(result, target, entry, { write, json }) {
           filePath: entry.filePath,
           ok: result.ok,
           errors: result.errors,
+          prompt_profiles: result.promptProfiles || [],
         },
         null,
         2
@@ -130,6 +129,15 @@ function printValidation(result, target, entry, { write, json }) {
 
   if (result.ok) {
     write(`✓ Template "${entry.alias}" is valid (${entry.source})`);
+    if (Array.isArray(result.promptProfiles) && result.promptProfiles.length > 0) {
+      for (const profile of result.promptProfiles) {
+        write(
+          `  - ${profile.nickname || profile.agent_id || "agent"}: `
+          + `${profile.requested_profile} -> ${profile.resolved_profile} `
+          + `[${profile.profile_source}]`
+        );
+      }
+    }
     return;
   }
 
@@ -144,6 +152,7 @@ async function runGroupCoreCommand(subcmd, cmdArgs = [], options = {}) {
   const write = typeof options.write === "function" ? options.write : console.log;
   const json = Boolean(options.json);
   const templatesOptions = options.templatesOptions || {};
+  const promptProfilesOptions = options.promptProfilesOptions || {};
 
   const args = Array.isArray(cmdArgs) ? cmdArgs.filter((item) => item !== undefined) : [];
   const normalizedSubcmd = String(subcmd || "").trim().toLowerCase();
@@ -205,18 +214,18 @@ async function runGroupCoreCommand(subcmd, cmdArgs = [], options = {}) {
   if (action === "validate") {
     const target = String(args[1] || "").trim();
     if (!target) throw new Error("group template validate requires <alias|path>");
-    const resolved = resolveTemplateReference(cwd, target, {
+    const result = validateTemplateTarget(cwd, target, {
       allowPath: true,
       cwd,
-      ...templatesOptions,
+      templatesOptions,
+      promptProfilesOptions,
     });
-    if (!resolved.entry) {
-      throwResolveFailure(target, resolved);
+    if (!result.entry) {
+      throwResolveFailure(target, { errors: result.errors || [] });
     }
-    const result = validateTemplate(resolved.entry.data);
-    printValidation(result, target, resolved.entry, { write, json });
+    printValidation(result, target, result.entry, { write, json });
     if (!result.ok) {
-      throw new Error(`Template validation failed: ${resolved.entry.alias}`);
+      throw new Error(`Template validation failed: ${result.entry.alias}`);
     }
     return;
   }

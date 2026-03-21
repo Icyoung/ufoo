@@ -184,4 +184,16 @@ describe("UfooInit markdown handling", () => {
     expect(targets).toContain(agentsFile);
     expect(targets).toContain(claudeFile);
   });
+
+  test("init in controllerMode skips AGENTS/CLAUDE project files while bootstrapping .ufoo", async () => {
+    await init.init({
+      modules: "context",
+      project: projectRoot,
+      controllerMode: true,
+    });
+
+    expect(fs.existsSync(path.join(projectRoot, "AGENTS.md"))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, "CLAUDE.md"))).toBe(false);
+    expect(fs.existsSync(path.join(projectRoot, ".ufoo", "context", "decisions.jsonl"))).toBe(true);
+  });
 });

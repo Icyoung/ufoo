@@ -154,14 +154,18 @@ function createInputSubmitHandler(options = {}) {
       const choice = state.pending.disambiguate.candidates[idx - 1];
       if (choice) {
         queueStatusLine(`ufoo-agent processing (assigning ${choice.agent_id})`);
+        const requestMeta = {
+          source: "chat-dialog",
+          dispatch_default_injection_mode: "immediate",
+          allow_relevance_queue: true,
+        };
+        if (state.pending.project_root) {
+          requestMeta.force_project_root = state.pending.project_root;
+        }
         send({
           type: IPC_REQUEST_TYPES.PROMPT,
           text: `Use agent ${choice.agent_id} to handle: ${state.pending.original || "the request"}`,
-          request_meta: {
-            source: "chat-dialog",
-            dispatch_default_injection_mode: "immediate",
-            allow_relevance_queue: true,
-          },
+          request_meta: requestMeta,
         });
         state.pending = null;
       } else {

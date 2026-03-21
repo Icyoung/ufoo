@@ -6,6 +6,8 @@ const { runGroupCoreCommand } = require("../cli/groupCoreCommands");
 const { loadConfig: loadProjectConfig, saveConfig: saveProjectConfig, loadGlobalUcodeConfig, saveGlobalUcodeConfig } = require("../config");
 const { resolveTransport } = require("../code/nativeRunner");
 const { parseIntervalMs, formatIntervalMs } = require("./cronScheduler");
+const { isGlobalControllerProjectRoot, resolveGlobalControllerUfooDir } = require("../globalMode");
+const { loadPromptProfileRegistry } = require("../group/promptProfiles");
 
 function defaultCreateDoctor(projectRoot) {
   const UfooDoctor = require("../doctor");
@@ -92,6 +94,7 @@ function createCommandExecutor(options = {}) {
     stopCronTask = () => false,
     runGroupCore = runGroupCoreCommand,
     requestCron = null,
+    globalMode = false,
     listProjects = () => [],
     getCurrentProject = () => ({ projectRoot }),
     switchProject = async () => ({ ok: false, error: "project switching unavailable" }),
@@ -404,7 +407,7 @@ function createCommandExecutor(options = {}) {
     if (args.length === 0) {
       logMessage(
         "error",
-        "{white-fg}✗{/white-fg} Usage: /launch <claude|codex|ucode> [nickname=<name>] [count=<n>] [scope=inplace|window]"
+        "{white-fg}✗{/white-fg} Usage: /launch <claude|codex|ucode> [nickname=<name>] [profile=<id>] [count=<n>] [scope=inplace|window]"
       );
       return;
     }
@@ -452,6 +455,7 @@ function createCommandExecutor(options = {}) {
     }
 
     const nickname = parsedOptions.nickname || "";
+    const promptProfile = parsedOptions.profile || parsedOptions.prompt_profile || "";
     const count = parseInt(parsedOptions.count || "1", 10);
     const scopeRaw = parsedOptions.scope || parsedOptions.launch_scope || parsedOptions.window || "";
     let launchScope = normalizeLaunchScopeOption(scopeRaw, "inplace");
@@ -473,6 +477,10 @@ function createCommandExecutor(options = {}) {
       logMessage("error", "{white-fg}✗{/white-fg} nickname requires count=1");
       return;
     }
+    if (promptProfile && count > 1) {
+      logMessage("error", "{white-fg}✗{/white-fg} profile requires count=1");
+      return;
+    }
 
     try {
       const request = {
@@ -480,6 +488,7 @@ function createCommandExecutor(options = {}) {
         agent: normalizedAgent,
         count: Number.isFinite(count) ? count : 1,
         nickname,
+        prompt_profile: promptProfile,
         launch_scope: launchScope,
         ...collectHostLaunchRequestContext(),
       };
@@ -491,6 +500,52 @@ function createCommandExecutor(options = {}) {
       schedule(requestStatus, 1000);
     } catch (err) {
       logMessage("error", `{white-fg}✗{/white-fg} Launch failed: ${escapeBlessed(err.message)}`);
+    }
+  }
+
+  async function handleRoleCommand(args = []) {
+    const action = String(args[0] || "").trim().toLowerCase();
+    if (action === "list" || action === "ls") {
+      try {
+        const registry = loadPromptProfileRegistry(projectRoot);
+        const profiles = registry.profiles || [];
+        if (profiles.length === 0) {
+          logMessage("system", "{white-fg}⚙{/white-fg} No prompt profiles found.");
+          return;
+        }
+        logMessage("system", `{white-fg}⚙{/white-fg} Available prompt profiles (${profiles.length}):`);
+        for (const p of profiles) {
+          const aliases = p.aliases && p.aliases.length > 0 ? ` {gray-fg}(${p.aliases.join(", ")}){/gray-fg}` : "";
+          const source = p.source ? ` {cyan-fg}[${p.source}]{/cyan-fg}` : "";
+          const summary = p.summary ? `  ${p.summary}` : "";
+          logMessage("system", `  {bold}${escapeBlessed(p.id)}{/bold}${aliases}${source}`);
+          if (summary) {
+            logMessage("system", `    ${escapeBlessed(summary)}`);
+          }
+        }
+      } catch (err) {
+        logMessage("error", `{white-fg}✗{/white-fg} Failed to list profiles: ${escapeBlessed(err.message)}`);
+      }
+      return;
+    }
+
+    const target = String(args[0] || "").trim();
+    const profile = String(args[1] || "").trim();
+    if (!target || !profile) {
+      logMessage("error", "{white-fg}✗{/white-fg} Usage: /role <agent-id|nickname> <prompt-profile>");
+      logMessage("error", "       /role list");
+      return;
+    }
+
+    try {
+      send({
+        type: IPC_REQUEST_TYPES.ASSIGN_ROLE,
+        target,
+        prompt_profile: profile,
+      });
+      schedule(requestStatus, 1000);
+    } catch (err) {
+      logMessage("error", `{white-fg}✗{/white-fg} Role assignment failed: ${escapeBlessed(err.message)}`);
     }
   }
 
@@ -517,7 +572,11 @@ function createCommandExecutor(options = {}) {
 
     if (subcommand === "list") {
       const rowsRaw = await Promise.resolve(listProjects());
-      const rows = Array.isArray(rowsRaw) ? rowsRaw : [];
+      const rows = (Array.isArray(rowsRaw) ? rowsRaw : []).filter((row) => {
+        if (!globalMode) return true;
+        const root = row && row.project_root ? String(row.project_root) : "";
+        return !isGlobalControllerProjectRoot(root);
+      });
       const current = await Promise.resolve(getCurrentProject());
       const currentRoot = current && current.project_root ? String(current.project_root) : "";
       if (rows.length === 0) {
@@ -545,12 +604,19 @@ function createCommandExecutor(options = {}) {
         logMessage("error", "{white-fg}✗{/white-fg} Current project unavailable");
         return;
       }
+      if (globalMode && isGlobalControllerProjectRoot(current.project_root)) {
+        logMessage(
+          "system",
+          `{cyan-fg}Current:{/cyan-fg} global controller (${escapeBlessed(resolveGlobalControllerUfooDir())})`
+        );
+        return;
+      }
       logMessage("system", `{cyan-fg}Current:{/cyan-fg} ${escapeBlessed(current.project_root)}`);
       return;
     }
 
     if (subcommand === "switch") {
-      const target = String(args[1] || "").trim();
+      const target = args.slice(1).join(" ").trim();
       if (!target) {
         logMessage("error", "{white-fg}✗{/white-fg} Usage: /project switch <index|path>");
         return;
@@ -568,6 +634,27 @@ function createCommandExecutor(options = {}) {
     }
 
     logMessage("error", "{white-fg}✗{/white-fg} Unknown project command. Use: list, current, switch");
+  }
+
+  async function handleOpenCommand(args = []) {
+    if (!globalMode) {
+      logMessage("error", "{white-fg}✗{/white-fg} /open is only available in global mode");
+      return;
+    }
+    const target = args.join(" ").trim();
+    if (!target) {
+      logMessage("error", "{white-fg}✗{/white-fg} Usage: /open <path>");
+      return;
+    }
+    logMessage("system", `{white-fg}⚙{/white-fg} Opening project: ${escapeBlessed(target)}`);
+    const result = await Promise.resolve(switchProject({ target }));
+    if (!result || result.ok !== true) {
+      const reason = result && result.error ? String(result.error) : "open failed";
+      logMessage("error", `{white-fg}✗{/white-fg} Open failed: ${escapeBlessed(reason)}`);
+      return;
+    }
+    const nextRoot = result.project_root || result.projectRoot || "";
+    logMessage("system", `{white-fg}✓{/white-fg} Opened project: ${escapeBlessed(nextRoot)}`);
   }
 
   function parseKeyValueArgs(args = []) {
@@ -1120,11 +1207,17 @@ function createCommandExecutor(options = {}) {
       case "launch":
         await handleLaunchCommand(args);
         return true;
+      case "open":
+        await handleOpenCommand(args);
+        return true;
       case "resume":
         await handleResumeCommand(args);
         return true;
       case "project":
         await handleProjectCommand(args);
+        return true;
+      case "role":
+        await handleRoleCommand(args);
         return true;
       case "cron":
         await handleCronCommand(args);
@@ -1154,8 +1247,10 @@ function createCommandExecutor(options = {}) {
     handleCtxCommand,
     handleSkillsCommand,
     handleLaunchCommand,
+    handleOpenCommand,
     handleResumeCommand,
     handleProjectCommand,
+    handleRoleCommand,
     handleCronCommand,
     handleGroupCommand,
     handleSettingsCommand,

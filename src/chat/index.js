@@ -45,11 +45,19 @@ const { createTerminalAdapterRouter } = require("../terminal/adapterRouter");
 const { createDaemonTransport } = require("./daemonTransport");
 const { listProjectRuntimes, resolveRuntimeDir } = require("../projects/registry");
 const { canonicalProjectRoot, buildProjectId } = require("../projects/projectId");
+const { loadTemplateRegistry } = require("../group/templates");
 const {
   sortProjectRuntimes,
   parseTimestampMs,
   filterVisibleProjectRuntimes,
 } = require("./projectRuntimes");
+const { isGlobalControllerProjectRoot, resolveGlobalControllerProjectRoot } = require("../globalMode");
+const {
+  DEFAULT_TRANSIENT_AGENT_STATE_TTL_MS,
+  setTransientAgentState: setTransientAgentStateValue,
+  getTransientAgentState,
+  pruneTransientAgentStates,
+} = require("./transientAgentState");
 
 const MODE_OPTIONS = ["auto", "host", "terminal", "tmux", "internal"];
 
@@ -63,10 +71,25 @@ async function runChat(projectRoot, options = {}) {
     activeProjectRoot = path.resolve(projectRoot || process.cwd());
   }
 
-  if (!fs.existsSync(getUfooPaths(projectRoot).ufooDir)) {
+  let globalScope = globalMode ? "controller" : "project";
+
+  const runtimePaths = getUfooPaths(projectRoot);
+  const contextIndexFile = path.join(runtimePaths.ufooDir, "context", "decisions.jsonl");
+  const needsGlobalControllerBootstrap = globalMode && (
+    !fs.existsSync(runtimePaths.ufooDir)
+    || !fs.existsSync(runtimePaths.busDir)
+    || !fs.existsSync(runtimePaths.agentDir)
+    || !fs.existsSync(contextIndexFile)
+  );
+
+  if (needsGlobalControllerBootstrap || !fs.existsSync(runtimePaths.ufooDir)) {
     const repoRoot = path.join(__dirname, "..", "..");
     const init = new UfooInit(repoRoot);
-    await init.init({ modules: "context,bus", project: projectRoot });
+    await init.init({
+      modules: "context,bus",
+      project: projectRoot,
+      controllerMode: globalMode,
+    });
   }
 
   // Ensure subscriber ID exists for chat (persistent across restarts)
@@ -528,6 +551,14 @@ async function runChat(projectRoot, options = {}) {
     completionPanel,
     promptBox,
     commandRegistry: COMMAND_REGISTRY,
+    getGroupTemplateCandidates: () => {
+      const registry = loadTemplateRegistry(activeProjectRoot);
+      return registry.templates.map((item) => ({
+        alias: item.alias,
+        name: item.templateName || item.templateId || "",
+        source: item.source || "",
+      }));
+    },
     getMentionCandidates: () => activeAgents.map((id) => ({
       id,
       label: getAgentLabel(id),
@@ -558,6 +589,14 @@ async function runChat(projectRoot, options = {}) {
     getSelectedAgentIndex: () => selectedAgentIndex,
     getActiveAgents: () => activeAgents,
     getTargetAgent: () => targetAgent,
+    getGlobalScope: () => globalScope,
+    clearTargetAgent,
+    exitProjectScope: () => {
+      setGlobalScope("controller").catch((err) => {
+        const message = err && err.message ? err.message : String(err || "scope switch failed");
+        logMessage("error", `{white-fg}✗{/white-fg} Scope switch failed: ${escapeBlessed(message)}`);
+      });
+    },
     requestCloseAgent,
     logMessage,
     isSuppressKeypress: () => pasteController.isSuppressKeypress(),
@@ -687,15 +726,16 @@ async function runChat(projectRoot, options = {}) {
     { label: "Start new session", value: false },
   ];
   let selectedResumeIndex = autoResume ? 0 : 1;
+  let selectedCronIndex = -1;
   const DASH_HINTS = {
     agents: "←/→ select · Enter · ↓ mode · ↑ back",
     agentsGlobal: "←/→ select · Enter · ↓ mode · ↑ projects",
     agentsEmpty: "↓ mode · ↑ back",
     mode: "←/→ select · Enter · ↓ provider · ↑ back",
     provider: "←/→ select · Enter · ↓ cron · ↑ back",
-    cron: "Ctrl+X close · ↑ back",
+    cron: "←/→ switch · Ctrl+X stop · ↑ back",
     resume: "",
-    projects: "Use /project switch <index|path>",
+    projects: "Use /open <path> or /project switch <index|path>",
     projectsFocus: "←/→ switch · Ctrl+X close · ↓ second row · Enter confirm · ↑ back",
     projectsEmpty: "Run ufoo chat or ufoo daemon start in project directories",
   };
@@ -926,9 +966,13 @@ async function runChat(projectRoot, options = {}) {
       rows = [];
     }
     rows = filterVisibleProjectRuntimes(rows);
+    if (globalMode) {
+      rows = rows.filter((row) => !isGlobalControllerProjectRoot(resolveRuntimeProjectRoot(row)));
+    }
     const normalizedActive = String(activeProjectRoot || "");
     if (
       normalizedActive
+      && !(globalMode && isGlobalControllerProjectRoot(normalizedActive))
       && !rows.some((row) => resolveRuntimeProjectRoot(row) === normalizedActive)
     ) {
       rows.unshift({
@@ -989,18 +1033,24 @@ async function runChat(projectRoot, options = {}) {
   }
 
   function updatePromptBox() {
-    if (targetAgent) {
-      const label = getAgentLabel(targetAgent);
-      promptBox.setContent(`>@${label}`);
-      promptBox.width = label.length + 3;  // >@name + spacer
-      input.left = promptBox.width;
-      input.width = `100%-${promptBox.width}`;
-    } else {
-      promptBox.setContent(">");
-      promptBox.width = 2;
-      input.left = 2;
-      input.width = "100%-2";
+    // Determine scope prefix (only in global mode)
+    let prefix = "";
+    if (globalMode && globalScope === "controller") {
+      prefix = "g";
+    } else if (globalMode && globalScope === "project") {
+      prefix = truncateText(path.basename(activeProjectRoot), 10, "");
     }
+
+    // Build content: [prefix]>[>@agent]
+    const content = targetAgent
+      ? `${prefix}>@${getAgentLabel(targetAgent)}`
+      : `${prefix}>`;
+
+    promptBox.setContent(content);
+    promptBox.width = content.length + 1;  // content + spacer
+    input.left = promptBox.width;
+    input.width = `100%-${promptBox.width}`;
+
     if (!input.parent || !promptBox.parent) return;
     resizeInput();
     if (typeof input._updateCursor === "function") {
@@ -1126,6 +1176,7 @@ async function runChat(projectRoot, options = {}) {
   function renderDashboard() {
     const computed = computeDashboardContent({
       globalMode,
+      globalScope,
       focusMode,
       dashboardView,
       activeAgents,
@@ -1147,8 +1198,9 @@ async function runChat(projectRoot, options = {}) {
             : "";
         }
         if (metaState) return metaState;
-        const transientState = transientAgentStateMap.get(agentId);
-        return typeof transientState === "string" ? transientState : "";
+        return getTransientAgentState(transientAgentStateMap, agentId, {
+          ttlMs: DEFAULT_TRANSIENT_AGENT_STATE_TTL_MS,
+        });
       },
       launchMode,
       agentProvider,
@@ -1156,6 +1208,7 @@ async function runChat(projectRoot, options = {}) {
       selectedModeIndex,
       selectedProviderIndex,
       selectedResumeIndex,
+      selectedCronIndex,
       cronTasks,
       providerOptions,
       resumeOptions,
@@ -1197,20 +1250,19 @@ async function runChat(projectRoot, options = {}) {
 
   function updateDashboard(status) {
     activeAgents = status.active || [];
-    if (transientAgentStateMap.size > 0) {
-      const activeSet = new Set(activeAgents);
-      for (const id of transientAgentStateMap.keys()) {
-        if (!activeSet.has(id)) {
-          transientAgentStateMap.delete(id);
-        }
-      }
-    }
+    pruneTransientAgentStates(transientAgentStateMap, activeAgents, {
+      ttlMs: DEFAULT_TRANSIENT_AGENT_STATE_TTL_MS,
+    });
     if (globalMode) {
       refreshProjectRuntimes();
     }
-    reportPendingTotal = Number.isFinite(status?.reports?.pending_total)
+    const publicPending = Number.isFinite(status?.reports?.pending_total)
       ? status.reports.pending_total
       : 0;
+    const controllerPending = Number.isFinite(status?.controller?.pending_total)
+      ? status.controller.pending_total
+      : 0;
+    reportPendingTotal = publicPending + controllerPending;
     cronTasks = Array.isArray(status?.cron?.tasks) ? status.cron.tasks : [];
     const metaList = Array.isArray(status.active_meta) ? status.active_meta : [];
     let fallbackMap = null;
@@ -1286,6 +1338,12 @@ async function runChat(projectRoot, options = {}) {
           selectedAgentIndex = 0;
         }
         clampAgentWindow();
+      } else if (dashboardView === "cron") {
+        if (cronTasks.length === 0) {
+          selectedCronIndex = -1;
+        } else if (selectedCronIndex < 0 || selectedCronIndex >= cronTasks.length) {
+          selectedCronIndex = Math.max(0, Math.min(selectedCronIndex, cronTasks.length - 1));
+        }
       }
     }
     syncTargetFromSelection();
@@ -1298,7 +1356,14 @@ async function runChat(projectRoot, options = {}) {
     dashboardView = globalMode ? "projects" : "agents";
     if (globalMode) {
       refreshProjectRuntimes();
-      syncSelectedProjectToActive();
+      if (globalScope === "project") {
+        syncSelectedProjectToActive();
+      } else {
+        // Controller scope: no active project in list, init to 0 for navigation
+        if (projectRuntimes.length > 0 && (selectedProjectIndex < 0 || selectedProjectIndex >= projectRuntimes.length)) {
+          selectedProjectIndex = 0;
+        }
+      }
     } else {
       selectedAgentIndex = activeAgents.length > 0 ? 0 : -1;
       agentListWindowStart = 0;
@@ -1307,6 +1372,7 @@ async function runChat(projectRoot, options = {}) {
     selectedModeIndex = Math.max(0, MODE_OPTIONS.indexOf(launchMode));
     selectedProviderIndex = Math.max(0, providerOptions.findIndex((opt) => opt.value === agentProvider));
     selectedResumeIndex = autoResume ? 0 : 1;
+    selectedCronIndex = cronTasks.length > 0 ? 0 : -1;
     // Immediately set @target when first agent is selected.
     if (!globalMode && selectedAgentIndex >= 0 && selectedAgentIndex < activeAgents.length) {
       targetAgent = activeAgents[selectedAgentIndex];
@@ -1334,6 +1400,7 @@ async function runChat(projectRoot, options = {}) {
     selectedModeIndex: { get: () => selectedModeIndex, set: (value) => { selectedModeIndex = value; } },
     selectedProviderIndex: { get: () => selectedProviderIndex, set: (value) => { selectedProviderIndex = value; } },
     selectedResumeIndex: { get: () => selectedResumeIndex, set: (value) => { selectedResumeIndex = value; } },
+    selectedCronIndex: { get: () => selectedCronIndex, set: (value) => { selectedCronIndex = value; } },
     launchMode: { get: () => launchMode },
     agentProvider: { get: () => agentProvider },
     autoResume: { get: () => autoResume },
@@ -1382,6 +1449,19 @@ async function runChat(projectRoot, options = {}) {
     clampAgentWindowWithSelection,
     requestProjectSwitch: requestProjectSwitchByIndex,
     requestCloseProject: requestCloseProjectByIndex,
+    requestCron: (payload = {}) => {
+      send({
+        type: IPC_REQUEST_TYPES.CRON,
+        ...payload,
+      });
+    },
+    setGlobalScope: (scope, targetProjectRoot) => {
+      setGlobalScope(scope, targetProjectRoot).catch((err) => {
+        const message = err && err.message ? err.message : String(err || "scope switch failed");
+        logMessage("error", `{white-fg}✗{/white-fg} Scope switch failed: ${escapeBlessed(message)}`);
+      });
+    },
+    getGlobalScope: () => globalScope,
     renderDashboard,
     renderAgentDashboard,
     renderScreen: () => screen.render(),
@@ -1518,7 +1598,7 @@ async function runChat(projectRoot, options = {}) {
     hasStream: (publisher) => streamTracker.hasStream(publisher),
     setTransientAgentState: (agentId, state) => {
       if (!agentId || !state) return;
-      transientAgentStateMap.set(agentId, state);
+      setTransientAgentStateValue(transientAgentStateMap, agentId, state);
     },
     clearTransientAgentState: (agentId) => {
       if (!agentId) return;
@@ -1630,6 +1710,7 @@ async function runChat(projectRoot, options = {}) {
       if (globalMode) {
         refreshProjectRuntimes();
         syncSelectedProjectToActive();
+        updatePromptBox();
         renderDashboard();
         screen.render();
       }
@@ -1642,6 +1723,44 @@ async function runChat(projectRoot, options = {}) {
         ok: false,
         error: err && err.message ? err.message : "switch failed",
       };
+    }
+  }
+
+  async function setGlobalScope(scope, targetProjectRoot) {
+    if (!globalMode) return;
+
+    if (scope === "controller") {
+      if (globalScope === "controller") return;
+      const controllerRoot = resolveGlobalControllerProjectRoot();
+      if (activeProjectRoot !== controllerRoot) {
+        const result = await requestProjectSwitchByTarget(controllerRoot);
+        if (!result || !result.ok) {
+          const reason = (result && result.error) || "switch to controller failed";
+          logMessage("error", `{white-fg}✗{/white-fg} Scope switch failed: ${escapeBlessed(reason)}`);
+          return;
+        }
+      }
+      globalScope = "controller";
+      targetAgent = null;
+      updatePromptBox();
+      if (projectRuntimes.length > 0 && (selectedProjectIndex < 0 || selectedProjectIndex >= projectRuntimes.length)) {
+        selectedProjectIndex = 0;
+      }
+      renderDashboard();
+      screen.render();
+    } else if (scope === "project") {
+      if (!targetProjectRoot) return;
+      targetAgent = null;
+      const result = await requestProjectSwitchByTarget(targetProjectRoot);
+      if (!result || !result.ok) {
+        const reason = (result && result.error) || "switch to project failed";
+        logMessage("error", `{white-fg}✗{/white-fg} Scope switch failed: ${escapeBlessed(reason)}`);
+        return;
+      }
+      globalScope = "project";
+      updatePromptBox();
+      renderDashboard();
+      screen.render();
     }
   }
 
@@ -1815,9 +1934,12 @@ async function runChat(projectRoot, options = {}) {
     listProjects: () => listProjectRuntimes({ validate: true, cleanupTmp: true }),
     getCurrentProject: () => ({
       project_root: activeProjectRoot,
-      project_name: path.basename(activeProjectRoot),
+      project_name: globalMode && isGlobalControllerProjectRoot(activeProjectRoot)
+        ? "global-controller"
+        : path.basename(activeProjectRoot),
     }),
     switchProject: async ({ target } = {}) => requestProjectSwitchByTarget(target),
+    globalMode,
   });
 
   async function executeCommand(text) {
@@ -1933,13 +2055,6 @@ async function runChat(projectRoot, options = {}) {
     focusInput();
   });
 
-  // Escape in input mode only clears @target, never exits
-  input.key(["escape"], () => {
-    if (targetAgent) {
-      clearTargetAgent();
-    }
-  });
-
   focusInput();
   if (screen.program && typeof screen.program.decset === "function") {
     screen.program.decset(2004);
@@ -1957,6 +2072,7 @@ async function runChat(projectRoot, options = {}) {
   if (globalMode) {
     refreshProjectRuntimes();
   }
+  updatePromptBox();
   renderDashboard();
   resizeInput();
   requestStatus();

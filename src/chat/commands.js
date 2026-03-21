@@ -47,6 +47,7 @@ const COMMAND_TREE = {
     },
   },
   "/init": { desc: "Initialize modules" },
+  "/open": { desc: "Open project path in global mode" },
   "/launch": {
     desc: "Launch new agent",
     children: {
@@ -61,6 +62,12 @@ const COMMAND_TREE = {
       current: { desc: "Show current chat project" },
       list: { desc: "List running projects from registry" },
       switch: { desc: "Switch daemon connection to project index/path" },
+    },
+  },
+  "/role": {
+    desc: "Assign preset role to an existing agent",
+    children: {
+      list: { desc: "List available prompt profiles" },
     },
   },
   "/resume": {

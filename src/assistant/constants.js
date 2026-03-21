@@ -1,4 +1,4 @@
-const DEFAULT_ASSISTANT_TIMEOUT_MS = 300000; // 5 minutes
+const DEFAULT_ASSISTANT_TIMEOUT_MS = 600000; // 10 minutes
 const DEFAULT_ASSISTANT_TIMEOUT_GRACE_MS = 5000;
 
 function normalizeAssistantTimeoutMs(value, fallback = DEFAULT_ASSISTANT_TIMEOUT_MS) {

@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "template": {
+    "id": "ui-polish",
+    "alias": "ui-polish",
+    "name": "UI Polish"
+  },
+  "defaults": {
+    "launch_mode": "auto",
+    "start_timeout_ms": 15000
+  },
+  "agents": [
+    {
+      "id": "designer",
+      "nickname": "designer",
+      "type": "auto",
+      "role": "audit the interface and rank design polish issues",
+      "prompt_profile": "design-critic",
+      "accept_from": [],
+      "report_to": [
+        "refiner",
+        "qa"
+      ],
+      "startup_order": 1,
+      "depends_on": []
+    },
+    {
+      "id": "refiner",
+      "nickname": "refiner",
+      "type": "auto",
+      "role": "implement focused UI and interaction refinements",
+      "prompt_profile": "frontend-refiner",
+      "accept_from": [
+        "designer",
+        "qa"
+      ],
+      "report_to": [
+        "qa"
+      ],
+      "startup_order": 2,
+      "depends_on": [
+        "designer"
+      ]
+    },
+    {
+      "id": "qa",
+      "nickname": "qa",
+      "type": "auto",
+      "role": "validate polish changes and catch UX regressions",
+      "prompt_profile": "qa-driver",
+      "accept_from": [
+        "designer",
+        "refiner"
+      ],
+      "report_to": [
+        "refiner"
+      ],
+      "startup_order": 3,
+      "depends_on": [
+        "designer",
+        "refiner"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "designer",
+      "to": "refiner",
+      "kind": "task"
+    },
+    {
+      "from": "designer",
+      "to": "qa",
+      "kind": "review"
+    },
+    {
+      "from": "refiner",
+      "to": "qa",
+      "kind": "task"
+    },
+    {
+      "from": "qa",
+      "to": "refiner",
+      "kind": "review"
+    }
+  ]
+}

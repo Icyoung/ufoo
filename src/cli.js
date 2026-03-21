@@ -411,7 +411,8 @@ async function runCli(argv) {
       .description("Launch an agent (ucode, uclaude, ucodex)")
       .argument("<agent>", "Agent type: ucode|uclaude|ucodex|claude|codex")
       .argument("[nickname]", "Optional nickname for the agent")
-      .action(async (agent, nickname) => {
+      .option("--profile <id>", "Prompt profile to assign after launch")
+      .action(async (agent, nickname, opts) => {
         try {
           const projectRoot = process.cwd();
           await ensureDaemonRunning(projectRoot);
@@ -436,11 +437,32 @@ async function runCli(argv) {
             type: "launch_agent",
             agent: normalizedAgent,
             nickname: nickname || "",
+            prompt_profile: opts.profile || "",
             count: 1,
             ...collectHostLaunchRequestContext(),
           });
           const reply = resp?.data?.reply || `Launching ${normalizedAgent} agent...`;
           console.log(reply);
+        } catch (err) {
+          console.error(err.message || String(err));
+          process.exitCode = 1;
+        }
+      });
+    program
+      .command("role")
+      .description("Assign a preset role to an existing agent")
+      .argument("<target>", "Agent subscriber id or nickname")
+      .argument("<profile>", "Prompt profile id or alias")
+      .action(async (target, profile) => {
+        try {
+          const projectRoot = process.cwd();
+          await ensureDaemonRunning(projectRoot);
+          const resp = await sendDaemonRequest(projectRoot, {
+            type: "assign_role",
+            target,
+            prompt_profile: profile,
+          });
+          console.log(resp?.data?.reply || `Assigned role ${profile}`);
         } catch (err) {
           console.error(err.message || String(err));
           process.exitCode = 1;

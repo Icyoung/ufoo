@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { getUfooPaths } = require("../ufoo/paths");
 const { isMetaActive } = require("../bus/utils");
-const { readReportSummary } = require("../report/store");
+const { readReportSummary, countControllerInboxEntries } = require("../report/store");
 
 function readBus(projectRoot) {
   const busPath = getUfooPaths(projectRoot).agentsFile;
@@ -132,6 +132,7 @@ function buildStatus(projectRoot, options = {}) {
   const decisions = readDecisions(projectRoot);
   const unread = readUnread(projectRoot);
   const reports = readReportSummary(projectRoot);
+  const controllerPendingTotal = countControllerInboxEntries(projectRoot, "ufoo-agent");
   const groups = readGroups(projectRoot);
   const subscribers = bus ? Object.keys(bus.agents || {}) : [];
   const cronTasks = normalizeCronTasks(options.cronTasks || []);
@@ -176,6 +177,9 @@ function buildStatus(projectRoot, options = {}) {
     unread,
     decisions,
     reports,
+    controller: {
+      pending_total: controllerPendingTotal,
+    },
     cron: {
       count: cronTasks.length,
       tasks: cronTasks,

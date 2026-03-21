@@ -19,20 +19,25 @@ class UfooInit {
   async init(options = {}) {
     const modules = (options.modules || "context").split(",");
     const project = options.project || process.cwd();
+    const controllerMode = options.controllerMode === true;
 
     console.log("=== ufoo init ===");
     console.log(`Project directory: ${project}`);
     console.log(`Modules: ${modules.join(", ")}`);
     console.log();
 
-    // 确保 AGENTS.md 和 CLAUDE.md 存在
-    this.ensureAgentsFiles(project);
+    if (!controllerMode) {
+      // 确保 AGENTS.md 和 CLAUDE.md 存在
+      this.ensureAgentsFiles(project);
+    }
 
     // 初始化核心
-    this.initCore(project);
+    this.initCore(project, { controllerMode });
 
-    // 初始化 AGENTS.md 模板
-    this.injectAgentsTemplate(project);
+    if (!controllerMode) {
+      // 初始化 AGENTS.md 模板
+      this.injectAgentsTemplate(project);
+    }
 
     // 初始化各模块
     for (const module of modules) {
@@ -82,8 +87,9 @@ class UfooInit {
   /**
    * 初始化核心 .ufoo 目录
    */
-  initCore(project) {
+  initCore(project, options = {}) {
     console.log("[core] Initializing .ufoo core...");
+    const controllerMode = options.controllerMode === true;
 
     const ufooDir = path.join(project, ".ufoo");
     if (!fs.existsSync(ufooDir)) {
@@ -94,7 +100,7 @@ class UfooInit {
     const docsLink = path.join(ufooDir, "docs");
     const projectDocs = path.join(project, "docs");
 
-    if (fs.existsSync(projectDocs)) {
+    if (!controllerMode && fs.existsSync(projectDocs)) {
       const linkStat = this.safeLstat(docsLink);
       if (linkStat) {
         fs.unlinkSync(docsLink);

@@ -23,6 +23,7 @@ function sampleTemplate(alias) {
         id: "solo",
         nickname: "solo",
         type: "codex",
+        prompt_profile: "architecture-review",
         startup_order: 1,
         depends_on: [],
         accept_from: [],
@@ -130,5 +131,24 @@ describe("cli groupCoreCommands", () => {
         templatesOptions: { builtinDir, globalDir, projectDir },
       })
     ).rejects.toThrow("cannot use both --global and --project");
+  });
+
+  test("template validate json includes resolved prompt profile metadata", async () => {
+    const logs = [];
+    await runGroupCoreCommand("template", ["validate", "dev-basic"], {
+      cwd: projectRoot,
+      json: true,
+      write: (line) => logs.push(String(line)),
+      templatesOptions: { builtinDir, globalDir, projectDir },
+    });
+
+    const payload = JSON.parse(logs.join("\n"));
+    expect(payload.ok).toBe(true);
+    expect(payload.prompt_profiles).toEqual([
+      expect.objectContaining({
+        requested_profile: "architecture-review",
+        resolved_profile: "system-architect",
+      }),
+    ]);
   });
 });

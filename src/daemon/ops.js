@@ -191,6 +191,14 @@ function escapeAppleScriptString(str) {
   return String(str).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
+function buildShellEnvPrefix(extraEnv = {}) {
+  if (!extraEnv || typeof extraEnv !== "object") return "";
+  return Object.entries(extraEnv)
+    .filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(String(key || "")))
+    .map(([key, value]) => `${key}=${shellEscape(String(value ?? ""))}`)
+    .join(" ");
+}
+
 function runAppleScript(lines) {
   return new Promise((resolve, reject) => {
     const proc = spawn("osascript", lines.flatMap((l) => ["-e", l]));
@@ -494,7 +502,7 @@ async function spawnManagedHostAgent(
   return { child: null, subscriberId: subscriberId || null, sessionId, injectSock };
 }
 
-async function spawnInternalAgent(projectRoot, agent, count = 1, nickname = "", processManager = null) {
+async function spawnInternalAgent(projectRoot, agent, count = 1, nickname = "", processManager = null, extraEnv = {}) {
   const runner = path.join(projectRoot, "bin", "ufoo.js");
   const logDir = getUfooPaths(projectRoot).runDir;
   fs.mkdirSync(logDir, { recursive: true });
@@ -549,6 +557,7 @@ async function spawnInternalAgent(projectRoot, agent, count = 1, nickname = "", 
       cwd: projectRoot,
       env: {
         ...process.env,
+        ...(extraEnv && typeof extraEnv === "object" ? extraEnv : {}),
         UFOO_INTERNAL_AGENT: "1",
         UFOO_INTERNAL_PTY: usePty ? "1" : "0",
         UFOO_SUBSCRIBER_ID: subscriberId,  // 直接传递 subscriber ID
@@ -711,13 +720,22 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
   const mode = resolveConfiguredLaunchMode(config.launchMode, options);
   const launchScope = normalizeLaunchScope(options.launchScope, "inplace");
   const terminalApp = normalizeTerminalAppPreference(options.terminalApp);
+  const extraEnvObject = options.extraEnv && typeof options.extraEnv === "object" ? options.extraEnv : {};
+  const extraEnvPrefix = buildShellEnvPrefix(extraEnvObject);
   const normalizedAgent = normalizeLaunchAgent(agent);
   if (!normalizedAgent) {
     throw new Error(`unsupported agent type: ${agent}`);
   }
 
   if (mode === "internal") {
-    const result = await spawnInternalAgent(projectRoot, normalizedAgent, count, nickname, processManager);
+    const result = await spawnInternalAgent(
+      projectRoot,
+      normalizedAgent,
+      count,
+      nickname,
+      processManager,
+      extraEnvObject
+    );
     return { mode: "internal", launchScope, subscriberIds: result.subscriberIds };
   }
   if (mode === "tmux") {
@@ -750,15 +768,15 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
       const nick = count > 1 ? `${nickname || defaultNick}-${i + 1}` : (nickname || "");
       if (useSeparateWindow) {
         // eslint-disable-next-line no-await-in-loop
-        await spawnTmuxWindow(projectRoot, normalizedAgent, nick);
+        await spawnTmuxWindow(projectRoot, normalizedAgent, nick, [], extraEnvPrefix);
       } else {
         try {
           // eslint-disable-next-line no-await-in-loop
-          await spawnTmuxPane(projectRoot, normalizedAgent, nick, [], "", paneTarget);
+          await spawnTmuxPane(projectRoot, normalizedAgent, nick, [], extraEnvPrefix, paneTarget);
         } catch {
           // Fallback to new window when current pane target cannot be resolved.
           // eslint-disable-next-line no-await-in-loop
-          await spawnTmuxWindow(projectRoot, normalizedAgent, nick);
+          await spawnTmuxWindow(projectRoot, normalizedAgent, nick, [], extraEnvPrefix);
         }
       }
     }
@@ -777,7 +795,7 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
         nick,
         processManager,
         [],
-        "",
+        extraEnvPrefix,
         hostContext
       );
       if (result.subscriberId) subscriberIds.push(result.subscriberId);
@@ -801,7 +819,7 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
       nick,
       processManager,
       [],
-      "",
+      extraEnvPrefix,
       launchScope,
       terminalApp
     );

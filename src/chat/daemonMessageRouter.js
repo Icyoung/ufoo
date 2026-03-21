@@ -286,7 +286,14 @@ function createDaemonMessageRouter(options = {}) {
       payload.disambiguate.candidates.length > 0
     ) {
       const pending = getPending();
-      setPending({ disambiguate: payload.disambiguate, original: pending && pending.original });
+      const routedProjectRoot = payload.routed_project && payload.routed_project.project_root
+        ? payload.routed_project.project_root
+        : (pending && pending.project_root ? pending.project_root : "");
+      setPending({
+        disambiguate: payload.disambiguate,
+        original: pending && pending.original,
+        project_root: routedProjectRoot || undefined,
+      });
       const prompt = payload.disambiguate.prompt || "Choose target:";
       resolveStatusLine(`{gray-fg}?{/gray-fg} ${escapeBlessed(prompt)}`);
       logMessage("disambiguate", `{white-fg}?{/white-fg} ${escapeBlessed(prompt)}`);
@@ -321,6 +328,19 @@ function createDaemonMessageRouter(options = {}) {
     const data = msg.data || {};
     if (data.event === "activity_state_changed") {
       requestStatus();
+      return true;
+    }
+    if (data.event === "controller_report") {
+      const report = data.report && typeof data.report === "object" ? data.report : {};
+      const publisher = report.agent_id || data.publisher || "ufoo-agent";
+      const displayName = resolveAgentDisplayName(publisher);
+      const detail = report.summary || report.message || data.message || report.task_id || "report";
+      logMessage(
+        "system",
+        `{gray-fg}↥{/gray-fg} {cyan-fg}${escapeBlessed(displayName)}{/cyan-fg} {gray-fg}→ ufoo-agent{/gray-fg} ${escapeBlessed(detail)}`
+      );
+      requestStatus();
+      renderScreen();
       return true;
     }
     const prefix = data.event === "broadcast" ? "{gray-fg}⇢{/gray-fg}" : "{gray-fg}↔{/gray-fg}";

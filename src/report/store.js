@@ -216,6 +216,11 @@ function listControllerInboxEntries(projectRoot, controllerId = "ufoo-agent", op
   return rows.slice(rows.length - num);
 }
 
+function countControllerInboxEntries(projectRoot, controllerId = "ufoo-agent") {
+  const file = getControllerInboxFile(projectRoot, controllerId);
+  return parseJsonLines(file).length;
+}
+
 function clearControllerInbox(projectRoot, controllerId = "ufoo-agent") {
   const file = getControllerInboxFile(projectRoot, controllerId);
   try {
@@ -326,6 +331,7 @@ module.exports = {
   getControllerInboxFile,
   appendControllerInboxEntry,
   listControllerInboxEntries,
+  countControllerInboxEntries,
   clearControllerInbox,
   consumeControllerInboxEntries,
 };

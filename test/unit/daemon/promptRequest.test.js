@@ -3,11 +3,15 @@ const os = require("os");
 const path = require("path");
 const { IPC_RESPONSE_TYPES } = require("../../../src/shared/eventContract");
 const { handlePromptRequest } = require("../../../src/daemon/promptRequest");
+jest.mock("../../../src/globalMode", () => ({
+  isGlobalControllerProjectRoot: jest.fn(() => false),
+}));
 const {
   normalizeReportInput,
   appendControllerInboxEntry,
   listControllerInboxEntries,
 } = require("../../../src/report/store");
+const { isGlobalControllerProjectRoot } = require("../../../src/globalMode");
 
 function parseWritePayload(writeCallArg) {
   const line = String(writeCallArg || "").trim();
@@ -15,6 +19,10 @@ function parseWritePayload(writeCallArg) {
 }
 
 describe("daemon promptRequest", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
   test("writes response payload on successful prompt handling", async () => {
     const socket = { write: jest.fn() };
     const log = jest.fn();
@@ -151,6 +159,8 @@ describe("daemon promptRequest", () => {
     const calledPrompt = runPromptWithAssistant.mock.calls[0][0].prompt;
     expect(calledPrompt).toContain("Private runtime reports for ufoo-agent");
     expect(calledPrompt).toContain("\"task_id\": \"task-1\"");
+    expect(calledPrompt).toContain("control-plane observability");
+    expect(calledPrompt).toContain("do not dispatch that handoff again");
     expect(listControllerInboxEntries(projectRoot, "ufoo-agent")).toHaveLength(0);
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
@@ -241,5 +251,125 @@ describe("daemon promptRequest", () => {
       message: "new",
     }));
     fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  test("global controller uses router mode then proxies prompt to target project", async () => {
+    isGlobalControllerProjectRoot.mockReturnValue(true);
+    const socket = { write: jest.fn() };
+    const runPromptWithAssistant = jest.fn().mockResolvedValue({
+      ok: true,
+      payload: {
+        reply: "routing",
+        project_route: {
+          project_root: "/tmp/project-a",
+          project_name: "alpha",
+          prompt: "Handle billing fix",
+          reason: "billing ownership",
+        },
+        dispatch: [{ target: "codex:1", message: "ignore" }],
+        ops: [{ action: "launch", agent: "codex", count: 1 }],
+      },
+      opsResults: [],
+    });
+    const forwardProjectPrompt = jest.fn().mockResolvedValue({
+      ok: true,
+      project_root: "/tmp/project-a",
+      project_name: "alpha",
+      payload: { reply: "done", dispatch: [{ target: "codex:1", message: "do" }], ops: [] },
+      opsResults: [{ action: "launch", ok: true }],
+    });
+
+    const ok = await handlePromptRequest({
+      projectRoot: "/tmp/controller",
+      req: { text: "fix billing issue" },
+      socket,
+      provider: "codex-cli",
+      model: "",
+      runPromptWithAssistant,
+      runUfooAgent: jest.fn(),
+      runAssistantTask: jest.fn(),
+      dispatchMessages: jest.fn(),
+      handleOps: jest.fn(),
+      markPending: jest.fn(),
+      reportTaskStatus: jest.fn(),
+      forwardProjectPrompt,
+      log: jest.fn(),
+    });
+
+    expect(ok).toBe(true);
+    expect(runPromptWithAssistant).toHaveBeenCalledWith(expect.objectContaining({
+      ufooAgentOptions: { routingMode: "global-router" },
+      finalizeLocally: false,
+    }));
+    expect(forwardProjectPrompt).toHaveBeenCalledWith(expect.objectContaining({
+      targetProjectRoot: "/tmp/project-a",
+      targetProjectName: "alpha",
+      prompt: "Handle billing fix",
+      routeReason: "billing ownership",
+    }));
+    const msg = parseWritePayload(socket.write.mock.calls[0][0]);
+    expect(msg).toEqual({
+      type: IPC_RESPONSE_TYPES.RESPONSE,
+      data: {
+        reply: "done",
+        dispatch: [{ target: "codex:1", message: "do" }],
+        ops: [],
+        routed_project: {
+          project_root: "/tmp/project-a",
+          project_name: "alpha",
+          reason: "billing ownership",
+        },
+      },
+      opsResults: [{ action: "launch", ok: true }],
+    });
+  });
+
+  test("global controller can directly forward to forced project root", async () => {
+    isGlobalControllerProjectRoot.mockReturnValue(true);
+    const socket = { write: jest.fn() };
+    const runPromptWithAssistant = jest.fn();
+    const forwardProjectPrompt = jest.fn().mockResolvedValue({
+      ok: true,
+      project_root: "/tmp/project-b",
+      project_name: "beta",
+      payload: { reply: "project reply", dispatch: [], ops: [] },
+      opsResults: [],
+    });
+
+    const ok = await handlePromptRequest({
+      projectRoot: "/tmp/controller",
+      req: {
+        text: "Use agent codex:1 to handle: analyze this",
+        request_meta: {
+          source: "chat-dialog",
+          force_project_root: "/tmp/project-b",
+        },
+      },
+      socket,
+      provider: "codex-cli",
+      model: "",
+      runPromptWithAssistant,
+      runUfooAgent: jest.fn(),
+      runAssistantTask: jest.fn(),
+      dispatchMessages: jest.fn(),
+      handleOps: jest.fn(),
+      markPending: jest.fn(),
+      reportTaskStatus: jest.fn(),
+      forwardProjectPrompt,
+      log: jest.fn(),
+    });
+
+    expect(ok).toBe(true);
+    expect(runPromptWithAssistant).not.toHaveBeenCalled();
+    expect(forwardProjectPrompt).toHaveBeenCalledWith(expect.objectContaining({
+      targetProjectRoot: "/tmp/project-b",
+      routeReason: "forced_project_root",
+    }));
+    const msg = parseWritePayload(socket.write.mock.calls[0][0]);
+    expect(msg.data.routed_project).toEqual({
+      project_root: "/tmp/project-b",
+      project_name: "beta",
+      reason: "forced_project_root",
+    });
   });
 });

@@ -7,6 +7,9 @@ function createInputListenerController(options = {}) {
     getSelectedAgentIndex = () => -1,
     getActiveAgents = () => [],
     getTargetAgent = () => null,
+    getGlobalScope = () => "",
+    clearTargetAgent = () => {},
+    exitProjectScope = () => {},
     requestCloseAgent = () => {},
     logMessage = () => {},
     isSuppressKeypress = () => false,
@@ -238,6 +241,17 @@ function createInputListenerController(options = {}) {
     }
 
     if (keyName === "escape") {
+      // Layer 1: clear @target agent
+      if (getTargetAgent && getTargetAgent()) {
+        clearTargetAgent();
+        return;
+      }
+      // Layer 2: exit project scope → global scope
+      if (getGlobalScope && getGlobalScope() === "project") {
+        exitProjectScope();
+        return;
+      }
+      // Layer 3: existing behavior (cancel input)
       if (textarea && typeof textarea._done === "function") {
         textarea._done(null, null);
       }

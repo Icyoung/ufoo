@@ -1,4 +1,5 @@
 const fs = require("fs");
+const EventBus = require("../bus");
 const { BUS_STATUS_PHASES } = require("../shared/eventContract");
 const {
   REPORT_PHASES,
@@ -62,6 +63,21 @@ function publishToPrivateController(projectRoot, entry) {
   appendControllerInboxEntry(projectRoot, entry.controller_id, entry);
 }
 
+async function wakePrivateController(projectRoot, entry, log = () => {}) {
+  if (!entry || entry.scope !== "private" || !entry.controller_id) return false;
+  try {
+    const eventBus = new EventBus(projectRoot);
+    await eventBus.wake(entry.controller_id, {
+      reason: `agent-report:${entry.phase}`,
+      shake: false,
+    });
+    return true;
+  } catch (err) {
+    log(`report wake skipped controller=${entry.controller_id} error=${err.message || String(err)}`);
+    return false;
+  }
+}
+
 async function recordAgentReport({
   projectRoot,
   report,
@@ -72,6 +88,7 @@ async function recordAgentReport({
   appendReport(projectRoot, entry);
   const state = updateReportState(projectRoot, entry);
   publishToPrivateController(projectRoot, entry);
+  await wakePrivateController(projectRoot, entry, log);
   const displayName = resolveAgentDisplayName(projectRoot, entry.agent_id);
   if (entry.scope !== "private") {
     onStatus(buildReportStatus(entry, displayName));
@@ -87,4 +104,5 @@ module.exports = {
   formatStatusText,
   buildReportStatus,
   publishToPrivateController,
+  wakePrivateController,
 };

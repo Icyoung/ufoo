@@ -113,13 +113,16 @@ ucode-core list --json
 
 ## 全局聊天（`ufoo -g`）
 
-使用 `ufoo -g`（或 `ufoo --global`）启动跨项目聊天仪表盘。全局模式会连接所有正在运行的 ufoo 守护进程，支持在不同项目之间快速切换。
+使用 `ufoo -g`（或 `ufoo --global`）启动跨项目聊天仪表盘。全局模式不再绑定当前工作目录，而是使用一个基于家目录的控制器上下文，并将自身运行时写入 `~/.ufoo`，然后按需连接各项目的 ufoo 守护进程。
+
+当全局聊天停留在这个家目录控制器视图时，普通消息会先经过控制器侧的 `ufoo-agent`，由它在当前已注册的 Projects 里选择最合适的项目，再把消息转交给目标项目内的 `ufoo-agent` 继续做 agent 级路由。
 
 ```bash
 $ ufoo -g
 
 > /project list          # 列出所有运行中的项目守护进程
 > /project switch 2      # 切换到第 2 个项目
+> /open ~/Code/my-app    # 按路径初始化/启动/打开一个项目
 > /launch claude scope=inplace   # 在当前上下文启动 Agent
 > @claude-1 开始审查 auth 模块
 ```
@@ -128,8 +131,13 @@ $ ufoo -g
 |------|------|
 | `/project list` | 列出全局运行时注册的项目 |
 | `/project switch <序号\|路径>` | 切换活动项目的 daemon 连接 |
+| `/open <path>` | 仅在全局模式下可用；按路径初始化、启动并打开项目 daemon |
 | `/launch <agent> scope=inplace` | 在当前工作区启动 Agent |
 | `/launch <agent> scope=window` | 在独立终端窗口启动 Agent |
+
+说明：
+- 如果你在控制器视图里直接输入普通消息，全局 `ufoo-agent` 会先尝试把它路由到最相关的已注册项目。
+- 选中的项目里，项目侧 `ufoo-agent` 会继续完成第二跳路由，选择具体 coding agent。
 
 ## Agent 配置
 
