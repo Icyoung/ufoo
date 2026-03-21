@@ -255,6 +255,13 @@ function createDaemonCronController(options = {}) {
     task.timer = null;
   }
 
+  function detachTimer(timer) {
+    if (timer && typeof timer.unref === "function") {
+      timer.unref();
+    }
+    return timer;
+  }
+
   function runTask(task) {
     task.lastRunAt = nowFn();
     task.tickCount += 1;
@@ -292,17 +299,17 @@ function createDaemonCronController(options = {}) {
   function attachTaskTimer(task) {
     if (task.onceAtMs > 0) {
       const delay = Math.max(0, task.onceAtMs - nowFn());
-      task.timer = setTimeoutFn(() => {
+      task.timer = detachTimer(setTimeoutFn(() => {
         runTask(task);
         stopTask(task.id);
-      }, delay);
+      }, delay));
       return;
     }
 
-    task.timer = setIntervalFn(() => {
+    task.timer = detachTimer(setIntervalFn(() => {
       runTask(task);
       persistState();
-    }, task.intervalMs);
+    }, task.intervalMs));
   }
 
   function addTask({ intervalMs = 0, onceAtMs = 0, targets = [], prompt = "", title = "" } = {}) {

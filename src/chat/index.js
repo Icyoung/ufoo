@@ -713,7 +713,6 @@ async function runChat(projectRoot, options = {}) {
   let targetAgent = null;       // Selected agent for direct messaging
   let focusMode = "input";      // "input" or "dashboard"
   let dashboardView = "agents"; // "projects" | "agents" | "mode" | "provider" | "cron"
-  let reportPendingTotal = 0;
   let selectedModeIndex = Math.max(0, MODE_OPTIONS.indexOf(launchMode));
   const providerOptions = [
     { label: "codex", value: "codex-cli" },
@@ -1212,7 +1211,6 @@ async function runChat(projectRoot, options = {}) {
       cronTasks,
       providerOptions,
       resumeOptions,
-      pendingReports: reportPendingTotal,
       dashHints: DASH_HINTS,
       modeOptions: MODE_OPTIONS,
     });
@@ -1256,13 +1254,6 @@ async function runChat(projectRoot, options = {}) {
     if (globalMode) {
       refreshProjectRuntimes();
     }
-    const publicPending = Number.isFinite(status?.reports?.pending_total)
-      ? status.reports.pending_total
-      : 0;
-    const controllerPending = Number.isFinite(status?.controller?.pending_total)
-      ? status.controller.pending_total
-      : 0;
-    reportPendingTotal = publicPending + controllerPending;
     cronTasks = Array.isArray(status?.cron?.tasks) ? status.cron.tasks : [];
     const metaList = Array.isArray(status.active_meta) ? status.active_meta : [];
     let fallbackMap = null;

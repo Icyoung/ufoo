@@ -22,14 +22,13 @@ describe("chat dashboardView", () => {
     expect(providerLabel("unknown")).toBe("codex");
   });
 
-  test("normal mode renders summary line with reports counter", () => {
+  test("normal mode renders summary line without reports counter", () => {
     const out = computeDashboardContent({
       focusMode: "input",
       activeAgents: ["a", "b", "c", "d"],
       getAgentLabel: (id) => `@${id}`,
       launchMode: "tmux",
       agentProvider: "claude-cli",
-      pendingReports: 3,
       cronTasks: [{ id: "c1", summary: "c1@10s->a: smoke" }, { id: "c2", summary: "c2@5m->b: check" }],
       autoResume: false,
       dashHints,
@@ -39,7 +38,7 @@ describe("chat dashboardView", () => {
     expect(out.content).toContain("{gray-fg}Agents:{/gray-fg} {cyan-fg}@a, @b, @c +1{/cyan-fg}");
     expect(out.content).toContain("{gray-fg}Mode:{/gray-fg} {cyan-fg}tmux{/cyan-fg}");
     expect(out.content).toContain("{gray-fg}Agent:{/gray-fg} {cyan-fg}claude{/cyan-fg}");
-    expect(out.content).toContain("{gray-fg}Reports:{/gray-fg} {cyan-fg}3{/cyan-fg}");
+    expect(out.content).not.toContain("{gray-fg}Reports:{/gray-fg}");
     expect(out.content).toContain("{gray-fg}Cron:{/gray-fg} {cyan-fg}2{/cyan-fg}");
   });
 

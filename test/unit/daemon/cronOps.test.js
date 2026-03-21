@@ -16,7 +16,7 @@ describe("daemon cronOps", () => {
     const timers = [];
     const dispatch = jest.fn().mockResolvedValue(undefined);
     const setIntervalFn = jest.fn((fn, ms) => {
-      const timer = { fn, ms, id: `t${timers.length + 1}` };
+      const timer = { fn, ms, id: `t${timers.length + 1}`, unref: jest.fn() };
       timers.push(timer);
       return timer;
     });
@@ -44,6 +44,7 @@ describe("daemon cronOps", () => {
     expect(started.task.title).toBe("follow up");
     expect(started.task.label).toBe("codex-3:follow up:30m");
     expect(setIntervalFn).toHaveBeenCalledWith(expect.any(Function), 1800000);
+    expect(timers[0].unref).toHaveBeenCalledTimes(1);
 
     timers[0].fn();
     await Promise.resolve();
@@ -127,7 +128,7 @@ describe("daemon cronOps", () => {
     let timeoutHandler = null;
     const setTimeoutFn = jest.fn((fn) => {
       timeoutHandler = fn;
-      return { id: "timeout-1" };
+      return { id: "timeout-1", unref: jest.fn() };
     });
     const clearTimeoutFn = jest.fn();
 
@@ -149,6 +150,7 @@ describe("daemon cronOps", () => {
     expect(started.ok).toBe(true);
     expect(started.task.mode).toBe("once");
     expect(controller.handleCronOp({ operation: "list" }).count).toBe(1);
+    expect(setTimeoutFn.mock.results[0].value.unref).toHaveBeenCalledTimes(1);
 
     timeoutHandler();
     await Promise.resolve();

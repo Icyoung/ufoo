@@ -36,7 +36,6 @@ function buildSummaryLine(options = {}) {
     launchMode = "terminal",
     agentProvider = "codex-cli",
     cronTasks = [],
-    pendingReports = 0,
   } = options;
   const agents = activeAgents.length > 0
     ? activeAgents.slice(0, 3)
@@ -47,7 +46,6 @@ function buildSummaryLine(options = {}) {
   return `{gray-fg}Agents:{/gray-fg} {cyan-fg}${agents}{/cyan-fg}`
     + `  {gray-fg}Mode:{/gray-fg} {cyan-fg}${launchMode}{/cyan-fg}`
     + `  {gray-fg}Agent:{/gray-fg} {cyan-fg}${providerLabel(agentProvider)}{/cyan-fg}`
-    + `  {gray-fg}Reports:{/gray-fg} {cyan-fg}${Number.isFinite(pendingReports) ? pendingReports : 0}{/cyan-fg}`
     + `  {gray-fg}Cron:{/gray-fg} {cyan-fg}${Array.isArray(cronTasks) ? cronTasks.length : 0}{/cyan-fg}`;
 }
 
@@ -132,7 +130,6 @@ function buildDashboardDetailLine(options = {}) {
     selectedResumeIndex = 0,
     selectedCronIndex = -1,
     cronTasks = [],
-    pendingReports = 0,
     providerOptions = [],
     resumeOptions = [],
     dashHints = {},
@@ -293,7 +290,6 @@ function computeDashboardContent(options = {}) {
         launchMode,
         agentProvider,
         cronTasks,
-        pendingReports,
       });
       return {
         content: `${rail.line}\n ${line2}`,
@@ -356,7 +352,6 @@ function computeDashboardContent(options = {}) {
     launchMode,
     agentProvider,
     cronTasks,
-    pendingReports,
   });
 
   return { content, windowStart: agentListWindowStart };
