@@ -6,7 +6,7 @@ function safeStrWidth(strWidth, value) {
 function getInnerWidth({ input, screen, promptWidth = 2 }) {
   const lpos = input.lpos || input._getCoords();
   if (lpos && Number.isFinite(lpos.xl) && Number.isFinite(lpos.xi)) {
-    return Math.max(1, lpos.xl - lpos.xi + 1);
+    return Math.max(1, lpos.xl - lpos.xi);
   }
   if (typeof input.width === "number") return Math.max(1, input.width);
   if (typeof input.width === "string") {

@@ -3,9 +3,14 @@ const path = require("path");
 const os = require("os");
 const {
   TEMPLATE_SOURCE,
+  defaultBuiltinTemplatesDir,
+  defaultGlobalTemplatesDir,
+  defaultProjectTemplatesDir,
+  getTemplateDirs,
   createTemplateFromBuiltin,
   loadTemplateRegistry,
   resolveTemplateReference,
+  normalizeTemplateAlias,
 } = require("../../../src/group/templates");
 
 const TEST_ROOT = path.join(os.tmpdir(), "ufoo-group-templates-test");
@@ -103,6 +108,61 @@ describe("group templates registry", () => {
     const saved = JSON.parse(fs.readFileSync(created.filePath, "utf8"));
     expect(saved.template.alias).toBe("team-alpha");
     expect(saved.template.name).toBe("Dev Basic");
+  });
+
+  test("normalizeTemplateAlias trims alias strings", () => {
+    expect(normalizeTemplateAlias("  Build-Lane  ")).toBe("Build-Lane");
+    expect(normalizeTemplateAlias("my-template")).toBe("my-template");
+    expect(normalizeTemplateAlias("")).toBe("");
+  });
+
+  test("getTemplateDirs returns defaults from projectRoot", () => {
+    const dirs = getTemplateDirs(projectRoot);
+    expect(dirs.builtinDir).toBeTruthy();
+    expect(dirs.globalDir).toBeTruthy();
+    expect(dirs.projectDir).toContain(projectRoot);
+  });
+
+  test("getTemplateDirs uses custom options", () => {
+    const dirs = getTemplateDirs(projectRoot, {
+      builtinDir: "/custom/builtin",
+      globalDir: "/custom/global",
+      projectDir: "/custom/project",
+    });
+    expect(dirs.builtinDir).toBe("/custom/builtin");
+    expect(dirs.globalDir).toBe("/custom/global");
+    expect(dirs.projectDir).toBe("/custom/project");
+  });
+
+  test("defaultBuiltinTemplatesDir returns valid path", () => {
+    expect(defaultBuiltinTemplatesDir()).toContain("templates");
+  });
+
+  test("defaultGlobalTemplatesDir returns homedir-based path", () => {
+    expect(defaultGlobalTemplatesDir()).toContain(".ufoo");
+  });
+
+  test("defaultProjectTemplatesDir uses projectRoot", () => {
+    expect(defaultProjectTemplatesDir("/my/project")).toContain("/my/project");
+  });
+
+  test("loadTemplateRegistry returns empty for missing dirs", () => {
+    const registry = loadTemplateRegistry(projectRoot, {
+      builtinDir: "/nonexistent/a",
+      globalDir: "/nonexistent/b",
+      projectDir: "/nonexistent/c",
+    });
+    expect(registry.templates).toEqual([]);
+  });
+
+  test("resolveTemplateReference returns null entry for missing alias", () => {
+    const result = resolveTemplateReference(projectRoot, "nonexistent", {
+      builtinDir: "/nonexistent",
+      globalDir: "/nonexistent",
+      projectDir: "/nonexistent",
+      cwd: projectRoot,
+    });
+    expect(result.entry).toBeNull();
   });
 
   test("createTemplateFromBuiltin surfaces builtin loader diagnostics", () => {

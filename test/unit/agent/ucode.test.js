@@ -1,12 +1,17 @@
 const fs = require("fs");
 const {
   bundledModuleRoots,
+  defaultBundledCoreRoot,
   tokenizeCommand,
   splitCommand,
   hasAnyArg,
+  pickBinEntry,
   normalizeAppendSystemPromptMode,
   isLikelyPiCoreCommand,
   readLastArgValue,
+  canExecutePath,
+  resolveCoreFromPath,
+  resolveCandidateCoreRoot,
   resolveNativeFallbackCommand,
   resolveUcodeLaunch,
 } = require("../../../src/agent/ucode");
@@ -110,5 +115,97 @@ describe("ucode launcher resolver", () => {
     const roots = bundledModuleRoots();
     expect(Array.isArray(roots)).toBe(true);
     expect(roots[0]).toMatch(/src\/code$/);
+  });
+
+  test("tokenizeCommand handles single quotes", () => {
+    expect(tokenizeCommand("echo 'hello world'")).toEqual(["echo", "hello world"]);
+  });
+
+  test("tokenizeCommand handles double quotes with escapes", () => {
+    expect(tokenizeCommand('echo "hello \\"world\\""')).toEqual(["echo", 'hello "world"']);
+  });
+
+  test("tokenizeCommand handles backslash escapes", () => {
+    expect(tokenizeCommand("echo hello\\ world")).toEqual(["echo", "hello world"]);
+  });
+
+  test("tokenizeCommand handles trailing backslash", () => {
+    expect(tokenizeCommand("echo hello\\")).toEqual(["echo", "hello\\"]);
+  });
+
+  test("tokenizeCommand falls back to split on unclosed quote", () => {
+    const result = tokenizeCommand("echo 'unclosed");
+    expect(result).toEqual(["echo", "'unclosed"]);
+  });
+
+  test("splitCommand returns fallback for empty input", () => {
+    expect(splitCommand("")).toEqual({ command: "pi", args: [] });
+    expect(splitCommand("", "custom")).toEqual({ command: "custom", args: [] });
+  });
+
+  test("hasAnyArg returns false for empty arrays", () => {
+    expect(hasAnyArg([], ["--flag"])).toBe(false);
+    expect(hasAnyArg(null, ["--flag"])).toBe(false);
+  });
+
+  test("pickBinEntry handles string bin field", () => {
+    expect(pickBinEntry("./cli.js")).toBe("./cli.js");
+  });
+
+  test("pickBinEntry handles object bin field", () => {
+    expect(pickBinEntry({ tool: "./tool.js" })).toBe("./tool.js");
+    expect(pickBinEntry({ ucode: "./ucode.js", other: "./other.js" })).toBe("./ucode.js");
+  });
+
+  test("pickBinEntry returns empty for empty/null", () => {
+    expect(pickBinEntry({})).toBe("");
+    expect(pickBinEntry(null)).toBe("");
+  });
+
+  test("normalizeAppendSystemPromptMode handles all variants", () => {
+    expect(normalizeAppendSystemPromptMode("force")).toBe("always");
+    expect(normalizeAppendSystemPromptMode("on")).toBe("always");
+    expect(normalizeAppendSystemPromptMode("1")).toBe("always");
+    expect(normalizeAppendSystemPromptMode("true")).toBe("always");
+    expect(normalizeAppendSystemPromptMode("off")).toBe("never");
+    expect(normalizeAppendSystemPromptMode("0")).toBe("never");
+    expect(normalizeAppendSystemPromptMode("false")).toBe("never");
+    expect(normalizeAppendSystemPromptMode("")).toBe("auto");
+  });
+
+  test("isLikelyPiCoreCommand detects ucode variants", () => {
+    expect(isLikelyPiCoreCommand("ucode")).toBe(true);
+    expect(isLikelyPiCoreCommand("ucode-core")).toBe(true);
+    expect(isLikelyPiCoreCommand("node", ["ucode-core"])).toBe(true);
+    expect(isLikelyPiCoreCommand("node", ["\\src\\code\\agent.js"])).toBe(true);
+    expect(isLikelyPiCoreCommand("random")).toBe(false);
+    expect(isLikelyPiCoreCommand("")).toBe(false);
+  });
+
+  test("readLastArgValue reads flag and inline values", () => {
+    expect(readLastArgValue(["--model", "gpt4", "--model", "gpt5"], "--model")).toBe("gpt5");
+    expect(readLastArgValue(["--model=inline"], "--model")).toBe("inline");
+    expect(readLastArgValue([], "--model")).toBe("");
+    expect(readLastArgValue(null, "--model")).toBe("");
+  });
+
+  test("canExecutePath returns false for empty/nonexistent", () => {
+    expect(canExecutePath("")).toBe(false);
+    expect(canExecutePath("/nonexistent/file")).toBe(false);
+  });
+
+  test("resolveCoreFromPath returns null for nonexistent dir", () => {
+    expect(resolveCoreFromPath("/nonexistent/dir")).toBeNull();
+    expect(resolveCoreFromPath("")).toBeNull();
+  });
+
+  test("resolveCandidateCoreRoot returns null (native-only mode)", () => {
+    expect(resolveCandidateCoreRoot()).toBeNull();
+  });
+
+  test("defaultBundledCoreRoot returns src/code path", () => {
+    const root = defaultBundledCoreRoot();
+    expect(root).toContain("src");
+    expect(root).toContain("code");
   });
 });

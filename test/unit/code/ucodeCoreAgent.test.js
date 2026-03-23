@@ -53,6 +53,8 @@ const {
   shouldAutoConsumeBus,
   parseAgentArgs,
   resolveUfooProjectRoot,
+  extractAgentNickname,
+  buildNlFallbackSummary,
 } = require("../../../src/code/agent");
 
 describe("ucode core agent nl path", () => {
@@ -740,6 +742,76 @@ describe("ucode core agent nl path", () => {
     const parsed = parseAgentArgs(["--tui", "--no-tui"]);
     expect(parsed.forceTui).toBe(true);
     expect(parsed.disableTui).toBe(true);
+  });
+
+  test("extractAgentNickname extracts known agent base names", () => {
+    expect(extractAgentNickname("ufoo-agent:abc")).toBe("ufoo");
+    expect(extractAgentNickname("claude-code:xyz")).toBe("claude");
+    expect(extractAgentNickname("ufoo-code:123")).toBe("ucode");
+    expect(extractAgentNickname("codex:abc")).toBe("codex");
+    expect(extractAgentNickname("")).toBe("");
+    expect(extractAgentNickname(null)).toBe("");
+  });
+
+  test("formatNlResult returns JSON when asJson=true", () => {
+    const json = formatNlResult({ ok: true, summary: "done" }, true);
+    expect(JSON.parse(json).ok).toBe(true);
+  });
+
+  test("formatNlResult returns default JSON for invalid input", () => {
+    const json = formatNlResult(null, true);
+    const parsed = JSON.parse(json);
+    expect(parsed.ok).toBe(false);
+    expect(parsed.error).toBe("invalid nl result");
+  });
+
+  test("formatNlResult returns Cancelled for cancelled tasks", () => {
+    expect(formatNlResult({ cancelled: true })).toBe("Cancelled.");
+  });
+
+  test("formatNlResult returns summary when available", () => {
+    expect(formatNlResult({ ok: true, summary: "all good" })).toBe("all good");
+  });
+
+  test("formatNlResult falls back to artifacts", () => {
+    expect(formatNlResult({ ok: true, summary: "", artifacts: ["a", "b"] })).toBe("a\nb");
+  });
+
+  test("formatNlResult returns default error for failed task", () => {
+    expect(formatNlResult({ ok: false })).toBe("Error: task failed");
+  });
+
+  test("buildNlFallbackSummary returns ok for empty logs", () => {
+    const result = buildNlFallbackSummary([]);
+    expect(typeof result).toBe("string");
+  });
+
+  test("buildNlFallbackSummary includes tool event count", () => {
+    const logs = [
+      { tool: "read", file: "src/test.js" },
+      { tool: "edit", file: "src/test.js" },
+    ];
+    const result = buildNlFallbackSummary(logs);
+    expect(result).toContain("2");
+  });
+
+  test("getPendingBusCount returns 0 for empty workspace", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-pending-"));
+    try {
+      expect(getPendingBusCount(tmpDir, "codex:test")).toBe(0);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test("extractBusMessageTask extracts task from JSON message", () => {
+    const json = JSON.stringify({ message: "do something" });
+    const result = extractBusMessageTask(json);
+    expect(result).toContain("do something");
+  });
+
+  test("extractBusMessageTask handles plain text", () => {
+    expect(extractBusMessageTask("plain text")).toBe("plain text");
   });
 
   test("resolveUcodeProviderModel defaults to ufoo config provider mapping", () => {

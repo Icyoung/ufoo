@@ -76,6 +76,45 @@ describe("ucode-core tool kernel", () => {
     expect(result.error).toContain("unknown");
   });
 
+  test("edit returns error when find pattern is empty", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-edit-nofind-"));
+    runWriteTool({ path: "test.txt", content: "hello" }, { workspaceRoot: root });
+    const result = runEditTool({ path: "test.txt", find: "", replace: "x" }, { workspaceRoot: root });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("find pattern");
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test("edit replaceAll replaces multiple occurrences", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-edit-all-"));
+    runWriteTool({ path: "test.txt", content: "aaa bbb aaa" }, { workspaceRoot: root });
+    const result = runEditTool(
+      { path: "test.txt", find: "aaa", replace: "ccc", all: true },
+      { workspaceRoot: root }
+    );
+    expect(result.ok).toBe(true);
+    expect(result.replacements).toBe(2);
+    expect(fs.readFileSync(path.join(root, "test.txt"), "utf8")).toBe("ccc bbb ccc");
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test("edit returns ok=true changed=false when find not found", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-edit-nochange-"));
+    runWriteTool({ path: "test.txt", content: "hello" }, { workspaceRoot: root });
+    const result = runEditTool({ path: "test.txt", find: "xyz", replace: "abc" }, { workspaceRoot: root });
+    expect(result.ok).toBe(true);
+    expect(result.changed).toBe(false);
+    expect(result.replacements).toBe(0);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test("edit returns error for nonexistent file", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-edit-nofile-"));
+    const result = runEditTool({ path: "missing.txt", find: "x", replace: "y" }, { workspaceRoot: root });
+    expect(result.ok).toBe(false);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
   test("workspace path escape is blocked", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-core-escape-"));
     const result = runReadTool({

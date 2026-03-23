@@ -10,6 +10,12 @@ const {
   readJSONL,
   appendJSONL,
   truncateFile,
+  isValidTty,
+  readLastLine,
+  ensureDir,
+  sleep,
+  isMetaActive,
+  normalizeAgentTypeAlias,
 } = require('../../../src/bus/utils');
 const fs = require('fs');
 const path = require('path');
@@ -235,6 +241,133 @@ describe('Bus Utils', () => {
       it('should not fail for non-existent file', () => {
         expect(() => truncateFile('/nonexistent.txt')).not.toThrow();
       });
+    });
+  });
+
+  describe('isValidTty', () => {
+    it('returns false for falsy input', () => {
+      expect(isValidTty(null)).toBe(false);
+      expect(isValidTty("")).toBe(false);
+      expect(isValidTty(undefined)).toBe(false);
+    });
+
+    it('returns false for /dev/tty', () => {
+      expect(isValidTty("/dev/tty")).toBe(false);
+    });
+
+    it('returns false for non-/dev/ paths', () => {
+      expect(isValidTty("/tmp/tty")).toBe(false);
+    });
+
+    it('returns true for valid tty paths', () => {
+      expect(isValidTty("/dev/ttys001")).toBe(true);
+      expect(isValidTty("/dev/pts/1")).toBe(true);
+    });
+  });
+
+  describe('readLastLine', () => {
+    it('returns null for non-existent file', () => {
+      expect(readLastLine('/nonexistent')).toBeNull();
+    });
+
+    it('returns null for empty file', () => {
+      const file = path.join(testDir, 'empty.txt');
+      fs.writeFileSync(file, '', 'utf8');
+      expect(readLastLine(file)).toBeNull();
+    });
+
+    it('returns last line of file', () => {
+      const file = path.join(testDir, 'lines.txt');
+      fs.writeFileSync(file, 'line1\nline2\nline3', 'utf8');
+      expect(readLastLine(file)).toBe('line3');
+    });
+  });
+
+  describe('ensureDir', () => {
+    it('creates directory if not exists', () => {
+      const dir = path.join(testDir, 'new', 'nested');
+      ensureDir(dir);
+      expect(fs.existsSync(dir)).toBe(true);
+    });
+
+    it('does not fail if directory exists', () => {
+      ensureDir(testDir);
+      expect(fs.existsSync(testDir)).toBe(true);
+    });
+  });
+
+  describe('sleep', () => {
+    it('resolves after delay', async () => {
+      const start = Date.now();
+      await sleep(50);
+      expect(Date.now() - start).toBeGreaterThanOrEqual(40);
+    });
+  });
+
+  describe('normalizeAgentTypeAlias', () => {
+    it('normalizes codex', () => {
+      expect(normalizeAgentTypeAlias("codex")).toBe("codex");
+    });
+
+    it('normalizes claude variants', () => {
+      expect(normalizeAgentTypeAlias("claude")).toBe("claude-code");
+      expect(normalizeAgentTypeAlias("claude-code")).toBe("claude-code");
+    });
+
+    it('normalizes ufoo variants', () => {
+      expect(normalizeAgentTypeAlias("ufoo")).toBe("ufoo-code");
+      expect(normalizeAgentTypeAlias("ucode")).toBe("ufoo-code");
+      expect(normalizeAgentTypeAlias("ufoo-code")).toBe("ufoo-code");
+    });
+
+    it('returns empty for empty input', () => {
+      expect(normalizeAgentTypeAlias("")).toBe("");
+      expect(normalizeAgentTypeAlias(null)).toBe("");
+    });
+
+    it('returns lowercase for unknown types', () => {
+      expect(normalizeAgentTypeAlias("custom")).toBe("custom");
+    });
+  });
+
+  describe('isMetaActive', () => {
+    it('returns false for null meta', () => {
+      expect(isMetaActive(null)).toBe(false);
+    });
+
+    it('returns false for inactive status', () => {
+      expect(isMetaActive({ status: "inactive" })).toBe(false);
+    });
+
+    it('returns true when pid is alive', () => {
+      expect(isMetaActive({ status: "active", pid: process.pid })).toBe(true);
+    });
+
+    it('returns false when pid is dead', () => {
+      expect(isMetaActive({ status: "active", pid: 999999 })).toBe(false);
+    });
+
+    it('uses heartbeat timeout for active status without pid', () => {
+      expect(isMetaActive({
+        status: "active",
+        last_seen: new Date().toISOString(),
+      })).toBe(true);
+
+      expect(isMetaActive({
+        status: "active",
+        last_seen: new Date(Date.now() - 60000).toISOString(),
+      })).toBe(false);
+    });
+
+    it('uses joined_at for active status without last_seen or pid', () => {
+      expect(isMetaActive({
+        status: "active",
+        joined_at: new Date().toISOString(),
+      })).toBe(true);
+    });
+
+    it('returns true for active without any time info', () => {
+      expect(isMetaActive({ status: "active" })).toBe(true);
     });
   });
 });

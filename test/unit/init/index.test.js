@@ -196,4 +196,135 @@ describe("UfooInit markdown handling", () => {
     expect(fs.existsSync(path.join(projectRoot, "CLAUDE.md"))).toBe(false);
     expect(fs.existsSync(path.join(projectRoot, ".ufoo", "context", "decisions.jsonl"))).toBe(true);
   });
+
+  test("init with context and bus modules", async () => {
+    await init.init({
+      modules: "context,bus",
+      project: projectRoot,
+    });
+
+    expect(fs.existsSync(path.join(projectRoot, ".ufoo", "context", "decisions"))).toBe(true);
+    expect(fs.existsSync(path.join(projectRoot, ".ufoo", "bus"))).toBe(true);
+  });
+
+  test("init with resources module when module exists", async () => {
+    // Create resources module
+    const resourcesDir = path.join(repoRoot, "modules", "resources");
+    fs.mkdirSync(resourcesDir, { recursive: true });
+    fs.writeFileSync(path.join(resourcesDir, "test.txt"), "resource content");
+
+    await init.init({
+      modules: "resources",
+      project: projectRoot,
+    });
+
+    const destFile = path.join(projectRoot, ".ufoo", "resources", "test.txt");
+    expect(fs.existsSync(destFile)).toBe(true);
+    expect(fs.readFileSync(destFile, "utf8")).toBe("resource content");
+  });
+
+  test("init with resources module when module does not exist", async () => {
+    await init.init({
+      modules: "resources",
+      project: projectRoot,
+    });
+    // Should not crash, just log and skip
+  });
+
+  test("init with unknown module logs error", async () => {
+    await init.init({
+      modules: "unknown-module",
+      project: projectRoot,
+    });
+    expect(errorSpy).toHaveBeenCalledWith("Unknown module: unknown-module");
+  });
+
+  test("initContext creates decisions directory structure", () => {
+    init.initContext(projectRoot);
+    expect(fs.existsSync(path.join(projectRoot, ".ufoo", "context", "decisions"))).toBe(true);
+    expect(fs.existsSync(path.join(projectRoot, ".ufoo", "context", "decisions.jsonl"))).toBe(true);
+  });
+
+  test("initCore creates .ufoo directory", () => {
+    init.initCore(projectRoot);
+    expect(fs.existsSync(path.join(projectRoot, ".ufoo"))).toBe(true);
+  });
+
+  test("initCore creates docs symlink when docs/ exists", () => {
+    const docsDir = path.join(projectRoot, "docs");
+    fs.mkdirSync(docsDir, { recursive: true });
+    fs.writeFileSync(path.join(docsDir, "README.md"), "docs");
+
+    init.initCore(projectRoot);
+    const docsLink = path.join(projectRoot, ".ufoo", "docs");
+    expect(fs.existsSync(docsLink)).toBe(true);
+  });
+
+  test("safeLstat returns null for nonexistent file", () => {
+    expect(init.safeLstat("/nonexistent/path")).toBeNull();
+  });
+
+  test("safeLstat returns stat for existing file", () => {
+    const file = path.join(projectRoot, "test.txt");
+    fs.writeFileSync(file, "content");
+    expect(init.safeLstat(file)).not.toBeNull();
+  });
+
+  test("findFirstHeadingEnd finds ATX heading", () => {
+    expect(init.findFirstHeadingEnd("# Title\nContent")).toBeGreaterThan(0);
+    expect(init.findFirstHeadingEnd("## Subtitle\nContent")).toBeGreaterThan(0);
+  });
+
+  test("findFirstHeadingEnd finds setext heading", () => {
+    expect(init.findFirstHeadingEnd("Title\n===\nContent")).toBeGreaterThan(0);
+    expect(init.findFirstHeadingEnd("Title\n---\nContent")).toBeGreaterThan(0);
+  });
+
+  test("findFirstHeadingEnd returns -1 when no heading", () => {
+    expect(init.findFirstHeadingEnd("no heading here")).toBe(-1);
+  });
+
+  test("copyModuleContent copies files and subdirectories", () => {
+    const src = path.join(projectRoot, "src-mod");
+    const dest = path.join(projectRoot, "dest-mod");
+    fs.mkdirSync(path.join(src, "sub"), { recursive: true });
+    fs.writeFileSync(path.join(src, "file.txt"), "root file");
+    fs.writeFileSync(path.join(src, "sub", "nested.txt"), "nested file");
+
+    init.copyModuleContent(src, dest);
+
+    expect(fs.readFileSync(path.join(dest, "file.txt"), "utf8")).toBe("root file");
+    expect(fs.readFileSync(path.join(dest, "sub", "nested.txt"), "utf8")).toBe("nested file");
+  });
+
+  test("copyModuleContent skips hidden dirs and node_modules", () => {
+    const src = path.join(projectRoot, "src-skip");
+    const dest = path.join(projectRoot, "dest-skip");
+    fs.mkdirSync(path.join(src, ".hidden"), { recursive: true });
+    fs.mkdirSync(path.join(src, "node_modules"), { recursive: true });
+    fs.writeFileSync(path.join(src, ".hidden", "secret.txt"), "secret");
+    fs.writeFileSync(path.join(src, "node_modules", "pkg.json"), "pkg");
+    fs.writeFileSync(path.join(src, "visible.txt"), "visible");
+
+    init.copyModuleContent(src, dest);
+
+    expect(fs.existsSync(path.join(dest, "visible.txt"))).toBe(true);
+    expect(fs.existsSync(path.join(dest, ".hidden"))).toBe(false);
+    expect(fs.existsSync(path.join(dest, "node_modules"))).toBe(false);
+  });
+
+  test("resolveTemplateTargets handles symlink to outside project", () => {
+    const agentsFile = path.join(projectRoot, "AGENTS.md");
+    const claudeFile = path.join(projectRoot, "CLAUDE.md");
+    const outsideFile = path.join(testRoot, "outside.md");
+    fs.writeFileSync(agentsFile, "# AGENTS\n", "utf8");
+    fs.writeFileSync(outsideFile, "# Outside\n", "utf8");
+    fs.symlinkSync(outsideFile, claudeFile);
+
+    const targets = init.resolveTemplateTargets(projectRoot);
+    // Should only contain AGENTS.md, not the outside file
+    expect(targets).toHaveLength(1);
+    expect(targets[0]).toBe(agentsFile);
+    expect(warnSpy).toHaveBeenCalled();
+  });
 });

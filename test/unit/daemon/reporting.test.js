@@ -10,7 +10,14 @@ jest.mock("../../../src/bus", () => {
 
 const EventBus = require("../../../src/bus");
 const { getUfooPaths } = require("../../../src/ufoo/paths");
-const { recordAgentReport } = require("../../../src/daemon/reporting");
+const {
+  recordAgentReport,
+  resolveAgentDisplayName,
+  toStatusPhase,
+  formatStatusText,
+  buildReportStatus,
+} = require("../../../src/daemon/reporting");
+const { REPORT_PHASES } = require("../../../src/report/store");
 const { listControllerInboxEntries } = require("../../../src/report/store");
 
 describe("daemon reporting", () => {
@@ -91,6 +98,54 @@ describe("daemon reporting", () => {
       reason: "agent-report:start",
       shake: false,
     }));
+  });
+
+  test("toStatusPhase maps report phases to status phases", () => {
+    expect(toStatusPhase("start")).toBe("start");
+    expect(toStatusPhase("progress")).toBe("start");
+    expect(toStatusPhase("error")).toBe("error");
+    expect(toStatusPhase("done")).toBe("done");
+    expect(toStatusPhase("unknown")).toBe("done");
+  });
+
+  test("formatStatusText formats start phase", () => {
+    expect(formatStatusText("builder", { phase: "start", message: "working" }))
+      .toBe("builder working");
+  });
+
+  test("formatStatusText formats progress phase", () => {
+    expect(formatStatusText("builder", { phase: "progress", summary: "50%" }))
+      .toBe("builder progress: 50%");
+  });
+
+  test("formatStatusText formats error phase", () => {
+    expect(formatStatusText("builder", { phase: "error", error: "crash" }))
+      .toBe("builder failed: crash");
+  });
+
+  test("formatStatusText formats done phase", () => {
+    expect(formatStatusText("builder", { phase: "done", summary: "ok" }))
+      .toBe("builder done: ok");
+  });
+
+  test("resolveAgentDisplayName returns nickname when available", () => {
+    expect(resolveAgentDisplayName(projectRoot, "codex:abc")).toBe("codex-1");
+  });
+
+  test("resolveAgentDisplayName returns agentId when no nickname", () => {
+    expect(resolveAgentDisplayName(projectRoot, "codex:unknown")).toBe("codex:unknown");
+  });
+
+  test("resolveAgentDisplayName returns unknown-agent for empty", () => {
+    expect(resolveAgentDisplayName(projectRoot, "")).toBe("unknown-agent");
+  });
+
+  test("buildReportStatus creates correct status object", () => {
+    const entry = { phase: "done", agent_id: "codex:abc", task_id: "t1", summary: "ok" };
+    const result = buildReportStatus(entry, "builder");
+    expect(result.phase).toBe("done");
+    expect(result.key).toBe("report:codex:abc:t1");
+    expect(result.text).toBe("builder done: ok");
   });
 
   test("public report does not wake private controller", async () => {

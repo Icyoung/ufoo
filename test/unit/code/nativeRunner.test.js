@@ -334,4 +334,57 @@ describe("ucode native runner", () => {
     expect(parseBashIntent("please list files")).toBe("ls -la");
     expect(extractPreflightEvidence("Preflight snapshot (captured by ucode):\n---\nFile: A.md\n# A").length).toBe(1);
   });
+
+  test("parseReadIntent extracts file from various patterns", () => {
+    expect(parseReadIntent("cat README.md")).toBe("README.md");
+    expect(parseReadIntent("查看 src/index.js")).toBe("src/index.js");
+    expect(parseReadIntent("读取 config.json")).toBe("config.json");
+    expect(parseReadIntent("look at package.json please")).toBe("package.json");
+  });
+
+  test("parseReadIntent returns empty for no match", () => {
+    expect(parseReadIntent("hello world")).toBe("");
+    expect(parseReadIntent("")).toBe("");
+  });
+
+  test("parseBashIntent extracts commands", () => {
+    expect(parseBashIntent("show files")).toBe("ls -la");
+    expect(parseBashIntent("list directories")).toBe("ls -la");
+    expect(parseBashIntent("列出文件")).toBe("ls -la");
+    expect(parseBashIntent("run `npm test`")).toBe("npm test");
+    expect(parseBashIntent("执行 `git status`")).toBe("git status");
+  });
+
+  test("parseBashIntent returns empty for no match", () => {
+    expect(parseBashIntent("hello")).toBe("");
+    expect(parseBashIntent("")).toBe("");
+  });
+
+  test("extractPreflightEvidence parses command entries", () => {
+    const input = "---\nCommand: ls -la\nfile1\nfile2\n---\nFile: README.md\n# Hello";
+    const evidence = extractPreflightEvidence(input);
+    expect(evidence.length).toBe(2);
+    expect(evidence.some(e => e.kind === "command")).toBe(true);
+    expect(evidence.some(e => e.kind === "file")).toBe(true);
+  });
+
+  test("extractPreflightEvidence returns empty for empty input", () => {
+    expect(extractPreflightEvidence("")).toEqual([]);
+    expect(extractPreflightEvidence(null)).toEqual([]);
+  });
+
+  test("resolveTransport handles various provider/url combos", () => {
+    expect(resolveTransport({ provider: "codex-cli" })).toBe("openai-chat");
+    expect(resolveTransport({ provider: "claude-cli" })).toBe("anthropic-messages");
+    expect(resolveTransport({ provider: "", baseUrl: "" })).toBe("openai-chat");
+    expect(resolveTransport({ provider: "", baseUrl: "https://api.anthropic.com/v1" })).toBe("anthropic-messages");
+  });
+
+  test("resolveRuntimeConfig uses env vars", () => {
+    process.env.UFOO_UCODE_PROVIDER = "anthropic";
+    process.env.UFOO_UCODE_MODEL = "claude-sonnet";
+    const config = resolveRuntimeConfig(workspaceRoot);
+    expect(config.provider).toBe("anthropic");
+    expect(config.model).toBe("claude-sonnet");
+  });
 });

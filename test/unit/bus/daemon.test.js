@@ -225,6 +225,104 @@ describe("BusDaemon delivery ownership", () => {
     expect(fs.readFileSync(pendingFile, "utf8")).not.toContain("immediate-first");
   });
 
+  test("isRunning returns false when no pid file", () => {
+    const daemon = new BusDaemon(busDir, agentsFile, daemonDir, 2000);
+    expect(daemon.isRunning()).toBe(false);
+  });
+
+  test("isRunning returns false when pid is dead", () => {
+    const daemon = new BusDaemon(busDir, agentsFile, daemonDir, 2000);
+    fs.writeFileSync(daemon.pidFile, "999999\n");
+    expect(daemon.isRunning()).toBe(false);
+  });
+
+  test("getRunningPid returns null when no pid file", () => {
+    const daemon = new BusDaemon(busDir, agentsFile, daemonDir, 2000);
+    expect(daemon.getRunningPid()).toBeNull();
+  });
+
+  test("getRunningPid returns null for dead pid", () => {
+    const daemon = new BusDaemon(busDir, agentsFile, daemonDir, 2000);
+    fs.writeFileSync(daemon.pidFile, "999999\n");
+    expect(daemon.getRunningPid()).toBeNull();
+  });
+
+  test("stop logs not running when no daemon", () => {
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+    const daemon = new BusDaemon(busDir, agentsFile, daemonDir, 2000);
+    daemon.stop();
+    expect(logSpy).toHaveBeenCalledWith("[daemon] Not running");
+    logSpy.mockRestore();
+  });
+
+  test("status logs not running and cleans stale pid file", () => {
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {});
+    const daemon = new BusDaemon(busDir, agentsFile, daemonDir, 2000);
+    fs.writeFileSync(daemon.pidFile, "999999\n");
+    daemon.status();
+    expect(logSpy).toHaveBeenCalledWith("[daemon] Not running");
+    expect(fs.existsSync(daemon.pidFile)).toBe(false);
+    logSpy.mockRestore();
+  });
+
+  test("setLegacyActivityState updates agent meta", () => {
+    const subscriber = "codex:act1";
+    fs.writeFileSync(agentsFile, JSON.stringify({
+      agents: { [subscriber]: { status: "active" } },
+    }));
+    const daemon = new BusDaemon(busDir, agentsFile, daemonDir, 2000);
+    daemon.setLegacyActivityState(subscriber, "working");
+    const data = JSON.parse(fs.readFileSync(agentsFile, "utf8"));
+    expect(data.agents[subscriber].activity_state).toBe("working");
+  });
+
+  test("setLegacyActivityState does nothing for missing subscriber", () => {
+    fs.writeFileSync(agentsFile, JSON.stringify({ agents: {} }));
+    const daemon = new BusDaemon(busDir, agentsFile, daemonDir, 2000);
+    daemon.setLegacyActivityState("codex:missing", "idle");
+    // Should not throw
+  });
+
+  test("refreshLegacyActivityState transitions starting to idle", () => {
+    fs.writeFileSync(agentsFile, JSON.stringify({
+      agents: { "codex:r1": { status: "active", activity_state: "starting" } },
+    }));
+    const daemon = new BusDaemon(busDir, agentsFile, daemonDir, 2000);
+    const result = daemon.refreshLegacyActivityState(
+      "codex:r1",
+      { activity_state: "starting" },
+      false
+    );
+    expect(result).toBe("idle");
+  });
+
+  test("refreshLegacyActivityState transitions starting to ready when pending", () => {
+    fs.writeFileSync(agentsFile, JSON.stringify({
+      agents: { "codex:r2": { status: "active", activity_state: "starting" } },
+    }));
+    const daemon = new BusDaemon(busDir, agentsFile, daemonDir, 2000);
+    const result = daemon.refreshLegacyActivityState(
+      "codex:r2",
+      { activity_state: "starting" },
+      true
+    );
+    expect(result).toBe("ready");
+  });
+
+  test("refreshLegacyActivityState holds working state during hold period", () => {
+    fs.writeFileSync(agentsFile, JSON.stringify({
+      agents: { "codex:r3": { status: "active", activity_state: "working" } },
+    }));
+    const daemon = new BusDaemon(busDir, agentsFile, daemonDir, 2000);
+    daemon.lastWorkingAt.set("codex:r3", Date.now());
+    const result = daemon.refreshLegacyActivityState(
+      "codex:r3",
+      { activity_state: "working" },
+      false
+    );
+    expect(result).toBe("working");
+  });
+
   test("skips daemon injection for ufoo-code and keeps pending queue", async () => {
     const subscriber = "ufoo-code:ee8094d2";
     fs.writeFileSync(

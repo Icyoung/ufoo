@@ -16,7 +16,7 @@ describe("chat inputMath helpers", () => {
       _getCoords: jest.fn(),
     };
     const screen = { width: 100 };
-    expect(getInnerWidth({ input, screen, promptWidth: 2 })).toBe(12);
+    expect(getInnerWidth({ input, screen, promptWidth: 2 })).toBe(11);
   });
 
   test("getInnerWidth falls back to numeric input width", () => {

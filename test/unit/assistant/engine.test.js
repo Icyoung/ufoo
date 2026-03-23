@@ -218,4 +218,56 @@ describe("assistant engine resolver", () => {
     expect(extractSessionId({ sessionId: "s2" })).toBe("s2");
     expect(extractSessionId({ session: "s3" })).toBe("s3");
   });
+
+  test("extractSessionId returns empty for null", () => {
+    expect(extractSessionId(null)).toBe("");
+    expect(extractSessionId("string")).toBe("");
+  });
+
+  test("splitCommand returns fallback for empty input", () => {
+    expect(splitCommand("")).toEqual({ command: "ufoo-engine", args: [] });
+    expect(splitCommand(null)).toEqual({ command: "ufoo-engine", args: [] });
+  });
+
+  test("splitCommand uses custom fallback", () => {
+    expect(splitCommand("", "custom")).toEqual({ command: "custom", args: [] });
+  });
+
+  test("parseEngineJson returns null for empty input", () => {
+    expect(parseEngineJson("")).toBeNull();
+    expect(parseEngineJson(null)).toBeNull();
+  });
+
+  test("parseEngineJson returns null for invalid JSON", () => {
+    expect(parseEngineJson("not json\nstill not json")).toBeNull();
+  });
+
+  test("parseEngineJson parses valid JSON", () => {
+    expect(parseEngineJson('{"ok":true}')).toEqual({ ok: true });
+  });
+
+  test("isUnsupportedArgError detects all error variants", () => {
+    expect(isUnsupportedArgError("unknown argument foo")).toBe(true);
+    expect(isUnsupportedArgError("unexpected argument --bar")).toBe(true);
+    expect(isUnsupportedArgError("unrecognized option --baz")).toBe(true);
+    expect(isUnsupportedArgError("")).toBe(false);
+    expect(isUnsupportedArgError(null)).toBe(false);
+  });
+
+  test("buildExternalEngineArgs handles minimal payload", () => {
+    const args = buildExternalEngineArgs({}, {});
+    expect(args).toContain("--assistant-task");
+    expect(args).toContain("--json");
+  });
+
+  test("model from env takes precedence", () => {
+    process.env.UFOO_ASSISTANT_MODEL = "env-model";
+    writeConfig({});
+    const resolved = resolveAssistantEngine({
+      projectRoot,
+      requestedProvider: "codex",
+      requestedModel: "",
+    });
+    expect(resolved.model).toBe("env-model");
+  });
 });

@@ -855,4 +855,135 @@ describe("chat commandExecutor", () => {
     const result = await executor.executeCommand("/ufoo claude-2");
     expect(result).toBe(true);
   });
+
+  test("handleDaemonCommand stop path calls stopDaemon", async () => {
+    const { executor, options, logs } = createHarness({
+      parseCommand: jest.fn(() => ({ command: "daemon", args: ["stop"] })),
+    });
+    await executor.executeCommand("/daemon stop");
+    expect(options.stopDaemon).toHaveBeenCalled();
+    expect(logs.some((e) => e.text.includes("Stopping"))).toBe(true);
+  });
+
+  test("handleDaemonCommand restart path calls restartDaemon", async () => {
+    const { executor, options, logs } = createHarness({
+      parseCommand: jest.fn(() => ({ command: "daemon", args: ["restart"] })),
+    });
+    await executor.executeCommand("/daemon restart");
+    expect(options.restartDaemon).toHaveBeenCalled();
+    expect(logs.some((e) => e.text.includes("Restarting"))).toBe(true);
+  });
+
+  test("handleDaemonCommand status shows running when daemon is active", async () => {
+    const { executor, logs } = createHarness({
+      parseCommand: jest.fn(() => ({ command: "daemon", args: ["status"] })),
+      isDaemonRunning: jest.fn(() => true),
+    });
+    await executor.executeCommand("/daemon status");
+    expect(logs.some((e) => e.text.includes("is running"))).toBe(true);
+  });
+
+  test("handleDaemonCommand status shows not running", async () => {
+    const { executor, logs } = createHarness({
+      parseCommand: jest.fn(() => ({ command: "daemon", args: ["status"] })),
+    });
+    await executor.executeCommand("/daemon status");
+    expect(logs.some((e) => e.text.includes("not running"))).toBe(true);
+  });
+
+  test("handleDaemonCommand unknown subcommand shows usage", async () => {
+    const { executor, logs } = createHarness({
+      parseCommand: jest.fn(() => ({ command: "daemon", args: ["foo"] })),
+    });
+    await executor.executeCommand("/daemon foo");
+    expect(logs.some((e) => e.text.includes("Unknown daemon command"))).toBe(true);
+  });
+
+  test("handleDaemonCommand start when already running", async () => {
+    const { executor, logs } = createHarness({
+      parseCommand: jest.fn(() => ({ command: "daemon", args: ["start"] })),
+      isDaemonRunning: jest.fn(() => true),
+    });
+    await executor.executeCommand("/daemon start");
+    expect(logs.some((e) => e.text.includes("already running"))).toBe(true);
+  });
+
+  test("handleDaemonCommand start that fails", async () => {
+    const { executor, logs } = createHarness({
+      parseCommand: jest.fn(() => ({ command: "daemon", args: ["start"] })),
+      isDaemonRunning: jest.fn(() => false),
+    });
+    await executor.executeCommand("/daemon start");
+    expect(logs.some((e) => e.text.includes("Failed to start"))).toBe(true);
+  });
+
+  test("handleDaemonCommand stop that fails", async () => {
+    const { executor, logs } = createHarness({
+      parseCommand: jest.fn(() => ({ command: "daemon", args: ["stop"] })),
+      isDaemonRunning: jest.fn(() => true),
+    });
+    await executor.executeCommand("/daemon stop");
+    expect(logs.some((e) => e.text.includes("Failed to stop"))).toBe(true);
+  });
+
+  test("handleInitCommand runs init and logs", async () => {
+    const { executor, logs, options } = createHarness({
+      parseCommand: jest.fn(() => ({ command: "init", args: [] })),
+    });
+    await executor.executeCommand("/init");
+    expect(options.createInit).toHaveBeenCalled();
+    expect(logs.some((e) => e.text.includes("Initializing") || e.text.includes("complete"))).toBe(true);
+  });
+
+  test("handleInitCommand with specific modules", async () => {
+    const { executor, options } = createHarness({
+      parseCommand: jest.fn(() => ({ command: "init", args: ["context", "bus"] })),
+    });
+    await executor.executeCommand("/init context bus");
+    const initMock = options.createInit.mock.results[0].value;
+    expect(initMock.init).toHaveBeenCalledWith(
+      expect.objectContaining({ modules: "context,bus" })
+    );
+  });
+
+  test("handleInitCommand catches errors", async () => {
+    const { executor, logs } = createHarness({
+      parseCommand: jest.fn(() => ({ command: "init", args: [] })),
+      createInit: jest.fn(() => ({
+        init: jest.fn().mockRejectedValue(new Error("init boom")),
+      })),
+    });
+    await executor.executeCommand("/init");
+    expect(logs.some((e) => e.text.includes("init boom"))).toBe(true);
+  });
+
+  test("collectHostLaunchRequestContext collects env vars", () => {
+    const { collectHostLaunchRequestContext } = require("../../../src/chat/commandExecutor");
+    const ctx = collectHostLaunchRequestContext({
+      UFOO_HOST_INJECT_SOCK: "/tmp/inject.sock",
+      UFOO_HOST_DAEMON_SOCK: "/tmp/daemon.sock",
+      UFOO_HOST_NAME: "horizon",
+      UFOO_HOST_SESSION_ID: "sess-1",
+    });
+    expect(ctx.host_inject_sock).toBe("/tmp/inject.sock");
+    expect(ctx.host_daemon_sock).toBe("/tmp/daemon.sock");
+    expect(ctx.host_name).toBe("horizon");
+    expect(ctx.host_session_id).toBe("sess-1");
+  });
+
+  test("collectHostLaunchRequestContext returns empty for missing vars", () => {
+    const { collectHostLaunchRequestContext } = require("../../../src/chat/commandExecutor");
+    const ctx = collectHostLaunchRequestContext({});
+    expect(Object.keys(ctx)).toHaveLength(0);
+  });
+
+  test("collectHostLaunchRequestContext uses HORIZON fallbacks", () => {
+    const { collectHostLaunchRequestContext } = require("../../../src/chat/commandExecutor");
+    const ctx = collectHostLaunchRequestContext({
+      HORIZON_INJECT_SOCK: "/tmp/h-inject.sock",
+      HORIZON_SESSION_ID: "h-sess",
+    });
+    expect(ctx.host_inject_sock).toBe("/tmp/h-inject.sock");
+    expect(ctx.host_session_id).toBe("h-sess");
+  });
 });

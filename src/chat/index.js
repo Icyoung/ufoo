@@ -375,7 +375,7 @@ async function runChat(projectRoot, options = {}) {
   }
 
   function ensureInputCursorVisible() {
-    const innerWidth = getInnerWidth();
+    const innerWidth = getWrapWidth();
     if (innerWidth <= 0) return;
     const totalRows = countLines(input.value, innerWidth);
     const visibleRows = Math.max(1, input.height || 1);

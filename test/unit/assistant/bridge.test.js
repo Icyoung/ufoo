@@ -68,4 +68,46 @@ describe("assistant bridge helpers", () => {
       metrics: { duration_ms: 12 },
     });
   });
+
+  test("parseAssistantOutput returns null for empty input", () => {
+    expect(parseAssistantOutput("")).toBeNull();
+    expect(parseAssistantOutput(null)).toBeNull();
+  });
+
+  test("parseAssistantOutput returns null for unparseable text", () => {
+    expect(parseAssistantOutput("not json at all")).toBeNull();
+  });
+
+  test("normalizeResponse defaults non-string summary to empty", () => {
+    const result = normalizeResponse({ ok: true, summary: 123 });
+    expect(result.summary).toBe("");
+  });
+
+  test("normalizeResponse defaults non-array artifacts and logs", () => {
+    const result = normalizeResponse({ ok: true, artifacts: "str", logs: "str" });
+    expect(result.artifacts).toEqual([]);
+    expect(result.logs).toEqual([]);
+  });
+
+  test("normalizeResponse defaults non-object metrics", () => {
+    const result = normalizeResponse({ ok: true, metrics: "str" });
+    expect(result.metrics).toEqual({});
+  });
+
+  test("normalizeResponse uses default error message", () => {
+    const result = normalizeResponse(null);
+    expect(result.error).toBe("assistant returned invalid JSON");
+  });
+
+  test("resolveAssistantCommand handles empty UFOO_ASSISTANT_CMD", () => {
+    const original = process.env.UFOO_ASSISTANT_CMD;
+    process.env.UFOO_ASSISTANT_CMD = "";
+    const resolved = resolveAssistantCommand();
+    expect(resolved.command).toBe(process.execPath);
+    if (typeof original === "string") {
+      process.env.UFOO_ASSISTANT_CMD = original;
+    } else {
+      delete process.env.UFOO_ASSISTANT_CMD;
+    }
+  });
 });

@@ -566,7 +566,7 @@ function runUcodeTui({
     const getWrapWidth = () => inputMath.getWrapWidth(input, getInnerWidth());
 
     const ensureInputCursorVisible = () => {
-      const innerWidth = getInnerWidth();
+      const innerWidth = getWrapWidth();
       if (innerWidth <= 0) return;
       const totalRows = inputMath.countLines(input.value || "", innerWidth, (v) => input.strWidth(v));
       const visibleRows = Math.max(1, input.height || 1);
