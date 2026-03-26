@@ -633,12 +633,9 @@ class AgentLauncher {
             const explicitNickname = this._originalNickname || "";
             if (this.agentType === "claude-code" && explicitNickname && wrapper.pty) {
               try {
-                // Strip control chars to prevent PTY command injection
-                const safeNick = explicitNickname.replace(/[\x00-\x1f\x7f]/g, "");
+                const safeNick = AgentLauncher._sanitizeNickname(explicitNickname);
                 if (safeNick) {
-                  wrapper.write(`/rename ${safeNick}`);
-                  await new Promise((r) => setTimeout(r, 200));
-                  wrapper.write("\r");
+                  wrapper.write(`/rename ${safeNick}\r`);
                   await new Promise((r) => setTimeout(r, 400));
                 }
               } catch (err) {
@@ -911,5 +908,9 @@ class AgentLauncher {
     }
   }
 }
+
+// Exported for testing
+AgentLauncher._sanitizeNickname = (nick) => nick.replace(/[^a-zA-Z0-9_-]/g, "");
+AgentLauncher._findPreviousSession = findPreviousSession;
 
 module.exports = AgentLauncher;
