@@ -29,6 +29,7 @@ class AgentNotifier {
     this.lastNickname = "";
     this.lastUbusWakeCount = -1;
 
+
     // 计算队列文件路径
     const safeSub = subscriber.replace(/:/g, "_");
     const paths = getUfooPaths(projectRoot);
@@ -70,8 +71,17 @@ class AgentNotifier {
   }
 
   /**
+   * 通知 notifier launcher 已检测到 agent ready
+   * 在此之前 notifier 不会将 activity_state 设为 idle（避免 bootstrap 提前注入）
+   */
+  markLauncherReady() {
+    this._launcherReady = true;
+  }
+
+  /**
    * 设置终端标题为昵称
-   * iTerm2: 同时设置 badge 和 cwd
+   * codex 等: OSC escape sequence + iTerm2 badge
+   * claude-code: OSC 会被 Claude 覆盖，仅设 iTerm2 badge
    */
   setTitle(nickname) {
     if (!nickname) return;
@@ -364,7 +374,7 @@ class AgentNotifier {
     }
 
     this.lastCount = this.getMessageCount();
-    if (!this.lastWorkingAt || nowMs - this.lastWorkingAt >= this.workingHoldMs) {
+    if (this._launcherReady && (!this.lastWorkingAt || nowMs - this.lastWorkingAt >= this.workingHoldMs)) {
       this.updateActivityState("idle");
     }
     this.refreshTitle();
@@ -381,7 +391,10 @@ class AgentNotifier {
     if (this.lastNickname) {
       this.setTitle(this.lastNickname);
     }
-    this.updateActivityState("ready");
+    this.updateActivityState("starting");
+    // launcher 的 readyDetector 负责在 TUI 真正 ready 后标记 "ready"
+    // 在那之前 notifier 不应覆盖 activity_state
+    this._launcherReady = false;
 
     // 启动轮询
     this.timer = setInterval(() => {

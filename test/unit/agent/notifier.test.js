@@ -254,6 +254,7 @@ describe("AgentNotifier delivery strategy", () => {
     const notifier = new AgentNotifier(projectRoot, subscriber);
     notifier.workingHoldMs = 1000;
     notifier.lastWorkingAt = Date.now();
+    notifier._launcherReady = true; // simulate launcher ready
     notifier.getMessageCount = jest.fn(() => 0);
     notifier.notify = jest.fn();
     notifier.refreshTitle = jest.fn();
@@ -266,6 +267,86 @@ describe("AgentNotifier delivery strategy", () => {
     notifier.lastWorkingAt = Date.now() - 1500;
     await notifier.poll();
     expect(stateSpy).toHaveBeenCalledWith("idle");
+  });
+
+  test("poll does not set idle when _launcherReady is false", async () => {
+    const subscriber = "codex:gate1";
+    fs.writeFileSync(
+      path.join(projectRoot, ".ufoo", "agent", "all-agents.json"),
+      JSON.stringify({
+        agents: {
+          [subscriber]: { status: "active", activity_state: "starting" },
+        },
+      }, null, 2)
+    );
+
+    const notifier = new AgentNotifier(projectRoot, subscriber);
+    notifier.workingHoldMs = 0;
+    notifier.lastWorkingAt = 0;
+    // _launcherReady defaults to false after start()
+    notifier._launcherReady = false;
+    notifier.getMessageCount = jest.fn(() => 0);
+    notifier.notify = jest.fn();
+    notifier.refreshTitle = jest.fn();
+    notifier.updateHeartbeat = jest.fn();
+    const stateSpy = jest.spyOn(notifier, "updateActivityState");
+
+    await notifier.poll();
+    expect(stateSpy).not.toHaveBeenCalledWith("idle");
+  });
+
+  test("markLauncherReady enables idle transition in poll", async () => {
+    const subscriber = "codex:gate2";
+    fs.writeFileSync(
+      path.join(projectRoot, ".ufoo", "agent", "all-agents.json"),
+      JSON.stringify({
+        agents: {
+          [subscriber]: { status: "active", activity_state: "starting" },
+        },
+      }, null, 2)
+    );
+
+    const notifier = new AgentNotifier(projectRoot, subscriber);
+    notifier.workingHoldMs = 0;
+    notifier.lastWorkingAt = 0;
+    notifier._launcherReady = false;
+    notifier.getMessageCount = jest.fn(() => 0);
+    notifier.notify = jest.fn();
+    notifier.refreshTitle = jest.fn();
+    notifier.updateHeartbeat = jest.fn();
+    const stateSpy = jest.spyOn(notifier, "updateActivityState");
+
+    // Before markLauncherReady: no idle
+    await notifier.poll();
+    expect(stateSpy).not.toHaveBeenCalledWith("idle");
+
+    // After markLauncherReady: idle allowed
+    notifier.markLauncherReady();
+    await notifier.poll();
+    expect(stateSpy).toHaveBeenCalledWith("idle");
+  });
+
+  test("start() sets activity_state to starting and _launcherReady to false", () => {
+    const subscriber = "codex:start1";
+    // Pre-populate agent entry (writeActivityState requires it)
+    fs.writeFileSync(
+      path.join(projectRoot, ".ufoo", "agent", "all-agents.json"),
+      JSON.stringify({
+        agents: {
+          [subscriber]: { status: "active", activity_state: "ready" },
+        },
+      }, null, 2)
+    );
+    const notifier = new AgentNotifier(projectRoot, subscriber);
+    notifier.start();
+    expect(notifier._launcherReady).toBe(false);
+    // Check that starting was written
+    const data = JSON.parse(
+      fs.readFileSync(path.join(projectRoot, ".ufoo", "agent", "all-agents.json"), "utf8")
+    );
+    expect(data.agents[subscriber].activity_state).toBe("starting");
+    // cleanup timer
+    if (notifier.timer) clearInterval(notifier.timer);
   });
 
   test("poll does not force working state on queue growth", async () => {

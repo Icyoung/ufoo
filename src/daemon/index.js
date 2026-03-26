@@ -13,7 +13,7 @@ const { createDaemonIpcServer } = require("./ipcServer");
 const { IPC_REQUEST_TYPES, IPC_RESPONSE_TYPES, BUS_STATUS_PHASES } = require("../shared/eventContract");
 const { getUfooPaths } = require("../ufoo/paths");
 const { upsertProjectRuntime, markProjectStopped } = require("../projects/registry");
-const { scheduleProviderSessionProbe, loadProviderSessionCache } = require("./providerSessions");
+const { scheduleProviderSessionProbe, resolveSessionFromFile, persistProviderSession, loadProviderSessionCache } = require("./providerSessions");
 const { createTerminalAdapterRouter } = require("../terminal/adapterRouter");
 const { createDaemonCronController } = require("./cronOps");
 const { createGroupOrchestrator } = require("./groupOrchestrator");
@@ -499,6 +499,7 @@ async function handleOps(projectRoot, ops = [], processManager = null) {
               subscriberId,
               agentType: probeAgentType,
               nickname: resolvedNickname,
+              agentCwd: projectRoot,
               onResolved: (id, resolved) => {
                 if (providerSessions) {
                   providerSessions.set(id, {
@@ -1973,6 +1974,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
             subscriberId,
             agentType,
             nickname: resolvedNickname,
+            agentCwd: projectRoot,
             onResolved: (id, resolved) => {
               if (providerSessions) {
                 providerSessions.set(id, {
@@ -2009,11 +2011,41 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
       return;
     }
     if (req.type === IPC_REQUEST_TYPES.AGENT_READY) {
-      const { subscriberId } = req;
+      const { subscriberId, agentPid } = req;
       if (!subscriberId) {
         return;
       }
-      log(`agent_ready id=${subscriberId} - triggering probe immediately`);
+      log(`agent_ready id=${subscriberId} pid=${agentPid || 0} - resolving session`);
+
+      // Try direct file read first if we have agentPid (fast path)
+      const parsedAgentPid = Number.parseInt(agentPid, 10);
+      if (Number.isFinite(parsedAgentPid) && parsedAgentPid > 0) {
+        const agentType = subscriberId.split(":")[0] || "";
+        const resolved = resolveSessionFromFile(agentType, {
+          pid: parsedAgentPid,
+          cwd: projectRoot,
+        });
+        if (resolved && resolved.sessionId) {
+          log(`agent_ready session resolved from file for ${subscriberId}: ${resolved.sessionId}`);
+          persistProviderSession(projectRoot, subscriberId, resolved);
+          if (providerSessions) {
+            providerSessions.set(subscriberId, {
+              sessionId: resolved.sessionId,
+              source: resolved.source || "",
+              updated_at: new Date().toISOString(),
+            });
+          }
+          // Cancel the scheduled probe to prevent /ufoo injection
+          const handle = probeHandles.get(subscriberId);
+          if (handle && typeof handle.cancel === "function") {
+            handle.cancel();
+          }
+          probeHandles.delete(subscriberId);
+          return;
+        }
+      }
+
+      // Fallback: trigger scheduled probe
       const probeHandle = probeHandles.get(subscriberId);
       if (probeHandle && typeof probeHandle.triggerNow === "function") {
         probeHandle.triggerNow().catch((err) => {

@@ -537,8 +537,9 @@ class AgentLauncher {
 
       // 6. 启动消息通知监听器（ufoo-code 改为内部 bus 轮询消费）
       const shouldStartNotifier = String(this.agentType || "").trim().toLowerCase() !== "ufoo-code";
+      let notifier = null;
       if (shouldStartNotifier) {
-        const notifier = new AgentNotifier(this.cwd, subscriberId);
+        notifier = new AgentNotifier(this.cwd, subscriberId);
         notifier.start();
       }
 
@@ -605,6 +606,10 @@ class AgentLauncher {
           });
           readyDetector.onReady(async () => {
             launcherActivityDetector.markReady();
+            // 通知 notifier launcher 已检测到 ready，可以开始设 idle 状态
+            if (notifier) {
+              notifier.markLauncherReady();
+            }
             // Claude Code's Ink TUI renders ❯ prompt before the input handler
             // is fully mounted. Wait a short period for the TUI to be ready to
             // accept injected text, otherwise only the trailing CR is processed
@@ -612,6 +617,7 @@ class AgentLauncher {
             if (this.agentType === "claude-code") {
               await new Promise((r) => setTimeout(r, 800));
             }
+
             const startTime = Date.now();
             try {
               const daemonSock = await connectWithRetry(daemonSockPath, 3, 100);
@@ -619,6 +625,7 @@ class AgentLauncher {
                 daemonSock.write(`${JSON.stringify({
                   type: IPC_REQUEST_TYPES.AGENT_READY,
                   subscriberId,
+                  agentPid: wrapper.pty ? wrapper.pty.pid : 0,
                 })}\n`);
                 daemonSock.end();
 
@@ -637,6 +644,7 @@ class AgentLauncher {
                 console.error(`[ready] daemon notification error: ${err.message}, will use fallback delay`);
               }
             }
+
           });
 
           // Fallback：如果10秒后还没检测到ready，强制标记为ready
@@ -669,6 +677,7 @@ class AgentLauncher {
           // 启动PTY
           wrapper.spawn();
           wrapper.attachStreams(process.stdin, process.stdout, process.stderr);
+
 
           // 启动inject监听socket（用于外部注入命令到PTY）
           const injectSockPath = path.join(
