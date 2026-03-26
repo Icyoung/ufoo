@@ -44,6 +44,7 @@ const BUILTIN_PROFILES = [
       "Handoff:",
       "- Send the architect a scoped brief.",
       "- Send the scope challenger any assumptions that feel inflated or weak.",
+      "- Use `ufoo bus send <target-nickname> \"<message>\"` to deliver handoffs to other agents.",
     ].join("\n"),
   },
   {
@@ -71,6 +72,7 @@ const BUILTIN_PROFILES = [
       "",
       "Handoff:",
       "- Send approved scope decisions to the architect and builder.",
+      "- Use `ufoo bus send <target-nickname> \"<message>\"` to deliver handoffs to other agents.",
     ].join("\n"),
   },
   {
@@ -99,6 +101,7 @@ const BUILTIN_PROFILES = [
       "Handoff:",
       "- Send execution-ready slices to the implementation lead.",
       "- Send risk hotspots to the reviewer and QA roles.",
+      "- Use `ufoo bus send <target-nickname> \"<message>\"` to deliver handoffs to other agents.",
     ].join("\n"),
   },
   {
@@ -126,6 +129,7 @@ const BUILTIN_PROFILES = [
       "",
       "Handoff:",
       "- Send changed areas and known risk points to review-critic and qa-driver.",
+      "- Use `ufoo bus send <target-nickname> \"<message>\"` to deliver handoffs to other agents.",
     ].join("\n"),
   },
   {
@@ -154,6 +158,7 @@ const BUILTIN_PROFILES = [
       "",
       "Handoff:",
       "- Send changed surfaces and known UI tradeoffs to design-critic and qa-driver.",
+      "- Use `ufoo bus send <target-nickname> \"<message>\"` to deliver handoffs to other agents.",
     ].join("\n"),
   },
   {
@@ -183,6 +188,7 @@ const BUILTIN_PROFILES = [
       "Handoff:",
       "- Send ranked UI issues and concrete polish guidance to frontend-refiner.",
       "- Send user-visible risk items and regression watch points to qa-driver.",
+      "- Use `ufoo bus send <target-nickname> \"<message>\"` to deliver handoffs to other agents.",
     ].join("\n"),
   },
   {
@@ -209,6 +215,7 @@ const BUILTIN_PROFILES = [
       "Handoff:",
       "- Send must-fix items back to implementation lead.",
       "- Send user-visible risk items to qa-driver.",
+      "- Use `ufoo bus send <target-nickname> \"<message>\"` to deliver handoffs to other agents.",
     ].join("\n"),
   },
   {
@@ -235,6 +242,7 @@ const BUILTIN_PROFILES = [
       "Handoff:",
       "- Send fixable bugs to implementation lead.",
       "- Send suspicious root-cause patterns to debug-investigator.",
+      "- Use `ufoo bus send <target-nickname> \"<message>\"` to deliver handoffs to other agents.",
     ].join("\n"),
   },
   {
@@ -262,6 +270,7 @@ const BUILTIN_PROFILES = [
       "",
       "Handoff:",
       "- Send confirmed cause and fix guidance to implementation lead.",
+      "- Use `ufoo bus send <target-nickname> \"<message>\"` to deliver handoffs to other agents.",
     ].join("\n"),
   },
   {
@@ -288,6 +297,7 @@ const BUILTIN_PROFILES = [
       "Handoff:",
       "- Send blockers back to the responsible agent.",
       "- Send the final readiness note to the human operator.",
+      "- Use `ufoo bus send <target-nickname> \"<message>\"` to deliver handoffs to other agents.",
     ].join("\n"),
   },
   {
@@ -313,6 +323,7 @@ const BUILTIN_PROFILES = [
       "",
       "Handoff:",
       "- Send the architect and builder a short ordered plan with explicit blockers.",
+      "- Use `ufoo bus send <target-nickname> \"<message>\"` to deliver handoffs to other agents.",
     ].join("\n"),
   },
   {
@@ -338,6 +349,7 @@ const BUILTIN_PROFILES = [
       "",
       "Handoff:",
       "- Send a concise findings brief and source list to the next agent.",
+      "- Use `ufoo bus send <target-nickname> \"<message>\"` to deliver handoffs to other agents.",
     ].join("\n"),
   },
   {
@@ -363,6 +375,7 @@ const BUILTIN_PROFILES = [
       "",
       "Handoff:",
       "- Send the prototype status, evidence, and remaining gaps to the next agent.",
+      "- Use `ufoo bus send <target-nickname> \"<message>\"` to deliver handoffs to other agents.",
     ].join("\n"),
   },
 ];

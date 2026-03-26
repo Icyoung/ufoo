@@ -132,6 +132,12 @@ function findPreviousSession(cwd, agentType, tty, tmuxPane) {
         continue;
       }
 
+      // 检查旧 shell 进程是否还存活（防止 tty 回收导致误匹配）
+      if (meta.tty_shell_pid && !isAgentPidAlive(meta.tty_shell_pid)) {
+        // shell 已退出，说明是不同的终端窗口复用了同一个 tty
+        continue;
+      }
+
       // 找到了可以复用的旧 session
       const parts = id.split(":");
       if (parts.length !== 2) continue;
@@ -504,6 +510,8 @@ class AgentLauncher {
    * 启动 agent
    */
   async launch(args) {
+    // 保存用户/group 显式传入的 nickname（在 session 复用覆盖前）
+    this._originalNickname = process.env.UFOO_NICKNAME || "";
     try {
       // 1. 确保初始化
       await this.ensureInit();
@@ -616,6 +624,28 @@ class AgentLauncher {
             // and the probe command is lost.
             if (this.agentType === "claude-code") {
               await new Promise((r) => setTimeout(r, 800));
+            }
+
+            // Claude Code: inject /rename 设置 session 标签（在 AGENT_READY/bootstrap 之前）
+            // /rename 是 slash 命令，瞬间完成，不调 LLM
+            // 仅在有显式 nickname 时注入（UFOO_NICKNAME 由 group launch 或用户指定）
+            // 使用启动前保存的原始值，避免复用 nickname 污染
+            const explicitNickname = this._originalNickname || "";
+            if (this.agentType === "claude-code" && explicitNickname && wrapper.pty) {
+              try {
+                // Strip control chars to prevent PTY command injection
+                const safeNick = explicitNickname.replace(/[\x00-\x1f\x7f]/g, "");
+                if (safeNick) {
+                  wrapper.write(`/rename ${safeNick}`);
+                  await new Promise((r) => setTimeout(r, 200));
+                  wrapper.write("\r");
+                  await new Promise((r) => setTimeout(r, 400));
+                }
+              } catch (err) {
+                if (process.env.UFOO_DEBUG) {
+                  console.error("[rename] inject failed:", err.message);
+                }
+              }
             }
 
             const startTime = Date.now();
