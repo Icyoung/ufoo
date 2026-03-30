@@ -81,4 +81,34 @@ describe("BusStore load recovery", () => {
       status: "inactive",
     });
   });
+
+  test("recovers reserved ufoo-agent entry and deactivates stale aliases", () => {
+    fs.writeFileSync(paths.agentsFile, JSON.stringify({
+      schema_version: 1,
+      created_at: "2026-02-12T00:00:00.000Z",
+      agents: {
+        "ufoo-agent:old1": {
+          agent_type: "ufoo-agent",
+          nickname: "ufoo-agent-1",
+          status: "active",
+          pid: 123,
+        },
+      },
+    }, null, 2));
+
+    const controllerQueue = path.join(paths.busQueuesDir, "ufoo-agent");
+    fs.mkdirSync(controllerQueue, { recursive: true });
+
+    const store = new BusStore(projectRoot);
+    const data = store.load();
+
+    expect(data.agents["ufoo-agent"]).toMatchObject({
+      agent_type: "ufoo-agent",
+      nickname: "ufoo-agent",
+      status: "active",
+    });
+    expect(data.agents["ufoo-agent:old1"]).toMatchObject({
+      status: "inactive",
+    });
+  });
 });

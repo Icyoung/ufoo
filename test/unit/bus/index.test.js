@@ -312,6 +312,17 @@ describe("EventBus", () => {
       }
     });
 
+    test("send preserves reserved ufoo-agent publisher identity", async () => {
+      const bus = initBus();
+      const sub = await bus.join("target-ufoo", "codex");
+
+      await bus.send(sub, "controller msg", "ufoo-agent", { silent: true });
+
+      const saved = JSON.parse(fs.readFileSync(bus.agentsFile, "utf8"));
+      expect(saved.agents["ufoo-agent"]).toBeDefined();
+      expect(Object.keys(saved.agents).filter((id) => id.startsWith("ufoo-agent:"))).toHaveLength(0);
+    });
+
     test("send with event option uses emit", async () => {
       const bus = initBus();
       const sub = await bus.join("evt-recv", "codex");

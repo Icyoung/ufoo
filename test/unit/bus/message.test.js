@@ -116,6 +116,23 @@ describe('MessageManager', () => {
       expect(targets).toEqual(['ufoo-agent']);
     });
 
+    it('should keep reserved ufoo-agent target exact when queue exists but metadata is missing', () => {
+      fs.mkdirSync(path.join(testBusDir, 'queues', 'ufoo-agent'), { recursive: true });
+      busData.agents['ufoo-agent:old1'] = {
+        agent_type: 'ufoo-agent',
+        nickname: 'ufoo-agent-1',
+        status: 'active',
+      };
+      busData.agents['ufoo-agent:old2'] = {
+        agent_type: 'ufoo-agent',
+        nickname: 'ufoo-agent-2',
+        status: 'active',
+      };
+
+      const targets = manager.resolveTarget('ufoo-agent');
+      expect(targets).toEqual(['ufoo-agent']);
+    });
+
     it('should resolve nickname to subscriber', () => {
       const targets = manager.resolveTarget('architect');
       expect(targets).toEqual(['claude-code:abc123']);

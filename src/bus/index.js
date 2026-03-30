@@ -285,13 +285,19 @@ class EventBus {
 
     // 如果 publisher 不在 agents 列表中，自动注册它（懒加载模式）
     if (publisher !== "unknown" && this.busData.agents && !this.busData.agents[publisher]) {
-      // 解析 agent 信息
-      const parts = publisher.split(":");
-      const agentType = parts[0] || "unknown-agent";
-      const sessionId = parts[1] || require("./utils").generateInstanceId();
+      let subscriber;
+      if (publisher === "ufoo-agent") {
+        // Keep the reserved controller on its fixed identity even after metadata loss.
+        subscriber = (await this.subscriberManager.join("ufoo-agent", "ufoo-agent", "ufoo-agent")).subscriber;
+      } else {
+        // 解析 agent 信息
+        const parts = publisher.split(":");
+        const agentType = parts[0] || "unknown-agent";
+        const sessionId = parts[1] || require("./utils").generateInstanceId();
 
-      // 自动加入总线（静默模式，不输出日志）
-      const subscriber = await this.subscriberManager.join(sessionId, agentType, null);
+        // 自动加入总线（静默模式，不输出日志）
+        subscriber = (await this.subscriberManager.join(sessionId, agentType, null)).subscriber;
+      }
       this.saveBusData();
       publisher = subscriber; // 使用规范化的 subscriber ID
     }

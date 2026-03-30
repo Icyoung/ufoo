@@ -178,11 +178,27 @@ class MessageManager {
   resolveTarget(target) {
     const nicknameManager = new NicknameManager(this.busData);
     const normalizedTarget = normalizeAgentTypeAlias(target);
+    const controllerTarget = target === "ufoo-agent";
 
     // 0. Exact subscriber ID match (allows ids without ":" e.g. "ufoo-agent")
     const subscribers = this.busData.agents || {};
     if (target && typeof target === "string" && subscribers[target]) {
       return [target];
+    }
+
+    // Reserved controller ID should never fan out to legacy typed aliases.
+    if (controllerTarget) {
+      try {
+        const queueDir = this.queueManager && this.queueManager.getQueueDir
+          ? this.queueManager.getQueueDir(target)
+          : path.join(this.busDir, "queues", target);
+        if (queueDir && fs.existsSync(queueDir)) {
+          return [target];
+        }
+      } catch {
+        // ignore queue lookup errors
+      }
+      return [];
     }
 
     // 1. 尝试作为订阅者 ID

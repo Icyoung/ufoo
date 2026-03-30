@@ -47,6 +47,75 @@ function allocateRecoveredNickname(agentType, used) {
   return nick;
 }
 
+function recoverQueueEntry(data, subscriber, queueDir, usedNicknames, now) {
+  if (!subscriber || data.agents[subscriber]) return false;
+
+  if (subscriber === "ufoo-agent") {
+    const tty = readQueueTty(queueDir);
+    const ttyInfo = tty ? getTtyProcessInfo(tty) : null;
+    data.agents[subscriber] = {
+      agent_type: "ufoo-agent",
+      nickname: "ufoo-agent",
+      status: "active",
+      joined_at: now,
+      last_seen: now,
+      pid: 0,
+      tty,
+      tty_shell_pid: ttyInfo && ttyInfo.shellPid ? ttyInfo.shellPid : 0,
+      tmux_pane: "",
+      launch_mode: "",
+    };
+    return true;
+  }
+
+  const parts = subscriber.split(":");
+  if (parts.length !== 2) return false;
+  const [agentType, sessionId] = parts;
+  if (!agentType || !sessionId) return false;
+  if (!isRecoverableSessionId(sessionId)) return false;
+
+  const tty = readQueueTty(queueDir);
+  const ttyInfo = tty ? getTtyProcessInfo(tty) : null;
+  const activeByTty = Boolean(ttyInfo && ttyInfo.alive && ttyInfo.hasAgent);
+  const nickname = activeByTty ? allocateRecoveredNickname(agentType, usedNicknames) : "";
+
+  data.agents[subscriber] = {
+    agent_type: agentType,
+    nickname,
+    status: activeByTty ? "active" : "inactive",
+    joined_at: now,
+    last_seen: now,
+    pid: 0,
+    tty,
+    tty_shell_pid: ttyInfo && ttyInfo.shellPid ? ttyInfo.shellPid : 0,
+    tmux_pane: "",
+    launch_mode: "",
+  };
+  return true;
+}
+
+function reconcileReservedControllerAliases(data, now) {
+  if (!data.agents || !data.agents["ufoo-agent"]) return false;
+
+  let changed = false;
+  for (const [id, meta] of Object.entries(data.agents)) {
+    if (!id.startsWith("ufoo-agent:")) continue;
+    if (!meta || meta.status !== "active") continue;
+    if (String(meta.agent_type || "").trim() !== "ufoo-agent") continue;
+    const hasRuntimeBinding = Boolean(
+      meta.tty
+      || meta.tmux_pane
+      || meta.host_inject_sock
+      || meta.host_daemon_sock
+    );
+    if (hasRuntimeBinding) continue;
+    meta.status = "inactive";
+    meta.last_seen = now;
+    changed = true;
+  }
+  return changed;
+}
+
 class BusStore {
   constructor(projectRoot) {
     this.projectRoot = projectRoot;
@@ -89,32 +158,10 @@ class BusStore {
       if (!stat.isDirectory()) continue;
 
       const subscriber = safeNameToSubscriber(entry);
-      const parts = subscriber.split(":");
-      if (parts.length !== 2) continue;
-      const [agentType, sessionId] = parts;
-      if (!agentType || !sessionId) continue;
-      if (!isRecoverableSessionId(sessionId)) continue;
-      if (data.agents[subscriber]) continue;
-
-      const tty = readQueueTty(queueDir);
-      const ttyInfo = tty ? getTtyProcessInfo(tty) : null;
-      const activeByTty = Boolean(ttyInfo && ttyInfo.alive && ttyInfo.hasAgent);
-      const nickname = activeByTty ? allocateRecoveredNickname(agentType, usedNicknames) : "";
-
-      data.agents[subscriber] = {
-        agent_type: agentType,
-        nickname,
-        status: activeByTty ? "active" : "inactive",
-        joined_at: now,
-        last_seen: now,
-        pid: 0,
-        tty,
-        tty_shell_pid: ttyInfo && ttyInfo.shellPid ? ttyInfo.shellPid : 0,
-        tmux_pane: "",
-        launch_mode: "",
-      };
-      recovered = true;
+      recovered = recoverQueueEntry(data, subscriber, queueDir, usedNicknames, now) || recovered;
     }
+
+    recovered = reconcileReservedControllerAliases(data, now) || recovered;
 
     if (recovered) {
       saveAgentsData(this.agentsFile, data);
