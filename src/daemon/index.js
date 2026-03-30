@@ -472,6 +472,12 @@ async function handleOps(projectRoot, ops = [], processManager = null) {
         const launchResult = await launchAgent(projectRoot, agent, count, nickname, processManager, {
           launchScope: op.launch_scope || "",
           terminalApp: op.terminal_app || "",
+          tmuxLayoutContext:
+            op.tmux_layout_context && typeof op.tmux_layout_context === "object"
+              ? op.tmux_layout_context
+              : ((op.tmuxLayoutContext && typeof op.tmuxLayoutContext === "object")
+                ? op.tmuxLayoutContext
+                : null),
           extraEnv:
             op.extra_env && typeof op.extra_env === "object"
               ? op.extra_env
@@ -486,6 +492,8 @@ async function handleOps(projectRoot, ops = [], processManager = null) {
             : ((op.hostCapabilities && typeof op.hostCapabilities === "object")
               ? op.hostCapabilities
               : null),
+          requireActivityMonitor:
+            op.require_activity_monitor === true || op.requireActivityMonitor === true,
         });
         if (launchResult.mode === "internal" && launchResult.subscriberIds && launchResult.subscriberIds.length > 0) {
           const probeAgentType = agent === "codex"

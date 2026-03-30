@@ -85,6 +85,29 @@ function parseInputMessage(message) {
   return { raw: false, text: message };
 }
 
+function getOuterTerminalSize() {
+  const cols = Number.isInteger(process.stdout && process.stdout.columns) && process.stdout.columns > 0
+    ? process.stdout.columns
+    : 80;
+  const rows = Number.isInteger(process.stdout && process.stdout.rows) && process.stdout.rows > 0
+    ? process.stdout.rows
+    : 24;
+  return { cols, rows };
+}
+
+function computeInjectedSubmitDelayMs(agentType, text) {
+  const normalizedAgent = String(agentType || "").trim().toLowerCase();
+  const input = typeof text === "string" ? text : "";
+  let delayMs = normalizedAgent === "claude-code" ? 350 : 200;
+  if (input.includes("\n")) {
+    delayMs += normalizedAgent === "claude-code" ? 250 : 120;
+  }
+  if (input.length > 512) {
+    delayMs += Math.min(1200, Math.ceil(input.length / 512) * 90);
+  }
+  return delayMs;
+}
+
 function buildPrompt(text, marker) {
   if (!marker) return text;
   return `${text}\n\n请在完成后输出以下标记（单独一行）：\n${marker}\n`;
@@ -223,6 +246,9 @@ async function runPtyRunner({ projectRoot, agentType = "codex" }) {
     return 512 * 1024;
   })();
   let outputRingBuffer = "";
+  let outerInputHandler = null;
+  let outerResizeHandler = null;
+  let outerRawModeEnabled = false;
 
   function initScreenBuffer(cols = 80, rows = 24) {
     if (!Terminal || !SerializeAddon) return null;
@@ -302,6 +328,13 @@ async function runPtyRunner({ projectRoot, agentType = "codex" }) {
   function broadcastOutput(data) {
     const text = Buffer.from(data || "").toString("utf8");
     if (!text) return;
+    if (process.stdout && process.stdout.isTTY && typeof process.stdout.write === "function") {
+      try {
+        process.stdout.write(text);
+      } catch {
+        // ignore outer terminal write failures
+      }
+    }
     enqueueTermWrite(text);
     outputRingBuffer += text;
     if (outputRingBuffer.length > OUTPUT_RING_MAX) {
@@ -337,7 +370,9 @@ async function runPtyRunner({ projectRoot, agentType = "codex" }) {
             if (req.type === "inject" && req.command) {
               if (ptyProcess && ptyAlive) {
                 const isClaude = agentType === "claude-code";
-                ptyProcess.write(String(req.command));
+                const commandText = String(req.command);
+                const submitDelayMs = computeInjectedSubmitDelayMs(agentType, commandText);
+                ptyProcess.write(commandText);
                 if (isClaude) {
                   // Claude Code: send CR directly without ESC.
                   // ESC before CR is interpreted as Alt+Enter (newline).
@@ -345,7 +380,7 @@ async function runPtyRunner({ projectRoot, agentType = "codex" }) {
                     if (ptyProcess && ptyAlive) {
                       ptyProcess.write("\r");
                     }
-                  }, 200);
+                  }, submitDelayMs);
                 } else {
                   // Codex/others: ESC dismisses autocomplete, then CR submits.
                   setTimeout(() => {
@@ -356,7 +391,7 @@ async function runPtyRunner({ projectRoot, agentType = "codex" }) {
                         ptyProcess.write("\r");
                       }
                     }, 100);
-                  }, 200);
+                  }, submitDelayMs);
                 }
                 client.write(JSON.stringify({ ok: true }) + "\n");
               } else {
@@ -441,6 +476,60 @@ async function runPtyRunner({ projectRoot, agentType = "codex" }) {
     });
     server.listen(injectSockPath);
     return server;
+  }
+
+  function syncOuterTerminalSize() {
+    const { cols, rows } = getOuterTerminalSize();
+    if (ptyProcess && ptyAlive && typeof ptyProcess.resize === "function") {
+      try {
+        ptyProcess.resize(cols, rows);
+      } catch {
+        // ignore outer resize failures
+      }
+    }
+    if (term && typeof term.resize === "function") {
+      try {
+        term.resize(cols, rows);
+      } catch {
+        // ignore local screen buffer resize failures
+      }
+    }
+  }
+
+  function attachOuterTerminalBridge() {
+    if (process.stdin && typeof process.stdin.on === "function" && !outerInputHandler) {
+      outerInputHandler = (chunk) => {
+        if (!ptyProcess || !ptyAlive) return;
+        const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+        if (!text) return;
+        try {
+          ptyProcess.write(text);
+        } catch {
+          // ignore transient PTY bridge failures
+        }
+      };
+      process.stdin.on("data", outerInputHandler);
+      if (typeof process.stdin.resume === "function") {
+        process.stdin.resume();
+      }
+    }
+
+    if (process.stdin && process.stdin.isTTY && typeof process.stdin.setRawMode === "function" && !outerRawModeEnabled) {
+      try {
+        process.stdin.setRawMode(true);
+        outerRawModeEnabled = true;
+      } catch {
+        // ignore raw mode failures on unsupported hosts
+      }
+    }
+
+    if (process.stdout && process.stdout.isTTY && typeof process.stdout.on === "function" && !outerResizeHandler) {
+      outerResizeHandler = () => {
+        syncOuterTerminalSize();
+      };
+      process.stdout.on("resize", outerResizeHandler);
+      syncOuterTerminalSize();
+    }
   }
 
   function cleanupInjectServer(server) {
@@ -728,10 +817,11 @@ async function runPtyRunner({ projectRoot, agentType = "codex" }) {
       clearTimeout(readyTimer);
       readyTimer = null;
     }
+    const { cols, rows } = getOuterTerminalSize();
     const proc = pty.spawn(command, args, {
       name: "xterm-256color",
-      cols: 80,
-      rows: 24,
+      cols,
+      rows,
       cwd: projectRoot,
       env,
     });
@@ -762,6 +852,30 @@ async function runPtyRunner({ projectRoot, agentType = "codex" }) {
   const stop = () => {
     running = false;
     cleanupInjectServer(injectServer);
+    if (process.stdin && outerInputHandler) {
+      if (typeof process.stdin.off === "function") {
+        process.stdin.off("data", outerInputHandler);
+      } else if (typeof process.stdin.removeListener === "function") {
+        process.stdin.removeListener("data", outerInputHandler);
+      }
+      outerInputHandler = null;
+    }
+    if (process.stdout && outerResizeHandler) {
+      if (typeof process.stdout.off === "function") {
+        process.stdout.off("resize", outerResizeHandler);
+      } else if (typeof process.stdout.removeListener === "function") {
+        process.stdout.removeListener("resize", outerResizeHandler);
+      }
+      outerResizeHandler = null;
+    }
+    if (process.stdin && outerRawModeEnabled && typeof process.stdin.setRawMode === "function") {
+      try {
+        process.stdin.setRawMode(false);
+      } catch {
+        // ignore raw mode cleanup failures
+      }
+      outerRawModeEnabled = false;
+    }
     try {
       if (ptyProcess) ptyProcess.kill();
     } catch {
@@ -776,6 +890,7 @@ async function runPtyRunner({ projectRoot, agentType = "codex" }) {
   process.on("SIGHUP", () => {});
 
   ptyProcess = spawnPtyProcess();
+  attachOuterTerminalBridge();
 
   function processQueue() {
     if (busy || messageQueue.length === 0 || !running || !ptyAlive || !ptyReady) return;

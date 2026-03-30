@@ -104,7 +104,7 @@ describe("daemon groupOrchestrator", () => {
   const projectDir = path.join(projectRoot, ".ufoo", "templates", "groups");
   let injectMock;
 
-  function createTestOrchestrator(handleOps) {
+function createTestOrchestrator(handleOps) {
     return createGroupOrchestrator({
       projectRoot,
       handleOps,
@@ -254,6 +254,36 @@ describe("daemon groupOrchestrator", () => {
       })],
       null
     );
+  });
+
+  test("runGroup reuses one tmux layout context across member launches", async () => {
+    const tmuxContexts = [];
+    const handleOps = jest.fn(async (_root, ops) => {
+      const op = ops[0];
+      tmuxContexts.push(op.tmux_layout_context);
+      if (op.nickname === "pm") {
+        upsertAgentMeta(projectRoot, "codex:pm1", {
+          nickname: "pm",
+          status: "active",
+          activity_state: "ready",
+        });
+        return [{ action: "launch", ok: true, subscriber_ids: ["codex:pm1"], mode: "tmux" }];
+      }
+      upsertAgentMeta(projectRoot, "claude-code:arch1", {
+        nickname: "architect",
+        status: "active",
+        activity_state: "ready",
+      });
+      return [{ action: "launch", ok: true, subscriber_ids: ["claude-code:arch1"], mode: "tmux" }];
+    });
+    const orchestrator = createTestOrchestrator(handleOps);
+
+    const result = await orchestrator.runGroup({ alias: "dev-basic", instance: "grp-tmux-layout" });
+
+    expect(result.ok).toBe(true);
+    expect(tmuxContexts).toHaveLength(2);
+    expect(tmuxContexts[0]).toBe(tmuxContexts[1]);
+    expect(tmuxContexts[0]).toEqual(expect.objectContaining({ mode: "group-right-column" }));
   });
 
   test("runGroup rolls back launched members when a later launch fails", async () => {
@@ -496,6 +526,61 @@ describe("daemon groupOrchestrator", () => {
     expect(result.ok).toBe(true);
     expect(injectMock).toHaveBeenCalledTimes(2);
     expect(injectMock.mock.calls[0][0]).toBe("codex:pm1");
+  });
+
+  test("runGroup adds provider-specific settle delay before claude bootstrap inject", async () => {
+    const handleOps = jest.fn(async (_root, ops) => {
+      const op = ops[0];
+      if (op.action === "launch" && op.nickname === "lead") {
+        upsertAgentMeta(projectRoot, "claude-code:lead1", {
+          nickname: "lead",
+          status: "active",
+          activity_state: "ready",
+        });
+        return [{ action: "launch", ok: true, subscriber_ids: ["claude-code:lead1"], mode: "host" }];
+      }
+      throw new Error(`unexpected op: ${JSON.stringify(op)}`);
+    });
+
+    writeJson(path.join(builtinDir, "single-claude.json"), {
+      schema_version: 1,
+      template: { id: "single-claude", alias: "single-claude", name: "single-claude" },
+      agents: [{
+        id: "lead",
+        nickname: "lead",
+        type: "claude",
+        role: "lead",
+        prompt_profile: "system-architect",
+        startup_order: 1,
+        depends_on: [],
+        accept_from: [],
+        report_to: [],
+      }],
+      edges: [],
+    });
+
+    let injectedAt = 0;
+    injectMock.mockImplementation(async () => {
+      injectedAt = Date.now();
+    });
+    const startedAt = Date.now();
+    const orchestrator = createGroupOrchestrator({
+      projectRoot,
+      handleOps,
+      templatesOptions: { builtinDir, globalDir, projectDir },
+      bootstrapTimeoutMs: 80,
+      bootstrapRetryDelayMs: 1,
+      bootstrapProtectionMs: 3,
+      bootstrapWorkingGraceMs: 8,
+      bootstrapInjectSettleMsByAgent: { claude: 20 },
+    });
+
+    const result = await orchestrator.runGroup({ alias: "single-claude", instance: "grp-claude-settle" });
+
+    expect(result.ok).toBe(true);
+    expect(injectedAt - startedAt).toBeGreaterThanOrEqual(18);
+    expect(injectMock).toHaveBeenCalledTimes(1);
+    expect(injectMock.mock.calls[0][0]).toBe("claude-code:lead1");
   });
 
   test("runGroup allows bootstrap after prolonged working state", async () => {

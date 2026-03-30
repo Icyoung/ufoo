@@ -102,6 +102,7 @@ function resolveHostLaunchContext(options = {}) {
       options.hostCapabilities && typeof options.hostCapabilities === "object"
         ? { ...options.hostCapabilities }
         : null,
+    requireActivityMonitor: options.requireActivityMonitor === true,
   };
 }
 
@@ -450,7 +451,7 @@ async function spawnManagedHostAgent(
   nickname = "",
   processManager = null,
   extraArgs = [],
-  extraEnv = "",
+  extraEnv = {},
   hostOptions = {}
 ) {
   void processManager;
@@ -462,11 +463,11 @@ async function spawnManagedHostAgent(
   }
 
   const hostContext = resolveHostLaunchContext(hostOptions);
+  const requireActivityMonitor = hostContext.requireActivityMonitor === true;
   if (!hostContext.hostDaemonSock) {
     throw new Error("host launch requires UFOO_HOST_DAEMON_SOCK");
   }
 
-  const existing = listSubscribers(projectRoot, agentType);
   const createOptions = {};
   if (hostOptions.groupId) {
     createOptions.group_id = String(hostOptions.groupId).trim();
@@ -474,22 +475,87 @@ async function spawnManagedHostAgent(
     createOptions.source_session_id = hostContext.hostSessionId;
   }
 
-  const args = Array.isArray(extraArgs) ? extraArgs : [];
-  const argText = args.length > 0 ? ` ${args.map(shellEscape).join(" ")}` : "";
-  const envParts = ["UFOO_LAUNCH_MODE=host"];
-  if (nickname) {
-    envParts.push(`UFOO_NICKNAME=${shellEscape(nickname)}`);
-  }
-  if (extraEnv) {
-    envParts.push(String(extraEnv).trim());
+  // Pre-register subscriber on the bus so waitForNewSubscriber resolves immediately
+  const crypto = require("crypto");
+  const EventBus = require("../bus");
+  const existing = listSubscribers(projectRoot, agentType);
+  let subscriberId = "";
+  let preRegistrationError = null;
+  try {
+    const bus = new EventBus(projectRoot);
+    await bus.init();
+    if (bus.subscriberManager) {
+      const sessionToken = crypto.randomBytes(4).toString("hex");
+      subscriberId = `${agentType}:${sessionToken}`;
+      const defaultNickname = agentType === "ufoo-code" ? "ucode" : normalizedAgent;
+      const finalNickname = nickname || defaultNickname;
+      await bus.subscriberManager.join(sessionToken, agentType, finalNickname, {
+        launchMode: "host",
+        parentPid: process.pid,
+      });
+      bus.saveBusData();
+    }
+  } catch (err) {
+    preRegistrationError = err;
+    subscriberId = "";
   }
 
+  const args = Array.isArray(extraArgs) ? extraArgs : [];
+  const argText = args.length > 0 ? ` ${args.map(shellEscape).join(" ")}` : "";
+
   const titleCmd = buildTitleCmd(nickname);
-  const launchCmd = `${envParts.join(" ")} ${binary}${argText}`.trim();
-  const runCmd = titleCmd
-    ? `cd ${shellEscape(projectRoot)} && ${titleCmd} && ${launchCmd}`
-    : `cd ${shellEscape(projectRoot)} && ${launchCmd}`;
+  const hasPreRegisteredSubscriber = !!subscriberId;
+
+  // Pass env vars to Horizon via the env parameter (Horizon will set them for the child process)
+  const env = {
+    UFOO_LAUNCH_MODE: "host",
+  };
+  if (requireActivityMonitor) {
+    env.UFOO_FORCE_PTY = "1";
+  }
+  if (subscriberId) {
+    env.UFOO_SUBSCRIBER_ID = subscriberId;
+  }
+  if (nickname) {
+    env.UFOO_NICKNAME = nickname;
+  }
+  // Parse extraEnv string (e.g., "UFOO_UCODE_BOOTSTRAP_FILE=/path/to/file") and add to env
+  if (extraEnv && typeof extraEnv === "object") {
+    for (const [key, value] of Object.entries(extraEnv)) {
+      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(String(key || ""))) {
+        env[String(key)] = String(value ?? "");
+      }
+    }
+  }
+
+  let runCmd;
+  if (hasPreRegisteredSubscriber) {
+    // Group mode: use ufoo launcher for activity_state monitoring
+    // This enables ReadyDetector and bootstrap to work correctly
+    const ufooRunner = path.join(projectRoot, "bin", "ufoo.js");
+    const launchCmd = `${shellEscape(process.execPath)} ${shellEscape(ufooRunner)} agent-pty-runner ${shellEscape(normalizedAgent)}${argText}`.trim();
+    runCmd = titleCmd
+      ? `cd ${shellEscape(projectRoot)} && ${titleCmd} && ${launchCmd}`
+      : `cd ${shellEscape(projectRoot)} && ${launchCmd}`;
+    // Force PTY wrapper so ReadyDetector + ActivityDetector work for activity_state monitoring.
+    // Horizon sets UFOO_DISABLE_PTY=1 unconditionally; UFOO_FORCE_PTY=1 takes priority over it.
+    env.UFOO_FORCE_PTY = "1";
+  } else {
+    if (preRegistrationError) {
+      console.error(
+        `[host-launch] pre-registration failed for ${nickname || agentType}: ${preRegistrationError.message || String(preRegistrationError)}`
+      );
+    }
+    // Fallback launch still goes through the regular agent launcher binary.
+    // For group/bootstrap-monitored flows we also force the PTY wrapper so
+    // activity_state can progress out of "starting" after self-registration.
+    const directCmd = `${binary}${argText}`;
+    runCmd = titleCmd
+      ? `cd ${shellEscape(projectRoot)} && ${titleCmd} && ${directCmd}`
+      : `cd ${shellEscape(projectRoot)} && ${directCmd}`;
+  }
   createOptions.command = runCmd;
+  createOptions.env = env;
 
   const created = await createHostSession(hostContext.hostDaemonSock, createOptions);
   const sessionId = normalizeOptionalString(created?.session_id);
@@ -498,8 +564,16 @@ async function spawnManagedHostAgent(
     throw new Error("host create_session returned incomplete session info");
   }
 
-  const subscriberId = await waitForNewSubscriber(projectRoot, agentType, existing, 20000);
-  return { child: null, subscriberId: subscriberId || null, sessionId, injectSock };
+  // If pre-registration succeeded we already have the subscriber ID;
+  // otherwise fall back to polling (slower but still works).
+  if (!subscriberId) {
+    subscriberId = await waitForNewSubscriber(projectRoot, agentType, existing, 20000);
+  }
+
+  // Return format must match what launchAgent expects: { mode, launchScope, subscriberIds }
+  // subscriberIds is an array for consistency with other launch modes
+  const resultSubscriberId = subscriberId || null;
+  return { child: null, subscriberId: resultSubscriberId, subscriberIds: [resultSubscriberId].filter(Boolean), sessionId, injectSock };
 }
 
 async function spawnInternalAgent(projectRoot, agent, count = 1, nickname = "", processManager = null, extraEnv = {}) {
@@ -679,7 +753,49 @@ function resolveTmuxPaneTarget() {
   return "";
 }
 
-function spawnTmuxPane(projectRoot, agent, nickname = "", extraArgs = [], extraEnv = "", target = "") {
+function runTmuxCommand(tmuxArgs = [], failureMessage = "tmux command failed", captureStdout = false) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn("tmux", tmuxArgs);
+    let stdout = "";
+    let stderr = "";
+    proc.stdout.on("data", (d) => {
+      stdout += d.toString("utf8");
+    });
+    proc.stderr.on("data", (d) => {
+      stderr += d.toString("utf8");
+    });
+    proc.on("error", (err) => reject(err));
+    proc.on("close", (code) => {
+      if (code === 0) {
+        resolve(captureStdout ? stdout.trim() : "");
+      } else {
+        reject(new Error(stderr || failureMessage));
+      }
+    });
+  });
+}
+
+function applyTmuxLayout(layout = "", target = "") {
+  const normalizedLayout = String(layout || "").trim();
+  if (!normalizedLayout) return Promise.resolve("");
+  const tmuxArgs = ["select-layout"];
+  const normalizedTarget = String(target || "").trim();
+  if (normalizedTarget) {
+    tmuxArgs.push("-t", normalizedTarget);
+  }
+  tmuxArgs.push(normalizedLayout);
+  return runTmuxCommand(tmuxArgs, "tmux select-layout failed");
+}
+
+function spawnTmuxPane(
+  projectRoot,
+  agent,
+  nickname = "",
+  extraArgs = [],
+  extraEnv = "",
+  target = "",
+  splitOptions = {}
+) {
   return new Promise((resolve, reject) => {
     const normalizedAgent = normalizeLaunchAgent(agent);
     const binary = toTmuxBinary(normalizedAgent);
@@ -697,21 +813,25 @@ function spawnTmuxPane(projectRoot, agent, nickname = "", extraArgs = [], extraE
     const runCmd = `cd ${shellEscape(projectRoot)} && ${setPaneEnv}${modeEnv}${nickEnv}${ttyEnv}${envPrefix}${binary}${argText}`;
 
     const tmuxArgs = ["split-window", "-d"];
+    const orientation = String(splitOptions.orientation || "").trim().toLowerCase();
+    if (orientation === "horizontal") {
+      tmuxArgs.push("-h");
+    } else if (orientation === "vertical") {
+      tmuxArgs.push("-v");
+    }
+    const capturePaneId = splitOptions.capturePaneId === true;
+    if (capturePaneId) {
+      tmuxArgs.push("-P", "-F", "#{pane_id}");
+    }
     const normalizedTarget = String(target || "").trim();
     if (normalizedTarget) {
       tmuxArgs.push("-t", normalizedTarget);
     }
     tmuxArgs.push(runCmd);
 
-    const proc = spawn("tmux", tmuxArgs);
-    let stderr = "";
-    proc.stderr.on("data", (d) => {
-      stderr += d.toString("utf8");
-    });
-    proc.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(stderr || "tmux split-window failed"));
-    });
+    runTmuxCommand(tmuxArgs, "tmux split-window failed", capturePaneId)
+      .then((paneId) => resolve({ paneId: capturePaneId ? paneId : "" }))
+      .catch(reject);
   });
 }
 
@@ -762,6 +882,12 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
     }
     const paneTarget = resolveTmuxPaneTarget();
     const useSeparateWindow = launchScope === "window";
+    const tmuxLayoutContext = options.tmuxLayoutContext && typeof options.tmuxLayoutContext === "object"
+      ? options.tmuxLayoutContext
+      : null;
+    const useGroupRightColumnLayout = !useSeparateWindow
+      && tmuxLayoutContext
+      && tmuxLayoutContext.mode === "group-right-column";
     for (let i = 0; i < count; i += 1) {
       // Use "ucode" as default nickname for ufoo/ucode agents
       const defaultNick = normalizedAgent === "ufoo" ? "ucode" : normalizedAgent;
@@ -769,6 +895,31 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
       if (useSeparateWindow) {
         // eslint-disable-next-line no-await-in-loop
         await spawnTmuxWindow(projectRoot, normalizedAgent, nick, [], extraEnvPrefix);
+      } else if (useGroupRightColumnLayout && paneTarget) {
+        const basePane = String(tmuxLayoutContext.basePane || paneTarget).trim() || paneTarget;
+        tmuxLayoutContext.basePane = basePane;
+        const rightColumnPane = String(tmuxLayoutContext.rightColumnPane || "").trim();
+        const splitTarget = rightColumnPane || basePane;
+        const splitOrientation = rightColumnPane ? "vertical" : "horizontal";
+        let splitResult;
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          splitResult = await spawnTmuxPane(projectRoot, normalizedAgent, nick, [], extraEnvPrefix, splitTarget, {
+            orientation: splitOrientation,
+            capturePaneId: !rightColumnPane,
+          });
+        } catch {
+          // Fallback to new window when current pane target cannot be resolved.
+          // eslint-disable-next-line no-await-in-loop
+          await spawnTmuxWindow(projectRoot, normalizedAgent, nick, [], extraEnvPrefix);
+          continue;
+        }
+        if (!rightColumnPane && splitResult && splitResult.paneId) {
+          tmuxLayoutContext.rightColumnPane = splitResult.paneId;
+        }
+        // Keep the original chat pane on the left while stacking agents evenly on the right.
+        // eslint-disable-next-line no-await-in-loop
+        await applyTmuxLayout("main-vertical", basePane);
       } else {
         try {
           // eslint-disable-next-line no-await-in-loop
@@ -795,7 +946,7 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
         nick,
         processManager,
         [],
-        extraEnvPrefix,
+        extraEnvObject,
         hostContext
       );
       if (result.subscriberId) subscriberIds.push(result.subscriberId);

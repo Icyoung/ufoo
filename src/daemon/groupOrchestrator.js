@@ -19,6 +19,32 @@ function asTrimmedString(value) {
   return value.trim();
 }
 
+function resolveBootstrapInjectSettleMs(agentType = "", promptText = "", options = {}) {
+  const byAgent = options && typeof options.byAgent === "object" ? options.byAgent : {};
+  const normalizedAgent = asTrimmedString(agentType).toLowerCase();
+  const explicit = Number.isFinite(byAgent[normalizedAgent]) ? byAgent[normalizedAgent] : Number.NaN;
+  if (Number.isFinite(explicit) && explicit > 0) {
+    return explicit;
+  }
+
+  let delayMs = 0;
+  if (normalizedAgent === "claude") {
+    delayMs = 800;
+  } else if (normalizedAgent === "codex") {
+    delayMs = 250;
+  }
+
+  const text = typeof promptText === "string" ? promptText : "";
+  if (!text) return delayMs;
+  if (text.includes("\n")) {
+    delayMs += normalizedAgent === "claude" ? 200 : 100;
+  }
+  if (text.length > 1024) {
+    delayMs += Math.min(800, Math.ceil(text.length / 1024) * 120);
+  }
+  return delayMs;
+}
+
 function asStringArray(value) {
   if (!Array.isArray(value)) return [];
   return value.map((item) => asTrimmedString(item)).filter(Boolean);
@@ -608,6 +634,7 @@ function createGroupOrchestrator(options = {}) {
     bootstrapRetryDelayMs = 250,
     bootstrapProtectionMs = 3000,
     bootstrapWorkingGraceMs = 10000,
+    bootstrapInjectSettleMsByAgent = {},
   } = options;
 
   if (!projectRoot) {
@@ -775,6 +802,7 @@ function createGroupOrchestrator(options = {}) {
 
     const rollbackTargets = [];
     const eventBus = new EventBus(projectRoot);
+    const tmuxLayoutContext = { mode: "group-right-column" };
 
     for (let i = 0; i < compiled.executionPlan.length; i += 1) {
       const item = compiled.executionPlan[i];
@@ -810,6 +838,8 @@ function createGroupOrchestrator(options = {}) {
         agent: item.type,
         count: 1,
         nickname: item.nickname,
+        require_activity_monitor: true,
+        tmux_layout_context: tmuxLayoutContext,
         ...launchHostContext,
       };
       if (Object.keys(extraEnv).length > 0) {
@@ -923,6 +953,18 @@ function createGroupOrchestrator(options = {}) {
             item.nickname,
             member.bootstrap_error
           );
+        }
+        const settleDelayMs = resolveBootstrapInjectSettleMs(
+          item.type,
+          item.bootstrap_prompt,
+          { byAgent: bootstrapInjectSettleMsByAgent }
+        );
+        if (settleDelayMs > 0) {
+          // Claude/Codex TUIs can render their prompt before the input handler
+          // is fully ready for a large bootstrap paste. Give the UI a short
+          // provider-specific settle window before injecting the group prompt.
+          // eslint-disable-next-line no-await-in-loop
+          await sleep(settleDelayMs);
         }
         // eslint-disable-next-line no-await-in-loop
         const injected = await injectBootstrapPrompt(
@@ -1058,4 +1100,5 @@ module.exports = {
   createGroupOrchestrator,
   buildLaunchPlan,
   normalizeGroupId,
+  resolveBootstrapInjectSettleMs,
 };

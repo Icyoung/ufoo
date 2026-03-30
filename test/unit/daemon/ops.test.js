@@ -25,6 +25,19 @@ const { launchAgent, getRecoverableAgents, closeAgent } = require("../../../src/
 const { getUfooPaths } = require("../../../src/ufoo/paths");
 const hostAdapter = require("../../../src/terminal/adapters/hostAdapter");
 
+function createMockProcess({ stdout = "", stderr = "", code = 0 } = {}) {
+  const { EventEmitter } = require("events");
+  const proc = new EventEmitter();
+  proc.stdout = new EventEmitter();
+  proc.stderr = new EventEmitter();
+  process.nextTick(() => {
+    if (stdout) proc.stdout.emit("data", stdout);
+    if (stderr) proc.stderr.emit("data", stderr);
+    proc.emit("close", code);
+  });
+  return proc;
+}
+
 describe("daemon ops recoverable agents", () => {
   const projectRoot = "/tmp/ufoo-daemon-ops-test";
 
@@ -174,6 +187,41 @@ describe("daemon ops launch scope (tmux)", () => {
     const tmuxCalls = spawn.mock.calls.filter((call) => call[0] === "tmux");
     expect(tmuxCalls.some(([, args]) => Array.isArray(args) && args[0] === "new-window")).toBe(true);
   });
+
+  test("group tmux layout keeps chat on left and stacks agents in right column", async () => {
+    writeConfig({ launchMode: "tmux" });
+    let nextPane = 41;
+    spawn.mockImplementation((command, args = []) => {
+      if (command === "tmux" && Array.isArray(args) && args[0] === "split-window" && args.includes("-P")) {
+        return createMockProcess({ stdout: `%${nextPane++}\n` });
+      }
+      return createMockProcess();
+    });
+
+    const tmuxLayoutContext = { mode: "group-right-column" };
+    await launchAgent(projectRoot, "codex", 1, "builder", null, { tmuxLayoutContext });
+    await launchAgent(projectRoot, "claude", 1, "architect", null, { tmuxLayoutContext });
+    await launchAgent(projectRoot, "ufoo", 1, "ucode", null, { tmuxLayoutContext });
+
+    const tmuxCalls = spawn.mock.calls.filter((call) => call[0] === "tmux").map(([, args]) => args);
+    const splitCalls = tmuxCalls.filter((args) => Array.isArray(args) && args[0] === "split-window");
+    const layoutCalls = tmuxCalls.filter((args) => Array.isArray(args) && args[0] === "select-layout");
+
+    expect(splitCalls).toHaveLength(3);
+    expect(splitCalls[0]).toEqual(expect.arrayContaining(["split-window", "-d", "-h", "-P", "-F", "#{pane_id}", "-t", "%9"]));
+    expect(splitCalls[1]).toEqual(expect.arrayContaining(["split-window", "-d", "-v", "-t", "%41"]));
+    expect(splitCalls[2]).toEqual(expect.arrayContaining(["split-window", "-d", "-v", "-t", "%41"]));
+
+    expect(layoutCalls).toHaveLength(3);
+    expect(layoutCalls[0]).toEqual(["select-layout", "-t", "%9", "main-vertical"]);
+    expect(layoutCalls[1]).toEqual(["select-layout", "-t", "%9", "main-vertical"]);
+    expect(layoutCalls[2]).toEqual(["select-layout", "-t", "%9", "main-vertical"]);
+    expect(tmuxLayoutContext).toEqual(expect.objectContaining({
+      mode: "group-right-column",
+      basePane: "%9",
+      rightColumnPane: "%41",
+    }));
+  });
 });
 
 describe("daemon ops host launch", () => {
@@ -245,14 +293,55 @@ describe("daemon ops host launch", () => {
     expect(hostAdapter.createSession).toHaveBeenCalledWith("/tmp/horizon-daemon.sock", {
       source_session_id: "HS-SRC",
       command: expect.stringContaining("ucodex"),
+      env: expect.objectContaining({
+        UFOO_LAUNCH_MODE: "host",
+        UFOO_NICKNAME: "neo",
+      }),
     });
     const command = hostAdapter.createSession.mock.calls[0][1].command;
-    expect(command).toContain("UFOO_LAUNCH_MODE=host");
-    expect(command).toContain("UFOO_NICKNAME='neo'");
     expect(command).not.toContain("UFOO_HOST_DAEMON_SOCK=");
     expect(command).not.toContain("UFOO_HOST_SESSION_ID=");
     expect(command).not.toContain("UFOO_HOST_INJECT_SOCK=");
     expect(hostAdapter.sendToSocket).not.toHaveBeenCalled();
+  });
+
+  test("host launch forwards multiple extra env values without collapsing them into one string", async () => {
+    writeConfig({ launchMode: "host" });
+    writeAgents({});
+
+    hostAdapter.createSession.mockImplementation(async (_sockPath, opts) => {
+      expect(opts.env).toEqual(expect.objectContaining({
+        UFOO_LAUNCH_MODE: "host",
+        FOO: "1",
+        BAR: "two words",
+      }));
+      writeAgents({
+        "codex:host-extra-env": {
+          agent_type: "codex",
+          nickname: "neo",
+          status: "active",
+          launch_mode: "host",
+        },
+      });
+      return {
+        session_id: "HS-ENV",
+        inject_sock: "/tmp/horizon-extra-env.sock",
+      };
+    });
+
+    const result = await launchAgent(projectRoot, "codex", 1, "neo", null, {
+      hostDaemonSock: "/tmp/horizon-daemon.sock",
+      hostSessionId: "HS-SRC",
+      extraEnv: {
+        FOO: "1",
+        BAR: "two words",
+      },
+    });
+
+    expect(result).toMatchObject({
+      mode: "host",
+      subscriberIds: ["codex:host-extra-env"],
+    });
   });
 
   test("host launch surfaces create_session failures without follow-up injects", async () => {

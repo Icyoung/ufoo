@@ -177,6 +177,19 @@ function shouldShowLaunchBanner(agentType = "") {
   return true;
 }
 
+function computeInjectedSubmitDelayMs(agentType, text) {
+  const normalizedAgent = String(agentType || "").trim().toLowerCase();
+  const input = typeof text === "string" ? text : "";
+  let delayMs = normalizedAgent === "claude-code" ? 350 : 200;
+  if (input.includes("\n")) {
+    delayMs += normalizedAgent === "claude-code" ? 250 : 120;
+  }
+  if (input.length > 512) {
+    delayMs += Math.min(1200, Math.ceil(input.length / 512) * 90);
+  }
+  return delayMs;
+}
+
 async function resolveHostRegistrationData(launchMode) {
   if (launchMode !== "host") {
     return {
@@ -557,10 +570,10 @@ class AgentLauncher {
       let shouldUsePty = false;
 
       // 显式开关（优先级最高）
-      if (process.env.UFOO_DISABLE_PTY === "1") {
-        shouldUsePty = false;  // 强制回退spawn (CI/回滚)
-      } else if (process.env.UFOO_FORCE_PTY === "1") {
+      if (process.env.UFOO_FORCE_PTY === "1") {
         shouldUsePty = true;   // 强制使用PTY (测试/调试)
+      } else if (process.env.UFOO_DISABLE_PTY === "1") {
+        shouldUsePty = false;  // 强制回退spawn (CI/回滚)
       } else {
         // 自动检测：Terminal/tmux模式 + 非internal
         shouldUsePty =
@@ -778,13 +791,15 @@ class AgentLauncher {
                     // Claude Code (Ink TUI) interprets ESC+CR within ~100ms as
                     // Alt+Enter (newline) instead of two separate keys. Use a
                     // longer gap so the escape sequence parser times out.
-                    wrapper.write(req.command);
+                    const commandText = String(req.command);
+                    const submitDelayMs = computeInjectedSubmitDelayMs(this.agentType, commandText);
+                    wrapper.write(commandText);
                     if (normalizedAgentType === "claude-code") {
                       // Claude Code: send CR directly without ESC.
                       // ESC before CR is interpreted as Alt+Enter (newline).
                       setTimeout(() => {
                         wrapper.write("\r");
-                      }, 200);
+                      }, submitDelayMs);
                     } else {
                       // Codex/others: ESC dismisses autocomplete, then CR submits.
                       setTimeout(() => {
@@ -792,7 +807,7 @@ class AgentLauncher {
                         setTimeout(() => {
                           wrapper.write("\r");
                         }, 100);
-                      }, 200);
+                      }, submitDelayMs);
                     }
                     client.write(JSON.stringify({ ok: true }) + "\n");
                     if (wrapper.logger) {
