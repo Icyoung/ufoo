@@ -2,6 +2,7 @@ const {
   COMMAND_REGISTRY,
   buildCommandRegistry,
   parseCommand,
+  shouldEchoCommandInChat,
   parseAtTarget,
 } = require("../../../src/chat/commands");
 
@@ -94,5 +95,11 @@ describe("chat command helpers", () => {
     expect(parseAtTarget("hello")).toBeNull();
     expect(parseAtTarget("@codex")).toEqual({ target: "codex", message: "" });
     expect(parseAtTarget("@codex hi there")).toEqual({ target: "codex", message: "hi there" });
+  });
+
+  test("shouldEchoCommandInChat suppresses group run echoes only", () => {
+    expect(shouldEchoCommandInChat("/group run build-lane")).toBe(false);
+    expect(shouldEchoCommandInChat("/group status build-lane")).toBe(true);
+    expect(shouldEchoCommandInChat("/status")).toBe(true);
   });
 });

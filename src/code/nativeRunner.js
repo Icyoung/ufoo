@@ -1,6 +1,10 @@
 const { randomUUID } = require("crypto");
 const { loadConfig } = require("../config");
 const { runToolCall } = require("./dispatch");
+const { getReadToolDescription } = require("./prompts/toolDescriptions/read");
+const { getWriteToolDescription } = require("./prompts/toolDescriptions/write");
+const { getEditToolDescription } = require("./prompts/toolDescriptions/edit");
+const { getBashToolDescription } = require("./prompts/toolDescriptions/bash");
 
 const CORE_TOOL_NAMES = new Set(["read", "write", "edit", "bash"]);
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
@@ -244,7 +248,7 @@ function buildCoreToolSpecs() {
       type: "function",
       function: {
         name: "read",
-        description: "Read a text file from workspace.",
+        description: getReadToolDescription(),
         parameters: {
           type: "object",
           properties: {
@@ -261,7 +265,7 @@ function buildCoreToolSpecs() {
       type: "function",
       function: {
         name: "write",
-        description: "Write content to a file in workspace.",
+        description: getWriteToolDescription(),
         parameters: {
           type: "object",
           properties: {
@@ -277,7 +281,7 @@ function buildCoreToolSpecs() {
       type: "function",
       function: {
         name: "edit",
-        description: "Replace text in a file in workspace.",
+        description: getEditToolDescription(),
         parameters: {
           type: "object",
           properties: {
@@ -294,7 +298,7 @@ function buildCoreToolSpecs() {
       type: "function",
       function: {
         name: "bash",
-        description: "Run one shell command in workspace.",
+        description: getBashToolDescription(),
         parameters: {
           type: "object",
           properties: {

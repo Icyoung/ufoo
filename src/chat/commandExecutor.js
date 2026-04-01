@@ -189,7 +189,6 @@ function createCommandExecutor(options = {}) {
     }
 
     if (subcommand === "restart") {
-      logMessage("system", "{white-fg}⚙{/white-fg} Restarting daemon...");
       await restartDaemon();
       return;
     }

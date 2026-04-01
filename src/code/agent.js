@@ -24,6 +24,7 @@ const {
   saveSessionSnapshot,
   loadSessionSnapshot,
 } = require("./sessionStore");
+const { buildPromptContext } = require("./prompts");
 
 function printPrompt() {
   process.stdout.write("> ");
@@ -553,14 +554,28 @@ function formatNlResult(result, asJson = false) {
 function buildNlContext({
   appendSystemPrompt = "",
   systemPrompt = "",
+  workspaceRoot = "",
+  model = "",
+  provider = "",
 } = {}) {
-  const inline = readTextOrFile(appendSystemPrompt) || readTextOrFile(systemPrompt);
-  if (inline) return clampContext(inline);
+  // Legacy override: if caller passes a raw systemPrompt string/file, honor it
+  const override = readTextOrFile(systemPrompt);
+  if (override) return clampContext(override);
 
-  const envFallback = readTextOrFile(process.env.UFOO_UCODE_APPEND_SYSTEM_PROMPT)
+  // Resolve append from args or env
+  const append = readTextOrFile(appendSystemPrompt)
+    || readTextOrFile(process.env.UFOO_UCODE_APPEND_SYSTEM_PROMPT)
     || readTextOrFile(process.env.UFOO_UCODE_BOOTSTRAP_FILE)
-    || readTextOrFile(process.env.UFOO_UCODE_PROMPT_FILE);
-  return clampContext(envFallback);
+    || readTextOrFile(process.env.UFOO_UCODE_PROMPT_FILE)
+    || "";
+
+  // New modular prompt assembly
+  return clampContext(buildPromptContext({
+    workspaceRoot: workspaceRoot || process.cwd(),
+    model,
+    provider,
+    appendSystemPrompt: append,
+  }));
 }
 
 function buildSessionSnapshotFromState(state = {}) {
@@ -1327,7 +1342,13 @@ async function runUcodeCoreAgent({
     provider: resolvedUcode.provider,
     model: resolvedUcode.model,
     engine: "ufoo-core",
-    context: buildNlContext({ appendSystemPrompt, systemPrompt }),
+    context: buildNlContext({
+      appendSystemPrompt,
+      systemPrompt,
+      workspaceRoot: resolvedWorkspaceRoot,
+      model: resolvedUcode.model,
+      provider: resolvedUcode.provider,
+    }),
     nlMessages: [],
     sessionId: resolveSessionId(String(sessionId || "").trim()),
     timeoutMs,

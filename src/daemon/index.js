@@ -32,6 +32,7 @@ const {
   buildSoloBootstrapFingerprint,
   rollbackLaunchAfterRoleAssignmentFailure,
 } = require("./soloBootstrap");
+const { applyProjectNicknamePrefix } = require("./nicknameScope");
 
 let providerSessions = null;
 let probeHandles = new Map();
@@ -382,7 +383,7 @@ async function waitForNewSubscriber(projectRoot, agentType, existing, timeoutMs 
   return null;
 }
 
-function checkAndCleanupNickname(projectRoot, nickname) {
+function checkAndCleanupNickname(projectRoot, nickname, { tty = "", agentType = "" } = {}) {
   if (!nickname) return { existing: null, cleaned: false };
   const busPath = getUfooPaths(projectRoot).agentsFile;
   try {
@@ -397,7 +398,22 @@ function checkAndCleanupNickname(projectRoot, nickname) {
     // Check for active agent with same nickname
     const activeAgent = entries.find(([, meta]) => meta.status === "active");
     if (activeAgent) {
-      return { existing: activeAgent[0], cleaned: false };
+      const [existingId, existingMeta] = activeAgent;
+      // Allow takeover when the existing holder is a pre-registered stub
+      // (same agent type, no TTY) or occupies the same TTY — the new
+      // registration is the real agent replacing the placeholder.
+      const sameType = agentType && existingMeta.agent_type === agentType;
+      // A stub is a pre-registered entry with no TTY AND no meaningful activity
+      // state. Internal-mode agents also lack a TTY but will have activity_state
+      // set once they start working — don't evict those.
+      const isStub = sameType && !existingMeta.tty && !existingMeta.activity_state;
+      const sameTty = tty && existingMeta.tty === tty;
+      if (isStub || sameTty) {
+        delete bus.agents[existingId];
+        fs.writeFileSync(busPath, JSON.stringify(bus, null, 2));
+        return { existing: null, cleaned: true };
+      }
+      return { existing: existingId, cleaned: false };
     }
 
     // Clean up offline agents with same nickname
@@ -437,7 +453,8 @@ async function handleOps(projectRoot, ops = [], processManager = null) {
         });
         continue;
       }
-      const nickname = op.nickname || "";
+      const requestedNickname = String(op.nickname || "").trim();
+      const nickname = applyProjectNicknamePrefix(projectRoot, requestedNickname, { agentType: agent });
       const startTime = new Date(Date.now() - 1000);
       const startIso = startTime.toISOString();
       if (nickname && count > 1) {
@@ -482,6 +499,9 @@ async function handleOps(projectRoot, ops = [], processManager = null) {
             op.extra_env && typeof op.extra_env === "object"
               ? op.extra_env
               : ((op.extraEnv && typeof op.extraEnv === "object") ? op.extraEnv : null),
+          extraArgs:
+            Array.isArray(op.extra_args) ? op.extra_args
+              : (Array.isArray(op.extraArgs) ? op.extraArgs : []),
           hostInjectSock: op.host_inject_sock || op.hostInjectSock || "",
           hostDaemonSock: op.host_daemon_sock || op.hostDaemonSock || "",
           hostName: op.host_name || op.hostName || "",
@@ -556,13 +576,14 @@ async function handleOps(projectRoot, ops = [], processManager = null) {
       });
     } else if (op.action === "rename") {
       const agentId = op.agent_id || "";
-      const nickname = op.nickname || "";
-      if (!agentId || !nickname) {
+      const requestedNickname = String(op.nickname || "").trim();
+      let nickname = "";
+      if (!agentId || !requestedNickname) {
         results.push({
           action: "rename",
           ok: false,
           agent_id: agentId,
-          nickname,
+          nickname: requestedNickname,
           error: "rename requires agent_id and nickname",
         });
         continue;
@@ -576,17 +597,28 @@ async function handleOps(projectRoot, ops = [], processManager = null) {
           const nicknameManager = new NicknameManager(eventBus.busData || { agents: {} });
           const resolved = nicknameManager.resolveNickname(agentId);
           if (resolved) targetId = resolved;
+          if (!resolved) {
+            const scopedTarget = applyProjectNicknamePrefix(projectRoot, agentId);
+            if (scopedTarget && scopedTarget !== agentId) {
+              const scopedResolved = nicknameManager.resolveNickname(scopedTarget);
+              if (scopedResolved) targetId = scopedResolved;
+            }
+          }
         }
         if (!eventBus.busData?.agents?.[targetId]) {
           results.push({
             action: "rename",
             ok: false,
             agent_id: agentId,
-            nickname,
+            nickname: requestedNickname,
             error: `agent not found: ${agentId}`,
           });
           continue;
         }
+        const targetMeta = eventBus.busData.agents[targetId] || {};
+        nickname = applyProjectNicknamePrefix(projectRoot, requestedNickname, {
+          agentType: targetMeta.agent_type || "",
+        });
         const result = await eventBus.rename(targetId, nickname, "ufoo-agent");
         results.push({
           action: "rename",
@@ -600,7 +632,7 @@ async function handleOps(projectRoot, ops = [], processManager = null) {
           action: "rename",
           ok: false,
           agent_id: agentId,
-          nickname,
+          nickname: nickname || requestedNickname,
           error: err && err.message ? err.message : String(err || "rename failed"),
         });
       }
@@ -1279,6 +1311,9 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
       const parsedCount = parseInt(count, 10);
       const finalCount = Number.isFinite(parsedCount) && parsedCount > 0 ? parsedCount : 1;
       const requestedProfile = String(prompt_profile || "").trim();
+      const explicitNickname = applyProjectNicknamePrefix(projectRoot, String(nickname || "").trim(), {
+        agentType: normalizedAgent,
+      });
       if (requestedProfile && finalCount > 1) {
         socket.write(
           `${JSON.stringify({
@@ -1293,7 +1328,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
         action: "launch",
         agent: normalizedAgent,
         count: finalCount,
-        nickname: nickname || "",
+        nickname: explicitNickname,
         launch_scope: launch_scope || "",
         terminal_app: terminal_app || "",
         host_inject_sock: host_inject_sock || "",
@@ -1307,6 +1342,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
       };
       let soloLaunchBootstrap = null;
       if (requestedProfile && normalizedAgent === "ufoo") {
+        const soloNickname = explicitNickname || "ucode";
         const profileResult = resolveSoloPromptProfile(projectRoot, requestedProfile);
         if (!profileResult.ok) {
           socket.write(
@@ -1319,14 +1355,14 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
           return;
         }
         const built = buildSoloBootstrap({
-          nickname: nickname || "ucode",
+          nickname: soloNickname,
           agentType: "ufoo-code",
           requestedProfile: profileResult.requested_profile,
           profile: profileResult.profile,
         });
         if (built.required) {
           try {
-            const prepared = prepareSoloUcodeBootstrap(projectRoot, nickname || "ucode", built.promptText);
+            const prepared = prepareSoloUcodeBootstrap(projectRoot, soloNickname, built.promptText);
             op.extra_env = {
               ...(op.extra_env && typeof op.extra_env === "object" ? op.extra_env : {}),
               UFOO_UCODE_BOOTSTRAP_FILE: prepared.file,
@@ -1352,7 +1388,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
         const opsResults = await handleOps(projectRoot, [op], processManager);
         const launchResult = opsResults.find((r) => r.action === "launch");
         if (soloLaunchBootstrap && launchResult && launchResult.ok !== false) {
-          const subscriberId = pickLaunchSubscriber(projectRoot, launchResult, nickname || "");
+          const subscriberId = pickLaunchSubscriber(projectRoot, launchResult, explicitNickname || "");
           if (subscriberId) {
             persistSoloRoleMetadata(projectRoot, subscriberId, {
               requested_profile: soloLaunchBootstrap.requested_profile,
@@ -1367,7 +1403,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
             });
           }
         } else if (requestedProfile && launchResult && launchResult.ok !== false) {
-          const roleTarget = pickLaunchSubscriber(projectRoot, launchResult, nickname || "");
+          const roleTarget = pickLaunchSubscriber(projectRoot, launchResult, explicitNickname || "");
           const roleResult = await assignSoloRoleToExistingAgent(projectRoot, roleTarget, requestedProfile, {
             bootstrapOptions: {
               timeoutMs: 15000,
@@ -1949,7 +1985,10 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
 
         let finalNickname = nickname || "";
         if (finalNickname) {
-          const nickCheck = checkAndCleanupNickname(projectRoot, finalNickname);
+          const nickCheck = checkAndCleanupNickname(projectRoot, finalNickname, {
+            tty: tty || "",
+            agentType: normalizeBusAgentType(agentType),
+          });
           if (nickCheck.existing) {
             finalNickname = "";
           }

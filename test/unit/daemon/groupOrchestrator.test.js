@@ -102,6 +102,7 @@ describe("daemon groupOrchestrator", () => {
   const builtinDir = path.join(TEST_ROOT, "builtin");
   const globalDir = path.join(TEST_ROOT, "global");
   const projectDir = path.join(projectRoot, ".ufoo", "templates", "groups");
+  const runtimeNick = (nickname) => `project-${nickname}`;
   let injectMock;
 
 function createTestOrchestrator(handleOps) {
@@ -154,8 +155,16 @@ function createTestOrchestrator(handleOps) {
     expect(result.members[0]).toEqual(
       expect.objectContaining({
         nickname: "pm",
+        runtime_nickname: runtimeNick("pm"),
         resolved_profile: "task-breakdown",
-        bootstrap_strategy: "post-launch-inject",
+        bootstrap_strategy: "initial-prompt-arg",
+      })
+    );
+    expect(result.members[1]).toEqual(
+      expect.objectContaining({
+        nickname: "architect",
+        runtime_nickname: runtimeNick("architect"),
+        bootstrap_strategy: "system-prompt-file",
       })
     );
     expect(result.members[1].group_members).toHaveLength(2);
@@ -165,17 +174,17 @@ function createTestOrchestrator(handleOps) {
   test("runGroup launches members, injects bootstrap prompts, and persists runtime state", async () => {
     const handleOps = jest.fn(async (_root, ops) => {
       const op = ops[0];
-      if (op.action === "launch" && op.nickname === "pm") {
+      if (op.action === "launch" && op.nickname === runtimeNick("pm")) {
         upsertAgentMeta(projectRoot, "codex:pm1", {
-          nickname: "pm",
+          nickname: runtimeNick("pm"),
           status: "active",
           activity_state: "ready",
         });
         return [{ action: "launch", ok: true, subscriber_ids: ["codex:pm1"], mode: "internal" }];
       }
-      if (op.action === "launch" && op.nickname === "architect") {
+      if (op.action === "launch" && op.nickname === runtimeNick("architect")) {
         upsertAgentMeta(projectRoot, "claude-code:arch1", {
-          nickname: "architect",
+          nickname: runtimeNick("architect"),
           status: "active",
           activity_state: "ready",
         });
@@ -191,11 +200,8 @@ function createTestOrchestrator(handleOps) {
     expect(result.group_id).toBe("grp-dev");
     expect(result.group.status).toBe("active");
     expect(result.group.members.map((item) => item.status)).toEqual(["active", "active"]);
-    expect(injectMock).toHaveBeenCalledTimes(2);
-    expect(injectMock.mock.calls[0][0]).toBe("codex:pm1");
-    expect(injectMock.mock.calls[0][1]).toContain('"group_id": "grp-dev"');
-    expect(injectMock.mock.calls[0][1]).toContain('"group_members"');
-    expect(injectMock.mock.calls[1][0]).toBe("claude-code:arch1");
+    // Both codex (initial-prompt-arg) and claude (system-prompt-file) skip inject
+    expect(injectMock).toHaveBeenCalledTimes(0);
 
     const runtimeFile = path.join(getUfooPaths(projectRoot).groupsDir, "grp-dev.json");
     expect(fs.existsSync(runtimeFile)).toBe(true);
@@ -205,6 +211,7 @@ function createTestOrchestrator(handleOps) {
     expect(runtime.members[0]).toEqual(
       expect.objectContaining({
         subscriber_id: "codex:pm1",
+        runtime_nickname: runtimeNick("pm"),
         bootstrap_status: "applied",
         bootstrapped_subscriber_id: "codex:pm1",
         resolved_profile: "task-breakdown",
@@ -213,6 +220,7 @@ function createTestOrchestrator(handleOps) {
     expect(runtime.members[1]).toEqual(
       expect.objectContaining({
         subscriber_id: "claude-code:arch1",
+        runtime_nickname: runtimeNick("architect"),
         bootstrap_status: "applied",
         upstream: ["pm"],
       })
@@ -245,7 +253,7 @@ function createTestOrchestrator(handleOps) {
       projectRoot,
       [expect.objectContaining({
         action: "launch",
-        nickname: "pm",
+        nickname: runtimeNick("pm"),
         host_inject_sock: "/tmp/host-inject.sock",
         host_daemon_sock: "/tmp/host-daemon.sock",
         host_name: "horizon",
@@ -261,16 +269,16 @@ function createTestOrchestrator(handleOps) {
     const handleOps = jest.fn(async (_root, ops) => {
       const op = ops[0];
       tmuxContexts.push(op.tmux_layout_context);
-      if (op.nickname === "pm") {
+      if (op.nickname === runtimeNick("pm")) {
         upsertAgentMeta(projectRoot, "codex:pm1", {
-          nickname: "pm",
+          nickname: runtimeNick("pm"),
           status: "active",
           activity_state: "ready",
         });
         return [{ action: "launch", ok: true, subscriber_ids: ["codex:pm1"], mode: "tmux" }];
       }
       upsertAgentMeta(projectRoot, "claude-code:arch1", {
-        nickname: "architect",
+        nickname: runtimeNick("architect"),
         status: "active",
         activity_state: "ready",
       });
@@ -289,15 +297,15 @@ function createTestOrchestrator(handleOps) {
   test("runGroup rolls back launched members when a later launch fails", async () => {
     const handleOps = jest.fn(async (_root, ops) => {
       const op = ops[0];
-      if (op.action === "launch" && op.nickname === "pm") {
+      if (op.action === "launch" && op.nickname === runtimeNick("pm")) {
         upsertAgentMeta(projectRoot, "codex:pm1", {
-          nickname: "pm",
+          nickname: runtimeNick("pm"),
           status: "active",
           activity_state: "ready",
         });
         return [{ action: "launch", ok: true, subscriber_ids: ["codex:pm1"], mode: "internal" }];
       }
-      if (op.action === "launch" && op.nickname === "architect") {
+      if (op.action === "launch" && op.nickname === runtimeNick("architect")) {
         return [{ action: "launch", ok: false, error: "boom" }];
       }
       if (op.action === "close" && op.agent_id === "codex:pm1") {
@@ -320,13 +328,12 @@ function createTestOrchestrator(handleOps) {
     expect(runtime.members[1].status).toBe("failed");
   });
 
-  test("runGroup rolls back when bootstrap injection fails", async () => {
-    injectMock.mockRejectedValue(new Error("inject down"));
+  test("runGroup rolls back when claude system-prompt-file bootstrap write fails", async () => {
     const handleOps = jest.fn(async (_root, ops) => {
       const op = ops[0];
-      if (op.action === "launch" && op.nickname === "pm") {
+      if (op.action === "launch" && op.nickname === runtimeNick("pm")) {
         upsertAgentMeta(projectRoot, "codex:pm1", {
-          nickname: "pm",
+          nickname: runtimeNick("pm"),
           status: "active",
           activity_state: "ready",
         });
@@ -338,26 +345,31 @@ function createTestOrchestrator(handleOps) {
       throw new Error(`unexpected op: ${JSON.stringify(op)}`);
     });
 
+    // Make the bootstrap file directory unwritable to trigger system-prompt-file failure
+    const groupsDir = path.join(getUfooPaths(projectRoot).agentDir, "ucode", "groups", "grp-bootstrap-fail");
+    fs.mkdirSync(groupsDir, { recursive: true });
+    // Create a file where the directory should be, so mkdirSync fails
+    const architectBootstrapDir = path.join(groupsDir, "architect.bootstrap.md");
+    fs.mkdirSync(architectBootstrapDir, { recursive: true });
+    fs.writeFileSync(path.join(architectBootstrapDir, "blocker"), "x");
+
     const orchestrator = createTestOrchestrator(handleOps);
 
     const result = await orchestrator.runGroup({ alias: "dev-basic", instance: "grp-bootstrap-fail" });
     expect(result.ok).toBe(false);
-    expect(result.error).toContain("inject down");
 
     const runtime = JSON.parse(
       fs.readFileSync(path.join(getUfooPaths(projectRoot).groupsDir, "grp-bootstrap-fail.json"), "utf8")
     );
     expect(runtime.status).toBe("failed");
-    expect(runtime.members[0].status).toBe("rolled_back");
-    expect(runtime.members[0].bootstrap_status).toBe("failed");
   });
 
   test("runGroup re-injects bootstrap for reused post-launch members when no matching bootstrap record exists", async () => {
     const handleOps = jest.fn(async (_root, ops) => {
       const op = ops[0];
-      if (op.action === "launch" && op.nickname === "pm") {
+      if (op.action === "launch" && op.nickname === runtimeNick("pm")) {
         upsertAgentMeta(projectRoot, "codex:pm1", {
-          nickname: "pm",
+          nickname: runtimeNick("pm"),
           status: "active",
           activity_state: "idle",
         });
@@ -369,9 +381,9 @@ function createTestOrchestrator(handleOps) {
           message: "Agent 'pm' already exists",
         }];
       }
-      if (op.action === "launch" && op.nickname === "architect") {
+      if (op.action === "launch" && op.nickname === runtimeNick("architect")) {
         upsertAgentMeta(projectRoot, "claude-code:arch1", {
-          nickname: "architect",
+          nickname: runtimeNick("architect"),
           status: "active",
           activity_state: "ready",
         });
@@ -387,15 +399,22 @@ function createTestOrchestrator(handleOps) {
     expect(result.group.members[0]).toEqual(
       expect.objectContaining({
         nickname: "pm",
+        runtime_nickname: runtimeNick("pm"),
         status: "reused",
         bootstrap_status: "applied",
         bootstrapped_subscriber_id: "codex:pm1",
         bootstrap_fingerprint: expect.any(String),
       })
     );
-    expect(injectMock).toHaveBeenCalledTimes(2);
-    expect(injectMock.mock.calls[0][0]).toBe("codex:pm1");
-    expect(injectMock.mock.calls[1][0]).toBe("claude-code:arch1");
+    // Both codex (initial-prompt-arg) and claude (system-prompt-file) skip inject
+    expect(injectMock).toHaveBeenCalledTimes(0);
+    expect(result.group.members[1]).toEqual(
+      expect.objectContaining({
+        nickname: "architect",
+        runtime_nickname: runtimeNick("architect"),
+        bootstrap_status: "applied",
+      })
+    );
   });
 
   test("runGroup prepares ucode bootstrap files and forwards launch env", async () => {
@@ -460,7 +479,7 @@ function createTestOrchestrator(handleOps) {
       const op = ops[0];
       if (op.action === "launch") {
         upsertAgentMeta(projectRoot, "claude-code:auto1", {
-          nickname: "lead",
+          nickname: runtimeNick("lead"),
           status: "active",
           activity_state: "ready",
         });
@@ -478,7 +497,7 @@ function createTestOrchestrator(handleOps) {
       [expect.objectContaining({
         action: "launch",
         agent: "claude",
-        nickname: "lead",
+        nickname: runtimeNick("lead"),
       })],
       null
     );
@@ -494,9 +513,9 @@ function createTestOrchestrator(handleOps) {
   test("runGroup waits for startup to settle before bootstrap inject", async () => {
     const handleOps = jest.fn(async (_root, ops) => {
       const op = ops[0];
-      if (op.action === "launch" && op.nickname === "pm") {
+      if (op.action === "launch" && op.nickname === runtimeNick("pm")) {
         upsertAgentMeta(projectRoot, "codex:pm1", {
-          nickname: "pm",
+          nickname: runtimeNick("pm"),
           status: "active",
           activity_state: "working",
         });
@@ -509,9 +528,9 @@ function createTestOrchestrator(handleOps) {
         }, 5);
         return [{ action: "launch", ok: true, subscriber_ids: ["codex:pm1"], mode: "internal" }];
       }
-      if (op.action === "launch" && op.nickname === "architect") {
+      if (op.action === "launch" && op.nickname === runtimeNick("architect")) {
         upsertAgentMeta(projectRoot, "claude-code:arch1", {
-          nickname: "architect",
+          nickname: runtimeNick("architect"),
           status: "active",
           activity_state: "ready",
         });
@@ -524,16 +543,16 @@ function createTestOrchestrator(handleOps) {
     const result = await orchestrator.runGroup({ alias: "dev-basic", instance: "grp-wait-ready" });
 
     expect(result.ok).toBe(true);
-    expect(injectMock).toHaveBeenCalledTimes(2);
-    expect(injectMock.mock.calls[0][0]).toBe("codex:pm1");
+    // codex uses initial-prompt-arg, claude uses system-prompt-file — no inject
+    expect(injectMock).toHaveBeenCalledTimes(0);
   });
 
-  test("runGroup adds provider-specific settle delay before claude bootstrap inject", async () => {
+  test("runGroup uses system-prompt-file strategy for claude (no inject, no settle delay)", async () => {
     const handleOps = jest.fn(async (_root, ops) => {
       const op = ops[0];
-      if (op.action === "launch" && op.nickname === "lead") {
+      if (op.action === "launch" && op.nickname === runtimeNick("lead")) {
         upsertAgentMeta(projectRoot, "claude-code:lead1", {
-          nickname: "lead",
+          nickname: runtimeNick("lead"),
           status: "active",
           activity_state: "ready",
         });
@@ -559,11 +578,6 @@ function createTestOrchestrator(handleOps) {
       edges: [],
     });
 
-    let injectedAt = 0;
-    injectMock.mockImplementation(async () => {
-      injectedAt = Date.now();
-    });
-    const startedAt = Date.now();
     const orchestrator = createGroupOrchestrator({
       projectRoot,
       handleOps,
@@ -578,26 +592,40 @@ function createTestOrchestrator(handleOps) {
     const result = await orchestrator.runGroup({ alias: "single-claude", instance: "grp-claude-settle" });
 
     expect(result.ok).toBe(true);
-    expect(injectedAt - startedAt).toBeGreaterThanOrEqual(18);
-    expect(injectMock).toHaveBeenCalledTimes(1);
-    expect(injectMock.mock.calls[0][0]).toBe("claude-code:lead1");
+    // system-prompt-file: no inject needed, bootstrap baked into --append-system-prompt
+    expect(injectMock).toHaveBeenCalledTimes(0);
+    expect(handleOps).toHaveBeenCalledWith(
+      projectRoot,
+      [expect.objectContaining({
+        action: "launch",
+        nickname: runtimeNick("lead"),
+        extra_args: ["--append-system-prompt", expect.stringContaining("lead")],
+      })],
+      null
+    );
+    expect(result.group.members[0]).toEqual(
+      expect.objectContaining({
+        bootstrap_status: "applied",
+        subscriber_id: "claude-code:lead1",
+      })
+    );
   });
 
   test("runGroup allows bootstrap after prolonged working state", async () => {
     const handleOps = jest.fn(async (_root, ops) => {
       const op = ops[0];
-      if (op.action === "launch" && op.nickname === "pm") {
+      if (op.action === "launch" && op.nickname === runtimeNick("pm")) {
         upsertAgentMeta(projectRoot, "codex:pm1", {
-          nickname: "pm",
+          nickname: runtimeNick("pm"),
           status: "active",
           activity_state: "working",
           activity_since: new Date(Date.now() - 20).toISOString(),
         });
         return [{ action: "launch", ok: true, subscriber_ids: ["codex:pm1"], mode: "internal" }];
       }
-      if (op.action === "launch" && op.nickname === "architect") {
+      if (op.action === "launch" && op.nickname === runtimeNick("architect")) {
         upsertAgentMeta(projectRoot, "claude-code:arch1", {
-          nickname: "architect",
+          nickname: runtimeNick("architect"),
           status: "active",
           activity_state: "ready",
         });
@@ -610,10 +638,12 @@ function createTestOrchestrator(handleOps) {
     const result = await orchestrator.runGroup({ alias: "dev-basic", instance: "grp-working-grace" });
 
     expect(result.ok).toBe(true);
-    expect(injectMock).toHaveBeenCalledTimes(2);
+    // codex uses initial-prompt-arg, claude uses system-prompt-file — no inject
+    expect(injectMock).toHaveBeenCalledTimes(0);
     expect(result.group.members[0]).toEqual(
       expect.objectContaining({
         nickname: "pm",
+        runtime_nickname: runtimeNick("pm"),
         bootstrap_status: "applied",
         subscriber_id: "codex:pm1",
       })

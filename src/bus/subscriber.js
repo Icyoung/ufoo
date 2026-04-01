@@ -99,9 +99,10 @@ class SubscriberManager {
   }
 
   async cleanupDuplicateTty(currentSubscriber, ttyPath) {
-    if (!ttyPath) return;
-    if (!this.busData.agents) return;
+    if (!ttyPath) return null;
+    if (!this.busData.agents) return null;
 
+    let inheritedNickname = null;
     const entries = Object.entries(this.busData.agents);
     for (const [id, meta] of entries) {
       if (id === currentSubscriber) continue;
@@ -111,6 +112,10 @@ class SubscriberManager {
         : (await this.queueManager.readTty(id));
       if (!metaTty) continue;
       if (metaTty === ttyPath) {
+        // Inherit user-set nickname from the displaced entry
+        if (meta.nickname && !inheritedNickname) {
+          inheritedNickname = meta.nickname;
+        }
         // Remove stale subscriber using same tty
         delete this.busData.agents[id];
         try {
@@ -125,6 +130,7 @@ class SubscriberManager {
         }
       }
     }
+    return inheritedNickname;
   }
 
   /**
@@ -186,7 +192,12 @@ class SubscriberManager {
     const ttyInfo = finalTty ? getTtyProcessInfo(finalTty) : null;
 
     // 清理同一 tty 的旧订阅者（避免重复启动污染）
-    await this.cleanupDuplicateTty(subscriber, finalTty);
+    // Inherit nickname from displaced entry when this is a new subscriber
+    // with no explicit nickname (e.g. session restart on same TTY)
+    const inheritedNickname = await this.cleanupDuplicateTty(subscriber, finalTty);
+    if (inheritedNickname && !nickname && !existingMeta) {
+      finalNickname = inheritedNickname;
+    }
 
     // 更新订阅者信息（保留已有字段，如 provider_session_*）
     const preserved = existingMeta && typeof existingMeta === "object"
@@ -288,6 +299,7 @@ class SubscriberManager {
     }
 
     this.busData.agents[subscriber].status = "inactive";
+    this.busData.agents[subscriber].activity_state = "";
     this.busData.agents[subscriber].last_seen = getTimestamp();
 
     return true;
@@ -350,6 +362,7 @@ class SubscriberManager {
     for (const [id, meta] of Object.entries(this.busData.agents)) {
       if (meta.status === "active" && !isMetaActive(meta)) {
         meta.status = "inactive";
+        meta.activity_state = "";
         meta.last_seen = getTimestamp();
       }
     }

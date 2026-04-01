@@ -9,6 +9,7 @@ function createSettingsController(options = {}) {
     fsModule,
     getUfooPaths = () => ({ agentDir: "" }),
     logMessage = () => {},
+    resolveStatusLine = null,
     renderDashboard = () => {},
     renderScreen = () => {},
     restartDaemon = () => {},
@@ -59,7 +60,8 @@ function createSettingsController(options = {}) {
     const nextIndex = modeOptions.findIndex((opt) => opt === next);
     setSelectedModeIndex(nextIndex >= 0 ? nextIndex : 0);
     saveConfig(projectRoot, { launchMode: next });
-    logMessage("status", `{white-fg}⚙{/white-fg} Launch mode: ${next}`);
+    const statusMsg = resolveStatusLine || ((text) => logMessage("status", text));
+    statusMsg(`{gray-fg}⚙{/gray-fg} Launch mode: ${next}`);
     renderDashboard();
     renderScreen();
     void restartDaemon();

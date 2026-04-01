@@ -1136,6 +1136,7 @@ async function runChat(projectRoot, options = {}) {
     fsModule: fs,
     getUfooPaths,
     logMessage,
+    resolveStatusLine,
     renderDashboard,
     renderScreen: () => screen.render(),
     restartDaemon,

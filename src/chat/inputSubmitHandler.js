@@ -1,4 +1,6 @@
 const { IPC_REQUEST_TYPES } = require("../shared/eventContract");
+const { decodeEscapedNewlines } = require("./text");
+const { shouldEchoCommandInChat } = require("./commands");
 
 function createInputSubmitHandler(options = {}) {
   const {
@@ -69,7 +71,7 @@ function createInputSubmitHandler(options = {}) {
   }
 
   async function handleSubmit(value) {
-    const text = String(value || "").trim();
+    const text = decodeEscapedNewlines(value).trim();
 
     if (!text) {
       if (state.targetAgent) {
@@ -120,16 +122,17 @@ function createInputSubmitHandler(options = {}) {
         return;
       }
       const resolvedTarget = resolveAgentId(atTarget.target) || atTarget.target;
+      const message = atTarget.message.trim();
       logMessage(
         "user",
-        `{cyan-fg}→{/cyan-fg} {magenta-fg}@${escapeBlessed(atTarget.target)}{/magenta-fg} ${escapeBlessed(atTarget.message)}`
+        `{cyan-fg}→{/cyan-fg} {magenta-fg}@${escapeBlessed(atTarget.target)}{/magenta-fg} ${escapeBlessed(message)}`
       );
       renderScreen();  // Immediately render the user message
       markPendingDelivery(resolvedTarget);
       send({
         type: IPC_REQUEST_TYPES.BUS_SEND,
         target: resolvedTarget,
-        message: atTarget.message,
+        message,
         injection_mode: "immediate",
         source: "chat-direct",
       });
@@ -138,8 +141,10 @@ function createInputSubmitHandler(options = {}) {
     }
 
     if (text.startsWith("/")) {
-      logMessage("user", `{white-fg}→{/white-fg} ${escapeBlessed(text)}`);
-      renderScreen();  // Render slash command immediately
+      if (shouldEchoCommandInChat(text)) {
+        logMessage("user", `{white-fg}→{/white-fg} ${escapeBlessed(text)}`);
+        renderScreen();  // Render slash command immediately
+      }
       try {
         await executeCommand(text);
       } catch (err) {

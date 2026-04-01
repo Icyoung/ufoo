@@ -39,6 +39,7 @@ function createDaemonCoordinator(options = {}) {
     startDaemon,
     daemonConnection: connection,
     logMessage,
+    resolveStatusLine,
   });
   let switchProjectChain = Promise.resolve();
 

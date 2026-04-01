@@ -17,6 +17,11 @@ function escapeBlessed(text) {
   return `{escape}${safe}{/escape}`;
 }
 
+function decodeEscapedNewlines(text) {
+  if (text == null) return "";
+  return String(text).replace(/\\n/g, "\n");
+}
+
 function stripBlessedTags(text) {
   if (text == null) return "";
   return String(text).replace(/\{[^}]+\}/g, "");
@@ -63,6 +68,7 @@ function truncateText(text, maxWidth) {
 module.exports = {
   neutralizeBlessedCommaTags,
   escapeBlessed,
+  decodeEscapedNewlines,
   stripBlessedTags,
   stripAnsi,
   truncateAnsi,

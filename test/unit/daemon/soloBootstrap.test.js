@@ -12,6 +12,7 @@ jest.mock("../../../src/agent/ucodeBootstrap", () => ({
 const EventBus = require("../../../src/bus");
 const { prepareUcodeBootstrap } = require("../../../src/agent/ucodeBootstrap");
 const { getUfooPaths } = require("../../../src/ufoo/paths");
+const { buildProjectNicknamePrefix } = require("../../../src/daemon/nicknameScope");
 const {
   resolveSoloPromptProfile,
   buildSoloBootstrap,
@@ -26,9 +27,11 @@ const {
 
 describe("daemon soloBootstrap", () => {
   let projectRoot;
+  let runtimeNick;
 
   beforeEach(() => {
     projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-solo-bootstrap-"));
+    runtimeNick = (nickname) => `${buildProjectNicknamePrefix(projectRoot)}-${nickname}`;
     const paths = getUfooPaths(projectRoot);
     fs.mkdirSync(path.dirname(paths.agentsFile), { recursive: true });
     fs.writeFileSync(paths.agentsFile, JSON.stringify({
@@ -110,6 +113,25 @@ describe("daemon soloBootstrap", () => {
     expect(resolved.subscriberId).toBe("codex:test");
   });
 
+  test("resolves existing agent by raw nickname when runtime nickname is project-prefixed", () => {
+    fs.writeFileSync(getUfooPaths(projectRoot).agentsFile, JSON.stringify({
+      schema_version: 1,
+      created_at: new Date().toISOString(),
+      agents: {
+        "codex:test": {
+          agent_type: "codex",
+          nickname: runtimeNick("designer"),
+          status: "active",
+          activity_state: "ready",
+          last_seen: new Date().toISOString(),
+        },
+      },
+    }, null, 2));
+
+    const resolved = resolveExistingAgent(projectRoot, "designer");
+    expect(resolved.subscriberId).toBe("codex:test");
+  });
+
   test("does not resolve stale active agent entries as existing live agents", () => {
     fs.writeFileSync(getUfooPaths(projectRoot).agentsFile, JSON.stringify({
       schema_version: 1,
@@ -148,6 +170,40 @@ describe("daemon soloBootstrap", () => {
 
     const owner = findOwningGroup(projectRoot, "codex:test");
     expect(owner.group_id).toBe("grp-1");
+  });
+
+  test("detects active group ownership when live nickname uses runtime_nickname", () => {
+    fs.writeFileSync(getUfooPaths(projectRoot).agentsFile, JSON.stringify({
+      schema_version: 1,
+      created_at: new Date().toISOString(),
+      agents: {
+        "codex:test": {
+          agent_type: "codex",
+          nickname: runtimeNick("designer"),
+          status: "active",
+          activity_state: "ready",
+          last_seen: new Date().toISOString(),
+        },
+      },
+    }, null, 2));
+    const groupPath = path.join(getUfooPaths(projectRoot).groupsDir, "grp-runtime-nick.json");
+    fs.mkdirSync(path.dirname(groupPath), { recursive: true });
+    fs.writeFileSync(groupPath, JSON.stringify({
+      group_id: "grp-runtime-nick",
+      template_alias: "ui-polish",
+      status: "active",
+      members: [
+        {
+          nickname: "designer",
+          runtime_nickname: runtimeNick("designer"),
+          subscriber_id: "codex:test",
+          status: "active",
+        },
+      ],
+    }, null, 2));
+
+    const owner = findOwningGroup(projectRoot, "codex:test");
+    expect(owner.group_id).toBe("grp-runtime-nick");
   });
 
   test("assignSoloRoleToExistingAgent rejects group-owned agents", async () => {

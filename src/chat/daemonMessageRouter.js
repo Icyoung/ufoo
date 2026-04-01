@@ -1,5 +1,6 @@
 const { IPC_RESPONSE_TYPES, BUS_STATUS_PHASES } = require("../shared/eventContract");
 const { renderMarkdownLines } = require("../shared/markdownRenderer");
+const { decodeEscapedNewlines } = require("./text");
 
 function createDaemonMessageRouter(options = {}) {
   const {
@@ -51,7 +52,7 @@ function createDaemonMessageRouter(options = {}) {
     }
 
     if (typeof displayMessage === "string") {
-      displayMessage = displayMessage.replace(/\\n/g, "\n");
+      displayMessage = decodeEscapedNewlines(displayMessage);
     }
 
     return { displayMessage, streamPayload };
@@ -198,8 +199,23 @@ function createDaemonMessageRouter(options = {}) {
   function handleResponseMessage(msg) {
     const payload = msg.data || {};
     if (payload.reply) {
-      resolveStatusLine(`{gray-fg}←{/gray-fg} ${escapeBlessed(payload.reply)}`);
-      logMessage("reply", `{white-fg}←{/white-fg} ${escapeBlessed(payload.reply)}`);
+      const replyText = decodeEscapedNewlines(payload.reply);
+      resolveStatusLine(`{gray-fg}←{/gray-fg} ${escapeBlessed(replyText)}`);
+      const ops = Array.isArray(payload.ops) ? payload.ops : [];
+      const isLifecycleStatusOnly = ops.length > 0
+        && ops.every((op) => op && (op.action === "close" || op.action === "launch"));
+      const group = payload.group && typeof payload.group === "object" ? payload.group : null;
+      const isGroupStartedConfirmation = Boolean(
+        group &&
+        group.group_id &&
+        Array.isArray(group.members) &&
+        !group.dry_run &&
+        /^Group started\b/i.test(replyText)
+      );
+      // Suppress lifecycle confirmations from chat history — status line plus structured payload is enough.
+      if (!isLifecycleStatusOnly && !isGroupStartedConfirmation) {
+        logMessage("reply", `{white-fg}←{/white-fg} ${escapeBlessed(replyText)}`);
+      }
     }
 
     if (payload.recoverable && typeof payload.recoverable === "object") {
@@ -277,7 +293,7 @@ function createDaemonMessageRouter(options = {}) {
 
     if (payload.dispatch && payload.dispatch.length > 0) {
       const targets = payload.dispatch.map((d) => d.target || d).join(", ");
-      logMessage("dispatch", `{white-fg}→{/white-fg} Dispatched to: ${escapeBlessed(targets)}`);
+      resolveStatusLine(`{gray-fg}→{/gray-fg} Dispatched to: ${escapeBlessed(targets)}`);
     }
 
     if (
@@ -350,6 +366,10 @@ function createDaemonMessageRouter(options = {}) {
 
     const { displayMessage, streamPayload } = normalizeDisplayMessage(data.message || "");
 
+    // Skip silent events (e.g. delivery confirmations from notifier) and empty messages
+    if (data.silent && !streamPayload) return true;
+    if (!displayMessage && !streamPayload) return true;
+
     const isAgentViewTarget =
       getCurrentView() === "agent" &&
       isAgentViewUsesBus() &&
@@ -361,7 +381,7 @@ function createDaemonMessageRouter(options = {}) {
     if (isAgentViewTarget) {
       if (streamPayload) {
         const delta = typeof streamPayload.delta === "string"
-          ? streamPayload.delta.replace(/\\n/g, "\n")
+          ? decodeEscapedNewlines(streamPayload.delta)
           : "";
         if (delta) writeToAgentTerm(delta);
       } else if (displayMessage) {
@@ -371,15 +391,7 @@ function createDaemonMessageRouter(options = {}) {
     }
 
     if (data.event === "delivery" && consumePendingDelivery(publisher, displayName)) {
-      const ok = (data.status || "").toLowerCase() !== "error";
-      const detail = typeof data.message === "string" && data.message
-        ? data.message
-        : (ok ? `Delivered to @${displayName}` : `Delivery failed to @${displayName}`);
-      if (ok) {
-        logMessage("status", `{white-fg}✓{/white-fg} ${escapeBlessed(detail)}`);
-      } else {
-        logMessage("error", `{white-fg}✗{/white-fg} ${escapeBlessed(detail)}`);
-      }
+      // Delivery confirmations are already shown in the status bar — suppress from chat.
       requestStatus();
       renderScreen();
       return true;
@@ -391,7 +403,7 @@ function createDaemonMessageRouter(options = {}) {
 
     if (streamPayload) {
       const delta = typeof streamPayload.delta === "string"
-        ? streamPayload.delta.replace(/\\n/g, "\n")
+        ? decodeEscapedNewlines(streamPayload.delta)
         : "";
       const state = beginStream(publisher, prefixLabel, continuationPrefix, data);
       if (delta) appendStreamDelta(state, delta);
@@ -426,7 +438,6 @@ function createDaemonMessageRouter(options = {}) {
 
   function handleErrorMessage(msg) {
     resolveStatusLine(`{gray-fg}✗{/gray-fg} Error: ${msg.error}`);
-    logMessage("error", `{white-fg}✗{/white-fg} Error: ${msg.error}`);
     renderScreen();
     return false;
   }

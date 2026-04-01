@@ -86,6 +86,25 @@ describe("chat inputSubmitHandler", () => {
     expect(state.targetAgent).toBeNull();
   });
 
+  test("targeted text decodes escaped newlines before echo and send", async () => {
+    const { options, handler } = createHarness({ targetAgent: "codex:1" });
+
+    await handler.handleSubmit("hello\\nworld");
+
+    expect(options.commitInputHistory).toHaveBeenCalledWith("hello\nworld");
+    expect(options.logMessage).toHaveBeenCalledWith(
+      "user",
+      "{cyan-fg}→{/cyan-fg} {magenta-fg}@ESC(codex:1){/magenta-fg} ESC(hello\nworld)"
+    );
+    expect(options.send).toHaveBeenCalledWith({
+      type: "bus_send",
+      target: "codex:1",
+      message: "hello\nworld",
+      injection_mode: "immediate",
+      source: "chat-direct",
+    });
+  });
+
   test("@target without message selects direct target when resolvable", async () => {
     const { state, options, handler } = createHarness({}, {
       parseAtTarget: jest.fn(() => ({ target: "a", message: "" })),
@@ -153,6 +172,19 @@ describe("chat inputSubmitHandler", () => {
     expect(options.logMessage).toHaveBeenCalledWith(
       "error",
       "{white-fg}✗{/white-fg} Command error: ESC(boom)"
+    );
+    expect(options.focusInput).toHaveBeenCalled();
+  });
+
+  test("group run slash command executes without chat echo", async () => {
+    const { options, handler } = createHarness();
+
+    await handler.handleSubmit("/group run build-lane");
+
+    expect(options.executeCommand).toHaveBeenCalledWith("/group run build-lane");
+    expect(options.logMessage).not.toHaveBeenCalledWith(
+      "user",
+      "{white-fg}→{/white-fg} ESC(/group run build-lane)"
     );
     expect(options.focusInput).toHaveBeenCalled();
   });
@@ -230,5 +262,27 @@ describe("chat inputSubmitHandler", () => {
       "{white-fg}→{/white-fg} ESC(run analysis)"
     );
     expect(options.focusInput).toHaveBeenCalled();
+  });
+
+  test("default prompt path decodes escaped newlines before send and echo", async () => {
+    const { state, options, handler } = createHarness();
+
+    await handler.handleSubmit("run\\nanalysis");
+
+    expect(options.commitInputHistory).toHaveBeenCalledWith("run\nanalysis");
+    expect(options.send).toHaveBeenCalledWith({
+      type: "prompt",
+      text: "run\nanalysis",
+      request_meta: {
+        source: "chat-dialog",
+        dispatch_default_injection_mode: "immediate",
+        allow_relevance_queue: true,
+      },
+    });
+    expect(state.pending).toEqual({ original: "run\nanalysis" });
+    expect(options.logMessage).toHaveBeenCalledWith(
+      "user",
+      "{white-fg}→{/white-fg} ESC(run\nanalysis)"
+    );
   });
 });

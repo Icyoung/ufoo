@@ -9,14 +9,17 @@ function restartDaemonFlow(options = {}) {
     startDaemon,
     daemonConnection,
     logMessage,
+    resolveStatusLine = null,
   } = options;
+
+  const statusMsg = resolveStatusLine || ((text) => logMessage("status", text));
 
   let restartInProgress = false;
 
   return async function restartDaemon() {
     if (restartInProgress) return;
     restartInProgress = true;
-    logMessage("status", "{white-fg}⚙{/white-fg} Restarting daemon...");
+    statusMsg("{gray-fg}⚙{/gray-fg} Restarting daemon...");
     try {
       const connection = resolveDaemonConnection(daemonConnection);
       if (connection) {
@@ -26,9 +29,9 @@ function restartDaemonFlow(options = {}) {
       startDaemon(projectRoot);
       const connected = connection ? await connection.connect() : false;
       if (connected) {
-        logMessage("status", "{white-fg}✓{/white-fg} Daemon reconnected");
+        statusMsg("{gray-fg}✓{/gray-fg} Daemon reconnected");
       } else {
-        logMessage("error", "{white-fg}✗{/white-fg} Failed to reconnect to daemon");
+        statusMsg("{gray-fg}✗{/gray-fg} Failed to reconnect to daemon");
       }
     } finally {
       restartInProgress = false;

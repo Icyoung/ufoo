@@ -13,6 +13,10 @@ const {
 } = require("../group/bootstrap");
 const { validateTemplateTarget: validateGroupTemplateTarget } = require("../group/templateValidation");
 const { getUfooPaths } = require("../ufoo/paths");
+const {
+  normalizeNicknameSegment,
+  buildProjectNicknamePrefix,
+} = require("./nicknameScope");
 
 function asTrimmedString(value) {
   if (typeof value !== "string") return "";
@@ -61,6 +65,12 @@ function normalizeInstanceId(value = "") {
 
 function normalizeGroupId(value = "") {
   return normalizeInstanceId(value);
+}
+
+function buildRuntimeNickname(projectPrefix, nickname) {
+  const prefix = normalizeNicknameSegment(projectPrefix, "project");
+  const logicalName = normalizeNicknameSegment(nickname, "agent");
+  return `${prefix}-${logicalName}`;
 }
 
 function buildLaunchPlan(templateDoc = {}) {
@@ -294,6 +304,7 @@ function resolveAutoAgentType(projectRoot, requestedType) {
 function buildExecutionPlan({
   projectRoot,
   groupId,
+  projectNicknamePrefix,
   templateEntry,
   templateDoc,
   plan,
@@ -311,8 +322,10 @@ function buildExecutionPlan({
   const roster = plan.map((item) => {
     const resolvedType = resolveAutoAgentType(projectRoot, item.requested_type || item.type);
     const profile = profileByNickname.get(item.nickname) || null;
+    const runtimeNickname = buildRuntimeNickname(projectNicknamePrefix, item.nickname);
     return {
       nickname: item.nickname,
+      runtime_nickname: runtimeNickname,
       requested_type: item.requested_type || item.type,
       type: resolvedType,
       role: item.role,
@@ -340,6 +353,7 @@ function buildExecutionPlan({
     const relation = relationships.get(item.nickname) || { upstream: [], downstream: [] };
     const upstream = pickRosterMembers(roster, relation.upstream);
     const downstream = pickRosterMembers(roster, relation.downstream);
+    const runtimeNickname = buildRuntimeNickname(projectNicknamePrefix, item.nickname);
     const metadata = buildGroupPromptMetadata({
       groupId,
       templateAlias: templateEntry.alias || asTrimmedString(templateInfo.alias),
@@ -361,7 +375,11 @@ function buildExecutionPlan({
     const bootstrapRequired = Boolean(resolvedProfile && resolvedProfile.prompt);
     const bootstrapStrategy = !bootstrapRequired
       ? "none"
-      : (resolvedType === "ucode" ? "ucode-bootstrap-file" : "post-launch-inject");
+      : (resolvedType === "ucode"
+        ? "ucode-bootstrap-file"
+        : (resolvedType === "claude"
+          ? "system-prompt-file"
+          : (resolvedType === "codex" ? "initial-prompt-arg" : "post-launch-inject")));
     const bootstrapPrompt = bootstrapRequired
       ? composeGroupBootstrapPrompt({
         profilePrompt: resolvedProfile.prompt,
@@ -383,6 +401,7 @@ function buildExecutionPlan({
       ...item,
       requested_type: item.requested_type || item.type,
       type: resolvedType,
+      runtime_nickname: runtimeNickname,
       resolved_profile: profile ? profile.resolved_profile : "",
       display_name: profile ? profile.display_name : "",
       short_name: profile ? profile.short_name : "",
@@ -393,7 +412,7 @@ function buildExecutionPlan({
       bootstrap_metadata: metadata,
       bootstrap_prompt: bootstrapPrompt,
       bootstrap_fingerprint: bootstrapFingerprint,
-      bootstrap_file: bootstrapStrategy === "ucode-bootstrap-file"
+      bootstrap_file: (bootstrapStrategy === "ucode-bootstrap-file" || bootstrapStrategy === "system-prompt-file")
         ? memberBootstrapFilePath(projectRoot, groupId, item.nickname)
         : "",
       upstream: relation.upstream.slice(),
@@ -411,6 +430,7 @@ function buildExecutionPlan({
 function buildDefaultRuntime({
   groupId,
   instance,
+  projectNicknamePrefix,
   templateEntry,
   plan,
   rosterVersion,
@@ -429,6 +449,7 @@ function buildDefaultRuntime({
     template_version: Number.isInteger(templateEntry.schemaVersion) ? templateEntry.schemaVersion : null,
     template_source: templateEntry.source || "",
     template_file: templateEntry.filePath || "",
+    project_nickname_prefix: projectNicknamePrefix || "",
     roster_version: rosterVersion || "",
     created_at: createdAt,
     started_at: createdAt,
@@ -438,6 +459,7 @@ function buildDefaultRuntime({
       index: idx,
       template_agent_id: item.id || "",
       nickname: item.nickname,
+      runtime_nickname: item.runtime_nickname || "",
       requested_type: item.requested_type || item.type,
       type: item.type,
       role: item.role || "",
@@ -732,6 +754,7 @@ function createGroupOrchestrator(options = {}) {
 
     const plan = buildLaunchPlan(validated.entry.data);
     const groupId = generateGroupId(validated.entry.alias || alias, instance);
+    const projectNicknamePrefix = buildProjectNicknamePrefix(projectRoot);
 
     if (instance && !normalizeInstanceId(instance)) {
       return {
@@ -752,6 +775,7 @@ function createGroupOrchestrator(options = {}) {
     const compiled = buildExecutionPlan({
       projectRoot,
       groupId,
+      projectNicknamePrefix,
       templateEntry: validated.entry,
       templateDoc: validated.entry.data,
       plan,
@@ -766,9 +790,11 @@ function createGroupOrchestrator(options = {}) {
         status: "dry_run",
         group_id: groupId,
         template_alias: validated.entry.alias,
+        project_nickname_prefix: projectNicknamePrefix,
         roster_version: compiled.rosterVersion,
         members: compiled.executionPlan.map((item) => ({
           nickname: item.nickname,
+          runtime_nickname: item.runtime_nickname,
           type: item.type,
           role: item.role,
           startup_order: item.startup_order,
@@ -794,6 +820,7 @@ function createGroupOrchestrator(options = {}) {
     const runtime = buildDefaultRuntime({
       groupId,
       instance,
+      projectNicknamePrefix,
       templateEntry: validated.entry,
       plan: compiled.executionPlan,
       rosterVersion: compiled.rosterVersion,
@@ -808,6 +835,8 @@ function createGroupOrchestrator(options = {}) {
       const item = compiled.executionPlan[i];
       const member = runtime.members[i];
       const extraEnv = {};
+      let extraArgs = [];
+      let bootstrapInjected = false;
 
       if (item.bootstrap_strategy === "ucode-bootstrap-file") {
         member.bootstrap_attempted_at = nowIso();
@@ -833,17 +862,62 @@ function createGroupOrchestrator(options = {}) {
         }
       }
 
+      // Claude Code: write bootstrap to file and pass as --append-system-prompt at launch.
+      // This injects the persona prompt into the system prompt at startup — zero delay,
+      // no need to wait for idle + settle + PTY inject.
+      if (item.bootstrap_strategy === "system-prompt-file") {
+        member.bootstrap_attempted_at = nowIso();
+        member.bootstrap_error = "";
+        try {
+          const bootstrapContent = item.bootstrap_prompt || "";
+          const targetFile = item.bootstrap_file;
+          if (targetFile && bootstrapContent.trim()) {
+            fs.mkdirSync(path.dirname(targetFile), { recursive: true });
+            fs.writeFileSync(targetFile, bootstrapContent, "utf8");
+            extraArgs = ["--append-system-prompt", targetFile];
+            bootstrapInjected = true;
+          }
+        } catch (err) {
+          member.status = "failed";
+          member.bootstrap_status = "failed";
+          member.bootstrap_error = err && err.message ? err.message : "failed to prepare system-prompt-file bootstrap";
+          return failGroupLaunch(
+            runtime,
+            rollbackTargets,
+            "bootstrap",
+            item.nickname,
+            member.bootstrap_error
+          );
+        }
+      }
+
+      // Codex: pass bootstrap prompt as the initial [PROMPT] CLI argument.
+      // Codex doesn't support --append-system-prompt, but accepts an initial
+      // prompt argument that becomes the first user message at startup.
+      if (item.bootstrap_strategy === "initial-prompt-arg") {
+        member.bootstrap_attempted_at = nowIso();
+        member.bootstrap_error = "";
+        const promptText = (item.bootstrap_prompt || "").trim();
+        if (promptText) {
+          extraArgs = [promptText];
+          bootstrapInjected = true;
+        }
+      }
+
       const op = {
         action: "launch",
         agent: item.type,
         count: 1,
-        nickname: item.nickname,
+        nickname: item.runtime_nickname,
         require_activity_monitor: true,
         tmux_layout_context: tmuxLayoutContext,
         ...launchHostContext,
       };
       if (Object.keys(extraEnv).length > 0) {
         op.extra_env = extraEnv;
+      }
+      if (extraArgs.length > 0) {
+        op.extra_args = extraArgs;
       }
 
       // eslint-disable-next-line no-await-in-loop
@@ -867,7 +941,7 @@ function createGroupOrchestrator(options = {}) {
       }
 
       const reused = Boolean(launchResult.skipped);
-      const subscriberId = pickLaunchSubscriber(projectRoot, launchResult, item.nickname);
+      const subscriberId = pickLaunchSubscriber(projectRoot, launchResult, item.runtime_nickname);
       member.status = reused ? "reused" : "active";
       member.managed = !reused;
       member.subscriber_id = subscriberId || "";
@@ -879,7 +953,7 @@ function createGroupOrchestrator(options = {}) {
       if (!reused) {
         rollbackTargets.push({
           memberIndex: i,
-          target: subscriberId || item.nickname,
+          target: subscriberId || item.runtime_nickname,
         });
       } else if (!canReuseBootstrappedMember(member, item, subscriberId)) {
         const priorBootstrap = findAppliedBootstrapRecord(
@@ -894,7 +968,7 @@ function createGroupOrchestrator(options = {}) {
           member.bootstrapped_subscriber_id = priorBootstrap.bootstrapped_subscriber_id;
           member.bootstrap_fingerprint = priorBootstrap.bootstrap_fingerprint;
           member.bootstrap_error = "";
-        } else if (item.bootstrap_required && item.bootstrap_strategy === "post-launch-inject" && subscriberId) {
+        } else if (item.bootstrap_required && (item.bootstrap_strategy === "post-launch-inject" || item.bootstrap_strategy === "system-prompt-file" || item.bootstrap_strategy === "initial-prompt-arg") && subscriberId) {
           member.bootstrap_status = "pending";
         } else {
           member.status = "failed";
@@ -927,6 +1001,20 @@ function createGroupOrchestrator(options = {}) {
       }
 
       member.bootstrap_attempted_at = member.bootstrap_attempted_at || nowIso();
+
+      // system-prompt-file: bootstrap is already baked into --append-system-prompt at launch.
+      // initial-prompt-arg: bootstrap is passed as the initial [PROMPT] CLI argument.
+      // No waiting, no PTY injection needed — mark as applied immediately.
+      // If bootstrap content was empty, mark as skipped (no actual injection occurred).
+      if (item.bootstrap_strategy === "system-prompt-file" || item.bootstrap_strategy === "initial-prompt-arg") {
+        member.bootstrap_status = bootstrapInjected ? "applied" : "skipped";
+        member.bootstrapped_subscriber_id = bootstrapInjected ? (subscriberId || "") : "";
+        member.bootstrap_fingerprint = bootstrapInjected ? (item.bootstrap_fingerprint || "") : "";
+        member.bootstrap_error = "";
+        writeGroupState(projectRoot, runtime);
+        continue;
+      }
+
       if (item.bootstrap_strategy === "post-launch-inject") {
         // Wait for the agent wrapper/startup sequence to settle before injecting
         // the group bootstrap prompt, otherwise the default startup command flow
@@ -1028,7 +1116,9 @@ function createGroupOrchestrator(options = {}) {
       const member = members[i];
       if (!member || member.managed === false) continue;
       if (member.status !== "active") continue;
-      const target = asTrimmedString(member.subscriber_id) || asTrimmedString(member.nickname);
+      const target = asTrimmedString(member.subscriber_id)
+        || asTrimmedString(member.runtime_nickname)
+        || asTrimmedString(member.nickname);
       if (!target) continue;
       activeMembers.push({ index: i, target });
     }

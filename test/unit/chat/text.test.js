@@ -1,6 +1,7 @@
 const {
   neutralizeBlessedCommaTags,
   escapeBlessed,
+  decodeEscapedNewlines,
   stripBlessedTags,
   stripAnsi,
   truncateAnsi,
@@ -17,6 +18,11 @@ describe("chat text helpers", () => {
     expect(escapeBlessed(null)).toBe("");
     expect(escapeBlessed("")).toBe("");
     expect(escapeBlessed("a{/escape}b")).toBe("{escape}a{open}/escape{close}b{/escape}");
+  });
+
+  test("decodeEscapedNewlines converts literal newline escapes", () => {
+    expect(decodeEscapedNewlines("hello\\nworld")).toBe("hello\nworld");
+    expect(decodeEscapedNewlines(null)).toBe("");
   });
 
   test("stripBlessedTags removes blessed style tags", () => {

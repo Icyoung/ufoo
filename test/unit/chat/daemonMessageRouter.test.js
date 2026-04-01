@@ -144,7 +144,27 @@ describe("chat daemonMessageRouter", () => {
     expect(options.writeToAgentTerm).toHaveBeenCalledWith("hello\r\n");
   });
 
-  test("delivery event consumes pending and requests status", () => {
+  test("agent view bus passthrough decodes escaped newlines", () => {
+    const { router, options } = createHarness({
+      getCurrentView: jest.fn(() => "agent"),
+      isAgentViewUsesBus: jest.fn(() => true),
+      getViewingAgent: jest.fn(() => "codex:1"),
+    });
+
+    const stop = router.handleMessage({
+      type: IPC_RESPONSE_TYPES.BUS,
+      data: {
+        event: "message",
+        publisher: "codex:1",
+        message: "hello\\nworld",
+      },
+    });
+
+    expect(stop).toBe(true);
+    expect(options.writeToAgentTerm).toHaveBeenCalledWith("hello\nworld\r\n");
+  });
+
+  test("delivery event consumes pending and requests status without logging to chat", () => {
     const { router, options } = createHarness({
       consumePendingDelivery: jest.fn(() => true),
     });
@@ -160,10 +180,8 @@ describe("chat daemonMessageRouter", () => {
     });
 
     expect(stop).toBe(true);
-    expect(options.logMessage).toHaveBeenCalledWith(
-      "status",
-      "{white-fg}✓{/white-fg} ESC(delivered)"
-    );
+    // Delivery confirmations are suppressed from chat (shown in status bar only)
+    expect(options.logMessage).not.toHaveBeenCalled();
     expect(options.requestStatus).toHaveBeenCalled();
     expect(options.renderScreen).toHaveBeenCalled();
   });
@@ -208,6 +226,25 @@ describe("chat daemonMessageRouter", () => {
     );
     expect(options.requestStatus).toHaveBeenCalledTimes(1);
     expect(options.renderScreen).toHaveBeenCalledTimes(1);
+  });
+
+  test("response reply decodes escaped newlines before rendering", () => {
+    const { router, options } = createHarness();
+
+    router.handleMessage({
+      type: IPC_RESPONSE_TYPES.RESPONSE,
+      data: {
+        reply: "line1\\nline2",
+      },
+    });
+
+    expect(options.resolveStatusLine).toHaveBeenCalledWith(
+      "{gray-fg}←{/gray-fg} ESC(line1\nline2)"
+    );
+    expect(options.logMessage).toHaveBeenCalledWith(
+      "reply",
+      "{white-fg}←{/white-fg} ESC(line1\nline2)"
+    );
   });
 
   test("stream payload routes through stream tracker methods", () => {
@@ -274,9 +311,9 @@ describe("chat daemonMessageRouter", () => {
     router.handleMessage({ type: "error", error: "boom" });
 
     expect(options.resolveStatusLine).toHaveBeenCalledWith("{gray-fg}✗{/gray-fg} Error: boom");
-    expect(options.logMessage).toHaveBeenCalledWith(
+    expect(options.logMessage).not.toHaveBeenCalledWith(
       "error",
-      "{white-fg}✗{/white-fg} Error: boom"
+      expect.anything()
     );
   });
 
@@ -351,6 +388,37 @@ describe("chat daemonMessageRouter", () => {
     expect(options.logMessage).toHaveBeenCalledWith(
       "system",
       "  • ESC(dev-basic-ab12) [ESC(active)] ESC(dev-basic) active=2/2"
+    );
+  });
+
+  test("response with group start keeps status line but suppresses reply history", () => {
+    const { router, options } = createHarness();
+
+    router.handleMessage({
+      type: IPC_RESPONSE_TYPES.RESPONSE,
+      data: {
+        reply: "Group started build-lane-mnfurxqc-2wjm",
+        group: {
+          group_id: "build-lane-mnfurxqc-2wjm",
+          status: "active",
+          template_alias: "build-lane",
+          members: [
+            { nickname: "builder", type: "codex", status: "active", subscriber_id: "codex:1" },
+          ],
+        },
+      },
+    });
+
+    expect(options.resolveStatusLine).toHaveBeenCalledWith(
+      "{gray-fg}←{/gray-fg} ESC(Group started build-lane-mnfurxqc-2wjm)"
+    );
+    expect(options.logMessage).not.toHaveBeenCalledWith(
+      "reply",
+      "{white-fg}←{/white-fg} ESC(Group started build-lane-mnfurxqc-2wjm)"
+    );
+    expect(options.logMessage).toHaveBeenCalledWith(
+      "system",
+      "{cyan-fg}Group:{/cyan-fg} ESC(build-lane-mnfurxqc-2wjm) [ESC(active)] ESC(build-lane)"
     );
   });
 

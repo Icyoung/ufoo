@@ -1,7 +1,45 @@
 const { restartDaemonFlow } = require("../../../src/chat/daemonReconnect");
 
 describe("chat daemonReconnect", () => {
-  test("restart flow logs success and reconnects", async () => {
+  test("restart flow uses resolveStatusLine for success", async () => {
+    const logMessage = jest.fn();
+    const resolveStatusLine = jest.fn();
+    const stopDaemon = jest.fn();
+    const startDaemon = jest.fn();
+    const daemonConnection = {
+      close: jest.fn(),
+      connect: jest.fn().mockResolvedValue(true),
+    };
+
+    const restartDaemon = restartDaemonFlow({
+      projectRoot: "/tmp/project",
+      stopDaemon,
+      startDaemon,
+      daemonConnection,
+      logMessage,
+      resolveStatusLine,
+    });
+
+    await restartDaemon();
+
+    expect(resolveStatusLine).toHaveBeenCalledWith(
+      "{gray-fg}⚙{/gray-fg} Restarting daemon..."
+    );
+    expect(stopDaemon).toHaveBeenCalledWith("/tmp/project");
+    expect(startDaemon).toHaveBeenCalledWith("/tmp/project");
+    expect(daemonConnection.close).toHaveBeenCalledTimes(1);
+    expect(daemonConnection.connect).toHaveBeenCalledTimes(1);
+    expect(resolveStatusLine).toHaveBeenCalledWith(
+      "{gray-fg}✓{/gray-fg} Daemon reconnected"
+    );
+    // Status messages should NOT go to logMessage
+    expect(logMessage).not.toHaveBeenCalledWith(
+      "status",
+      expect.anything()
+    );
+  });
+
+  test("restart flow falls back to logMessage when no resolveStatusLine", async () => {
     const logMessage = jest.fn();
     const stopDaemon = jest.fn();
     const startDaemon = jest.fn();
@@ -22,20 +60,17 @@ describe("chat daemonReconnect", () => {
 
     expect(logMessage).toHaveBeenCalledWith(
       "status",
-      "{white-fg}⚙{/white-fg} Restarting daemon..."
+      "{gray-fg}⚙{/gray-fg} Restarting daemon..."
     );
-    expect(stopDaemon).toHaveBeenCalledWith("/tmp/project");
-    expect(startDaemon).toHaveBeenCalledWith("/tmp/project");
-    expect(daemonConnection.close).toHaveBeenCalledTimes(1);
-    expect(daemonConnection.connect).toHaveBeenCalledTimes(1);
     expect(logMessage).toHaveBeenCalledWith(
       "status",
-      "{white-fg}✓{/white-fg} Daemon reconnected"
+      "{gray-fg}✓{/gray-fg} Daemon reconnected"
     );
   });
 
-  test("restart flow logs failure when reconnect fails", async () => {
+  test("restart flow uses resolveStatusLine for failure", async () => {
     const logMessage = jest.fn();
+    const resolveStatusLine = jest.fn();
     const stopDaemon = jest.fn();
     const startDaemon = jest.fn();
     const daemonConnection = {
@@ -49,17 +84,16 @@ describe("chat daemonReconnect", () => {
       startDaemon,
       daemonConnection,
       logMessage,
+      resolveStatusLine,
     });
 
     await restartDaemon();
 
-    expect(logMessage).toHaveBeenCalledWith(
-      "status",
-      "{white-fg}⚙{/white-fg} Restarting daemon..."
+    expect(resolveStatusLine).toHaveBeenCalledWith(
+      "{gray-fg}⚙{/gray-fg} Restarting daemon..."
     );
-    expect(logMessage).toHaveBeenCalledWith(
-      "error",
-      "{white-fg}✗{/white-fg} Failed to reconnect to daemon"
+    expect(resolveStatusLine).toHaveBeenCalledWith(
+      "{gray-fg}✗{/gray-fg} Failed to reconnect to daemon"
     );
   });
 

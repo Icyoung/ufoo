@@ -7,6 +7,7 @@ const { loadAgentsData, saveAgentsData } = require("../ufoo/agentsStore");
 const { isAgentPidAlive, getTtyProcessInfo } = require("../bus/utils");
 const { isITerm2 } = require("../terminal/detect");
 const { createTerminalAdapterRouter } = require("../terminal/adapterRouter");
+const { applyProjectNicknamePrefix } = require("./nicknameScope");
 const {
   createSession: createHostSession,
 } = require("../terminal/adapters/hostAdapter");
@@ -126,6 +127,11 @@ function resolveAgentId(projectRoot, agentId) {
     const entries = Object.entries(bus.agents || {});
     const match = entries.find(([, meta]) => meta?.nickname === agentId);
     if (match) return match[0];
+    const scopedNickname = applyProjectNicknamePrefix(projectRoot, agentId);
+    if (scopedNickname && scopedNickname !== agentId) {
+      const scopedMatch = entries.find(([, meta]) => meta?.nickname === scopedNickname);
+      if (scopedMatch) return scopedMatch[0];
+    }
     const normalized = normalizeLaunchAgent(agentId);
     const targetType = toBusAgentType(normalized) || agentId;
     const candidates = entries
@@ -147,6 +153,7 @@ function markAgentInactive(projectRoot, agentId) {
   data.agents[agentId] = {
     ...meta,
     status: "inactive",
+    activity_state: "",
     last_seen: new Date().toISOString(),
   };
   saveAgentsData(filePath, data);
@@ -842,6 +849,7 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
   const terminalApp = normalizeTerminalAppPreference(options.terminalApp);
   const extraEnvObject = options.extraEnv && typeof options.extraEnv === "object" ? options.extraEnv : {};
   const extraEnvPrefix = buildShellEnvPrefix(extraEnvObject);
+  const extraArgs = Array.isArray(options.extraArgs) ? options.extraArgs : [];
   const normalizedAgent = normalizeLaunchAgent(agent);
   if (!normalizedAgent) {
     throw new Error(`unsupported agent type: ${agent}`);
@@ -894,7 +902,7 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
       const nick = count > 1 ? `${nickname || defaultNick}-${i + 1}` : (nickname || "");
       if (useSeparateWindow) {
         // eslint-disable-next-line no-await-in-loop
-        await spawnTmuxWindow(projectRoot, normalizedAgent, nick, [], extraEnvPrefix);
+        await spawnTmuxWindow(projectRoot, normalizedAgent, nick, extraArgs, extraEnvPrefix);
       } else if (useGroupRightColumnLayout && paneTarget) {
         const basePane = String(tmuxLayoutContext.basePane || paneTarget).trim() || paneTarget;
         tmuxLayoutContext.basePane = basePane;
@@ -904,14 +912,14 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
         let splitResult;
         try {
           // eslint-disable-next-line no-await-in-loop
-          splitResult = await spawnTmuxPane(projectRoot, normalizedAgent, nick, [], extraEnvPrefix, splitTarget, {
+          splitResult = await spawnTmuxPane(projectRoot, normalizedAgent, nick, extraArgs, extraEnvPrefix, splitTarget, {
             orientation: splitOrientation,
             capturePaneId: !rightColumnPane,
           });
         } catch {
           // Fallback to new window when current pane target cannot be resolved.
           // eslint-disable-next-line no-await-in-loop
-          await spawnTmuxWindow(projectRoot, normalizedAgent, nick, [], extraEnvPrefix);
+          await spawnTmuxWindow(projectRoot, normalizedAgent, nick, extraArgs, extraEnvPrefix);
           continue;
         }
         if (!rightColumnPane && splitResult && splitResult.paneId) {
@@ -923,11 +931,11 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
       } else {
         try {
           // eslint-disable-next-line no-await-in-loop
-          await spawnTmuxPane(projectRoot, normalizedAgent, nick, [], extraEnvPrefix, paneTarget);
+          await spawnTmuxPane(projectRoot, normalizedAgent, nick, extraArgs, extraEnvPrefix, paneTarget);
         } catch {
           // Fallback to new window when current pane target cannot be resolved.
           // eslint-disable-next-line no-await-in-loop
-          await spawnTmuxWindow(projectRoot, normalizedAgent, nick, [], extraEnvPrefix);
+          await spawnTmuxWindow(projectRoot, normalizedAgent, nick, extraArgs, extraEnvPrefix);
         }
       }
     }
@@ -1009,10 +1017,15 @@ function collectRecoverableAgents(projectRoot, target = "") {
 
   let targets = entries;
   if (target) {
+    const scopedTarget = applyProjectNicknamePrefix(projectRoot, target);
     if (target.includes(":")) {
       targets = entries.filter(([id]) => id === target);
     } else {
-      targets = entries.filter(([id, meta]) => id === target || (meta && meta.nickname === target));
+      targets = entries.filter(([id, meta]) =>
+        id === target
+        || (meta && meta.nickname === target)
+        || (scopedTarget && scopedTarget !== target && meta && meta.nickname === scopedTarget)
+      );
     }
   }
 

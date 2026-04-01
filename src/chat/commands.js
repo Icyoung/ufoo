@@ -38,10 +38,10 @@ const COMMAND_TREE = {
   "/group": {
     desc: "Agent group orchestration",
     children: {
-      diagram: { desc: "Render group diagram (ascii|mermaid)" },
       run: { desc: "Launch a group template" },
-      status: { desc: "Show group runtime status" },
       stop: { desc: "Stop a running group" },
+      status: { desc: "Show group runtime status" },
+      diagram: { desc: "Render group diagram (ascii|mermaid)" },
       template: { desc: "Template ops (list/show/validate/new)" },
       templates: { desc: "List available templates" },
     },
@@ -136,6 +136,13 @@ function parseCommand(text) {
   return { command, args };
 }
 
+function shouldEchoCommandInChat(text) {
+  const parsed = parseCommand(String(text || "").trim());
+  if (!parsed) return true;
+  if (parsed.command === "group" && parsed.args[0] === "run") return false;
+  return true;
+}
+
 function parseAtTarget(text) {
   if (!text.startsWith("@")) return null;
   const trimmed = text.slice(1).trim();
@@ -155,5 +162,6 @@ module.exports = {
   sortCommands,
   buildCommandRegistry,
   parseCommand,
+  shouldEchoCommandInChat,
   parseAtTarget,
 };

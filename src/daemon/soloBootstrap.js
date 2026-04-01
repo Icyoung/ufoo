@@ -5,6 +5,7 @@ const EventBus = require("../bus");
 const { prepareUcodeBootstrap } = require("../agent/ucodeBootstrap");
 const { isMetaActive } = require("../bus/utils");
 const { getUfooPaths } = require("../ufoo/paths");
+const { applyProjectNicknamePrefix } = require("./nicknameScope");
 const { loadAgentsData, saveAgentsData } = require("../ufoo/agentsStore");
 const {
   loadPromptProfileRegistry,
@@ -194,13 +195,21 @@ function isLiveAgentMeta(meta) {
 function resolveExistingAgent(projectRoot, target = "") {
   const key = String(target || "").trim();
   if (!key) return null;
+  const scopedKey = applyProjectNicknamePrefix(projectRoot, key);
   const bus = loadBusMeta(projectRoot);
   const agents = bus && bus.agents ? bus.agents : {};
   if (isLiveAgentMeta(agents[key])) {
     return { subscriberId: key, meta: agents[key] };
   }
+  if (scopedKey && scopedKey !== key && isLiveAgentMeta(agents[scopedKey])) {
+    return { subscriberId: scopedKey, meta: agents[scopedKey] };
+  }
   for (const [subscriberId, meta] of Object.entries(agents)) {
-    if (meta && meta.nickname === key && isLiveAgentMeta(meta)) {
+    if (
+      meta
+      && (meta.nickname === key || (scopedKey && scopedKey !== key && meta.nickname === scopedKey))
+      && isLiveAgentMeta(meta)
+    ) {
       return { subscriberId, meta };
     }
   }
@@ -232,7 +241,11 @@ function findOwningGroup(projectRoot, subscriberId = "") {
         && asTrimmedString(member.subscriber_id) === targetSubscriber
         && (member.status === "active" || member.status === "reused")
         && asTrimmedString(member.nickname)
-        && (!liveNickname || asTrimmedString(member.nickname) === liveNickname)
+        && (
+          !liveNickname
+          || asTrimmedString(member.nickname) === liveNickname
+          || asTrimmedString(member.runtime_nickname) === liveNickname
+        )
       );
       if (found) {
         return {

@@ -491,7 +491,10 @@ class AgentLauncher {
     const child = spawn(this.command, args, {
       cwd: this.cwd,
       stdio: "inherit",
-      env: process.env,
+      env: {
+        ...process.env,
+        ...(this.agentType === "claude-code" ? { CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1" } : {}),
+      },
     });
 
     child.on("error", (err) => {
@@ -588,7 +591,11 @@ class AgentLauncher {
         try {
           const wrapper = new PtyWrapper(this.command, args, {
             cwd: this.cwd,
-            env: process.env,
+            env: {
+              ...process.env,
+              // Enable Claude Code SDK session state events for precise idle/busy detection
+              ...(this.agentType === "claude-code" ? { CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1" } : {}),
+            },
             // 未来扩展：ioAdapter: new TerminalIOAdapter()
           });
 
@@ -716,6 +723,10 @@ class AgentLauncher {
 
           // 启动PTY
           wrapper.spawn();
+          // Pass PID to ActivityDetector for transcript mtime checking
+          if (wrapper.pty && wrapper.pty.pid) {
+            launcherActivityDetector.setPid(wrapper.pty.pid);
+          }
           wrapper.attachStreams(process.stdin, process.stdout, process.stderr);
 
 

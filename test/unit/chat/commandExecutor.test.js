@@ -866,12 +866,11 @@ describe("chat commandExecutor", () => {
   });
 
   test("handleDaemonCommand restart path calls restartDaemon", async () => {
-    const { executor, options, logs } = createHarness({
+    const { executor, options } = createHarness({
       parseCommand: jest.fn(() => ({ command: "daemon", args: ["restart"] })),
     });
     await executor.executeCommand("/daemon restart");
     expect(options.restartDaemon).toHaveBeenCalled();
-    expect(logs.some((e) => e.text.includes("Restarting"))).toBe(true);
   });
 
   test("handleDaemonCommand status shows running when daemon is active", async () => {

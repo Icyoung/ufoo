@@ -10,6 +10,8 @@
  *                      BLOCKED ----+
  */
 
+const { isTranscriptActive } = require("./claudeSessionFiles");
+
 const ACTIVITY_STATES = {
   starting: "starting",
   ready: "ready",
@@ -24,6 +26,7 @@ const DEFAULT_TAIL_LINES = 10;
 const DEFAULT_BLOCKED_TIMEOUT_MS = 300000;
 const DEFAULT_INTERNAL_QUIET_MS = 3500;
 const DEFAULT_EXTERNAL_QUIET_MS = 5000;
+const DEFAULT_TRANSCRIPT_THRESHOLD_MS = 5000;
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const OSC_PATTERN = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 
@@ -34,6 +37,10 @@ const INPUT_PATTERNS = {
     /\bAllow\b.*\bDeny\b/,            // Claude Code permission dialog: "Allow | Deny"
     /\ballow mcp\b/i,                 // MCP tool approval prompt
     /Enter to select.*\u2191\/\u2193 to navigate/, // Ink TUI interactive prompt navigation bar (permissions, AskUserQuestion, Plan approval)
+    /\u276f\s+.*\n.*\u276f\s+/,       // AskUserQuestion multi-option selector (❯ markers)
+    /Do you want to proceed/i,         // Plan mode approval prompt
+    /\bApprove\b.*\bReject\b/,        // Plan approval dialog
+    /\bYes\b.*\bNo\b.*\bAlways allow\b/, // Permission with "Always allow" option
   ],
   codex: [
     /\[Y\/n\]/,                        // Bracket-style prompt
@@ -79,6 +86,8 @@ class ActivityDetector {
    * @param {boolean} [options.startOnOutput=false] - allow STARTING -> WORKING on first output
    * @param {number} [options.quietWindowMs] - output quiet window before WAITING_INPUT/IDLE classification
    * @param {number} [options.blockedTimeoutMs=300000] - 5 min WAITING_INPUT → BLOCKED
+   * @param {number} [options.pid] - agent PID for transcript mtime checking (claude-code only)
+   * @param {number} [options.transcriptThresholdMs=5000] - transcript mtime threshold for busy detection
    */
   constructor(agentType, options = {}) {
     this.agentType = agentType;
@@ -87,6 +96,8 @@ class ActivityDetector {
     this.tailLines = toPositiveInt(options.tailLines, DEFAULT_TAIL_LINES);
     this.startOnOutput = options.startOnOutput === true;
     this.blockedTimeoutMs = toPositiveInt(options.blockedTimeoutMs, DEFAULT_BLOCKED_TIMEOUT_MS);
+    this.pid = toPositiveInt(options.pid, 0);
+    this.transcriptThresholdMs = toPositiveInt(options.transcriptThresholdMs, DEFAULT_TRANSCRIPT_THRESHOLD_MS);
     const optionQuietMs = toPositiveInt(options.quietWindowMs, 0);
     const envQuietMs = toPositiveInt(process.env.UFOO_ACTIVITY_QUIET_MS, 0);
     this.quietWindowMs = optionQuietMs || envQuietMs || getDefaultQuietWindowMs(this.mode);
@@ -124,6 +135,13 @@ class ActivityDetector {
         // ignore callback errors
       }
     }
+  }
+
+  /**
+   * Set the agent PID (for transcript mtime checking after spawn).
+   */
+  setPid(pid) {
+    this.pid = toPositiveInt(pid, 0);
   }
 
   /**
@@ -224,6 +242,21 @@ class ActivityDetector {
 
   _classifyAfterQuietWindow() {
     if (this.state !== ACTIVITY_STATES.working) return;
+
+    // Transcript mtime check: if Claude Code's transcript was recently written,
+    // the agent is still working (e.g. waiting for API response). Reschedule
+    // classification instead of prematurely going idle.
+    if (this.pid && this.agentType === "claude-code") {
+      try {
+        if (isTranscriptActive(this.pid, this.transcriptThresholdMs)) {
+          this._scheduleQuietClassification();
+          return;
+        }
+      } catch {
+        // ignore — fall through to normal classification
+      }
+    }
+
     const tailBuffer = this._tailWindow();
 
     // Check agent-specific patterns only after output has stabilized.

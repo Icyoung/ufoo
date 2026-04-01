@@ -167,13 +167,11 @@ describe("chat daemonCoordinator", () => {
 
     expect(stopDaemon).toHaveBeenCalledWith("/tmp/project");
     expect(startDaemon).toHaveBeenCalledWith("/tmp/project");
-    expect(logMessage).toHaveBeenCalledWith(
-      "status",
-      "{white-fg}⚙{/white-fg} Restarting daemon..."
+    expect(resolveStatusLine).toHaveBeenCalledWith(
+      "{gray-fg}⚙{/gray-fg} Restarting daemon..."
     );
-    expect(logMessage).toHaveBeenCalledWith(
-      "status",
-      "{white-fg}✓{/white-fg} Daemon reconnected"
+    expect(resolveStatusLine).toHaveBeenCalledWith(
+      "{gray-fg}✓{/gray-fg} Daemon reconnected"
     );
     expect(connectClient).toHaveBeenCalledTimes(3);
     expect(coordinator.isConnected()).toBe(true);
