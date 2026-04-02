@@ -1,6 +1,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const EventEmitter = require("events");
 
 const AgentLauncher = require("../../../src/agent/launcher");
 
@@ -132,6 +133,111 @@ describe("_findPreviousSession tty_shell_pid guard", () => {
       subscriberId: "claude-code:legacy789",
       nickname: "old-agent",
       providerSessionId: "",
+    });
+  });
+});
+
+describe("_notifyDaemonAgentReady", () => {
+  const net = require("net");
+  const originalCreateConnection = net.createConnection;
+
+  afterEach(() => {
+    net.createConnection = originalCreateConnection;
+    delete process.env.UFOO_DEBUG;
+  });
+
+  it("writes agent_ready payload when pid is valid", async () => {
+    const client = new EventEmitter();
+    client.write = jest.fn();
+    client.end = jest.fn();
+    net.createConnection = jest.fn((_sockPath, onConnect) => {
+      if (typeof onConnect === "function") process.nextTick(onConnect);
+      return client;
+    });
+
+    const ok = await AgentLauncher._notifyDaemonAgentReady(
+      "/tmp/ufoo-daemon.sock",
+      "claude-code:test123",
+      4321,
+    );
+
+    expect(ok).toBe(true);
+    expect(net.createConnection).toHaveBeenCalledWith("/tmp/ufoo-daemon.sock", expect.any(Function));
+    expect(client.write).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(client.write.mock.calls[0][0])).toEqual({
+      type: "agent_ready",
+      subscriberId: "claude-code:test123",
+      agentPid: 4321,
+    });
+    expect(client.end).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips daemon notification for invalid pid", async () => {
+    const netSpy = jest.spyOn(require("net"), "createConnection");
+
+    const ok = await AgentLauncher._notifyDaemonAgentReady(
+      "/tmp/ufoo-daemon.sock",
+      "claude-code:test123",
+      0,
+    );
+
+    expect(ok).toBe(false);
+    expect(netSpy).not.toHaveBeenCalled();
+    netSpy.mockRestore();
+  });
+});
+
+describe("_spawnDirect host notification", () => {
+  afterEach(() => {
+    jest.resetModules();
+    jest.clearAllMocks();
+    delete process.env.UFOO_HOST_SESSION_ID;
+  });
+
+  it("notifies daemon when host launches without PTY", async () => {
+    const child = new EventEmitter();
+    child.pid = 2468;
+    child.on = child.on.bind(child);
+    const client = new EventEmitter();
+    client.write = jest.fn();
+    client.end = jest.fn();
+    const spawnMock = jest.fn(() => child);
+    const createConnectionMock = jest.fn((_sockPath, onConnect) => {
+      if (typeof onConnect === "function") process.nextTick(onConnect);
+      return client;
+    });
+    let TestAgentLauncher;
+
+    jest.isolateModules(() => {
+      jest.doMock("child_process", () => ({
+        spawn: spawnMock,
+        spawnSync: jest.fn(),
+      }));
+      jest.doMock("net", () => ({
+        createConnection: createConnectionMock,
+      }));
+      TestAgentLauncher = require("../../../src/agent/launcher");
+    });
+
+    process.env.UFOO_HOST_SESSION_ID = "HS-1";
+    const launcher = new TestAgentLauncher("codex", "ucodex");
+    launcher.cwd = "/tmp/ufoo-host-project";
+    launcher._spawnDirect(["--help"], "codex:test123");
+
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(spawnMock).toHaveBeenCalledWith("ucodex", ["--help"], expect.objectContaining({
+      cwd: "/tmp/ufoo-host-project",
+      stdio: "inherit",
+    }));
+    expect(createConnectionMock).toHaveBeenCalledWith(
+      expect.stringContaining(path.join(".ufoo", "run", "ufoo.sock")),
+      expect.any(Function),
+    );
+    expect(JSON.parse(client.write.mock.calls[0][0])).toEqual({
+      type: "agent_ready",
+      subscriberId: "codex:test123",
+      agentPid: 2468,
     });
   });
 });

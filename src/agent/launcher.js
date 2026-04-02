@@ -37,6 +37,40 @@ async function connectWithRetry(sockPath, retries, delayMs) {
   return null;
 }
 
+async function notifyDaemonAgentReady(daemonSockPath, subscriberId, agentPid) {
+  if (!daemonSockPath || !subscriberId) return false;
+  const parsedAgentPid = Number.parseInt(agentPid, 10);
+  if (!Number.isFinite(parsedAgentPid) || parsedAgentPid <= 0) return false;
+
+  const startTime = Date.now();
+  try {
+    const daemonSock = await connectWithRetry(daemonSockPath, 3, 100);
+    if (!daemonSock) {
+      if (process.env.UFOO_DEBUG) {
+        console.error("[ready] failed to connect to daemon after retries, will use fallback delay");
+      }
+      return false;
+    }
+
+    daemonSock.write(`${JSON.stringify({
+      type: IPC_REQUEST_TYPES.AGENT_READY,
+      subscriberId,
+      agentPid: parsedAgentPid,
+    })}\n`);
+    daemonSock.end();
+
+    if (process.env.UFOO_DEBUG) {
+      console.error(`[ready] notified daemon in ${Date.now() - startTime}ms`);
+    }
+    return true;
+  } catch (err) {
+    if (process.env.UFOO_DEBUG) {
+      console.error(`[ready] daemon notification error: ${err.message}, will use fallback delay`);
+    }
+    return false;
+  }
+}
+
 async function probeDaemonSocket(sockPath) {
   try {
     const client = await connectSocket(sockPath);
@@ -497,6 +531,11 @@ class AgentLauncher {
       },
     });
 
+    if (resolveLaunchMode() === "host" && child.pid) {
+      const daemonSockPath = getUfooPaths(this.cwd).ufooSock;
+      notifyDaemonAgentReady(daemonSockPath, subscriberId, child.pid).catch(() => {});
+    }
+
     child.on("error", (err) => {
       console.error(`[${this.command}] Failed to start:`, err.message);
       process.exit(1);
@@ -665,33 +704,7 @@ class AgentLauncher {
               }
             }
 
-            const startTime = Date.now();
-            try {
-              const daemonSock = await connectWithRetry(daemonSockPath, 3, 100);
-              if (daemonSock) {
-                daemonSock.write(`${JSON.stringify({
-                  type: IPC_REQUEST_TYPES.AGENT_READY,
-                  subscriberId,
-                  agentPid: wrapper.pty ? wrapper.pty.pid : 0,
-                })}\n`);
-                daemonSock.end();
-
-                const notifyTime = Date.now() - startTime;
-                if (process.env.UFOO_DEBUG) {
-                  console.error(`[ready] notified daemon in ${notifyTime}ms`);
-                }
-              } else {
-                if (process.env.UFOO_DEBUG) {
-                  console.error(`[ready] failed to connect to daemon after retries, will use fallback delay`);
-                }
-              }
-            } catch (err) {
-              // 忽略通知失败（probe会通过fallback延迟执行）
-              if (process.env.UFOO_DEBUG) {
-                console.error(`[ready] daemon notification error: ${err.message}, will use fallback delay`);
-              }
-            }
-
+            await notifyDaemonAgentReady(daemonSockPath, subscriberId, wrapper.pty ? wrapper.pty.pid : 0);
           });
 
           // Fallback：如果10秒后还没检测到ready，强制标记为ready
@@ -938,5 +951,6 @@ class AgentLauncher {
 // Exported for testing
 AgentLauncher._sanitizeNickname = (nick) => nick.replace(/[^a-zA-Z0-9_-]/g, "");
 AgentLauncher._findPreviousSession = findPreviousSession;
+AgentLauncher._notifyDaemonAgentReady = notifyDaemonAgentReady;
 
 module.exports = AgentLauncher;

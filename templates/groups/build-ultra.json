@@ -1,0 +1,219 @@
+{
+  "schema_version": 1,
+  "template": {
+    "id": "build-ultra",
+    "alias": "build-ultra",
+    "name": "Build Ultra"
+  },
+  "defaults": {
+    "launch_mode": "auto",
+    "start_timeout_ms": 15000
+  },
+  "agents": [
+    {
+      "id": "pmo",
+      "nickname": "pmo",
+      "type": "auto",
+      "role": "coordinate builders, track progress, enforce delivery cadence",
+      "prompt_profile": "pmo-coordinator",
+      "accept_from": [],
+      "report_to": [
+        "builder-1",
+        "builder-2",
+        "builder-3",
+        "builder-4",
+        "reviewer"
+      ],
+      "startup_order": 1,
+      "depends_on": []
+    },
+    {
+      "id": "builder-1",
+      "nickname": "builder-1",
+      "type": "auto",
+      "role": "implement approved slices",
+      "prompt_profile": "implementation-lead",
+      "accept_from": [
+        "pmo",
+        "reviewer"
+      ],
+      "report_to": [
+        "pmo",
+        "reviewer"
+      ],
+      "startup_order": 2,
+      "depends_on": [
+        "pmo"
+      ]
+    },
+    {
+      "id": "builder-2",
+      "nickname": "builder-2",
+      "type": "auto",
+      "role": "implement approved slices",
+      "prompt_profile": "implementation-lead",
+      "accept_from": [
+        "pmo",
+        "reviewer"
+      ],
+      "report_to": [
+        "pmo",
+        "reviewer"
+      ],
+      "startup_order": 2,
+      "depends_on": [
+        "pmo"
+      ]
+    },
+    {
+      "id": "builder-3",
+      "nickname": "builder-3",
+      "type": "auto",
+      "role": "implement approved slices",
+      "prompt_profile": "implementation-lead",
+      "accept_from": [
+        "pmo",
+        "reviewer"
+      ],
+      "report_to": [
+        "pmo",
+        "reviewer"
+      ],
+      "startup_order": 2,
+      "depends_on": [
+        "pmo"
+      ]
+    },
+    {
+      "id": "builder-4",
+      "nickname": "builder-4",
+      "type": "auto",
+      "role": "implement approved slices",
+      "prompt_profile": "implementation-lead",
+      "accept_from": [
+        "pmo",
+        "reviewer"
+      ],
+      "report_to": [
+        "pmo",
+        "reviewer"
+      ],
+      "startup_order": 2,
+      "depends_on": [
+        "pmo"
+      ]
+    },
+    {
+      "id": "reviewer",
+      "nickname": "reviewer",
+      "type": "auto",
+      "role": "review correctness and risk",
+      "prompt_profile": "review-critic",
+      "accept_from": [
+        "pmo",
+        "builder-1",
+        "builder-2",
+        "builder-3",
+        "builder-4"
+      ],
+      "report_to": [
+        "pmo",
+        "builder-1",
+        "builder-2",
+        "builder-3",
+        "builder-4"
+      ],
+      "startup_order": 3,
+      "depends_on": [
+        "pmo"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "pmo",
+      "to": "builder-1",
+      "kind": "task"
+    },
+    {
+      "from": "pmo",
+      "to": "builder-2",
+      "kind": "task"
+    },
+    {
+      "from": "pmo",
+      "to": "builder-3",
+      "kind": "task"
+    },
+    {
+      "from": "pmo",
+      "to": "builder-4",
+      "kind": "task"
+    },
+    {
+      "from": "builder-1",
+      "to": "reviewer",
+      "kind": "review"
+    },
+    {
+      "from": "builder-2",
+      "to": "reviewer",
+      "kind": "review"
+    },
+    {
+      "from": "builder-3",
+      "to": "reviewer",
+      "kind": "review"
+    },
+    {
+      "from": "builder-4",
+      "to": "reviewer",
+      "kind": "review"
+    },
+    {
+      "from": "reviewer",
+      "to": "builder-1",
+      "kind": "task"
+    },
+    {
+      "from": "reviewer",
+      "to": "builder-2",
+      "kind": "task"
+    },
+    {
+      "from": "reviewer",
+      "to": "builder-3",
+      "kind": "task"
+    },
+    {
+      "from": "reviewer",
+      "to": "builder-4",
+      "kind": "task"
+    },
+    {
+      "from": "reviewer",
+      "to": "pmo",
+      "kind": "report"
+    },
+    {
+      "from": "builder-1",
+      "to": "pmo",
+      "kind": "report"
+    },
+    {
+      "from": "builder-2",
+      "to": "pmo",
+      "kind": "report"
+    },
+    {
+      "from": "builder-3",
+      "to": "pmo",
+      "kind": "report"
+    },
+    {
+      "from": "builder-4",
+      "to": "pmo",
+      "kind": "report"
+    }
+  ]
+}
