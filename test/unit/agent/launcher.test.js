@@ -187,6 +187,48 @@ describe("_notifyDaemonAgentReady", () => {
   });
 });
 
+describe("_injectPtyCommand", () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it("submits startup bootstrap directly for claude", async () => {
+    const wrapper = {
+      write: jest.fn(),
+      logger: { write: jest.fn() },
+    };
+
+    const promise = AgentLauncher._injectPtyCommand(wrapper, "claude-code", "bootstrap text", "startup-bootstrap");
+    jest.runAllTimers();
+    await promise;
+
+    expect(wrapper.write).toHaveBeenNthCalledWith(1, "bootstrap text");
+    expect(wrapper.write).toHaveBeenNthCalledWith(2, "\r");
+    expect(wrapper.logger.write).toHaveBeenCalledWith(expect.stringContaining("\"source\":\"startup-bootstrap\""));
+  });
+
+  it("uses escape-then-enter submission for codex", async () => {
+    const wrapper = {
+      write: jest.fn(),
+      logger: { write: jest.fn() },
+    };
+
+    const promise = AgentLauncher._injectPtyCommand(wrapper, "codex", "bootstrap text");
+    jest.advanceTimersByTime(200);
+    await Promise.resolve();
+    jest.advanceTimersByTime(100);
+    await promise;
+
+    expect(wrapper.write).toHaveBeenNthCalledWith(1, "bootstrap text");
+    expect(wrapper.write).toHaveBeenNthCalledWith(2, "\u001b");
+    expect(wrapper.write).toHaveBeenNthCalledWith(3, "\r");
+  });
+});
+
 describe("_spawnDirect host notification", () => {
   afterEach(() => {
     jest.resetModules();

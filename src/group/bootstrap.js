@@ -2,6 +2,15 @@
 
 const crypto = require("crypto");
 
+const SHARED_UFOO_PROTOCOL = [
+  "ufoo protocol:",
+  "- At session start, sync shared context with `ufoo ctx decisions -l` and `ufoo ctx decisions -n 1`.",
+  "- If your work produces knowledge with information value, record it before acting via `ufoo ctx decisions new \"Title\"`.",
+  "- Use `ufoo bus send <target-nickname> \"<message>\"` for agent-to-agent handoffs.",
+  "- If you receive pending bus work, execute it immediately, reply to the sender, then `ufoo bus ack \"$UFOO_SUBSCRIBER_ID\"`.",
+  "- Use `ufoo report` for controller/runtime status updates, not as a substitute for direct handoffs.",
+].join("\n");
+
 const SHARED_GROUP_PREFIX = [
   "You are part of a ufoo multi-agent group.",
   "",
@@ -12,6 +21,8 @@ const SHARED_GROUP_PREFIX = [
   "- If another agent owns the next step, hand off instead of doing their job for them.",
   "- When reporting, separate facts, inferences, and recommendations.",
   "- Preserve continuity with the group's current task rather than restarting analysis from scratch.",
+  "",
+  SHARED_UFOO_PROTOCOL,
   "",
   "Coordination protocol:",
   "- Use direct handoff for worker-to-worker delivery.",
@@ -28,6 +39,8 @@ const SOLO_AGENT_PREFIX = [
   "- Surface uncertainty explicitly.",
   "- Preserve continuity with the current task instead of restarting from scratch.",
   "- Use ufoo-agent for control-plane coordination, not as a substitute for doing your role.",
+  "",
+  SHARED_UFOO_PROTOCOL,
 ].join("\n");
 
 function asTrimmedString(value) {
@@ -145,6 +158,7 @@ function computeBootstrapFingerprint({
 }
 
 module.exports = {
+  SHARED_UFOO_PROTOCOL,
   SHARED_GROUP_PREFIX,
   SOLO_AGENT_PREFIX,
   buildGroupPromptMetadata,

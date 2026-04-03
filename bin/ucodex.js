@@ -6,8 +6,18 @@
  */
 
 const AgentLauncher = require("../src/agent/launcher");
+const { resolveDefaultManualBootstrap } = require("../src/agent/defaultBootstrap");
 
 const launcher = new AgentLauncher("codex", "codex");
-const args = process.argv.slice(2);
+const resolved = resolveDefaultManualBootstrap({
+  projectRoot: process.cwd(),
+  agentType: "codex",
+  args: process.argv.slice(2),
+  env: process.env,
+});
 
-launcher.launch(args);
+for (const [key, value] of Object.entries(resolved.env || {})) {
+  process.env[key] = String(value);
+}
+
+launcher.launch(resolved.args);

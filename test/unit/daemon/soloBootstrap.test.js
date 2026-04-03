@@ -75,6 +75,9 @@ describe("daemon soloBootstrap", () => {
 
     expect(built.required).toBe(true);
     expect(built.promptText).toContain("You are the design critic");
+    expect(built.promptText).toContain("ufoo ctx decisions -l");
+    expect(built.promptText).toContain("ufoo bus send <target-nickname>");
+    expect(built.promptText).toContain("ufoo bus ack \"$UFOO_SUBSCRIBER_ID\"");
     expect(built.promptText).toContain("\"self_nickname\": \"designer\"");
     expect(built.promptText).toContain("\"resolved_profile\": \"design-critic\"");
   });

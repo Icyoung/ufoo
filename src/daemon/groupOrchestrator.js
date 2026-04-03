@@ -753,6 +753,7 @@ function createGroupOrchestrator(options = {}) {
     }
 
     const plan = buildLaunchPlan(validated.entry.data);
+    const templateDefaults = (validated.entry.data && validated.entry.data.defaults) || {};
     const groupId = generateGroupId(validated.entry.alias || alias, instance);
     const projectNicknamePrefix = buildProjectNicknamePrefix(projectRoot);
 
@@ -835,6 +836,12 @@ function createGroupOrchestrator(options = {}) {
       const item = compiled.executionPlan[i];
       const member = runtime.members[i];
       const extraEnv = {};
+      if (item.bootstrap_required) {
+        extraEnv.UFOO_SKIP_DEFAULT_BOOTSTRAP = "1";
+      }
+      if (Number.isInteger(templateDefaults.start_timeout_ms) && templateDefaults.start_timeout_ms > 0) {
+        extraEnv.UFOO_REGISTER_TIMEOUT_MS = String(templateDefaults.start_timeout_ms);
+      }
       let extraArgs = [];
       let bootstrapInjected = false;
 

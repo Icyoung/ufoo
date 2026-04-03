@@ -224,6 +224,42 @@ function computeInjectedSubmitDelayMs(agentType, text) {
   return delayMs;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function logInjectedCommand(wrapper, source, commandText) {
+  if (!wrapper || !wrapper.logger) return;
+  const text = String(commandText || "");
+  if (!text) return;
+  const logEntry = {
+    ts: Date.now(),
+    dir: "in",
+    data: { text, encoding: "utf8", size: text.length },
+    source,
+  };
+  wrapper.logger.write(JSON.stringify(logEntry) + "\n");
+}
+
+async function injectPtyCommand(wrapper, agentType, commandText, source = "inject") {
+  const text = String(commandText || "");
+  if (!wrapper || !text) return false;
+  const normalizedAgentType = String(agentType || "").trim().toLowerCase();
+  const submitDelayMs = computeInjectedSubmitDelayMs(agentType, text);
+  wrapper.write(text);
+  if (normalizedAgentType === "claude-code") {
+    await sleep(submitDelayMs);
+    wrapper.write("\r");
+  } else {
+    await sleep(submitDelayMs);
+    wrapper.write("\x1b");
+    await sleep(100);
+    wrapper.write("\r");
+  }
+  logInjectedCommand(wrapper, source, text);
+  return true;
+}
+
 async function resolveHostRegistrationData(launchMode) {
   if (launchMode !== "host") {
     return {
@@ -451,6 +487,7 @@ class AgentLauncher {
     return new Promise((resolve, reject) => {
       let buffer = "";
       let settled = false;
+      const registerTimeoutMs = parseInt(process.env.UFOO_REGISTER_TIMEOUT_MS, 10) || 8000;
       const timeout = setTimeout(() => {
         if (settled) return;
         settled = true;
@@ -460,7 +497,7 @@ class AgentLauncher {
           // ignore
         }
         reject(new Error("register_agent timeout"));
-      }, 8000);
+      }, registerTimeoutMs);
 
       const cleanup = () => {
         clearTimeout(timeout);
@@ -607,6 +644,7 @@ class AgentLauncher {
       }
 
       // 7. 启动命令（PTY wrapper或直接spawn）
+      const startupBootstrapText = String(process.env.UFOO_STARTUP_BOOTSTRAP_TEXT || "").trim();
 
       // 7.1 PTY启用条件（显式开关 + 自动检测）
       let shouldUsePty = false;
@@ -702,6 +740,10 @@ class AgentLauncher {
                   console.error("[rename] inject failed:", err.message);
                 }
               }
+            }
+
+            if (startupBootstrapText && wrapper.pty) {
+              await injectPtyCommand(wrapper, this.agentType, startupBootstrapText, "startup-bootstrap");
             }
 
             await notifyDaemonAgentReady(daemonSockPath, subscriberId, wrapper.pty ? wrapper.pty.pid : 0);
@@ -812,37 +854,8 @@ class AgentLauncher {
                       continue;
                     }
                     // 注入命令到PTY（带延迟确保输入完成）
-                    // Claude Code (Ink TUI) interprets ESC+CR within ~100ms as
-                    // Alt+Enter (newline) instead of two separate keys. Use a
-                    // longer gap so the escape sequence parser times out.
-                    const commandText = String(req.command);
-                    const submitDelayMs = computeInjectedSubmitDelayMs(this.agentType, commandText);
-                    wrapper.write(commandText);
-                    if (normalizedAgentType === "claude-code") {
-                      // Claude Code: send CR directly without ESC.
-                      // ESC before CR is interpreted as Alt+Enter (newline).
-                      setTimeout(() => {
-                        wrapper.write("\r");
-                      }, submitDelayMs);
-                    } else {
-                      // Codex/others: ESC dismisses autocomplete, then CR submits.
-                      setTimeout(() => {
-                        wrapper.write("\x1b");
-                        setTimeout(() => {
-                          wrapper.write("\r");
-                        }, 100);
-                      }, submitDelayMs);
-                    }
+                    void injectPtyCommand(wrapper, this.agentType, req.command, "inject");
                     client.write(JSON.stringify({ ok: true }) + "\n");
-                    if (wrapper.logger) {
-                      const logEntry = {
-                        ts: Date.now(),
-                        dir: "in",
-                        data: { text: req.command, encoding: "utf8", size: req.command.length },
-                        source: "inject",
-                      };
-                      wrapper.logger.write(JSON.stringify(logEntry) + "\n");
-                    }
                   } else if (req.type === PTY_SOCKET_MESSAGE_TYPES.RAW && req.data) {
                     // Raw PTY write (no Enter appended) - for TTY view passthrough
                     wrapper.write(req.data);
@@ -952,5 +965,6 @@ class AgentLauncher {
 AgentLauncher._sanitizeNickname = (nick) => nick.replace(/[^a-zA-Z0-9_-]/g, "");
 AgentLauncher._findPreviousSession = findPreviousSession;
 AgentLauncher._notifyDaemonAgentReady = notifyDaemonAgentReady;
+AgentLauncher._injectPtyCommand = injectPtyCommand;
 
 module.exports = AgentLauncher;

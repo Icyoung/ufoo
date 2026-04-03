@@ -7,7 +7,7 @@
   },
   "defaults": {
     "launch_mode": "auto",
-    "start_timeout_ms": 15000
+    "start_timeout_ms": 30000
   },
   "agents": [
     {
@@ -16,7 +16,13 @@
       "type": "auto",
       "role": "coordinate builders, track progress, enforce delivery cadence",
       "prompt_profile": "pmo-coordinator",
-      "accept_from": [],
+      "accept_from": [
+        "builder-1",
+        "builder-2",
+        "builder-3",
+        "builder-4",
+        "reviewer"
+      ],
       "report_to": [
         "builder-1",
         "builder-2",

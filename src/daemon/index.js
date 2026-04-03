@@ -1384,6 +1384,12 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
           }
         }
       }
+      if (requestedProfile) {
+        op.extra_env = {
+          ...(op.extra_env && typeof op.extra_env === "object" ? op.extra_env : {}),
+          UFOO_SKIP_DEFAULT_BOOTSTRAP: "1",
+        };
+      }
       try {
         const opsResults = await handleOps(projectRoot, [op], processManager);
         const launchResult = opsResults.find((r) => r.action === "launch");

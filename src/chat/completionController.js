@@ -371,14 +371,14 @@ function createCompletionController(options = {}) {
 
     if (!selected.isSubcommand && selected.subcommands && selected.subcommands.length > 0) {
       show(input.value);
-        } else if (
-          selected.isSubcommand
-          && ((selected.parentCmd === "/group" && selected.cmd === "run")
-            || (selected.parentCmd === "/solo" && selected.cmd === "run"))
-        ) {
-          show(input.value);
-        } else {
-          hide();
+    } else if (
+      selected.isSubcommand
+      && ((selected.parentCmd === "/group" && selected.cmd === "run")
+        || (selected.parentCmd === "/solo" && selected.cmd === "run"))
+    ) {
+      show(input.value);
+    } else {
+      hide();
     }
 
     renderScreen();
