@@ -7,6 +7,9 @@ const { runBusCoreCommand } = require("./cli/busCoreCommands");
 const { runCtxCommand } = require("./cli/ctxCoreCommands");
 const { runOnlineCommand } = require("./cli/onlineCoreCommands");
 const { runGroupCoreCommand } = require("./cli/groupCoreCommands");
+const { loadConfig } = require("./config");
+const { loadPromptProfileRegistry } = require("./group/promptProfiles");
+const { resolveSoloAgentType } = require("./solo/commands");
 const { listProjectRuntimes, getCurrentProjectRuntime } = require("./projects/registry");
 const { canonicalProjectRoot, buildProjectId } = require("./projects/projectId");
 const { getUfooPaths } = require("./ufoo/paths");
@@ -443,6 +446,68 @@ async function runCli(argv) {
           });
           const reply = resp?.data?.reply || `Launching ${normalizedAgent} agent...`;
           console.log(reply);
+        } catch (err) {
+          console.error(err.message || String(err));
+          process.exitCode = 1;
+        }
+      });
+    program
+      .command("solo")
+      .description("Solo role agent operations")
+      .argument("<action>", "run|list")
+      .argument("[profile]", "Prompt profile id or alias")
+      .option("--agent <type>", "Agent type: codex|claude|ucode")
+      .option("--nickname <name>", "Optional nickname")
+      .option("--scope <scope>", "Launch scope: inplace|window", "inplace")
+      .option("--json", "Output role list as JSON")
+      .action(async (action, profile, opts) => {
+        try {
+          const projectRoot = process.cwd();
+          const subcommand = String(action || "").trim().toLowerCase();
+          if (subcommand === "list" || subcommand === "ls") {
+            const registry = loadPromptProfileRegistry(projectRoot);
+            if (opts.json) {
+              console.log(JSON.stringify({ profiles: registry.profiles || [] }, null, 2));
+              return;
+            }
+            const profiles = registry.profiles || [];
+            if (profiles.length === 0) {
+              console.log("No solo roles found.");
+              return;
+            }
+            console.log(`Available solo roles (${profiles.length}):`);
+            for (const p of profiles) {
+              const aliases = p.aliases && p.aliases.length > 0 ? ` (${p.aliases.join(", ")})` : "";
+              const source = p.source ? ` [${p.source}]` : "";
+              console.log(`  ${p.id}${aliases}${source}`);
+              if (p.summary) console.log(`    ${p.summary}`);
+            }
+            return;
+          }
+          if (subcommand !== "run") {
+            throw new Error(`Unknown solo action: ${subcommand}`);
+          }
+          const promptProfile = String(profile || "").trim();
+          if (!promptProfile) {
+            throw new Error("solo run requires <profile>");
+          }
+          await ensureDaemonRunning(projectRoot);
+          const config = loadConfig(projectRoot);
+          const agent = resolveSoloAgentType(config, opts.agent || "");
+          const scope = String(opts.scope || "inplace").trim().toLowerCase();
+          if (scope !== "inplace" && scope !== "window") {
+            throw new Error("scope must be inplace|window");
+          }
+          const resp = await sendDaemonRequest(projectRoot, {
+            type: "launch_agent",
+            agent: agent === "ucode" ? "ufoo" : agent,
+            nickname: String(opts.nickname || "").trim(),
+            prompt_profile: promptProfile,
+            count: 1,
+            launch_scope: scope,
+            ...collectHostLaunchRequestContext(),
+          });
+          console.log(resp?.data?.reply || `Launched ${agent} role ${promptProfile}`);
         } catch (err) {
           console.error(err.message || String(err));
           process.exitCode = 1;
@@ -1312,6 +1377,8 @@ async function runCli(argv) {
     console.log("  ufoo group status [groupId] [--json]");
     console.log("  ufoo group diagram <alias|groupId> [--ascii|--mermaid] [--json]");
     console.log("  ufoo group stop <groupId> [--json]");
+    console.log("  ufoo solo list [--json]");
+    console.log("  ufoo solo run <profile> [--agent <codex|claude|ucode>] [--nickname <name>] [--scope <inplace|window>]");
     console.log("  ufoo online server [--port 8787] [--host 127.0.0.1] [--token-file <path>]");
     console.log("  ufoo online token <subscriber> [--nickname <name>] [--server <url>] [--file <path>]");
     console.log("  ufoo online room create [--name <room>] --type public|private [--password <pwd>] [--created-by <name>] [--server <url>]");
@@ -1788,6 +1855,67 @@ async function runCli(argv) {
         }
 
         throw new Error("group requires templates|template|run|status|diagram|stop subcommand");
+      } catch (err) {
+        console.error(err.message || String(err));
+        process.exitCode = 1;
+      }
+    })();
+    return;
+  }
+  if (cmd === "solo") {
+    const sub = String(rest[0] || "").trim().toLowerCase();
+    (async () => {
+      try {
+        const projectRoot = process.cwd();
+        if (sub === "list" || sub === "ls") {
+          const outputJson = rest.includes("--json");
+          const registry = loadPromptProfileRegistry(projectRoot);
+          if (outputJson) {
+            console.log(JSON.stringify({ profiles: registry.profiles || [] }, null, 2));
+            return;
+          }
+          const profiles = registry.profiles || [];
+          if (profiles.length === 0) {
+            console.log("No solo roles found.");
+            return;
+          }
+          console.log(`Available solo roles (${profiles.length}):`);
+          for (const p of profiles) {
+            const aliases = p.aliases && p.aliases.length > 0 ? ` (${p.aliases.join(", ")})` : "";
+            const source = p.source ? ` [${p.source}]` : "";
+            console.log(`  ${p.id}${aliases}${source}`);
+            if (p.summary) console.log(`    ${p.summary}`);
+          }
+          return;
+        }
+        if (sub === "run") {
+          const profile = String(rest[1] || "").trim();
+          if (!profile) throw new Error("solo run requires <profile>");
+          const agentIdx = rest.indexOf("--agent");
+          const agentInput = agentIdx !== -1 ? String(rest[agentIdx + 1] || "").trim() : "";
+          const nickIdx = rest.indexOf("--nickname");
+          const nickname = nickIdx !== -1 ? String(rest[nickIdx + 1] || "").trim() : "";
+          const scopeIdx = rest.indexOf("--scope");
+          const scope = scopeIdx !== -1 ? String(rest[scopeIdx + 1] || "").trim().toLowerCase() : "inplace";
+          if (scope !== "inplace" && scope !== "window") {
+            throw new Error("scope must be inplace|window");
+          }
+          await ensureDaemonRunning(projectRoot);
+          const config = loadConfig(projectRoot);
+          const agent = resolveSoloAgentType(config, agentInput);
+          const resp = await sendDaemonRequest(projectRoot, {
+            type: "launch_agent",
+            agent: agent === "ucode" ? "ufoo" : agent,
+            nickname,
+            prompt_profile: profile,
+            count: 1,
+            launch_scope: scope,
+            ...collectHostLaunchRequestContext(),
+          });
+          console.log(resp?.data?.reply || `Launched ${agent} role ${profile}`);
+          return;
+        }
+        throw new Error(`Unknown solo action: ${sub || "(empty)"}`);
       } catch (err) {
         console.error(err.message || String(err));
         process.exitCode = 1;

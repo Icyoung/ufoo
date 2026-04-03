@@ -8,6 +8,7 @@ const { resolveTransport } = require("../code/nativeRunner");
 const { parseIntervalMs, formatIntervalMs } = require("./cronScheduler");
 const { isGlobalControllerProjectRoot, resolveGlobalControllerUfooDir } = require("../globalMode");
 const { loadPromptProfileRegistry } = require("../group/promptProfiles");
+const { resolveSoloAgentType } = require("../solo/commands");
 
 function defaultCreateDoctor(projectRoot) {
   const UfooDoctor = require("../doctor");
@@ -528,10 +529,15 @@ function createCommandExecutor(options = {}) {
       return;
     }
 
-    const target = String(args[0] || "").trim();
-    const profile = String(args[1] || "").trim();
+    const target = action === "assign"
+      ? String(args[1] || "").trim()
+      : String(args[0] || "").trim();
+    const profile = action === "assign"
+      ? String(args[2] || "").trim()
+      : String(args[1] || "").trim();
     if (!target || !profile) {
-      logMessage("error", "{white-fg}✗{/white-fg} Usage: /role <agent-id|nickname> <prompt-profile>");
+      logMessage("error", "{white-fg}✗{/white-fg} Usage: /role assign <agent-id|nickname> <prompt-profile>");
+      logMessage("error", "       /role <agent-id|nickname> <prompt-profile>");
       logMessage("error", "       /role list");
       return;
     }
@@ -545,6 +551,95 @@ function createCommandExecutor(options = {}) {
       schedule(requestStatus, 1000);
     } catch (err) {
       logMessage("error", `{white-fg}✗{/white-fg} Role assignment failed: ${escapeBlessed(err.message)}`);
+    }
+  }
+
+  async function handleSoloCommand(args = []) {
+    const subcommand = String(args[0] || "").trim().toLowerCase();
+    if (!subcommand) {
+      logMessage("error", "{white-fg}✗{/white-fg} Usage: /solo <run|list> ...");
+      return;
+    }
+
+    if (subcommand === "list" || subcommand === "ls") {
+      try {
+        const registry = loadPromptProfileRegistry(projectRoot);
+        const profiles = registry.profiles || [];
+        if (profiles.length === 0) {
+          logMessage("system", "{white-fg}⚙{/white-fg} No solo roles found.");
+          return;
+        }
+        logMessage("system", `{white-fg}⚙{/white-fg} Available solo roles (${profiles.length}):`);
+        for (const p of profiles) {
+          const aliases = p.aliases && p.aliases.length > 0 ? ` {gray-fg}(${p.aliases.join(", ")}){/gray-fg}` : "";
+          const source = p.source ? ` {cyan-fg}[${p.source}]{/cyan-fg}` : "";
+          const summary = p.summary ? `  ${p.summary}` : "";
+          logMessage("system", `  {bold}${escapeBlessed(p.id)}{/bold}${aliases}${source}`);
+          if (summary) {
+            logMessage("system", `    ${escapeBlessed(summary)}`);
+          }
+        }
+      } catch (err) {
+        logMessage("error", `{white-fg}✗{/white-fg} Failed to list solo roles: ${escapeBlessed(err.message)}`);
+      }
+      return;
+    }
+
+    if (subcommand !== "run") {
+      logMessage("error", `{white-fg}✗{/white-fg} Unknown solo action: ${escapeBlessed(subcommand)}`);
+      return;
+    }
+
+    const profile = String(args[1] || "").trim();
+    if (!profile) {
+      logMessage("error", "{white-fg}✗{/white-fg} Usage: /solo run <prompt-profile> [agent=codex|claude|ucode] [nickname=<name>] [scope=inplace|window]");
+      return;
+    }
+
+    const parsedOptions = {};
+    for (let i = 2; i < args.length; i += 1) {
+      const arg = args[i];
+      if (arg.includes("=")) {
+        const [key, value] = arg.split("=", 2);
+        parsedOptions[key] = value;
+      }
+    }
+
+    function normalizeLaunchScopeOption(value, fallback = "inplace") {
+      const raw = String(value || "").trim().toLowerCase();
+      if (!raw) return fallback;
+      if (raw === "inplace" || raw === "same" || raw === "current" || raw === "tab" || raw === "pane") {
+        return "inplace";
+      }
+      if (raw === "window" || raw === "separate" || raw === "new" || raw === "new-window" || raw === "external") {
+        return "window";
+      }
+      return "";
+    }
+
+    const config = loadConfig(projectRoot);
+    const agent = resolveSoloAgentType(config, parsedOptions.agent || parsedOptions.type || "");
+    const nickname = String(parsedOptions.nickname || "").trim();
+    const scopeRaw = parsedOptions.scope || parsedOptions.launch_scope || "";
+    const launchScope = normalizeLaunchScopeOption(scopeRaw, "inplace");
+    if (scopeRaw && !launchScope) {
+      logMessage("error", "{white-fg}✗{/white-fg} scope must be inplace|window");
+      return;
+    }
+
+    try {
+      send({
+        type: IPC_REQUEST_TYPES.LAUNCH_AGENT,
+        agent: agent === "ucode" ? "ufoo" : agent,
+        count: 1,
+        nickname,
+        prompt_profile: profile,
+        launch_scope: launchScope,
+        ...collectHostLaunchRequestContext(),
+      });
+      schedule(requestStatus, 1000);
+    } catch (err) {
+      logMessage("error", `{white-fg}✗{/white-fg} Solo launch failed: ${escapeBlessed(err.message)}`);
     }
   }
 
@@ -1218,6 +1313,9 @@ function createCommandExecutor(options = {}) {
       case "role":
         await handleRoleCommand(args);
         return true;
+      case "solo":
+        await handleSoloCommand(args);
+        return true;
       case "cron":
         await handleCronCommand(args);
         return true;
@@ -1250,6 +1348,7 @@ function createCommandExecutor(options = {}) {
     handleResumeCommand,
     handleProjectCommand,
     handleRoleCommand,
+    handleSoloCommand,
     handleCronCommand,
     handleGroupCommand,
     handleSettingsCommand,

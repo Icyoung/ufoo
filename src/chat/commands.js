@@ -67,7 +67,15 @@ const COMMAND_TREE = {
   "/role": {
     desc: "Assign preset role to an existing agent",
     children: {
-      list: { desc: "List available prompt profiles" },
+      assign: { desc: "Assign a role to an existing agent", order: 1 },
+      list: { desc: "List available prompt profiles", order: 2 },
+    },
+  },
+  "/solo": {
+    desc: "Solo role agent operations",
+    children: {
+      run: { desc: "Launch a solo role agent", order: 1 },
+      list: { desc: "List available solo roles", order: 2 },
     },
   },
   "/resume": {
@@ -111,10 +119,20 @@ function buildCommandRegistry(tree) {
       const entry = { cmd, desc: node.desc || "" };
       if (node.children) {
         entry.subcommands = Object.keys(node.children)
-          .sort((a, b) => a.localeCompare(b, "en", { sensitivity: "base" }))
+          .sort((a, b) => {
+            const aNode = node.children[a] || {};
+            const bNode = node.children[b] || {};
+            const aOrder = Number.isFinite(aNode.order) ? aNode.order : Number.POSITIVE_INFINITY;
+            const bOrder = Number.isFinite(bNode.order) ? bNode.order : Number.POSITIVE_INFINITY;
+            if (aOrder !== bOrder) return aOrder - bOrder;
+            return a.localeCompare(b, "en", { sensitivity: "base" });
+          })
           .map((sub) => ({
             cmd: sub,
             desc: (node.children[sub] && node.children[sub].desc) || "",
+            order: Number.isFinite(node.children[sub] && node.children[sub].order)
+              ? node.children[sub].order
+              : undefined,
           }));
       }
       return entry;

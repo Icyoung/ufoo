@@ -4,6 +4,13 @@ const FALLBACK_LAUNCH_SUBCOMMANDS = [
   { cmd: "ucode", desc: "Launch ucode core agent" },
 ];
 
+function sortSubcommandEntries(a, b) {
+  const aOrder = Number.isFinite(a && a.order) ? a.order : Number.POSITIVE_INFINITY;
+  const bOrder = Number.isFinite(b && b.order) ? b.order : Number.POSITIVE_INFINITY;
+  if (aOrder !== bOrder) return aOrder - bOrder;
+  return String(a && a.cmd ? a.cmd : "").localeCompare(String(b && b.cmd ? b.cmd : ""), "en", { sensitivity: "base" });
+}
+
 function createCompletionController(options = {}) {
   const {
     input,
@@ -12,6 +19,7 @@ function createCompletionController(options = {}) {
     promptBox,
     commandRegistry = [],
     getGroupTemplateCandidates = () => [],
+    getSoloProfileCandidates = () => [],
     getMentionCandidates = () => [],
     normalizeCommandPrefix = () => {},
     truncateText = (text) => String(text || ""),
@@ -143,6 +151,7 @@ function createCompletionController(options = {}) {
     const mainCmd = parts[0];
     const isLaunch = mainCmd && mainCmd.toLowerCase() === "/launch";
     const isGroup = mainCmd && mainCmd.toLowerCase() === "/group";
+    const isSolo = mainCmd && mainCmd.toLowerCase() === "/solo";
     const wantsSubcommands = (parts.length > 1 || (endsWithSpace && parts.length === 1));
 
     if (isGroup) {
@@ -169,6 +178,28 @@ function createCompletionController(options = {}) {
       }
     }
 
+    if (isSolo) {
+      const soloSubcommand = String(parts[1] || "").trim().toLowerCase();
+      const wantsSoloRunArgs = soloSubcommand === "run" && (parts.length > 2 || endsWithSpace);
+      if (wantsSoloRunArgs) {
+        const profileFilter = String(parts[2] || "").trim().toLowerCase();
+        return (Array.isArray(getSoloProfileCandidates()) ? getSoloProfileCandidates() : [])
+          .map((item) => {
+            const profileId = String(item && item.cmd ? item.cmd : item && item.id ? item.id : "").trim();
+            if (!profileId) return null;
+            const desc = String(item && item.desc ? item.desc : item && item.summary ? item.summary : "").trim();
+            return {
+              cmd: profileId,
+              desc,
+              isArgumentSuggestion: true,
+              argumentPrefix: "/solo run",
+            };
+          })
+          .filter((item) => item && (!profileFilter || item.cmd.toLowerCase().startsWith(profileFilter)))
+          .sort((a, b) => a.cmd.localeCompare(b.cmd, "en", { sensitivity: "base" }));
+      }
+    }
+
     if ((wantsSubcommands || isLaunch) && mainCmd && mainCmd.startsWith("/")) {
       const subFilter = parts[1] || "";
       const mainCmdObj = commandRegistry.find((item) =>
@@ -188,12 +219,12 @@ function createCompletionController(options = {}) {
         if (isLaunch) {
           return subs
             .map((sub) => ({ ...sub, isSubcommand: true, parentCmd: mainCmd }))
-            .sort((a, b) => a.cmd.localeCompare(b.cmd));
+            .sort(sortSubcommandEntries);
         }
         return subs
           .filter((sub) => sub.cmd.toLowerCase().startsWith(subFilter.toLowerCase()))
           .map((sub) => ({ ...sub, isSubcommand: true, parentCmd: mainCmd }))
-          .sort((a, b) => a.cmd.localeCompare(b.cmd));
+          .sort(sortSubcommandEntries);
       }
       return [];
     }
@@ -340,10 +371,14 @@ function createCompletionController(options = {}) {
 
     if (!selected.isSubcommand && selected.subcommands && selected.subcommands.length > 0) {
       show(input.value);
-    } else if (selected.isSubcommand && selected.parentCmd === "/group" && selected.cmd === "run") {
-      show(input.value);
-    } else {
-      hide();
+        } else if (
+          selected.isSubcommand
+          && ((selected.parentCmd === "/group" && selected.cmd === "run")
+            || (selected.parentCmd === "/solo" && selected.cmd === "run"))
+        ) {
+          show(input.value);
+        } else {
+          hide();
     }
 
     renderScreen();
@@ -384,7 +419,11 @@ function createCompletionController(options = {}) {
           applyPreview(nextPreview);
           if (!selected.isSubcommand && selected.subcommands && selected.subcommands.length > 0) {
             show(input.value);
-          } else if (selected.isSubcommand && selected.parentCmd === "/group" && selected.cmd === "run") {
+          } else if (
+            selected.isSubcommand
+            && ((selected.parentCmd === "/group" && selected.cmd === "run")
+              || (selected.parentCmd === "/solo" && selected.cmd === "run"))
+          ) {
             show(input.value);
           } else {
             hide();

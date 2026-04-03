@@ -44,8 +44,16 @@ function createHarness(overrides = {}) {
         cmd: "/group",
         desc: "Group ops",
         subcommands: [
-          { cmd: "run", desc: "Launch a group template" },
-          { cmd: "status", desc: "Show group status" },
+          { cmd: "run", desc: "Launch a group template", order: 1 },
+          { cmd: "status", desc: "Show group status", order: 2 },
+        ],
+      },
+      {
+        cmd: "/solo",
+        desc: "Solo ops",
+        subcommands: [
+          { cmd: "run", desc: "Launch a solo role agent", order: 1 },
+          { cmd: "list", desc: "List solo roles", order: 2 },
         ],
       },
       {
@@ -56,6 +64,10 @@ function createHarness(overrides = {}) {
     getGroupTemplateCandidates: jest.fn(() => [
       { alias: "product-discovery", name: "Product Discovery", source: "builtin" },
       { alias: "build-lane", name: "Build Lane", source: "builtin" },
+    ]),
+    getSoloProfileCandidates: jest.fn(() => [
+      { cmd: "design-critic", desc: "Audit the interface · builtin" },
+      { cmd: "implementation-lead", desc: "Turn plan into code · builtin" },
     ]),
     getMentionCandidates: jest.fn(() => [
       { id: "codex:1", label: "codex-1" },
@@ -149,6 +161,42 @@ describe("chat completionController", () => {
     expect(controller.isActive()).toBe(true);
     expect(controller.getCommandCount()).toBe(2);
     expect(completionPanel.setContent).toHaveBeenLastCalledWith(expect.stringContaining("build-lane"));
+  });
+
+  test("solo run shows role candidates after subcommand confirmation", () => {
+    const { controller, input, completionPanel } = createHarness();
+    input.value = "/solo ";
+
+    controller.show(input.value);
+    const handled = controller.handleKey("", { name: "enter" });
+
+    expect(handled).toBe(true);
+    expect(input.value).toBe("/solo run ");
+    expect(controller.isActive()).toBe(true);
+    expect(completionPanel.setContent).toHaveBeenLastCalledWith(expect.stringContaining("design-critic"));
+  });
+
+  test("solo run with trailing space lists solo roles", () => {
+    const { controller, input, completionPanel } = createHarness();
+    input.value = "/solo run ";
+
+    controller.show(input.value);
+
+    expect(controller.isActive()).toBe(true);
+    expect(controller.getCommandCount()).toBe(2);
+    expect(completionPanel.setContent).toHaveBeenLastCalledWith(expect.stringContaining("implementation-lead"));
+  });
+
+  test("solo role candidate confirms profile with trailing space", () => {
+    const { controller, input } = createHarness();
+    input.value = "/solo run des";
+
+    controller.show(input.value);
+    const handled = controller.handleKey("", { name: "tab" });
+
+    expect(handled).toBe(true);
+    expect(input.value).toBe("/solo run design-critic ");
+    expect(controller.isActive()).toBe(false);
   });
 
   test("group template candidate confirms alias with trailing space", () => {

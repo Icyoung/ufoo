@@ -18,6 +18,7 @@ const { getUfooPaths } = require("../ufoo/paths");
 const { startDaemon, stopDaemon, connectWithRetry } = require("./transport");
 const { escapeBlessed, stripBlessedTags, truncateText } = require("./text");
 const { COMMAND_REGISTRY, parseCommand, parseAtTarget } = require("./commands");
+const { buildPromptProfileCandidates } = require("../solo/commands");
 const inputMath = require("./inputMath");
 const { createStreamTracker } = require("./streamTracker");
 const agentDirectory = require("./agentDirectory");
@@ -558,6 +559,10 @@ async function runChat(projectRoot, options = {}) {
         name: item.templateName || item.templateId || "",
         source: item.source || "",
       }));
+    },
+    getSoloProfileCandidates: () => {
+      const registry = loadPromptProfileRegistry(activeProjectRoot);
+      return buildPromptProfileCandidates(registry);
     },
     getMentionCandidates: () => activeAgents.map((id) => ({
       id,

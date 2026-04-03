@@ -77,6 +77,24 @@ function createHarness(overrides = {}) {
 }
 
 describe("chat commandExecutor", () => {
+  const originalEnv = { ...process.env };
+
+  beforeEach(() => {
+    delete process.env.UFOO_HOST_INJECT_SOCK;
+    delete process.env.HORIZON_INJECT_SOCK;
+    delete process.env.UFOO_HOST_DAEMON_SOCK;
+    delete process.env.UFOO_HOST_NAME;
+    delete process.env.UFOO_HOST_SESSION_ID;
+    delete process.env.HORIZON_SESSION_ID;
+  });
+
+  afterEach(() => {
+    for (const key of Object.keys(process.env)) {
+      delete process.env[key];
+    }
+    Object.assign(process.env, originalEnv);
+  });
+
   test("requires projectRoot", () => {
     expect(() => createCommandExecutor({ projectRoot: "" })).toThrow(/requires projectRoot/);
   });
@@ -376,6 +394,18 @@ describe("chat commandExecutor", () => {
     expect(options.requestStatus).toHaveBeenCalled();
   });
 
+  test("handleRoleCommand accepts explicit assign subcommand", async () => {
+    const { executor, options } = createHarness();
+
+    await executor.handleRoleCommand(["assign", "designer", "design-critic"]);
+
+    expect(options.send).toHaveBeenCalledWith({
+      type: "assign_role",
+      target: "designer",
+      prompt_profile: "design-critic",
+    });
+  });
+
   test("handleRoleCommand list shows available prompt profiles", async () => {
     const { executor, logs } = createHarness();
 
@@ -405,6 +435,52 @@ describe("chat commandExecutor", () => {
     expect(usage).toBeTruthy();
     const listHint = logs.find((entry) => entry.text.includes("/role list"));
     expect(listHint).toBeTruthy();
+  });
+
+  test("handleSoloCommand list shows available roles", async () => {
+    const { executor, logs } = createHarness();
+
+    await executor.handleSoloCommand(["list"]);
+
+    const header = logs.find((entry) => entry.text.includes("Available solo roles"));
+    expect(header).toBeTruthy();
+    expect(logs.some((entry) => entry.text.includes("implementation-lead"))).toBe(true);
+  });
+
+  test("handleSoloCommand run sends launch_agent with prompt profile", async () => {
+    const { executor, options } = createHarness({
+      loadConfig: jest.fn(() => ({ agentProvider: "claude-cli" })),
+    });
+
+    await executor.handleSoloCommand(["run", "design-critic", "nickname=designer"]);
+
+    expect(options.send).toHaveBeenCalledWith({
+      type: "launch_agent",
+      agent: "claude",
+      count: 1,
+      nickname: "designer",
+      prompt_profile: "design-critic",
+      launch_scope: "inplace",
+    });
+    expect(options.schedule).toHaveBeenCalled();
+    expect(options.requestStatus).toHaveBeenCalled();
+  });
+
+  test("handleSoloCommand run accepts explicit agent override", async () => {
+    const { executor, options } = createHarness({
+      loadConfig: jest.fn(() => ({ agentProvider: "claude-cli" })),
+    });
+
+    await executor.handleSoloCommand(["run", "design-critic", "agent=ucode", "scope=window"]);
+
+    expect(options.send).toHaveBeenCalledWith({
+      type: "launch_agent",
+      agent: "ufoo",
+      count: 1,
+      nickname: "",
+      prompt_profile: "design-critic",
+      launch_scope: "window",
+    });
   });
 
   test("handleResumeCommand supports list subcommand", async () => {

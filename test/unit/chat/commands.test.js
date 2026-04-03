@@ -63,7 +63,16 @@ describe("chat command helpers", () => {
     const role = COMMAND_REGISTRY.find((item) => item.cmd === "/role");
     expect(role).toBeTruthy();
     expect(role.desc).toBe("Assign preset role to an existing agent");
+    expect((role.subcommands || []).some((sub) => sub.cmd === "assign")).toBe(true);
     expect((role.subcommands || []).some((sub) => sub.cmd === "list")).toBe(true);
+  });
+
+  test("solo command is exposed with run and list subcommands", () => {
+    const solo = COMMAND_REGISTRY.find((item) => item.cmd === "/solo");
+    expect(solo).toBeTruthy();
+    expect(solo.desc).toBe("Solo role agent operations");
+    expect((solo.subcommands || []).some((sub) => sub.cmd === "run")).toBe(true);
+    expect((solo.subcommands || []).some((sub) => sub.cmd === "list")).toBe(true);
   });
 
   test("open command is exposed", () => {
