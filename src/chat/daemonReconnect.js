@@ -1,3 +1,5 @@
+const { restartLocks } = require("./daemonTransport");
+
 function resolveDaemonConnection(daemonConnection) {
   return typeof daemonConnection === "function" ? daemonConnection() : daemonConnection;
 }
@@ -14,11 +16,10 @@ function restartDaemonFlow(options = {}) {
 
   const statusMsg = resolveStatusLine || ((text) => logMessage("status", text));
 
-  let restartInProgress = false;
-
   return async function restartDaemon() {
-    if (restartInProgress) return;
-    restartInProgress = true;
+    // Use global restart lock to prevent concurrent restart flows
+    if (restartLocks.get(projectRoot)) return;
+    restartLocks.set(projectRoot, true);
     statusMsg("{gray-fg}⚙{/gray-fg} Restarting daemon...");
     try {
       const connection = resolveDaemonConnection(daemonConnection);
@@ -34,7 +35,7 @@ function restartDaemonFlow(options = {}) {
         statusMsg("{gray-fg}✗{/gray-fg} Failed to reconnect to daemon");
       }
     } finally {
-      restartInProgress = false;
+      restartLocks.delete(projectRoot);
     }
   };
 }

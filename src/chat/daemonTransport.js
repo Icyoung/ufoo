@@ -1,5 +1,8 @@
 const { DAEMON_TRANSPORT_DEFAULTS } = require("./daemonTransportDefaults");
 
+// Global restart lock per project to prevent concurrent restart flows
+const restartLocks = new Map();
+
 function createDaemonTransport(options = {}) {
   const {
     projectRoot,
@@ -34,7 +37,9 @@ function createDaemonTransport(options = {}) {
     );
     if (!client) {
       // Retry once with a fresh daemon start and longer wait.
-      if (!isRunning(target.projectRoot)) {
+      // Check if a restart is already in progress via the explicit restart flow.
+      const isExplicitRestartInProgress = restartLocks.get(target.projectRoot);
+      if (!isExplicitRestartInProgress && !isRunning(target.projectRoot)) {
         startDaemon(target.projectRoot);
         await new Promise((resolve) => setTimeout(resolve, restartDelayMs));
       }
@@ -75,4 +80,5 @@ function createDaemonTransport(options = {}) {
 
 module.exports = {
   createDaemonTransport,
+  restartLocks,
 };

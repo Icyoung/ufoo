@@ -201,16 +201,16 @@ function looksLikeRunningDaemon(projectRoot, pid) {
 function isRunning(projectRoot) {
   const pid = readPid(projectRoot);
   if (!pid) return false;
-  if (looksLikeRunningDaemon(projectRoot, pid)) {
-    return true;
-  }
+  return looksLikeRunningDaemon(projectRoot, pid);
+}
+
+function cleanupStaleState(projectRoot) {
   try {
     fs.unlinkSync(pidPath(projectRoot));
   } catch {
     // ignore
   }
   removeSocket(projectRoot);
-  return false;
 }
 
 function removeSocket(projectRoot) {
@@ -1051,6 +1051,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
             await init.init({ modules: "context,bus", project: root });
           }
           if (!isRunning(root)) {
+            cleanupStaleState(root);
             const daemonBin = path.join(__dirname, "..", "..", "bin", "ufoo.js");
             const child = spawn(process.execPath, [daemonBin, "daemon", "--start"], {
               detached: true,
@@ -2329,4 +2330,4 @@ function stopDaemon(projectRoot) {
   return killed;
 }
 
-module.exports = { startDaemon, stopDaemon, isRunning, socketPath };
+module.exports = { startDaemon, stopDaemon, isRunning, cleanupStaleState, socketPath };
