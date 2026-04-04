@@ -97,21 +97,18 @@ ufoo bus alert "$SUBSCRIBER" --stop
 ufoo bus check "$SUBSCRIBER"
 ```
 
-If pending events exist, show:
+The system automatically prefixes each message with `[ufoo]<from:id(nickname)>` to identify the sender. You do not need to add this prefix yourself.
+
+If pending events exist, output looks like:
 
 ```
-=== Pending Messages ===
-
 [ufoo]<from:claude-code:abc123(architect)>
   Type: message/targeted/message
   Content: {"message":"review src/main.ts","injection_mode":"immediate"}
-
----
-Please handle the above messages, after completion you can reply:
-ufoo bus send "architect" "Review completed, found 2 issues..."
 ```
 
-Note: Messages use `[ufoo]<from:id(nickname)>` prefix to distinguish from manual user input.
+- The sender ID and nickname are in the `[ufoo]<from:...>` line — use the ID to reply
+- The actual task is in `Content.message`
 
 ### 5. IMPORTANT: Acknowledge messages after handling
 
