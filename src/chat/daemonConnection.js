@@ -108,7 +108,6 @@ function createDaemonConnection(options = {}) {
       if (exitRequested) return;
       if (!connectionLostNotified) {
         connectionLostNotified = true;
-        logMessage("status", "{white-fg}✗{/white-fg} Daemon disconnected");
       }
       void ensureConnected();
     };
@@ -122,7 +121,6 @@ function createDaemonConnection(options = {}) {
     if (exitRequested) return false;
     if (reconnectPromise) return reconnectPromise;
     queueStatusLine("Reconnecting to daemon", { key: STATUS_KEY_RECONNECT });
-    logMessage("status", "{white-fg}⚙{/white-fg} Reconnecting to daemon...");
     reconnectPromise = (async () => {
       const newClient = await connectClient();
       if (!newClient) {

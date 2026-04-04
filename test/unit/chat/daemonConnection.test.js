@@ -64,7 +64,7 @@ describe("chat daemonConnection", () => {
     expect(first.writes).toEqual(['{"type":"status"}\n']);
   });
 
-  test("disconnect triggers reconnect with unchanged status text", async () => {
+  test("disconnect triggers reconnect with status bar only (no chat log)", async () => {
     const first = new FakeClient();
     const second = new FakeClient();
     const { connection, connectClient, queueStatusLine, resolveStatusLine, logMessage } = createHarness();
@@ -75,11 +75,12 @@ describe("chat daemonConnection", () => {
     await flushPromises();
     await flushPromises();
 
-    expect(logMessage).toHaveBeenCalledWith(
+    // Disconnect and reconnect should NOT log to chat — only status bar
+    expect(logMessage).not.toHaveBeenCalledWith(
       "status",
       "{white-fg}✗{/white-fg} Daemon disconnected"
     );
-    expect(logMessage).toHaveBeenCalledWith(
+    expect(logMessage).not.toHaveBeenCalledWith(
       "status",
       "{white-fg}⚙{/white-fg} Reconnecting to daemon..."
     );
