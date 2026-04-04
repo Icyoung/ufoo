@@ -1908,6 +1908,7 @@ async function runChat(projectRoot, options = {}) {
 
   const commandExecutor = createCommandExecutor({
     projectRoot,
+    getActiveProjectRoot: () => activeProjectRoot,
     parseCommand,
     escapeBlessed,
     logMessage,

@@ -67,6 +67,7 @@ async function withCapturedConsole(capture, fn) {
 function createCommandExecutor(options = {}) {
   const {
     projectRoot,
+    getActiveProjectRoot = () => projectRoot,
     parseCommand = () => null,
     escapeBlessed = (value) => String(value || ""),
     logMessage = () => {},
@@ -160,15 +161,16 @@ function createCommandExecutor(options = {}) {
 
   async function handleDaemonCommand(args = []) {
     const subcommand = args[0];
+    const targetRoot = getActiveProjectRoot();
 
     if (subcommand === "start") {
-      if (isDaemonRunning(projectRoot)) {
+      if (isDaemonRunning(targetRoot)) {
         logMessage("system", "{white-fg}⚠{/white-fg} Daemon already running");
       } else {
         logMessage("system", "{white-fg}⚙{/white-fg} Starting daemon...");
-        startDaemon(projectRoot);
+        startDaemon(targetRoot);
         await sleep(1000);
-        if (isDaemonRunning(projectRoot)) {
+        if (isDaemonRunning(targetRoot)) {
           logMessage("system", "{white-fg}✓{/white-fg} Daemon started");
         } else {
           logMessage("error", "{white-fg}✗{/white-fg} Failed to start daemon");
@@ -179,9 +181,9 @@ function createCommandExecutor(options = {}) {
 
     if (subcommand === "stop") {
       logMessage("system", "{white-fg}⚙{/white-fg} Stopping daemon...");
-      stopDaemon(projectRoot);
+      stopDaemon(targetRoot);
       await sleep(1000);
-      if (!isDaemonRunning(projectRoot)) {
+      if (!isDaemonRunning(targetRoot)) {
         logMessage("system", "{white-fg}✓{/white-fg} Daemon stopped");
       } else {
         logMessage("error", "{white-fg}✗{/white-fg} Failed to stop daemon");
@@ -190,12 +192,21 @@ function createCommandExecutor(options = {}) {
     }
 
     if (subcommand === "restart") {
-      await restartDaemon();
+      logMessage("system", "{white-fg}⚙{/white-fg} Restarting daemon...");
+      stopDaemon(targetRoot);
+      await sleep(500);
+      startDaemon(targetRoot);
+      await sleep(1000);
+      if (isDaemonRunning(targetRoot)) {
+        logMessage("system", "{white-fg}✓{/white-fg} Daemon restarted");
+      } else {
+        logMessage("error", "{white-fg}✗{/white-fg} Failed to restart daemon");
+      }
       return;
     }
 
     if (subcommand === "status") {
-      if (isDaemonRunning(projectRoot)) {
+      if (isDaemonRunning(targetRoot)) {
         logMessage("system", "{white-fg}✓{/white-fg} Daemon is running");
       } else {
         logMessage("system", "{white-fg}✗{/white-fg} Daemon is not running");
