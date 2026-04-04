@@ -2074,39 +2074,46 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
       const parsedAgentPid = Number.parseInt(agentPid, 10);
       const agentType = subscriberId.split(":")[0] || "";
 
-      // Try direct file read — retry up to 5s to handle race where
-      // _spawnDirect sends AGENT_READY before Claude writes its session file
+      // In _spawnDirect (host mode), AGENT_READY is sent immediately after
+      // spawn() before Claude has written ~/.claude/sessions/<pid>.json.
+      // Retry with short backoff to handle the race condition.
+      const RETRY_DELAYS_MS = [100, 500, 1000, 2000, 3000];
+
       const tryResolveSession = (attempt) => {
-        if (!Number.isFinite(parsedAgentPid) || parsedAgentPid <= 0) return;
-        const resolved = resolveSessionFromFile(agentType, {
-          pid: parsedAgentPid,
-          cwd: projectRoot,
-        });
-        if (resolved && resolved.sessionId) {
-          log(`agent_ready session resolved from file for ${subscriberId}: ${resolved.sessionId} (attempt ${attempt})`);
-          persistProviderSession(projectRoot, subscriberId, resolved);
-          if (providerSessions) {
-            providerSessions.set(subscriberId, {
-              sessionId: resolved.sessionId,
-              source: resolved.source || "",
-              updated_at: new Date().toISOString(),
-            });
+        if (Number.isFinite(parsedAgentPid) && parsedAgentPid > 0) {
+          const resolved = resolveSessionFromFile(agentType, {
+            pid: parsedAgentPid,
+            cwd: projectRoot,
+          });
+          if (resolved && resolved.sessionId) {
+            const attemptNote = attempt > 1 ? ` (attempt ${attempt})` : "";
+            log(`agent_ready session resolved from file for ${subscriberId}: ${resolved.sessionId}${attemptNote}`);
+            persistProviderSession(projectRoot, subscriberId, resolved);
+            if (providerSessions) {
+              providerSessions.set(subscriberId, {
+                sessionId: resolved.sessionId,
+                source: resolved.source || "",
+                updated_at: new Date().toISOString(),
+              });
+            }
+            // Cancel the scheduled probe to prevent redundant /ufoo injection
+            const handle = probeHandles.get(subscriberId);
+            if (handle && typeof handle.cancel === "function") {
+              handle.cancel();
+            }
+            probeHandles.delete(subscriberId);
+            return;
           }
-          const handle = probeHandles.get(subscriberId);
-          if (handle && typeof handle.cancel === "function") {
-            handle.cancel();
+
+          // Session file not ready — retry if attempts remain
+          const delayMs = RETRY_DELAYS_MS[attempt - 1];
+          if (delayMs !== undefined) {
+            setTimeout(() => tryResolveSession(attempt + 1), delayMs);
+            return;
           }
-          probeHandles.delete(subscriberId);
-          return;
         }
 
-        // Session file not ready yet — retry with backoff (max 5 attempts ~5s)
-        if (attempt < 5) {
-          setTimeout(() => tryResolveSession(attempt + 1), attempt * 1000);
-          return;
-        }
-
-        // Exhausted retries — fall back to probe
+        // Exhausted retries or no pid — fall back to scheduled probe
         const probeHandle = probeHandles.get(subscriberId);
         if (probeHandle && typeof probeHandle.triggerNow === "function") {
           log(`agent_ready falling back to probe for ${subscriberId}`);
