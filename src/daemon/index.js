@@ -2071,16 +2071,19 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
       }
       log(`agent_ready id=${subscriberId} pid=${agentPid || 0} - resolving session`);
 
-      // Try direct file read first if we have agentPid (fast path)
       const parsedAgentPid = Number.parseInt(agentPid, 10);
-      if (Number.isFinite(parsedAgentPid) && parsedAgentPid > 0) {
-        const agentType = subscriberId.split(":")[0] || "";
+      const agentType = subscriberId.split(":")[0] || "";
+
+      // Try direct file read — retry up to 5s to handle race where
+      // _spawnDirect sends AGENT_READY before Claude writes its session file
+      const tryResolveSession = (attempt) => {
+        if (!Number.isFinite(parsedAgentPid) || parsedAgentPid <= 0) return;
         const resolved = resolveSessionFromFile(agentType, {
           pid: parsedAgentPid,
           cwd: projectRoot,
         });
         if (resolved && resolved.sessionId) {
-          log(`agent_ready session resolved from file for ${subscriberId}: ${resolved.sessionId}`);
+          log(`agent_ready session resolved from file for ${subscriberId}: ${resolved.sessionId} (attempt ${attempt})`);
           persistProviderSession(projectRoot, subscriberId, resolved);
           if (providerSessions) {
             providerSessions.set(subscriberId, {
@@ -2089,7 +2092,6 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
               updated_at: new Date().toISOString(),
             });
           }
-          // Cancel the scheduled probe to prevent /ufoo injection
           const handle = probeHandles.get(subscriberId);
           if (handle && typeof handle.cancel === "function") {
             handle.cancel();
@@ -2097,17 +2099,26 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
           probeHandles.delete(subscriberId);
           return;
         }
-      }
 
-      // Fallback: trigger scheduled probe
-      const probeHandle = probeHandles.get(subscriberId);
-      if (probeHandle && typeof probeHandle.triggerNow === "function") {
-        probeHandle.triggerNow().catch((err) => {
-          log(`agent_ready probe trigger failed for ${subscriberId}: ${err.message}`);
-        });
-      } else {
-        log(`agent_ready no probe handle found for ${subscriberId}`);
-      }
+        // Session file not ready yet — retry with backoff (max 5 attempts ~5s)
+        if (attempt < 5) {
+          setTimeout(() => tryResolveSession(attempt + 1), attempt * 1000);
+          return;
+        }
+
+        // Exhausted retries — fall back to probe
+        const probeHandle = probeHandles.get(subscriberId);
+        if (probeHandle && typeof probeHandle.triggerNow === "function") {
+          log(`agent_ready falling back to probe for ${subscriberId}`);
+          probeHandle.triggerNow().catch((err) => {
+            log(`agent_ready probe trigger failed for ${subscriberId}: ${err.message}`);
+          });
+        } else {
+          log(`agent_ready no probe handle found for ${subscriberId}`);
+        }
+      };
+
+      tryResolveSession(1);
       return;
     }
   };
