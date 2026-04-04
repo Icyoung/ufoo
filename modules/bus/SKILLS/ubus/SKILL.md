@@ -102,14 +102,16 @@ If pending events exist, show:
 ```
 === Pending Messages ===
 
-@you from claude-code:abc123
-  Type: task/delegate
-  Content: {"task":"review","file":"src/main.ts"}
+[ufoo]<from:claude-code:abc123(architect)>
+  Type: message/targeted/message
+  Content: {"message":"review src/main.ts","injection_mode":"immediate"}
 
 ---
 Please handle the above messages, after completion you can reply:
-ufoo bus send "claude-code:abc123" "Review completed, found 2 issues..."
+ufoo bus send "architect" "Review completed, found 2 issues..."
 ```
+
+Note: Messages use `[ufoo]<from:id(nickname)>` prefix to distinguish from manual user input.
 
 ### 5. IMPORTANT: Acknowledge messages after handling
 

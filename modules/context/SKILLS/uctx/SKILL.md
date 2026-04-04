@@ -13,7 +13,8 @@ description: |
 Fast context check for daily use. Run at session start or anytime.
 
 Pre-flight reminder:
-- If the user is asking for evaluation/recommendation/plan, write a decision before replying.
+- If the user is asking for an important architectural decision, a plan with multiple options, or a cross-agent coordination choice, write a decision before replying.
+  Do NOT write decisions for routine tasks, simple bug fixes, or trivial findings.
   Use: `ufoo ctx decisions new "<Title>"`
 
 ## Decision format (canonical)

@@ -24,14 +24,15 @@ When you see a probe marker command like `/ufoo <marker>` (Claude) or `$ufoo <ma
 
 ### When to Record
 
-**"If it has information value, write it down."**
+**"Only record decisions that matter beyond this session."**
 
-Record a decision whenever your work produces knowledge that would be useful to your future self, other agents, or the user. The threshold is LOW — when in doubt, record it.
+Record a decision for important, plan-level knowledge that other agents or your future self need. The threshold is HIGH — most tasks do NOT need a decision.
 
-- **Always record**: architectural choices, trade-off analysis, research findings, non-obvious gotchas, naming/convention changes, external API behavior discovered, performance observations, bug root causes
-- **Also record**: open questions you couldn't resolve, assumptions you made, approaches you considered and rejected (with reasons), edge cases noticed but not handled
+- **Always record**: architectural choices, plan-level decisions with multiple options, cross-agent coordination decisions, trade-off analysis where alternatives were considered and rejected
+- **Also record**: design patterns that set precedent, integration contracts between systems, decisions that constrain future work
+- **Do NOT record**: routine bug fixes, simple implementation details, trivial observations, findings that only matter within the current task
 - **Write the decision BEFORE acting on it** — if your session dies, the knowledge survives
-- **Granularity**: one sentence or multi-page analysis — match the depth to the information value
+- **Rule of thumb**: if another agent wouldn't need to know about it, don't write a decision
 
 ### Commands
 
@@ -121,7 +122,35 @@ Notes:
 
 ---
 
-## 3. Initialization (uinit)
+## 3. Message Format
+
+Bus messages use a unified prefix format to distinguish sources:
+
+- `[ufoo]<from:id(nickname)>` — message from another agent via the bus
+- `[manual]<to:id(nickname)>` — manual user input directed at an agent
+
+When you see `[ufoo]<from:xxx>` in your prompt, it's an inter-agent message — `xxx` is the sender's ID and nickname.
+When you see `[manual]<to:xxx>`, it's a direct user instruction to an agent — `xxx` is the recipient's ID and nickname.
+
+---
+
+## 4. Team Activity (Input History)
+
+Your bootstrap prompt may include a `## Team Activity` section showing recent prompts sent to all agents. Use this to understand:
+- What each agent is currently working on
+- Who sent what tasks to whom
+- The overall coordination flow
+
+Commands:
+```bash
+ufoo history build              # Rebuild timeline from bus + session data
+ufoo history show [limit]       # Show recent entries
+ufoo history prompt [limit]     # Render as injectable prompt block
+```
+
+---
+
+## 5. Initialization (uinit)
 
 Trigger: `/uinit` or `/ufoo init`
 
