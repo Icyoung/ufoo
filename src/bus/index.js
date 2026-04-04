@@ -328,6 +328,23 @@ class EventBus {
           `Event sent: event=${eventName} seq=${result.seq} -> ${result.targets.join(", ")}`
         );
       }
+
+      // Real-time timeline append for message events
+      if (eventName === "message" && message) {
+        try {
+          const { appendBusEntry } = require("../history/inputTimeline");
+          appendBusEntry(this.projectRoot, {
+            seq: result.seq,
+            timestamp: new Date().toISOString(),
+            publisher,
+            target,
+            message,
+          });
+        } catch {
+          // non-critical
+        }
+      }
+
       return result;
     } catch (err) {
       logError(err.message);
@@ -364,7 +381,10 @@ class EventBus {
     console.log();
 
     for (const event of pending) {
-      console.log(`  ${colors.yellow}@you${colors.reset} from ${colors.cyan}${event.publisher}${colors.reset}`);
+      const publisherMeta = this.busData.agents?.[event.publisher];
+      const nick = publisherMeta?.nickname;
+      const fromLabel = nick ? `${event.publisher}(${nick})` : event.publisher;
+      console.log(`  ${colors.yellow}[ufoo]<from:${fromLabel}>${colors.reset}`);
       console.log(`  Type: ${event.type}/${event.event}`);
       console.log(`  Content: ${JSON.stringify(event.data)}`);
       console.log();
@@ -731,7 +751,7 @@ class EventBus {
 
       if (countAfter > countBefore) {
         await sleep(50);
-        const daemon = new BusDaemon(this.busDir, this.agentsFile, this.paths.busDaemonDir, 2000);
+        const daemon = new BusDaemon(this.busDir, this.agentsFile, this.paths.busDaemonDir, 2000, this.projectRoot);
         await daemon.injector.inject(target, options.command || "");
         if (options.shake !== false) {
           const tty = daemon.injector.readTty(target);
@@ -829,7 +849,7 @@ class EventBus {
    */
   async daemon(action, options = {}) {
     const interval = options.interval || 2000;
-    const daemon = new BusDaemon(this.busDir, this.agentsFile, this.paths.busDaemonDir, interval);
+    const daemon = new BusDaemon(this.busDir, this.agentsFile, this.paths.busDaemonDir, interval, this.projectRoot);
 
     switch (action) {
       case "start":

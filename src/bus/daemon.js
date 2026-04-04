@@ -19,17 +19,21 @@ function isBusyActivityState(value = "") {
  * Bus Daemon - 监控消息并自动注入命令
  */
 class BusDaemon {
-  constructor(busDir, agentsFile, daemonDir, interval = 2000) {
+  constructor(busDir, agentsFile, daemonDir, interval = 2000, projectRoot = "") {
     this.busDir = busDir;
     this.agentsFile = agentsFile;
     this.interval = interval;
     this.daemonDir = daemonDir;
+    this.projectRoot = projectRoot || path.resolve(busDir, "..", "..");
     this.pidFile = path.join(this.daemonDir, "daemon.pid");
     this.logFile = path.join(this.daemonDir, "daemon.log");
     this.countsDir = path.join(this.daemonDir, "counts", `${process.pid}`);
     this.running = false;
     this.cleanupCounter = 0;
     this.cleanupInterval = 5; // 每 5 个周期清理一次
+    this.timelineSyncCounter = 0;
+    // 每 15 个周期同步一次 manual inputs (~15 × interval, default ~30s)
+    this.timelineSyncInterval = 15;
 
     this.queueManager = new QueueManager(busDir);
     this.injector = new Injector(busDir, agentsFile);
@@ -233,6 +237,13 @@ class BusDaemon {
           this.cleanupCounter = 0;
         }
 
+        // 定期同步 timeline（manual inputs from session files, ~15 × interval）
+        this.timelineSyncCounter++;
+        if (this.timelineSyncCounter >= this.timelineSyncInterval) {
+          this.syncTimeline();
+          this.timelineSyncCounter = 0;
+        }
+
         // 检查所有订阅者的队列
         await this.checkQueues();
       } catch (err) {
@@ -241,6 +252,20 @@ class BusDaemon {
 
       // 等待下一个周期
       await new Promise((resolve) => setTimeout(resolve, this.interval));
+    }
+  }
+
+  /**
+   * 增量同步 timeline — 捕获 manual inputs（bus 消息已在 send() 时实时追加）
+   */
+  syncTimeline() {
+    try {
+      const { buildTimeline } = require("../history/inputTimeline");
+      buildTimeline(this.projectRoot);
+    } catch (err) {
+      if (process.env.UFOO_HISTORY_DEBUG === "1") {
+        console.error("[daemon][history] syncTimeline failed:", err.message);
+      }
     }
   }
 

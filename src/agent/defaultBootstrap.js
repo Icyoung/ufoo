@@ -26,17 +26,40 @@ function hasMetaCommandArgs(args = []) {
   return hasArg(args, ["-h", "--help", "-v", "--version"]);
 }
 
-function buildDefaultStartupBootstrapPrompt({ agentType = "" } = {}) {
+/**
+ * Load the team activity timeline for prompt injection.
+ * The daemon syncs manual inputs every ~30s; bus messages are appended in real-time.
+ * Agent startup only reads — no build triggered here.
+ */
+function loadTeamActivityContext(projectRoot) {
+  try {
+    const { renderTimelineForPrompt } = require("../history/inputTimeline");
+    return renderTimelineForPrompt(projectRoot, 20) || "";
+  } catch {
+    return "";
+  }
+}
+
+function buildDefaultStartupBootstrapPrompt({ agentType = "", projectRoot = "" } = {}) {
   const normalizedAgent = asTrimmedString(agentType).toLowerCase();
   const displayAgent = normalizedAgent === "claude-code"
     ? "Claude"
     : (normalizedAgent === "codex" ? "Codex" : "agent");
-  return [
+
+  const segments = [
     `Session bootstrap for ${displayAgent}.`,
     "Adopt the following ufoo coordination protocol silently.",
     "Do not reply to this bootstrap message unless the user explicitly asks about it. After applying it, continue the active task or wait for user input.",
     SHARED_UFOO_PROTOCOL,
-  ].join("\n\n");
+  ];
+
+  const root = asTrimmedString(projectRoot) || process.cwd();
+  const teamActivity = loadTeamActivityContext(root);
+  if (teamActivity) {
+    segments.push(teamActivity);
+  }
+
+  return segments.join("\n\n");
 }
 
 function defaultBootstrapFile(projectRoot, agentType = "") {
@@ -78,7 +101,7 @@ function resolveDefaultManualBootstrap({
     if (hasArg(currentArgs, ["--append-system-prompt", "--system-prompt"])) {
       return { args: currentArgs, env: {}, mode: "skip" };
     }
-    const promptText = buildDefaultStartupBootstrapPrompt({ agentType: normalizedAgent });
+    const promptText = buildDefaultStartupBootstrapPrompt({ agentType: normalizedAgent, projectRoot });
     const prepared = prepareDefaultBootstrapFile({
       projectRoot,
       agentType: normalizedAgent,
@@ -97,7 +120,7 @@ function resolveDefaultManualBootstrap({
     if (currentArgs.length > 0) {
       return { args: currentArgs, env: {}, mode: "skip" };
     }
-    const promptText = buildDefaultStartupBootstrapPrompt({ agentType: normalizedAgent });
+    const promptText = buildDefaultStartupBootstrapPrompt({ agentType: normalizedAgent, projectRoot });
     return {
       args: currentArgs,
       env: {

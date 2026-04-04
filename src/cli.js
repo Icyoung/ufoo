@@ -1327,6 +1327,38 @@ async function runCli(argv) {
         }
       });
 
+    const history = program.command("history").description("Agent input history timeline");
+    history
+      .command("build")
+      .description("Build unified input timeline (incremental by default)")
+      .option("--force", "Full rebuild (ignore watermark)")
+      .action((opts) => {
+        const { buildTimeline } = require("./history/inputTimeline");
+        const result = buildTimeline(process.cwd(), { force: opts.force === true });
+        console.log(`Timeline: ${result.count} total, ${result.newCount} new → ${result.file}`);
+      });
+    history
+      .command("show")
+      .description("Show recent timeline entries")
+      .argument("[limit]", "Number of entries to show", "50")
+      .action((limit) => {
+        const { showTimeline } = require("./history/inputTimeline");
+        showTimeline(process.cwd(), parseInt(limit, 10) || 50);
+      });
+    history
+      .command("prompt")
+      .description("Render timeline as injectable prompt context")
+      .argument("[limit]", "Number of entries to include", "30")
+      .action((limit) => {
+        const { renderTimelineForPrompt } = require("./history/inputTimeline");
+        const text = renderTimelineForPrompt(process.cwd(), parseInt(limit, 10) || 30);
+        if (text) {
+          console.log(text);
+        } else {
+          console.log("No timeline data. Run `ufoo history build` first.");
+        }
+      });
+
     program.addHelpText(
       "after",
       `\nNotes:\n  - If 'ufoo' isn't in PATH, run it via ${chalk.cyan(
@@ -1391,6 +1423,7 @@ async function runCli(argv) {
     console.log("  ufoo bus wake <target> [--reason <reason>] [--no-shake]");
     console.log("  ufoo bus <args...>    (JS bus implementation)");
     console.log("  ufoo ctx <subcmd> ... (doctor|lint|decisions|sync)");
+    console.log("  ufoo history <build|show|prompt> [limit]");
     console.log("");
     console.log("Notes:");
     console.log("  - For Codex notifications, use ufoo bus alert / ufoo bus listen");
@@ -2096,6 +2129,36 @@ async function runCli(argv) {
         process.exit(1);
       }
     })();
+    return;
+  }
+
+  if (cmd === "history") {
+    const sub = rest[0] || "show";
+    const cwd = process.cwd();
+    const { buildTimeline, showTimeline, renderTimelineForPrompt } = require("./history/inputTimeline");
+
+    if (sub === "build") {
+      const force = rest.includes("--force");
+      const result = buildTimeline(cwd, { force });
+      console.log(`Timeline: ${result.count} total, ${result.newCount} new → ${result.file}`);
+      return;
+    }
+    if (sub === "show") {
+      const limit = parseInt(rest[1], 10) || 50;
+      showTimeline(cwd, limit);
+      return;
+    }
+    if (sub === "prompt") {
+      const limit = parseInt(rest[1], 10) || 30;
+      const text = renderTimelineForPrompt(cwd, limit);
+      if (text) {
+        console.log(text);
+      } else {
+        console.log("No timeline data. Run `ufoo history build` first.");
+      }
+      return;
+    }
+    console.log("Usage: ufoo history [build|show|prompt] [limit]");
     return;
   }
 
