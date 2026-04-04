@@ -542,9 +542,10 @@ function formatEntry(entry) {
       ? `${entry.fromId}(${entry.from})` : entry.from;
     return `[ufoo]<from:${label}> ${entry.message}`;
   }
+  // manual: focus on who received it, not who sent (always user)
   const toLabel = entry.toId && entry.toId !== entry.to
-    ? `${entry.to}(${entry.toId})` : entry.to;
-  return `[manual]<user → ${toLabel}> ${entry.message}`;
+    ? `${entry.toId}(${entry.to})` : entry.to;
+  return `[manual]<to:${toLabel}> ${entry.message}`;
 }
 
 function renderTimelineForPrompt(projectRoot, limit = 30) {
@@ -555,7 +556,7 @@ function renderTimelineForPrompt(projectRoot, limit = 30) {
     const time = entry.ts ? entry.ts.slice(0, 16).replace("T", " ") : "?";
     const prefix = entry.source === "bus"
       ? `[ufoo]<from:${entry.from}>`
-      : `[manual]<user → ${entry.to}>`;
+      : `[manual]<to:${entry.to}>`;
     const msg = entry.message.length > 200 ? entry.message.slice(0, 200) + "..." : entry.message;
     return `${time} ${prefix} ${msg}`;
   });
