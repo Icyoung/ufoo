@@ -44,15 +44,18 @@ const { createDaemonCoordinator } = require("./daemonCoordinator");
 const { IPC_REQUEST_TYPES } = require("../shared/eventContract");
 const { createTerminalAdapterRouter } = require("../terminal/adapterRouter");
 const { createDaemonTransport } = require("./daemonTransport");
-const { listProjectRuntimes, resolveRuntimeDir } = require("../projects/registry");
-const { canonicalProjectRoot, buildProjectId } = require("../projects/projectId");
-const { loadTemplateRegistry } = require("../group/templates");
 const {
+  listProjectRuntimes,
+  resolveRuntimeDir,
+  canonicalProjectRoot,
+  buildProjectId,
   sortProjectRuntimes,
   parseTimestampMs,
   filterVisibleProjectRuntimes,
-} = require("./projectRuntimes");
-const { isGlobalControllerProjectRoot, resolveGlobalControllerProjectRoot } = require("../globalMode");
+  isGlobalControllerProjectRoot,
+  resolveGlobalControllerProjectRoot,
+} = require("../projects");
+const { loadTemplateRegistry } = require("../group/templates");
 const {
   DEFAULT_TRANSIENT_AGENT_STATE_TTL_MS,
   setTransientAgentState: setTransientAgentStateValue,

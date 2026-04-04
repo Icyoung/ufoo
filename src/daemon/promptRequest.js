@@ -5,7 +5,7 @@ const {
   listControllerInboxEntries,
   consumeControllerInboxEntries,
 } = require("../report/store");
-const { isGlobalControllerProjectRoot } = require("../globalMode");
+const { isGlobalControllerProjectRoot } = require("../projects");
 
 function normalizeProjectRoute(route) {
   if (!route || typeof route !== "object") return null;

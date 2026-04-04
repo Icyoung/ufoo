@@ -11,8 +11,7 @@ const {
 } = require("../code/nativeRunner");
 const { DEFAULT_ASSISTANT_TIMEOUT_MS } = require("../assistant/constants");
 const { normalizeAgentTypeAlias } = require("../bus/utils");
-const { listProjectRuntimes } = require("../projects/registry");
-const { isGlobalControllerProjectRoot } = require("../globalMode");
+const { listProjectRuntimes, isGlobalControllerProjectRoot } = require("../projects");
 
 function loadSessionState(projectRoot) {
   const dir = getUfooPaths(projectRoot).agentDir;

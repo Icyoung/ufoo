@@ -12,7 +12,7 @@ const { generateInstanceId, subscriberToSafeName } = require("../bus/utils");
 const { createDaemonIpcServer } = require("./ipcServer");
 const { IPC_REQUEST_TYPES, IPC_RESPONSE_TYPES, BUS_STATUS_PHASES } = require("../shared/eventContract");
 const { getUfooPaths } = require("../ufoo/paths");
-const { upsertProjectRuntime, markProjectStopped } = require("../projects/registry");
+const { upsertProjectRuntime, markProjectStopped } = require("../projects");
 const { scheduleProviderSessionProbe, resolveSessionFromFile, persistProviderSession, loadProviderSessionCache } = require("./providerSessions");
 const { createTerminalAdapterRouter } = require("../terminal/adapterRouter");
 const { createDaemonCronController } = require("./cronOps");
@@ -22,7 +22,7 @@ const { runAssistantTask } = require("../assistant/bridge");
 const { runPromptWithAssistant } = require("./promptLoop");
 const { handlePromptRequest } = require("./promptRequest");
 const { recordAgentReport } = require("./reporting");
-const { isGlobalControllerProjectRoot } = require("../globalMode");
+const { isGlobalControllerProjectRoot } = require("../projects");
 const {
   assignSoloRoleToExistingAgent,
   resolveSoloPromptProfile,

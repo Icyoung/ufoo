@@ -6,7 +6,7 @@ const { runGroupCoreCommand } = require("../cli/groupCoreCommands");
 const { loadConfig: loadProjectConfig, saveConfig: saveProjectConfig, loadGlobalUcodeConfig, saveGlobalUcodeConfig } = require("../config");
 const { resolveTransport } = require("../code/nativeRunner");
 const { parseIntervalMs, formatIntervalMs } = require("./cronScheduler");
-const { isGlobalControllerProjectRoot, resolveGlobalControllerUfooDir } = require("../globalMode");
+const { isGlobalControllerProjectRoot, resolveGlobalControllerUfooDir } = require("../projects");
 const { loadPromptProfileRegistry } = require("../group/promptProfiles");
 const { resolveSoloAgentType } = require("../solo/commands");
 
