@@ -3,7 +3,7 @@ const os = require("os");
 const path = require("path");
 const { IPC_RESPONSE_TYPES } = require("../../../src/shared/eventContract");
 const { handlePromptRequest } = require("../../../src/daemon/promptRequest");
-jest.mock("../../../src/globalMode", () => ({
+jest.mock("../../../src/projects", () => ({
   isGlobalControllerProjectRoot: jest.fn(() => false),
 }));
 const {
@@ -11,7 +11,7 @@ const {
   appendControllerInboxEntry,
   listControllerInboxEntries,
 } = require("../../../src/report/store");
-const { isGlobalControllerProjectRoot } = require("../../../src/globalMode");
+const { isGlobalControllerProjectRoot } = require("../../../src/projects");
 
 function parseWritePayload(writeCallArg) {
   const line = String(writeCallArg || "").trim();

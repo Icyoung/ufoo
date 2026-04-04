@@ -5,7 +5,7 @@ const { runDaemonCli } = require("../src/daemon/run");
 const { runChat } = require("../src/chat");
 const { runInternalRunner } = require("../src/agent/internalRunner");
 const { runPtyRunner } = require("../src/agent/ptyRunner");
-const { resolveGlobalControllerProjectRoot } = require("../src/globalMode");
+const { resolveGlobalControllerProjectRoot } = require("../src/projects");
 
 const rawArgv = process.argv.slice(2);
 

@@ -5,7 +5,7 @@ const {
   resolveGlobalControllerProjectRoot,
   resolveGlobalControllerUfooDir,
   isGlobalControllerProjectRoot,
-} = require("../../src/globalMode");
+} = require("../../src/projects");
 
 describe("globalMode helpers", () => {
   test("resolveGlobalControllerProjectRoot anchors global chat to the home directory", () => {
