@@ -953,7 +953,7 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
         normalizedAgent,
         nick,
         processManager,
-        [],
+        extraArgs,
         extraEnvObject,
         hostContext
       );
