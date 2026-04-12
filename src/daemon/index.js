@@ -1342,8 +1342,11 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
             : null,
       };
       let soloLaunchBootstrap = null;
-      if (requestedProfile && normalizedAgent === "ufoo") {
-        const soloNickname = explicitNickname || "ucode";
+      if (requestedProfile && (normalizedAgent === "ufoo" || normalizedAgent === "claude" || normalizedAgent === "codex")) {
+        const agentTypeMap = { ufoo: "ufoo-code", claude: "claude-code", codex: "codex" };
+        const defaultNickMap = { ufoo: "ucode", claude: "claude", codex: "codex" };
+        const agentTypeForBootstrap = agentTypeMap[normalizedAgent];
+        const soloNickname = explicitNickname || defaultNickMap[normalizedAgent];
         const profileResult = resolveSoloPromptProfile(projectRoot, requestedProfile);
         if (!profileResult.ok) {
           socket.write(
@@ -1357,17 +1360,36 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
         }
         const built = buildSoloBootstrap({
           nickname: soloNickname,
-          agentType: "ufoo-code",
+          agentType: agentTypeForBootstrap,
           requestedProfile: profileResult.requested_profile,
           profile: profileResult.profile,
         });
         if (built.required) {
           try {
-            const prepared = prepareSoloUcodeBootstrap(projectRoot, soloNickname, built.promptText);
-            op.extra_env = {
-              ...(op.extra_env && typeof op.extra_env === "object" ? op.extra_env : {}),
-              UFOO_UCODE_BOOTSTRAP_FILE: prepared.file,
-            };
+            if (normalizedAgent === "ufoo") {
+              // ucode: bootstrap via env var pointing to file
+              const prepared = prepareSoloUcodeBootstrap(projectRoot, soloNickname, built.promptText);
+              op.extra_env = {
+                ...(op.extra_env && typeof op.extra_env === "object" ? op.extra_env : {}),
+                UFOO_UCODE_BOOTSTRAP_FILE: prepared.file,
+              };
+            } else if (normalizedAgent === "claude") {
+              // claude-code: bootstrap via --append-system-prompt file
+              const bootstrapDir = path.join(getUfooPaths(projectRoot).agentDir, "claude-code", "solo");
+              fs.mkdirSync(bootstrapDir, { recursive: true });
+              const bootstrapFile = path.join(bootstrapDir, `${soloNickname}.bootstrap.md`);
+              fs.writeFileSync(bootstrapFile, built.promptText, "utf8");
+              op.extra_args = [
+                ...(Array.isArray(op.extra_args) ? op.extra_args : []),
+                "--append-system-prompt", bootstrapFile,
+              ];
+            } else if (normalizedAgent === "codex") {
+              // codex: bootstrap via initial prompt argument
+              op.extra_args = [
+                ...(Array.isArray(op.extra_args) ? op.extra_args : []),
+                built.promptText,
+              ];
+            }
             soloLaunchBootstrap = {
               requested_profile: profileResult.requested_profile,
               resolved_profile: profileResult.profile.id,
@@ -1377,7 +1399,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
             socket.write(
               `${JSON.stringify({
                 type: IPC_RESPONSE_TYPES.ERROR,
-                error: err.message || "failed to prepare ucode bootstrap",
+                error: err.message || "failed to prepare solo bootstrap",
               })}
 `,
             );
