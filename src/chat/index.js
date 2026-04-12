@@ -56,6 +56,7 @@ const {
   resolveGlobalControllerProjectRoot,
 } = require("../projects");
 const { loadTemplateRegistry } = require("../group/templates");
+const { loadPromptProfileRegistry } = require("../group/promptProfiles");
 const {
   DEFAULT_TRANSIENT_AGENT_STATE_TTL_MS,
   setTransientAgentState: setTransientAgentStateValue,
