@@ -29,13 +29,15 @@ async function main() {
   }
   if (cmd === "agent-runner") {
     const agentType = argv[1] || "codex";
-    await runInternalRunner({ projectRoot: process.cwd(), agentType });
+    const extraArgs = argv.slice(2);
+    await runInternalRunner({ projectRoot: process.cwd(), agentType, extraArgs });
     return;
   }
   if (cmd === "agent-pty-runner") {
     const agentType = argv[1] || "codex";
+    const extraArgs = argv.slice(2);
     try {
-      await runPtyRunner({ projectRoot: process.cwd(), agentType });
+      await runPtyRunner({ projectRoot: process.cwd(), agentType, extraArgs });
     } catch (err) {
       const normalized = String(agentType || "").trim().toLowerCase();
       if (normalized === "ufoo" || normalized === "ucode" || normalized === "ufoo-code") {
@@ -44,7 +46,7 @@ async function main() {
       // Fallback to headless runner if PTY is unavailable
       // eslint-disable-next-line no-console
       console.error(`[pty-runner] ${err.message || err}. Falling back to headless internal runner.`);
-      await runInternalRunner({ projectRoot: process.cwd(), agentType });
+      await runInternalRunner({ projectRoot: process.cwd(), agentType, extraArgs });
     }
     return;
   }

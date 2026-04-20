@@ -132,6 +132,37 @@ describe("agent cliRunner streaming", () => {
     ]);
   });
 
+  test("runCliAgent appends extra args before prompt", async () => {
+    spawn.mockImplementation(() => makeChildProcess({
+      stdoutChunks: ["{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"ok\"}}\n"],
+      code: 0,
+    }));
+
+    const result = await runCliAgent({
+      provider: "codex-cli",
+      prompt: "say hi",
+      cwd: process.cwd(),
+      extraArgs: ["--model", "gpt-5.4-mini", "--approval-mode", "full-auto"],
+    });
+
+    expect(result.ok).toBe(true);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(spawn.mock.calls[0][1]).toEqual([
+      "exec",
+      "--json",
+      "--color",
+      "never",
+      "--sandbox",
+      "read-only",
+      "--skip-git-repo-check",
+      "--model",
+      "gpt-5.4-mini",
+      "--approval-mode",
+      "full-auto",
+      "say hi",
+    ]);
+  });
+
   test("runCliAgent retries claude without unsupported no-session-persistence flag", async () => {
     spawn
       .mockImplementationOnce(() => makeChildProcess({

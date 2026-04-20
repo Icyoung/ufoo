@@ -192,6 +192,32 @@ describe("agent internalRunner stream forwarding", () => {
     expect(state.cliSessionId).toBe("sess-42");
     expect(state.needsSave).toBe(true);
   });
+
+  test("passes extra args through to runCliAgent", async () => {
+    runCliAgent.mockResolvedValueOnce({ ok: true, output: "done" });
+    normalizeCliOutput.mockReturnValue("done");
+
+    const busSender = { enqueue: jest.fn(), flush: jest.fn(async () => {}) };
+    const state = { cliSessionId: null, needsSave: false };
+    const evt = { publisher: "chat:8", data: { message: "task" } };
+
+    await handleEvent(
+      process.cwd(),
+      "codex",
+      "codex-cli",
+      "",
+      "codex:c8",
+      "codex-8",
+      evt,
+      state,
+      busSender,
+      ["--model", "gpt-5.4-mini", "--approval-mode", "full-auto"]
+    );
+
+    expect(runCliAgent).toHaveBeenCalledWith(expect.objectContaining({
+      extraArgs: ["--model", "gpt-5.4-mini", "--approval-mode", "full-auto"],
+    }));
+  });
 });
 
 describe("createBusSender", () => {

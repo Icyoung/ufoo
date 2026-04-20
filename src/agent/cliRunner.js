@@ -484,6 +484,10 @@ const DEFAULT_CODEX = {
 
 function buildArgs(backend, prompt, opts) {
   const args = [...(backend.args || [])];
+  const extraArgs = Array.isArray(opts.extraArgs) ? opts.extraArgs.filter(Boolean) : [];
+  if (extraArgs.length > 0) {
+    args.push(...extraArgs);
+  }
   if (opts.model && backend.modelArg) {
     args.push(backend.modelArg, opts.model);
   }
@@ -588,6 +592,7 @@ async function runCliAgent(params) {
     sessionId,
     systemPrompt: params.systemPrompt,
     disableSession: params.disableSession,
+    extraArgs: params.extraArgs,
   });
   if (backend === DEFAULT_CODEX && params.sandbox) {
     applySandboxOverride(args, params.sandbox);
@@ -642,6 +647,7 @@ async function runCliAgent(params) {
             sessionId,
             systemPrompt: params.systemPrompt,
             disableSession: params.disableSession,
+            extraArgs: params.extraArgs,
           },
         );
         retryArgs = retry.args;

@@ -96,7 +96,18 @@ function drainQueue(queueFile) {
   return content.split(/\r?\n/).filter(Boolean);
 }
 
-async function handleEvent(projectRoot, agentType, provider, model, subscriber, nickname, evt, cliSessionState, busSender) {
+async function handleEvent(
+  projectRoot,
+  agentType,
+  provider,
+  model,
+  subscriber,
+  nickname,
+  evt,
+  cliSessionState,
+  busSender,
+  extraArgs = []
+) {
   if (!evt || !evt.data || !evt.data.message) return;
   const prompt = evt.data.message;
   const publisher = evt.publisher || "unknown";
@@ -118,6 +129,7 @@ async function handleEvent(projectRoot, agentType, provider, model, subscriber, 
     sessionId: cliSessionState.cliSessionId,
     sandbox,
     cwd: projectRoot,
+    extraArgs,
     onStreamDelta: emitStreamDelta,
   });
 
@@ -136,6 +148,7 @@ async function handleEvent(projectRoot, agentType, provider, model, subscriber, 
         sessionId: null, // Let runCliAgent generate new session
         sandbox,
         cwd: projectRoot,
+        extraArgs,
         onStreamDelta: emitStreamDelta,
       });
     }
@@ -175,7 +188,7 @@ async function handleEvent(projectRoot, agentType, provider, model, subscriber, 
   await busSender.flush();
 }
 
-async function runInternalRunner({ projectRoot, agentType = "codex" }) {
+async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs = [] }) {
   // Internal runner 必须由 daemon 启动，UFOO_SUBSCRIBER_ID 应该已经设置
   const { subscriber, agentType: parsedAgentType, sessionId } = parseSubscriberId();
   const nickname = process.env.UFOO_NICKNAME || "";
@@ -280,7 +293,8 @@ async function runInternalRunner({ projectRoot, agentType = "codex" }) {
               nickname,
               evt,
               cliSessionState,
-              busSender
+              busSender,
+              extraArgs
             );
           }
 

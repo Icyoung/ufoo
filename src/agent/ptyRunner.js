@@ -113,24 +113,25 @@ function buildPrompt(text, marker) {
   return `${text}\n\n请在完成后输出以下标记（单独一行）：\n${marker}\n`;
 }
 
-function resolveCommand(agentType) {
+function resolveCommand(agentType, extraArgs = []) {
   const normalizedAgent = String(agentType || "").trim().toLowerCase();
+  const extra = Array.isArray(extraArgs) ? extraArgs : [];
   const rawCmd = String(process.env.UFOO_PTY_CMD || "").trim();
   if (rawCmd) {
     const rawArgs = String(process.env.UFOO_PTY_ARGS || "").trim();
     const args = rawArgs ? rawArgs.split(/\s+/).filter(Boolean) : [];
-    return { command: rawCmd, args };
+    return { command: rawCmd, args: [...args, ...extra] };
   }
   if (normalizedAgent === "claude" || normalizedAgent === "claude-code") {
-    return { command: "claude", args: [] };
+    return { command: "claude", args: [...extra] };
   }
   if (normalizedAgent === "ufoo" || normalizedAgent === "ucode" || normalizedAgent === "ufoo-code") {
-    return { command: "ucode", args: [] };
+    return { command: "ucode", args: [...extra] };
   }
-  return { command: "codex", args: ["--no-alt-screen", "--sandbox", "workspace-write"] };
+  return { command: "codex", args: ["--no-alt-screen", "--sandbox", "workspace-write", ...extra] };
 }
 
-async function runPtyRunner({ projectRoot, agentType = "codex" }) {
+async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }) {
   let pty;
   try {
     // eslint-disable-next-line global-require
@@ -156,7 +157,7 @@ async function runPtyRunner({ projectRoot, agentType = "codex" }) {
   const logFile = path.join(runDir, "pty-runner.log");
   const injectSockPath = path.join(queueDir, "inject.sock");
 
-  const { command, args } = resolveCommand(agentType);
+  const { command, args } = resolveCommand(agentType, extraArgs);
   const env = {
     ...process.env,
     UFOO_LAUNCH_MODE: "internal-pty",
