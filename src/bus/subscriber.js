@@ -98,6 +98,30 @@ class SubscriberManager {
     this.queueManager = queueManager;
   }
 
+  cleanupSubscriberArtifacts(subscriber) {
+    if (!subscriber || !this.queueManager) return;
+    try {
+      const queueDir = this.queueManager.getQueueDir
+        ? this.queueManager.getQueueDir(subscriber)
+        : "";
+      if (queueDir) {
+        fs.rmSync(queueDir, { recursive: true, force: true });
+      }
+    } catch {
+      // ignore cleanup errors
+    }
+    try {
+      const offsetPath = this.queueManager.getOffsetPath
+        ? this.queueManager.getOffsetPath(subscriber)
+        : "";
+      if (offsetPath) {
+        fs.rmSync(offsetPath, { force: true });
+      }
+    } catch {
+      // ignore cleanup errors
+    }
+  }
+
   async cleanupDuplicateTty(currentSubscriber, ttyPath) {
     if (!ttyPath) return null;
     if (!this.busData.agents) return null;
@@ -301,6 +325,7 @@ class SubscriberManager {
     this.busData.agents[subscriber].status = "inactive";
     this.busData.agents[subscriber].activity_state = "";
     this.busData.agents[subscriber].last_seen = getTimestamp();
+    this.cleanupSubscriberArtifacts(subscriber);
 
     return true;
   }
@@ -364,6 +389,7 @@ class SubscriberManager {
         meta.status = "inactive";
         meta.activity_state = "";
         meta.last_seen = getTimestamp();
+        this.cleanupSubscriberArtifacts(id);
       }
     }
   }

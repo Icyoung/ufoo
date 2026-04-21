@@ -57,7 +57,7 @@ describe("BusStore load recovery", () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  test("recovers missing entries from queue folders", () => {
+  test("does not recover ordinary agent entries from queue folders", () => {
     const codexQueue = path.join(paths.busQueuesDir, "codex_abc123");
     fs.mkdirSync(codexQueue, { recursive: true });
     fs.writeFileSync(path.join(codexQueue, "tty"), "/dev/ttys001");
@@ -68,18 +68,8 @@ describe("BusStore load recovery", () => {
     const store = new BusStore(projectRoot);
     const data = store.load();
 
-    expect(data.agents["codex:abc123"]).toMatchObject({
-      agent_type: "codex",
-      nickname: "codex-1",
-      status: "active",
-      tty: "/dev/ttys001",
-      tty_shell_pid: 1234,
-    });
-    expect(data.agents["claude-code:def456"]).toMatchObject({
-      agent_type: "claude-code",
-      nickname: "",
-      status: "inactive",
-    });
+    expect(data.agents["codex:abc123"]).toBeUndefined();
+    expect(data.agents["claude-code:def456"]).toBeUndefined();
   });
 
   test("recovers reserved ufoo-agent entry and deactivates stale aliases", () => {

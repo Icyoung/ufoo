@@ -15,19 +15,6 @@ function readQueueTty(queueDir) {
   }
 }
 
-function nicknamePrefixForType(agentType = "") {
-  return agentType === "claude-code" ? "claude"
-       : agentType === "ufoo-code" ? "ucode"
-       : String(agentType || "agent");
-}
-
-function isRecoverableSessionId(sessionId = "") {
-  const text = String(sessionId || "").trim();
-  if (!text) return false;
-  if (text.includes(":") || text.includes("_")) return false;
-  return true;
-}
-
 function buildUsedNicknameSet(agents = {}) {
   const set = new Set();
   for (const meta of Object.values(agents || {})) {
@@ -36,15 +23,6 @@ function buildUsedNicknameSet(agents = {}) {
     if (nick) set.add(nick);
   }
   return set;
-}
-
-function allocateRecoveredNickname(agentType, used) {
-  const prefix = nicknamePrefixForType(agentType);
-  let idx = 1;
-  while (used.has(`${prefix}-${idx}`)) idx += 1;
-  const nick = `${prefix}-${idx}`;
-  used.add(nick);
-  return nick;
 }
 
 function recoverQueueEntry(data, subscriber, queueDir, usedNicknames, now) {
@@ -67,31 +45,7 @@ function recoverQueueEntry(data, subscriber, queueDir, usedNicknames, now) {
     };
     return true;
   }
-
-  const parts = subscriber.split(":");
-  if (parts.length !== 2) return false;
-  const [agentType, sessionId] = parts;
-  if (!agentType || !sessionId) return false;
-  if (!isRecoverableSessionId(sessionId)) return false;
-
-  const tty = readQueueTty(queueDir);
-  const ttyInfo = tty ? getTtyProcessInfo(tty) : null;
-  const activeByTty = Boolean(ttyInfo && ttyInfo.alive && ttyInfo.hasAgent);
-  const nickname = activeByTty ? allocateRecoveredNickname(agentType, usedNicknames) : "";
-
-  data.agents[subscriber] = {
-    agent_type: agentType,
-    nickname,
-    status: activeByTty ? "active" : "inactive",
-    joined_at: now,
-    last_seen: now,
-    pid: 0,
-    tty,
-    tty_shell_pid: ttyInfo && ttyInfo.shellPid ? ttyInfo.shellPid : 0,
-    tmux_pane: "",
-    launch_mode: "",
-  };
-  return true;
+  return false;
 }
 
 function reconcileReservedControllerAliases(data, now) {

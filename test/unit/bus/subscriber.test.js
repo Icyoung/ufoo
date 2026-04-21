@@ -13,6 +13,8 @@ describe('SubscriberManager', () => {
     mockQueueManager = {
       ensureQueueDir: jest.fn(),
       saveTty: jest.fn(),
+      getQueueDir: jest.fn((subscriber) => `/tmp/${subscriber}`),
+      getOffsetPath: jest.fn((subscriber) => `/tmp/${subscriber}.offset`),
     };
 
     manager = new SubscriberManager(busData, mockQueueManager);
@@ -151,6 +153,8 @@ describe('SubscriberManager', () => {
 
       expect(result).toBe(true);
       expect(busData.agents['claude-code:abc123'].status).toBe('inactive');
+      expect(mockQueueManager.getQueueDir).toHaveBeenCalledWith('claude-code:abc123');
+      expect(mockQueueManager.getOffsetPath).toHaveBeenCalledWith('claude-code:abc123');
     });
 
     it('should update last_seen on leave', async () => {
@@ -375,6 +379,16 @@ describe('SubscriberManager', () => {
       manager.cleanupInactive();
 
       expect(busData.agents['claude-code:abc1'].last_seen).not.toBe(lastSeenBefore);
+    });
+
+    it('should cleanup queue artifacts when marking inactive', async () => {
+      await manager.join('abc1', 'claude-code');
+      busData.agents['claude-code:abc1'].pid = 999999;
+
+      manager.cleanupInactive();
+
+      expect(mockQueueManager.getQueueDir).toHaveBeenCalledWith('claude-code:abc1');
+      expect(mockQueueManager.getOffsetPath).toHaveBeenCalledWith('claude-code:abc1');
     });
   });
 
