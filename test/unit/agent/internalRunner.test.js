@@ -10,9 +10,37 @@ jest.mock("../../../src/agent/normalizeOutput", () => ({
   normalizeCliOutput: jest.fn(),
 }));
 
+jest.mock("../../../src/agent/codexThreadProvider", () => ({
+  createCodexThreadProvider: jest.fn(),
+  defaultCodexTransportStreamFactory: jest.fn(),
+}));
+
+jest.mock("../../../src/agent/claudeThreadProvider", () => ({
+  createClaudeThreadProvider: jest.fn(),
+  defaultClaudeTransportStreamFactory: jest.fn(),
+}));
+
+jest.mock("../../../src/agent/credentials/claude", () => ({
+  resolveClaudeUpstreamCredentials: jest.fn(),
+}));
+
 const { runCliAgent } = require("../../../src/agent/cliRunner");
 const { normalizeCliOutput } = require("../../../src/agent/normalizeOutput");
-const { handleEvent, createBusSender } = require("../../../src/agent/internalRunner");
+const { createCodexThreadProvider } = require("../../../src/agent/codexThreadProvider");
+const { createClaudeThreadProvider } = require("../../../src/agent/claudeThreadProvider");
+const { resolveClaudeUpstreamCredentials } = require("../../../src/agent/credentials/claude");
+const {
+  handleEvent,
+  createBusSender,
+  createThreadRuntime,
+  getCodexThreadMode,
+  getWorkerThreadToolMode,
+  buildWorkerThreadToolRuntime,
+  normalizeWorkerThreadToolMode,
+  getClaudeThreadMode,
+  buildClaudeAuthProvider,
+  shouldFallbackToLegacyThreadProvider,
+} = require("../../../src/agent/internalRunner");
 
 describe("agent internalRunner stream forwarding", () => {
   beforeEach(() => {
@@ -218,6 +246,134 @@ describe("agent internalRunner stream forwarding", () => {
       extraArgs: ["--model", "gpt-5.4-mini", "--approval-mode", "full-auto"],
     }));
   });
+
+  test("uses codex thread runtime when enabled", async () => {
+    const busSender = {
+      enqueue: jest.fn(),
+      flush: jest.fn(async () => {}),
+    };
+    const state = { cliSessionId: null, needsSave: false };
+    const evt = { publisher: "chat:9", data: { message: "task" } };
+    const threadRuntime = {
+      enabled: true,
+      thread: {
+        runStreamed: jest.fn(async function* () {
+          yield { type: "text_delta", delta: "hello " };
+          yield { type: "text_delta", delta: "sdk" };
+        }),
+      },
+      rebuildThread: jest.fn(async () => {}),
+    };
+
+    await handleEvent(
+      process.cwd(),
+      "codex",
+      "codex-cli",
+      "",
+      "codex:sdk",
+      "codex-sdk",
+      evt,
+      state,
+      busSender,
+      [],
+      threadRuntime
+    );
+
+    expect(runCliAgent).not.toHaveBeenCalled();
+    expect(busSender.enqueue).toHaveBeenCalledWith("chat:9", JSON.stringify({ stream: true, delta: "hello " }));
+    expect(busSender.enqueue).toHaveBeenCalledWith("chat:9", JSON.stringify({ stream: true, delta: "sdk" }));
+    expect(busSender.enqueue).toHaveBeenCalledWith(
+      "chat:9",
+      JSON.stringify({ stream: true, done: true, reason: "complete" })
+    );
+  });
+
+  test("rebuilds codex thread after threaded failure", async () => {
+    const busSender = {
+      enqueue: jest.fn(),
+      flush: jest.fn(async () => {}),
+    };
+    const state = { cliSessionId: null, needsSave: false };
+    const evt = { publisher: "chat:10", data: { message: "task" } };
+    const threadRuntime = {
+      enabled: true,
+      thread: {
+        runStreamed: jest.fn(async function* () {
+          yield { type: "turn_failed", error: "sdk boom" };
+        }),
+      },
+      rebuildThread: jest.fn(async () => {}),
+    };
+
+    await handleEvent(
+      process.cwd(),
+      "codex",
+      "codex-cli",
+      "",
+      "codex:sdk2",
+      "codex-sdk-2",
+      evt,
+      state,
+      busSender,
+      [],
+      threadRuntime
+    );
+
+    expect(threadRuntime.rebuildThread).toHaveBeenCalled();
+    expect(busSender.enqueue).toHaveBeenCalledWith(
+      "chat:10",
+      JSON.stringify({ stream: true, delta: "[internal:codex] error: sdk boom" })
+    );
+    expect(busSender.enqueue).toHaveBeenCalledWith(
+      "chat:10",
+      JSON.stringify({ stream: true, done: true, reason: "error" })
+    );
+  });
+
+  test("falls back to legacy Claude CLI when threaded auth is unavailable", async () => {
+    runCliAgent.mockResolvedValueOnce({ ok: true, output: [{ item: { type: "agent_message", text: "legacy ok" } }] });
+    normalizeCliOutput.mockReturnValueOnce("legacy ok");
+
+    const busSender = {
+      enqueue: jest.fn(),
+      flush: jest.fn(async () => {}),
+    };
+    const state = { cliSessionId: null, needsSave: false };
+    const evt = { publisher: "chat:11", data: { message: "task" } };
+    const threadRuntime = {
+      enabled: true,
+      thread: {
+        runStreamed: jest.fn(async function* () {
+          const error = new Error("oauth unavailable");
+          error.code = "CLAUDE_AUTH_UNAVAILABLE";
+          throw error;
+        }),
+      },
+      rebuildThread: jest.fn(async () => {}),
+    };
+
+    await handleEvent(
+      process.cwd(),
+      "claude-code",
+      "claude-cli",
+      "",
+      "claude:fallback",
+      "claude-fallback",
+      evt,
+      state,
+      busSender,
+      ["--dangerously-skip-permissions"],
+      threadRuntime
+    );
+
+    expect(threadRuntime.rebuildThread).not.toHaveBeenCalled();
+    expect(runCliAgent).toHaveBeenCalledWith(expect.objectContaining({
+      provider: "claude-cli",
+      prompt: "task",
+      extraArgs: ["--dangerously-skip-permissions"],
+    }));
+    expect(busSender.enqueue).toHaveBeenCalledWith("chat:11", "legacy ok");
+  });
 });
 
 describe("createBusSender", () => {
@@ -235,5 +391,371 @@ describe("createBusSender", () => {
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("internalRunner codex thread mode", () => {
+  const originalEnv = process.env.UFOO_CODEX_INTERNAL_THREAD_MODE;
+  const originalToolEnv = process.env.UFOO_CODEX_INTERNAL_THREAD_TOOLS;
+  const originalClaudeEnv = process.env.UFOO_CLAUDE_INTERNAL_THREAD_MODE;
+
+  afterEach(() => {
+    if (typeof originalEnv === "undefined") {
+      delete process.env.UFOO_CODEX_INTERNAL_THREAD_MODE;
+    } else {
+      process.env.UFOO_CODEX_INTERNAL_THREAD_MODE = originalEnv;
+    }
+    if (typeof originalToolEnv === "undefined") {
+      delete process.env.UFOO_CODEX_INTERNAL_THREAD_TOOLS;
+    } else {
+      process.env.UFOO_CODEX_INTERNAL_THREAD_TOOLS = originalToolEnv;
+    }
+    if (typeof originalClaudeEnv === "undefined") {
+      delete process.env.UFOO_CLAUDE_INTERNAL_THREAD_MODE;
+    } else {
+      process.env.UFOO_CLAUDE_INTERNAL_THREAD_MODE = originalClaudeEnv;
+    }
+    jest.clearAllMocks();
+  });
+
+  test("defaults to legacy mode", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-config-"));
+    expect(getCodexThreadMode(projectRoot)).toBe("legacy");
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  test("env override enables sdk mode", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-config-env-"));
+    process.env.UFOO_CODEX_INTERNAL_THREAD_MODE = "sdk";
+    expect(getCodexThreadMode(projectRoot)).toBe("sdk");
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  test("worker tool mode stays disabled by default and normalizes explicit enablement", () => {
+    expect(getWorkerThreadToolMode()).toBe("disabled");
+    expect(normalizeWorkerThreadToolMode("worker-tier01")).toBe("worker-tier01");
+    expect(normalizeWorkerThreadToolMode("enabled")).toBe("worker-tier01");
+    expect(normalizeWorkerThreadToolMode("legacy")).toBe("disabled");
+  });
+
+  test("createThreadRuntime stays disabled for legacy mode", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-legacy-"));
+    const runtime = createThreadRuntime({
+      projectRoot,
+      provider: "codex-cli",
+      model: "gpt-5-codex",
+      extraArgs: [],
+      subscriber: "codex:legacy",
+    });
+
+    expect(runtime.enabled).toBe(false);
+    expect(createCodexThreadProvider).not.toHaveBeenCalled();
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  test("createThreadRuntime builds codex thread provider in sdk mode", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-sdk-"));
+    process.env.UFOO_CODEX_INTERNAL_THREAD_MODE = "sdk";
+
+    createCodexThreadProvider.mockReturnValue({
+      startThread: jest.fn(() => ({
+        runStreamed: async function* () {},
+        close: jest.fn(async () => {}),
+      })),
+    });
+
+    const runtime = createThreadRuntime({
+      projectRoot,
+      provider: "codex-cli",
+      model: "gpt-5-codex",
+      extraArgs: ["--model", "gpt-5-codex"],
+      subscriber: "codex:sdk",
+    });
+
+    expect(runtime.enabled).toBe(true);
+    expect(createCodexThreadProvider).toHaveBeenCalledWith({
+      model: "gpt-5-codex",
+      cwd: projectRoot,
+      extraArgs: ["--model", "gpt-5-codex"],
+      tools: [],
+      streamFactory: expect.any(Function),
+    });
+
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  test("createThreadRuntime falls back to disabled when Codex seam creation throws", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-sdk-fallback-"));
+    process.env.UFOO_CODEX_INTERNAL_THREAD_MODE = "sdk";
+    createCodexThreadProvider.mockImplementation(() => {
+      throw new Error("sdk missing");
+    });
+
+    const runtime = createThreadRuntime({
+      projectRoot,
+      provider: "codex-cli",
+      model: "gpt-5-codex",
+      extraArgs: [],
+      subscriber: "codex:sdk-fallback",
+    });
+
+    expect(runtime.enabled).toBe(false);
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  test("buildWorkerThreadToolRuntime exposes only worker tier tools", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-tools-"));
+    process.env.UFOO_CODEX_INTERNAL_THREAD_TOOLS = "worker-tier01";
+
+    const runtime = buildWorkerThreadToolRuntime({
+      projectRoot,
+      subscriber: "codex:worker",
+    });
+
+    expect(runtime.enabled).toBe(true);
+    expect(runtime.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+      "read_bus_summary",
+      "read_prompt_history",
+      "read_open_decisions",
+      "list_agents",
+      "read_project_registry",
+      "route_agent",
+      "dispatch_message",
+      "ack_bus",
+    ]));
+    expect(runtime.tools.some((tool) => tool.name === "launch_agent")).toBe(false);
+
+    const unsupported = await runtime.executeToolCall({
+      name: "launch_agent",
+      arguments: { agent: "codex" },
+    });
+    expect(unsupported).toEqual({
+      ok: false,
+      error: {
+        code: "unsupported_tool",
+        message: "worker tool is unavailable: launch_agent",
+      },
+    });
+
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  test("worker tool runtime fires observer hook with redacted pre-call and post-call payloads (§10.7 slice 1)", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-redact-"));
+    process.env.UFOO_CODEX_INTERNAL_THREAD_TOOLS = "worker-tier01";
+
+    const events = [];
+    const runtime = buildWorkerThreadToolRuntime({
+      projectRoot,
+      subscriber: "codex:worker-redact",
+      observer: {
+        onToolCall: (event) => events.push(event),
+      },
+    });
+
+    await runtime.executeToolCall({
+      name: "launch_agent",
+      arguments: {
+        agent: "codex",
+        headers: { Authorization: "Bearer leak-me" },
+        accessToken: "also-leak",
+      },
+      tool_call_id: "call-redact-1",
+    });
+
+    expect(events.length).toBeGreaterThanOrEqual(2);
+    const preCall = events.find((e) => e.phase === "pre_call");
+    expect(preCall.payload.name).toBe("launch_agent");
+    expect(preCall.payload.caller_tier).toBe("worker");
+    expect(preCall.payload.tool_call_id).toBe("call-redact-1");
+    expect(preCall.payload.args.headers.Authorization).toBe("[REDACTED]");
+    expect(preCall.payload.args.accessToken).toBe("[REDACTED]");
+    expect(preCall.payload.args.agent).toBe("codex");
+
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  test("worker thread tool runtime executes shared handlers with caller-owned context", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-handler-"));
+    process.env.UFOO_CODEX_INTERNAL_THREAD_TOOLS = "worker-tier01";
+    const EventBus = require("../../../src/bus");
+    const eventBus = new EventBus(projectRoot);
+    await eventBus.init();
+    const sender = await eventBus.join("sender", "codex", "sender");
+    const receiver = await eventBus.join("receiver", "claude-code", "receiver");
+
+    const runtime = buildWorkerThreadToolRuntime({
+      projectRoot,
+      subscriber: sender,
+    });
+
+    const result = await runtime.executeToolCall({
+      name: "dispatch_message",
+      arguments: {
+        target: receiver,
+        message: "worker hello",
+        source: sender,
+      },
+    });
+    expect(result).toEqual(expect.objectContaining({
+      ok: true,
+      target: receiver,
+      source: sender,
+      delivered: 1,
+    }));
+
+    const badAck = await runtime.executeToolCall({
+      name: "ack_bus",
+      arguments: { subscriber: receiver },
+    });
+    expect(badAck).toEqual({
+      ok: false,
+      error: {
+        code: "forbidden_ack",
+        message: "ack_bus can only acknowledge the caller subscriber queue",
+      },
+    });
+
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  test("createThreadRuntime injects worker tier tools only when the tool flag is enabled", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-sdk-tools-"));
+    process.env.UFOO_CODEX_INTERNAL_THREAD_MODE = "sdk";
+    process.env.UFOO_CODEX_INTERNAL_THREAD_TOOLS = "worker-tier01";
+
+    createCodexThreadProvider.mockReturnValue({
+      startThread: jest.fn(() => ({
+        runStreamed: async function* () {},
+        close: jest.fn(async () => {}),
+      })),
+    });
+
+    const runtime = createThreadRuntime({
+      projectRoot,
+      provider: "codex-cli",
+      model: "gpt-5-codex",
+      extraArgs: [],
+      subscriber: "codex:worker-tools",
+    });
+
+    expect(runtime.enabled).toBe(true);
+    expect(runtime.toolRuntime).toEqual(expect.objectContaining({
+      enabled: true,
+      mode: "worker-tier01",
+    }));
+    expect(createCodexThreadProvider).toHaveBeenCalledWith(expect.objectContaining({
+      tools: expect.arrayContaining([
+        expect.objectContaining({ name: "route_agent" }),
+        expect.objectContaining({ name: "dispatch_message" }),
+        expect.objectContaining({ name: "ack_bus" }),
+      ]),
+    }));
+    expect(createCodexThreadProvider.mock.calls[0][0].tools.some((tool) => tool.name === "launch_agent")).toBe(false);
+
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  test("claude thread mode defaults to legacy", () => {
+    delete process.env.UFOO_CLAUDE_INTERNAL_THREAD_MODE;
+    expect(getClaudeThreadMode()).toBe("legacy");
+  });
+
+  test("env override enables Claude API thread mode", () => {
+    process.env.UFOO_CLAUDE_INTERNAL_THREAD_MODE = "api";
+    expect(getClaudeThreadMode()).toBe("api");
+  });
+
+  test("buildClaudeAuthProvider uses oauth reader config seam", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-claude-auth-"));
+    resolveClaudeUpstreamCredentials.mockResolvedValue({
+      provider: "claude",
+      credentialKind: "oauth",
+      accessToken: "oauth-token",
+      tokenType: "Bearer",
+    });
+
+    const authProvider = buildClaudeAuthProvider(projectRoot);
+    await expect(authProvider()).resolves.toEqual({
+      headers: {
+        authorization: "Bearer oauth-token",
+      },
+    });
+    expect(resolveClaudeUpstreamCredentials).toHaveBeenCalledWith(expect.objectContaining({
+      profile: "",
+      tokenPath: "",
+      refreshWindowMs: 300000,
+    }));
+
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  test("createThreadRuntime stays disabled for Claude legacy mode", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-claude-legacy-"));
+    delete process.env.UFOO_CLAUDE_INTERNAL_THREAD_MODE;
+
+    const runtime = createThreadRuntime({
+      projectRoot,
+      provider: "claude-cli",
+      model: "claude-sonnet",
+      extraArgs: [],
+    });
+
+    expect(runtime.enabled).toBe(false);
+    expect(createClaudeThreadProvider).not.toHaveBeenCalled();
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  test("createThreadRuntime builds Claude thread provider in api mode", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-claude-api-"));
+    process.env.UFOO_CLAUDE_INTERNAL_THREAD_MODE = "api";
+
+    createClaudeThreadProvider.mockReturnValue({
+      startThread: jest.fn(() => ({
+        runStreamed: async function* () {},
+        close: jest.fn(async () => {}),
+      })),
+    });
+
+    const runtime = createThreadRuntime({
+      projectRoot,
+      provider: "claude-cli",
+      model: "claude-sonnet",
+      extraArgs: [],
+    });
+
+    expect(runtime.enabled).toBe(true);
+    expect(createClaudeThreadProvider).toHaveBeenCalledWith(expect.objectContaining({
+      model: "claude-sonnet",
+      authProvider: expect.any(Function),
+    }));
+
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  test("createThreadRuntime falls back to disabled when Claude seam creation throws", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-claude-fallback-"));
+    process.env.UFOO_CLAUDE_INTERNAL_THREAD_MODE = "api";
+    createClaudeThreadProvider.mockImplementation(() => {
+      throw new Error("sdk missing");
+    });
+
+    const runtime = createThreadRuntime({
+      projectRoot,
+      provider: "claude-cli",
+      model: "claude-sonnet",
+      extraArgs: [],
+    });
+
+    expect(runtime.enabled).toBe(false);
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  test("only Claude auth and sdk availability errors trigger legacy threaded fallback", () => {
+    expect(shouldFallbackToLegacyThreadProvider({ code: "CLAUDE_AUTH_UNAVAILABLE" }, "claude-cli")).toBe(true);
+    expect(shouldFallbackToLegacyThreadProvider({ code: "claude_oauth_schema_unsupported" }, "claude-cli")).toBe(true);
+    expect(shouldFallbackToLegacyThreadProvider({ code: "ANTHROPIC_SDK_UNAVAILABLE" }, "claude-cli")).toBe(true);
+    expect(shouldFallbackToLegacyThreadProvider({ code: "ECONNRESET" }, "claude-cli")).toBe(false);
+    expect(shouldFallbackToLegacyThreadProvider({ code: "CLAUDE_AUTH_UNAVAILABLE" }, "codex-cli")).toBe(false);
   });
 });

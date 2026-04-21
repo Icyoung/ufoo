@@ -36,6 +36,7 @@ function buildSummaryLine(options = {}) {
     launchMode = "terminal",
     agentProvider = "codex-cli",
     cronTasks = [],
+    loopSummary = null,
   } = options;
   const agents = activeAgents.length > 0
     ? activeAgents.slice(0, 3)
@@ -43,10 +44,56 @@ function buildSummaryLine(options = {}) {
       .join(", ")
       + (activeAgents.length > 3 ? ` +${activeAgents.length - 3}` : "")
     : "none";
-  return `{gray-fg}Agents:{/gray-fg} {cyan-fg}${agents}{/cyan-fg}`
+  let line = `{gray-fg}Agents:{/gray-fg} {cyan-fg}${agents}{/cyan-fg}`
     + `  {gray-fg}Mode:{/gray-fg} {cyan-fg}${launchMode}{/cyan-fg}`
     + `  {gray-fg}Agent:{/gray-fg} {cyan-fg}${providerLabel(agentProvider)}{/cyan-fg}`
     + `  {gray-fg}Cron:{/gray-fg} {cyan-fg}${Array.isArray(cronTasks) ? cronTasks.length : 0}{/cyan-fg}`;
+  const loopPart = formatLoopSummary(loopSummary);
+  if (loopPart) {
+    line += `  {gray-fg}Loop:{/gray-fg} {cyan-fg}${loopPart}{/cyan-fg}`;
+  }
+  return line;
+}
+
+function formatToolDistribution(items = []) {
+  const tools = Array.isArray(items) ? items : [];
+  if (tools.length === 0) return "";
+  const visible = tools.slice(0, 2).map((item) => `${item.name}x${item.count}`);
+  if (tools.length > 2) {
+    visible.push(`+${tools.length - 2}`);
+  }
+  return visible.join(",");
+}
+
+function formatLoopSummary(loopSummary) {
+  if (!loopSummary || typeof loopSummary !== "object") return "";
+  const rounds = Number(loopSummary.rounds) || 0;
+  const toolCalls = Number(loopSummary.tool_calls) || 0;
+  const totalTokens = Number(loopSummary.total_tokens) || 0;
+  const cacheReadTokens = Number(loopSummary.cache_read_tokens) || 0;
+  const cacheCreationTokens = Number(loopSummary.cache_creation_tokens) || 0;
+  const terminalReason = String(loopSummary.terminal_reason || "").trim();
+  const toolDistribution = formatToolDistribution(loopSummary.tools);
+
+  if (rounds <= 0 && toolCalls <= 0 && totalTokens <= 0 && !terminalReason && !toolDistribution) {
+    return "";
+  }
+
+  const parts = [
+    `r${rounds}`,
+    `tc${toolCalls}`,
+    `tok${totalTokens}`,
+  ];
+  if (cacheReadTokens > 0 || cacheCreationTokens > 0) {
+    parts.push(`cache${cacheReadTokens}/${cacheCreationTokens}`);
+  }
+  if (toolDistribution) {
+    parts.push(toolDistribution);
+  }
+  if (terminalReason) {
+    parts.push(terminalReason);
+  }
+  return parts.join(" ");
 }
 
 function buildProjectRailLine(options = {}) {
@@ -251,6 +298,7 @@ function computeDashboardContent(options = {}) {
     selectedResumeIndex = 0,
     selectedCronIndex = -1,
     cronTasks = [],
+    loopSummary = null,
     pendingReports = 0,
     providerOptions = [],
     resumeOptions = [],
@@ -290,6 +338,7 @@ function computeDashboardContent(options = {}) {
         launchMode,
         agentProvider,
         cronTasks,
+        loopSummary,
       });
       return {
         content: `${rail.line}\n ${line2}`,
@@ -352,6 +401,7 @@ function computeDashboardContent(options = {}) {
     launchMode,
     agentProvider,
     cronTasks,
+    loopSummary,
   });
 
   return { content, windowStart: agentListWindowStart };

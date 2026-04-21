@@ -5,6 +5,7 @@ const os = require("os");
 const path = require("path");
 const { getUfooPaths } = require("../ufoo/paths");
 const { loadAgentsData } = require("../ufoo/agentsStore");
+const { redactSecrets, redactString } = require("../providerapi/redactor");
 
 const HISTORY_DEBUG = process.env.UFOO_HISTORY_DEBUG === "1";
 const debugLog = (...args) => { if (HISTORY_DEBUG) console.error("[history]", ...args); };
@@ -446,10 +447,10 @@ function appendBusEntry(projectRoot, { seq, timestamp, publisher, target, messag
       fromId: publisher,
       to: nicknameMap.get(target) || target,
       toId: target,
-      message,
+      message: redactString(message),
     };
 
-    fs.appendFileSync(timelineFile, JSON.stringify(entry) + "\n", "utf8");
+    fs.appendFileSync(timelineFile, JSON.stringify(redactSecrets(entry)) + "\n", "utf8");
 
     if (seq) {
       const lock = acquireWatermarkLock(projectRoot);
@@ -504,10 +505,14 @@ function buildTimeline(projectRoot, { force = false } = {}) {
   const lock = acquireWatermarkLock(projectRoot);
   try {
     if (force) {
-      const content = newEntries.map((e) => JSON.stringify(e)).join("\n") + (newEntries.length > 0 ? "\n" : "");
+      const content = newEntries.map((e) => JSON.stringify(redactSecrets(e))).join("\n") + (newEntries.length > 0 ? "\n" : "");
       fs.writeFileSync(timelineFile, content, "utf8");
     } else {
-      fs.appendFileSync(timelineFile, newEntries.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf8");
+      fs.appendFileSync(
+        timelineFile,
+        newEntries.map((e) => JSON.stringify(redactSecrets(e))).join("\n") + "\n",
+        "utf8"
+      );
     }
 
     const prevCount = force ? 0 : (watermark.entryCount || 0);

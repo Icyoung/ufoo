@@ -1,22 +1,3 @@
-function buildAssistantContinuationPrompt({
-  originalPrompt,
-  previousReply,
-  reports,
-}) {
-  const lines = [];
-  lines.push(`User: ${originalPrompt}`);
-  if (previousReply) {
-    lines.push("");
-    lines.push(`Your previous reply draft: ${previousReply}`);
-  }
-  lines.push("");
-  lines.push("Assistant execution reports (JSON):");
-  lines.push(JSON.stringify(reports, null, 2));
-  lines.push("");
-  lines.push("Using these reports, return the final JSON response.");
-  return lines.join("\n");
-}
-
 function normalizePayload(payload) {
   if (!payload || typeof payload !== "object") {
     return { reply: "", dispatch: [], ops: [] };
@@ -29,88 +10,27 @@ function normalizePayload(payload) {
   };
 }
 
-function annotateAssistantFailureFallback(payload, assistantResult) {
-  if (!payload || typeof payload !== "object") return payload;
-  const dispatchCount = Array.isArray(payload.dispatch) ? payload.dispatch.length : 0;
-  const opsCount = Array.isArray(payload.ops) ? payload.ops.length : 0;
-  if (dispatchCount > 0 || opsCount > 0) return payload;
-
-  const error = assistantResult && typeof assistantResult.error === "string" && assistantResult.error
-    ? assistantResult.error
-    : "assistant task failed";
-  const note = `Assistant execution failed: ${error}. No action was applied.`;
-  const reply = typeof payload.reply === "string" && payload.reply
-    ? `${payload.reply}\n${note}`
-    : note;
-  return {
-    ...payload,
-    reply,
-  };
-}
-
-function extractAssistantCall(payload) {
+function stripAssistantCall(payload) {
   if (!payload || typeof payload !== "object") {
-    return { assistantCall: null, ops: [] };
+    return { reply: "", dispatch: [], ops: [] };
   }
 
   const ops = Array.isArray(payload.ops) ? payload.ops : [];
-  let assistantCall = payload.assistant_call || null;
   const normalOps = [];
 
   for (const op of ops) {
     if (op && op.action === "assistant_call") {
-      if (!assistantCall) assistantCall = op;
       continue;
     }
     if (op) normalOps.push(op);
   }
 
-  return { assistantCall, ops: normalOps };
-}
-
-function normalizeAssistantCall(call) {
-  if (!call) return null;
-  if (typeof call === "string") {
-    return { task: call, kind: "mixed", context: "", expect: "" };
-  }
-  if (typeof call !== "object") return null;
-  const task = typeof call.task === "string" ? call.task : "";
-  if (!task) return null;
-  return {
-    task,
-    kind: typeof call.kind === "string" ? call.kind : "mixed",
-    context: typeof call.context === "string" ? call.context : "",
-    expect: typeof call.expect === "string" ? call.expect : "",
-    provider: typeof call.provider === "string" ? call.provider : "",
-    model: typeof call.model === "string" ? call.model : "",
-    timeoutMs: Number.isFinite(call.timeout_ms) ? call.timeout_ms : null,
+  const nextPayload = {
+    ...normalizePayload(payload),
+    ops: normalOps,
   };
-}
-
-function buildAssistantReport(call, result) {
-  return {
-    kind: call.kind,
-    task: call.task,
-    ok: result && result.ok !== false,
-    summary: result && typeof result.summary === "string" ? result.summary : "",
-    error: result && typeof result.error === "string" ? result.error : "",
-    artifacts: result && Array.isArray(result.artifacts) ? result.artifacts : [],
-    logs: result && Array.isArray(result.logs) ? result.logs : [],
-    metrics: result && typeof result.metrics === "object" ? result.metrics : {},
-  };
-}
-
-function createAssistantTaskId() {
-  return `assistant-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-async function emitAssistantReport(reportTaskStatus, payload) {
-  if (typeof reportTaskStatus !== "function") return;
-  try {
-    await reportTaskStatus(payload);
-  } catch {
-    // best effort: reporting must not break prompt flow
-  }
+  delete nextPayload.assistant_call;
+  return nextPayload;
 }
 
 async function finalizePromptRun({
@@ -153,22 +73,24 @@ async function runPromptWithAssistant({
   model,
   processManager = null,
   runUfooAgent,
-  runAssistantTask,
+  runPromptWithControllerLoop = null,
   dispatchMessages,
   handleOps,
   markPending = () => {},
-  reportTaskStatus = () => {},
-  maxAssistantLoops = 2,
-  log = () => {},
   ufooAgentOptions = {},
   finalizeLocally = true,
+  loopRuntime = null,
 }) {
+  const agentOptions = {
+    ...(ufooAgentOptions && typeof ufooAgentOptions === "object" ? ufooAgentOptions : {}),
+  };
+
   const firstResult = await runUfooAgent({
     projectRoot,
     prompt: prompt || "",
     provider,
     model,
-    ...ufooAgentOptions,
+    ...agentOptions,
   });
 
   if (!firstResult || !firstResult.ok) {
@@ -178,144 +100,35 @@ async function runPromptWithAssistant({
     };
   }
 
-  const firstPayload = normalizePayload(firstResult.payload);
-  const extractedFirst = extractAssistantCall(firstPayload);
-  const assistantCall = normalizeAssistantCall(extractedFirst.assistantCall);
-  const basePayload = {
-    ...firstPayload,
-    ops: extractedFirst.ops,
-  };
-  delete basePayload.assistant_call;
+  const firstPayload = stripAssistantCall(firstResult.payload);
+  const shouldUpgradeToLoop = Boolean(
+    loopRuntime
+      && loopRuntime.enabled
+      && firstPayload
+      && firstPayload.upgrade_to_loop_router === true
+      && typeof runPromptWithControllerLoop === "function"
+  );
 
-  if (!assistantCall || maxAssistantLoops < 1) {
-    return finalizePromptRun({
+  if (shouldUpgradeToLoop) {
+    return runPromptWithControllerLoop({
       projectRoot,
-      payload: basePayload,
+      prompt: prompt || "",
+      provider,
+      model,
       processManager,
+      runUfooAgent,
       dispatchMessages,
       handleOps,
       markPending,
+      ufooAgentOptions,
       finalizeLocally,
+      loopRuntime,
     });
   }
-
-  const assistantTaskId = createAssistantTaskId();
-  await emitAssistantReport(reportTaskStatus, {
-    phase: "start",
-    source: "assistant",
-    agent_id: "ufoo-assistant-agent",
-    scope: "private",
-    controller_id: "ufoo-agent",
-    task_id: assistantTaskId,
-    message: assistantCall.task,
-    summary: "",
-    error: "",
-    ok: true,
-    meta: {
-      kind: assistantCall.kind,
-      provider: assistantCall.provider || provider || "",
-      model: assistantCall.model || model || "",
-    },
-  });
-
-  let assistantResult;
-  try {
-    assistantResult = await runAssistantTask({
-      projectRoot,
-      provider: assistantCall.provider || "",
-      fallbackProvider: provider,
-      model: assistantCall.model || model,
-      task: assistantCall.task,
-      kind: assistantCall.kind,
-      context: assistantCall.context,
-      expect: assistantCall.expect,
-      timeoutMs: assistantCall.timeoutMs || undefined,
-    });
-  } catch (err) {
-    assistantResult = {
-      ok: false,
-      summary: "",
-      artifacts: [],
-      logs: [],
-      error: err && err.message ? err.message : "assistant task failed",
-      metrics: {},
-    };
-  }
-
-  await emitAssistantReport(reportTaskStatus, {
-    phase: assistantResult && assistantResult.ok === false ? "error" : "done",
-    source: "assistant",
-    agent_id: "ufoo-assistant-agent",
-    scope: "private",
-    controller_id: "ufoo-agent",
-    task_id: assistantTaskId,
-    message: assistantCall.task,
-    summary: assistantResult && typeof assistantResult.summary === "string" ? assistantResult.summary : "",
-    error: assistantResult && typeof assistantResult.error === "string" ? assistantResult.error : "",
-    ok: assistantResult && assistantResult.ok !== false,
-    meta: {
-      kind: assistantCall.kind,
-      provider: assistantCall.provider || provider || "",
-      model: assistantCall.model || model || "",
-      metrics: assistantResult && assistantResult.metrics && typeof assistantResult.metrics === "object"
-        ? assistantResult.metrics
-        : {},
-    },
-  });
-
-  if (!assistantResult || assistantResult.ok === false) {
-    log("assistant-loop fallback to round1 payload");
-    const fallbackPayload = annotateAssistantFailureFallback(basePayload, assistantResult);
-    return finalizePromptRun({
-      projectRoot,
-      payload: fallbackPayload,
-      processManager,
-      dispatchMessages,
-      handleOps,
-      markPending,
-    });
-  }
-
-  const reports = [buildAssistantReport(assistantCall, assistantResult)];
-  const continuationPrompt = buildAssistantContinuationPrompt({
-    originalPrompt: prompt || "",
-    previousReply: basePayload.reply || "",
-    reports,
-  });
-
-  const secondResult = await runUfooAgent({
-    projectRoot,
-    prompt: continuationPrompt,
-    provider,
-    model,
-    ...ufooAgentOptions,
-  });
-
-  if (!secondResult || !secondResult.ok) {
-    log("assistant-loop fallback to round1 payload (round2 failed)");
-    return finalizePromptRun({
-      projectRoot,
-      payload: basePayload,
-      processManager,
-      dispatchMessages,
-      handleOps,
-      markPending,
-      finalizeLocally,
-    });
-  }
-
-  const secondPayload = normalizePayload(secondResult.payload);
-  const extractedSecond = extractAssistantCall(secondPayload);
-  const finalPayload = {
-    ...secondPayload,
-    ops: extractedSecond.ops,
-    assistant: { runs: reports },
-  };
-  delete finalPayload.assistant_call;
 
   return finalizePromptRun({
     projectRoot,
-    payload: finalPayload,
+    payload: firstPayload,
     processManager,
     dispatchMessages,
     handleOps,
@@ -326,10 +139,6 @@ async function runPromptWithAssistant({
 
 module.exports = {
   runPromptWithAssistant,
-  buildAssistantContinuationPrompt,
   normalizePayload,
-  annotateAssistantFailureFallback,
-  extractAssistantCall,
-  normalizeAssistantCall,
-  buildAssistantReport,
+  stripAssistantCall,
 };

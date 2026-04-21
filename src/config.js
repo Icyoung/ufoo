@@ -7,10 +7,13 @@ const UCODE_FIELDS = ["ucodeProvider", "ucodeModel", "ucodeBaseUrl", "ucodeApiKe
 const DEFAULT_CONFIG = {
   launchMode: "auto",
   agentProvider: "codex-cli",
+  controllerMode: "legacy",
+  codexInternalThreadMode: "legacy",
+  codexAuthPath: "",
+  claudeOauthProfile: "",
+  claudeOauthTokenPath: "",
+  claudeOauthRefreshWindowSec: 300,
   agentModel: "",
-  assistantEngine: "auto",
-  assistantModel: "",
-  assistantUfooCmd: "",
   autoResume: false,
 };
 
@@ -33,17 +36,39 @@ function normalizeLaunchMode(value) {
 
 function normalizeAgentProvider(value) {
   if (value === "claude-cli") return "claude-cli";
-  if (value === "ucode" || value === "ufoo" || value === "ufoo-code") return "ucode";
   return "codex-cli";
 }
 
-function normalizeAssistantEngine(value) {
+function normalizeControllerMode(value) {
   const raw = String(value || "").trim().toLowerCase();
-  if (!raw || raw === "auto") return "auto";
-  if (raw === "codex" || raw === "codex-cli" || raw === "codex-code") return "codex";
-  if (raw === "claude" || raw === "claude-cli" || raw === "claude-code") return "claude";
-  if (raw === "ufoo") return "ufoo";
-  return "auto";
+  if (raw === "shadow") return "shadow";
+  if (raw === "router-api") return "router-api";
+  if (raw === "loop") return "loop";
+  return "legacy";
+}
+
+function normalizeCodexInternalThreadMode(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "sdk") return "sdk";
+  return "legacy";
+}
+
+function normalizeCodexAuthPath(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeClaudeOauthProfile(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeClaudeOauthTokenPath(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeClaudeOauthRefreshWindowSec(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num < 0) return 300;
+  return Math.floor(num);
 }
 
 function globalConfigPath() {
@@ -70,9 +95,12 @@ function loadConfig(projectRoot) {
       ...raw,
       launchMode: normalizeLaunchMode(raw.launchMode),
       agentProvider: normalizeAgentProvider(raw.agentProvider),
-      assistantEngine: normalizeAssistantEngine(raw.assistantEngine),
-      assistantModel: typeof raw.assistantModel === "string" ? raw.assistantModel : "",
-      assistantUfooCmd: typeof raw.assistantUfooCmd === "string" ? raw.assistantUfooCmd : "",
+      controllerMode: normalizeControllerMode(raw.controllerMode),
+      codexInternalThreadMode: normalizeCodexInternalThreadMode(raw.codexInternalThreadMode),
+      codexAuthPath: normalizeCodexAuthPath(raw.codexAuthPath),
+      claudeOauthProfile: normalizeClaudeOauthProfile(raw.claudeOauthProfile),
+      claudeOauthTokenPath: normalizeClaudeOauthTokenPath(raw.claudeOauthTokenPath),
+      claudeOauthRefreshWindowSec: normalizeClaudeOauthRefreshWindowSec(raw.claudeOauthRefreshWindowSec),
       autoResume: raw.autoResume !== false,
       // Merge ucode fields from global config so callers still see them
       ...loadGlobalUcodeConfig(),
@@ -109,9 +137,12 @@ function saveConfig(projectRoot, config) {
   }
   merged.launchMode = normalizeLaunchMode(merged.launchMode);
   merged.agentProvider = normalizeAgentProvider(merged.agentProvider);
-  merged.assistantEngine = normalizeAssistantEngine(merged.assistantEngine);
-  merged.assistantModel = typeof merged.assistantModel === "string" ? merged.assistantModel : "";
-  merged.assistantUfooCmd = typeof merged.assistantUfooCmd === "string" ? merged.assistantUfooCmd : "";
+  merged.controllerMode = normalizeControllerMode(merged.controllerMode);
+  merged.codexInternalThreadMode = normalizeCodexInternalThreadMode(merged.codexInternalThreadMode);
+  merged.codexAuthPath = normalizeCodexAuthPath(merged.codexAuthPath);
+  merged.claudeOauthProfile = normalizeClaudeOauthProfile(merged.claudeOauthProfile);
+  merged.claudeOauthTokenPath = normalizeClaudeOauthTokenPath(merged.claudeOauthTokenPath);
+  merged.claudeOauthRefreshWindowSec = normalizeClaudeOauthRefreshWindowSec(merged.claudeOauthRefreshWindowSec);
   merged.autoResume = merged.autoResume !== false;
   fs.writeFileSync(target, JSON.stringify(merged, null, 2));
   return merged;
@@ -149,5 +180,10 @@ module.exports = {
   saveGlobalUcodeConfig,
   normalizeLaunchMode,
   normalizeAgentProvider,
-  normalizeAssistantEngine,
+  normalizeControllerMode,
+  normalizeCodexInternalThreadMode,
+  normalizeCodexAuthPath,
+  normalizeClaudeOauthProfile,
+  normalizeClaudeOauthTokenPath,
+  normalizeClaudeOauthRefreshWindowSec,
 };

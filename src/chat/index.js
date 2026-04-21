@@ -133,6 +133,7 @@ async function runChat(projectRoot, options = {}) {
   let agentProvider = config.agentProvider;
   let autoResume = config.autoResume !== false;
   let cronTasks = [];
+  let loopSummary = null;
 
   // Dynamic input height settings.
   // Layout: dashboard(N) + inputBottom(1) + content + inputTop(1) + status(1)
@@ -726,7 +727,6 @@ async function runChat(projectRoot, options = {}) {
   const providerOptions = [
     { label: "codex", value: "codex-cli" },
     { label: "claude", value: "claude-cli" },
-    { label: "ucode", value: "ucode" },
   ];
   let selectedProviderIndex = Math.max(0, providerOptions.findIndex((opt) => opt.value === agentProvider));
   const resumeOptions = [
@@ -1219,6 +1219,7 @@ async function runChat(projectRoot, options = {}) {
       selectedResumeIndex,
       selectedCronIndex,
       cronTasks,
+      loopSummary,
       providerOptions,
       resumeOptions,
       dashHints: DASH_HINTS,
@@ -1265,6 +1266,7 @@ async function runChat(projectRoot, options = {}) {
       refreshProjectRuntimes();
     }
     cronTasks = Array.isArray(status?.cron?.tasks) ? status.cron.tasks : [];
+    loopSummary = status && status.loop && typeof status.loop === "object" ? status.loop : null;
     const metaList = Array.isArray(status.active_meta) ? status.active_meta : [];
     let fallbackMap = null;
     if (metaList.length === 0 && activeAgents.length > 0) {

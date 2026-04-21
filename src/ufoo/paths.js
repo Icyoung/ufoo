@@ -4,7 +4,9 @@ function getUfooPaths(projectRoot) {
   const ufooDir = path.join(projectRoot, ".ufoo");
   const busDir = path.join(ufooDir, "bus");
   const agentDir = path.join(ufooDir, "agent");
+  const memoryDir = path.join(ufooDir, "memory");
   const agentsFile = path.join(agentDir, "all-agents.json");
+  const memoryFile = path.join(memoryDir, "memory.jsonl");
 
   const busQueuesDir = path.join(busDir, "queues");
   const busEventsDir = path.join(busDir, "events");
@@ -27,7 +29,9 @@ function getUfooPaths(projectRoot) {
     ufooDir,
     busDir,
     agentDir,
+    memoryDir,
     agentsFile,
+    memoryFile,
     busQueuesDir,
     busEventsDir,
     busLogsDir,

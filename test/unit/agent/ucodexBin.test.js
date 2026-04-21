@@ -45,9 +45,16 @@ describe("bin/ucodex default bootstrap", () => {
     expect(env.UFOO_STARTUP_BOOTSTRAP_TEXT).toContain("ufoo ctx decisions -l");
   });
 
-  test("skips startup bootstrap when user already passes args", () => {
+  test("merges startup bootstrap when user already passes a prompt arg", () => {
     const { launchMock, env } = withIsolatedCodexBin({ args: ["fix the flaky test"] });
-    expect(launchMock).toHaveBeenCalledWith(["fix the flaky test"]);
+    expect(launchMock.mock.calls[0][0][0]).toContain("Session bootstrap for Codex.");
+    expect(launchMock.mock.calls[0][0][0]).toContain("fix the flaky test");
     expect(env.UFOO_STARTUP_BOOTSTRAP_TEXT).toBeUndefined();
+  });
+
+  test("keeps startup bootstrap env when args are flags only", () => {
+    const { launchMock, env } = withIsolatedCodexBin({ args: ["exec", "--json"] });
+    expect(launchMock).toHaveBeenCalledWith(["exec", "--json"]);
+    expect(env.UFOO_STARTUP_BOOTSTRAP_TEXT).toContain("ufoo ctx decisions -l");
   });
 });

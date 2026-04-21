@@ -1,6 +1,6 @@
 {
   "name": "u-foo",
-  "version": "1.9.8",
+  "version": "2.2.0",
   "description": "Multi-Agent Workspace Protocol. Just add u. claude → uclaude, codex → ucodex.",
   "license": "SEE LICENSE IN LICENSE",
   "homepage": "https://ufoo.dev",
@@ -20,9 +20,7 @@
     "uclaude": "bin/uclaude.js",
     "ucodex": "bin/ucodex.js",
     "ucode": "bin/ucode.js",
-    "ucode-core": "bin/ucode-core.js",
-    "ufoo-assistant-agent": "bin/ufoo-assistant-agent.js",
-    "ufoo-engine": "bin/ufoo-engine.js"
+    "ucode-core": "bin/ucode-core.js"
   },
   "files": [
     "bin/",

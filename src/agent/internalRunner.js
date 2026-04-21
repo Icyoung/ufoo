@@ -6,9 +6,30 @@ const EventBus = require("../bus");
 const { runCliAgent } = require("./cliRunner");
 const { normalizeCliOutput } = require("./normalizeOutput");
 const { createActivityStatePublisher } = require("./activityStatePublisher");
+const { loadConfig, normalizeCodexInternalThreadMode } = require("../config");
+const {
+  createCodexThreadProvider,
+  defaultCodexTransportStreamFactory,
+} = require("./codexThreadProvider");
+const {
+  createClaudeThreadProvider,
+  defaultClaudeTransportStreamFactory,
+} = require("./claudeThreadProvider");
+const { resolveClaudeUpstreamCredentials } = require("./credentials/claude");
+const { buildUpstreamAuthFromCredential } = require("./credentials");
+const { listToolsForCallerTier, CALLER_TIERS } = require("../tools");
+const { redactToolCallPayload, redactSecrets } = require("../providerapi/redactor");
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeWorkerThreadToolMode(value = "") {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "worker-tier01" || raw === "tier01" || raw === "enabled" || raw === "1" || raw === "true") {
+    return "worker-tier01";
+  }
+  return "disabled";
 }
 
 function buildEnv(agentType, sessionId, publisher, nickname) {
@@ -63,6 +84,18 @@ function createBusSender(projectRoot, subscriber) {
   return { enqueue, flush };
 }
 
+function shouldFallbackToLegacyThreadProvider(err, provider) {
+  if (provider !== "claude-cli" || !err || typeof err !== "object") {
+    return false;
+  }
+  const code = String(err.code || "").trim().toUpperCase();
+  return (
+    code === "CLAUDE_AUTH_UNAVAILABLE"
+    || code === "CLAUDE_OAUTH_SCHEMA_UNSUPPORTED"
+    || code === "ANTHROPIC_SDK_UNAVAILABLE"
+  );
+}
+
 function drainQueue(queueFile) {
   if (!fs.existsSync(queueFile)) return [];
   const processingFile = `${queueFile}.processing.${process.pid}.${Date.now()}`;
@@ -106,7 +139,8 @@ async function handleEvent(
   evt,
   cliSessionState,
   busSender,
-  extraArgs = []
+  extraArgs = [],
+  threadRuntime = null
 ) {
   if (!evt || !evt.data || !evt.data.message) return;
   const prompt = evt.data.message;
@@ -121,6 +155,21 @@ async function handleEvent(
     streamState.lastChar = text.slice(-1);
     busSender.enqueue(publisher, JSON.stringify({ stream: true, delta: text }));
   };
+
+  if (threadRuntime && threadRuntime.enabled && threadRuntime.thread) {
+    const threadedResult = await handleThreadedEvent({
+      agentType,
+      provider,
+      publisher,
+      prompt,
+      busSender,
+      emitStreamDelta,
+      threadRuntime,
+    });
+    if (!threadedResult || !threadedResult.fallbackToLegacy) {
+      return;
+    }
+  }
 
   let res = await runCliAgent({
     provider,
@@ -188,6 +237,270 @@ async function handleEvent(
   await busSender.flush();
 }
 
+async function handleThreadedEvent({
+  agentType,
+  provider,
+  publisher,
+  prompt,
+  busSender,
+  emitStreamDelta,
+  threadRuntime,
+}) {
+  try {
+    for await (const event of threadRuntime.thread.runStreamed(prompt, {})) {
+      if (!event || typeof event !== "object") continue;
+      if (event.type === "text_delta" && event.delta) {
+        emitStreamDelta(event.delta);
+      } else if (event.type === "turn_failed") {
+        throw new Error(event.error || `thread turn failed for ${agentType}`);
+      }
+    }
+
+    busSender.enqueue(
+      publisher,
+      JSON.stringify({ stream: true, done: true, reason: "complete" })
+    );
+    await busSender.flush();
+  } catch (err) {
+    if (shouldFallbackToLegacyThreadProvider(err, provider)) {
+      return { fallbackToLegacy: true };
+    }
+    if (threadRuntime && typeof threadRuntime.rebuildThread === "function") {
+      await threadRuntime.rebuildThread();
+    }
+    busSender.enqueue(
+      publisher,
+      JSON.stringify({
+        stream: true,
+        delta: `[internal:${agentType}] error: ${err && err.message ? err.message : "unknown error"}`,
+      })
+    );
+    busSender.enqueue(
+      publisher,
+      JSON.stringify({ stream: true, done: true, reason: "error" })
+    );
+    await busSender.flush();
+    return { fallbackToLegacy: false };
+  }
+}
+
+function getCodexThreadMode(projectRoot) {
+  const envValue = process.env.UFOO_CODEX_INTERNAL_THREAD_MODE;
+  if (typeof envValue === "string" && envValue.trim()) {
+    return normalizeCodexInternalThreadMode(envValue);
+  }
+  return loadConfig(projectRoot).codexInternalThreadMode;
+}
+
+function getWorkerThreadToolMode() {
+  return normalizeWorkerThreadToolMode(process.env.UFOO_CODEX_INTERNAL_THREAD_TOOLS);
+}
+
+function buildWorkerThreadToolRuntime({ projectRoot, subscriber, observer }) {
+  const mode = getWorkerThreadToolMode();
+  if (mode !== "worker-tier01") {
+    return {
+      enabled: false,
+      mode,
+      tools: [],
+      executeToolCall: null,
+    };
+  }
+
+  const eventBus = new EventBus(projectRoot);
+  const toolDefinitions = listToolsForCallerTier(CALLER_TIERS.WORKER);
+  const toolsByName = new Map(toolDefinitions.map((tool) => [tool.name, tool]));
+  const emitAudit = (phase, payload) => {
+    if (observer && typeof observer.onToolCall === "function") {
+      try { observer.onToolCall({ phase, payload }); } catch { /* ignore observer errors */ }
+    }
+  };
+
+  return {
+    enabled: toolDefinitions.length > 0,
+    mode,
+    tools: toolDefinitions.map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      input_schema: tool.input_schema,
+    })),
+    // Keep a shared-handler executor ready for a future continuation-capable SDK path.
+    // The current Codex seam injects tool descriptors only and does not execute live
+    // tool calls inside the SDK stream yet.
+    async executeToolCall(toolCall = {}) {
+      const name = String(toolCall.name || "").trim();
+      const definition = toolsByName.get(name);
+      const rawArgs = toolCall.arguments || toolCall.args || {};
+      // Slice 1 (§10.7 tool pre-call): build a redacted audit envelope before
+      // the handler receives args, so observability consumers never see raw secrets.
+      const redactedPayload = redactToolCallPayload({
+        name,
+        args: rawArgs,
+        tool_call_id: toolCall.tool_call_id || toolCall.toolCallId || "",
+        caller_tier: CALLER_TIERS.WORKER,
+      });
+      emitAudit("pre_call", redactedPayload);
+      if (!definition) {
+        const errorResult = {
+          ok: false,
+          error: {
+            code: "unsupported_tool",
+            message: `worker tool is unavailable: ${name}`,
+          },
+        };
+        emitAudit("post_call", { ...redactedPayload, result: errorResult });
+        return errorResult;
+      }
+
+      try {
+        const result = await definition.handler({
+          caller_tier: CALLER_TIERS.WORKER,
+          projectRoot,
+          subscriber,
+          eventBus,
+        }, rawArgs);
+        const safeResult = redactSecrets(result);
+        emitAudit("post_call", { ...redactedPayload, result: safeResult });
+        return safeResult;
+      } catch (err) {
+        const errorResult = {
+          ok: false,
+          error: {
+            code: err && err.code ? err.code : "tool_execution_failed",
+            message: err && err.message ? err.message : String(err || "tool execution failed"),
+          },
+        };
+        const safeErrorResult = redactSecrets(errorResult);
+        emitAudit("post_call", { ...redactedPayload, result: safeErrorResult });
+        return safeErrorResult;
+      }
+    },
+  };
+}
+
+function getClaudeThreadMode() {
+  const envValue = process.env.UFOO_CLAUDE_INTERNAL_THREAD_MODE;
+  const raw = String(envValue || "").trim().toLowerCase();
+  if (raw === "api") return "api";
+  return "legacy";
+}
+
+function buildClaudeAuthProvider(projectRoot) {
+  const config = loadConfig(projectRoot);
+  return async () => {
+    const credential = await resolveClaudeUpstreamCredentials({
+      profile: config.claudeOauthProfile,
+      tokenPath: config.claudeOauthTokenPath,
+      refreshWindowMs: Number(config.claudeOauthRefreshWindowSec || 300) * 1000,
+    });
+    return buildUpstreamAuthFromCredential(credential);
+  };
+}
+
+function createThreadRuntime({ projectRoot, provider, model, extraArgs = [], subscriber = "" }) {
+  const disabledRuntime = {
+    enabled: false,
+    thread: null,
+    toolRuntime: { enabled: false, mode: "disabled", tools: [] },
+    close: async () => {},
+    rebuildThread: async () => {},
+  };
+
+  if (provider === "codex-cli") {
+    if (getCodexThreadMode(projectRoot) !== "sdk") {
+      return disabledRuntime;
+    }
+
+    try {
+      const toolRuntime = buildWorkerThreadToolRuntime({
+        projectRoot,
+        subscriber,
+      });
+      let providerInstance = createCodexThreadProvider({
+        model,
+        cwd: projectRoot,
+        extraArgs,
+        tools: toolRuntime.tools,
+        streamFactory: defaultCodexTransportStreamFactory,
+      });
+      let thread = providerInstance.startThread();
+
+      return {
+        enabled: true,
+        toolRuntime,
+        get thread() {
+          return thread;
+        },
+        async rebuildThread() {
+          if (thread && typeof thread.close === "function") {
+            await thread.close();
+          }
+          providerInstance = createCodexThreadProvider({
+            model,
+            cwd: projectRoot,
+            extraArgs,
+            tools: toolRuntime.tools,
+            streamFactory: defaultCodexTransportStreamFactory,
+          });
+          thread = providerInstance.startThread();
+        },
+        async close() {
+          if (thread && typeof thread.close === "function") {
+            await thread.close();
+          }
+        },
+      };
+    } catch {
+      return disabledRuntime;
+    }
+  }
+
+  if (provider === "claude-cli") {
+    if (getClaudeThreadMode() !== "api") {
+      return disabledRuntime;
+    }
+    if (typeof createClaudeThreadProvider !== "function" || typeof resolveClaudeUpstreamCredentials !== "function") {
+      return disabledRuntime;
+    }
+
+    try {
+      let providerInstance = createClaudeThreadProvider({
+        model,
+        authProvider: buildClaudeAuthProvider(projectRoot),
+        streamFactory: defaultClaudeTransportStreamFactory,
+      });
+      let thread = providerInstance.startThread();
+
+      return {
+        enabled: true,
+        get thread() {
+          return thread;
+        },
+        async rebuildThread() {
+          if (thread && typeof thread.close === "function") {
+            await thread.close();
+          }
+          providerInstance = createClaudeThreadProvider({
+            model,
+            authProvider: buildClaudeAuthProvider(projectRoot),
+            streamFactory: defaultClaudeTransportStreamFactory,
+          });
+          thread = providerInstance.startThread();
+        },
+        async close() {
+          if (thread && typeof thread.close === "function") {
+            await thread.close();
+          }
+        },
+      };
+    } catch {
+      return disabledRuntime;
+    }
+  }
+
+  return disabledRuntime;
+}
+
 async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs = [] }) {
   // Internal runner 必须由 daemon 启动，UFOO_SUBSCRIBER_ID 应该已经设置
   const { subscriber, agentType: parsedAgentType, sessionId } = parseSubscriberId();
@@ -202,6 +515,13 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
   const provider = normalizedAgentType === "codex" ? "codex-cli" : "claude-cli";
   const model = process.env.UFOO_AGENT_MODEL || "";
   const busSender = createBusSender(projectRoot, subscriber);
+  const threadRuntime = createThreadRuntime({
+    projectRoot,
+    provider,
+    model,
+    extraArgs,
+    subscriber,
+  });
 
   // Session state management for CLI continuity
   // Use stable path based on nickname (if exists) or agent type, NOT subscriber ID
@@ -294,7 +614,8 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
               evt,
               cliSessionState,
               busSender,
-              extraArgs
+              extraArgs,
+              threadRuntime
             );
           }
 
@@ -324,10 +645,20 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
     // eslint-disable-next-line no-await-in-loop
     await sleep(1000);
   }
+
+  await threadRuntime.close();
 }
 
 module.exports = {
   runInternalRunner,
   createBusSender,
   handleEvent,
+  createThreadRuntime,
+  getCodexThreadMode,
+  getWorkerThreadToolMode,
+  buildWorkerThreadToolRuntime,
+  normalizeWorkerThreadToolMode,
+  getClaudeThreadMode,
+  buildClaudeAuthProvider,
+  shouldFallbackToLegacyThreadProvider,
 };

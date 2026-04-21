@@ -82,6 +82,39 @@ describe("report store", () => {
     expect(rows[1].phase).toBe("start");
   });
 
+  test("report sinks redact secret-like payloads before persistence", () => {
+    const report = normalizeReportInput({
+      phase: "progress",
+      task_id: "task-secret",
+      agent_id: "codex:1",
+      message: "Authorization: Bearer hidden-secret",
+      meta: {
+        accessToken: "access-secret",
+      },
+    }, { ts: "2026-02-12T00:00:04.000Z" });
+
+    appendReport(projectRoot, report);
+    appendControllerInboxEntry(projectRoot, "ufoo-agent", report);
+    updateReportState(projectRoot, report);
+
+    const { reportsFile, stateFile } = getReportPaths(projectRoot);
+    const inboxFile = path.join(path.dirname(reportsFile), "private-inbox", "ufoo-agent.jsonl");
+    const reportsRaw = fs.readFileSync(reportsFile, "utf8");
+    const stateRaw = fs.readFileSync(stateFile, "utf8");
+    const inboxRaw = fs.readFileSync(inboxFile, "utf8");
+
+    expect(reportsRaw).not.toContain("hidden-secret");
+    expect(reportsRaw).not.toContain("access-secret");
+    expect(stateRaw).not.toContain("hidden-secret");
+    expect(stateRaw).not.toContain("access-secret");
+    expect(inboxRaw).not.toContain("hidden-secret");
+    expect(inboxRaw).not.toContain("access-secret");
+
+    const listed = listReports(projectRoot, { num: 5, agent: "codex:1" });
+    expect(listed[0].message).toContain("Bearer [REDACTED]");
+    expect(listed[0].meta.accessToken).toBe("[REDACTED]");
+  });
+
   test("updates state pending count and summary", () => {
     const start = normalizeReportInput({
       phase: "start",

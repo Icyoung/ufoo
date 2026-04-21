@@ -30,6 +30,15 @@ describe("chat dashboardView", () => {
       launchMode: "tmux",
       agentProvider: "claude-cli",
       cronTasks: [{ id: "c1", summary: "c1@10s->a: smoke" }, { id: "c2", summary: "c2@5m->b: check" }],
+      loopSummary: {
+        rounds: 2,
+        tool_calls: 1,
+        total_tokens: 165,
+        cache_read_tokens: 10,
+        cache_creation_tokens: 5,
+        terminal_reason: "final_answer",
+        tools: [{ name: "dispatch_message", count: 1 }],
+      },
       autoResume: false,
       dashHints,
     });
@@ -40,6 +49,7 @@ describe("chat dashboardView", () => {
     expect(out.content).toContain("{gray-fg}Agent:{/gray-fg} {cyan-fg}claude{/cyan-fg}");
     expect(out.content).not.toContain("{gray-fg}Reports:{/gray-fg}");
     expect(out.content).toContain("{gray-fg}Cron:{/gray-fg} {cyan-fg}2{/cyan-fg}");
+    expect(out.content).toContain("{gray-fg}Loop:{/gray-fg} {cyan-fg}r2 tc1 tok165 cache10/5 dispatch_messagex1 final_answer{/cyan-fg}");
   });
 
   test("dashboard mode page highlights selected mode", () => {
@@ -310,5 +320,23 @@ describe("chat dashboardView", () => {
     expect(detail.content).toContain("{cyan-fg}*@codex:1{/cyan-fg}");
     expect(detail.content).toContain("{inverse}?@claude:2{/inverse}");
     expect(detail.content).toContain("{cyan-fg}!@ucode:3{/cyan-fg}");
+  });
+
+  test("omits loop summary when no recent loop metrics exist", () => {
+    const out = computeDashboardContent({
+      focusMode: "input",
+      activeAgents: ["a"],
+      getAgentLabel: (id) => id,
+      loopSummary: {
+        rounds: 0,
+        tool_calls: 0,
+        total_tokens: 0,
+        terminal_reason: "",
+        tools: [],
+      },
+      dashHints,
+    });
+
+    expect(out.content).not.toContain("{gray-fg}Loop:{/gray-fg}");
   });
 });

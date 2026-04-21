@@ -4,14 +4,14 @@ const { runCliAgent } = require("./cliRunner");
 const { normalizeCliOutput } = require("./normalizeOutput");
 const { buildStatus } = require("../daemon/status");
 const { getUfooPaths } = require("../ufoo/paths");
-const {
-  resolveRuntimeConfig,
-  resolveCompletionUrl,
-  resolveAnthropicMessagesUrl,
-} = require("../code/nativeRunner");
-const { DEFAULT_ASSISTANT_TIMEOUT_MS } = require("../assistant/constants");
+const { normalizeGateRouterResult } = require("../controller/gateRouter");
+const { sendUpstreamPrompt } = require("./upstreamTransport");
 const { normalizeAgentTypeAlias } = require("../bus/utils");
 const { listProjectRuntimes, isGlobalControllerProjectRoot } = require("../projects");
+const {
+  CONTROLLER_MODES,
+  resolveControllerMode,
+} = require("../controller/flags");
 
 function loadSessionState(projectRoot) {
   const dir = getUfooPaths(projectRoot).agentDir;
@@ -405,19 +405,23 @@ function buildGlobalProjectRouterContext(projectRoot, options = {}) {
 
 function buildSystemPrompt(context, options = {}) {
   const mode = String(options.routingMode || (context && context.mode) || "").trim().toLowerCase();
+  const loopRuntime = options.loopRuntime && options.loopRuntime.enabled ? options.loopRuntime : null;
+  const controllerMode = String(options.controllerMode || CONTROLLER_MODES.LEGACY);
   if (mode === "global-router") {
+    const schemaLines = [
+      "{",
+      '  "reply": "string",',
+    ];
+    schemaLines.push('  "project_route": {"project_root":"absolute-path","project_name":"string","prompt":"string","reason":"string"},');
+    schemaLines.push('  "dispatch": [],');
+    schemaLines.push('  "ops": []');
+    schemaLines.push("}");
     return [
       "You are ufoo-agent, the global project router for `ufoo chat -g`.",
       "You run inside the home-scoped controller runtime and must choose the right project before any project-local routing happens.",
       "Return ONLY valid JSON. No extra text.",
       "Schema:",
-      "{",
-      '  "reply": "string",',
-      `  "assistant_call": {"kind":"explore|bash|mixed","task":"string","context":"optional","expect":"optional","provider":"codex|claude|ufoo (optional)","model":"optional","timeout_ms":${DEFAULT_ASSISTANT_TIMEOUT_MS}},`,
-      '  "project_route": {"project_root":"absolute-path","project_name":"string","prompt":"string","reason":"string"},',
-      '  "dispatch": [],',
-      '  "ops": []',
-      "}",
+      ...schemaLines,
       "Rules:",
       "- Use project_route when the request should be handed to one specific registered project.",
       "- project_route.prompt should usually preserve the user request, optionally rewritten only to clarify project context for the next router.",
@@ -427,7 +431,7 @@ function buildSystemPrompt(context, options = {}) {
       "- The target project's ufoo-agent will do the second-hop routing to a concrete agent.",
       "- If the user asks for a global comparison, registry overview, or other controller-level answer, reply directly and omit project_route.",
       "- If no registered project is a clear match, reply with a concise clarification request or tell the user to use /open <path> first.",
-      "- assistant_call is allowed for lightweight controller-side inspection when the registry/context is insufficient.",
+      `- Controller mode=${controllerMode}. Do not emit assistant_call or ops.assistant_call; the legacy helper path has been removed.`,
       "- Prefer continuity: if a project's recent prompt history clearly matches the current request, route there.",
       "",
       "Context: registered projects and project activity summaries:",
@@ -438,20 +442,55 @@ function buildSystemPrompt(context, options = {}) {
   const hasAgents = context.agents && context.agents.length > 0;
   const agentGuidance = hasAgents
     ? ""
-    : "\n- IMPORTANT: No coding agents are currently online. For lightweight exploration or temporary command execution, prefer top-level assistant_call.\n- Use ops.launch only when persistent coding-agent sessions are necessary.";
+    : "\n- IMPORTANT: No coding agents are currently online.\n- Use ops.launch only when a persistent coding-agent session is necessary; otherwise reply with a clarification or route later.";
 
-  return [
+  if (loopRuntime) {
+    return [
+      "You are ufoo-agent, a headless routing controller running in limited loop mode.",
+      "Return ONLY valid JSON. No extra text.",
+      "Loop schema:",
+      "{",
+      '  "reply": "string",',
+      '  "done": true,',
+      '  "dispatch": [{"target":"broadcast|<agent-id>|<nickname>","message":"string","injection_mode":"immediate|queued (optional)","source":"optional"}],',
+      '  "ops": [{"action":"launch|close|rename|role|cron","agent":"codex|claude|ucode","count":1,"agent_id":"id","nickname":"optional"}],',
+      '  "tool_call": {"id":"optional","name":"dispatch_message|ack_bus|launch_agent","arguments":{}}',
+      "}",
+      "Loop rules:",
+      "- Use tool_call only when the controller must execute a control-plane action before deciding the final answer.",
+      "- When returning tool_call, set done=false and keep dispatch/ops empty for that round.",
+      "- Use dispatch_message for direct bus delivery, ack_bus for controller queue acknowledgement, and launch_agent for bounded worker launches.",
+      "- When you have enough information, omit tool_call and return the final reply/dispatch/ops with done=true.",
+      "- Do not emit assistant_call or ops.assistant_call; that legacy helper path has been removed.",
+      `- Round budget: maxRounds=${loopRuntime.maxRounds || ""}, remainingToolCalls=${loopRuntime.remainingToolCalls || 0}.`,
+      agentGuidance,
+      "",
+      "Context: online agents and recent bus events:",
+      JSON.stringify(context),
+    ].join("\n");
+  }
+
+  const baseHeader = [
     "You are ufoo-agent, a headless routing controller.",
-    "You can call a private execution helper via top-level assistant_call (not visible on bus).",
-    "Return ONLY valid JSON. No extra text.",
-    "Schema:",
+    `Controller mode=${controllerMode}. The legacy assistant_call / helper-agent path has been removed; route via dispatch/ops or reply directly.`,
+  ];
+  const schemaLines = [
     "{",
     '  "reply": "string",',
-    `  "assistant_call": {"kind":"explore|bash|mixed","task":"string","context":"optional","expect":"optional","provider":"codex|claude|ufoo (optional)","model":"optional","timeout_ms":${DEFAULT_ASSISTANT_TIMEOUT_MS}},`,
-    '  "dispatch": [{"target":"broadcast|<agent-id>|<nickname>","message":"string","injection_mode":"immediate|queued (optional)","source":"optional"}],',
-    '  "ops": [{"action":"launch|close|rename|role|cron","agent":"codex|claude|ucode","count":1,"agent_id":"id","nickname":"optional","prompt_profile":"profile-id (for role)","operation":"start|list|stop","every":"30m","interval_ms":1800000,"at":"YYYY-MM-DD HH:mm","once_at_ms":1700000000000,"target":"agent-id|nickname|csv","targets":["agent-id"],"title":"optional short title","prompt":"message","id":"task-id|all"}],',
-    '  "disambiguate": {"prompt":"string","candidates":[{"agent_id":"id","reason":"string"}]}',
-    "}",
+  ];
+  schemaLines.push('  "dispatch": [{"target":"broadcast|<agent-id>|<nickname>","message":"string","injection_mode":"immediate|queued (optional)","source":"optional"}],');
+  schemaLines.push('  "ops": [{"action":"launch|close|rename|role|cron","agent":"codex|claude|ucode","count":1,"agent_id":"id","nickname":"optional","prompt_profile":"profile-id (for role)","operation":"start|list|stop","every":"30m","interval_ms":1800000,"at":"YYYY-MM-DD HH:mm","once_at_ms":1700000000000,"target":"agent-id|nickname|csv","targets":["agent-id"],"title":"optional short title","prompt":"message","id":"task-id|all"}],');
+  schemaLines.push('  "disambiguate": {"prompt":"string","candidates":[{"agent_id":"id","reason":"string"}]}');
+  if (controllerMode === CONTROLLER_MODES.LOOP) {
+    schemaLines.push('  "upgrade_to_loop_router": true');
+  }
+  schemaLines.push("}");
+
+  return [
+    ...baseHeader,
+    "Return ONLY valid JSON. No extra text.",
+    "Schema:",
+    ...schemaLines,
     "Rules:",
     "- target must be 'broadcast', concrete agent-id, or a known nickname",
     "- If multiple possible agents, use disambiguate with candidates and no dispatch.",
@@ -461,16 +500,20 @@ function buildSystemPrompt(context, options = {}) {
     "- To check scheduled tasks, use ops.cron with operation=list.",
     "- To stop scheduled tasks, use ops.cron with operation=stop and id (or id=all).",
     "- To assign a preset role to an existing agent, use ops.role with target (agent-id or nickname) and prompt_profile (profile id or alias). Available profiles: discovery-facilitator, scope-challenger, system-architect, implementation-lead, frontend-refiner, design-critic, review-critic, qa-driver, debug-investigator, release-coordinator, task-breakdown, research-scan, rapid-prototype.",
-    "- Use top-level assistant_call for project exploration, temporary shell tasks, and quick execution support.",
-    "- assistant_call fields: kind (explore|bash|mixed), task (required), context/expect (optional), provider (codex|claude|ufoo, optional), model/timeout_ms (optional).",
-    "- Prefer assistant_call over launching coding agents when the task is short-lived.",
+    "- Do not emit assistant_call or ops.assistant_call; that schema has been removed and the daemon will ignore it if emitted.",
+    "- For short-lived exploration, prefer a dispatch to an online agent or reply with a clarification.",
     "- Primary routing signal is semantic continuity from agent_prompt_history; prefer the agent that already handled similar prompts.",
     "- Launch a new coding agent when the request is a new topic without clear ownership in existing histories.",
     "- dispatch.injection_mode defaults to immediate when omitted.",
     "- Use queued only when routing a chat-dialog request that is clearly a new unrelated task for an agent whose recent prompt history shows a different ongoing thread.",
     "- If the new request strongly continues the target agent's recent prompt history, keep injection_mode immediate even when that agent is busy.",
     "- Manual @agent sends in ufoo chat are handled outside this router and remain immediate; do not model them here.",
-    "- Legacy compatibility: if model emits ops.assistant_call, daemon will still process it.",
+    ...(controllerMode === CONTROLLER_MODES.LOOP
+      ? [
+        "- When single-shot routing is insufficient and the controller should continue with tool-assisted exploration, set upgrade_to_loop_router=true.",
+        "- If upgrade_to_loop_router=true, keep dispatch/ops empty for this response.",
+      ]
+      : []),
     "- If no action needed, return reply with empty dispatch/ops.",
     agentGuidance,
     "",
@@ -508,6 +551,34 @@ function buildHistoryPrompt(history) {
   return lines.join("\n");
 }
 
+function buildRouteAgentSystemPrompt(context, options = {}) {
+  return [
+    "You are ufoo-agent gate_router, the front-door router for pure delegation requests.",
+    "Return ONLY valid JSON. No markdown or extra text.",
+    "Schema:",
+    "{",
+    '  "decision": "direct_dispatch|upgrade_to_main_router",',
+    '  "target": "broadcast|<agent-id>|<nickname>|unknown",',
+    '  "message": "string",',
+    '  "confidence": 0.0,',
+    '  "reason": "string",',
+    '  "injection_mode": "immediate|queued"',
+    "}",
+    "Rules:",
+    "- Every request reaches you first. Decide whether to direct_dispatch immediately or upgrade.",
+    "- Use decision=direct_dispatch only when a single target is clear and no richer orchestration is needed.",
+    "- If the request needs repo work, richer controller context, or the best target is unclear, return decision=upgrade_to_main_router.",
+    "- Do not decide loop_router here. Main_router will decide whether a later upgrade to loop_router is necessary.",
+    "- Use only agent IDs or nicknames that appear in context.",
+    "- Preserve the user request in message unless a small clarification helps the chosen target.",
+    "- Prefer continuity from agent_prompt_history when one agent already owns the thread.",
+    "- Use queued only when the user is clearly starting a new unrelated thread for a busy agent.",
+    "",
+    "Context: online agents and recent bus events:",
+    JSON.stringify(context),
+  ].join("\n");
+}
+
 function extractNickname(prompt) {
   if (!prompt) return "";
   const patterns = [
@@ -535,106 +606,49 @@ function stripMarkdownFence(text = "") {
   return raw;
 }
 
-function clipText(value = "", maxChars = 500) {
-  const text = String(value || "");
-  if (text.length <= maxChars) return text;
-  return `${text.slice(0, maxChars)}...[truncated]`;
-}
-
-async function runNativeRouterCall({ projectRoot, prompt, systemPrompt, model: requestedModel, timeoutMs = 120000 }) {
-  const runtime = resolveRuntimeConfig({
-    workspaceRoot: projectRoot,
-    provider: "",
+async function runNativeRouterCall({
+  projectRoot,
+  prompt,
+  systemPrompt,
+  provider: requestedProvider,
+  model: requestedModel,
+  timeoutMs = 120000,
+}) {
+  return sendUpstreamPrompt({
+    projectRoot,
+    prompt,
+    systemPrompt,
+    provider: requestedProvider,
     model: requestedModel,
+    timeoutMs,
   });
-
-  const requestModel = String(runtime.model || "").trim();
-  if (!requestModel) {
-    return { ok: false, error: "ucode model is not configured" };
-  }
-
-  const isAnthropic = runtime.transport === "anthropic-messages";
-  const url = isAnthropic
-    ? resolveAnthropicMessagesUrl(runtime.baseUrl)
-    : resolveCompletionUrl(runtime.baseUrl);
-
-  if (!url) {
-    return { ok: false, error: "ucode baseUrl is not configured" };
-  }
-
-  const headers = { "content-type": "application/json" };
-  let body;
-
-  if (isAnthropic) {
-    headers["anthropic-version"] = "2023-06-01";
-    if (runtime.apiKey) headers["x-api-key"] = runtime.apiKey;
-    body = JSON.stringify({
-      model: requestModel,
-      max_tokens: 4096,
-      system: String(systemPrompt || ""),
-      messages: [{ role: "user", content: String(prompt || "") }],
-      temperature: 0,
-    });
-  } else {
-    if (runtime.apiKey) headers.authorization = `Bearer ${runtime.apiKey}`;
-    const messages = [];
-    if (systemPrompt) messages.push({ role: "system", content: String(systemPrompt) });
-    messages.push({ role: "user", content: String(prompt || "") });
-    body = JSON.stringify({
-      model: requestModel,
-      messages,
-      temperature: 0,
-    });
-  }
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => { try { controller.abort(); } catch {} }, timeoutMs);
-
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers,
-      body,
-      signal: controller.signal,
-    });
-
-    if (!response.ok) {
-      const errBody = await response.text().catch(() => "");
-      return { ok: false, error: `provider request failed (${response.status}): ${clipText(errBody)}` };
-    }
-
-    const data = await response.json();
-
-    let text = "";
-    if (isAnthropic) {
-      const content = Array.isArray(data.content) ? data.content : [];
-      text = content
-        .filter((item) => item && item.type === "text")
-        .map((item) => String(item.text || ""))
-        .join("");
-    } else {
-      const choice = data.choices && data.choices[0];
-      text = choice && choice.message && typeof choice.message.content === "string"
-        ? choice.message.content
-        : "";
-    }
-
-    return { ok: true, output: text.trim() };
-  } catch (err) {
-    const message = err && err.message ? err.message : "native router call failed";
-    return { ok: false, error: message };
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
-async function runUfooAgent({ projectRoot, prompt, provider, model, routingMode = "", routingContext = null }) {
+async function runUfooAgent({
+  projectRoot,
+  prompt,
+  provider,
+  model,
+  routingMode = "",
+  routingContext = null,
+  loopRuntime = null,
+  controllerMode = null,
+}) {
   const state = loadSessionState(projectRoot);
   const mode = String(routingMode || (routingContext && routingContext.mode) || "").trim().toLowerCase();
+  const resolvedControllerMode = String(
+    controllerMode
+      || resolveControllerMode({ projectRoot })
+      || CONTROLLER_MODES.LEGACY,
+  );
   const bus = routingContext || (mode === "global-router"
     ? buildGlobalProjectRouterContext(projectRoot)
     : loadBusSummary(projectRoot));
-  const systemPrompt = buildSystemPrompt(bus, { routingMode: mode });
+  const systemPrompt = buildSystemPrompt(bus, {
+    routingMode: mode,
+    loopRuntime,
+    controllerMode: resolvedControllerMode,
+  });
   const history = loadHistory(projectRoot);
   const historyPrompt = buildHistoryPrompt(history);
   const fullPrompt = historyPrompt ? `${historyPrompt}User: ${prompt}` : prompt;
@@ -722,4 +736,48 @@ async function runUfooAgent({ projectRoot, prompt, provider, model, routingMode 
   return { ok: true, payload };
 }
 
-module.exports = { runUfooAgent };
+async function runUfooRouteAgent({
+  projectRoot,
+  prompt,
+  provider = "ucode",
+  model = "",
+  timeoutMs = 5000,
+}) {
+  const bus = loadBusSummary(projectRoot);
+  const systemPrompt = buildRouteAgentSystemPrompt(bus);
+  const history = loadHistory(projectRoot);
+  const historyPrompt = buildHistoryPrompt(history);
+  const fullPrompt = historyPrompt ? `${historyPrompt}User: ${prompt}` : prompt;
+
+  const res = await runNativeRouterCall({
+    projectRoot,
+    prompt: fullPrompt,
+    systemPrompt,
+    provider,
+    model,
+    timeoutMs,
+  });
+
+  if (!res.ok) {
+    return { ok: false, error: res.error || "gate_router failed" };
+  }
+
+  const text = stripMarkdownFence(String(res.output || "").trim());
+  let payload = null;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    return { ok: false, error: "gate_router returned non-JSON output" };
+  }
+
+  return {
+    ok: true,
+    route: normalizeGateRouterResult(payload, prompt),
+    meta: {
+      provider: String(res.provider || ""),
+      model: String(res.model || ""),
+    },
+  };
+}
+
+module.exports = { runUfooAgent, runUfooRouteAgent };

@@ -148,4 +148,58 @@ describe("daemon status", () => {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
   });
+
+  test("includes recent loop observability summary", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-status-"));
+    try {
+      const paths = getUfooPaths(projectRoot);
+      fs.mkdirSync(path.dirname(paths.agentsFile), { recursive: true });
+      fs.writeFileSync(paths.agentsFile, JSON.stringify({ agents: {} }, null, 2));
+      fs.mkdirSync(paths.agentDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(paths.agentDir, "ufoo-agent.loop-events.jsonl"),
+        [
+          JSON.stringify({
+            event: "model_call",
+            ts: "2026-04-20T10:00:00.000Z",
+            round: 1,
+            input_tokens: 120,
+            output_tokens: 45,
+            cache_read_tokens: 11,
+            cache_creation_tokens: 3,
+            latency_ms: 900,
+            first_token_ms: 150,
+          }),
+          JSON.stringify({
+            event: "tool_call",
+            ts: "2026-04-20T10:00:01.000Z",
+            tool_name: "dispatch_message",
+          }),
+          JSON.stringify({
+            event: "loop_terminal",
+            ts: "2026-04-20T10:00:02.000Z",
+            rounds: 1,
+            tool_calls: 1,
+            total_tokens: 165,
+            total_latency_ms: 900,
+            terminal_reason: "final_answer",
+          }),
+        ].join("\n")
+      );
+
+      const status = buildStatus(projectRoot);
+      expect(status.loop).toEqual(expect.objectContaining({
+        status: "completed",
+        rounds: 1,
+        tool_calls: 1,
+        total_tokens: 165,
+        cache_read_tokens: 11,
+        cache_creation_tokens: 3,
+        terminal_reason: "final_answer",
+      }));
+      expect(status.loop.tools).toEqual([{ name: "dispatch_message", count: 1 }]);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
 });

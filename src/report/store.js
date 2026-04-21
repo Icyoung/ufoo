@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { getUfooPaths } = require("../ufoo/paths");
+const { redactSecrets } = require("../providerapi/redactor");
 
 const REPORT_PHASES = {
   START: "start",
@@ -100,7 +101,7 @@ function normalizeReportInput(input = {}, options = {}) {
 function appendReport(projectRoot, entry) {
   ensureReportDir(projectRoot);
   const { reportsFile } = getReportPaths(projectRoot);
-  fs.appendFileSync(reportsFile, `${JSON.stringify(entry)}\n`, "utf8");
+  fs.appendFileSync(reportsFile, `${JSON.stringify(redactSecrets(entry))}\n`, "utf8");
 }
 
 function parseJsonLines(file) {
@@ -151,7 +152,7 @@ function loadReportState(projectRoot) {
 function saveReportState(projectRoot, state) {
   ensureReportDir(projectRoot);
   const { stateFile } = getReportPaths(projectRoot);
-  fs.writeFileSync(stateFile, JSON.stringify(state, null, 2));
+  fs.writeFileSync(stateFile, JSON.stringify(redactSecrets(state), null, 2));
 }
 
 function updateReportState(projectRoot, entry) {
@@ -205,7 +206,7 @@ function getControllerInboxFile(projectRoot, controllerId = "ufoo-agent") {
 function appendControllerInboxEntry(projectRoot, controllerId, entry) {
   const file = getControllerInboxFile(projectRoot, controllerId);
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.appendFileSync(file, `${JSON.stringify(entry)}\n`, "utf8");
+  fs.appendFileSync(file, `${JSON.stringify(redactSecrets(entry))}\n`, "utf8");
 }
 
 function listControllerInboxEntries(projectRoot, controllerId = "ufoo-agent", options = {}) {

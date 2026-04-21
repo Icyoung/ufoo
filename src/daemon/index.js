@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const net = require("net");
 const { spawn, spawnSync } = require("child_process");
-const { runUfooAgent } = require("../agent/ufooAgent");
+const { runUfooAgent, runUfooRouteAgent } = require("../agent/ufooAgent");
 const { launchAgent, closeAgent, getRecoverableAgents, resumeAgents } = require("./ops");
 const { buildStatus } = require("./status");
 const EventBus = require("../bus");
@@ -18,7 +18,6 @@ const { createTerminalAdapterRouter } = require("../terminal/adapterRouter");
 const { createDaemonCronController } = require("./cronOps");
 const { createGroupOrchestrator } = require("./groupOrchestrator");
 const { normalizeFormat, renderGroupDiagramFromTemplate, renderGroupDiagramFromRuntime } = require("../group/diagram");
-const { runAssistantTask } = require("../assistant/bridge");
 const { runPromptWithAssistant } = require("./promptLoop");
 const { handlePromptRequest } = require("./promptRequest");
 const { recordAgentReport } = require("./reporting");
@@ -1013,7 +1012,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
         processManager,
         runPromptWithAssistant,
         runUfooAgent,
-        runAssistantTask,
+        runUfooRouteAgent,
         dispatchMessages,
         handleOps,
         markPending: (target) => busBridge.markPending(target),

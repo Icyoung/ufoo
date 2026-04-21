@@ -2,6 +2,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
+const { redactSecrets } = require("../providerapi/redactor");
 
 /**
  * 获取当前 UTC 时间戳（ISO 8601 格式）
@@ -207,7 +208,7 @@ function readJSON(filePath, defaultValue = null) {
  * 写入 JSON 文件（格式化）
  */
 function writeJSON(filePath, data) {
-  const content = JSON.stringify(data, null, 2);
+  const content = JSON.stringify(redactSecrets(data), null, 2);
   writeFileAtomic(filePath, content);
 }
 
@@ -231,7 +232,7 @@ function readJSONL(filePath) {
  * 追加一行到 JSONL 文件
  */
 function appendJSONL(filePath, data) {
-  const line = JSON.stringify(data);
+  const line = JSON.stringify(redactSecrets(data));
   appendFileAtomic(filePath, `${line}\n`);
 }
 

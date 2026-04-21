@@ -1,24 +1,12 @@
 const { spawn } = require("child_process");
 const { randomUUID } = require("crypto");
-const { DEFAULT_ASSISTANT_TIMEOUT_MS } = require("../assistant/constants");
+
+const DEFAULT_CLI_TIMEOUT_MS = 600000;
 
 const ROUTER_JSON_SCHEMA = JSON.stringify({
   type: "object",
   properties: {
     reply: { type: "string" },
-    assistant_call: {
-      type: "object",
-      properties: {
-        kind: { type: "string", enum: ["explore", "bash", "mixed"] },
-        task: { type: "string" },
-        context: { type: "string" },
-        expect: { type: "string" },
-        provider: { type: "string" },
-        model: { type: "string" },
-        timeout_ms: { type: "integer" },
-      },
-      required: ["task"],
-    },
     dispatch: {
       type: "array",
       items: {
@@ -622,7 +610,7 @@ async function runCliAgent(params) {
       cwd: params.cwd,
       env,
       input: stdin,
-      timeoutMs: params.timeoutMs || DEFAULT_ASSISTANT_TIMEOUT_MS,
+      timeoutMs: params.timeoutMs || DEFAULT_CLI_TIMEOUT_MS,
       onStdout: codexParser ? (chunk) => codexParser.onChunk(chunk) : null,
       signal: params.signal,
     });
@@ -685,7 +673,7 @@ async function runCliAgent(params) {
           cwd: params.cwd,
           env,
           input: retryStdin,
-          timeoutMs: params.timeoutMs || DEFAULT_ASSISTANT_TIMEOUT_MS,
+          timeoutMs: params.timeoutMs || DEFAULT_CLI_TIMEOUT_MS,
           onStdout: retryParser ? (chunk) => retryParser.onChunk(chunk) : null,
           signal: params.signal,
         });

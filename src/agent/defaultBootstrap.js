@@ -26,6 +26,16 @@ function hasMetaCommandArgs(args = []) {
   return hasArg(args, ["-h", "--help", "-v", "--version"]);
 }
 
+function readOptionalFile(filePath) {
+  const target = asTrimmedString(filePath);
+  if (!target) return "";
+  try {
+    return fs.readFileSync(target, "utf8");
+  } catch {
+    return "";
+  }
+}
+
 /**
  * Load the team activity timeline for prompt injection.
  * The daemon syncs manual inputs every ~30s; bus messages are appended in real-time.
@@ -67,6 +77,11 @@ function defaultBootstrapFile(projectRoot, agentType = "") {
   return path.join(getUfooPaths(projectRoot).agentDir, safeAgentType, "default-bootstrap.md");
 }
 
+function mergedBootstrapFile(projectRoot, agentType = "") {
+  const safeAgentType = asTrimmedString(agentType).replace(/[^a-zA-Z0-9._-]/g, "-") || "agent";
+  return path.join(getUfooPaths(projectRoot).agentDir, safeAgentType, "merged-bootstrap.md");
+}
+
 function prepareDefaultBootstrapFile({
   projectRoot,
   agentType = "",
@@ -78,6 +93,83 @@ function prepareDefaultBootstrapFile({
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, String(promptText || ""), "utf8");
   return { ok: true, file };
+}
+
+function mergePromptSegments(...segments) {
+  return segments
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function mergeClaudePromptArgs({
+  projectRoot,
+  agentType = "claude-code",
+  args = [],
+  bootstrapText = "",
+} = {}) {
+  const currentArgs = Array.isArray(args) ? args.slice() : [];
+  for (let index = 0; index < currentArgs.length; index += 1) {
+    const item = asTrimmedString(currentArgs[index]);
+    if (!item) continue;
+
+    if (item === "--append-system-prompt") {
+      const existingFile = asTrimmedString(currentArgs[index + 1]);
+      const mergedText = mergePromptSegments(readOptionalFile(existingFile), bootstrapText);
+      const prepared = prepareDefaultBootstrapFile({
+        projectRoot,
+        agentType,
+        targetFile: mergedBootstrapFile(projectRoot, agentType),
+        promptText: mergedText,
+      });
+      currentArgs[index + 1] = prepared.file;
+      return { args: currentArgs, file: prepared.file, promptText: mergedText };
+    }
+
+    if (item.startsWith("--append-system-prompt=")) {
+      const existingFile = item.slice("--append-system-prompt=".length);
+      const mergedText = mergePromptSegments(readOptionalFile(existingFile), bootstrapText);
+      const prepared = prepareDefaultBootstrapFile({
+        projectRoot,
+        agentType,
+        targetFile: mergedBootstrapFile(projectRoot, agentType),
+        promptText: mergedText,
+      });
+      currentArgs[index] = `--append-system-prompt=${prepared.file}`;
+      return { args: currentArgs, file: prepared.file, promptText: mergedText };
+    }
+
+    if (item === "--system-prompt") {
+      const existingPrompt = String(currentArgs[index + 1] || "");
+      currentArgs[index + 1] = mergePromptSegments(existingPrompt, bootstrapText);
+      return { args: currentArgs, file: "", promptText: String(currentArgs[index + 1] || "") };
+    }
+
+    if (item.startsWith("--system-prompt=")) {
+      const existingPrompt = item.slice("--system-prompt=".length);
+      const mergedText = mergePromptSegments(existingPrompt, bootstrapText);
+      currentArgs[index] = `--system-prompt=${mergedText}`;
+      return { args: currentArgs, file: "", promptText: mergedText };
+    }
+  }
+  return null;
+}
+
+function mergeCodexPromptArgs({ args = [], bootstrapText = "" } = {}) {
+  const currentArgs = Array.isArray(args) ? args.slice() : [];
+  const lastIndex = currentArgs.length - 1;
+  if (lastIndex < 0) return null;
+  const lastItem = asTrimmedString(currentArgs[lastIndex]);
+  const promptIndex = lastItem && !lastItem.startsWith("-") ? lastIndex : -1;
+
+  if (promptIndex < 0) return null;
+
+  currentArgs[promptIndex] = mergePromptSegments(bootstrapText, currentArgs[promptIndex]);
+  return {
+    args: currentArgs,
+    promptText: String(currentArgs[promptIndex] || ""),
+    promptIndex,
+  };
 }
 
 function resolveDefaultManualBootstrap({
@@ -98,10 +190,22 @@ function resolveDefaultManualBootstrap({
   }
 
   if (normalizedAgent === "claude-code") {
-    if (hasArg(currentArgs, ["--append-system-prompt", "--system-prompt"])) {
-      return { args: currentArgs, env: {}, mode: "skip" };
-    }
     const promptText = buildDefaultStartupBootstrapPrompt({ agentType: normalizedAgent, projectRoot });
+    const merged = mergeClaudePromptArgs({
+      projectRoot,
+      agentType: normalizedAgent,
+      args: currentArgs,
+      bootstrapText: promptText,
+    });
+    if (merged) {
+      return {
+        args: merged.args,
+        env: {},
+        mode: "merged-system-prompt",
+        file: merged.file,
+        promptText: merged.promptText,
+      };
+    }
     const prepared = prepareDefaultBootstrapFile({
       projectRoot,
       agentType: normalizedAgent,
@@ -117,10 +221,29 @@ function resolveDefaultManualBootstrap({
   }
 
   if (normalizedAgent === "codex") {
-    if (currentArgs.length > 0) {
-      return { args: currentArgs, env: {}, mode: "skip" };
-    }
     const promptText = buildDefaultStartupBootstrapPrompt({ agentType: normalizedAgent, projectRoot });
+    const merged = mergeCodexPromptArgs({
+      args: currentArgs,
+      bootstrapText: promptText,
+    });
+    if (merged) {
+      return {
+        args: merged.args,
+        env: {},
+        mode: "initial-prompt-arg",
+        promptText: merged.promptText,
+      };
+    }
+    if (currentArgs.length > 0) {
+      return {
+        args: currentArgs,
+        env: {
+          UFOO_STARTUP_BOOTSTRAP_TEXT: promptText,
+        },
+        mode: "post-launch-inject",
+        promptText,
+      };
+    }
     return {
       args: currentArgs,
       env: {

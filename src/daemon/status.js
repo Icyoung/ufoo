@@ -3,6 +3,7 @@ const path = require("path");
 const { getUfooPaths } = require("../ufoo/paths");
 const { isMetaActive } = require("../bus/utils");
 const { readReportSummary, countControllerInboxEntries } = require("../report/store");
+const { readRecentLoopSummary } = require("../agent/loopObservability");
 
 function readBus(projectRoot) {
   const busPath = getUfooPaths(projectRoot).agentsFile;
@@ -180,6 +181,7 @@ function buildStatus(projectRoot, options = {}) {
     controller: {
       pending_total: controllerPendingTotal,
     },
+    loop: readRecentLoopSummary(projectRoot),
     cron: {
       count: cronTasks.length,
       tasks: cronTasks,

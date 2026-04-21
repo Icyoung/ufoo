@@ -70,4 +70,22 @@ describe("bin/uclaude default bootstrap", () => {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
+
+  test("merges bootstrap with caller-provided append-system-prompt", () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-uclaude-bin-merge-"));
+    const customFile = path.join(cwd, "custom.md");
+    fs.writeFileSync(customFile, "custom prompt", "utf8");
+    const { launchMock } = withIsolatedClaudeBin({
+      args: ["--append-system-prompt", customFile],
+    });
+    try {
+      const launchArgs = launchMock.mock.calls[0][0];
+      expect(launchArgs[0]).toBe("--append-system-prompt");
+      expect(launchArgs[1]).toContain(path.join("claude-code", "merged-bootstrap.md"));
+      expect(fs.readFileSync(launchArgs[1], "utf8")).toContain("custom prompt");
+      expect(fs.readFileSync(launchArgs[1], "utf8")).toContain("ufoo ctx decisions -l");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 });

@@ -21,6 +21,9 @@ function parseWritePayload(writeCallArg) {
 describe("daemon promptRequest", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    delete process.env.UFOO_AGENT_RUNTIME_MODE;
+    delete process.env.UFOO_AGENT_ENABLE_LOOP;
+    isGlobalControllerProjectRoot.mockReturnValue(false);
   });
 
   test("writes response payload on successful prompt handling", async () => {
@@ -371,5 +374,208 @@ describe("daemon promptRequest", () => {
       project_name: "beta",
       reason: "forced_project_root",
     });
+  });
+
+  test("router-api gate router dispatches pure routing requests without main router fallback", async () => {
+    const socket = { write: jest.fn() };
+    const dispatchMessages = jest.fn().mockResolvedValue(undefined);
+    const runPromptWithAssistant = jest.fn();
+    const runUfooRouteAgent = jest.fn().mockResolvedValue({
+      ok: true,
+      route: {
+        decision: "direct_dispatch",
+        target: "reviewer",
+        message: "Continue with the current review thread",
+        confidence: 0.91,
+        reason: "prompt continuity",
+        injection_mode: "immediate",
+      },
+      meta: {
+        provider: "openai",
+        model: "gpt-4o-mini",
+      },
+    });
+
+    const ok = await handlePromptRequest({
+      projectRoot: "/tmp/project",
+      req: {
+        text: "Continue with reviewer on the current review thread",
+        request_meta: { agent_execution_path: "router-api" },
+      },
+      socket,
+      provider: "codex-cli",
+      model: "",
+      runPromptWithAssistant,
+      runUfooAgent: jest.fn(),
+      runUfooRouteAgent,
+      runAssistantTask: jest.fn(),
+      dispatchMessages,
+      handleOps: jest.fn(),
+      markPending: jest.fn(),
+      log: jest.fn(),
+    });
+
+    expect(ok).toBe(true);
+    expect(runUfooRouteAgent).toHaveBeenCalledTimes(1);
+    expect(runPromptWithAssistant).not.toHaveBeenCalled();
+    expect(dispatchMessages).toHaveBeenCalledWith("/tmp/project", [{
+      target: "reviewer",
+      message: "Continue with the current review thread",
+      injection_mode: "immediate",
+      source: "ufoo-agent-gate-router",
+    }]);
+    expect(parseWritePayload(socket.write.mock.calls[0][0])).toEqual({
+      type: IPC_RESPONSE_TYPES.RESPONSE,
+      data: {
+        reply: "",
+        dispatch: [{
+          target: "reviewer",
+          message: "Continue with the current review thread",
+          injection_mode: "immediate",
+          source: "ufoo-agent-gate-router",
+        }],
+        ops: [],
+      },
+      opsResults: [],
+    });
+  });
+
+  test("router-api upgrades to main router when gate router returns an upgrade decision", async () => {
+    const socket = { write: jest.fn() };
+    const runPromptWithAssistant = jest.fn().mockResolvedValue({
+      ok: true,
+      payload: { reply: "legacy", dispatch: [], ops: [] },
+      opsResults: [],
+    });
+    const runUfooRouteAgent = jest.fn().mockResolvedValue({
+      ok: true,
+      route: {
+        decision: "upgrade_to_main_router",
+        target: "unknown",
+        message: "Send this to the right agent",
+        confidence: 0.42,
+        reason: "ambiguous target",
+        injection_mode: "immediate",
+      },
+    });
+
+    const ok = await handlePromptRequest({
+      projectRoot: "/tmp/project",
+      req: {
+        text: "Send this to the right agent",
+        request_meta: { agent_execution_path: "router-api" },
+      },
+      socket,
+      provider: "codex-cli",
+      model: "",
+      runPromptWithAssistant,
+      runUfooAgent: jest.fn(),
+      runUfooRouteAgent,
+      runAssistantTask: jest.fn(),
+      dispatchMessages: jest.fn(),
+      handleOps: jest.fn(),
+      markPending: jest.fn(),
+      log: jest.fn(),
+    });
+
+    expect(ok).toBe(true);
+    expect(runUfooRouteAgent).toHaveBeenCalledTimes(1);
+    expect(runPromptWithAssistant).toHaveBeenCalledTimes(1);
+    expect(runPromptWithAssistant.mock.calls[0][0].prompt).toContain("\"gate_router\"");
+    expect(runPromptWithAssistant.mock.calls[0][0].prompt).toContain("\"decision\": \"upgrade_to_main_router\"");
+  });
+
+  test("router-api upgrades to main router when gate-router dispatch fails", async () => {
+    const socket = { write: jest.fn() };
+    const runPromptWithAssistant = jest.fn().mockResolvedValue({
+      ok: true,
+      payload: { reply: "legacy", dispatch: [], ops: [] },
+      opsResults: [],
+    });
+    const runUfooRouteAgent = jest.fn().mockResolvedValue({
+      ok: true,
+      route: {
+        decision: "direct_dispatch",
+        target: "reviewer",
+        message: "Continue with reviewer",
+        confidence: 0.88,
+        reason: "continuity",
+        injection_mode: "immediate",
+      },
+    });
+    const dispatchMessages = jest.fn().mockRejectedValue(new Error("target not found"));
+
+    const ok = await handlePromptRequest({
+      projectRoot: "/tmp/project",
+      req: {
+        text: "Continue with reviewer",
+        request_meta: { agent_execution_path: "router-api" },
+      },
+      socket,
+      provider: "codex-cli",
+      model: "",
+      runPromptWithAssistant,
+      runUfooAgent: jest.fn(),
+      runUfooRouteAgent,
+      runAssistantTask: jest.fn(),
+      dispatchMessages,
+      handleOps: jest.fn(),
+      markPending: jest.fn(),
+      log: jest.fn(),
+    });
+
+    expect(ok).toBe(true);
+    expect(dispatchMessages).toHaveBeenCalledTimes(1);
+    expect(runPromptWithAssistant).toHaveBeenCalledTimes(1);
+    expect(runPromptWithAssistant.mock.calls[0][0].prompt).toContain("\"reason\": \"dispatch_failed\"");
+    expect(runPromptWithAssistant.mock.calls[0][0].prompt).toContain("\"error\": \"target not found\"");
+  });
+
+  test("loop mode still attempts gate router first and upgrades through main router", async () => {
+    process.env.UFOO_AGENT_ENABLE_LOOP = "1";
+    const socket = { write: jest.fn() };
+    const runPromptWithControllerLoop = jest.fn();
+    const runPromptWithAssistant = jest.fn().mockResolvedValue({
+      ok: true,
+      payload: { reply: "main", dispatch: [], ops: [] },
+      opsResults: [],
+    });
+    const runUfooRouteAgent = jest.fn().mockResolvedValue({
+      ok: true,
+      route: {
+        decision: "upgrade_to_main_router",
+        target: "unknown",
+        message: "Review the current codebase",
+        confidence: 0.31,
+        reason: "needs tool-assisted exploration",
+        injection_mode: "immediate",
+      },
+    });
+
+    const ok = await handlePromptRequest({
+      projectRoot: "/tmp/project",
+      req: {
+        text: "让reviewer审核当前代码",
+        request_meta: { agent_execution_path: "loop" },
+      },
+      socket,
+      provider: "codex-cli",
+      model: "",
+      runPromptWithAssistant,
+      runPromptWithControllerLoop,
+      runUfooAgent: jest.fn(),
+      runUfooRouteAgent,
+      dispatchMessages: jest.fn(),
+      handleOps: jest.fn(),
+      ackBus: jest.fn(),
+      markPending: jest.fn(),
+      log: jest.fn(),
+    });
+
+    expect(ok).toBe(true);
+    expect(runUfooRouteAgent).toHaveBeenCalledTimes(1);
+    expect(runPromptWithAssistant).toHaveBeenCalledTimes(1);
+    expect(runPromptWithControllerLoop).not.toHaveBeenCalled();
+    expect(runPromptWithAssistant.mock.calls[0][0].prompt).toContain("\"decision\": \"upgrade_to_main_router\"");
   });
 });

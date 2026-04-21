@@ -163,6 +163,22 @@ describe('Bus Utils', () => {
         expect(fs.existsSync(testFile)).toBe(true);
         expect(readJSON(testFile)).toEqual(data);
       });
+
+      it('redacts secret-like fields before persisting JSON', () => {
+        const testFile = path.join(testDir, 'redacted.json');
+        writeJSON(testFile, {
+          accessToken: 'secret-access',
+          headers: { Authorization: 'Bearer raw-secret' },
+        });
+
+        const raw = fs.readFileSync(testFile, 'utf8');
+        expect(raw).not.toContain('secret-access');
+        expect(raw).not.toContain('raw-secret');
+        expect(readJSON(testFile)).toEqual({
+          accessToken: '[REDACTED]',
+          headers: { Authorization: '[REDACTED]' },
+        });
+      });
     });
   });
 
@@ -225,6 +241,23 @@ describe('Bus Utils', () => {
 
         expect(fs.existsSync(testFile)).toBe(true);
         expect(readJSONL(testFile)).toEqual([{ test: true }]);
+      });
+
+      it('redacts secret-like fields before appending JSONL', () => {
+        const testFile = path.join(testDir, 'secret.jsonl');
+
+        appendJSONL(testFile, {
+          token: 'tok-123',
+          note: 'Authorization: Bearer live-secret',
+        });
+
+        const raw = fs.readFileSync(testFile, 'utf8');
+        expect(raw).not.toContain('tok-123');
+        expect(raw).not.toContain('live-secret');
+        expect(readJSONL(testFile)).toEqual([{
+          token: '[REDACTED]',
+          note: 'Authorization: Bearer [REDACTED]',
+        }]);
       });
     });
 
