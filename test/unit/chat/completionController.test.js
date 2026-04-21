@@ -60,6 +60,20 @@ function createHarness(overrides = {}) {
         cmd: "/status",
         desc: "Show status",
       },
+      {
+        cmd: "/settings",
+        desc: "Settings ops",
+        subcommands: [
+          {
+            cmd: "router",
+            desc: "Manage router",
+            subcommands: [
+              { cmd: "show", desc: "Show router config", order: 1 },
+              { cmd: "set", desc: "Set router config", order: 2 },
+            ],
+          },
+        ],
+      },
     ],
     getGroupTemplateCandidates: jest.fn(() => [
       { alias: "product-discovery", name: "Product Discovery", source: "builtin" },
@@ -139,6 +153,18 @@ describe("chat completionController", () => {
     expect(completionPanel.setContent).not.toHaveBeenLastCalledWith(expect.stringContaining("ufoo"));
   });
 
+  test("settings subcommand mode can descend into nested router actions", () => {
+    const { controller, input, completionPanel } = createHarness();
+    input.value = "/settings router ";
+
+    controller.show(input.value);
+
+    expect(controller.isActive()).toBe(true);
+    expect(controller.getCommandCount()).toBe(2);
+    expect(completionPanel.setContent).toHaveBeenLastCalledWith(expect.stringContaining("show"));
+    expect(completionPanel.setContent).toHaveBeenLastCalledWith(expect.stringContaining("set"));
+  });
+
   test("group run shows template candidates after subcommand confirmation", () => {
     const { controller, input, completionPanel } = createHarness();
     input.value = "/group ";
@@ -213,10 +239,9 @@ describe("chat completionController", () => {
 
   test("tab confirms selected command", () => {
     const { controller, input } = createHarness();
-    input.value = "/";
+    input.value = "/stat";
 
     controller.show(input.value);
-    controller.jumpToLast();
     const handled = controller.handleKey("", { name: "tab" });
 
     expect(handled).toBe(true);

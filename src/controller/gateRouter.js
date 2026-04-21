@@ -2,7 +2,7 @@
 
 const { loadConfig } = require("../config");
 
-const DEFAULT_EXECUTION_PATH = "legacy";
+const DEFAULT_EXECUTION_PATH = "main";
 const DEFAULT_CONFIDENCE_THRESHOLD = 0.6;
 const DEFAULT_TIMEOUT_MS = 5000;
 
@@ -55,7 +55,8 @@ const NON_ROUTING_PATTERNS = [
 
 function normalizeExecutionPath(value = "") {
   const text = String(value || "").trim().toLowerCase();
-  if (text === "router-api") return "router-api";
+  if (text === "router-api") return "main";
+  if (text === "main") return "main";
   if (text === "shadow") return "shadow";
   if (text === "loop") return "loop";
   return DEFAULT_EXECUTION_PATH;
@@ -110,7 +111,7 @@ function shouldUseGateRouter({
   return {
     executionPath,
     intent,
-    enabled: executionPath === "router-api" || executionPath === "loop",
+    enabled: executionPath === "main" || executionPath === "loop",
   };
 }
 

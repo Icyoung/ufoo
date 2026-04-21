@@ -376,7 +376,7 @@ describe("daemon promptRequest", () => {
     });
   });
 
-  test("router-api gate router dispatches pure routing requests without main router fallback", async () => {
+  test("main gate router dispatches pure routing requests without main router fallback", async () => {
     const socket = { write: jest.fn() };
     const dispatchMessages = jest.fn().mockResolvedValue(undefined);
     const runPromptWithAssistant = jest.fn();
@@ -400,7 +400,7 @@ describe("daemon promptRequest", () => {
       projectRoot: "/tmp/project",
       req: {
         text: "Continue with reviewer on the current review thread",
-        request_meta: { agent_execution_path: "router-api" },
+        request_meta: { agent_execution_path: "main" },
       },
       socket,
       provider: "codex-cli",
@@ -440,7 +440,7 @@ describe("daemon promptRequest", () => {
     });
   });
 
-  test("router-api upgrades to main router when gate router returns an upgrade decision", async () => {
+  test("main upgrades to main router when gate router returns an upgrade decision", async () => {
     const socket = { write: jest.fn() };
     const runPromptWithAssistant = jest.fn().mockResolvedValue({
       ok: true,
@@ -463,7 +463,7 @@ describe("daemon promptRequest", () => {
       projectRoot: "/tmp/project",
       req: {
         text: "Send this to the right agent",
-        request_meta: { agent_execution_path: "router-api" },
+        request_meta: { agent_execution_path: "main" },
       },
       socket,
       provider: "codex-cli",
@@ -485,7 +485,7 @@ describe("daemon promptRequest", () => {
     expect(runPromptWithAssistant.mock.calls[0][0].prompt).toContain("\"decision\": \"upgrade_to_main_router\"");
   });
 
-  test("router-api upgrades to main router when gate-router dispatch fails", async () => {
+  test("main upgrades to main router when gate-router dispatch fails", async () => {
     const socket = { write: jest.fn() };
     const runPromptWithAssistant = jest.fn().mockResolvedValue({
       ok: true,
@@ -509,7 +509,7 @@ describe("daemon promptRequest", () => {
       projectRoot: "/tmp/project",
       req: {
         text: "Continue with reviewer",
-        request_meta: { agent_execution_path: "router-api" },
+        request_meta: { agent_execution_path: "main" },
       },
       socket,
       provider: "codex-cli",

@@ -5,7 +5,7 @@ const { loadConfig, normalizeControllerMode } = require("../config");
 const CONTROLLER_MODES = Object.freeze({
   LEGACY: "legacy",
   SHADOW: "shadow",
-  ROUTER_API: "router-api",
+  MAIN: "main",
   LOOP: "loop",
 });
 
@@ -15,7 +15,11 @@ const appliedControllerModes = new Map();
 const appliedControllerModeHistory = new Map();
 
 function readProcessControllerMode(env = process.env) {
-  return normalizeControllerMode(env.UFOO_CONTROLLER_MODE);
+  const normalized = normalizeControllerMode(env.UFOO_CONTROLLER_MODE);
+  if (normalized !== CONTROLLER_MODES.LEGACY || String(env.UFOO_CONTROLLER_MODE || "").trim().toLowerCase() === CONTROLLER_MODES.LEGACY) {
+    return normalized;
+  }
+  return CONTROLLER_MODES.MAIN;
 }
 
 function resolveControllerMode({
@@ -37,7 +41,10 @@ function resolveControllerMode({
     : null;
   if (loadedConfig) {
     const projectMode = normalizeControllerMode(loadedConfig.controllerMode);
-    return projectMode;
+    if (projectMode !== CONTROLLER_MODES.LEGACY || String(loadedConfig.controllerMode || "").trim().toLowerCase() === CONTROLLER_MODES.LEGACY) {
+      return projectMode;
+    }
+    return CONTROLLER_MODES.MAIN;
   }
 
   return readProcessControllerMode(env);
@@ -62,7 +69,7 @@ function pushModeHistory(key, previousMode, normalizedMode, messageId) {
 
 function applyControllerModeForMessage({
   projectRoot,
-  nextMode = CONTROLLER_MODES.LEGACY,
+  nextMode = CONTROLLER_MODES.MAIN,
   messageId = "",
 } = {}) {
   const key = getControllerModeStateKey(projectRoot);
@@ -96,7 +103,7 @@ function rollbackControllerModeForMessage({
   const key = getControllerModeStateKey(projectRoot);
   const list = appliedControllerModeHistory.get(key) || [];
   const lastTransition = list.length > 0 ? list[list.length - 1] : null;
-  const currentMode = appliedControllerModes.get(key) || CONTROLLER_MODES.LEGACY;
+  const currentMode = appliedControllerModes.get(key) || CONTROLLER_MODES.MAIN;
 
   if (!lastTransition) {
     return {
@@ -135,7 +142,7 @@ function rollbackControllerModeForMessage({
 
 function getAppliedControllerMode(projectRoot) {
   const key = getControllerModeStateKey(projectRoot);
-  return appliedControllerModes.get(key) || CONTROLLER_MODES.LEGACY;
+  return appliedControllerModes.get(key) || CONTROLLER_MODES.MAIN;
 }
 
 function getControllerModeHistoryForTests(projectRoot) {

@@ -44,8 +44,11 @@ describe("config save/load", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-config-controller-"));
     fs.mkdirSync(path.join(projectRoot, ".ufoo"), { recursive: true });
 
+    saveConfig(projectRoot, { controllerMode: "main" });
+    expect(loadConfig(projectRoot).controllerMode).toBe("main");
+
     saveConfig(projectRoot, { controllerMode: "router-api" });
-    expect(loadConfig(projectRoot).controllerMode).toBe("router-api");
+    expect(loadConfig(projectRoot).controllerMode).toBe("main");
 
     saveConfig(projectRoot, { controllerMode: "invalid-mode" });
     expect(loadConfig(projectRoot).controllerMode).toBe("legacy");
@@ -64,9 +67,16 @@ describe("config save/load", () => {
   test("normalizeControllerMode supports all phase flags", () => {
     expect(normalizeControllerMode("legacy")).toBe("legacy");
     expect(normalizeControllerMode("shadow")).toBe("shadow");
-    expect(normalizeControllerMode("router-api")).toBe("router-api");
+    expect(normalizeControllerMode("main")).toBe("main");
+    expect(normalizeControllerMode("router-api")).toBe("main");
     expect(normalizeControllerMode("loop")).toBe("loop");
     expect(normalizeControllerMode("unknown")).toBe("legacy");
+  });
+
+  test("loadConfig defaults controllerMode to main when config is absent", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-config-default-main-"));
+    expect(loadConfig(projectRoot).controllerMode).toBe("main");
+    fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
   test("saveConfig/loadConfig normalizes codexInternalThreadMode", () => {

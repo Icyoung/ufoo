@@ -1770,19 +1770,34 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
         );
         return;
       }
-      const target = req.group_id || req.groupId || req.instance || req.alias || req.target || "";
-      if (!target) {
-        socket.write(
-          `${JSON.stringify({
-            type: IPC_RESPONSE_TYPES.ERROR,
-            error: "group diagram requires alias|group_id",
-          })}
-`,
-        );
-        return;
-      }
+      let target = req.group_id || req.groupId || req.instance || req.alias || req.target || "";
       const format = normalizeFormat(req.format || (req.mermaid ? "mermaid" : "ascii"));
       try {
+        if (!target || target === "current") {
+          const latest = daemonGroupOrchestrator.getStatus({});
+          if (latest && latest.ok && Array.isArray(latest.groups) && latest.groups.length > 0) {
+            target = latest.groups[0].group_id || "";
+          }
+        }
+        if (!target) {
+          socket.write(
+            `${JSON.stringify({
+              type: IPC_RESPONSE_TYPES.RESPONSE,
+              data: {
+                reply: "Group diagram failed: no running groups and no template alias provided",
+                group: {
+                  ok: false,
+                  mode: "runtime",
+                  target: "",
+                  format,
+                  error: "no running groups",
+                },
+              },
+            })}
+`,
+          );
+          return;
+        }
         const runtimeState = daemonGroupOrchestrator.getStatus({ group_id: target });
         if (runtimeState && runtimeState.ok === false && runtimeState.error === "invalid group_id") {
           socket.write(

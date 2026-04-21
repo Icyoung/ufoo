@@ -31,7 +31,18 @@ describe("chat command helpers", () => {
   test("settings command exposes ucode subsection", () => {
     const settings = COMMAND_REGISTRY.find((item) => item.cmd === "/settings");
     expect(settings).toBeTruthy();
+    expect((settings.subcommands || []).some((sub) => sub.cmd === "router")).toBe(true);
     expect((settings.subcommands || []).some((sub) => sub.cmd === "ucode")).toBe(true);
+    const router = (settings.subcommands || []).find((sub) => sub.cmd === "router");
+    expect((router.subcommands || []).map((sub) => sub.cmd)).toEqual([
+      "show",
+      "set",
+      "clear",
+      "main",
+      "loop",
+      "legacy",
+      "shadow",
+    ]);
   });
 
   test("cron command is exposed", () => {
@@ -46,6 +57,8 @@ describe("chat command helpers", () => {
     const group = COMMAND_REGISTRY.find((item) => item.cmd === "/group");
     expect(group).toBeTruthy();
     expect((group.subcommands || []).some((sub) => sub.cmd === "run")).toBe(true);
+    expect(group.subcommands[0].cmd).toBe("run");
+    expect(group.subcommands[1].cmd).toBe("diagram");
     expect((group.subcommands || []).some((sub) => sub.cmd === "status")).toBe(true);
     expect((group.subcommands || []).some((sub) => sub.cmd === "stop")).toBe(true);
     expect((group.subcommands || []).some((sub) => sub.cmd === "template")).toBe(true);

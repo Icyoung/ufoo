@@ -7,7 +7,7 @@ const UCODE_FIELDS = ["ucodeProvider", "ucodeModel", "ucodeBaseUrl", "ucodeApiKe
 const DEFAULT_CONFIG = {
   launchMode: "auto",
   agentProvider: "codex-cli",
-  controllerMode: "legacy",
+  controllerMode: "main",
   codexInternalThreadMode: "legacy",
   codexAuthPath: "",
   claudeOauthProfile: "",
@@ -42,7 +42,8 @@ function normalizeAgentProvider(value) {
 function normalizeControllerMode(value) {
   const raw = String(value || "").trim().toLowerCase();
   if (raw === "shadow") return "shadow";
-  if (raw === "router-api") return "router-api";
+  if (raw === "router-api") return "main";
+  if (raw === "main") return "main";
   if (raw === "loop") return "loop";
   return "legacy";
 }
@@ -95,7 +96,9 @@ function loadConfig(projectRoot) {
       ...raw,
       launchMode: normalizeLaunchMode(raw.launchMode),
       agentProvider: normalizeAgentProvider(raw.agentProvider),
-      controllerMode: normalizeControllerMode(raw.controllerMode),
+      controllerMode: Object.prototype.hasOwnProperty.call(raw, "controllerMode")
+        ? normalizeControllerMode(raw.controllerMode)
+        : DEFAULT_CONFIG.controllerMode,
       codexInternalThreadMode: normalizeCodexInternalThreadMode(raw.codexInternalThreadMode),
       codexAuthPath: normalizeCodexAuthPath(raw.codexAuthPath),
       claudeOauthProfile: normalizeClaudeOauthProfile(raw.claudeOauthProfile),

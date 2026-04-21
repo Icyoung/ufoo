@@ -38,10 +38,10 @@ const COMMAND_TREE = {
   "/group": {
     desc: "Agent group orchestration",
     children: {
-      run: { desc: "Launch a group template" },
+      run: { desc: "Launch a group template", order: 1 },
+      diagram: { desc: "Render group diagram (ascii|mermaid)", order: 2 },
       stop: { desc: "Stop a running group" },
       status: { desc: "Show group runtime status" },
-      diagram: { desc: "Render group diagram (ascii|mermaid)" },
       template: { desc: "Template ops (list/show/validate/new)" },
       templates: { desc: "List available templates" },
     },
@@ -87,7 +87,26 @@ const COMMAND_TREE = {
   "/settings": {
     desc: "Settings operations",
     children: {
-      ucode: { desc: "Manage ucode model provider config" },
+      router: {
+        desc: "Manage controller routing mode/provider/model",
+        children: {
+          show: { desc: "Show router mode/provider/model", order: 1 },
+          set: { desc: "Set router mode/provider/model", order: 2 },
+          clear: { desc: "Clear router provider/model or reset mode", order: 3 },
+          main: { desc: "Set router mode to main", order: 4 },
+          loop: { desc: "Set router mode to loop", order: 5 },
+          legacy: { desc: "Set router mode to legacy", order: 6 },
+          shadow: { desc: "Set router mode to shadow", order: 7 },
+        },
+      },
+      ucode: {
+        desc: "Manage ucode model provider config",
+        children: {
+          show: { desc: "Show ucode provider/model/url/key", order: 1 },
+          set: { desc: "Set ucode provider/model/url/key", order: 2 },
+          clear: { desc: "Clear ucode provider/model/url/key", order: 3 },
+        },
+      },
     },
   },
   "/skills": {
@@ -101,7 +120,7 @@ const COMMAND_TREE = {
   "/ufoo": { desc: "ufoo protocol (session marker)" },
 };
 
-const COMMAND_ORDER = ["/launch", "/bus", "/ctx"];
+const COMMAND_ORDER = ["/launch", "/group", "/bus", "/ctx"];
 const COMMAND_ORDER_MAP = new Map(COMMAND_ORDER.map((cmd, idx) => [cmd, idx]));
 
 function sortCommands(a, b) {
@@ -112,30 +131,34 @@ function sortCommands(a, b) {
 }
 
 function buildCommandRegistry(tree) {
+  function mapNode(node = {}) {
+    const entry = {
+      desc: node.desc || "",
+      order: Number.isFinite(node.order) ? node.order : undefined,
+    };
+    if (node.children) {
+      entry.subcommands = Object.keys(node.children)
+        .sort((a, b) => {
+          const aNode = node.children[a] || {};
+          const bNode = node.children[b] || {};
+          const aOrder = Number.isFinite(aNode.order) ? aNode.order : Number.POSITIVE_INFINITY;
+          const bOrder = Number.isFinite(bNode.order) ? bNode.order : Number.POSITIVE_INFINITY;
+          if (aOrder !== bOrder) return aOrder - bOrder;
+          return a.localeCompare(b, "en", { sensitivity: "base" });
+        })
+        .map((sub) => ({
+          cmd: sub,
+          ...mapNode(node.children[sub]),
+        }));
+    }
+    return entry;
+  }
+
   return Object.keys(tree)
     .sort(sortCommands)
     .map((cmd) => {
       const node = tree[cmd] || {};
-      const entry = { cmd, desc: node.desc || "" };
-      if (node.children) {
-        entry.subcommands = Object.keys(node.children)
-          .sort((a, b) => {
-            const aNode = node.children[a] || {};
-            const bNode = node.children[b] || {};
-            const aOrder = Number.isFinite(aNode.order) ? aNode.order : Number.POSITIVE_INFINITY;
-            const bOrder = Number.isFinite(bNode.order) ? bNode.order : Number.POSITIVE_INFINITY;
-            if (aOrder !== bOrder) return aOrder - bOrder;
-            return a.localeCompare(b, "en", { sensitivity: "base" });
-          })
-          .map((sub) => ({
-            cmd: sub,
-            desc: (node.children[sub] && node.children[sub].desc) || "",
-            order: Number.isFinite(node.children[sub] && node.children[sub].order)
-              ? node.children[sub].order
-              : undefined,
-          }));
-      }
-      return entry;
+      return { cmd, ...mapNode(node) };
     });
 }
 

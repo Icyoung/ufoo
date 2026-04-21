@@ -3,7 +3,13 @@ const EventBus = require("../bus");
 const { IPC_REQUEST_TYPES } = require("../shared/eventContract");
 const UfooInit = require("../init");
 const { runGroupCoreCommand } = require("../cli/groupCoreCommands");
-const { loadConfig: loadProjectConfig, saveConfig: saveProjectConfig, loadGlobalUcodeConfig, saveGlobalUcodeConfig } = require("../config");
+const {
+  loadConfig: loadProjectConfig,
+  saveConfig: saveProjectConfig,
+  loadGlobalUcodeConfig,
+  saveGlobalUcodeConfig,
+  normalizeControllerMode,
+} = require("../config");
 const { resolveTransport } = require("../code/nativeRunner");
 const { parseIntervalMs, formatIntervalMs } = require("./cronScheduler");
 const { isGlobalControllerProjectRoot, resolveGlobalControllerUfooDir } = require("../projects");
@@ -1104,10 +1110,10 @@ function createCommandExecutor(options = {}) {
         kv.group_id ||
         kv.group ||
         kv.alias ||
-        (diagramArgs[0] && !String(diagramArgs[0]).includes("=") ? diagramArgs[0] : "")
+        (diagramArgs[0] && !String(diagramArgs[0]).includes("=") ? diagramArgs[0] : "current")
       ).trim();
       if (!target) {
-        logMessage("error", "{white-fg}✗{/white-fg} Usage: /group diagram <alias|groupId> [format=ascii|mermaid]");
+        logMessage("error", "{white-fg}✗{/white-fg} Usage: /group diagram [current|alias|groupId] [format=ascii|mermaid]");
         return;
       }
       const format = diagramArgs.includes("--mermaid")
@@ -1133,7 +1139,13 @@ function createCommandExecutor(options = {}) {
   async function handleSettingsCommand(args = []) {
     const section = String(args[0] || "").trim().toLowerCase();
     if (!section) {
-      logMessage("error", "{white-fg}✗{/white-fg} Usage: /settings ucode [show|set|clear ...]");
+      logMessage("error", "{white-fg}✗{/white-fg} Usage: /settings <router|ucode> ...");
+      return;
+    }
+
+    if (section === "router") {
+      const subArgs = args.slice(1);
+      await handleRouterSettingsCommand(subArgs);
       return;
     }
 
@@ -1147,7 +1159,88 @@ function createCommandExecutor(options = {}) {
       return;
     }
 
-    logMessage("error", "{white-fg}✗{/white-fg} Unknown settings section. Use: ucode");
+    logMessage("error", "{white-fg}✗{/white-fg} Unknown settings section. Use: router, ucode");
+  }
+
+  async function handleRouterSettingsCommand(args = []) {
+    const first = String(args[0] || "").trim().toLowerCase();
+    const hasInlineKv = args.some((item) => String(item || "").includes("="));
+    const action = !first ? "show" : (hasInlineKv ? "set" : first);
+
+    if (action === "show" || action === "status") {
+      const config = loadConfig(projectRoot) || {};
+      const mode = normalizeControllerMode(config.controllerMode);
+      logMessage("system", "{cyan-fg}router config:{/cyan-fg}");
+      logMessage("system", `  • controllerMode: ${mode}`);
+      logMessage("system", `  • provider: ${String(config.routerProvider || "").trim() || "(unset)"}`);
+      logMessage("system", `  • model: ${String(config.routerModel || "").trim() || "(unset)"}`);
+      logMessage("system", "  • allowed modes: main | loop | legacy | shadow");
+      return;
+    }
+
+    if (action === "set") {
+      const kvArgs = hasInlineKv ? args : args.slice(1);
+      const kv = parseKeyValueArgs(kvArgs);
+      const updates = {};
+
+      if (Object.prototype.hasOwnProperty.call(kv, "mode")) {
+        const nextMode = normalizeControllerMode(kv.mode);
+        if (!["main", "loop", "legacy", "shadow"].includes(nextMode) || nextMode !== String(kv.mode || "").trim().toLowerCase()) {
+          logMessage("error", "{white-fg}✗{/white-fg} Usage: /settings router set mode=<main|loop|legacy|shadow> provider=<id> model=<id>");
+          return;
+        }
+        updates.controllerMode = nextMode;
+      }
+      if (Object.prototype.hasOwnProperty.call(kv, "provider")) updates.routerProvider = String(kv.provider || "").trim();
+      if (Object.prototype.hasOwnProperty.call(kv, "model")) updates.routerModel = String(kv.model || "").trim();
+
+      if (Object.keys(updates).length === 0) {
+        logMessage("error", "{white-fg}✗{/white-fg} Usage: /settings router set mode=<main|loop|legacy|shadow> provider=<id> model=<id>");
+        return;
+      }
+
+      saveConfig(projectRoot, updates);
+      logMessage("system", "{white-fg}✓{/white-fg} router config updated");
+      if (Object.prototype.hasOwnProperty.call(updates, "controllerMode")) {
+        logMessage("system", `  • controllerMode: ${updates.controllerMode}`);
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, "routerProvider")) {
+        logMessage("system", `  • provider: ${updates.routerProvider || "(unset)"}`);
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, "routerModel")) {
+        logMessage("system", `  • model: ${updates.routerModel || "(unset)"}`);
+      }
+      await restartDaemon(projectRoot);
+      return;
+    }
+
+    if (action === "clear") {
+      const fieldsRaw = args.slice(1).map((item) => String(item || "").trim().toLowerCase()).filter(Boolean);
+      const fields = fieldsRaw.length === 0 ? ["all"] : fieldsRaw;
+      const updates = {};
+      const clearAll = fields.includes("all");
+      if (clearAll || fields.includes("mode")) updates.controllerMode = "main";
+      if (clearAll || fields.includes("provider")) updates.routerProvider = "";
+      if (clearAll || fields.includes("model")) updates.routerModel = "";
+      if (Object.keys(updates).length === 0) {
+        logMessage("error", "{white-fg}✗{/white-fg} Usage: /settings router clear [mode|provider|model|all]");
+        return;
+      }
+      saveConfig(projectRoot, updates);
+      logMessage("system", "{white-fg}✓{/white-fg} router config cleared");
+      await restartDaemon(projectRoot);
+      return;
+    }
+
+    const nextMode = normalizeControllerMode(action);
+    if (nextMode !== action || !["main", "loop", "legacy", "shadow"].includes(nextMode)) {
+      logMessage("error", "{white-fg}✗{/white-fg} Usage: /settings router <main|loop|legacy|shadow>");
+      return;
+    }
+
+    saveConfig(projectRoot, { controllerMode: nextMode });
+    logMessage("system", `{white-fg}✓{/white-fg} router mode set to ${nextMode}`);
+    await restartDaemon(projectRoot);
   }
 
   function parseUcodeConfigKv(args = []) {

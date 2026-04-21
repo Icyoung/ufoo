@@ -90,19 +90,19 @@ describe("ufooAgent prompt schema", () => {
     expect(call.systemPrompt).toContain("remainingToolCalls=2");
   });
 
-  test("keeps assistant_call removed under router-api controller mode", async () => {
+  test("keeps assistant_call removed under main controller mode", async () => {
     const res = await runUfooAgent({
       projectRoot,
       prompt: "inspect",
       provider: "codex-cli",
       model: "",
-      controllerMode: "router-api",
+      controllerMode: "main",
     });
 
     expect(res.ok).toBe(true);
     const call = runCliAgent.mock.calls[0][0];
     expect(call.systemPrompt).not.toContain("\"assistant_call\": {");
-    expect(call.systemPrompt).toContain("Controller mode=router-api");
+    expect(call.systemPrompt).toContain("Controller mode=main");
   });
 
   test("keeps assistant_call removed under loop controller mode (non-loop-runtime path)", async () => {

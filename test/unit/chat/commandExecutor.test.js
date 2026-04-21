@@ -659,13 +659,18 @@ describe("chat commandExecutor", () => {
     });
   });
 
-  test("handleGroupCommand diagram requires target", async () => {
+  test("handleGroupCommand diagram defaults to current runtime group", async () => {
     const { executor, options, logs } = createHarness();
 
     await executor.handleGroupCommand(["diagram"]);
 
-    expect(options.send).not.toHaveBeenCalled();
-    expect(logs.some((entry) => entry.text.includes("Usage: /group diagram <alias|groupId>"))).toBe(true);
+    expect(logs.length).toBe(0);
+    expect(options.send).toHaveBeenCalledWith({
+      type: "group_diagram",
+      alias: "current",
+      group_id: "current",
+      format: "ascii",
+    });
   });
 
   test("handleGroupCommand uses group core helper for template listing", async () => {
@@ -893,6 +898,61 @@ describe("chat commandExecutor", () => {
 
     expect(options.loadUcodeConfig).toHaveBeenCalled();
     expect(logs.some((entry) => entry.text.includes("ucode config:"))).toBe(true);
+  });
+
+  test("handleSettingsCommand shows router mode", async () => {
+    const { executor, options, logs } = createHarness({
+      loadConfig: jest.fn(() => ({ controllerMode: "main", routerProvider: "codex", routerModel: "gpt-5.4-mini" })),
+    });
+
+    await executor.handleSettingsCommand(["router"]);
+
+    expect(options.loadConfig).toHaveBeenCalledWith("/tmp/ufoo");
+    expect(logs.some((entry) => entry.text.includes("router config:"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("controllerMode: main"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("provider: codex"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("model: gpt-5.4-mini"))).toBe(true);
+  });
+
+  test("executeCommand routes /settings router loop to project config and daemon restart", async () => {
+    const { executor, options, logs } = createHarness({
+      parseCommand: jest.fn(() => ({ command: "settings", args: ["router", "loop"] })),
+    });
+
+    await expect(executor.executeCommand("/settings router loop")).resolves.toBe(true);
+
+    expect(options.saveConfig).toHaveBeenCalledWith("/tmp/ufoo", { controllerMode: "loop" });
+    expect(options.restartDaemon).toHaveBeenCalledWith("/tmp/ufoo");
+    expect(logs.some((entry) => entry.text.includes("router mode set to loop"))).toBe(true);
+  });
+
+  test("executeCommand routes /settings router set provider/model kv pairs", async () => {
+    const { executor, options, logs } = createHarness({
+      parseCommand: jest.fn(() => ({ command: "settings", args: ["router", "set", "provider=claude", "model=claude-haiku", "mode=main"] })),
+    });
+
+    await expect(executor.executeCommand("/settings router set provider=claude model=claude-haiku mode=main")).resolves.toBe(true);
+
+    expect(options.saveConfig).toHaveBeenCalledWith("/tmp/ufoo", {
+      controllerMode: "main",
+      routerProvider: "claude",
+      routerModel: "claude-haiku",
+    });
+    expect(options.restartDaemon).toHaveBeenCalledWith("/tmp/ufoo");
+    expect(logs.some((entry) => entry.text.includes("router config updated"))).toBe(true);
+  });
+
+  test("handleSettingsCommand clears router provider and model", async () => {
+    const { executor, options, logs } = createHarness();
+
+    await executor.handleSettingsCommand(["router", "clear", "provider", "model"]);
+
+    expect(options.saveConfig).toHaveBeenCalledWith("/tmp/ufoo", {
+      routerProvider: "",
+      routerModel: "",
+    });
+    expect(options.restartDaemon).toHaveBeenCalledWith("/tmp/ufoo");
+    expect(logs.some((entry) => entry.text.includes("router config cleared"))).toBe(true);
   });
 
   test("handleUfooCommand with marker silently checks messages", async () => {

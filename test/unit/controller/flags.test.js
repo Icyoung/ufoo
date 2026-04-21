@@ -30,18 +30,18 @@ describe("controller flags", () => {
     expect(CONTROLLER_MODES).toEqual({
       LEGACY: "legacy",
       SHADOW: "shadow",
-      ROUTER_API: "router-api",
+      MAIN: "main",
       LOOP: "loop",
     });
   });
 
   test("reads process-scoped controller mode", () => {
     expect(readProcessControllerMode({ UFOO_CONTROLLER_MODE: "shadow" })).toBe("shadow");
-    expect(readProcessControllerMode({ UFOO_CONTROLLER_MODE: "invalid" })).toBe("legacy");
+    expect(readProcessControllerMode({ UFOO_CONTROLLER_MODE: "invalid" })).toBe("main");
   });
 
-  test("resolveControllerMode defaults to legacy", () => {
-    expect(resolveControllerMode({ env: {} })).toBe("legacy");
+  test("resolveControllerMode defaults to main", () => {
+    expect(resolveControllerMode({ env: {} })).toBe("main");
   });
 
   test("resolveControllerMode prefers user override over project and process", () => {
@@ -50,21 +50,21 @@ describe("controller flags", () => {
     const mode = resolveControllerMode({
       projectRoot,
       requestedMode: "loop",
-      env: { UFOO_CONTROLLER_MODE: "router-api" },
+      env: { UFOO_CONTROLLER_MODE: "main" },
     });
 
     expect(mode).toBe("loop");
   });
 
   test("resolveControllerMode falls back to project config before process env", () => {
-    saveConfig(projectRoot, { controllerMode: "router-api" });
+    saveConfig(projectRoot, { controllerMode: "main" });
 
     const mode = resolveControllerMode({
       projectRoot,
       env: { UFOO_CONTROLLER_MODE: "shadow" },
     });
 
-    expect(mode).toBe("router-api");
+    expect(mode).toBe("main");
   });
 
   test("resolveControllerMode uses process env when no narrower override exists", () => {
@@ -79,10 +79,10 @@ describe("controller flags", () => {
   test("applyControllerModeForMessage only emits transitions when mode changes on a later message", () => {
     expect(applyControllerModeForMessage({
       projectRoot,
-      nextMode: CONTROLLER_MODES.LEGACY,
+      nextMode: CONTROLLER_MODES.MAIN,
       messageId: "msg-1",
     })).toEqual({
-      mode: CONTROLLER_MODES.LEGACY,
+      mode: CONTROLLER_MODES.MAIN,
       transition: null,
     });
 
@@ -93,7 +93,7 @@ describe("controller flags", () => {
     })).toEqual({
       mode: CONTROLLER_MODES.SHADOW,
       transition: {
-        from_mode: CONTROLLER_MODES.LEGACY,
+        from_mode: CONTROLLER_MODES.MAIN,
         to_mode: CONTROLLER_MODES.SHADOW,
         applied_from_msg_id: "msg-2",
       },
@@ -112,7 +112,7 @@ describe("controller flags", () => {
   test("rollbackControllerModeForMessage reverts to the previous applied tier", () => {
     applyControllerModeForMessage({
       projectRoot,
-      nextMode: CONTROLLER_MODES.LEGACY,
+      nextMode: CONTROLLER_MODES.MAIN,
       messageId: "msg-a",
     });
     applyControllerModeForMessage({
@@ -128,7 +128,7 @@ describe("controller flags", () => {
 
     const history = getControllerModeHistoryForTests(projectRoot);
     expect(history).toEqual([
-      { from_mode: CONTROLLER_MODES.LEGACY, to_mode: CONTROLLER_MODES.SHADOW, applied_from_msg_id: "msg-b" },
+      { from_mode: CONTROLLER_MODES.MAIN, to_mode: CONTROLLER_MODES.SHADOW, applied_from_msg_id: "msg-b" },
       { from_mode: CONTROLLER_MODES.SHADOW, to_mode: CONTROLLER_MODES.LOOP, applied_from_msg_id: "msg-c" },
     ]);
 
@@ -150,11 +150,11 @@ describe("controller flags", () => {
 
     const secondRollback = rollbackControllerModeForMessage({ projectRoot, messageId: "msg-e" });
     expect(secondRollback).toEqual({
-      mode: CONTROLLER_MODES.LEGACY,
+      mode: CONTROLLER_MODES.MAIN,
       rolled_back: true,
       transition: {
         from_mode: CONTROLLER_MODES.SHADOW,
-        to_mode: CONTROLLER_MODES.LEGACY,
+        to_mode: CONTROLLER_MODES.MAIN,
         applied_from_msg_id: "msg-e",
         rolled_back: true,
         restored_from_msg_id: "msg-b",
@@ -163,7 +163,7 @@ describe("controller flags", () => {
 
     const noMoreHistory = rollbackControllerModeForMessage({ projectRoot, messageId: "msg-f" });
     expect(noMoreHistory).toEqual({
-      mode: CONTROLLER_MODES.LEGACY,
+      mode: CONTROLLER_MODES.MAIN,
       rolled_back: false,
       transition: null,
     });

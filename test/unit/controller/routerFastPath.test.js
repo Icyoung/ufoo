@@ -47,16 +47,16 @@ describe("controller gateRouter", () => {
     const loadConfigImpl = jest.fn(() => ({ agentExecutionPath: "legacy" }));
     const result = resolveExecutionPath({
       projectRoot: "/tmp/project",
-      requestMeta: { agent_execution_path: "router-api" },
+      requestMeta: { agent_execution_path: "main" },
       env: { UFOO_AGENT_EXECUTION_PATH: "loop" },
       loadConfigImpl,
     });
 
-    expect(result).toBe("router-api");
+    expect(result).toBe("main");
   });
 
-  test("enables gate router for router-api requests regardless of prompt intent", () => {
-    const loadConfigImpl = jest.fn(() => ({ agentExecutionPath: "router-api" }));
+  test("enables gate router for main requests regardless of prompt intent", () => {
+    const loadConfigImpl = jest.fn(() => ({ agentExecutionPath: "main" }));
 
     expect(shouldUseGateRouter({
       projectRoot: "/tmp/project",
@@ -64,7 +64,7 @@ describe("controller gateRouter", () => {
       loadConfigImpl,
       env: {},
     })).toEqual({
-      executionPath: "router-api",
+      executionPath: "main",
       intent: { kind: "routing", reason: "routing_signal" },
       enabled: true,
     });
@@ -75,20 +75,20 @@ describe("controller gateRouter", () => {
       loadConfigImpl,
       env: {},
     })).toEqual({
-      executionPath: "router-api",
+      executionPath: "main",
       intent: { kind: "general", reason: "no_routing_signal" },
       enabled: true,
     });
   });
 
   test("accepts controllerMode as the persisted gate-router config key", () => {
-    const loadConfigImpl = jest.fn(() => ({ controllerMode: "router-api" }));
+    const loadConfigImpl = jest.fn(() => ({ controllerMode: "main" }));
 
     expect(resolveExecutionPath({
       projectRoot: "/tmp/project",
       loadConfigImpl,
       env: {},
-    })).toBe("router-api");
+    })).toBe("main");
 
     expect(shouldUseGateRouter({
       projectRoot: "/tmp/project",
@@ -96,7 +96,7 @@ describe("controller gateRouter", () => {
       loadConfigImpl,
       env: {},
     })).toEqual({
-      executionPath: "router-api",
+      executionPath: "main",
       intent: { kind: "routing", reason: "routing_signal" },
       enabled: true,
     });

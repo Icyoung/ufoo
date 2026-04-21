@@ -11,6 +11,19 @@ function sortSubcommandEntries(a, b) {
   return String(a && a.cmd ? a.cmd : "").localeCompare(String(b && b.cmd ? b.cmd : ""), "en", { sensitivity: "base" });
 }
 
+function mapSubcommandSuggestions(subs = [], parentCmd, tokenIndex, filterText = "") {
+  const normalizedFilter = String(filterText || "").toLowerCase();
+  return subs
+    .filter((sub) => String(sub && sub.cmd ? sub.cmd : "").toLowerCase().startsWith(normalizedFilter))
+    .map((sub) => ({
+      ...sub,
+      isSubcommand: true,
+      parentCmd,
+      tokenIndex,
+    }))
+    .sort(sortSubcommandEntries);
+}
+
 function createCompletionController(options = {}) {
   const {
     input,
@@ -217,14 +230,14 @@ function createCompletionController(options = {}) {
           subs = Array.from(merged.values());
         }
         if (isLaunch) {
-          return subs
-            .map((sub) => ({ ...sub, isSubcommand: true, parentCmd: mainCmd }))
-            .sort(sortSubcommandEntries);
+          return mapSubcommandSuggestions(subs, mainCmd, 1, "");
         }
-        return subs
-          .filter((sub) => sub.cmd.toLowerCase().startsWith(subFilter.toLowerCase()))
-          .map((sub) => ({ ...sub, isSubcommand: true, parentCmd: mainCmd }))
-          .sort(sortSubcommandEntries);
+        const selectedSub = subs.find((sub) => String(sub && sub.cmd ? sub.cmd : "").toLowerCase() === subFilter.toLowerCase());
+        if (selectedSub && selectedSub.subcommands && (parts.length > 2 || endsWithSpace)) {
+          const nestedFilter = parts[2] || "";
+          return mapSubcommandSuggestions(selectedSub.subcommands, mainCmd, 2, nestedFilter);
+        }
+        return mapSubcommandSuggestions(subs, mainCmd, 1, subFilter);
       }
       return [];
     }
@@ -312,8 +325,10 @@ function createCompletionController(options = {}) {
 
     if (selected.isSubcommand) {
       const parts = trimmed.split(/\s+/);
-      const base = parts[0] || "";
-      const completedCore = base ? `${base} ${selected.cmd}` : selected.cmd;
+      const tokenIndex = Number.isInteger(selected.tokenIndex) ? selected.tokenIndex : 1;
+      while (parts.length <= tokenIndex) parts.push("");
+      parts[tokenIndex] = selected.cmd;
+      const completedCore = parts.slice(0, tokenIndex + 1).join(" ").trim();
       const isComplete = trimmed === completedCore || trimmed.startsWith(`${completedCore} `);
       return { text: `${completedCore} `, isComplete };
     }
@@ -353,8 +368,10 @@ function createCompletionController(options = {}) {
       input.value = `@${mentionTarget} `;
     } else if (selected.isSubcommand) {
       const parts = input.value.split(/\s+/);
-      parts[parts.length - 1] = selected.cmd;
-      input.value = `${parts.join(" ")} `;
+      const tokenIndex = Number.isInteger(selected.tokenIndex) ? selected.tokenIndex : 1;
+      while (parts.length <= tokenIndex) parts.push("");
+      parts[tokenIndex] = selected.cmd;
+      input.value = `${parts.slice(0, tokenIndex + 1).join(" ")} `;
     } else if (selected.isArgumentSuggestion) {
       const prefix = String(selected.argumentPrefix || "").trim();
       input.value = prefix ? `${prefix} ${selected.cmd} ` : `${selected.cmd} `;
@@ -369,7 +386,7 @@ function createCompletionController(options = {}) {
     }
     updateDraftFromInput();
 
-    if (!selected.isSubcommand && selected.subcommands && selected.subcommands.length > 0) {
+    if (selected.subcommands && selected.subcommands.length > 0) {
       show(input.value);
     } else if (
       selected.isSubcommand
@@ -417,7 +434,7 @@ function createCompletionController(options = {}) {
         const nextPreview = preview(selected);
         if (!nextPreview.isComplete) {
           applyPreview(nextPreview);
-          if (!selected.isSubcommand && selected.subcommands && selected.subcommands.length > 0) {
+          if (selected.subcommands && selected.subcommands.length > 0) {
             show(input.value);
           } else if (
             selected.isSubcommand
