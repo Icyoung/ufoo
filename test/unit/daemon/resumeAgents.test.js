@@ -71,4 +71,28 @@ describe("daemon resumeAgents", () => {
     });
     expect(spawn).toHaveBeenCalledWith("tmux", expect.any(Array));
   });
+
+  test("preserves stored nickname while resuming recoverable agent", async () => {
+    writeConfig({ launchMode: "tmux" });
+    writeAgents({
+      "claude-code:b1": {
+        agent_type: "claude-code",
+        nickname: "neptune-reviewer",
+        status: "inactive",
+        provider_session_id: "sess-r1",
+      },
+    });
+
+    const result = await resumeAgents(projectRoot, "neptune-reviewer");
+    const agents = JSON.parse(fs.readFileSync(getUfooPaths(projectRoot).agentsFile, "utf8"));
+
+    expect(result.ok).toBe(true);
+    expect(result.resumed).toHaveLength(1);
+    expect(result.resumed[0]).toMatchObject({
+      id: "claude-code:b1",
+      nickname: "neptune-reviewer",
+      reused: false,
+    });
+    expect(agents.agents["claude-code:b1"].nickname).toBe("neptune-reviewer");
+  });
 });

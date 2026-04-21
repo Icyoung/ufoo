@@ -1086,23 +1086,10 @@ function getRecoverableAgents(projectRoot, target = "") {
 }
 
 async function resumeAgents(projectRoot, target = "", processManager = null) {
-  const filePath = getUfooPaths(projectRoot).agentsFile;
   const { mode, data, recoverableEntries, skipped } = collectRecoverableAgents(projectRoot, target);
 
   if (recoverableEntries.length === 0) {
     return { ok: true, resumed: [], skipped };
-  }
-
-  // Clear old nicknames to allow reuse.
-  let updated = false;
-  for (const item of recoverableEntries) {
-    if (item.meta && item.meta.nickname) {
-      data.agents[item.id] = { ...item.meta, nickname: "" };
-      updated = true;
-    }
-  }
-  if (updated) {
-    saveAgentsData(filePath, data);
   }
 
   const resumed = [];
