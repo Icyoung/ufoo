@@ -15,6 +15,7 @@ const UfooInit = require("../init");
 const AgentActivator = require("../bus/activate");
 const { subscriberToSafeName } = require("../bus/utils");
 const { getUfooPaths } = require("../ufoo/paths");
+const { resolveDisplayNickname } = require("../daemon/nicknameScope");
 const { startDaemon, stopDaemon, connectWithRetry } = require("./transport");
 const { escapeBlessed, stripBlessedTags, truncateText } = require("./text");
 const { COMMAND_REGISTRY, parseCommand, parseAtTarget } = require("./commands");
@@ -915,7 +916,7 @@ async function runChat(projectRoot, options = {}) {
           const busPath = getUfooPaths(activeProjectRoot).agentsFile;
           const bus = JSON.parse(fs.readFileSync(busPath, "utf8"));
           for (const [id, meta] of Object.entries(bus.agents || {})) {
-            if (meta && meta.nickname === nickname) return id;
+            if (meta && (meta.nickname === nickname || meta.scoped_nickname === nickname)) return id;
           }
         } catch {
           // ignore lookup errors
@@ -934,7 +935,7 @@ async function runChat(projectRoot, options = {}) {
           const busPath = getUfooPaths(activeProjectRoot).agentsFile;
           const bus = JSON.parse(fs.readFileSync(busPath, "utf8"));
           const meta = bus.agents && bus.agents[id];
-          if (meta && meta.nickname) return meta.nickname;
+          if (meta) return resolveDisplayNickname(activeProjectRoot, meta);
         } catch {
           // Keep original publisher ID
         }
@@ -1275,7 +1276,9 @@ async function runChat(projectRoot, options = {}) {
         const bus = JSON.parse(fs.readFileSync(busPath, "utf8"));
         fallbackMap = new Map();
         for (const [id, meta] of Object.entries(bus.agents || {})) {
-          if (meta && meta.nickname) fallbackMap.set(id, meta.nickname);
+          if (!meta) continue;
+          const displayNickname = resolveDisplayNickname(activeProjectRoot, meta);
+          if (displayNickname) fallbackMap.set(id, displayNickname);
         }
       } catch {
         fallbackMap = null;

@@ -16,6 +16,7 @@ const {
   sleep,
 } = require("./utils");
 const { shakeTerminalByTty } = require("./shake");
+const { resolveDisplayNickname } = require("../daemon/nicknameScope");
 const QueueManager = require("./queue");
 const SubscriberManager = require("./subscriber");
 const MessageManager = require("./message");
@@ -147,7 +148,8 @@ class EventBus {
     if (!sessionId && !agentType && currentSubscriber && currentActive) {
       this.subscriberManager.updateLastSeen(currentSubscriber);
       this.saveBusData();
-      const currentNickname = currentMeta.nickname ? ` (${currentMeta.nickname})` : "";
+      const currentDisplayNickname = resolveDisplayNickname(this.projectRoot, currentMeta);
+      const currentNickname = currentDisplayNickname ? ` (${currentDisplayNickname})` : "";
       logInfo(`Already joined event bus: ${currentSubscriber}${currentNickname}`);
       return currentSubscriber;
     }
@@ -201,14 +203,15 @@ class EventBus {
   /**
    * 重命名订阅者
    */
-  async rename(subscriber, newNickname, publisher = null) {
+  async rename(subscriber, newNickname, publisher = null, options = {}) {
     this.ensureBus();
     this.loadBusData();
 
     try {
       const result = await this.subscriberManager.rename(
         subscriber,
-        newNickname
+        newNickname,
+        options
       );
       this.saveBusData();
       const pub = publisher || this.getDefaultPublisher() || "unknown";
@@ -468,7 +471,7 @@ class EventBus {
       console.log("  (none)");
     } else {
       for (const sub of active) {
-        const nickname = sub.nickname ? ` (${sub.nickname})` : "";
+      const nickname = sub.nickname ? ` (${sub.nickname})` : "";
         console.log(`  ${sub.id}${nickname}`);
       }
     }

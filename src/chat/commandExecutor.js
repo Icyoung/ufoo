@@ -11,6 +11,7 @@ const {
   normalizeControllerMode,
 } = require("../config");
 const { resolveTransport } = require("../code/nativeRunner");
+const { resolveDisplayNickname } = require("../daemon/nicknameScope");
 const { parseIntervalMs, formatIntervalMs } = require("./cronScheduler");
 const { isGlobalControllerProjectRoot, resolveGlobalControllerUfooDir } = require("../projects");
 const { loadPromptProfileRegistry } = require("../group/promptProfiles");
@@ -319,7 +320,8 @@ function createCommandExecutor(options = {}) {
         } else {
           logMessage("system", "{cyan-fg}Active agents:{/cyan-fg}");
           for (const [id, meta] of subscribers) {
-            const nickname = meta && meta.nickname ? ` (${meta.nickname})` : "";
+            const displayNickname = meta ? resolveDisplayNickname(projectRoot, meta) : "";
+            const nickname = displayNickname ? ` (${displayNickname})` : "";
             const status = meta && meta.status ? meta.status : "unknown";
             logMessage("system", `  • ${id}${nickname} {white-fg}[${status}]{/white-fg}`);
           }

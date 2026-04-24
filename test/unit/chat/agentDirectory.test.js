@@ -9,7 +9,7 @@ const {
 describe("chat agentDirectory helpers", () => {
   test("buildAgentMaps prefers meta nickname, then fallback, then id", () => {
     const activeAgents = ["a:1", "b:2", "c:3"];
-    const metaList = [{ id: "a:1", nickname: "alpha", launch_mode: "internal" }];
+    const metaList = [{ id: "a:1", nickname: "alpha", display_nickname: "alpha", launch_mode: "internal" }];
     const fallback = new Map([["b:2", "beta"]]);
 
     const maps = buildAgentMaps(activeAgents, metaList, fallback);
@@ -18,6 +18,14 @@ describe("chat agentDirectory helpers", () => {
     expect(maps.labelMap.get("c:3")).toBe("c:3");
     expect(maps.metaMap.get("a:1")).toEqual(metaList[0]);
     expect(maps.metaMap.has("b:2")).toBe(false);
+  });
+
+  test("buildAgentMaps prefers display nickname over scoped/raw fallback", () => {
+    const activeAgents = ["a:1"];
+    const metaList = [{ id: "a:1", nickname: "neptune-alpha", display_nickname: "alpha" }];
+
+    const maps = buildAgentMaps(activeAgents, metaList, null);
+    expect(maps.labelMap.get("a:1")).toBe("alpha");
   });
 
   test("getAgentLabel returns mapped label or id", () => {

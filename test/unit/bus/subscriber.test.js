@@ -31,10 +31,13 @@ describe('SubscriberManager', () => {
     });
 
     it('should join with custom nickname', async () => {
-      const result = await manager.join('xyz789', 'codex', 'my-agent');
+      const result = await manager.join('xyz789', 'codex', 'my-agent', {
+        scopedNickname: 'neptune-my-agent',
+      });
 
       expect(result.nickname).toBe('my-agent');
       expect(busData.agents['codex:xyz789'].nickname).toBe('my-agent');
+      expect(busData.agents['codex:xyz789'].scoped_nickname).toBe('neptune-my-agent');
     });
 
     it('should throw error for duplicate nickname', async () => {
@@ -196,11 +199,14 @@ describe('SubscriberManager', () => {
     it('should rename subscriber', async () => {
       await manager.join('abc123', 'claude-code', 'old-name');
 
-      const result = await manager.rename('claude-code:abc123', 'new-name');
+      const result = await manager.rename('claude-code:abc123', 'new-name', {
+        scopedNickname: 'neptune-new-name',
+      });
 
       expect(result.oldNickname).toBe('old-name');
       expect(result.newNickname).toBe('new-name');
       expect(busData.agents['claude-code:abc123'].nickname).toBe('new-name');
+      expect(busData.agents['claude-code:abc123'].scoped_nickname).toBe('neptune-new-name');
     });
 
     it('should throw error for non-existent subscriber', async () => {

@@ -7,8 +7,8 @@ describe('NicknameManager', () => {
   beforeEach(() => {
     busData = {
       agents: {
-        'claude-code:abc123': { nickname: 'architect', status: 'active' },
-        'claude-code:xyz789': { nickname: 'dev-lead', status: 'active' },
+        'claude-code:abc123': { nickname: 'architect', scoped_nickname: 'neptune-architect', status: 'active' },
+        'claude-code:xyz789': { nickname: 'dev-lead', scoped_nickname: 'neptune-dev-lead', status: 'active' },
         'codex:def456': { nickname: 'codex-1', status: 'active' },
         'codex:ghi789': { nickname: 'codex-2', status: 'inactive' },
       },
@@ -19,6 +19,7 @@ describe('NicknameManager', () => {
   describe('resolveNickname', () => {
     it('should resolve existing nickname', () => {
       expect(manager.resolveNickname('architect')).toBe('claude-code:abc123');
+      expect(manager.resolveNickname('neptune-architect')).toBe('claude-code:abc123');
       expect(manager.resolveNickname('dev-lead')).toBe('claude-code:xyz789');
       expect(manager.resolveNickname('codex-1')).toBe('codex:def456');
     });
@@ -41,6 +42,7 @@ describe('NicknameManager', () => {
   describe('nicknameExists', () => {
     it('should return true for existing nickname', () => {
       expect(manager.nicknameExists('architect')).toBe(true);
+      expect(manager.nicknameExists('neptune-architect')).toBe(true);
       expect(manager.nicknameExists('dev-lead')).toBe(true);
       expect(manager.nicknameExists('codex-1')).toBe(true);
     });
@@ -135,6 +137,12 @@ describe('NicknameManager', () => {
     it('should overwrite existing nickname', () => {
       manager.setNickname('claude-code:abc123', 'updated-name');
       expect(manager.getNickname('claude-code:abc123')).toBe('updated-name');
+    });
+
+    it('should store scoped nickname when provided', () => {
+      manager.setNickname('claude-code:abc123', 'builder', 'neptune-builder');
+      expect(manager.getNickname('claude-code:abc123')).toBe('builder');
+      expect(manager.getScopedNickname('claude-code:abc123')).toBe('neptune-builder');
     });
   });
 

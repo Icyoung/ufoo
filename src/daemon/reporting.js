@@ -9,6 +9,7 @@ const {
   appendControllerInboxEntry,
 } = require("../report/store");
 const { getUfooPaths } = require("../ufoo/paths");
+const { resolveDisplayNickname } = require("./nicknameScope");
 
 function resolveAgentDisplayName(projectRoot, agentId) {
   if (!agentId) return "unknown-agent";
@@ -16,9 +17,7 @@ function resolveAgentDisplayName(projectRoot, agentId) {
     const busPath = getUfooPaths(projectRoot).agentsFile;
     const bus = JSON.parse(fs.readFileSync(busPath, "utf8"));
     const meta = bus && bus.agents ? bus.agents[agentId] : null;
-    if (meta && typeof meta.nickname === "string" && meta.nickname.trim()) {
-      return meta.nickname.trim();
-    }
+    if (meta) return resolveDisplayNickname(projectRoot, meta) || agentId;
   } catch {
     // ignore
   }

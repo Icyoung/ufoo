@@ -3,6 +3,7 @@ const path = require("path");
 const childProcess = require("child_process");
 const { readJSON } = require("../bus/utils");
 const { getUfooPaths } = require("../ufoo/paths");
+const { resolveDisplayNickname } = require("../daemon/nicknameScope");
 
 function normalizeTty(ttyPath) {
   if (!ttyPath) return "";
@@ -233,7 +234,7 @@ class StatusDisplay {
     const busData = readJSON(agentsFile);
     if (!busData || !busData.agents) return null;
     const meta = busData.agents[subscriber];
-    return meta && meta.nickname ? meta.nickname : null;
+    return meta ? resolveDisplayNickname(this.projectRoot, meta) : null;
   }
 
   /**

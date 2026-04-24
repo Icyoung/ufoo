@@ -31,7 +31,11 @@ const {
   buildSoloBootstrapFingerprint,
   rollbackLaunchAfterRoleAssignmentFailure,
 } = require("./soloBootstrap");
-const { applyProjectNicknamePrefix } = require("./nicknameScope");
+const {
+  applyProjectNicknamePrefix,
+  resolveDisplayNickname,
+  resolveScopedNickname,
+} = require("./nicknameScope");
 
 let providerSessions = null;
 let probeHandles = new Map();
@@ -60,7 +64,7 @@ function normalizeLaunchAgent(agent = "") {
   return "";
 }
 
-async function renameSpawnedAgent(projectRoot, agentType, nickname, startIso) {
+async function renameSpawnedAgent(projectRoot, agentType, nickname, startIso, scopedNickname = "") {
   if (!nickname) return null;
   const busPath = getUfooPaths(projectRoot).agentsFile;
   const targetType = normalizeBusAgentType(agentType);
@@ -79,11 +83,11 @@ async function renameSpawnedAgent(projectRoot, agentType, nickname, startIso) {
         await sleep(200);
         continue;
       }
-      let candidates = entries.filter(([, meta]) => !meta.nickname);
+      let candidates = entries.filter(([, meta]) => !resolveDisplayNickname(projectRoot, meta));
       if (candidates.length === 0) candidates = entries;
       candidates.sort((a, b) => (a[1].joined_at || "").localeCompare(b[1].joined_at || ""));
       const [agentId] = candidates[candidates.length - 1];
-      await eventBus.rename(agentId, nickname, "ufoo-agent");
+      await eventBus.rename(agentId, nickname, "ufoo-agent", { scopedNickname });
       return { ok: true, agent_id: agentId, nickname };
     } catch (err) {
       lastError = err && err.message ? err.message : String(err || "rename failed");
@@ -382,13 +386,20 @@ async function waitForNewSubscriber(projectRoot, agentType, existing, timeoutMs 
   return null;
 }
 
-function checkAndCleanupNickname(projectRoot, nickname, { tty = "", agentType = "" } = {}) {
-  if (!nickname) return { existing: null, cleaned: false };
+function checkAndCleanupNickname(projectRoot, nickname, { tty = "", agentType = "", scopedNickname = "" } = {}) {
+  const conflictNickname = scopedNickname || applyProjectNicknamePrefix(projectRoot, nickname, {
+    agentType,
+    force: true,
+  });
+  if (!conflictNickname) return { existing: null, cleaned: false };
   const busPath = getUfooPaths(projectRoot).agentsFile;
   try {
     const bus = JSON.parse(fs.readFileSync(busPath, "utf8"));
     const entries = Object.entries(bus.agents || {})
-      .filter(([, meta]) => meta && meta.nickname === nickname);
+      .filter(([, meta]) => {
+        const candidate = resolveScopedNickname(projectRoot, meta);
+        return meta && candidate === conflictNickname;
+      });
 
     if (entries.length === 0) {
       return { existing: null, cleaned: false };
@@ -431,7 +442,7 @@ function resolveSubscriberNickname(projectRoot, subscriberId) {
   try {
     const busPath = getUfooPaths(projectRoot).agentsFile;
     const bus = JSON.parse(fs.readFileSync(busPath, "utf8"));
-    return bus.agents?.[subscriberId]?.nickname || "";
+    return resolveDisplayNickname(projectRoot, bus.agents?.[subscriberId] || {});
   } catch {
     return "";
   }
@@ -453,7 +464,8 @@ async function handleOps(projectRoot, ops = [], processManager = null) {
         continue;
       }
       const requestedNickname = String(op.nickname || "").trim();
-      const nickname = applyProjectNicknamePrefix(projectRoot, requestedNickname, { agentType: agent });
+      const nickname = requestedNickname;
+      const scopedNickname = applyProjectNicknamePrefix(projectRoot, requestedNickname, { agentType: agent });
       const startTime = new Date(Date.now() - 1000);
       const startIso = startTime.toISOString();
       if (nickname && count > 1) {
@@ -468,7 +480,7 @@ async function handleOps(projectRoot, ops = [], processManager = null) {
       }
       try {
         // Check for existing agent with same nickname
-        const { existing, cleaned } = checkAndCleanupNickname(projectRoot, nickname);
+        const { existing, cleaned } = checkAndCleanupNickname(projectRoot, nickname, { scopedNickname, agentType: agent });
         if (existing) {
           // Agent with this nickname already exists and is active
           results.push({
@@ -486,6 +498,7 @@ async function handleOps(projectRoot, ops = [], processManager = null) {
         }
         // eslint-disable-next-line no-await-in-loop
         const launchResult = await launchAgent(projectRoot, agent, count, nickname, processManager, {
+          scopedNickname,
           launchScope: op.launch_scope || "",
           terminalApp: op.terminal_app || "",
           tmuxLayoutContext:
@@ -555,7 +568,7 @@ async function handleOps(projectRoot, ops = [], processManager = null) {
         });
         if (nickname) {
           // eslint-disable-next-line no-await-in-loop
-          const renameResult = await renameSpawnedAgent(projectRoot, agent, nickname, startIso);
+          const renameResult = await renameSpawnedAgent(projectRoot, agent, nickname, startIso, scopedNickname);
           if (renameResult) {
             results.push({ action: "rename", ...renameResult });
           }
@@ -615,10 +628,11 @@ async function handleOps(projectRoot, ops = [], processManager = null) {
           continue;
         }
         const targetMeta = eventBus.busData.agents[targetId] || {};
-        nickname = applyProjectNicknamePrefix(projectRoot, requestedNickname, {
+        const scopedNickname = applyProjectNicknamePrefix(projectRoot, requestedNickname, {
           agentType: targetMeta.agent_type || "",
         });
-        const result = await eventBus.rename(targetId, nickname, "ufoo-agent");
+        nickname = requestedNickname;
+        const result = await eventBus.rename(targetId, nickname, "ufoo-agent", { scopedNickname });
         results.push({
           action: "rename",
           ok: true,
@@ -1311,9 +1325,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
       const parsedCount = parseInt(count, 10);
       const finalCount = Number.isFinite(parsedCount) && parsedCount > 0 ? parsedCount : 1;
       const requestedProfile = String(prompt_profile || "").trim();
-      const explicitNickname = applyProjectNicknamePrefix(projectRoot, String(nickname || "").trim(), {
-        agentType: normalizedAgent,
-      });
+      const explicitNickname = String(nickname || "").trim();
       if (requestedProfile && finalCount > 1) {
         socket.write(
           `${JSON.stringify({
@@ -2027,23 +2039,28 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
         if (skipProbe) joinOptions.skipProbe = true;
 
         let finalNickname = nickname || "";
+        let scopedNickname = applyProjectNicknamePrefix(projectRoot, finalNickname, {
+          agentType: normalizeBusAgentType(agentType),
+        });
         if (finalNickname) {
           const nickCheck = checkAndCleanupNickname(projectRoot, finalNickname, {
             tty: tty || "",
             agentType: normalizeBusAgentType(agentType),
+            scopedNickname,
           });
           if (nickCheck.existing) {
             finalNickname = "";
+            scopedNickname = "";
           }
         }
         await eventBus.join(
           sessionId,
           normalizeBusAgentType(agentType),
           finalNickname,
-          joinOptions,
+          { ...joinOptions, scopedNickname },
         );
         if (finalNickname) {
-          eventBus.rename(subscriberId, finalNickname, "ufoo-agent");
+          eventBus.rename(subscriberId, finalNickname, "ufoo-agent", { scopedNickname });
         }
         eventBus.saveBusData();
         const resolvedNickname = resolveSubscriberNickname(projectRoot, subscriberId) || finalNickname || "";

@@ -486,6 +486,7 @@ async function runOpenAiLikeTurn({
 } = {}) {
   const payload = {
     model,
+    max_tokens: 131072,
     messages,
     tools: buildCoreToolSpecs(),
     tool_choice: "auto",
@@ -683,7 +684,7 @@ async function runAnthropicTurn({
 } = {}) {
   const payload = {
     model,
-    max_tokens: 4096,
+    max_tokens: 131072,
     messages,
     tools: buildAnthropicToolSpecs(),
     stream: true,

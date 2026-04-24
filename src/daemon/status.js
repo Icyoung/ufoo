@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { getUfooPaths } = require("../ufoo/paths");
 const { isMetaActive } = require("../bus/utils");
+const { resolveDisplayNickname, resolveScopedNickname } = require("./nicknameScope");
 const { readReportSummary, countControllerInboxEntries } = require("../report/store");
 const { readRecentLoopSummary } = require("../agent/loopObservability");
 
@@ -146,7 +147,8 @@ function buildStatus(projectRoot, options = {}) {
     : [];
   const active = activeEntries.map(({ id }) => id);
   const activeMeta = activeEntries.map(({ id, meta }) => {
-    const nickname = meta?.nickname || "";
+    const nickname = resolveDisplayNickname(projectRoot, meta);
+    const scoped_nickname = resolveScopedNickname(projectRoot, meta);
     const display = nickname ? nickname : id;
     const launch_mode = meta?.launch_mode || "unknown";
     const tmux_pane = meta?.tmux_pane || "";
@@ -156,6 +158,8 @@ function buildStatus(projectRoot, options = {}) {
     return {
       id,
       nickname,
+      scoped_nickname,
+      display_nickname: nickname,
       display,
       launch_mode,
       tmux_pane,

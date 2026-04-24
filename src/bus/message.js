@@ -247,7 +247,7 @@ class MessageManager {
     if (meta && normalizedTarget === normalizeAgentTypeAlias(meta.agent_type)) return true;
 
     // 昵称匹配
-    if (meta && target === meta.nickname) return true;
+    if (meta && (target === meta.nickname || target === meta.scoped_nickname)) return true;
 
     // 通配符
     if (target === "*") return true;
@@ -423,7 +423,7 @@ class MessageManager {
       })
       .map(([id, meta]) => ({
         id,
-        nickname: meta.nickname,
+        nickname: meta.nickname || meta.scoped_nickname || "",
         agent_type: meta.agent_type,
         last_seen: meta.last_seen,
       }));

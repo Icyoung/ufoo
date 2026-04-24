@@ -10,8 +10,8 @@ function buildAgentMaps(activeAgents = [], metaList = [], fallbackMap = null) {
 
   for (const id of activeAgents) {
     const meta = metaById.get(id);
-    const label = meta && meta.nickname
-      ? meta.nickname
+    const label = meta && (meta.display_nickname || meta.nickname)
+      ? (meta.display_nickname || meta.nickname)
       : (fallbackMap && fallbackMap.get(id)) || id;
     labelMap.set(id, label);
     if (meta) {

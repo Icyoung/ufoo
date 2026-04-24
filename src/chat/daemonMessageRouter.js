@@ -229,7 +229,8 @@ function createDaemonMessageRouter(options = {}) {
       if (recoverableList.length > 0) {
         logMessage("system", "{cyan-fg}Recoverable agents:{/cyan-fg}");
         recoverableList.forEach((item) => {
-          const nickname = item.nickname ? ` (${item.nickname})` : "";
+          const displayNickname = item.display_nickname || item.nickname || "";
+          const nickname = displayNickname ? ` (${displayNickname})` : "";
           const meta = item.launchMode ? ` [${item.agent}/${item.launchMode}]` : ` [${item.agent}]`;
           logMessage("system", `  • ${escapeBlessed(`${item.id}${nickname}${meta}`)}`);
         });

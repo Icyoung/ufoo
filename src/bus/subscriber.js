@@ -175,20 +175,29 @@ class SubscriberManager {
     // 检查是否是重新加入（rejoin）
     const existingMeta = this.busData.agents[subscriber];
     let finalNickname = nickname;
+    let finalScopedNickname = typeof options.scopedNickname === "string"
+      ? options.scopedNickname.trim()
+      : (typeof process.env.UFOO_SCOPED_NICKNAME === "string" ? process.env.UFOO_SCOPED_NICKNAME.trim() : "");
 
-    if (existingMeta && existingMeta.nickname) {
-      // 重新加入，保留原昵称
-      finalNickname = existingMeta.nickname;
-    } else if (nickname) {
+    if (nickname) {
       // 新昵称，检查冲突
-      if (nicknameManager.nicknameExists(nickname, subscriber)) {
+      const conflictTarget = finalScopedNickname || nickname;
+      if (nicknameManager.nicknameExists(conflictTarget, subscriber)) {
         throw new Error(`Nickname "${nickname}" already exists`);
       }
       finalNickname = nickname;
+    } else if (existingMeta && existingMeta.nickname) {
+      // 重新加入，保留原昵称
+      finalNickname = existingMeta.nickname;
+      finalScopedNickname = existingMeta.scoped_nickname || finalScopedNickname || finalNickname;
     } else {
       // 自动生成昵称（并标记占用，避免并发重复）
       finalNickname = nicknameManager.generateAutoNickname(agentType);
-      nicknameManager.setNickname(subscriber, finalNickname);
+      nicknameManager.setNickname(subscriber, finalNickname, finalScopedNickname);
+    }
+
+    if (!finalScopedNickname) {
+      finalScopedNickname = existingMeta?.scoped_nickname || finalNickname;
     }
 
     const explicitLaunchMode = typeof options.launchMode === "string"
@@ -221,6 +230,7 @@ class SubscriberManager {
     const inheritedNickname = await this.cleanupDuplicateTty(subscriber, finalTty);
     if (inheritedNickname && !nickname && !existingMeta) {
       finalNickname = inheritedNickname;
+      if (!finalScopedNickname) finalScopedNickname = inheritedNickname;
     }
 
     // 更新订阅者信息（保留已有字段，如 provider_session_*）
@@ -252,6 +262,7 @@ class SubscriberManager {
       ...preserved,
       agent_type: agentType,
       nickname: finalNickname,
+      scoped_nickname: finalScopedNickname || finalNickname,
       status: "active",
       activity_state: "starting",
       activity_since: getTimestamp(),
@@ -311,7 +322,11 @@ class SubscriberManager {
     // 创建队列目录
     this.queueManager.ensureQueueDir(subscriber);
 
-    return { subscriber, nickname: finalNickname };
+    return {
+      subscriber,
+      nickname: finalNickname,
+      scopedNickname: this.busData.agents[subscriber].scoped_nickname || finalNickname,
+    };
   }
 
   /**
@@ -333,22 +348,27 @@ class SubscriberManager {
   /**
    * 重命名订阅者
    */
-  async rename(subscriber, newNickname) {
+  async rename(subscriber, newNickname, options = {}) {
     if (!this.busData.agents || !this.busData.agents[subscriber]) {
       throw new Error(`Subscriber "${subscriber}" not found`);
     }
 
     const nicknameManager = new NicknameManager(this.busData);
+    const scopedNickname = typeof options.scopedNickname === "string" && options.scopedNickname.trim()
+      ? options.scopedNickname.trim()
+      : newNickname;
 
     // 检查昵称冲突
-    if (nicknameManager.nicknameExists(newNickname, subscriber)) {
+    if (nicknameManager.nicknameExists(scopedNickname, subscriber)) {
       throw new Error(`Nickname "${newNickname}" already exists`);
     }
 
     const oldNickname = this.busData.agents[subscriber].nickname;
+    const oldScopedNickname = this.busData.agents[subscriber].scoped_nickname || oldNickname;
     this.busData.agents[subscriber].nickname = newNickname;
+    this.busData.agents[subscriber].scoped_nickname = scopedNickname;
 
-    return { subscriber, oldNickname, newNickname };
+    return { subscriber, oldNickname, newNickname, oldScopedNickname, newScopedNickname: scopedNickname };
   }
 
   /**

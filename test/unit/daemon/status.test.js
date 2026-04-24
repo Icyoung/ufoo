@@ -202,4 +202,34 @@ describe("daemon status", () => {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
   });
+
+  test("prefers display nickname over scoped nickname in active meta", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-status-"));
+    try {
+      const paths = getUfooPaths(projectRoot);
+      fs.mkdirSync(path.dirname(paths.agentsFile), { recursive: true });
+      fs.writeFileSync(
+        paths.agentsFile,
+        JSON.stringify({
+          agents: {
+            "claude-code:abc": {
+              status: "active",
+              nickname: "builder",
+              scoped_nickname: "neptune-builder",
+            },
+          },
+        }, null, 2)
+      );
+
+      const status = buildStatus(projectRoot);
+      expect(status.active_meta[0]).toEqual(expect.objectContaining({
+        nickname: "builder",
+        scoped_nickname: "neptune-builder",
+        display_nickname: "builder",
+        display: "builder",
+      }));
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
 });

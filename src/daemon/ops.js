@@ -7,7 +7,10 @@ const { loadAgentsData, saveAgentsData } = require("../ufoo/agentsStore");
 const { isAgentPidAlive, getTtyProcessInfo } = require("../bus/utils");
 const { isITerm2 } = require("../terminal/detect");
 const { createTerminalAdapterRouter } = require("../terminal/adapterRouter");
-const { applyProjectNicknamePrefix } = require("./nicknameScope");
+const {
+  applyProjectNicknamePrefix,
+  resolveDisplayNickname,
+} = require("./nicknameScope");
 const {
   createSession: createHostSession,
 } = require("../terminal/adapters/hostAdapter");
@@ -125,11 +128,15 @@ function resolveAgentId(projectRoot, agentId) {
   try {
     const bus = JSON.parse(fs.readFileSync(busPath, "utf8"));
     const entries = Object.entries(bus.agents || {});
-    const match = entries.find(([, meta]) => meta?.nickname === agentId);
+    const match = entries.find(([, meta]) =>
+      meta?.nickname === agentId || meta?.scoped_nickname === agentId
+    );
     if (match) return match[0];
     const scopedNickname = applyProjectNicknamePrefix(projectRoot, agentId);
     if (scopedNickname && scopedNickname !== agentId) {
-      const scopedMatch = entries.find(([, meta]) => meta?.nickname === scopedNickname);
+      const scopedMatch = entries.find(([, meta]) =>
+        meta?.nickname === scopedNickname || meta?.scoped_nickname === scopedNickname
+      );
       if (scopedMatch) return scopedMatch[0];
     }
     const normalized = normalizeLaunchAgent(agentId);
@@ -848,7 +855,11 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
   const launchScope = normalizeLaunchScope(options.launchScope, "inplace");
   const terminalApp = normalizeTerminalAppPreference(options.terminalApp);
   const extraEnvObject = options.extraEnv && typeof options.extraEnv === "object" ? options.extraEnv : {};
-  const extraEnvPrefix = buildShellEnvPrefix(extraEnvObject);
+  const scopedNickname = typeof options.scopedNickname === "string" ? options.scopedNickname.trim() : "";
+  const launchEnvObject = scopedNickname
+    ? { ...extraEnvObject, UFOO_SCOPED_NICKNAME: scopedNickname }
+    : extraEnvObject;
+  const extraEnvPrefix = buildShellEnvPrefix(launchEnvObject);
   const extraArgs = Array.isArray(options.extraArgs) ? options.extraArgs : [];
   const normalizedAgent = normalizeLaunchAgent(agent);
   if (!normalizedAgent) {
@@ -862,7 +873,7 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
       count,
       nickname,
       processManager,
-      extraEnvObject
+      launchEnvObject
     );
     return { mode: "internal", launchScope, subscriberIds: result.subscriberIds };
   }
@@ -954,7 +965,7 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
         nick,
         processManager,
         extraArgs,
-        extraEnvObject,
+        launchEnvObject,
         hostContext
       );
       if (result.subscriberId) subscriberIds.push(result.subscriberId);
@@ -1023,8 +1034,8 @@ function collectRecoverableAgents(projectRoot, target = "") {
     } else {
       targets = entries.filter(([id, meta]) =>
         id === target
-        || (meta && meta.nickname === target)
-        || (scopedTarget && scopedTarget !== target && meta && meta.nickname === scopedTarget)
+        || (meta && (meta.nickname === target || meta.scoped_nickname === target))
+        || (scopedTarget && scopedTarget !== target && meta && (meta.nickname === scopedTarget || meta.scoped_nickname === scopedTarget))
       );
     }
   }
@@ -1076,7 +1087,8 @@ function getRecoverableAgents(projectRoot, target = "") {
   const { mode, recoverableEntries, skipped } = collectRecoverableAgents(projectRoot, target);
   const recoverable = recoverableEntries.map((item) => ({
     id: item.id,
-    nickname: item.meta.nickname || "",
+    nickname: resolveDisplayNickname(projectRoot, item.meta),
+    display_nickname: resolveDisplayNickname(projectRoot, item.meta),
     agent: item.agent,
     sessionId: item.meta.provider_session_id || "",
     launchMode: item.meta.launch_mode || "",
@@ -1094,7 +1106,7 @@ async function resumeAgents(projectRoot, target = "", processManager = null) {
 
   const resumed = [];
   for (const item of recoverableEntries) {
-    const nickname = item.meta.nickname || "";
+    const nickname = resolveDisplayNickname(projectRoot, item.meta);
     const sessionId = item.meta.provider_session_id;
     const reused = await tryReuseTerminal(projectRoot, item.id, item.meta, item.agent, sessionId);
     if (!reused) {

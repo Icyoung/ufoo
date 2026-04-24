@@ -14,7 +14,7 @@ class NicknameManager {
   resolveNickname(nickname) {
     const subscribers = this.busData.agents || {};
     for (const [id, meta] of Object.entries(subscribers)) {
-      if (meta.nickname === nickname) {
+      if (meta.nickname === nickname || meta.scoped_nickname === nickname) {
         return id;
       }
     }
@@ -30,7 +30,10 @@ class NicknameManager {
   nicknameExists(nickname, excludeSubscriber = null) {
     const subscribers = this.busData.agents || {};
     for (const [id, meta] of Object.entries(subscribers)) {
-      if (id !== excludeSubscriber && meta.nickname === nickname) {
+      if (
+        id !== excludeSubscriber
+        && (meta.nickname === nickname || meta.scoped_nickname === nickname)
+      ) {
         return true;
       }
     }
@@ -71,10 +74,15 @@ class NicknameManager {
     return meta?.nickname || null;
   }
 
+  getScopedNickname(subscriber) {
+    const meta = this.busData.agents?.[subscriber];
+    return meta?.scoped_nickname || meta?.nickname || null;
+  }
+
   /**
    * 设置订阅者的昵称
    */
-  setNickname(subscriber, nickname) {
+  setNickname(subscriber, nickname, scopedNickname = "") {
     if (!this.busData.agents) {
       this.busData.agents = {};
     }
@@ -82,6 +90,9 @@ class NicknameManager {
       this.busData.agents[subscriber] = {};
     }
     this.busData.agents[subscriber].nickname = nickname;
+    if (scopedNickname) {
+      this.busData.agents[subscriber].scoped_nickname = scopedNickname;
+    }
   }
 }
 
