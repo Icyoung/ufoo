@@ -101,6 +101,45 @@ describe("activityStatePublisher", () => {
     expect(data.agents["codex:abc"].activity_state).toBe("idle");
   });
 
+  test("publish can override force for a single state transition", () => {
+    writeAgents(agentsFile, {
+      "codex:abc": { status: "active", activity_state: "working" },
+    });
+
+    const pub = createActivityStatePublisher({
+      agentsFile,
+      subscriber: "codex:abc",
+      projectRoot: tmpDir,
+      force: false,
+    });
+
+    expect(pub.publish("idle")).toBe(false);
+    expect(pub.publish("idle", {}, { force: true })).toBe(true);
+    expect(pub.getLastState()).toBe("idle");
+
+    const data = JSON.parse(fs.readFileSync(agentsFile, "utf8"));
+    expect(data.agents["codex:abc"].activity_state).toBe("idle");
+  });
+
+  test("force override keeps subsequent transitions publishable", () => {
+    writeAgents(agentsFile, {
+      "codex:abc": { status: "active", activity_state: "working" },
+    });
+
+    const pub = createActivityStatePublisher({
+      agentsFile,
+      subscriber: "codex:abc",
+      projectRoot: tmpDir,
+      force: false,
+    });
+
+    expect(pub.publish("idle", {}, { force: true })).toBe(true);
+    expect(pub.publish("working")).toBe(true);
+
+    const data = JSON.parse(fs.readFileSync(agentsFile, "utf8"));
+    expect(data.agents["codex:abc"].activity_state).toBe("working");
+  });
+
   test("getLastState tracks published state", () => {
     writeAgents(agentsFile, {
       "codex:abc": { status: "active", activity_state: "starting" },

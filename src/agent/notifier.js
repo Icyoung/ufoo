@@ -123,8 +123,10 @@ class AgentNotifier {
    * 更新 activity_state（terminal/tmux agent 基础支持）
    * 基于消息投递推断 WORKING，无 pending 时推断 IDLE
    */
-  updateActivityState(state) {
-    return this.activityPublisher.publish(state);
+  updateActivityState(state, options = {}) {
+    return this.activityPublisher.publish(state, {}, {
+      force: typeof options.force === "boolean" ? options.force : undefined,
+    });
   }
 
   getCurrentActivityState() {
@@ -375,7 +377,14 @@ class AgentNotifier {
 
     this.lastCount = this.getMessageCount();
     if (this._launcherReady && (!this.lastWorkingAt || nowMs - this.lastWorkingAt >= this.workingHoldMs)) {
-      this.updateActivityState("idle");
+      const currentActivityState = this.getCurrentActivityState();
+      if (currentActivityState !== "waiting_input" && currentActivityState !== "blocked") {
+        if (currentActivityState === "working") {
+          this.updateActivityState("idle", { force: true });
+        } else {
+          this.updateActivityState("idle");
+        }
+      }
     }
     this.refreshTitle();
     this.updateHeartbeat();

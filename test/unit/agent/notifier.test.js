@@ -266,7 +266,47 @@ describe("AgentNotifier delivery strategy", () => {
 
     notifier.lastWorkingAt = Date.now() - 1500;
     await notifier.poll();
-    expect(stateSpy).toHaveBeenCalledWith("idle");
+    expect(stateSpy).toHaveBeenCalledWith("idle", { force: true });
+    const data = JSON.parse(fs.readFileSync(
+      path.join(projectRoot, ".ufoo", "agent", "all-agents.json"), "utf8"
+    ));
+    expect(data.agents[subscriber].activity_state).toBe("idle");
+  });
+
+  test("poll does not force idle over waiting input or blocked states", async () => {
+    for (const state of ["waiting_input", "blocked"]) {
+      const subscriber = `codex:${state}`;
+      fs.writeFileSync(
+        path.join(projectRoot, ".ufoo", "agent", "all-agents.json"),
+        JSON.stringify({
+          agents: {
+            [subscriber]: {
+              status: "active",
+              activity_state: state,
+            },
+          },
+        }, null, 2)
+      );
+
+      const notifier = new AgentNotifier(projectRoot, subscriber);
+      notifier.workingHoldMs = 0;
+      notifier.lastWorkingAt = 0;
+      notifier._launcherReady = true;
+      notifier.getMessageCount = jest.fn(() => 0);
+      notifier.notify = jest.fn();
+      notifier.refreshTitle = jest.fn();
+      notifier.updateHeartbeat = jest.fn();
+      const stateSpy = jest.spyOn(notifier, "updateActivityState");
+
+      // eslint-disable-next-line no-await-in-loop
+      await notifier.poll();
+      expect(stateSpy).not.toHaveBeenCalledWith("idle", expect.anything());
+
+      const data = JSON.parse(fs.readFileSync(
+        path.join(projectRoot, ".ufoo", "agent", "all-agents.json"), "utf8"
+      ));
+      expect(data.agents[subscriber].activity_state).toBe(state);
+    }
   });
 
   test("poll does not set idle when _launcherReady is false", async () => {

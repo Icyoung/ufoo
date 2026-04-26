@@ -12,6 +12,7 @@ const { writeActivityState } = require("./activityStateWriter");
  * @param {string} options.subscriber  - Subscriber ID (e.g. "claude-code:abc123")
  * @param {string} options.projectRoot - Project root (unused, kept for API compat)
  * @param {boolean} [options.force=true] - Force overwrite priority-protected states
+ * publish(state, extra, { force }) can override this default for one transition.
  */
 function createActivityStatePublisher(options = {}) {
   const {
@@ -22,10 +23,13 @@ function createActivityStatePublisher(options = {}) {
 
   let lastState = "";
 
-  function publish(state, extra = {}) {
+  function publish(state, extra = {}, publishOptions = {}) {
     if (state === lastState) return false;
     const since = extra.since || undefined;
-    const changed = writeActivityState(agentsFile, subscriber, state, { since, force });
+    const effectiveForce = typeof publishOptions.force === "boolean"
+      ? publishOptions.force
+      : force;
+    const changed = writeActivityState(agentsFile, subscriber, state, { since, force: effectiveForce });
     if (!changed) return false;
     lastState = state;
     // Write to bus events directory for daemon bridge to pick up.
