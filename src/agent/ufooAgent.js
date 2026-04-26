@@ -5,8 +5,9 @@ const { normalizeCliOutput } = require("./normalizeOutput");
 const { buildStatus } = require("../daemon/status");
 const { getUfooPaths } = require("../ufoo/paths");
 const { normalizeGateRouterResult } = require("../controller/gateRouter");
-const { sendUpstreamPrompt } = require("./upstreamTransport");
+const { normalizeProvider, sendUpstreamPrompt } = require("./upstreamTransport");
 const { normalizeAgentTypeAlias } = require("../bus/utils");
+const { buildCachedMemoryPrefix } = require("../memory");
 const { listProjectRuntimes, isGlobalControllerProjectRoot } = require("../projects");
 const {
   CONTROLLER_MODES,
@@ -522,6 +523,14 @@ function buildSystemPrompt(context, options = {}) {
   ].join("\n");
 }
 
+function buildMemoryPrefixResult(projectRoot, limit = 50) {
+  try {
+    return buildCachedMemoryPrefix(projectRoot, { limit });
+  } catch {
+    return { prefix: "", estimated_tokens: 0, cache_hit: false, cache_semistatic_hit: 0, cache_semistatic_miss: 0 };
+  }
+}
+
 function loadHistory(projectRoot, maxTurns = 6) {
   const file = path.join(getUfooPaths(projectRoot).agentDir, "ufoo-agent.history.jsonl");
   try {
@@ -594,9 +603,9 @@ function extractNickname(prompt) {
   return "";
 }
 
-function isUcodeProvider(value = "") {
-  const text = String(value || "").trim().toLowerCase();
-  return text === "ucode" || text === "ufoo" || text === "ufoo-code";
+function shouldUseDirectProvider(value = "") {
+  const provider = normalizeProvider(value);
+  return provider === "ucode" || provider === "codex" || provider === "claude";
 }
 
 function stripMarkdownFence(text = "") {
@@ -644,32 +653,42 @@ async function runUfooAgent({
   const bus = routingContext || (mode === "global-router"
     ? buildGlobalProjectRouterContext(projectRoot)
     : loadBusSummary(projectRoot));
-  const systemPrompt = buildSystemPrompt(bus, {
+  let systemPrompt = buildSystemPrompt(bus, {
     routingMode: mode,
     loopRuntime,
     controllerMode: resolvedControllerMode,
   });
+  const memoryPrefixResult = buildMemoryPrefixResult(projectRoot);
+  const memoryPrefix = String(memoryPrefixResult.prefix || "").trim();
+  if (memoryPrefix) {
+    systemPrompt = `${systemPrompt}\n\n${memoryPrefix}`;
+  }
   const history = loadHistory(projectRoot);
   const historyPrompt = buildHistoryPrompt(history);
   const fullPrompt = historyPrompt ? `${historyPrompt}User: ${prompt}` : prompt;
 
   let res;
 
-  if (isUcodeProvider(provider)) {
-    // Native path: direct HTTP to LLM API, no CLI binary needed
+  const useDirectProvider = shouldUseDirectProvider(provider);
+  let usedDirectProvider = false;
+
+  if (useDirectProvider) {
     res = await runNativeRouterCall({
       projectRoot,
       prompt: fullPrompt,
       systemPrompt,
+      provider,
       model,
     });
     if (!res.ok) {
       return { ok: false, error: res.error };
+    } else {
+      usedDirectProvider = true;
+      res = { ok: true, output: res.output, sessionId: "", provider: res.provider, model: res.model };
     }
-    // Native path returns { ok, output } where output is raw text
-    res = { ok: true, output: res.output, sessionId: "" };
-  } else {
-    // CLI path: spawn codex/claude binary
+  }
+
+  if (!useDirectProvider) {
     res = await runCliAgent({
       provider,
       model,
@@ -700,7 +719,7 @@ async function runUfooAgent({
     }
   }
 
-  const rawText = isUcodeProvider(provider)
+  const rawText = usedDirectProvider
     ? String(res.output || "").trim()
     : normalizeCliOutput(res.output);
   const text = stripMarkdownFence(rawText);
@@ -733,7 +752,18 @@ async function runUfooAgent({
 
   appendHistory(projectRoot, { prompt, reply: payload.reply || "" });
 
-  return { ok: true, payload };
+  return {
+    ok: true,
+    payload,
+    meta: {
+      memory_prefix_tokens: memoryPrefixResult.estimated_tokens || 0,
+      cache_semistatic_hit: memoryPrefixResult.cache_semistatic_hit || 0,
+      cache_semistatic_miss: memoryPrefixResult.cache_semistatic_miss || 0,
+      memory_prefix_truncated: memoryPrefixResult.truncated === true,
+      memory_prefix_entries: memoryPrefixResult.entry_count || 0,
+      memory_prefix_emitted: memoryPrefixResult.emitted_count || 0,
+    },
+  };
 }
 
 async function runUfooRouteAgent({

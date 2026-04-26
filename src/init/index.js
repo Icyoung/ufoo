@@ -95,6 +95,10 @@ class UfooInit {
     if (!fs.existsSync(ufooDir)) {
       fs.mkdirSync(ufooDir, { recursive: true });
     }
+    const memoryDir = path.join(ufooDir, "memory");
+    if (!fs.existsSync(memoryDir)) {
+      fs.mkdirSync(memoryDir, { recursive: true });
+    }
 
     // 创建 docs 符号链接：项目的 docs/ -> .ufoo/docs
     const docsLink = path.join(ufooDir, "docs");

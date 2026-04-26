@@ -209,6 +209,41 @@ describe("daemon soloBootstrap", () => {
     expect(owner.group_id).toBe("grp-runtime-nick");
   });
 
+  test("detects active group ownership when runtime stores scoped_nickname", () => {
+    fs.writeFileSync(getUfooPaths(projectRoot).agentsFile, JSON.stringify({
+      schema_version: 1,
+      created_at: new Date().toISOString(),
+      agents: {
+        "codex:test": {
+          agent_type: "codex",
+          nickname: "designer",
+          scoped_nickname: runtimeNick("designer"),
+          status: "active",
+          activity_state: "ready",
+          last_seen: new Date().toISOString(),
+        },
+      },
+    }, null, 2));
+    const groupPath = path.join(getUfooPaths(projectRoot).groupsDir, "grp-scoped-nick.json");
+    fs.mkdirSync(path.dirname(groupPath), { recursive: true });
+    fs.writeFileSync(groupPath, JSON.stringify({
+      group_id: "grp-scoped-nick",
+      template_alias: "ui-polish",
+      status: "active",
+      members: [
+        {
+          nickname: "designer",
+          scoped_nickname: runtimeNick("designer"),
+          subscriber_id: "codex:test",
+          status: "active",
+        },
+      ],
+    }, null, 2));
+
+    const owner = findOwningGroup(projectRoot, "codex:test");
+    expect(owner.group_id).toBe("grp-scoped-nick");
+  });
+
   test("assignSoloRoleToExistingAgent rejects group-owned agents", async () => {
     const groupPath = path.join(getUfooPaths(projectRoot).groupsDir, "grp-1.json");
     fs.mkdirSync(path.dirname(groupPath), { recursive: true });

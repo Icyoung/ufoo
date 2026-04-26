@@ -35,6 +35,9 @@ describe("providerapi redactor", () => {
     expect(redactString("call with Authorization: Bearer secret-token now")).toBe(
       "call with Authorization: Bearer [REDACTED] now"
     );
+    expect(redactString("api_key=sk_test_123456789 should not persist")).toBe(
+      "api_key=[REDACTED] should not persist"
+    );
   });
 
   test("isSensitiveKey recognizes representative secret field names", () => {

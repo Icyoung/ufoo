@@ -4,6 +4,10 @@ const childProcess = require("child_process");
 const { readJSON } = require("../bus/utils");
 const { getUfooPaths } = require("../ufoo/paths");
 const { resolveDisplayNickname } = require("../daemon/nicknameScope");
+const {
+  inspectDirectAuthStatus,
+  formatDirectAuthStatus,
+} = require("../agent/directAuthStatus");
 
 function normalizeTty(ttyPath) {
   if (!ttyPath) return "";
@@ -52,10 +56,16 @@ function detectCurrentTty() {
  * 显示项目状态
  */
 class StatusDisplay {
-  constructor(projectRoot) {
+  constructor(projectRoot, options = {}) {
     this.projectRoot = projectRoot;
     this.paths = getUfooPaths(projectRoot);
     this.ufooDir = this.paths.ufooDir;
+    this.inspectDirectAuthStatus = options.inspectDirectAuthStatus
+      || options.inspectCodexDirectAuth
+      || inspectDirectAuthStatus;
+    this.formatDirectAuthStatus = options.formatDirectAuthStatus
+      || options.formatCodexDirectAuthStatus
+      || formatDirectAuthStatus;
   }
 
   /**
@@ -249,6 +259,16 @@ class StatusDisplay {
     }
   }
 
+  async showDirectApiStatus() {
+    const status = await this.inspectDirectAuthStatus({
+      projectRoot: this.projectRoot,
+      autoRefresh: false,
+    });
+    for (const line of this.formatDirectAuthStatus(status)) {
+      console.log(line);
+    }
+  }
+
   /**
    * 显示完整状态
    */
@@ -262,6 +282,9 @@ class StatusDisplay {
 
     // 显示项目路径
     console.log(`Project: ${this.projectRoot}`);
+
+    // 显示直连 API 凭证状态
+    await this.showDirectApiStatus();
 
     // 显示未读消息
     const unread = this.countUnreadMessages();

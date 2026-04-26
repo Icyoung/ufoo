@@ -181,9 +181,11 @@ function resolveDefaultManualBootstrap({
   const normalizedAgent = asTrimmedString(agentType).toLowerCase();
   const currentEnv = env && typeof env === "object" ? env : {};
   const currentArgs = Array.isArray(args) ? args.slice() : [];
+  const hasCodexStartupBootstrap = normalizedAgent === "codex"
+    && Boolean(currentEnv.UFOO_STARTUP_BOOTSTRAP_TEXT);
   if (
     currentEnv.UFOO_SKIP_DEFAULT_BOOTSTRAP === "1"
-    || currentEnv.UFOO_STARTUP_BOOTSTRAP_TEXT
+    || hasCodexStartupBootstrap
     || hasMetaCommandArgs(currentArgs)
   ) {
     return { args: currentArgs, env: {}, mode: "skip" };

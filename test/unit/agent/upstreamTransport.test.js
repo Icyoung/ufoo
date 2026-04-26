@@ -40,6 +40,7 @@ describe("agent upstreamTransport", () => {
     expect(normalizeProvider("claude-cli")).toBe("claude");
     expect(normalizeProvider("anthropic")).toBe("claude");
     expect(normalizeProvider("ucode")).toBe("ucode");
+    expect(normalizeProvider("ufoo")).toBe("ucode");
   });
 
   test("builds codex responses request with developer and user input items", () => {
@@ -111,6 +112,27 @@ describe("agent upstreamTransport", () => {
     });
     expect(resolveCodexUpstreamCredentials).toHaveBeenCalledWith(expect.objectContaining({
       authPath: "/tmp/codex-auth.json",
+      refreshWindowMs: 300000,
+    }));
+  });
+
+  test("sendUpstreamPrompt returns structured credential errors", async () => {
+    const err = new Error("Codex auth unavailable");
+    err.code = "CODEX_AUTH_UNAVAILABLE";
+    resolveCodexUpstreamCredentials.mockRejectedValue(err);
+
+    await expect(sendUpstreamPrompt({
+      projectRoot: "/tmp/project",
+      provider: "codex",
+      model: "gpt-5.4-mini",
+      prompt: "hello",
+      env: {},
+      loadConfigImpl: () => ({ codexAuthPath: "/tmp/missing.json" }),
+    })).resolves.toEqual(expect.objectContaining({
+      ok: false,
+      errorCode: "CODEX_AUTH_UNAVAILABLE",
+      provider: "codex",
+      model: "gpt-5.4-mini",
     }));
   });
 

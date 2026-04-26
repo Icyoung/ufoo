@@ -59,6 +59,15 @@ function createHarness(overrides = {}) {
       ucodeApiKey: "",
     })),
     saveUcodeConfig: jest.fn(),
+    inspectDirectAuth: jest.fn().mockResolvedValue({
+      ok: true,
+      provider: "codex",
+      transport: "openai-chat",
+      credentialKind: "api-key",
+      state: "fresh",
+      source: "test",
+    }),
+    formatDirectAuth: jest.fn(() => ["Codex API: OK · api-key/openai-chat · fresh"]),
     createCronTask: jest.fn((payload) => ({ id: "c1", ...payload, label: "codex:1:run:10s", summary: "c1 codex:1:run:10s" })),
     listCronTasks: jest.fn(() => []),
     stopCronTask: jest.fn(() => false),
@@ -127,6 +136,37 @@ describe("chat commandExecutor", () => {
     expect(logs.some((entry) => entry.text.includes("1 active agent"))).toBe(true);
     expect(logs.some((entry) => entry.text.includes("alpha") && entry.text.includes("internal"))).toBe(true);
     expect(logs.some((entry) => entry.text.includes("Daemon is running"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("Codex API: OK"))).toBe(true);
+    expect(options.inspectDirectAuth).toHaveBeenCalledWith({
+      projectRoot: "/tmp/ufoo",
+      autoRefresh: false,
+    });
+    expect(options.formatDirectAuth).toHaveBeenCalledWith(expect.objectContaining({
+      ok: true,
+      provider: "codex",
+    }), { compact: true });
+  });
+
+  test("handleStatusCommand can show claude direct auth for claude agent provider", async () => {
+    const { executor, options, logs } = createHarness({
+      loadConfig: jest.fn(() => ({ agentProvider: "claude-cli" })),
+      inspectDirectAuth: jest.fn().mockResolvedValue({
+        ok: true,
+        provider: "claude",
+        transport: "anthropic-messages",
+        credentialKind: "oauth",
+        state: "fresh",
+      }),
+      formatDirectAuth: jest.fn(() => ["Claude API: OK · oauth/anthropic-messages · fresh"]),
+    });
+
+    await executor.handleStatusCommand();
+
+    expect(logs.some((entry) => entry.text.includes("Claude API: OK"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("Codex API: OK"))).toBe(false);
+    expect(options.formatDirectAuth).toHaveBeenCalledWith(expect.objectContaining({
+      provider: "claude",
+    }), { compact: true });
   });
 
   test("handleDaemonCommand start path invokes start and checks status", async () => {
@@ -900,6 +940,59 @@ describe("chat commandExecutor", () => {
     expect(logs.some((entry) => entry.text.includes("ucode config:"))).toBe(true);
   });
 
+  test("handleSettingsCommand without section shows overview", async () => {
+    const { executor, options, logs } = createHarness({
+      loadConfig: jest.fn(() => ({
+        agentProvider: "codex-cli",
+        agentModel: "",
+        controllerMode: "main",
+        routerProvider: "claude",
+        routerModel: "sonnet-4.7",
+      })),
+      loadUcodeConfig: jest.fn(() => ({
+        ucodeProvider: "openai",
+        ucodeModel: "gpt-5.4-mini",
+        ucodeBaseUrl: "",
+        ucodeApiKey: "",
+      })),
+    });
+
+    await executor.handleSettingsCommand([]);
+
+    expect(options.loadConfig).toHaveBeenCalledWith("/tmp/ufoo");
+    expect(logs.some((entry) => entry.text.includes("settings:"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("agent: codex"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("recommended gpt-5.5"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("router: mode main"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("ucode: provider openai"))).toBe(true);
+  });
+
+  test("handleSettingsCommand manages ufoo-agent provider and model", async () => {
+    const { executor, options, logs } = createHarness();
+
+    await executor.handleSettingsCommand(["agent", "claude"]);
+
+    expect(options.saveConfig).toHaveBeenCalledWith("/tmp/ufoo", {
+      agentProvider: "claude-cli",
+      agentModel: "opus-4.7",
+    });
+    expect(options.restartDaemon).toHaveBeenCalledWith("/tmp/ufoo");
+    expect(logs.some((entry) => entry.text.includes("ufoo-agent config updated"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("model: opus-4.7"))).toBe(true);
+  });
+
+  test("handleSettingsCommand sets ufoo-agent model with kv pairs", async () => {
+    const { executor, options } = createHarness();
+
+    await executor.handleSettingsCommand(["agent", "set", "provider=codex", "model=gpt-5.5"]);
+
+    expect(options.saveConfig).toHaveBeenCalledWith("/tmp/ufoo", {
+      agentProvider: "codex-cli",
+      agentModel: "gpt-5.5",
+    });
+    expect(options.restartDaemon).toHaveBeenCalledWith("/tmp/ufoo");
+  });
+
   test("handleSettingsCommand shows router mode", async () => {
     const { executor, options, logs } = createHarness({
       loadConfig: jest.fn(() => ({ controllerMode: "main", routerProvider: "codex", routerModel: "gpt-5.4-mini" })),
@@ -908,7 +1001,7 @@ describe("chat commandExecutor", () => {
     await executor.handleSettingsCommand(["router"]);
 
     expect(options.loadConfig).toHaveBeenCalledWith("/tmp/ufoo");
-    expect(logs.some((entry) => entry.text.includes("router config:"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("gate router config:"))).toBe(true);
     expect(logs.some((entry) => entry.text.includes("controllerMode: main"))).toBe(true);
     expect(logs.some((entry) => entry.text.includes("provider: codex"))).toBe(true);
     expect(logs.some((entry) => entry.text.includes("model: gpt-5.4-mini"))).toBe(true);
@@ -923,7 +1016,7 @@ describe("chat commandExecutor", () => {
 
     expect(options.saveConfig).toHaveBeenCalledWith("/tmp/ufoo", { controllerMode: "loop" });
     expect(options.restartDaemon).toHaveBeenCalledWith("/tmp/ufoo");
-    expect(logs.some((entry) => entry.text.includes("router mode set to loop"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("gate router mode set to loop"))).toBe(true);
   });
 
   test("executeCommand routes /settings router set provider/model kv pairs", async () => {
@@ -939,7 +1032,20 @@ describe("chat commandExecutor", () => {
       routerModel: "claude-haiku",
     });
     expect(options.restartDaemon).toHaveBeenCalledWith("/tmp/ufoo");
-    expect(logs.some((entry) => entry.text.includes("router config updated"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("gate router config updated"))).toBe(true);
+  });
+
+  test("handleSettingsCommand applies gate router provider defaults", async () => {
+    const { executor, options, logs } = createHarness();
+
+    await executor.handleSettingsCommand(["router", "codex"]);
+
+    expect(options.saveConfig).toHaveBeenCalledWith("/tmp/ufoo", {
+      routerProvider: "codex",
+      routerModel: "gpt-5.4-mini",
+    });
+    expect(options.restartDaemon).toHaveBeenCalledWith("/tmp/ufoo");
+    expect(logs.some((entry) => entry.text.includes("gate router config updated"))).toBe(true);
   });
 
   test("handleSettingsCommand clears router provider and model", async () => {
@@ -952,7 +1058,7 @@ describe("chat commandExecutor", () => {
       routerModel: "",
     });
     expect(options.restartDaemon).toHaveBeenCalledWith("/tmp/ufoo");
-    expect(logs.some((entry) => entry.text.includes("router config cleared"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("gate router config cleared"))).toBe(true);
   });
 
   test("handleUfooCommand with marker silently checks messages", async () => {

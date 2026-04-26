@@ -3,7 +3,8 @@
   "template": {
     "id": "verify-ship",
     "alias": "verify-ship",
-    "name": "Verify and Ship"
+    "name": "Verify Existing Change",
+    "description": "Post-change verification lane for an existing implementation before release or merge."
   },
   "defaults": {
     "launch_mode": "auto",
@@ -14,9 +15,12 @@
       "id": "qa",
       "nickname": "qa",
       "type": "auto",
-      "role": "validate user flows and capture defects",
+      "role": "validate existing implementation user flows and capture reproducible defects",
       "prompt_profile": "qa-driver",
-      "accept_from": [],
+      "accept_from": [
+        "debugger",
+        "release"
+      ],
       "report_to": [
         "debugger",
         "release"
@@ -31,7 +35,8 @@
       "role": "identify root cause for hard failures",
       "prompt_profile": "debug-investigator",
       "accept_from": [
-        "qa"
+        "qa",
+        "release"
       ],
       "report_to": [
         "release"

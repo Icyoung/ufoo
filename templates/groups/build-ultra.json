@@ -3,7 +3,8 @@
   "template": {
     "id": "build-ultra",
     "alias": "build-ultra",
-    "name": "Build Ultra"
+    "name": "Build Ultra",
+    "description": "High-parallelism build lane for large, explicitly splittable engineering work."
   },
   "defaults": {
     "launch_mode": "auto",
@@ -37,7 +38,7 @@
       "id": "builder-1",
       "nickname": "builder-1",
       "type": "auto",
-      "role": "implement approved slices",
+      "role": "implement PMO-assigned slice 1 without duplicating other builders",
       "prompt_profile": "implementation-lead",
       "accept_from": [
         "pmo",
@@ -56,7 +57,7 @@
       "id": "builder-2",
       "nickname": "builder-2",
       "type": "auto",
-      "role": "implement approved slices",
+      "role": "implement PMO-assigned slice 2 without duplicating other builders",
       "prompt_profile": "implementation-lead",
       "accept_from": [
         "pmo",
@@ -75,7 +76,7 @@
       "id": "builder-3",
       "nickname": "builder-3",
       "type": "auto",
-      "role": "implement approved slices",
+      "role": "implement PMO-assigned slice 3 without duplicating other builders",
       "prompt_profile": "implementation-lead",
       "accept_from": [
         "pmo",
@@ -94,7 +95,7 @@
       "id": "builder-4",
       "nickname": "builder-4",
       "type": "auto",
-      "role": "implement approved slices",
+      "role": "implement PMO-assigned slice 4 without duplicating other builders",
       "prompt_profile": "implementation-lead",
       "accept_from": [
         "pmo",

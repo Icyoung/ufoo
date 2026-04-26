@@ -29,7 +29,7 @@ Please select modules to enable:
 ```
 
 Options:
-- `context` (recommended) - Shared context, decision recording, knowledge persistence
+- `context` (recommended) - Shared context, sparse decision log for major plan-level choices
 - `bus` (recommended) - Multi-agent communication, task delegation, message passing
 - `resources` (optional) - UI tone guide, icon library
 
@@ -61,6 +61,7 @@ fi
 === ufoo initialization complete ===
 
 Enabled modules:
+  ✓ core memory → .ufoo/memory/
   ✓ context → .ufoo/context/
   ✓ bus → .ufoo/bus/ + .ufoo/agent/
 
@@ -73,6 +74,6 @@ Next steps:
 
 ## Notes
 
-- If .ufoo/context, .ufoo/bus, or .ufoo/agent already exists, skip creation
+- If .ufoo/memory, .ufoo/context, .ufoo/bus, or .ufoo/agent already exists, skip creation
 - After initialization, reuse existing subscriber ID first, join only as fallback (if bus enabled)
 - AGENTS.md will have protocol description block injected

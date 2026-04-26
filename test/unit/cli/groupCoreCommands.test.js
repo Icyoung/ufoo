@@ -17,6 +17,7 @@ function sampleTemplate(alias) {
       id: alias,
       alias,
       name: alias,
+      description: "Useful test group template.",
     },
     agents: [
       {
@@ -58,6 +59,7 @@ describe("cli groupCoreCommands", () => {
       templatesOptions: { builtinDir, globalDir, projectDir },
     });
     expect(logs.some((line) => line.includes("dev-basic"))).toBe(true);
+    expect(logs.some((line) => line.includes("Useful test group template."))).toBe(true);
   });
 
   test("templates ls alias is accepted", async () => {

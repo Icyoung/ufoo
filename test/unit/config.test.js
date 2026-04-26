@@ -8,6 +8,7 @@ const {
   normalizeControllerMode,
   normalizeCodexInternalThreadMode,
   normalizeCodexAuthPath,
+  normalizeCodexOauthRefreshWindowSec,
   normalizeClaudeOauthProfile,
   normalizeClaudeOauthTokenPath,
   normalizeClaudeOauthRefreshWindowSec,
@@ -83,10 +84,13 @@ describe("config save/load", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-config-codex-thread-"));
     fs.mkdirSync(path.join(projectRoot, ".ufoo"), { recursive: true });
 
-    expect(loadConfig(projectRoot).codexInternalThreadMode).toBe("legacy");
+    expect(loadConfig(projectRoot).codexInternalThreadMode).toBe("api");
 
     saveConfig(projectRoot, { codexInternalThreadMode: "sdk" });
-    expect(loadConfig(projectRoot).codexInternalThreadMode).toBe("sdk");
+    expect(loadConfig(projectRoot).codexInternalThreadMode).toBe("api");
+
+    saveConfig(projectRoot, { codexInternalThreadMode: "direct-api" });
+    expect(loadConfig(projectRoot).codexInternalThreadMode).toBe("api");
 
     saveConfig(projectRoot, { codexInternalThreadMode: "invalid-mode" });
     expect(loadConfig(projectRoot).codexInternalThreadMode).toBe("legacy");
@@ -94,9 +98,11 @@ describe("config save/load", () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  test("normalizeCodexInternalThreadMode supports phase 1a flag", () => {
+  test("normalizeCodexInternalThreadMode supports direct API aliases", () => {
     expect(normalizeCodexInternalThreadMode("legacy")).toBe("legacy");
-    expect(normalizeCodexInternalThreadMode("sdk")).toBe("sdk");
+    expect(normalizeCodexInternalThreadMode("sdk")).toBe("api");
+    expect(normalizeCodexInternalThreadMode("api")).toBe("api");
+    expect(normalizeCodexInternalThreadMode("direct")).toBe("api");
     expect(normalizeCodexInternalThreadMode("unknown")).toBe("legacy");
   });
 
@@ -109,6 +115,8 @@ describe("config save/load", () => {
 
     expect(normalizeCodexAuthPath(" /tmp/codex-auth.json ")).toBe("/tmp/codex-auth.json");
     expect(normalizeCodexAuthPath(undefined)).toBe("");
+    expect(normalizeCodexOauthRefreshWindowSec("90")).toBe(90);
+    expect(normalizeCodexOauthRefreshWindowSec("bad")).toBe(300);
 
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });

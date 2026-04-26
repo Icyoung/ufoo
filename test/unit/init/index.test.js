@@ -248,6 +248,7 @@ describe("UfooInit markdown handling", () => {
   test("initCore creates .ufoo directory", () => {
     init.initCore(projectRoot);
     expect(fs.existsSync(path.join(projectRoot, ".ufoo"))).toBe(true);
+    expect(fs.existsSync(path.join(projectRoot, ".ufoo", "memory"))).toBe(true);
   });
 
   test("initCore creates docs symlink when docs/ exists", () => {

@@ -73,6 +73,12 @@ function buildRuntimeNickname(projectPrefix, nickname) {
   return `${prefix}-${logicalName}`;
 }
 
+function resolveMemberScopedNickname(member = {}) {
+  return asTrimmedString(member.scoped_nickname)
+    || asTrimmedString(member.runtime_nickname)
+    || asTrimmedString(member.nickname);
+}
+
 function buildLaunchPlan(templateDoc = {}) {
   const agents = Array.isArray(templateDoc.agents) ? templateDoc.agents : [];
   const remaining = new Map();
@@ -325,7 +331,6 @@ function buildExecutionPlan({
     const runtimeNickname = buildRuntimeNickname(projectNicknamePrefix, item.nickname);
     return {
       nickname: item.nickname,
-      runtime_nickname: runtimeNickname,
       requested_type: item.requested_type || item.type,
       type: resolvedType,
       role: item.role,
@@ -401,7 +406,7 @@ function buildExecutionPlan({
       ...item,
       requested_type: item.requested_type || item.type,
       type: resolvedType,
-      runtime_nickname: runtimeNickname,
+      scoped_nickname: runtimeNickname,
       resolved_profile: profile ? profile.resolved_profile : "",
       display_name: profile ? profile.display_name : "",
       short_name: profile ? profile.short_name : "",
@@ -459,7 +464,7 @@ function buildDefaultRuntime({
       index: idx,
       template_agent_id: item.id || "",
       nickname: item.nickname,
-      runtime_nickname: item.runtime_nickname || "",
+      scoped_nickname: item.scoped_nickname || item.runtime_nickname || "",
       requested_type: item.requested_type || item.type,
       type: item.type,
       role: item.role || "",
@@ -795,7 +800,7 @@ function createGroupOrchestrator(options = {}) {
         roster_version: compiled.rosterVersion,
         members: compiled.executionPlan.map((item) => ({
           nickname: item.nickname,
-          runtime_nickname: item.runtime_nickname,
+          scoped_nickname: item.scoped_nickname,
           type: item.type,
           role: item.role,
           startup_order: item.startup_order,
@@ -915,7 +920,7 @@ function createGroupOrchestrator(options = {}) {
         action: "launch",
         agent: item.type,
         count: 1,
-        nickname: item.runtime_nickname,
+        nickname: item.scoped_nickname || item.runtime_nickname,
         require_activity_monitor: true,
         tmux_layout_context: tmuxLayoutContext,
         ...launchHostContext,
@@ -948,7 +953,7 @@ function createGroupOrchestrator(options = {}) {
       }
 
       const reused = Boolean(launchResult.skipped);
-      const subscriberId = pickLaunchSubscriber(projectRoot, launchResult, item.runtime_nickname);
+      const subscriberId = pickLaunchSubscriber(projectRoot, launchResult, item.scoped_nickname || item.runtime_nickname);
       member.status = reused ? "reused" : "active";
       member.managed = !reused;
       member.subscriber_id = subscriberId || "";
@@ -960,7 +965,7 @@ function createGroupOrchestrator(options = {}) {
       if (!reused) {
         rollbackTargets.push({
           memberIndex: i,
-          target: subscriberId || item.runtime_nickname,
+          target: subscriberId || item.scoped_nickname || item.runtime_nickname,
         });
       } else if (!canReuseBootstrappedMember(member, item, subscriberId)) {
         const priorBootstrap = findAppliedBootstrapRecord(
@@ -1124,8 +1129,7 @@ function createGroupOrchestrator(options = {}) {
       if (!member || member.managed === false) continue;
       if (member.status !== "active") continue;
       const target = asTrimmedString(member.subscriber_id)
-        || asTrimmedString(member.runtime_nickname)
-        || asTrimmedString(member.nickname);
+        || resolveMemberScopedNickname(member);
       if (!target) continue;
       activeMembers.push({ index: i, target });
     }

@@ -113,7 +113,7 @@ class ContextDoctor {
 
     console.log("=== context doctor ===");
     console.log(
-      "Reminder: If you provide evaluation/recommendation/plan, write a decision before replying."
+      "Reminder: default to no new decision; only record important, plan-level choices that constrain future work."
     );
     console.log("");
 

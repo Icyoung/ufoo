@@ -8,11 +8,12 @@ description: |
 
 # ufoo — Unified Agent Protocol
 
-ufoo is the multi-agent coordination layer. It provides three capabilities:
+ufoo is the multi-agent coordination layer. It provides four capabilities:
 
-1. **Context Decisions** — Persistent knowledge log shared across agents
-2. **Event Bus** — Inter-agent messaging
-3. **Initialization** — Project setup for ufoo modules
+1. **Context Decisions** — Sparse log of major plan-level choices shared across agents
+2. **Shared Memory** — Durable, low-noise project facts shared across agents
+3. **Event Bus** — Inter-agent messaging
+4. **Initialization** — Project setup for ufoo modules
 
 ## Session Marker
 
@@ -26,13 +27,14 @@ When you see a probe marker command like `/ufoo <marker>` (Claude) or `$ufoo <ma
 
 **"Only record decisions that matter beyond this session."**
 
-Record a decision for important, plan-level knowledge that other agents or your future self need. The threshold is HIGH — most tasks do NOT need a decision.
+The default is **no new decision**. Record one only for important, plan-level knowledge that other agents or your future self will need.
 
 - **Always record**: architectural choices, plan-level decisions with multiple options, cross-agent coordination decisions, trade-off analysis where alternatives were considered and rejected
 - **Also record**: design patterns that set precedent, integration contracts between systems, decisions that constrain future work
-- **Do NOT record**: routine bug fixes, simple implementation details, trivial observations, findings that only matter within the current task
-- **Write the decision BEFORE acting on it** — if your session dies, the knowledge survives
-- **Rule of thumb**: if another agent wouldn't need to know about it, don't write a decision
+- **Do NOT record**: routine bug fixes, simple implementation details, trivial observations, generic planning/evaluation/recommendation requests, or findings that only matter within the current task
+- **Prefer shared memory**: durable project facts and long-lived factual constraints belong in shared memory, not decisions
+- **Write the decision BEFORE acting on it** — but only after the high bar above is clearly met
+- **Rule of thumb**: if another agent would not need this as a future constraint, do not write a decision
 
 ### Commands
 
@@ -75,9 +77,51 @@ What must follow from this?
 
 **NEVER resolve blindly.** Reading the title is not enough.
 
+### Read-First Rule
+
+Shared context is **read-first**, not write-only:
+
+1. At session start or before related work, read open decisions first.
+2. Do not create a new decision just to persist ordinary work state.
+3. Consume shared memory via prompt prefix / `recall` / `search_memory` before writing new memory.
+
 ---
 
-## 2. Event Bus (ubus)
+## 2. Shared Memory
+
+Shared memory records durable project facts only. It is not a scratchpad, progress log, user-preference store, or replacement for decisions.
+
+### When to Record
+
+- **Record**: permanent project invariants, external ownership facts, integration contracts, long-lived process constraints
+- **Do NOT record**: current task status, transient observations, "today/current/recent" facts, agent feedback, routine findings, or anything likely to expire
+- **Read first**: if memory may already exist, use `recall` / `search_memory` before `remember` or `edit_memory`
+- **Prefer edit over duplicate**: update an existing memory when the fact already exists but wording changed
+
+### Commands
+
+```bash
+ufoo memory add "Title" --body "Durable fact body" --tags infra,billing
+ufoo memory list [--tag infra] [--all]
+ufoo memory show mem-0001
+ufoo memory edit mem-0001
+ufoo memory forget mem-0001
+ufoo memory rebuild-index
+ufoo memory audit mem-0001
+```
+
+### Agent Tools
+
+- `remember` — write a new durable memory fact
+- `recall` — read memory by id or tags
+- `search_memory` — search memory before writing or when more context is needed
+- `search_history` — search local Claude/Codex session history as redacted evidence
+- `edit_memory` — directly update any existing memory, with optional `expected_updated_at`
+- `forget` — archive an obsolete or polluted memory entry
+
+---
+
+## 3. Event Bus (ubus)
 
 ### Commands
 
@@ -122,7 +166,7 @@ Notes:
 
 ---
 
-## 3. Message Format
+## 4. Message Format
 
 Bus messages use a unified prefix format to distinguish sources:
 
@@ -134,7 +178,7 @@ When you see `[manual]<to:xxx>`, it's a direct user instruction to an agent — 
 
 ---
 
-## 4. Team Activity (Input History)
+## 5. Team Activity (Input History)
 
 Your bootstrap prompt may include a `## Team Activity` section showing recent prompts sent to all agents. Use this to understand:
 - What each agent is currently working on
@@ -150,7 +194,7 @@ ufoo history prompt [limit]     # Render as injectable prompt block
 
 ---
 
-## 5. Initialization (uinit)
+## 6. Initialization (uinit)
 
 Trigger: `/uinit` or `/ufoo init`
 

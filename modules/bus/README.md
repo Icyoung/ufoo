@@ -134,7 +134,7 @@ Examples:
 
 | Module | Problem Solved |
 |--------|----------------|
-| context | Shared context, decision recording, knowledge persistence |
+| context | Shared context, sparse decision log for major plan-level choices |
 | bus | Real-time communication, task delegation, message passing |
 
 Both are independent peer modules that can be used separately or together.

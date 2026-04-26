@@ -21,6 +21,10 @@ function writeV1Token(filePath, overrides = {}) {
   }, null, 2));
 }
 
+function isolatedSettingsPath(dir) {
+  return path.join(dir, "settings.json");
+}
+
 describe("agent claudeOauthTokenReader", () => {
   test("resolves profile and explicit token paths", () => {
     const root = path.join(os.tmpdir(), "ufoo-claude-oauth-paths");
@@ -30,6 +34,7 @@ describe("agent claudeOauthTokenReader", () => {
       profileDir: path.join(root, "profiles", "work"),
       tokenPath: path.join(root, "profiles", "work", "oauth.json"),
       lockPath: path.join(root, "profiles", "work", "oauth.json.lock"),
+      settingsPath: path.join(root, "settings.json"),
     });
 
     expect(resolveClaudeOauthPaths({
@@ -74,6 +79,7 @@ describe("agent claudeOauthTokenReader", () => {
 
     const reader = new ClaudeOauthTokenReader({
       tokenPath,
+      settingsPath: isolatedSettingsPath(dir),
       env: { ANTHROPIC_API_KEY: "api-key-1" },
     });
 
@@ -81,6 +87,54 @@ describe("agent claudeOauthTokenReader", () => {
       source: "api-key",
       token: "api-key-1",
       tokenPath: "",
+    });
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("reads ANTHROPIC_AUTH_TOKEN from Claude settings env", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-claude-settings-auth-"));
+    fs.writeFileSync(path.join(dir, "settings.json"), JSON.stringify({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: "settings-auth-token-1",
+      },
+    }, null, 2));
+
+    const reader = new ClaudeOauthTokenReader({
+      configDir: dir,
+      env: {},
+    });
+
+    await expect(reader.resolveAuth()).resolves.toMatchObject({
+      source: "oauth",
+      token: "settings-auth-token-1",
+      tokenPath: path.join(dir, "settings.json"),
+      provider: "claude",
+      credentialKind: "oauth",
+    });
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("reads ANTHROPIC_API_KEY from Claude settings env", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-claude-settings-key-"));
+    fs.writeFileSync(path.join(dir, "settings.json"), JSON.stringify({
+      env: {
+        ANTHROPIC_API_KEY: "settings-api-key-1",
+      },
+    }, null, 2));
+
+    const reader = new ClaudeOauthTokenReader({
+      configDir: dir,
+      env: {},
+    });
+
+    await expect(reader.resolveAuth()).resolves.toMatchObject({
+      source: "api-key",
+      token: "settings-api-key-1",
+      tokenPath: path.join(dir, "settings.json"),
+      provider: "claude",
+      credentialKind: "api-key",
     });
 
     fs.rmSync(dir, { recursive: true, force: true });
@@ -94,6 +148,7 @@ describe("agent claudeOauthTokenReader", () => {
     const refreshAccessToken = jest.fn();
     const reader = new ClaudeOauthTokenReader({
       tokenPath,
+      settingsPath: isolatedSettingsPath(dir),
       now: () => Date.parse("2026-04-20T10:00:00.000Z"),
       refreshWindowMs: 5 * 60 * 1000,
       refreshAccessToken,
@@ -122,6 +177,7 @@ describe("agent claudeOauthTokenReader", () => {
 
     const reader = new ClaudeOauthTokenReader({
       tokenPath,
+      settingsPath: isolatedSettingsPath(dir),
       now: () => Date.parse("2026-04-20T10:00:00.000Z"),
       refreshWindowMs: 5 * 60 * 1000,
       refreshAccessToken,
@@ -150,6 +206,7 @@ describe("agent claudeOauthTokenReader", () => {
 
     const reader = new ClaudeOauthTokenReader({
       tokenPath,
+      settingsPath: isolatedSettingsPath(dir),
       now: () => Date.parse("2026-04-20T10:00:00.000Z"),
       refreshWindowMs: 5 * 60 * 1000,
       refreshAccessToken: async () => {
@@ -170,6 +227,7 @@ describe("agent claudeOauthTokenReader", () => {
 
     const reader = new ClaudeOauthTokenReader({
       tokenPath,
+      settingsPath: isolatedSettingsPath(dir),
       now: () => Date.parse("2026-04-20T10:00:00.000Z"),
       refreshWindowMs: 5 * 60 * 1000,
       refreshAccessToken: async () => ({
@@ -191,6 +249,7 @@ describe("agent claudeOauthTokenReader", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-claude-missing-"));
     const reader = new ClaudeOauthTokenReader({
       tokenPath: path.join(dir, "missing.json"),
+      settingsPath: isolatedSettingsPath(dir),
       env: {},
     });
 
@@ -221,6 +280,7 @@ describe("agent claudeOauthTokenReader", () => {
 
     const options = {
       tokenPath,
+      settingsPath: isolatedSettingsPath(dir),
       now: () => Date.parse("2026-04-20T10:00:00.000Z"),
       refreshWindowMs: 5 * 60 * 1000,
       refreshAccessToken,

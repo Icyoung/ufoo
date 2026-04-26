@@ -16,7 +16,7 @@ function normalizeProvider(value = "") {
   if (!text) return "ucode";
   if (text === "codex-cli" || text === "codex-code" || text === "codex" || text === "openai") return "codex";
   if (text === "claude-cli" || text === "claude-code" || text === "claude" || text === "anthropic") return "claude";
-  if (text === "ucode") return "ucode";
+  if (text === "ucode" || text === "ufoo" || text === "ufoo-code") return "ucode";
   return text;
 }
 
@@ -200,6 +200,7 @@ async function resolveUpstreamRuntime({
   provider = "",
   model = "",
   env = process.env,
+  fetchImpl = global.fetch,
   loadConfigImpl = loadConfig,
 } = {}) {
   const normalizedProvider = normalizeProvider(provider);
@@ -208,6 +209,8 @@ async function resolveUpstreamRuntime({
   if (normalizedProvider === "codex") {
     const credential = await resolveCodexUpstreamCredentials({
       authPath: config.codexAuthPath,
+      refreshWindowMs: Number(config.codexOauthRefreshWindowSec || 300) * 1000,
+      fetchImpl,
       env,
     });
     const useCodexResponses = credential.credentialKind === "oauth" && Boolean(credential.accessToken);
@@ -408,13 +411,25 @@ async function sendUpstreamPrompt({
   env = process.env,
   loadConfigImpl = loadConfig,
 } = {}) {
-  const runtime = await resolveUpstreamRuntime({
-    projectRoot,
-    provider,
-    model,
-    env,
-    loadConfigImpl,
-  });
+  let runtime;
+  try {
+    runtime = await resolveUpstreamRuntime({
+      projectRoot,
+      provider,
+      model,
+      env,
+      fetchImpl,
+      loadConfigImpl,
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      error: err && err.message ? err.message : "upstream runtime resolution failed",
+      errorCode: err && err.code ? err.code : "UPSTREAM_RUNTIME_RESOLUTION_FAILED",
+      provider: normalizeProvider(provider),
+      model: String(model || "").trim(),
+    };
+  }
 
   const requestModel = String(runtime.model || "").trim();
   const request = runtime.transport === "anthropic-messages"

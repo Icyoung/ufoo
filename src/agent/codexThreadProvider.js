@@ -61,7 +61,7 @@ async function* defaultCodexTransportStreamFactory({
   });
   if (!result.ok) {
     const err = new Error(result.error || "Codex upstream request failed");
-    err.code = "CODEX_UPSTREAM_FAILED";
+    err.code = result.errorCode || "CODEX_UPSTREAM_FAILED";
     throw err;
   }
 
@@ -145,7 +145,7 @@ class CodexThreadProvider {
     this.cwd = cwd;
     this.extraArgs = Array.isArray(extraArgs) ? extraArgs.slice() : [];
     this.streamFactory = streamFactory;
-    this.sdk = sdk || resolveCodexSdk();
+    this.sdk = sdk || (streamFactory === defaultCodexStreamFactory ? resolveCodexSdk() : null);
     this.tools = Array.isArray(tools) ? tools.slice() : [];
   }
 

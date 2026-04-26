@@ -24,6 +24,34 @@ function mapSubcommandSuggestions(subs = [], parentCmd, tokenIndex, filterText =
     .sort(sortSubcommandEntries);
 }
 
+function buildNestedSubcommandSuggestions(subs = [], mainCmd, parts = [], endsWithSpace = false) {
+  let currentSubs = Array.isArray(subs) ? subs : [];
+  if (currentSubs.length === 0) return [];
+
+  for (let index = 1; index < parts.length; index += 1) {
+    const token = String(parts[index] || "");
+    const exact = currentSubs.find((sub) =>
+      String(sub && sub.cmd ? sub.cmd : "").toLowerCase() === token.toLowerCase()
+    );
+    const isLastToken = index === parts.length - 1;
+
+    if (exact && Array.isArray(exact.subcommands) && exact.subcommands.length > 0) {
+      if (!isLastToken || endsWithSpace) {
+        currentSubs = exact.subcommands;
+        continue;
+      }
+    }
+
+    if (exact && isLastToken && endsWithSpace) {
+      return [];
+    }
+
+    return mapSubcommandSuggestions(currentSubs, mainCmd, index, token);
+  }
+
+  return mapSubcommandSuggestions(currentSubs, mainCmd, parts.length, "");
+}
+
 function createCompletionController(options = {}) {
   const {
     input,
@@ -230,14 +258,9 @@ function createCompletionController(options = {}) {
           subs = Array.from(merged.values());
         }
         if (isLaunch) {
-          return mapSubcommandSuggestions(subs, mainCmd, 1, "");
+          return mapSubcommandSuggestions(subs, mainCmd, 1, subFilter);
         }
-        const selectedSub = subs.find((sub) => String(sub && sub.cmd ? sub.cmd : "").toLowerCase() === subFilter.toLowerCase());
-        if (selectedSub && selectedSub.subcommands && (parts.length > 2 || endsWithSpace)) {
-          const nestedFilter = parts[2] || "";
-          return mapSubcommandSuggestions(selectedSub.subcommands, mainCmd, 2, nestedFilter);
-        }
-        return mapSubcommandSuggestions(subs, mainCmd, 1, subFilter);
+        return buildNestedSubcommandSuggestions(subs, mainCmd, parts, endsWithSpace);
       }
       return [];
     }

@@ -101,6 +101,7 @@ function parseTemplateFile(filePath, source) {
     data,
     templateId: asTrimmedString(templateInfo.id),
     templateName: asTrimmedString(templateInfo.name),
+    templateDescription: asTrimmedString(templateInfo.description || templateInfo.summary),
     schemaVersion: Number.isInteger(data.schema_version) ? data.schema_version : null,
   };
   return { entry, error: null };

@@ -563,6 +563,7 @@ async function runChat(projectRoot, options = {}) {
       return registry.templates.map((item) => ({
         alias: item.alias,
         name: item.templateName || item.templateId || "",
+        desc: item.templateDescription || "",
         source: item.source || "",
       }));
     },
@@ -2103,12 +2104,9 @@ async function runChat(projectRoot, options = {}) {
         if (runtimeWatchDebounce) return;
         runtimeWatchDebounce = setTimeout(() => {
           runtimeWatchDebounce = null;
-          const prevCount = projectRuntimes.length;
           refreshProjectRuntimes();
-          if (projectRuntimes.length !== prevCount) {
-            renderDashboard();
-            screen.render();
-          }
+          renderDashboard();
+          screen.render();
         }, 300);
       });
       screen.on("destroy", () => watcher.close());

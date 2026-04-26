@@ -3,7 +3,8 @@
   "template": {
     "id": "ui-polish",
     "alias": "ui-polish",
-    "name": "UI Polish"
+    "name": "UI Polish",
+    "description": "UI execution lane: audit, apply focused frontend polish, and verify UX regressions."
   },
   "defaults": {
     "launch_mode": "auto",
@@ -16,7 +17,10 @@
       "type": "auto",
       "role": "audit the interface and rank design polish issues",
       "prompt_profile": "design-critic",
-      "accept_from": [],
+      "accept_from": [
+        "refiner",
+        "qa"
+      ],
       "report_to": [
         "refiner",
         "qa"

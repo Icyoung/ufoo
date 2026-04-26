@@ -16,6 +16,10 @@ const { parseIntervalMs, formatIntervalMs } = require("./cronScheduler");
 const { isGlobalControllerProjectRoot, resolveGlobalControllerUfooDir } = require("../projects");
 const { loadPromptProfileRegistry } = require("../group/promptProfiles");
 const { resolveSoloAgentType } = require("../solo/commands");
+const {
+  inspectDirectAuthStatus,
+  formatDirectAuthStatus,
+} = require("../agent/directAuthStatus");
 
 function defaultCreateDoctor(projectRoot) {
   const UfooDoctor = require("../doctor");
@@ -37,6 +41,41 @@ function defaultResolveTerminalApp() {
   if (program === "Apple_Terminal") return "terminal";
   if (program === "iTerm.app" || process.env.ITERM_SESSION_ID) return "iterm2";
   return "";
+}
+
+const SETTINGS_MODEL_DEFAULTS = Object.freeze({
+  agent: Object.freeze({
+    codex: "gpt-5.5",
+    claude: "opus-4.7",
+  }),
+  router: Object.freeze({
+    codex: "gpt-5.4-mini",
+    claude: "sonnet-4.7",
+  }),
+});
+
+function normalizeSettingsProvider(value = "", fallback = "codex-cli") {
+  const text = String(value || "").trim().toLowerCase();
+  if (text === "claude" || text === "claude-cli" || text === "claude-code" || text === "anthropic") {
+    return "claude-cli";
+  }
+  if (text === "codex" || text === "codex-cli" || text === "codex-code" || text === "openai") {
+    return "codex-cli";
+  }
+  return fallback;
+}
+
+function agentProviderKey(value = "") {
+  return normalizeSettingsProvider(value) === "claude-cli" ? "claude" : "codex";
+}
+
+function defaultAgentModelForProvider(value = "") {
+  return SETTINGS_MODEL_DEFAULTS.agent[agentProviderKey(value)] || SETTINGS_MODEL_DEFAULTS.agent.codex;
+}
+
+function defaultGateModelForProvider(value = "") {
+  const key = agentProviderKey(value);
+  return SETTINGS_MODEL_DEFAULTS.router[key] || SETTINGS_MODEL_DEFAULTS.router.codex;
 }
 
 function collectHostLaunchRequestContext(env = process.env) {
@@ -102,6 +141,8 @@ function createCommandExecutor(options = {}) {
     listCronTasks = () => [],
     stopCronTask = () => false,
     runGroupCore = runGroupCoreCommand,
+    inspectDirectAuth = inspectDirectAuthStatus,
+    formatDirectAuth = formatDirectAuthStatus,
     requestCron = null,
     globalMode = false,
     listProjects = () => [],
@@ -163,6 +204,14 @@ function createCommandExecutor(options = {}) {
       logMessage("system", "{white-fg}✓{/white-fg} Daemon is running");
     } else {
       logMessage("system", "{white-fg}✗{/white-fg} Daemon is not running");
+    }
+
+    const authStatus = await inspectDirectAuth({
+      projectRoot: getActiveProjectRoot(),
+      autoRefresh: false,
+    });
+    for (const line of formatDirectAuth(authStatus, { compact: true })) {
+      logMessage("system", escapeBlessed(line));
     }
   }
 
@@ -1140,8 +1189,14 @@ function createCommandExecutor(options = {}) {
 
   async function handleSettingsCommand(args = []) {
     const section = String(args[0] || "").trim().toLowerCase();
-    if (!section) {
-      logMessage("error", "{white-fg}✗{/white-fg} Usage: /settings <router|ucode> ...");
+    if (!section || section === "show" || section === "status") {
+      await handleSettingsOverviewCommand();
+      return;
+    }
+
+    if (section === "agent" || section === "ufoo") {
+      const subArgs = args.slice(1);
+      await handleAgentSettingsCommand(subArgs);
       return;
     }
 
@@ -1161,7 +1216,116 @@ function createCommandExecutor(options = {}) {
       return;
     }
 
-    logMessage("error", "{white-fg}✗{/white-fg} Unknown settings section. Use: router, ucode");
+    logMessage("error", "{white-fg}✗{/white-fg} Unknown settings section. Use: show, agent, router, ucode");
+  }
+
+  async function handleSettingsOverviewCommand() {
+    const config = loadConfig(projectRoot) || {};
+    const agentProvider = normalizeSettingsProvider(config.agentProvider);
+    const agentKey = agentProviderKey(agentProvider);
+    const agentModel = String(config.agentModel || "").trim();
+    const routerMode = normalizeControllerMode(config.controllerMode);
+    const routerProvider = String(config.routerProvider || "").trim();
+    const routerModel = String(config.routerModel || "").trim();
+    const ucodeConfig = loadUcodeConfig() || {};
+    const ucodeProvider = String(ucodeConfig.ucodeProvider || "").trim();
+    const ucodeModel = String(ucodeConfig.ucodeModel || "").trim();
+
+    logMessage("system", "{cyan-fg}settings:{/cyan-fg}");
+    logMessage("system", `  • agent: ${agentKey} · model ${agentModel || `(unset, recommended ${defaultAgentModelForProvider(agentProvider)})`}`);
+    logMessage("system", `  • router: mode ${routerMode} · provider ${routerProvider || "(unset)"} · model ${routerModel || "(unset)"}`);
+    logMessage("system", `  • ucode: provider ${ucodeProvider || "(unset)"} · model ${ucodeModel || "(unset)"}`);
+    logMessage("system", "  • use: /settings agent | /settings router | /settings ucode");
+  }
+
+  async function handleAgentSettingsCommand(args = []) {
+    const first = String(args[0] || "").trim().toLowerCase();
+    const hasInlineKv = args.some((item) => String(item || "").includes("="));
+    const action = !first ? "show" : (hasInlineKv ? "set" : first);
+
+    if (action === "show" || action === "status") {
+      const config = loadConfig(projectRoot) || {};
+      const provider = normalizeSettingsProvider(config.agentProvider);
+      const key = agentProviderKey(provider);
+      const model = String(config.agentModel || "").trim();
+      logMessage("system", "{cyan-fg}ufoo-agent config:{/cyan-fg}");
+      logMessage("system", `  • provider: ${key}`);
+      logMessage("system", `  • model: ${model || `(unset, recommended ${defaultAgentModelForProvider(provider)})`}`);
+      logMessage("system", `  • defaults: codex=${SETTINGS_MODEL_DEFAULTS.agent.codex}, claude=${SETTINGS_MODEL_DEFAULTS.agent.claude}`);
+      logMessage("system", "  • use: /settings agent set provider=<codex|claude> model=<id>");
+      return;
+    }
+
+    if (action === "codex" || action === "claude") {
+      const kv = parseKeyValueArgs(args.slice(1));
+      const provider = action === "claude" ? "claude-cli" : "codex-cli";
+      const model = String(kv.model || defaultAgentModelForProvider(provider)).trim();
+      saveConfig(projectRoot, {
+        agentProvider: provider,
+        agentModel: model,
+      });
+      logMessage("system", "{white-fg}✓{/white-fg} ufoo-agent config updated");
+      logMessage("system", `  • provider: ${agentProviderKey(provider)}`);
+      logMessage("system", `  • model: ${model}`);
+      await restartDaemon(projectRoot);
+      return;
+    }
+
+    if (action === "set") {
+      const kvArgs = hasInlineKv ? args : args.slice(1);
+      const kv = parseKeyValueArgs(kvArgs);
+      const updates = {};
+      let nextProvider = "";
+
+      if (Object.prototype.hasOwnProperty.call(kv, "provider")) {
+        nextProvider = normalizeSettingsProvider(kv.provider, "");
+        if (!nextProvider) {
+          logMessage("error", "{white-fg}✗{/white-fg} Usage: /settings agent set provider=<codex|claude> model=<id>");
+          return;
+        }
+        updates.agentProvider = nextProvider;
+      }
+      if (Object.prototype.hasOwnProperty.call(kv, "model")) {
+        updates.agentModel = String(kv.model || "").trim();
+      } else if (nextProvider) {
+        updates.agentModel = defaultAgentModelForProvider(nextProvider);
+      }
+
+      if (Object.keys(updates).length === 0) {
+        logMessage("error", "{white-fg}✗{/white-fg} Usage: /settings agent set provider=<codex|claude> model=<id>");
+        return;
+      }
+
+      saveConfig(projectRoot, updates);
+      logMessage("system", "{white-fg}✓{/white-fg} ufoo-agent config updated");
+      if (Object.prototype.hasOwnProperty.call(updates, "agentProvider")) {
+        logMessage("system", `  • provider: ${agentProviderKey(updates.agentProvider)}`);
+      }
+      if (Object.prototype.hasOwnProperty.call(updates, "agentModel")) {
+        logMessage("system", `  • model: ${updates.agentModel || "(unset)"}`);
+      }
+      await restartDaemon(projectRoot);
+      return;
+    }
+
+    if (action === "clear") {
+      const fieldsRaw = args.slice(1).map((item) => String(item || "").trim().toLowerCase()).filter(Boolean);
+      const fields = fieldsRaw.length === 0 ? ["model"] : fieldsRaw;
+      const updates = {};
+      const clearAll = fields.includes("all");
+      if (clearAll || fields.includes("provider")) updates.agentProvider = "codex-cli";
+      if (clearAll || fields.includes("model")) updates.agentModel = "";
+      if (Object.keys(updates).length === 0) {
+        logMessage("error", "{white-fg}✗{/white-fg} Usage: /settings agent clear [provider|model|all]");
+        return;
+      }
+      saveConfig(projectRoot, updates);
+      logMessage("system", "{white-fg}✓{/white-fg} ufoo-agent config cleared");
+      await restartDaemon(projectRoot);
+      return;
+    }
+
+    logMessage("error", "{white-fg}✗{/white-fg} Unknown settings agent action. Use: show, set, clear, codex, claude");
   }
 
   async function handleRouterSettingsCommand(args = []) {
@@ -1172,11 +1336,27 @@ function createCommandExecutor(options = {}) {
     if (action === "show" || action === "status") {
       const config = loadConfig(projectRoot) || {};
       const mode = normalizeControllerMode(config.controllerMode);
-      logMessage("system", "{cyan-fg}router config:{/cyan-fg}");
+      logMessage("system", "{cyan-fg}gate router config:{/cyan-fg}");
       logMessage("system", `  • controllerMode: ${mode}`);
       logMessage("system", `  • provider: ${String(config.routerProvider || "").trim() || "(unset)"}`);
       logMessage("system", `  • model: ${String(config.routerModel || "").trim() || "(unset)"}`);
       logMessage("system", "  • allowed modes: main | loop | legacy | shadow");
+      logMessage("system", `  • defaults: codex=${SETTINGS_MODEL_DEFAULTS.router.codex}, claude=${SETTINGS_MODEL_DEFAULTS.router.claude}`);
+      return;
+    }
+
+    if (action === "codex" || action === "claude") {
+      const kv = parseKeyValueArgs(args.slice(1));
+      const provider = action;
+      const model = String(kv.model || defaultGateModelForProvider(provider)).trim();
+      saveConfig(projectRoot, {
+        routerProvider: provider,
+        routerModel: model,
+      });
+      logMessage("system", "{white-fg}✓{/white-fg} gate router config updated");
+      logMessage("system", `  • provider: ${provider}`);
+      logMessage("system", `  • model: ${model}`);
+      await restartDaemon(projectRoot);
       return;
     }
 
@@ -1202,7 +1382,7 @@ function createCommandExecutor(options = {}) {
       }
 
       saveConfig(projectRoot, updates);
-      logMessage("system", "{white-fg}✓{/white-fg} router config updated");
+      logMessage("system", "{white-fg}✓{/white-fg} gate router config updated");
       if (Object.prototype.hasOwnProperty.call(updates, "controllerMode")) {
         logMessage("system", `  • controllerMode: ${updates.controllerMode}`);
       }
@@ -1229,7 +1409,7 @@ function createCommandExecutor(options = {}) {
         return;
       }
       saveConfig(projectRoot, updates);
-      logMessage("system", "{white-fg}✓{/white-fg} router config cleared");
+      logMessage("system", "{white-fg}✓{/white-fg} gate router config cleared");
       await restartDaemon(projectRoot);
       return;
     }
@@ -1241,7 +1421,7 @@ function createCommandExecutor(options = {}) {
     }
 
     saveConfig(projectRoot, { controllerMode: nextMode });
-    logMessage("system", `{white-fg}✓{/white-fg} router mode set to ${nextMode}`);
+    logMessage("system", `{white-fg}✓{/white-fg} gate router mode set to ${nextMode}`);
     await restartDaemon(projectRoot);
   }
 

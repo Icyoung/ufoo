@@ -8,9 +8,11 @@ const {
   readLastLine,
   isPidAlive,
   normalizeAgentTypeAlias,
+  logWarn,
 } = require("./utils");
 const NicknameManager = require("./nickname");
 const { buildMessageData } = require("./messageMeta");
+const { getUfooPaths } = require("../ufoo/paths");
 
 const SEQ_LOCK_TIMEOUT_MS = 5000;
 const SEQ_LOCK_POLL_MS = 25;
@@ -20,13 +22,21 @@ const SEQ_LOCK_STALE_MS = 30000;
  * 消息管理器
  */
 class MessageManager {
-  constructor(busDir, busData, queueManager) {
+  constructor(busDir, busData, queueManager, options = {}) {
     this.busDir = busDir;
     this.busData = busData;
     this.queueManager = queueManager;
     this.eventsDir = path.join(busDir, "events");
     this.seqFile = path.join(busDir, "seq.counter");
     this.seqLockFile = path.join(busDir, "seq.counter.lock");
+    this.projectRoot = typeof options.projectRoot === "string" && options.projectRoot.trim()
+      ? options.projectRoot
+      : "";
+    this.warn = typeof options.warn === "function" ? options.warn : logWarn;
+    this.preSendHooks = Array.isArray(options.preSendHooks) ? options.preSendHooks.slice() : [];
+    if (options.enableGroupPolicyHook === true && this.projectRoot) {
+      this.preSendHooks.push((context) => this.checkGroupSoftPolicy(context));
+    }
   }
 
   /**
@@ -255,6 +265,131 @@ class MessageManager {
     return false;
   }
 
+  readActiveGroupStates() {
+    if (!this.projectRoot) return [];
+    const groupsDir = getUfooPaths(this.projectRoot).groupsDir;
+    if (!fs.existsSync(groupsDir)) return [];
+
+    const groups = [];
+    let files = [];
+    try {
+      files = fs.readdirSync(groupsDir, { withFileTypes: true })
+        .filter((item) => item.isFile() && item.name.endsWith(".json"))
+        .map((item) => path.join(groupsDir, item.name))
+        .sort((a, b) => a.localeCompare(b, "en", { sensitivity: "base" }));
+    } catch {
+      return [];
+    }
+
+    for (const filePath of files) {
+      try {
+        const runtime = JSON.parse(fs.readFileSync(filePath, "utf8"));
+        const status = typeof runtime.status === "string" ? runtime.status : "";
+        if (status === "active" || status === "starting") {
+          groups.push(runtime);
+        }
+      } catch {
+        // Ignore malformed runtime files; policy warnings must never block send.
+      }
+    }
+    return groups;
+  }
+
+  findGroupMember(runtime = {}, subscriberId = "") {
+    const members = Array.isArray(runtime.members) ? runtime.members : [];
+    const target = typeof subscriberId === "string" ? subscriberId.trim() : "";
+    if (!target) return null;
+
+    return members.find((member) => {
+      if (!member || typeof member !== "object") return false;
+      return member.subscriber_id === target
+        || member.bootstrapped_subscriber_id === target
+        || member.nickname === target
+        || member.scoped_nickname === target
+        || member.runtime_nickname === target;
+    }) || null;
+  }
+
+  checkGroupSoftPolicy({ publisher, targets } = {}) {
+    const resolvedTargets = Array.isArray(targets) ? targets : [];
+    if (!publisher || resolvedTargets.length === 0) return [];
+
+    const groups = this.readActiveGroupStates();
+    if (groups.length === 0) return [];
+
+    const warnings = [];
+    const seen = new Set();
+
+    for (const runtime of groups) {
+      const publisherMember = this.findGroupMember(runtime, publisher);
+      if (!publisherMember) continue;
+
+      const publisherNickname = publisherMember.nickname
+        || publisherMember.scoped_nickname
+        || publisherMember.runtime_nickname
+        || publisher;
+      for (const targetSubscriber of resolvedTargets) {
+        const targetMember = this.findGroupMember(runtime, targetSubscriber);
+        if (!targetMember || targetMember === publisherMember) continue;
+
+        const acceptFrom = Array.isArray(targetMember.accept_from)
+          ? targetMember.accept_from.filter((item) => typeof item === "string" && item.trim())
+          : [];
+        const allowed = acceptFrom.includes(publisherNickname)
+          || acceptFrom.includes(publisherMember.scoped_nickname)
+          || acceptFrom.includes(publisherMember.runtime_nickname)
+          || acceptFrom.includes(publisher);
+
+        if (allowed) continue;
+
+        const groupId = runtime.group_id || "unknown-group";
+        const targetNickname = targetMember.nickname
+          || targetMember.scoped_nickname
+          || targetMember.runtime_nickname
+          || targetSubscriber;
+        const key = `${groupId}:${publisherNickname}:${targetNickname}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        const allowedText = acceptFrom.length > 0 ? acceptFrom.join(", ") : "none";
+        warnings.push(
+          `group policy warning: ${publisherNickname} -> ${targetNickname} violates accept_from for group ${groupId}; allowed: ${allowedText}`
+        );
+      }
+    }
+
+    return warnings;
+  }
+
+  async runPreSendHooks(context) {
+    if (!Array.isArray(this.preSendHooks) || this.preSendHooks.length === 0) {
+      return [];
+    }
+
+    const warnings = [];
+    for (const hook of this.preSendHooks) {
+      if (typeof hook !== "function") continue;
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const result = await hook(context);
+        if (Array.isArray(result)) {
+          warnings.push(...result.filter(Boolean).map((item) => String(item)));
+        } else if (typeof result === "string" && result) {
+          warnings.push(result);
+        } else if (result && typeof result.message === "string") {
+          warnings.push(result.message);
+        }
+      } catch (err) {
+        warnings.push(`preSendHook failed: ${err && err.message ? err.message : err}`);
+      }
+    }
+
+    for (const warning of warnings) {
+      this.warn(warning);
+    }
+    return warnings;
+  }
+
   /**
    * 发送消息
    */
@@ -268,6 +403,16 @@ class MessageManager {
     if (targets.length === 0) {
       throw new Error(`Target "${target}" not found`);
     }
+
+    const warnings = await this.runPreSendHooks({
+      publisher,
+      target,
+      targets,
+      message,
+      options,
+      busData: this.busData,
+      projectRoot: this.projectRoot,
+    });
 
     const data = buildMessageData(message, options);
 
@@ -295,7 +440,7 @@ class MessageManager {
       }
     }
 
-    return { seq, targets };
+    return { seq, targets, warnings };
   }
 
   /**
@@ -421,12 +566,15 @@ class MessageManager {
 
         return false;
       })
-      .map(([id, meta]) => ({
-        id,
-        nickname: meta.nickname || meta.scoped_nickname || "",
-        agent_type: meta.agent_type,
-        last_seen: meta.last_seen,
-      }));
+      .map(([id, meta]) => {
+        const nickname = meta.nickname || meta.scoped_nickname;
+        return {
+          id,
+          ...(nickname ? { nickname } : {}),
+          agent_type: meta.agent_type,
+          last_seen: meta.last_seen,
+        };
+      });
 
     // 如果只有一个候选者，直接返回
     if (candidates.length === 1) {

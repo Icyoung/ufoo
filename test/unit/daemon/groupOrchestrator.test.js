@@ -155,7 +155,7 @@ function createTestOrchestrator(handleOps) {
     expect(result.members[0]).toEqual(
       expect.objectContaining({
         nickname: "pm",
-        runtime_nickname: runtimeNick("pm"),
+        scoped_nickname: runtimeNick("pm"),
         resolved_profile: "task-breakdown",
         bootstrap_strategy: "initial-prompt-arg",
       })
@@ -163,7 +163,7 @@ function createTestOrchestrator(handleOps) {
     expect(result.members[1]).toEqual(
       expect.objectContaining({
         nickname: "architect",
-        runtime_nickname: runtimeNick("architect"),
+        scoped_nickname: runtimeNick("architect"),
         bootstrap_strategy: "system-prompt-file",
       })
     );
@@ -211,7 +211,7 @@ function createTestOrchestrator(handleOps) {
     expect(runtime.members[0]).toEqual(
       expect.objectContaining({
         subscriber_id: "codex:pm1",
-        runtime_nickname: runtimeNick("pm"),
+        scoped_nickname: runtimeNick("pm"),
         bootstrap_status: "applied",
         bootstrapped_subscriber_id: "codex:pm1",
         resolved_profile: "task-breakdown",
@@ -220,7 +220,7 @@ function createTestOrchestrator(handleOps) {
     expect(runtime.members[1]).toEqual(
       expect.objectContaining({
         subscriber_id: "claude-code:arch1",
-        runtime_nickname: runtimeNick("architect"),
+        scoped_nickname: runtimeNick("architect"),
         bootstrap_status: "applied",
         upstream: ["pm"],
       })
@@ -399,7 +399,7 @@ function createTestOrchestrator(handleOps) {
     expect(result.group.members[0]).toEqual(
       expect.objectContaining({
         nickname: "pm",
-        runtime_nickname: runtimeNick("pm"),
+        scoped_nickname: runtimeNick("pm"),
         status: "reused",
         bootstrap_status: "applied",
         bootstrapped_subscriber_id: "codex:pm1",
@@ -411,7 +411,7 @@ function createTestOrchestrator(handleOps) {
     expect(result.group.members[1]).toEqual(
       expect.objectContaining({
         nickname: "architect",
-        runtime_nickname: runtimeNick("architect"),
+        scoped_nickname: runtimeNick("architect"),
         bootstrap_status: "applied",
       })
     );
@@ -643,7 +643,7 @@ function createTestOrchestrator(handleOps) {
     expect(result.group.members[0]).toEqual(
       expect.objectContaining({
         nickname: "pm",
-        runtime_nickname: runtimeNick("pm"),
+        scoped_nickname: runtimeNick("pm"),
         bootstrap_status: "applied",
         subscriber_id: "codex:pm1",
       })

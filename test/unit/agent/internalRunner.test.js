@@ -330,10 +330,7 @@ describe("agent internalRunner stream forwarding", () => {
     );
   });
 
-  test("falls back to legacy Claude CLI when threaded auth is unavailable", async () => {
-    runCliAgent.mockResolvedValueOnce({ ok: true, output: [{ item: { type: "agent_message", text: "legacy ok" } }] });
-    normalizeCliOutput.mockReturnValueOnce("legacy ok");
-
+  test("reports threaded auth errors without legacy CLI fallback", async () => {
     const busSender = {
       enqueue: jest.fn(),
       flush: jest.fn(async () => {}),
@@ -366,13 +363,16 @@ describe("agent internalRunner stream forwarding", () => {
       threadRuntime
     );
 
-    expect(threadRuntime.rebuildThread).not.toHaveBeenCalled();
-    expect(runCliAgent).toHaveBeenCalledWith(expect.objectContaining({
-      provider: "claude-cli",
-      prompt: "task",
-      extraArgs: ["--dangerously-skip-permissions"],
-    }));
-    expect(busSender.enqueue).toHaveBeenCalledWith("chat:11", "legacy ok");
+    expect(threadRuntime.rebuildThread).toHaveBeenCalled();
+    expect(runCliAgent).not.toHaveBeenCalled();
+    expect(busSender.enqueue).toHaveBeenCalledWith(
+      "chat:11",
+      JSON.stringify({ stream: true, delta: "[internal:claude-code] error: oauth unavailable" })
+    );
+    expect(busSender.enqueue).toHaveBeenCalledWith(
+      "chat:11",
+      JSON.stringify({ stream: true, done: true, reason: "error" })
+    );
   });
 });
 
@@ -418,16 +418,16 @@ describe("internalRunner codex thread mode", () => {
     jest.clearAllMocks();
   });
 
-  test("defaults to legacy mode", () => {
+  test("defaults to direct API mode", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-config-"));
-    expect(getCodexThreadMode(projectRoot)).toBe("legacy");
+    expect(getCodexThreadMode(projectRoot)).toBe("api");
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  test("env override enables sdk mode", () => {
+  test("env override keeps sdk as a compatibility alias for api mode", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-config-env-"));
     process.env.UFOO_CODEX_INTERNAL_THREAD_MODE = "sdk";
-    expect(getCodexThreadMode(projectRoot)).toBe("sdk");
+    expect(getCodexThreadMode(projectRoot)).toBe("api");
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
@@ -440,6 +440,7 @@ describe("internalRunner codex thread mode", () => {
 
   test("createThreadRuntime stays disabled for legacy mode", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-legacy-"));
+    process.env.UFOO_CODEX_INTERNAL_THREAD_MODE = "legacy";
     const runtime = createThreadRuntime({
       projectRoot,
       provider: "codex-cli",
@@ -453,9 +454,9 @@ describe("internalRunner codex thread mode", () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  test("createThreadRuntime builds codex thread provider in sdk mode", () => {
+  test("createThreadRuntime builds codex direct thread provider in api mode", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-sdk-"));
-    process.env.UFOO_CODEX_INTERNAL_THREAD_MODE = "sdk";
+    process.env.UFOO_CODEX_INTERNAL_THREAD_MODE = "api";
 
     createCodexThreadProvider.mockReturnValue({
       startThread: jest.fn(() => ({
@@ -486,7 +487,7 @@ describe("internalRunner codex thread mode", () => {
 
   test("createThreadRuntime falls back to disabled when Codex seam creation throws", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-sdk-fallback-"));
-    process.env.UFOO_CODEX_INTERNAL_THREAD_MODE = "sdk";
+    process.env.UFOO_CODEX_INTERNAL_THREAD_MODE = "api";
     createCodexThreadProvider.mockImplementation(() => {
       throw new Error("sdk missing");
     });
@@ -621,7 +622,7 @@ describe("internalRunner codex thread mode", () => {
 
   test("createThreadRuntime injects worker tier tools only when the tool flag is enabled", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-sdk-tools-"));
-    process.env.UFOO_CODEX_INTERNAL_THREAD_MODE = "sdk";
+    process.env.UFOO_CODEX_INTERNAL_THREAD_MODE = "api";
     process.env.UFOO_CODEX_INTERNAL_THREAD_TOOLS = "worker-tier01";
 
     createCodexThreadProvider.mockReturnValue({
@@ -751,11 +752,14 @@ describe("internalRunner codex thread mode", () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  test("only Claude auth and sdk availability errors trigger legacy threaded fallback", () => {
-    expect(shouldFallbackToLegacyThreadProvider({ code: "CLAUDE_AUTH_UNAVAILABLE" }, "claude-cli")).toBe(true);
-    expect(shouldFallbackToLegacyThreadProvider({ code: "claude_oauth_schema_unsupported" }, "claude-cli")).toBe(true);
-    expect(shouldFallbackToLegacyThreadProvider({ code: "ANTHROPIC_SDK_UNAVAILABLE" }, "claude-cli")).toBe(true);
+  test("threaded direct providers do not fall back to legacy CLI", () => {
+    expect(shouldFallbackToLegacyThreadProvider({ code: "CLAUDE_AUTH_UNAVAILABLE" }, "claude-cli")).toBe(false);
+    expect(shouldFallbackToLegacyThreadProvider({ code: "claude_oauth_schema_unsupported" }, "claude-cli")).toBe(false);
+    expect(shouldFallbackToLegacyThreadProvider({ code: "ANTHROPIC_SDK_UNAVAILABLE" }, "claude-cli")).toBe(false);
     expect(shouldFallbackToLegacyThreadProvider({ code: "ECONNRESET" }, "claude-cli")).toBe(false);
     expect(shouldFallbackToLegacyThreadProvider({ code: "CLAUDE_AUTH_UNAVAILABLE" }, "codex-cli")).toBe(false);
+    expect(shouldFallbackToLegacyThreadProvider({ code: "CODEX_AUTH_UNAVAILABLE" }, "codex-cli")).toBe(false);
+    expect(shouldFallbackToLegacyThreadProvider({ code: "CODEX_AUTH_REFRESH_FAILED" }, "codex-cli")).toBe(false);
+    expect(shouldFallbackToLegacyThreadProvider({ code: "CODEX_UPSTREAM_FAILED" }, "codex-cli")).toBe(false);
   });
 });

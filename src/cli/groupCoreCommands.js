@@ -80,6 +80,9 @@ function printList({ templates, errors }, { write, json, cwd }) {
       const displayPath = formatDisplayPath(item.filePath, cwd);
       write(`- ${item.alias} [${item.source}]`);
       write(`  name: ${nameLabel}`);
+      if (item.templateDescription) {
+        write(`  desc: ${item.templateDescription}`);
+      }
       write(`  id: ${idLabel}  schema: ${verLabel}`);
       write(`  file: ${displayPath}`);
     }
@@ -170,6 +173,7 @@ async function runGroupCoreCommand(subcmd, cmdArgs = [], options = {}) {
       filePath: item.filePath,
       templateId: item.templateId || "",
       templateName: item.templateName || "",
+      templateDescription: item.templateDescription || "",
       schemaVersion: item.schemaVersion,
     }));
     printList({ templates, errors: registry.errors }, { write, json, cwd });
@@ -190,6 +194,7 @@ async function runGroupCoreCommand(subcmd, cmdArgs = [], options = {}) {
       filePath: item.filePath,
       templateId: item.templateId || "",
       templateName: item.templateName || "",
+      templateDescription: item.templateDescription || "",
       schemaVersion: item.schemaVersion,
     }));
     printList({ templates, errors: registry.errors }, { write, json, cwd });

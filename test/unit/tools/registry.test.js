@@ -22,6 +22,12 @@ describe("shared tool registry", () => {
       "route_agent",
       "dispatch_message",
       "ack_bus",
+      "remember",
+      "recall",
+      "search_memory",
+      "search_history",
+      "edit_memory",
+      "forget",
       "launch_agent",
       "rename_agent",
       "close_agent",
@@ -69,6 +75,13 @@ describe("shared tool registry", () => {
       allowed_tiers: [CALLER_TIERS.CONTROLLER, CALLER_TIERS.WORKER],
       schema_version: "1.0",
     });
+    for (const name of ["remember", "recall", "search_memory", "search_history", "edit_memory", "forget"]) {
+      expect(getToolDefinition(name)).toMatchObject({
+        tier: TOOL_TIERS.TIER_1,
+        allowed_tiers: [CALLER_TIERS.CONTROLLER, CALLER_TIERS.WORKER],
+        schema_version: "1.0",
+      });
+    }
     expect(getToolDefinition("launch_agent")).toMatchObject({
       tier: TOOL_TIERS.TIER_2,
       allowed_tiers: [CALLER_TIERS.CONTROLLER],
@@ -109,6 +122,12 @@ describe("shared tool registry", () => {
       "route_agent",
       "dispatch_message",
       "ack_bus",
+      "remember",
+      "recall",
+      "search_memory",
+      "search_history",
+      "edit_memory",
+      "forget",
       "launch_agent",
       "rename_agent",
       "close_agent",
@@ -123,6 +142,12 @@ describe("shared tool registry", () => {
       "route_agent",
       "dispatch_message",
       "ack_bus",
+      "remember",
+      "recall",
+      "search_memory",
+      "search_history",
+      "edit_memory",
+      "forget",
     ]);
   });
 
@@ -135,8 +160,8 @@ describe("shared tool registry", () => {
     const copy = getSharedToolRegistry();
     copy.pop();
 
-    expect(copy).toHaveLength(11);
-    expect(SHARED_TOOL_REGISTRY).toHaveLength(12);
+    expect(copy).toHaveLength(17);
+    expect(SHARED_TOOL_REGISTRY).toHaveLength(18);
   });
 
   test("exports Phase 0 schema fixtures for translator validation", () => {
@@ -186,6 +211,48 @@ describe("shared tool registry", () => {
       schema_version: "1.0",
       output_schema: expect.objectContaining({
         required: ["ok", "subscriber", "acknowledged"],
+      }),
+    });
+    expect(PHASE0_TOOL_SCHEMAS.remember).toMatchObject({
+      name: "remember",
+      schema_version: "1.0",
+      input_schema: expect.objectContaining({
+        required: ["title", "body"],
+      }),
+    });
+    expect(PHASE0_TOOL_SCHEMAS.recall).toMatchObject({
+      name: "recall",
+      schema_version: "1.0",
+    });
+    expect(PHASE0_TOOL_SCHEMAS.search_memory).toMatchObject({
+      name: "search_memory",
+      schema_version: "1.0",
+      input_schema: expect.objectContaining({
+        required: ["query"],
+      }),
+    });
+    expect(PHASE0_TOOL_SCHEMAS.search_history).toMatchObject({
+      name: "search_history",
+      schema_version: "1.0",
+      input_schema: expect.objectContaining({
+        required: ["query"],
+      }),
+      output_schema: expect.objectContaining({
+        required: ["ok", "from_history", "query", "count", "snippets"],
+      }),
+    });
+    expect(PHASE0_TOOL_SCHEMAS.edit_memory).toMatchObject({
+      name: "edit_memory",
+      schema_version: "1.0",
+      input_schema: expect.objectContaining({
+        required: ["id"],
+      }),
+    });
+    expect(PHASE0_TOOL_SCHEMAS.forget).toMatchObject({
+      name: "forget",
+      schema_version: "1.0",
+      input_schema: expect.objectContaining({
+        required: ["id"],
       }),
     });
     expect(PHASE0_TOOL_SCHEMAS.launch_agent).toMatchObject({

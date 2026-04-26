@@ -10,6 +10,9 @@ jest.mock("../../../src/daemon/status", () => ({
 jest.mock("../../../src/agent/normalizeOutput", () => ({
   normalizeCliOutput: jest.fn((value) => String(value || "")),
 }));
+jest.mock("../../../src/agent/credentials/codex", () => ({
+  resolveCodexUpstreamCredentials: jest.fn(),
+}));
 jest.mock("../../../src/code/nativeRunner", () => ({
   resolveRuntimeConfig: jest.fn(() => ({
     provider: "openai",
@@ -26,11 +29,31 @@ jest.mock("../../../src/projects/registry", () => ({
 }));
 
 const { runCliAgent } = require("../../../src/agent/cliRunner");
+const { resolveCodexUpstreamCredentials } = require("../../../src/agent/credentials/codex");
 const { buildStatus } = require("../../../src/daemon/status");
 const { listProjectRuntimes } = require("../../../src/projects/registry");
 
 describe("ufooAgent prompt schema", () => {
   const projectRoot = "/tmp/ufoo-agent-schema-test";
+
+  function defaultDirectResponse(content = "{\"reply\":\"ok\",\"dispatch\":[],\"ops\":[]}") {
+    return {
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content } }],
+      }),
+    };
+  }
+
+  function lastDirectSystemPrompt() {
+    const calls = global.fetch && global.fetch.mock && global.fetch.mock.calls
+      ? global.fetch.mock.calls
+      : [];
+    const [, opts] = calls[calls.length - 1] || [];
+    const body = JSON.parse((opts && opts.body) || "{}");
+    const systemMsg = (body.messages || []).find((message) => message.role === "system");
+    return systemMsg ? systemMsg.content : "";
+  }
 
   beforeEach(() => {
     if (fs.existsSync(projectRoot)) {
@@ -43,6 +66,14 @@ describe("ufooAgent prompt schema", () => {
       sessionId: "sess-1",
       output: "{\"reply\":\"ok\",\"dispatch\":[],\"ops\":[]}",
     });
+    resolveCodexUpstreamCredentials.mockResolvedValue({
+      provider: "codex",
+      credentialKind: "api-key",
+      apiKey: "sk-test",
+      tokenType: "Bearer",
+      source: "test",
+    });
+    global.fetch = jest.fn().mockResolvedValue(defaultDirectResponse());
   });
 
   afterEach(() => {
@@ -50,6 +81,7 @@ describe("ufooAgent prompt schema", () => {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
     jest.clearAllMocks();
+    delete global.fetch;
   });
 
   test("does not expose assistant_call in controller prompt schema", async () => {
@@ -57,16 +89,16 @@ describe("ufooAgent prompt schema", () => {
       projectRoot,
       prompt: "inspect project",
       provider: "codex-cli",
-      model: "",
+      model: "gpt-5.4-mini",
     });
 
     expect(res.ok).toBe(true);
-    expect(runCliAgent).toHaveBeenCalledTimes(1);
-    const call = runCliAgent.mock.calls[0][0];
-    expect(call.systemPrompt).not.toContain("\"assistant_call\": {");
-    expect(call.systemPrompt).toContain("legacy assistant_call / helper-agent path has been removed");
-    expect(call.systemPrompt).toContain("\"injection_mode\":\"immediate|queued (optional)\"");
-    expect(call.systemPrompt).toContain("dispatch.injection_mode defaults to immediate when omitted.");
+    expect(runCliAgent).not.toHaveBeenCalled();
+    const systemPrompt = lastDirectSystemPrompt();
+    expect(systemPrompt).not.toContain("\"assistant_call\": {");
+    expect(systemPrompt).toContain("legacy assistant_call / helper-agent path has been removed");
+    expect(systemPrompt).toContain("\"injection_mode\":\"immediate|queued (optional)\"");
+    expect(systemPrompt).toContain("dispatch.injection_mode defaults to immediate when omitted.");
   });
 
   test("switches to limited loop schema when loop runtime is enabled", async () => {
@@ -74,7 +106,7 @@ describe("ufooAgent prompt schema", () => {
       projectRoot,
       prompt: "inspect project",
       provider: "codex-cli",
-      model: "",
+      model: "gpt-5.4-mini",
       loopRuntime: {
         enabled: true,
         maxRounds: 3,
@@ -83,11 +115,11 @@ describe("ufooAgent prompt schema", () => {
     });
 
     expect(res.ok).toBe(true);
-    const call = runCliAgent.mock.calls[0][0];
-    expect(call.systemPrompt).toContain("limited loop mode");
-    expect(call.systemPrompt).toContain("\"tool_call\": {\"id\":\"optional\",\"name\":\"dispatch_message|ack_bus|launch_agent\"");
-    expect(call.systemPrompt).toContain("Do not emit assistant_call or ops.assistant_call");
-    expect(call.systemPrompt).toContain("remainingToolCalls=2");
+    const systemPrompt = lastDirectSystemPrompt();
+    expect(systemPrompt).toContain("limited loop mode");
+    expect(systemPrompt).toContain("\"tool_call\": {\"id\":\"optional\",\"name\":\"dispatch_message|ack_bus|launch_agent\"");
+    expect(systemPrompt).toContain("Do not emit assistant_call or ops.assistant_call");
+    expect(systemPrompt).toContain("remainingToolCalls=2");
   });
 
   test("keeps assistant_call removed under main controller mode", async () => {
@@ -95,14 +127,74 @@ describe("ufooAgent prompt schema", () => {
       projectRoot,
       prompt: "inspect",
       provider: "codex-cli",
-      model: "",
+      model: "gpt-5.4-mini",
       controllerMode: "main",
     });
 
     expect(res.ok).toBe(true);
-    const call = runCliAgent.mock.calls[0][0];
-    expect(call.systemPrompt).not.toContain("\"assistant_call\": {");
-    expect(call.systemPrompt).toContain("Controller mode=main");
+    const systemPrompt = lastDirectSystemPrompt();
+    expect(systemPrompt).not.toContain("\"assistant_call\": {");
+    expect(systemPrompt).toContain("Controller mode=main");
+  });
+
+  test("codex provider uses direct upstream API when credentials resolve", async () => {
+    resolveCodexUpstreamCredentials.mockResolvedValueOnce({
+      provider: "codex",
+      credentialKind: "api-key",
+      apiKey: "sk-test",
+      tokenType: "Bearer",
+      source: "test",
+    });
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{
+          message: {
+            content: "{\"reply\":\"direct ok\",\"dispatch\":[],\"ops\":[]}",
+          },
+        }],
+      }),
+    });
+
+    const res = await runUfooAgent({
+      projectRoot,
+      prompt: "inspect",
+      provider: "codex-cli",
+      model: "gpt-5.4-mini",
+      controllerMode: "main",
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.payload.reply).toBe("direct ok");
+    expect(runCliAgent).not.toHaveBeenCalled();
+    expect(global.fetch).toHaveBeenCalledWith(
+      "https://api.openai.com/v1/chat/completions",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          authorization: "Bearer sk-test",
+        }),
+      })
+    );
+
+  });
+
+  test("codex provider returns credential errors without CLI fallback", async () => {
+    const err = new Error("Codex auth unavailable");
+    err.code = "CODEX_AUTH_UNAVAILABLE";
+    resolveCodexUpstreamCredentials.mockRejectedValueOnce(err);
+
+    const res = await runUfooAgent({
+      projectRoot,
+      prompt: "inspect",
+      provider: "codex-cli",
+      model: "gpt-5.4-mini",
+      controllerMode: "main",
+    });
+
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain("Codex auth unavailable");
+    expect(runCliAgent).not.toHaveBeenCalled();
   });
 
   test("keeps assistant_call removed under loop controller mode (non-loop-runtime path)", async () => {
@@ -110,15 +202,15 @@ describe("ufooAgent prompt schema", () => {
       projectRoot,
       prompt: "inspect",
       provider: "codex-cli",
-      model: "",
+      model: "gpt-5.4-mini",
       controllerMode: "loop",
     });
 
     expect(res.ok).toBe(true);
-    const call = runCliAgent.mock.calls[0][0];
-    expect(call.systemPrompt).not.toContain("\"assistant_call\": {");
-    expect(call.systemPrompt).toContain("Controller mode=loop");
-    expect(call.systemPrompt).toContain("\"upgrade_to_loop_router\": true");
+    const systemPrompt = lastDirectSystemPrompt();
+    expect(systemPrompt).not.toContain("\"assistant_call\": {");
+    expect(systemPrompt).toContain("Controller mode=loop");
+    expect(systemPrompt).toContain("\"upgrade_to_loop_router\": true");
   });
 
   test("keeps assistant_call removed under shadow controller mode", async () => {
@@ -126,14 +218,14 @@ describe("ufooAgent prompt schema", () => {
       projectRoot,
       prompt: "inspect",
       provider: "codex-cli",
-      model: "",
+      model: "gpt-5.4-mini",
       controllerMode: "shadow",
     });
 
     expect(res.ok).toBe(true);
-    const call = runCliAgent.mock.calls[0][0];
-    expect(call.systemPrompt).not.toContain("\"assistant_call\": {");
-    expect(call.systemPrompt).toContain("Controller mode=shadow");
+    const systemPrompt = lastDirectSystemPrompt();
+    expect(systemPrompt).not.toContain("\"assistant_call\": {");
+    expect(systemPrompt).toContain("Controller mode=shadow");
   });
 
   test("injects activity and report summaries into system prompt context", async () => {
@@ -171,15 +263,15 @@ describe("ufooAgent prompt schema", () => {
       projectRoot,
       prompt: "assign task",
       provider: "codex-cli",
-      model: "",
+      model: "gpt-5.4-mini",
     });
 
     expect(res.ok).toBe(true);
-    const call = runCliAgent.mock.calls[0][0];
-    expect(call.systemPrompt).toContain("\"activity_state\":\"working\"");
-    expect(call.systemPrompt).toContain("\"pending_total\":2");
-    expect(call.systemPrompt).toContain("\"busy_count\":1");
-    expect(call.systemPrompt).toContain("\"ready_count\":1");
+    const systemPrompt = lastDirectSystemPrompt();
+    expect(systemPrompt).toContain("\"activity_state\":\"working\"");
+    expect(systemPrompt).toContain("\"pending_total\":2");
+    expect(systemPrompt).toContain("\"busy_count\":1");
+    expect(systemPrompt).toContain("\"ready_count\":1");
   });
 
   test("injects per-agent prompt history summary from bus events", async () => {
@@ -225,14 +317,14 @@ describe("ufooAgent prompt schema", () => {
       projectRoot,
       prompt: "route new follow-up",
       provider: "codex-cli",
-      model: "",
+      model: "gpt-5.4-mini",
     });
 
     expect(res.ok).toBe(true);
-    const call = runCliAgent.mock.calls[0][0];
-    expect(call.systemPrompt).toContain("\"agent_prompt_history\"");
-    expect(call.systemPrompt).toContain("\"agent_id\":\"codex:a1\"");
-    expect(call.systemPrompt).toContain("Continue fixing daemon reconnection edge case");
+    const systemPrompt = lastDirectSystemPrompt();
+    expect(systemPrompt).toContain("\"agent_prompt_history\"");
+    expect(systemPrompt).toContain("\"agent_id\":\"codex:a1\"");
+    expect(systemPrompt).toContain("Continue fixing daemon reconnection edge case");
   });
 
   test("global-router mode injects registered project routing context", async () => {
@@ -269,18 +361,18 @@ describe("ufooAgent prompt schema", () => {
       projectRoot,
       prompt: "Fix the billing issue",
       provider: "codex-cli",
-      model: "",
+      model: "gpt-5.4-mini",
       routingMode: "global-router",
     });
 
     expect(res.ok).toBe(true);
-    const call = runCliAgent.mock.calls[0][0];
-    expect(call.systemPrompt).toContain("global project router");
-    expect(call.systemPrompt).toContain("\"project_route\": {\"project_root\":\"absolute-path\"");
-    expect(call.systemPrompt).toContain("Keep dispatch empty in global-router mode");
-    expect(call.systemPrompt).toContain("\"project_root\":\"/tmp/project-alpha\"");
-    expect(call.systemPrompt).toContain("\"project_name\":\"alpha\"");
-    expect(call.systemPrompt).toContain("\"active_count\":1");
+    const systemPrompt = lastDirectSystemPrompt();
+    expect(systemPrompt).toContain("global project router");
+    expect(systemPrompt).toContain("\"project_route\": {\"project_root\":\"absolute-path\"");
+    expect(systemPrompt).toContain("Keep dispatch empty in global-router mode");
+    expect(systemPrompt).toContain("\"project_root\":\"/tmp/project-alpha\"");
+    expect(systemPrompt).toContain("\"project_name\":\"alpha\"");
+    expect(systemPrompt).toContain("\"active_count\":1");
   });
 
   test("ucode provider uses native HTTP path instead of CLI", async () => {
@@ -313,8 +405,6 @@ describe("ufooAgent prompt schema", () => {
     const systemMsg = body.messages.find((m) => m.role === "system");
     expect(systemMsg).toBeTruthy();
     expect(systemMsg.content).toContain("ufoo-agent");
-
-    delete global.fetch;
   });
 
   test("ucode provider strips markdown fence from response", async () => {
@@ -338,8 +428,6 @@ describe("ufooAgent prompt schema", () => {
     expect(res.ok).toBe(true);
     expect(res.payload.reply).toBe("fenced ok");
     expect(runCliAgent).not.toHaveBeenCalled();
-
-    delete global.fetch;
   });
 
   test("ucode provider handles fetch failure gracefully", async () => {
@@ -354,8 +442,6 @@ describe("ufooAgent prompt schema", () => {
 
     expect(res.ok).toBe(false);
     expect(runCliAgent).not.toHaveBeenCalled();
-
-    delete global.fetch;
   });
 
   test("runUfooRouteAgent uses the native gate-router path and normalizes the route result", async () => {
@@ -394,7 +480,5 @@ describe("ufooAgent prompt schema", () => {
     });
     expect(runCliAgent).not.toHaveBeenCalled();
     expect(global.fetch).toHaveBeenCalledTimes(1);
-
-    delete global.fetch;
   });
 });

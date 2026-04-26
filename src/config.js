@@ -8,8 +8,9 @@ const DEFAULT_CONFIG = {
   launchMode: "auto",
   agentProvider: "codex-cli",
   controllerMode: "main",
-  codexInternalThreadMode: "legacy",
+  codexInternalThreadMode: "api",
   codexAuthPath: "",
+  codexOauthRefreshWindowSec: 300,
   claudeOauthProfile: "",
   claudeOauthTokenPath: "",
   claudeOauthRefreshWindowSec: 300,
@@ -50,12 +51,19 @@ function normalizeControllerMode(value) {
 
 function normalizeCodexInternalThreadMode(value) {
   const raw = String(value || "").trim().toLowerCase();
-  if (raw === "sdk") return "sdk";
+  if (raw === "api" || raw === "direct" || raw === "direct-api" || raw === "upstream") return "api";
+  if (raw === "sdk") return "api";
   return "legacy";
 }
 
 function normalizeCodexAuthPath(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeCodexOauthRefreshWindowSec(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num < 0) return 300;
+  return Math.floor(num);
 }
 
 function normalizeClaudeOauthProfile(value) {
@@ -99,8 +107,11 @@ function loadConfig(projectRoot) {
       controllerMode: Object.prototype.hasOwnProperty.call(raw, "controllerMode")
         ? normalizeControllerMode(raw.controllerMode)
         : DEFAULT_CONFIG.controllerMode,
-      codexInternalThreadMode: normalizeCodexInternalThreadMode(raw.codexInternalThreadMode),
+      codexInternalThreadMode: Object.prototype.hasOwnProperty.call(raw, "codexInternalThreadMode")
+        ? normalizeCodexInternalThreadMode(raw.codexInternalThreadMode)
+        : DEFAULT_CONFIG.codexInternalThreadMode,
       codexAuthPath: normalizeCodexAuthPath(raw.codexAuthPath),
+      codexOauthRefreshWindowSec: normalizeCodexOauthRefreshWindowSec(raw.codexOauthRefreshWindowSec),
       claudeOauthProfile: normalizeClaudeOauthProfile(raw.claudeOauthProfile),
       claudeOauthTokenPath: normalizeClaudeOauthTokenPath(raw.claudeOauthTokenPath),
       claudeOauthRefreshWindowSec: normalizeClaudeOauthRefreshWindowSec(raw.claudeOauthRefreshWindowSec),
@@ -143,6 +154,7 @@ function saveConfig(projectRoot, config) {
   merged.controllerMode = normalizeControllerMode(merged.controllerMode);
   merged.codexInternalThreadMode = normalizeCodexInternalThreadMode(merged.codexInternalThreadMode);
   merged.codexAuthPath = normalizeCodexAuthPath(merged.codexAuthPath);
+  merged.codexOauthRefreshWindowSec = normalizeCodexOauthRefreshWindowSec(merged.codexOauthRefreshWindowSec);
   merged.claudeOauthProfile = normalizeClaudeOauthProfile(merged.claudeOauthProfile);
   merged.claudeOauthTokenPath = normalizeClaudeOauthTokenPath(merged.claudeOauthTokenPath);
   merged.claudeOauthRefreshWindowSec = normalizeClaudeOauthRefreshWindowSec(merged.claudeOauthRefreshWindowSec);
@@ -186,6 +198,7 @@ module.exports = {
   normalizeControllerMode,
   normalizeCodexInternalThreadMode,
   normalizeCodexAuthPath,
+  normalizeCodexOauthRefreshWindowSec,
   normalizeClaudeOauthProfile,
   normalizeClaudeOauthTokenPath,
   normalizeClaudeOauthRefreshWindowSec,

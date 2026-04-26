@@ -3,6 +3,7 @@
 const REDACTED = "[REDACTED]";
 const SENSITIVE_KEY_PATTERN = /(^|_|-)(authorization|accesstoken|access_token|refreshtoken|refresh_token|apikey|api_key|tokenhash|token_hash)$/i;
 const BEARER_PATTERN = /\bBearer\s+[A-Za-z0-9._~+/=-]+\b/gi;
+const INLINE_SECRET_ASSIGNMENT_PATTERN = /\b(api[_-]?key|access[_-]?token|refresh[_-]?token|token)\s*[:=]\s*["']?([A-Za-z0-9._~+/=-]{8,})["']?/gi;
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -16,7 +17,9 @@ function isSensitiveKey(key = "") {
 }
 
 function redactString(value) {
-  return String(value || "").replace(BEARER_PATTERN, "Bearer [REDACTED]");
+  return String(value || "")
+    .replace(BEARER_PATTERN, "Bearer [REDACTED]")
+    .replace(INLINE_SECRET_ASSIGNMENT_PATTERN, "$1=[REDACTED]");
 }
 
 function redactSecrets(value, options = {}) {

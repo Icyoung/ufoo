@@ -87,20 +87,39 @@ const COMMAND_TREE = {
   "/settings": {
     desc: "Settings operations",
     children: {
-      router: {
-        desc: "Manage controller routing mode/provider/model",
+      show: {
+        desc: "Show settings overview",
+        order: 1,
+      },
+      agent: {
+        desc: "Manage main ufoo-agent/router provider/model",
+        order: 2,
         children: {
-          show: { desc: "Show router mode/provider/model", order: 1 },
-          set: { desc: "Set router mode/provider/model", order: 2 },
-          clear: { desc: "Clear router provider/model or reset mode", order: 3 },
+          show: { desc: "Show main agent provider/model", order: 1 },
+          set: { desc: "Set provider=<codex|claude> model=<id>", order: 2 },
+          clear: { desc: "Clear agent model or reset provider", order: 3 },
+          codex: { desc: "Use Codex default model (gpt-5.5)", order: 4 },
+          claude: { desc: "Use Claude default model (opus-4.7)", order: 5 },
+        },
+      },
+      router: {
+        desc: "Manage gate router mode/provider/model",
+        order: 3,
+        children: {
+          show: { desc: "Show gate router mode/provider/model", order: 1 },
+          set: { desc: "Set mode/provider/model", order: 2 },
+          clear: { desc: "Clear gate router provider/model or reset mode", order: 3 },
           main: { desc: "Set router mode to main", order: 4 },
           loop: { desc: "Set router mode to loop", order: 5 },
           legacy: { desc: "Set router mode to legacy", order: 6 },
           shadow: { desc: "Set router mode to shadow", order: 7 },
+          codex: { desc: "Use Codex gate model (gpt-5.4-mini)", order: 8 },
+          claude: { desc: "Use Claude gate model (sonnet-4.7)", order: 9 },
         },
       },
       ucode: {
         desc: "Manage ucode model provider config",
+        order: 4,
         children: {
           show: { desc: "Show ucode provider/model/url/key", order: 1 },
           set: { desc: "Set ucode provider/model/url/key", order: 2 },

@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "template": {
-    "id": "product-discovery",
-    "alias": "product-discovery",
-    "name": "Product Discovery Plan",
-    "description": "Pre-implementation discovery lane that turns vague product intent into a scoped technical plan; it does not implement."
+    "id": "design-system",
+    "alias": "design-system",
+    "name": "Design System Planning",
+    "description": "Pre-implementation design planning lane that defines visual system constraints; it does not edit UI code."
   },
   "defaults": {
     "launch_mode": "auto",
@@ -12,11 +12,11 @@
   },
   "agents": [
     {
-      "id": "facilitator",
-      "nickname": "facilitator",
+      "id": "consultant",
+      "nickname": "consultant",
       "type": "auto",
-      "role": "clarify the real problem and define a narrow wedge",
-      "prompt_profile": "discovery-facilitator",
+      "role": "define product design direction and visual system",
+      "prompt_profile": "design-system-consultant",
       "accept_from": [
         "challenger",
         "architect"
@@ -32,10 +32,10 @@
       "id": "challenger",
       "nickname": "challenger",
       "type": "auto",
-      "role": "challenge scope and leverage",
+      "role": "challenge scope, complexity, and overbuilt brand work",
       "prompt_profile": "scope-challenger",
       "accept_from": [
-        "facilitator",
+        "consultant",
         "architect"
       ],
       "report_to": [
@@ -43,35 +43,35 @@
       ],
       "startup_order": 2,
       "depends_on": [
-        "facilitator"
+        "consultant"
       ]
     },
     {
       "id": "architect",
       "nickname": "architect",
       "type": "auto",
-      "role": "translate approved scope into an execution-ready technical plan, not code",
+      "role": "turn design system rules into implementation constraints, not code changes",
       "prompt_profile": "system-architect",
       "accept_from": [
-        "facilitator",
+        "consultant",
         "challenger"
       ],
       "report_to": [],
       "startup_order": 3,
       "depends_on": [
-        "facilitator",
+        "consultant",
         "challenger"
       ]
     }
   ],
   "edges": [
     {
-      "from": "facilitator",
+      "from": "consultant",
       "to": "challenger",
-      "kind": "task"
+      "kind": "review"
     },
     {
-      "from": "facilitator",
+      "from": "consultant",
       "to": "architect",
       "kind": "task"
     },

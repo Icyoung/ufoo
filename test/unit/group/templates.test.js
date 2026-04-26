@@ -20,13 +20,14 @@ function writeJson(filePath, data) {
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
 }
 
-function buildTemplate(alias, name = alias) {
+function buildTemplate(alias, name = alias, description = "") {
   return {
     schema_version: 1,
     template: {
       id: alias,
       alias,
       name,
+      ...(description ? { description } : {}),
     },
     agents: [
       {
@@ -67,6 +68,16 @@ describe("group templates registry", () => {
     expect(registry.templates).toHaveLength(1);
     expect(registry.templates[0].source).toBe(TEMPLATE_SOURCE.PROJECT);
     expect(registry.templates[0].templateName).toBe("project");
+  });
+
+  test("loads template descriptions from metadata", () => {
+    writeJson(
+      path.join(builtinDir, "dev-basic.json"),
+      buildTemplate("dev-basic", "Dev Basic", "Default development workflow.")
+    );
+
+    const registry = loadTemplateRegistry(projectRoot, { builtinDir, globalDir, projectDir });
+    expect(registry.templates[0].templateDescription).toBe("Default development workflow.");
   });
 
   test("resolveTemplateReference supports alias and direct path", () => {

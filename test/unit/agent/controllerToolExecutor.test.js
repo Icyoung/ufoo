@@ -1,5 +1,8 @@
 "use strict";
 
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const { executeControllerTool } = require("../../../src/agent/controllerToolExecutor");
 
 describe("controllerToolExecutor", () => {
@@ -134,5 +137,34 @@ describe("controllerToolExecutor", () => {
         message: "ack_bus can only acknowledge the caller subscriber queue",
       }),
     }));
+  });
+
+  test("executes memory tools through shared registry fallback", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-controller-memory-"));
+    try {
+      const result = await executeControllerTool({
+        projectRoot,
+        subscriber: "ufoo-agent",
+        observer: { emit: jest.fn(), audit: jest.fn() },
+      }, {
+        id: "tool-memory",
+        name: "remember",
+        arguments: {
+          title: "Controller memory invariant",
+          body: "Controller loop memory tool calls may record durable project facts.",
+          tags: ["controller"],
+        },
+      });
+
+      expect(result).toEqual(expect.objectContaining({
+        ok: true,
+        result: expect.objectContaining({
+          ok: true,
+          entry: expect.objectContaining({ id: "mem-0001" }),
+        }),
+      }));
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
   });
 });

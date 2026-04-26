@@ -25,6 +25,7 @@ function resolveClaudeOauthPaths(options = {}) {
   const configDir = String(options.configDir || defaultClaudeConfigDir()).trim() || defaultClaudeConfigDir();
   const profile = String(options.profile || "").trim();
   const explicitTokenPath = String(options.tokenPath || "").trim();
+  const explicitSettingsPath = String(options.settingsPath || "").trim();
   const profileDir = profile ? path.join(configDir, "profiles", profile) : configDir;
   const tokenPath = explicitTokenPath || path.join(profileDir, "oauth.json");
   return {
@@ -33,7 +34,15 @@ function resolveClaudeOauthPaths(options = {}) {
     profileDir,
     tokenPath,
     lockPath: `${tokenPath}.lock`,
+    settingsPath: explicitSettingsPath || path.join(configDir, "settings.json"),
   };
+}
+
+function firstString(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
 }
 
 function classifyTokenState(expiresAtMs, nowMs, refreshWindowMs) {
@@ -208,6 +217,61 @@ class ClaudeUpstreamCredentialResolver {
     };
   }
 
+  readSettingsEnv() {
+    let raw;
+    try {
+      raw = JSON.parse(this.fs.readFileSync(this.paths.settingsPath, "utf8"));
+    } catch {
+      return {};
+    }
+    const env = raw && raw.env && typeof raw.env === "object" && !Array.isArray(raw.env)
+      ? raw.env
+      : {};
+    const apiKeySource = firstString(env.ANTHROPIC_API_KEY)
+      ? "settings:ANTHROPIC_API_KEY"
+      : (firstString(env.CLAUDE_API_KEY) ? "settings:CLAUDE_API_KEY" : "");
+    return {
+      apiKey: firstString(env.ANTHROPIC_API_KEY, env.CLAUDE_API_KEY),
+      apiKeySource,
+      authToken: firstString(env.ANTHROPIC_AUTH_TOKEN),
+    };
+  }
+
+  buildApiKeyCredential(apiKey, source, credentialPath = "") {
+    return buildCredentialDescriptor({
+      provider: "claude",
+      credentialKind: "api-key",
+      source,
+      apiKey,
+      tokenType: "Bearer",
+      state: "fresh",
+      refreshable: false,
+      profile: this.paths.profile,
+      credentialPath,
+      nowMs: this.now(),
+      refreshWindowMs: this.refreshWindowMs,
+    });
+  }
+
+  buildAuthTokenCredential(accessToken, source, credentialPath = "") {
+    return buildCredentialDescriptor({
+      provider: "claude",
+      credentialKind: "oauth",
+      source,
+      accessToken,
+      tokenType: "Bearer",
+      state: "fresh",
+      refreshable: false,
+      profile: this.paths.profile,
+      credentialPath,
+      nowMs: this.now(),
+      refreshWindowMs: this.refreshWindowMs,
+      metadata: {
+        tokenPath: credentialPath,
+      },
+    });
+  }
+
   buildResolvedCredential(tokenRecord) {
     return buildCredentialDescriptor({
       provider: "claude",
@@ -269,21 +333,26 @@ class ClaudeUpstreamCredentialResolver {
   }
 
   async resolveCredentials() {
-    const apiKey = typeof this.env.ANTHROPIC_API_KEY === "string" ? this.env.ANTHROPIC_API_KEY.trim() : "";
-    if (apiKey) {
-      return buildCredentialDescriptor({
-        provider: "claude",
-        credentialKind: "api-key",
-        source: "api-key",
-        apiKey,
-        tokenType: "Bearer",
-        state: "fresh",
-        refreshable: false,
-        profile: this.paths.profile,
-        credentialPath: "",
-        nowMs: this.now(),
-        refreshWindowMs: this.refreshWindowMs,
-      });
+    const anthropicApiKey = firstString(this.env.ANTHROPIC_API_KEY);
+    const claudeApiKey = firstString(this.env.CLAUDE_API_KEY);
+    if (anthropicApiKey || claudeApiKey) {
+      return this.buildApiKeyCredential(
+        anthropicApiKey || claudeApiKey,
+        anthropicApiKey ? "env:ANTHROPIC_API_KEY" : "env:CLAUDE_API_KEY",
+      );
+    }
+
+    const authToken = firstString(this.env.ANTHROPIC_AUTH_TOKEN);
+    if (authToken) {
+      return this.buildAuthTokenCredential(authToken, "env:ANTHROPIC_AUTH_TOKEN");
+    }
+
+    const settingsEnv = this.readSettingsEnv();
+    if (settingsEnv.apiKey) {
+      return this.buildApiKeyCredential(settingsEnv.apiKey, settingsEnv.apiKeySource || "settings:ANTHROPIC_API_KEY", this.paths.settingsPath);
+    }
+    if (settingsEnv.authToken) {
+      return this.buildAuthTokenCredential(settingsEnv.authToken, "settings:ANTHROPIC_AUTH_TOKEN", this.paths.settingsPath);
     }
 
     let tokenRecord;
@@ -291,7 +360,7 @@ class ClaudeUpstreamCredentialResolver {
       tokenRecord = this.readTokenFile();
     } catch (err) {
       if (err && err.code === "ENOENT") {
-        const missing = new Error("Claude OAuth token not found and ANTHROPIC_API_KEY is unset");
+        const missing = new Error("Claude credentials not found in environment, Claude settings, or OAuth token file");
         missing.code = "CLAUDE_AUTH_UNAVAILABLE";
         throw missing;
       }

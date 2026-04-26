@@ -2,6 +2,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const {
+  BUILTIN_PROFILES,
   loadPromptProfileRegistry,
   resolvePromptProfileReference,
 } = require("../../../src/group/promptProfiles");
@@ -34,6 +35,8 @@ describe("group prompt profile registry", () => {
     expect(resolvePromptProfileReference(registry, "code-implement")?.id).toBe("implementation-lead");
     expect(resolvePromptProfileReference(registry, "design-critic")?.display_name).toBe("Design");
     expect(resolvePromptProfileReference(registry, "frontend-refiner")?.display_name).toBe("Polish");
+    expect(resolvePromptProfileReference(registry, "design-consultation")?.id).toBe("design-system-consultant");
+    expect(resolvePromptProfileReference(registry, "plan-design-review")?.id).toBe("ui-plan-critic");
     expect(resolvePromptProfileReference(registry, "task-breakdown")?.id).toBe("task-breakdown");
     expect(resolvePromptProfileReference(registry, "Architecture")).toBeNull();
   });
@@ -61,5 +64,23 @@ describe("group prompt profile registry", () => {
 
     const registry = loadPromptProfileRegistry(projectRoot, { globalDir, projectDir });
     expect(registry.errors.some((item) => String(item.message).includes("conflicts"))).toBe(true);
+  });
+
+  test("builtin profile handoffs use runtime metadata instead of hard-coded profile targets", () => {
+    const forbiddenTargets = [
+      "review-critic",
+      "qa-driver",
+      "frontend-refiner",
+      "design-critic",
+      "debug-investigator",
+      "implementation-lead",
+    ];
+
+    for (const profile of BUILTIN_PROFILES) {
+      expect(profile.prompt).toContain("Runtime metadata");
+      for (const target of forbiddenTargets) {
+        expect(profile.prompt).not.toContain(target);
+      }
+    }
   });
 });

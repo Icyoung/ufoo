@@ -13,13 +13,15 @@ description: |
 Fast context check for daily use. Run at session start or anytime.
 
 Pre-flight reminder:
-- If the user is asking for an important architectural decision, a plan with multiple options, or a cross-agent coordination choice, write a decision before replying.
-  Do NOT write decisions for routine tasks, simple bug fixes, or trivial findings.
+- Default is no new decision.
+- Write a decision only for important architectural choices, trade-off outcomes, cross-agent coordination, or precedent-setting integration contracts.
+- Do NOT write decisions for routine tasks, simple bug fixes, trivial findings, or generic plan/evaluation/recommendation requests.
+- Durable project facts belong in shared memory, not decisions.
   Use: `ufoo ctx decisions new "<Title>"`
 
 ## Decision format (canonical)
 
-Project context is decision-only. Decisions live at:
+The context module tracks decisions only. Durable shared facts belong in shared memory. Decisions live at:
 `<project>/.ufoo/context/decisions/`
 
 Decision index (JSONL):
@@ -36,7 +38,7 @@ Each JSONL row includes:
 - `file` (decision filename)
 - `author` (decision author or resolver)
 
-Create a new decision (recommended before replying when required):
+Create a new decision (only when the high-threshold rule above requires it):
 ```bash
 ufoo ctx decisions new "Short Title"
 ```

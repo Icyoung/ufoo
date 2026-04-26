@@ -11,6 +11,8 @@ describe('StatusDisplay', () => {
   let consoleLogSpy;
   let processExitSpy;
   let spawnSyncSpy;
+  let inspectCodexDirectAuth;
+  let formatCodexDirectAuthStatus;
 
   beforeEach(() => {
     if (fs.existsSync(testProjectRoot)) {
@@ -19,7 +21,21 @@ describe('StatusDisplay', () => {
     fs.mkdirSync(testProjectRoot, { recursive: true });
     fs.mkdirSync(ufooDir, { recursive: true });
 
-    statusDisplay = new StatusDisplay(testProjectRoot);
+    inspectCodexDirectAuth = jest.fn().mockResolvedValue({
+      ok: true,
+      provider: 'codex',
+      transport: 'openai-chat',
+      credentialKind: 'api-key',
+      state: 'fresh',
+      source: 'test',
+    });
+    formatCodexDirectAuthStatus = jest.fn(() => [
+      'Codex direct API: OK (openai-chat, api-key, fresh)',
+    ]);
+    statusDisplay = new StatusDisplay(testProjectRoot, {
+      inspectCodexDirectAuth,
+      formatCodexDirectAuthStatus,
+    });
 
     // Spy on console methods
     consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation();
@@ -350,8 +366,13 @@ describe('StatusDisplay', () => {
       await statusDisplay.show();
 
       expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('Project:'));
+      expect(consoleLogSpy).toHaveBeenCalledWith('Codex direct API: OK (openai-chat, api-key, fresh)');
       expect(consoleLogSpy).toHaveBeenCalledWith('Unread messages: 2');
       expect(consoleLogSpy).toHaveBeenCalledWith('Open decisions: 1');
+      expect(inspectCodexDirectAuth).toHaveBeenCalledWith({
+        projectRoot: testProjectRoot,
+        autoRefresh: false,
+      });
     });
 
     it('should exit if .ufoo directory does not exist', async () => {
@@ -367,6 +388,7 @@ describe('StatusDisplay', () => {
 
       expect(consoleLogSpy).toHaveBeenCalledWith('Unread messages: 0');
       expect(consoleLogSpy).toHaveBeenCalledWith('Open decisions: 0');
+      expect(consoleLogSpy).toHaveBeenCalledWith('Codex direct API: OK (openai-chat, api-key, fresh)');
     });
   });
 

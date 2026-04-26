@@ -5,7 +5,13 @@ const readProjectRegistry = require("./tier0/readProjectRegistry");
 const readPromptHistory = require("./tier0/readPromptHistory");
 const ackBus = require("./tier1/ackBus");
 const dispatchMessage = require("./tier1/dispatchMessage");
+const editMemory = require("./tier1/editMemory");
+const forget = require("./tier1/forget");
+const recall = require("./tier1/recall");
+const remember = require("./tier1/remember");
 const routeAgent = require("./tier1/routeAgent");
+const searchHistory = require("./tier1/searchHistory");
+const searchMemory = require("./tier1/searchMemory");
 const closeAgent = require("./tier2/closeAgent");
 const launchAgent = require("./tier2/launchAgent");
 const manageCron = require("./tier2/manageCron");
@@ -26,6 +32,12 @@ const SHARED_TOOL_REGISTRY = Object.freeze([
   routeAgent,
   dispatchMessage,
   ackBus,
+  remember,
+  recall,
+  searchMemory,
+  searchHistory,
+  editMemory,
+  forget,
   launchAgent,
   renameAgent,
   closeAgent,

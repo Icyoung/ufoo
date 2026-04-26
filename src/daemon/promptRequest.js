@@ -212,15 +212,16 @@ async function handlePromptRequest(options = {}) {
 
   const privateReports = listControllerInboxEntries(projectRoot, "ufoo-agent", { num: 100 });
   const useGlobalProjectRouter = isGlobalController;
-  const promptRunner = runPromptWithAssistant;
   const ufooAgentOptions = useGlobalProjectRouter ? { routingMode: "global-router" } : { controllerMode };
   let nextRequestMeta = requestMeta;
-  if (!Object.prototype.hasOwnProperty.call(nextRequestMeta, "agent_execution_path") && controllerMode !== CONTROLLER_MODES.LEGACY) {
+  const hasExplicitRequestMeta = Object.keys(nextRequestMeta).length > 0;
+  if (hasExplicitRequestMeta && !Object.prototype.hasOwnProperty.call(nextRequestMeta, "agent_execution_path") && controllerMode !== CONTROLLER_MODES.LEGACY) {
     nextRequestMeta = {
       ...nextRequestMeta,
       agent_execution_path: controllerMode,
     };
   }
+  let forceMainRouterFallback = false;
 
   const logGateRouterEvent = (event, details = {}) => {
     controllerObserver.emit(event, details);
@@ -275,6 +276,7 @@ async function handlePromptRequest(options = {}) {
       attachGateRouterMeta("provider_error", {
         error: routed && routed.error ? routed.error : "route_agent_failed",
       });
+      forceMainRouterFallback = true;
       logGateRouterEvent("controller.gate_router_upgraded", {
         reason: "provider_error",
         fallback_used: "main_router",
@@ -295,6 +297,7 @@ async function handlePromptRequest(options = {}) {
           confidence: Number(route.confidence || 0),
           route_reason: route.reason || "",
         });
+        forceMainRouterFallback = true;
         logGateRouterEvent("controller.gate_router_upgraded", {
           reason: upgradeReason,
           decision: route.decision || "",
@@ -339,6 +342,7 @@ async function handlePromptRequest(options = {}) {
             route_reason: route.reason || "",
             error: err && err.message ? err.message : String(err),
           });
+          forceMainRouterFallback = true;
           logGateRouterEvent("controller.gate_router_upgraded", {
             reason: "dispatch_failed",
             target: route.target,
@@ -351,6 +355,11 @@ async function handlePromptRequest(options = {}) {
   }
 
   const promptText = buildPromptWithPrivateReports(req.text || "", privateReports, nextRequestMeta);
+  const promptRunner = loopRuntime.enabled
+    && !forceMainRouterFallback
+    && typeof injectedLoopRunner === "function"
+    ? injectedLoopRunner
+    : runPromptWithAssistant;
 
   try {
     const handled = await promptRunner({

@@ -253,6 +253,8 @@ function findOwningGroup(projectRoot, subscriberId = "") {
         && (
           !liveNickname
           || asTrimmedString(member.nickname) === liveNickname
+          || asTrimmedString(member.scoped_nickname) === liveNickname
+          || asTrimmedString(member.scoped_nickname) === liveScopedNickname
           || asTrimmedString(member.runtime_nickname) === liveNickname
           || asTrimmedString(member.runtime_nickname) === liveScopedNickname
         )

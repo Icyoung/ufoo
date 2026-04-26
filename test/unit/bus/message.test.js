@@ -2,6 +2,7 @@ const MessageManager = require('../../../src/bus/message');
 const fs = require('fs');
 const path = require('path');
 const { appendJSONL } = require('../../../src/bus/utils');
+const { getUfooPaths } = require('../../../src/ufoo/paths');
 
 describe('MessageManager', () => {
   const testBusDir = '/tmp/ufoo-message-test';
@@ -9,6 +10,16 @@ describe('MessageManager', () => {
   let busData;
   let mockQueueManager;
   let manager;
+
+  function writeGroupRuntime(runtime) {
+    const groupsDir = getUfooPaths(testBusDir).groupsDir;
+    fs.mkdirSync(groupsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(groupsDir, `${runtime.group_id}.json`),
+      `${JSON.stringify(runtime, null, 2)}\n`,
+      'utf8'
+    );
+  }
 
   beforeEach(() => {
     if (fs.existsSync(testBusDir)) {
@@ -301,6 +312,81 @@ describe('MessageManager', () => {
       await manager.send('architect', 'Test', 'sender');
 
       expect(mockQueueManager.appendPending).not.toHaveBeenCalled();
+    });
+
+    it('should warn on group accept_from violations while still delivering', async () => {
+      const warn = jest.fn();
+      writeGroupRuntime({
+        group_id: 'grp-dev',
+        status: 'active',
+        members: [
+          {
+            nickname: 'dev-lead',
+            scoped_nickname: 'project-dev-lead',
+            subscriber_id: 'codex:xyz789',
+            accept_from: [],
+          },
+          {
+            nickname: 'architect',
+            scoped_nickname: 'project-architect',
+            subscriber_id: 'claude-code:abc123',
+            accept_from: ['pm'],
+          },
+        ],
+      });
+      manager = new MessageManager(testBusDir, busData, mockQueueManager, {
+        projectRoot: testBusDir,
+        enableGroupPolicyHook: true,
+        warn,
+      });
+
+      const result = await manager.send('architect', 'Please review this', 'codex:xyz789');
+
+      expect(result.targets).toEqual(['claude-code:abc123']);
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings[0]).toContain('dev-lead -> architect');
+      expect(result.warnings[0]).toContain('allowed: pm');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('group policy warning'));
+      expect(mockQueueManager.appendPending).toHaveBeenCalledWith(
+        'claude-code:abc123',
+        expect.objectContaining({
+          publisher: 'codex:xyz789',
+          data: { message: 'Please review this', injection_mode: 'immediate' },
+        })
+      );
+    });
+
+    it('should not warn when group accept_from allows the publisher member', async () => {
+      const warn = jest.fn();
+      writeGroupRuntime({
+        group_id: 'grp-dev',
+        status: 'active',
+        members: [
+          {
+            nickname: 'dev-lead',
+            scoped_nickname: 'project-dev-lead',
+            subscriber_id: 'codex:xyz789',
+            accept_from: [],
+          },
+          {
+            nickname: 'architect',
+            scoped_nickname: 'project-architect',
+            subscriber_id: 'claude-code:abc123',
+            accept_from: ['dev-lead'],
+          },
+        ],
+      });
+      manager = new MessageManager(testBusDir, busData, mockQueueManager, {
+        projectRoot: testBusDir,
+        enableGroupPolicyHook: true,
+        warn,
+      });
+
+      const result = await manager.send('architect', 'Allowed handoff', 'codex:xyz789');
+
+      expect(result.warnings).toEqual([]);
+      expect(warn).not.toHaveBeenCalled();
+      expect(mockQueueManager.appendPending).toHaveBeenCalledTimes(1);
     });
   });
 

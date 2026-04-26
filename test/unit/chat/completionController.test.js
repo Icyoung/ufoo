@@ -65,6 +65,15 @@ function createHarness(overrides = {}) {
         desc: "Settings ops",
         subcommands: [
           {
+            cmd: "agent",
+            desc: "Manage agent",
+            subcommands: [
+              { cmd: "show", desc: "Show agent config", order: 1 },
+              { cmd: "set", desc: "Set agent config", order: 2 },
+              { cmd: "codex", desc: "Use Codex default", order: 3 },
+            ],
+          },
+          {
             cmd: "router",
             desc: "Manage router",
             subcommands: [
@@ -76,8 +85,8 @@ function createHarness(overrides = {}) {
       },
     ],
     getGroupTemplateCandidates: jest.fn(() => [
-      { alias: "product-discovery", name: "Product Discovery", source: "builtin" },
-      { alias: "build-lane", name: "Build Lane", source: "builtin" },
+      { alias: "product-discovery", name: "Product Discovery", desc: "Clarify before build", source: "builtin" },
+      { alias: "build-lane", name: "Build Lane", desc: "Plan, build, review, and QA", source: "builtin" },
     ]),
     getSoloProfileCandidates: jest.fn(() => [
       { cmd: "design-critic", desc: "Audit the interface · builtin" },
@@ -165,6 +174,27 @@ describe("chat completionController", () => {
     expect(completionPanel.setContent).toHaveBeenLastCalledWith(expect.stringContaining("set"));
   });
 
+  test("settings subcommand mode can descend into nested agent actions", () => {
+    const { controller, input, completionPanel } = createHarness();
+    input.value = "/settings agent ";
+
+    controller.show(input.value);
+
+    expect(controller.isActive()).toBe(true);
+    expect(controller.getCommandCount()).toBe(3);
+    expect(completionPanel.setContent).toHaveBeenLastCalledWith(expect.stringContaining("show"));
+    expect(completionPanel.setContent).toHaveBeenLastCalledWith(expect.stringContaining("codex"));
+  });
+
+  test("settings leaf subcommand with trailing space does not repeat itself", () => {
+    const { controller, input } = createHarness();
+    input.value = "/settings agent set ";
+
+    controller.show(input.value);
+
+    expect(controller.isActive()).toBe(false);
+  });
+
   test("group run shows template candidates after subcommand confirmation", () => {
     const { controller, input, completionPanel } = createHarness();
     input.value = "/group ";
@@ -187,6 +217,7 @@ describe("chat completionController", () => {
     expect(controller.isActive()).toBe(true);
     expect(controller.getCommandCount()).toBe(2);
     expect(completionPanel.setContent).toHaveBeenLastCalledWith(expect.stringContaining("build-lane"));
+    expect(completionPanel.setContent).toHaveBeenLastCalledWith(expect.stringContaining("Plan, build, review, and QA"));
   });
 
   test("solo run shows role candidates after subcommand confirmation", () => {

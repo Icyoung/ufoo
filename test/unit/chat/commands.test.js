@@ -31,8 +31,18 @@ describe("chat command helpers", () => {
   test("settings command exposes ucode subsection", () => {
     const settings = COMMAND_REGISTRY.find((item) => item.cmd === "/settings");
     expect(settings).toBeTruthy();
+    expect((settings.subcommands || []).some((sub) => sub.cmd === "show")).toBe(true);
+    expect((settings.subcommands || []).some((sub) => sub.cmd === "agent")).toBe(true);
     expect((settings.subcommands || []).some((sub) => sub.cmd === "router")).toBe(true);
     expect((settings.subcommands || []).some((sub) => sub.cmd === "ucode")).toBe(true);
+    const agent = (settings.subcommands || []).find((sub) => sub.cmd === "agent");
+    expect((agent.subcommands || []).map((sub) => sub.cmd)).toEqual([
+      "show",
+      "set",
+      "clear",
+      "codex",
+      "claude",
+    ]);
     const router = (settings.subcommands || []).find((sub) => sub.cmd === "router");
     expect((router.subcommands || []).map((sub) => sub.cmd)).toEqual([
       "show",
@@ -42,6 +52,8 @@ describe("chat command helpers", () => {
       "loop",
       "legacy",
       "shadow",
+      "codex",
+      "claude",
     ]);
   });
 

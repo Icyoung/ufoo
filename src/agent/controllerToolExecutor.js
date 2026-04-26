@@ -1,6 +1,7 @@
 "use strict";
 
 const EventBus = require("../bus");
+const { getToolDefinition, CALLER_TIERS } = require("../tools");
 const { dispatchMessageHandler } = require("../tools/handlers/dispatchMessage");
 const { ackBusHandler } = require("../tools/handlers/ackBus");
 
@@ -145,6 +146,25 @@ async function handleLaunchAgent(ctx, args) {
   };
 }
 
+async function handleSharedRegistryTool(ctx, name, args, audit = {}) {
+  const definition = getToolDefinition(name);
+  if (!definition || typeof definition.handler !== "function") {
+    throw buildStructuredError("unsupported_tool", `unsupported controller tool: ${name}`);
+  }
+  if (!definition.allowed_tiers.includes(CALLER_TIERS.CONTROLLER)) {
+    throw buildStructuredError("forbidden_caller_tier", `controller is not allowed to invoke tool: ${name}`);
+  }
+  const eventBus = ctx.eventBus || new EventBus(ctx.projectRoot);
+  return definition.handler({
+    projectRoot: ctx.projectRoot,
+    subscriber: ctx.subscriber || "ufoo-agent",
+    caller_tier: CALLER_TIERS.CONTROLLER,
+    eventBus,
+    turn_id: audit.turn_id || "",
+    tool_call_id: audit.tool_call_id || "",
+  }, args);
+}
+
 async function executeControllerTool(ctx, toolCall = {}) {
   const observer = ctx.observer || { emit: () => {}, audit: () => {} };
   const name = String(toolCall.name || "").trim();
@@ -169,7 +189,10 @@ async function executeControllerTool(ctx, toolCall = {}) {
     } else if (name === "launch_agent") {
       result = await handleLaunchAgent(ctx, args);
     } else {
-      throw buildStructuredError("unsupported_tool", `unsupported controller tool: ${name}`);
+      result = await handleSharedRegistryTool(ctx, name, args, {
+        turn_id: turnId,
+        tool_call_id: toolCallId,
+      });
     }
 
     observer.emit("tool_call_finished", {

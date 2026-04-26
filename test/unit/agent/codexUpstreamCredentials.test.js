@@ -30,6 +30,7 @@ describe("agent codexUpstreamCredentials", () => {
     expect(resolveCodexAuthPaths({ configDir: root })).toEqual({
       configDir: root,
       authPath: path.join(root, "auth.json"),
+      lockPath: path.join(root, "auth.json.lock"),
     });
     expect(resolveCodexAuthPaths({
       configDir: root,
@@ -62,9 +63,15 @@ describe("agent codexUpstreamCredentials", () => {
     const jwt = makeJwt({
       email: "dev@example.com",
       exp: Math.floor(Date.parse("2026-04-20T11:00:00.000Z") / 1000),
+      "https://api.openai.com/auth": {
+        chatgpt_account_id: "acct_claims",
+      },
     });
     expect(decodeJwtPayload(jwt)).toMatchObject({
       email: "dev@example.com",
+      "https://api.openai.com/auth": {
+        chatgpt_account_id: "acct_claims",
+      },
     });
   });
 
@@ -99,10 +106,12 @@ describe("agent codexUpstreamCredentials", () => {
         id_token: makeJwt({
           email: "dev@example.com",
           exp: Math.floor(Date.parse("2026-04-20T11:00:00.000Z") / 1000),
+          "https://api.openai.com/auth": {
+            chatgpt_account_id: "acct_from_claims",
+          },
         }),
         access_token: "access-1",
         refresh_token: "refresh-1",
-        account_id: "acct_456",
       },
       last_refresh: "2026-04-20T10:00:00.000Z",
     }, null, 2));
@@ -117,7 +126,7 @@ describe("agent codexUpstreamCredentials", () => {
       credentialKind: "oauth",
       accessToken: "access-1",
       refreshToken: "refresh-1",
-      accountId: "acct_456",
+      accountId: "acct_from_claims",
       accountEmail: "dev@example.com",
       state: "fresh",
     });
@@ -133,6 +142,77 @@ describe("agent codexUpstreamCredentials", () => {
     })).rejects.toMatchObject({
       code: "CODEX_AUTH_UNAVAILABLE",
     });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("refreshes near-expiry codex oauth token and atomically updates auth file", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-codex-refresh-"));
+    const authPath = path.join(dir, "auth.json");
+    fs.writeFileSync(authPath, JSON.stringify({
+      auth_mode: "chatgpt",
+      tokens: {
+        id_token: makeJwt({
+          email: "old@example.com",
+          exp: Math.floor(Date.parse("2026-04-20T10:00:30.000Z") / 1000),
+          "https://api.openai.com/auth": {
+            chatgpt_account_id: "acct_old",
+          },
+        }),
+        access_token: "access-old",
+        refresh_token: "refresh-old",
+      },
+      last_refresh: "2026-04-20T09:00:00.000Z",
+    }, null, 2));
+
+    const refreshedIdToken = makeJwt({
+      email: "new@example.com",
+      exp: Math.floor(Date.parse("2026-04-20T11:00:00.000Z") / 1000),
+      "https://api.openai.com/auth": {
+        chatgpt_account_id: "acct_new",
+      },
+    });
+    const fetchImpl = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        access_token: "access-new",
+        refresh_token: "refresh-new",
+        id_token: refreshedIdToken,
+        token_type: "Bearer",
+        expires_in: 3600,
+      }),
+    });
+
+    await expect(resolveCodexUpstreamCredentials({
+      authPath,
+      env: {},
+      fetchImpl,
+      now: () => Date.parse("2026-04-20T10:00:00.000Z"),
+      refreshWindowMs: 60 * 1000,
+    })).resolves.toMatchObject({
+      accessToken: "access-new",
+      refreshToken: "refresh-new",
+      accountId: "acct_new",
+      accountEmail: "new@example.com",
+      state: "fresh",
+    });
+
+    const saved = JSON.parse(fs.readFileSync(authPath, "utf8"));
+    expect(saved.tokens.access_token).toBe("access-new");
+    expect(saved.tokens.refresh_token).toBe("refresh-new");
+    expect(saved.tokens.account_id).toBe("acct_new");
+    expect(saved.email).toBe("new@example.com");
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://auth.openai.com/oauth/token",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          "content-type": "application/x-www-form-urlencoded",
+        }),
+        body: expect.stringContaining("grant_type=refresh_token"),
+      })
+    );
+
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });

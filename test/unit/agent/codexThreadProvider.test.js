@@ -87,6 +87,28 @@ describe("agent codexThreadProvider", () => {
     expect(thread.id).toBe("thread-prev");
   });
 
+  test("transport stream provider does not require @openai/codex-sdk", async () => {
+    const streamFactory = jest.fn(async function* () {
+      yield { type: "thread.started", thread_id: "thread-direct" };
+      yield { type: "turn.completed", turn_id: "turn-direct" };
+    });
+    const provider = new CodexThreadProvider({
+      model: "gpt-5-codex",
+      cwd: process.cwd(),
+      streamFactory,
+    });
+
+    const thread = provider.startThread();
+    const events = [];
+    for await (const event of thread.runStreamed("hi")) events.push(event);
+
+    expect(streamFactory).toHaveBeenCalled();
+    expect(events).toEqual([
+      { type: "thread_started", threadId: "thread-direct" },
+      { type: "turn_completed", turnId: "turn-direct", usage: null },
+    ]);
+  });
+
   test("injects worker tools into sdk.runStreamed opts without local execution", async () => {
     const sdk = {
       runStreamed: jest.fn(async function* () {

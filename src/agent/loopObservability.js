@@ -135,6 +135,10 @@ function readRecentLoopSummary(projectRoot, options = {}) {
     output_tokens: 0,
     cache_read_tokens: 0,
     cache_creation_tokens: 0,
+    cache_semistatic_hit: 0,
+    cache_semistatic_miss: 0,
+    memory_prefix_tokens: 0,
+    dynamic_memory_tokens: 0,
     total_tokens: 0,
     total_latency_ms: 0,
     first_token_ms: 0,
@@ -154,18 +158,24 @@ function readRecentLoopSummary(projectRoot, options = {}) {
       summary.output_tokens += Number(row.output_tokens) || 0;
       summary.cache_read_tokens += Number(row.cache_read_tokens) || 0;
       summary.cache_creation_tokens += Number(row.cache_creation_tokens) || 0;
+      summary.cache_semistatic_hit += Number(row.cache_semistatic_hit) || 0;
+      summary.cache_semistatic_miss += Number(row.cache_semistatic_miss) || 0;
+      summary.memory_prefix_tokens += Number(row.memory_prefix_tokens) || 0;
+      summary.dynamic_memory_tokens += Number(row.dynamic_memory_tokens) || 0;
       summary.total_latency_ms += Number(row.latency_ms) || 0;
       summary.first_token_ms += Number(row.first_token_ms) || 0;
     } else if (row.event === "tool_call") {
       summary.tool_calls += 1;
       const name = String(row.tool_name || "").trim() || "unknown";
       toolCounts.set(name, (toolCounts.get(name) || 0) + 1);
+      summary.dynamic_memory_tokens += Number(row.dynamic_memory_tokens) || 0;
     } else if (row.event === "loop_terminal") {
       summary.terminal_reason = String(row.terminal_reason || "").trim();
       if ((Number(row.rounds) || 0) > 0) summary.rounds = Number(row.rounds) || summary.rounds;
       if ((Number(row.tool_calls) || 0) >= 0) summary.tool_calls = Number(row.tool_calls) || summary.tool_calls;
       if ((Number(row.total_tokens) || 0) > 0) summary.total_tokens = Number(row.total_tokens) || 0;
       if ((Number(row.total_latency_ms) || 0) > 0) summary.total_latency_ms = Number(row.total_latency_ms) || 0;
+      if ((Number(row.dynamic_memory_tokens) || 0) > 0) summary.dynamic_memory_tokens = Number(row.dynamic_memory_tokens) || summary.dynamic_memory_tokens;
     }
   }
 

@@ -19,6 +19,7 @@ const { resolveClaudeUpstreamCredentials } = require("./credentials/claude");
 const { buildUpstreamAuthFromCredential } = require("./credentials");
 const { listToolsForCallerTier, CALLER_TIERS } = require("../tools");
 const { redactToolCallPayload, redactSecrets } = require("../providerapi/redactor");
+const { buildCachedMemoryPrefix } = require("../memory");
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -60,6 +61,14 @@ function safeSubscriber(subscriber) {
   return subscriber.replace(/:/g, "_");
 }
 
+function buildMemoryPrefix(projectRoot, limit = 50) {
+  try {
+    return buildCachedMemoryPrefix(projectRoot, { limit }).prefix.trim();
+  } catch {
+    return "";
+  }
+}
+
 function createBusSender(projectRoot, subscriber) {
   const eventBus = new EventBus(projectRoot);
   let sendQueue = Promise.resolve();
@@ -84,16 +93,8 @@ function createBusSender(projectRoot, subscriber) {
   return { enqueue, flush };
 }
 
-function shouldFallbackToLegacyThreadProvider(err, provider) {
-  if (provider !== "claude-cli" || !err || typeof err !== "object") {
-    return false;
-  }
-  const code = String(err.code || "").trim().toUpperCase();
-  return (
-    code === "CLAUDE_AUTH_UNAVAILABLE"
-    || code === "CLAUDE_OAUTH_SCHEMA_UNSUPPORTED"
-    || code === "ANTHROPIC_SDK_UNAVAILABLE"
-  );
+function shouldFallbackToLegacyThreadProvider() {
+  return false;
 }
 
 function drainQueue(queueFile) {
@@ -143,7 +144,10 @@ async function handleEvent(
   threadRuntime = null
 ) {
   if (!evt || !evt.data || !evt.data.message) return;
-  const prompt = evt.data.message;
+  const memoryPrefix = buildMemoryPrefix(projectRoot);
+  const prompt = memoryPrefix
+    ? `${memoryPrefix}\n\n${evt.data.message}`
+    : evt.data.message;
   const publisher = evt.publisher || "unknown";
   const sandbox = "workspace-write";
   const streamState = { emitted: false, lastChar: "" };
@@ -358,6 +362,8 @@ function buildWorkerThreadToolRuntime({ projectRoot, subscriber, observer }) {
           projectRoot,
           subscriber,
           eventBus,
+          tool_call_id: toolCall.tool_call_id || toolCall.toolCallId || "",
+          turn_id: toolCall.turn_id || toolCall.turnId || "",
         }, rawArgs);
         const safeResult = redactSecrets(result);
         emitAudit("post_call", { ...redactedPayload, result: safeResult });
@@ -407,7 +413,7 @@ function createThreadRuntime({ projectRoot, provider, model, extraArgs = [], sub
   };
 
   if (provider === "codex-cli") {
-    if (getCodexThreadMode(projectRoot) !== "sdk") {
+    if (getCodexThreadMode(projectRoot) !== "api") {
       return disabledRuntime;
     }
 

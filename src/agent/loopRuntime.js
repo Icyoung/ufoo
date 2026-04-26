@@ -58,6 +58,10 @@ function extractModelMetrics(result) {
     output_tokens: toNonNegativeInt(source.output_tokens),
     cache_read_tokens: toNonNegativeInt(source.cache_read_tokens),
     cache_creation_tokens: toNonNegativeInt(source.cache_creation_tokens),
+    cache_semistatic_hit: toNonNegativeInt(source.cache_semistatic_hit),
+    cache_semistatic_miss: toNonNegativeInt(source.cache_semistatic_miss),
+    memory_prefix_tokens: toNonNegativeInt(source.memory_prefix_tokens),
+    dynamic_memory_tokens: toNonNegativeInt(source.dynamic_memory_tokens),
     latency_ms: toNonNegativeInt(source.latency_ms),
     first_token_ms: toNonNegativeInt(source.first_token_ms),
     stop_reason: String(source.stop_reason || "").trim(),
@@ -168,6 +172,7 @@ function buildTerminalPayload(reason, lastPayload, rounds, toolCalls, toolErrors
     fallback_used: normalizeFallbackUsed(totals.fallback_used),
     total_tokens: toNonNegativeInt(totals.total_tokens),
     total_latency_ms: toNonNegativeInt(totals.total_latency_ms),
+    dynamic_memory_tokens: toNonNegativeInt(totals.dynamic_memory_tokens),
   };
   return payload;
 }
@@ -205,6 +210,7 @@ async function runPromptWithControllerLoop({
   let toolErrors = 0;
   let totalTokens = 0;
   let totalLatencyMs = 0;
+  let dynamicMemoryTokens = 0;
   const toolResults = [];
 
   const checkCancellation = () => {
@@ -220,6 +226,7 @@ async function runPromptWithControllerLoop({
     fallback_used: FALLBACK_USED_VALUES.NONE,
     total_tokens: totalTokens,
     total_latency_ms: totalLatencyMs,
+    dynamic_memory_tokens: dynamicMemoryTokens,
   });
 
   const terminate = (reason, payloadBase, roundsCount) => {
@@ -304,6 +311,10 @@ async function runPromptWithControllerLoop({
       output_tokens: metrics.output_tokens,
       cache_read_tokens: metrics.cache_read_tokens,
       cache_creation_tokens: metrics.cache_creation_tokens,
+      cache_semistatic_hit: metrics.cache_semistatic_hit,
+      cache_semistatic_miss: metrics.cache_semistatic_miss,
+      memory_prefix_tokens: metrics.memory_prefix_tokens,
+      dynamic_memory_tokens: metrics.dynamic_memory_tokens,
       latency_ms: modelLatency,
       first_token_ms: metrics.first_token_ms,
       tool_call_count: toolCall ? 1 : 0,
@@ -339,6 +350,7 @@ async function runPromptWithControllerLoop({
           fallback_used: FALLBACK_USED_VALUES.NONE,
           total_tokens: totalTokens,
           total_latency_ms: totalLatencyMs,
+          dynamic_memory_tokens: dynamicMemoryTokens,
         },
       };
       observer.emit("loop_terminal", finalPayload.loop);
@@ -382,13 +394,19 @@ async function runPromptWithControllerLoop({
     const toolDuration = Math.max(0, now() - toolStartedAt);
 
     let toolResultSize = 0;
+    let toolDynamicMemoryTokens = 0;
     try {
       toolResultSize = toolResult && toolResult.result !== undefined
         ? JSON.stringify(toolResult.result).length
         : 0;
+      toolDynamicMemoryTokens = toolResult && toolResult.result && Number.isFinite(Number(toolResult.result.dynamic_memory_tokens))
+        ? Math.max(0, Math.floor(Number(toolResult.result.dynamic_memory_tokens)))
+        : 0;
     } catch {
       toolResultSize = 0;
+      toolDynamicMemoryTokens = 0;
     }
+    dynamicMemoryTokens += toolDynamicMemoryTokens;
 
     observer.emit("tool_call", {
       round,
@@ -397,6 +415,7 @@ async function runPromptWithControllerLoop({
       turn_id: toolResult && toolResult.turn_id ? String(toolResult.turn_id) : `loop-round-${round}`,
       duration_ms: toolDuration,
       result_size: toolResultSize,
+      dynamic_memory_tokens: toolDynamicMemoryTokens,
       retry_count: 0,
       final_status: toolResult && toolResult.ok === true ? "ok" : "error",
     });

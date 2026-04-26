@@ -65,7 +65,12 @@ class EventBus {
     this.messageManager = new MessageManager(
       this.busDir,
       this.busData,
-      this.queueManager
+      this.queueManager,
+      {
+        projectRoot: this.projectRoot,
+        enableGroupPolicyHook: true,
+        warn: logWarn,
+      }
     );
 
     // 自动清理不活跃的 agents

@@ -1,4 +1,5 @@
 const path = require("path");
+const os = require("os");
 const { spawnSync } = require("child_process");
 const net = require("net");
 const fs = require("fs");
@@ -244,6 +245,179 @@ function projectSwitchV1Error() {
   return err;
 }
 
+function parseMemoryTags(value = "") {
+  return String(value || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function readTextFile(filePath = "") {
+  const target = String(filePath || "").trim();
+  if (!target) return "";
+  return fs.readFileSync(path.resolve(target), "utf8");
+}
+
+function formatMemoryLine(entry = {}) {
+  const tags = Array.isArray(entry.tags) && entry.tags.length
+    ? `[${entry.tags.join(",")}]`
+    : "[]";
+  const status = entry.status && entry.status !== "active" ? ` (${entry.status})` : "";
+  return `${entry.id} ${tags} ${entry.title}${status}`;
+}
+
+function printMemoryEntry(entry = {}, write = (line) => console.log(line)) {
+  write(`${entry.id} ${entry.status || "active"}`);
+  write(`title: ${entry.title || ""}`);
+  write(`tags: ${(entry.tags || []).join(",")}`);
+  write(`source: ${entry.source || ""}`);
+  write(`created_at: ${entry.created_at || ""}`);
+  write(`updated_at: ${entry.updated_at || ""}`);
+  write("");
+  write(entry.body || "");
+}
+
+function runMemoryCommand({
+  subcommand = "list",
+  args = [],
+  opts = {},
+  cwd = process.cwd(),
+  write = (line) => console.log(line),
+  writeError = (line) => console.error(line),
+} = {}) {
+  const MemoryManager = require("./memory");
+  const manager = new MemoryManager(cwd);
+  const sub = String(subcommand || "list").trim().toLowerCase();
+  const outputJson = opts.json === true;
+
+  try {
+    if (sub === "add") {
+      const title = String(args[0] || opts.title || "").trim();
+      const body = opts.bodyFile ? readTextFile(opts.bodyFile) : String(opts.body || "").trim();
+      if (!body) throw new Error("memory add requires --body or --body-file");
+      const entry = manager.add({
+        title,
+        body,
+        tags: parseMemoryTags(opts.tags),
+        source: "user",
+      }, {
+        source: "cli",
+        actor: process.env.UFOO_SUBSCRIBER_ID || process.env.USER || "user",
+      });
+      if (outputJson) write(JSON.stringify(entry, null, 2));
+      else write(formatMemoryLine(entry));
+      return 0;
+    }
+
+    if (sub === "list" || sub === "ls") {
+      const entries = manager.list({
+        tag: opts.tag || "",
+        all: opts.all === true,
+        limit: parseInt(opts.limit, 10) || 0,
+      });
+      if (outputJson) {
+        write(JSON.stringify(entries, null, 2));
+        return 0;
+      }
+      if (entries.length === 0) {
+        write("No memory entries found.");
+        return 0;
+      }
+      entries.forEach((entry) => write(formatMemoryLine(entry)));
+      return 0;
+    }
+
+    if (sub === "show") {
+      const id = String(args[0] || "").trim();
+      if (!id) throw new Error("memory show requires <id>");
+      const entry = manager.get(id, { includeArchived: opts.all === true });
+      if (outputJson) write(JSON.stringify(entry, null, 2));
+      else printMemoryEntry(entry, write);
+      return 0;
+    }
+
+    if (sub === "edit") {
+      const id = String(args[0] || "").trim();
+      if (!id) throw new Error("memory edit requires <id>");
+      const patch = {};
+      if (opts.title) patch.title = opts.title;
+      if (opts.tags !== undefined) patch.tags = parseMemoryTags(opts.tags);
+      if (opts.bodyFile) patch.body = readTextFile(opts.bodyFile);
+      if (opts.body) patch.body = opts.body;
+      if (Object.keys(patch).length === 0) {
+        const entry = manager.get(id);
+        const editor = process.env.EDITOR || "vi";
+        const tmp = path.join(os.tmpdir(), `ufoo-memory-${entry.id}-${Date.now()}.md`);
+        fs.writeFileSync(tmp, `# ${entry.title}\n\n${entry.body || ""}\n`, "utf8");
+        const res = spawnSync(editor, [tmp], { stdio: "inherit" });
+        if (res.error) throw res.error;
+        if (typeof res.status === "number" && res.status !== 0) {
+          throw new Error(`${editor} exited with code ${res.status}`);
+        }
+        const parsed = String(fs.readFileSync(tmp, "utf8"));
+        fs.rmSync(tmp, { force: true });
+        const lines = parsed.replace(/\r\n/g, "\n").split("\n");
+        const first = lines.findIndex((line) => line.trim());
+        if (first !== -1 && /^#\s+/.test(lines[first])) {
+          patch.title = lines[first].replace(/^#\s+/, "").trim();
+          patch.body = lines.slice(first + 1).join("\n").trim();
+        } else {
+          patch.body = parsed.trim();
+        }
+        patch.expected_updated_at = entry.updated_at;
+      }
+      const updated = manager.update(id, patch, {
+        source: "cli",
+        actor: process.env.UFOO_SUBSCRIBER_ID || process.env.USER || "user",
+      });
+      if (outputJson) write(JSON.stringify(updated, null, 2));
+      else write(formatMemoryLine(updated));
+      return 0;
+    }
+
+    if (sub === "forget" || sub === "archive") {
+      const id = String(args[0] || "").trim();
+      if (!id) throw new Error("memory forget requires <id>");
+      const entry = manager.archive(id, {
+        source: "cli",
+        actor: process.env.UFOO_SUBSCRIBER_ID || process.env.USER || "user",
+      });
+      if (outputJson) write(JSON.stringify(entry, null, 2));
+      else write(formatMemoryLine(entry));
+      return 0;
+    }
+
+    if (sub === "rebuild-index") {
+      const entries = manager.rebuildIndex();
+      if (outputJson) write(JSON.stringify({ count: entries.length, index_file: manager.indexFile }, null, 2));
+      else write(`Rebuilt ${manager.indexFile} (${entries.length} active entries)`);
+      return 0;
+    }
+
+    if (sub === "audit") {
+      const rows = manager.readAudit(args[0] || "");
+      if (outputJson) {
+        write(JSON.stringify(rows, null, 2));
+        return 0;
+      }
+      if (rows.length === 0) {
+        write("No memory audit entries found.");
+        return 0;
+      }
+      rows.forEach((row) => {
+        write(`${row.ts || "-"} ${row.action || "-"} ${row.id || ""} ${row.title || ""}`.trim());
+      });
+      return 0;
+    }
+
+    writeError("memory requires add|list|show|edit|forget|rebuild-index|audit subcommand");
+    return 1;
+  } catch (err) {
+    writeError(err.message || String(err));
+    return err.exitCode || 1;
+  }
+}
+
 function runProjectCommand({
   subcommand = "list",
   outputJson = false,
@@ -409,6 +583,108 @@ async function runCli(argv) {
           cwd: process.cwd(),
         });
       });
+
+    const memory = program.command("memory").description("Project shared memory commands");
+    memory
+      .command("add")
+      .description("Add a project memory entry")
+      .argument("<title>", "Memory title")
+      .option("--body <text>", "Memory body")
+      .option("--body-file <path>", "Read memory body from file")
+      .option("--tags <tags>", "Comma-separated tags")
+      .option("--json", "Output as JSON")
+      .action((title, opts) => {
+        process.exitCode = runMemoryCommand({
+          subcommand: "add",
+          args: [title],
+          opts,
+          cwd: process.cwd(),
+        });
+      });
+    memory
+      .command("list")
+      .alias("ls")
+      .description("List project memory entries")
+      .option("--tag <tag>", "Filter by tag")
+      .option("--all", "Include archived entries")
+      .option("--limit <n>", "Limit result count")
+      .option("--json", "Output as JSON")
+      .action((opts) => {
+        process.exitCode = runMemoryCommand({
+          subcommand: "list",
+          opts,
+          cwd: process.cwd(),
+        });
+      });
+    memory
+      .command("show")
+      .description("Show one memory entry")
+      .argument("<id>", "Memory id")
+      .option("--all", "Allow archived entries")
+      .option("--json", "Output as JSON")
+      .action((id, opts) => {
+        process.exitCode = runMemoryCommand({
+          subcommand: "show",
+          args: [id],
+          opts,
+          cwd: process.cwd(),
+        });
+      });
+    memory
+      .command("edit")
+      .description("Edit one memory entry")
+      .argument("<id>", "Memory id")
+      .option("--title <title>", "Replace title")
+      .option("--body <text>", "Replace body")
+      .option("--body-file <path>", "Replace body from file")
+      .option("--tags <tags>", "Replace tags with comma-separated tags")
+      .option("--json", "Output as JSON")
+      .action((id, opts) => {
+        process.exitCode = runMemoryCommand({
+          subcommand: "edit",
+          args: [id],
+          opts,
+          cwd: process.cwd(),
+        });
+      });
+    memory
+      .command("forget")
+      .description("Archive one memory entry")
+      .argument("<id>", "Memory id")
+      .option("--json", "Output as JSON")
+      .action((id, opts) => {
+        process.exitCode = runMemoryCommand({
+          subcommand: "forget",
+          args: [id],
+          opts,
+          cwd: process.cwd(),
+        });
+      });
+    memory
+      .command("rebuild-index")
+      .description("Rebuild memory INDEX.md")
+      .option("--json", "Output as JSON")
+      .action((opts) => {
+        process.exitCode = runMemoryCommand({
+          subcommand: "rebuild-index",
+          opts,
+          cwd: process.cwd(),
+        });
+      });
+    memory
+      .command("audit")
+      .description("Show memory audit log")
+      .argument("[id]", "Optional memory id")
+      .option("--json", "Output as JSON")
+      .action((id, opts) => {
+        process.exitCode = runMemoryCommand({
+          subcommand: "audit",
+          args: id ? [id] : [],
+          opts,
+          cwd: process.cwd(),
+        });
+      });
+
     program
       .command("launch")
       .description("Launch an agent (ucode, uclaude, ucodex)")
@@ -1703,6 +1979,39 @@ async function runCli(argv) {
     if (action === "prepare" && result.bootstrapPrepared && result.bootstrapPrepared.file) {
       console.log(`prepared bootstrap: ${result.bootstrapPrepared.file}`);
     }
+    return;
+  }
+  if (cmd === "memory") {
+    const sub = rest[0] || "list";
+    const args = rest.slice(1).filter((token, index, array) => {
+      const prev = array[index - 1] || "";
+      if (prev === "--body" || prev === "--body-file" || prev === "--tags" || prev === "--tag" || prev === "--limit" || prev === "--title") {
+        return false;
+      }
+      return !token.startsWith("--");
+    });
+    const getOpt = (name, fallback = "") => {
+      const idx = rest.indexOf(name);
+      if (idx === -1 || idx + 1 >= rest.length) return fallback;
+      const value = rest[idx + 1];
+      if (!value || value.startsWith("--")) return fallback;
+      return value;
+    };
+    process.exitCode = runMemoryCommand({
+      subcommand: sub,
+      args,
+      opts: {
+        title: getOpt("--title", ""),
+        body: getOpt("--body", ""),
+        bodyFile: getOpt("--body-file", ""),
+        tags: getOpt("--tags", ""),
+        tag: getOpt("--tag", ""),
+        limit: getOpt("--limit", ""),
+        all: rest.includes("--all"),
+        json: rest.includes("--json"),
+      },
+      cwd: process.cwd(),
+    });
     return;
   }
   if (cmd === "init") {
