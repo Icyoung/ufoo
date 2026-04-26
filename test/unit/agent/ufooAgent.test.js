@@ -375,6 +375,43 @@ describe("ufooAgent prompt schema", () => {
     expect(systemPrompt).toContain("\"active_count\":1");
   });
 
+  test("assigns semantic launch nickname without reading source metadata as nickname", async () => {
+    global.fetch = jest.fn().mockResolvedValue(defaultDirectResponse(JSON.stringify({
+      reply: "",
+      dispatch: [],
+      ops: [{ action: "launch", agent: "codex" }],
+    })));
+
+    const res = await runUfooAgent({
+      projectRoot,
+      prompt: "请处理这个路由/启动 agent 的 bug\n\nRouting request metadata (JSON):\n{\"source\":\"chat-dialog\"}",
+      provider: "codex-cli",
+      model: "gpt-5.4-mini",
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.payload.ops[0].nickname).toBe("codex-fix-route");
+    expect(res.payload.ops[0].nickname).not.toBe("source");
+  });
+
+  test("preserves explicit launch nickname from user request", async () => {
+    global.fetch = jest.fn().mockResolvedValue(defaultDirectResponse(JSON.stringify({
+      reply: "",
+      dispatch: [],
+      ops: [{ action: "launch", agent: "codex" }],
+    })));
+
+    const res = await runUfooAgent({
+      projectRoot,
+      prompt: "Please launch a codex agent named builder for this task.",
+      provider: "codex-cli",
+      model: "gpt-5.4-mini",
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.payload.ops[0].nickname).toBe("builder");
+  });
+
   test("ucode provider uses native HTTP path instead of CLI", async () => {
     const responsePayload = { reply: "native ok", dispatch: [], ops: [] };
     const mockResponse = {

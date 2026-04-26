@@ -30,8 +30,10 @@ function createInputSubmitHandler(options = {}) {
     throw new Error("createInputSubmitHandler requires a mutable state object");
   }
 
-  function userPrefix() {
-    return "{white-fg}you{/white-fg} {gray-fg}·{/gray-fg}";
+  function userEcho(text, targetLabel = "") {
+    const body = escapeBlessed(text);
+    if (!targetLabel) return body;
+    return `{magenta-fg}@${escapeBlessed(targetLabel)}{/magenta-fg} ${body}`;
   }
 
   async function tryActivateTargetAgent(agentId) {
@@ -92,7 +94,7 @@ function createInputSubmitHandler(options = {}) {
       const label = getAgentLabel(state.targetAgent);
       logMessage(
         "user",
-        `${userPrefix()} {magenta-fg}@${escapeBlessed(label)}{/magenta-fg} ${escapeBlessed(text)}`
+        userEcho(text, label)
       );
       renderScreen();  // Immediately render the user message
       markPendingDelivery(state.targetAgent);
@@ -126,7 +128,7 @@ function createInputSubmitHandler(options = {}) {
       const message = atTarget.message.trim();
       logMessage(
         "user",
-        `${userPrefix()} {magenta-fg}@${escapeBlessed(atTarget.target)}{/magenta-fg} ${escapeBlessed(message)}`
+        userEcho(message, atTarget.target)
       );
       renderScreen();  // Immediately render the user message
       markPendingDelivery(resolvedTarget);
@@ -143,7 +145,7 @@ function createInputSubmitHandler(options = {}) {
 
     if (text.startsWith("/")) {
       if (shouldEchoCommandInChat(text)) {
-        logMessage("user", `${userPrefix()} ${escapeBlessed(text)}`);
+        logMessage("user", userEcho(text));
         renderScreen();  // Render slash command immediately
       }
       try {
@@ -189,7 +191,7 @@ function createInputSubmitHandler(options = {}) {
           allow_relevance_queue: true,
         },
       });
-      logMessage("user", `${userPrefix()} ${escapeBlessed(text)}`);
+      logMessage("user", userEcho(text));
       renderScreen();  // Render plain text message immediately
     }
 

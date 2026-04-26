@@ -1,3 +1,5 @@
+const { finalizeRouterPayload } = require("../controller/routerFinalize");
+
 function normalizePayload(payload) {
   if (!payload || typeof payload !== "object") {
     return { reply: "", dispatch: [], ops: [] };
@@ -36,34 +38,23 @@ function stripAssistantCall(payload) {
 async function finalizePromptRun({
   projectRoot,
   payload,
+  prompt,
   processManager,
   dispatchMessages,
   handleOps,
   markPending,
   finalizeLocally = true,
 }) {
-  if (finalizeLocally === false) {
-    return {
-      ok: true,
-      payload,
-      opsResults: [],
-    };
-  }
-
-  for (const item of payload.dispatch || []) {
-    if (item && item.target && item.target !== "broadcast") {
-      markPending(item.target);
-    }
-  }
-
-  await dispatchMessages(projectRoot, payload.dispatch || []);
-  const opsResults = await handleOps(projectRoot, payload.ops || [], processManager);
-
-  return {
-    ok: true,
+  return finalizeRouterPayload({
+    projectRoot,
     payload,
-    opsResults,
-  };
+    prompt,
+    processManager,
+    dispatchMessages,
+    handleOps,
+    markPending,
+    finalizeLocally,
+  });
 }
 
 async function runPromptWithAssistant({
@@ -129,6 +120,7 @@ async function runPromptWithAssistant({
   return finalizePromptRun({
     projectRoot,
     payload: firstPayload,
+    prompt: prompt || "",
     processManager,
     dispatchMessages,
     handleOps,

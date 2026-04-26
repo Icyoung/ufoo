@@ -76,35 +76,30 @@ function getWrapWidth(input, fallbackWidth) {
 
 /**
  * Simulate blessed's wrapping for a single logical line (no newlines).
- * Returns { rows, lastCol }.
+ * Returns the zero-based visual row and column at the end of the line.
  *
- * Blessed preprocesses double-width chars by inserting a \x03 marker after
- * each one, then wraps at character count = width. This means a double-width
- * char at col (width - 1) overflows by 1 cell — only the \x03 marker wraps
- * to the next line. We replicate this behavior so cursor math matches what
- * blessed actually renders.
+ * A cursor at exactly width cells is still at the end of the current visual
+ * row; it should not become a phantom row until another character or an
+ * explicit newline is processed.
  */
-function wrapLine(line, width, strWidth) {
+function measureLineEnd(line, width, strWidth) {
   const chars = Array.from(String(line || ""));
+  let row = 0;
   let col = 0;
-  let rows = 1;
   for (const ch of chars) {
     const w = safeStrWidth(strWidth, ch);
     if (w === 0) continue;
-    if (col >= width) {
-      rows += 1;
-      col = col - width;
+    if (col > 0 && col + w > width) {
+      row += 1;
+      col = 0;
     }
     col += w;
   }
-  if (col > width) {
-    rows += 1;
-    col = col - width;
-  } else if (col === width) {
-    rows += 1;
-    col = 0;
-  }
-  return { rows, lastCol: col };
+  return { row, col };
+}
+
+function countLineRows(line, width, strWidth) {
+  return measureLineEnd(line, width, strWidth).row + 1;
 }
 
 function countLines(text, width, strWidth) {
@@ -114,8 +109,7 @@ function countLines(text, width, strWidth) {
   const lines = expanded.split("\n");
   let total = 0;
   for (const line of lines) {
-    const { rows, lastCol } = wrapLine(line, width, strWidth);
-    total += (lastCol === 0 && rows > 1) ? rows - 1 : rows;
+    total += countLineRows(line, width, strWidth);
   }
   return total;
 }
@@ -136,28 +130,10 @@ function getCursorRowCol(text, pos, width, strWidth) {
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i] || "";
     if (i < lines.length - 1) {
-      const { rows, lastCol } = wrapLine(line, width, strWidth);
-      row += (lastCol === 0 && rows > 1) ? rows - 1 : rows;
+      row += countLineRows(line, width, strWidth);
     } else {
-      const chars = Array.from(line);
-      let col = 0;
-      for (const ch of chars) {
-        const w = safeStrWidth(strWidth, ch);
-        if (w === 0) continue;
-        if (col >= width) {
-          row += 1;
-          col = col - width;
-        }
-        col += w;
-      }
-      if (col > width) {
-        row += 1;
-        col = col - width;
-      } else if (col === width) {
-        row += 1;
-        col = 0;
-      }
-      return { row, col };
+      const measured = measureLineEnd(line, width, strWidth);
+      return { row: row + measured.row, col: measured.col };
     }
   }
   return { row, col: 0 };
@@ -187,27 +163,20 @@ function getCursorPosForRowCol(text, targetRow, targetCol, width, strWidth) {
         lineOffset += ch.length;
         continue;
       }
-      if (col >= width) {
+      if (col > 0 && col + w > width) {
+        if (row === targetRow && targetCol >= col) {
+          return expandedToOriginal(original, expPos + lineOffset);
+        }
         row += 1;
-        col = col - width;
+        col = 0;
       }
       if (row === targetRow && col + w > targetCol) {
         return expandedToOriginal(original, expPos + lineOffset);
       }
       col += w;
       lineOffset += ch.length;
-      if (col > width) {
-        if (row === targetRow) {
-          return expandedToOriginal(original, expPos + lineOffset);
-        }
-        row += 1;
-        col = col - width;
-      } else if (col === width) {
-        if (row === targetRow) {
-          return expandedToOriginal(original, expPos + lineOffset);
-        }
-        row += 1;
-        col = 0;
+      if (row === targetRow && col === targetCol) {
+        return expandedToOriginal(original, expPos + lineOffset);
       }
     }
 

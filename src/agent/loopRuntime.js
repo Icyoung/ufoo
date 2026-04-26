@@ -2,6 +2,7 @@
 
 const { executeControllerTool } = require("./controllerToolExecutor");
 const { createLoopObserver } = require("./loopObservability");
+const { finalizeRouterPayload } = require("../controller/routerFinalize");
 
 const DEFAULT_LOOP_OPTIONS = {
   enabled: false,
@@ -126,34 +127,23 @@ function buildLoopContinuationPrompt({
 async function finalizeLoopRun({
   projectRoot,
   payload,
+  prompt = "",
   processManager,
   dispatchMessages,
   handleOps,
   markPending,
   finalizeLocally = true,
 }) {
-  if (finalizeLocally === false) {
-    return { ok: true, payload, opsResults: [] };
-  }
-
-  const dispatch = Array.isArray(payload.dispatch) ? payload.dispatch : [];
-  const ops = Array.isArray(payload.ops) ? payload.ops : [];
-
-  for (const item of dispatch) {
-    if (item && item.target && item.target !== "broadcast" && typeof markPending === "function") {
-      markPending(item.target);
-    }
-  }
-
-  if (typeof dispatchMessages === "function") {
-    await dispatchMessages(projectRoot, dispatch);
-  }
-
-  const opsResults = typeof handleOps === "function"
-    ? await handleOps(projectRoot, ops, processManager || null)
-    : [];
-
-  return { ok: true, payload, opsResults };
+  return finalizeRouterPayload({
+    projectRoot,
+    payload,
+    prompt,
+    processManager: processManager || null,
+    dispatchMessages,
+    handleOps,
+    markPending,
+    finalizeLocally,
+  });
 }
 
 function buildTerminalPayload(reason, lastPayload, rounds, toolCalls, toolErrors, totals = {}) {
@@ -248,6 +238,7 @@ async function runPromptWithControllerLoop({
       return finalizeLoopRun({
         projectRoot,
         payload,
+        prompt: currentPrompt,
         processManager,
         dispatchMessages,
         handleOps,
@@ -261,6 +252,7 @@ async function runPromptWithControllerLoop({
       return finalizeLoopRun({
         projectRoot,
         payload,
+        prompt: currentPrompt,
         processManager,
         dispatchMessages,
         handleOps,
@@ -357,6 +349,7 @@ async function runPromptWithControllerLoop({
       return finalizeLoopRun({
         projectRoot,
         payload: finalPayload,
+        prompt: currentPrompt,
         processManager,
         dispatchMessages,
         handleOps,
@@ -370,6 +363,7 @@ async function runPromptWithControllerLoop({
       return finalizeLoopRun({
         projectRoot,
         payload: finalPayload,
+        prompt: currentPrompt,
         processManager,
         dispatchMessages,
         handleOps,
@@ -430,6 +424,7 @@ async function runPromptWithControllerLoop({
       return finalizeLoopRun({
         projectRoot,
         payload: finalPayload,
+        prompt: currentPrompt,
         processManager,
         dispatchMessages,
         handleOps,
@@ -456,6 +451,7 @@ async function runPromptWithControllerLoop({
   return finalizeLoopRun({
     projectRoot,
     payload,
+    prompt: currentPrompt,
     processManager,
     dispatchMessages,
     handleOps,

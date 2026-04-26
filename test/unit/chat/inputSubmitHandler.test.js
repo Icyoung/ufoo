@@ -94,7 +94,7 @@ describe("chat inputSubmitHandler", () => {
     expect(options.commitInputHistory).toHaveBeenCalledWith("hello\nworld");
     expect(options.logMessage).toHaveBeenCalledWith(
       "user",
-      "{white-fg}you{/white-fg} {gray-fg}·{/gray-fg} {magenta-fg}@ESC(codex:1){/magenta-fg} ESC(hello\nworld)"
+      "{magenta-fg}@ESC(codex:1){/magenta-fg} ESC(hello\nworld)"
     );
     expect(options.send).toHaveBeenCalledWith({
       type: "bus_send",
@@ -257,11 +257,7 @@ describe("chat inputSubmitHandler", () => {
     expect(state.pending).toEqual({ original: "run analysis" });
     expect(options.logMessage).toHaveBeenCalledWith(
       "user",
-      "{white-fg}you{/white-fg} {gray-fg}·{/gray-fg} ESC(run analysis)"
-    );
-    expect(options.logMessage).not.toHaveBeenCalledWith(
-      "user",
-      "{white-fg}→{/white-fg} ESC(run analysis)"
+      "ESC(run analysis)"
     );
     expect(options.focusInput).toHaveBeenCalled();
   });
@@ -284,7 +280,7 @@ describe("chat inputSubmitHandler", () => {
     expect(state.pending).toEqual({ original: "run\nanalysis" });
     expect(options.logMessage).toHaveBeenCalledWith(
       "user",
-      "{white-fg}you{/white-fg} {gray-fg}·{/gray-fg} ESC(run\nanalysis)"
+      "ESC(run\nanalysis)"
     );
   });
 });

@@ -9,6 +9,7 @@ const { normalizeProvider, sendUpstreamPrompt } = require("./upstreamTransport")
 const { normalizeAgentTypeAlias } = require("../bus/utils");
 const { buildCachedMemoryPrefix } = require("../memory");
 const { listProjectRuntimes, isGlobalControllerProjectRoot } = require("../projects");
+const { assignMissingLaunchNicknames } = require("../controller/launchRouting");
 const {
   CONTROLLER_MODES,
   resolveControllerMode,
@@ -462,6 +463,8 @@ function buildSystemPrompt(context, options = {}) {
       "- When returning tool_call, set done=false and keep dispatch/ops empty for that round.",
       "- Use dispatch_message for direct bus delivery, ack_bus for controller queue acknowledgement, and launch_agent for bounded worker launches.",
       "- When you have enough information, omit tool_call and return the final reply/dispatch/ops with done=true.",
+      "- When launching a new coding agent for a user task, include a short task-specific nickname and include a dispatch to that launched nickname with the task.",
+      "- Do not emit launch-only ops for delegated work; a launched worker must receive a task in dispatch.",
       "- Do not emit assistant_call or ops.assistant_call; that legacy helper path has been removed.",
       `- Round budget: maxRounds=${loopRuntime.maxRounds || ""}, remainingToolCalls=${loopRuntime.remainingToolCalls || 0}.`,
       agentGuidance,
@@ -505,6 +508,8 @@ function buildSystemPrompt(context, options = {}) {
     "- For short-lived exploration, prefer a dispatch to an online agent or reply with a clarification.",
     "- Primary routing signal is semantic continuity from agent_prompt_history; prefer the agent that already handled similar prompts.",
     "- Launch a new coding agent when the request is a new topic without clear ownership in existing histories.",
+    "- When launching a new coding agent for a user task, include a short task-specific nickname and include a dispatch to that launched nickname with the task.",
+    "- Do not emit launch-only ops for delegated work; a launched worker must receive a task in dispatch.",
     "- dispatch.injection_mode defaults to immediate when omitted.",
     "- Use queued only when routing a chat-dialog request that is clearly a new unrelated task for an agent whose recent prompt history shows a different ongoing thread.",
     "- If the new request strongly continues the target agent's recent prompt history, keep injection_mode immediate even when that agent is busy.",
@@ -586,21 +591,6 @@ function buildRouteAgentSystemPrompt(context, options = {}) {
     "Context: online agents and recent bus events:",
     JSON.stringify(context),
   ].join("\n");
-}
-
-function extractNickname(prompt) {
-  if (!prompt) return "";
-  const patterns = [
-    /(?:叫|名为|叫做|取名|昵称)\s*([A-Za-z0-9_-]{1,32})/i,
-    /(?:named|name)\s+([A-Za-z0-9_-]{1,32})/i,
-  ];
-  for (const re of patterns) {
-    const match = prompt.match(re);
-    if (match && match[1]) return match[1];
-  }
-  const quoted = prompt.match(/[“"']([^“"'\\]{1,32})[”"']/);
-  if (quoted && quoted[1]) return quoted[1];
-  return "";
 }
 
 function shouldUseDirectProvider(value = "") {
@@ -733,15 +723,7 @@ async function runUfooAgent({
     payload = { reply: text, dispatch: [], ops: [] };
   }
 
-  const fallbackNickname = extractNickname(prompt);
-  if (fallbackNickname && payload && Array.isArray(payload.ops)) {
-    for (const op of payload.ops) {
-      if (op && (op.action === "launch" || op.action === "rename") && !op.nickname) {
-        op.nickname = fallbackNickname;
-        break;
-      }
-    }
-  }
+  payload = assignMissingLaunchNicknames(payload, { prompt, context: bus });
 
   saveSessionState(projectRoot, {
     provider,
