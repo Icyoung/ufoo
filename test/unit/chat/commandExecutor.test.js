@@ -34,6 +34,7 @@ function createHarness(overrides = {}) {
     parseCommand: jest.fn(() => null),
     escapeBlessed: jest.fn((value) => `ESC(${value})`),
     logMessage,
+    resolveStatusLine: jest.fn(),
     renderScreen: jest.fn(),
     getActiveAgents: jest.fn(() => []),
     getActiveAgentMetaMap: jest.fn(() => new Map()),
@@ -180,7 +181,8 @@ describe("chat commandExecutor", () => {
 
     expect(options.startDaemon).toHaveBeenCalledWith("/tmp/ufoo");
     expect(options.sleep).toHaveBeenCalledWith(1000);
-    expect(logs.some((entry) => entry.text.includes("Daemon started"))).toBe(true);
+    expect(options.resolveStatusLine).toHaveBeenCalledWith("{gray-fg}✓{/gray-fg} Daemon started");
+    expect(logs.some((entry) => entry.text.includes("Daemon started"))).toBe(false);
   });
 
   test("handleBusCommand send validates args and sends message", async () => {
@@ -1099,40 +1101,42 @@ describe("chat commandExecutor", () => {
   });
 
   test("handleDaemonCommand stop path calls stopDaemon", async () => {
-    const { executor, options, logs } = createHarness({
+    const { executor, options } = createHarness({
       parseCommand: jest.fn(() => ({ command: "daemon", args: ["stop"] })),
     });
     await executor.executeCommand("/daemon stop");
     expect(options.stopDaemon).toHaveBeenCalled();
-    expect(logs.some((e) => e.text.includes("Stopping"))).toBe(true);
+    expect(options.resolveStatusLine).toHaveBeenCalledWith("{gray-fg}⚙{/gray-fg} Stopping daemon...");
   });
 
   test("handleDaemonCommand restart path calls stopDaemon then startDaemon", async () => {
-    const { executor, options, logs } = createHarness({
+    const { executor, options } = createHarness({
       parseCommand: jest.fn(() => ({ command: "daemon", args: ["restart"] })),
       isDaemonRunning: jest.fn(() => true),
     });
     await executor.executeCommand("/daemon restart");
     expect(options.stopDaemon).toHaveBeenCalled();
     expect(options.startDaemon).toHaveBeenCalled();
-    expect(logs.some((e) => e.text.includes("Restarting"))).toBe(true);
+    expect(options.resolveStatusLine).toHaveBeenCalledWith("{gray-fg}⚙{/gray-fg} Restarting daemon...");
   });
 
   test("handleDaemonCommand status shows running when daemon is active", async () => {
-    const { executor, logs } = createHarness({
+    const { executor, options, logs } = createHarness({
       parseCommand: jest.fn(() => ({ command: "daemon", args: ["status"] })),
       isDaemonRunning: jest.fn(() => true),
     });
     await executor.executeCommand("/daemon status");
-    expect(logs.some((e) => e.text.includes("is running"))).toBe(true);
+    expect(options.resolveStatusLine).toHaveBeenCalledWith("{gray-fg}✓{/gray-fg} Daemon is running");
+    expect(logs.some((e) => e.text.includes("is running"))).toBe(false);
   });
 
   test("handleDaemonCommand status shows not running", async () => {
-    const { executor, logs } = createHarness({
+    const { executor, options, logs } = createHarness({
       parseCommand: jest.fn(() => ({ command: "daemon", args: ["status"] })),
     });
     await executor.executeCommand("/daemon status");
-    expect(logs.some((e) => e.text.includes("not running"))).toBe(true);
+    expect(options.resolveStatusLine).toHaveBeenCalledWith("{gray-fg}✗{/gray-fg} Daemon is not running");
+    expect(logs.some((e) => e.text.includes("not running"))).toBe(false);
   });
 
   test("handleDaemonCommand unknown subcommand shows usage", async () => {
@@ -1144,30 +1148,33 @@ describe("chat commandExecutor", () => {
   });
 
   test("handleDaemonCommand start when already running", async () => {
-    const { executor, logs } = createHarness({
+    const { executor, options, logs } = createHarness({
       parseCommand: jest.fn(() => ({ command: "daemon", args: ["start"] })),
       isDaemonRunning: jest.fn(() => true),
     });
     await executor.executeCommand("/daemon start");
-    expect(logs.some((e) => e.text.includes("already running"))).toBe(true);
+    expect(options.resolveStatusLine).toHaveBeenCalledWith("{gray-fg}⚠{/gray-fg} Daemon already running");
+    expect(logs.some((e) => e.text.includes("already running"))).toBe(false);
   });
 
   test("handleDaemonCommand start that fails", async () => {
-    const { executor, logs } = createHarness({
+    const { executor, options, logs } = createHarness({
       parseCommand: jest.fn(() => ({ command: "daemon", args: ["start"] })),
       isDaemonRunning: jest.fn(() => false),
     });
     await executor.executeCommand("/daemon start");
-    expect(logs.some((e) => e.text.includes("Failed to start"))).toBe(true);
+    expect(options.resolveStatusLine).toHaveBeenCalledWith("{gray-fg}✗{/gray-fg} Failed to start daemon");
+    expect(logs.some((e) => e.text.includes("Failed to start"))).toBe(false);
   });
 
   test("handleDaemonCommand stop that fails", async () => {
-    const { executor, logs } = createHarness({
+    const { executor, options, logs } = createHarness({
       parseCommand: jest.fn(() => ({ command: "daemon", args: ["stop"] })),
       isDaemonRunning: jest.fn(() => true),
     });
     await executor.executeCommand("/daemon stop");
-    expect(logs.some((e) => e.text.includes("Failed to stop"))).toBe(true);
+    expect(options.resolveStatusLine).toHaveBeenCalledWith("{gray-fg}✗{/gray-fg} Failed to stop daemon");
+    expect(logs.some((e) => e.text.includes("Failed to stop"))).toBe(false);
   });
 
   test("handleInitCommand runs init and logs", async () => {

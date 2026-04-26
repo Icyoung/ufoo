@@ -15,6 +15,7 @@ function createHarness(overrides = {}) {
   };
   const saveConfig = jest.fn();
   const logMessage = jest.fn();
+  const resolveStatusLine = jest.fn();
   const renderDashboard = jest.fn();
   const renderScreen = jest.fn();
   const restartDaemon = jest.fn();
@@ -30,6 +31,7 @@ function createHarness(overrides = {}) {
     fsModule,
     getUfooPaths,
     logMessage,
+    resolveStatusLine,
     renderDashboard,
     renderScreen,
     restartDaemon,
@@ -68,6 +70,7 @@ function createHarness(overrides = {}) {
     fsModule,
     saveConfig,
     logMessage,
+    resolveStatusLine,
     renderDashboard,
     renderScreen,
     restartDaemon,
@@ -80,7 +83,7 @@ describe("chat settingsController", () => {
   });
 
   test("setLaunchMode updates config and triggers daemon restart", () => {
-    const { controller, state, saveConfig, restartDaemon } = createHarness();
+    const { controller, state, saveConfig, restartDaemon, resolveStatusLine, logMessage } = createHarness();
 
     const changed = controller.setLaunchMode("tmux");
 
@@ -88,6 +91,8 @@ describe("chat settingsController", () => {
     expect(state.launchMode).toBe("tmux");
     expect(state.selectedModeIndex).toBe(3);
     expect(saveConfig).toHaveBeenCalledWith("/repo", { launchMode: "tmux" });
+    expect(resolveStatusLine).toHaveBeenCalledWith("{gray-fg}⚙{/gray-fg} Launch mode: tmux");
+    expect(logMessage).not.toHaveBeenCalledWith("status", expect.anything());
     expect(restartDaemon).toHaveBeenCalledTimes(1);
   });
 
@@ -102,7 +107,7 @@ describe("chat settingsController", () => {
   });
 
   test("setAgentProvider clears identity and restarts daemon", () => {
-    const { controller, state, fsModule, saveConfig, restartDaemon } = createHarness();
+    const { controller, state, fsModule, saveConfig, restartDaemon, resolveStatusLine, logMessage } = createHarness();
 
     const changed = controller.setAgentProvider("claude-cli");
 
@@ -111,11 +116,13 @@ describe("chat settingsController", () => {
     expect(state.selectedProviderIndex).toBe(1);
     expect(saveConfig).toHaveBeenCalledWith("/repo", { agentProvider: "claude-cli" });
     expect(fsModule.rmSync).toHaveBeenCalledTimes(2);
+    expect(resolveStatusLine).toHaveBeenCalledWith("{gray-fg}⚙{/gray-fg} ufoo-agent: claude");
+    expect(logMessage).not.toHaveBeenCalledWith("status", expect.anything());
     expect(restartDaemon).toHaveBeenCalledTimes(1);
   });
 
   test("setAutoResume updates config without daemon restart", () => {
-    const { controller, state, saveConfig, restartDaemon } = createHarness();
+    const { controller, state, saveConfig, restartDaemon, resolveStatusLine, logMessage } = createHarness();
 
     const changed = controller.setAutoResume(false);
 
@@ -123,6 +130,8 @@ describe("chat settingsController", () => {
     expect(state.autoResume).toBe(false);
     expect(state.selectedResumeIndex).toBe(1);
     expect(saveConfig).toHaveBeenCalledWith("/repo", { autoResume: false });
+    expect(resolveStatusLine).toHaveBeenCalledWith("{gray-fg}⚙{/gray-fg} Resume mode: Start new session");
+    expect(logMessage).not.toHaveBeenCalledWith("status", expect.anything());
     expect(restartDaemon).not.toHaveBeenCalled();
   });
 });

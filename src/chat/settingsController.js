@@ -75,7 +75,8 @@ function createSettingsController(options = {}) {
     setSelectedProviderIndex(Math.max(0, providerOptions.findIndex((opt) => opt.value === next)));
     saveConfig(projectRoot, { agentProvider: next });
     clearUfooAgentIdentity();
-    logMessage("status", `{white-fg}⚙{/white-fg} ufoo-agent: ${providerLabel(next)}`);
+    const statusMsg = resolveStatusLine || ((text) => logMessage("status", text));
+    statusMsg(`{gray-fg}⚙{/gray-fg} ufoo-agent: ${providerLabel(next)}`);
     renderDashboard();
     renderScreen();
     void restartDaemon();
@@ -89,7 +90,8 @@ function createSettingsController(options = {}) {
     setSelectedResumeIndex(next ? 0 : 1);
     saveConfig(projectRoot, { autoResume: next });
     const label = next ? "Resume previous session" : "Start new session";
-    logMessage("status", `{white-fg}⚙{/white-fg} Resume mode: ${label}`);
+    const statusMsg = resolveStatusLine || ((text) => logMessage("status", text));
+    statusMsg(`{gray-fg}⚙{/gray-fg} Resume mode: ${label}`);
     renderDashboard();
     renderScreen();
     return true;

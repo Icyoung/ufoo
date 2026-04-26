@@ -94,7 +94,7 @@ describe("chat inputSubmitHandler", () => {
     expect(options.commitInputHistory).toHaveBeenCalledWith("hello\nworld");
     expect(options.logMessage).toHaveBeenCalledWith(
       "user",
-      "{cyan-fg}→{/cyan-fg} {magenta-fg}@ESC(codex:1){/magenta-fg} ESC(hello\nworld)"
+      "{white-fg}you{/white-fg} {gray-fg}·{/gray-fg} {magenta-fg}@ESC(codex:1){/magenta-fg} ESC(hello\nworld)"
     );
     expect(options.send).toHaveBeenCalledWith({
       type: "bus_send",
@@ -117,10 +117,8 @@ describe("chat inputSubmitHandler", () => {
     await handler.handleSubmit("@a");
 
     expect(options.setTargetAgent).toHaveBeenCalledWith("codex:1");
-    expect(options.logMessage).toHaveBeenCalledWith(
-      "status",
-      "{white-fg}⚙{/white-fg} Target selected: @ESC(a)"
-    );
+    expect(options.queueStatusLine).toHaveBeenCalledWith("Target selected: @ESC(a)");
+    expect(options.logMessage).not.toHaveBeenCalledWith("status", expect.anything());
     expect(options.send).not.toHaveBeenCalled();
     expect(options.focusInput).toHaveBeenCalled();
   });
@@ -259,6 +257,10 @@ describe("chat inputSubmitHandler", () => {
     expect(state.pending).toEqual({ original: "run analysis" });
     expect(options.logMessage).toHaveBeenCalledWith(
       "user",
+      "{white-fg}you{/white-fg} {gray-fg}·{/gray-fg} ESC(run analysis)"
+    );
+    expect(options.logMessage).not.toHaveBeenCalledWith(
+      "user",
       "{white-fg}→{/white-fg} ESC(run analysis)"
     );
     expect(options.focusInput).toHaveBeenCalled();
@@ -282,7 +284,7 @@ describe("chat inputSubmitHandler", () => {
     expect(state.pending).toEqual({ original: "run\nanalysis" });
     expect(options.logMessage).toHaveBeenCalledWith(
       "user",
-      "{white-fg}→{/white-fg} ESC(run\nanalysis)"
+      "{white-fg}you{/white-fg} {gray-fg}·{/gray-fg} ESC(run\nanalysis)"
     );
   });
 });

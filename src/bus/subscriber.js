@@ -122,10 +122,11 @@ class SubscriberManager {
     }
   }
 
-  async cleanupDuplicateTty(currentSubscriber, ttyPath) {
+  async cleanupDuplicateTty(currentSubscriber, ttyPath, options = {}) {
     if (!ttyPath) return null;
     if (!this.busData.agents) return null;
 
+    const currentAgentType = String(options.agentType || "").trim();
     let inheritedNickname = null;
     const entries = Object.entries(this.busData.agents);
     for (const [id, meta] of entries) {
@@ -136,8 +137,9 @@ class SubscriberManager {
         : (await this.queueManager.readTty(id));
       if (!metaTty) continue;
       if (metaTty === ttyPath) {
-        // Inherit user-set nickname from the displaced entry
-        if (meta.nickname && !inheritedNickname) {
+        const sameAgentType = !currentAgentType || meta?.agent_type === currentAgentType;
+        // Inherit user-set nickname only when replacing the same agent type.
+        if (sameAgentType && meta.nickname && !inheritedNickname) {
           inheritedNickname = meta.nickname;
         }
         // Remove stale subscriber using same tty
@@ -227,7 +229,7 @@ class SubscriberManager {
     // 清理同一 tty 的旧订阅者（避免重复启动污染）
     // Inherit nickname from displaced entry when this is a new subscriber
     // with no explicit nickname (e.g. session restart on same TTY)
-    const inheritedNickname = await this.cleanupDuplicateTty(subscriber, finalTty);
+    const inheritedNickname = await this.cleanupDuplicateTty(subscriber, finalTty, { agentType });
     if (inheritedNickname && !nickname && !existingMeta) {
       finalNickname = inheritedNickname;
       if (!finalScopedNickname) finalScopedNickname = inheritedNickname;

@@ -221,8 +221,8 @@ describe("chat daemonMessageRouter", () => {
 
     expect(stop).toBe(true);
     expect(options.logMessage).toHaveBeenCalledWith(
-      "system",
-      "{gray-fg}↥{/gray-fg} {cyan-fg}ESC(name:codex:1){/cyan-fg} {gray-fg}→ ufoo-agent{/gray-fg} ESC(Discovery brief delivered)"
+      "bus",
+      "{cyan-fg}ESC(name:codex:1){/cyan-fg} {gray-fg}·{/gray-fg} ESC(Discovery brief delivered)"
     );
     expect(options.requestStatus).toHaveBeenCalledTimes(1);
     expect(options.renderScreen).toHaveBeenCalledTimes(1);
@@ -243,7 +243,7 @@ describe("chat daemonMessageRouter", () => {
     );
     expect(options.logMessage).toHaveBeenCalledWith(
       "reply",
-      "{white-fg}←{/white-fg} ESC(line1\nline2)"
+      "{white-fg}ESC(ufoo){/white-fg} {gray-fg}·{/gray-fg} ESC(line1\nline2)"
     );
   });
 
@@ -414,7 +414,7 @@ describe("chat daemonMessageRouter", () => {
     );
     expect(options.logMessage).not.toHaveBeenCalledWith(
       "reply",
-      "{white-fg}←{/white-fg} ESC(Group started build-lane-mnfurxqc-2wjm)"
+      "{white-fg}ESC(ufoo){/white-fg} {gray-fg}·{/gray-fg} ESC(Group started build-lane-mnfurxqc-2wjm)"
     );
     expect(options.logMessage).toHaveBeenCalledWith(
       "system",

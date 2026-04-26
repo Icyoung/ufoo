@@ -30,6 +30,10 @@ function createInputSubmitHandler(options = {}) {
     throw new Error("createInputSubmitHandler requires a mutable state object");
   }
 
+  function userPrefix() {
+    return "{white-fg}you{/white-fg} {gray-fg}·{/gray-fg}";
+  }
+
   async function tryActivateTargetAgent(agentId) {
     const adapter = getAgentAdapter(agentId);
     const capabilities = adapter && adapter.capabilities ? adapter.capabilities : null;
@@ -88,7 +92,7 @@ function createInputSubmitHandler(options = {}) {
       const label = getAgentLabel(state.targetAgent);
       logMessage(
         "user",
-        `{cyan-fg}→{/cyan-fg} {magenta-fg}@${escapeBlessed(label)}{/magenta-fg} ${escapeBlessed(text)}`
+        `${userPrefix()} {magenta-fg}@${escapeBlessed(label)}{/magenta-fg} ${escapeBlessed(text)}`
       );
       renderScreen();  // Immediately render the user message
       markPendingDelivery(state.targetAgent);
@@ -114,10 +118,7 @@ function createInputSubmitHandler(options = {}) {
           return;
         }
         setTargetAgent(resolvedTarget);
-        logMessage(
-          "status",
-          `{white-fg}⚙{/white-fg} Target selected: @${escapeBlessed(atTarget.target)}`
-        );
+        queueStatusLine(`Target selected: @${escapeBlessed(atTarget.target)}`);
         focusInput();
         return;
       }
@@ -125,7 +126,7 @@ function createInputSubmitHandler(options = {}) {
       const message = atTarget.message.trim();
       logMessage(
         "user",
-        `{cyan-fg}→{/cyan-fg} {magenta-fg}@${escapeBlessed(atTarget.target)}{/magenta-fg} ${escapeBlessed(message)}`
+        `${userPrefix()} {magenta-fg}@${escapeBlessed(atTarget.target)}{/magenta-fg} ${escapeBlessed(message)}`
       );
       renderScreen();  // Immediately render the user message
       markPendingDelivery(resolvedTarget);
@@ -142,7 +143,7 @@ function createInputSubmitHandler(options = {}) {
 
     if (text.startsWith("/")) {
       if (shouldEchoCommandInChat(text)) {
-        logMessage("user", `{white-fg}→{/white-fg} ${escapeBlessed(text)}`);
+        logMessage("user", `${userPrefix()} ${escapeBlessed(text)}`);
         renderScreen();  // Render slash command immediately
       }
       try {
@@ -188,7 +189,7 @@ function createInputSubmitHandler(options = {}) {
           allow_relevance_queue: true,
         },
       });
-      logMessage("user", `{white-fg}→{/white-fg} ${escapeBlessed(text)}`);
+      logMessage("user", `${userPrefix()} ${escapeBlessed(text)}`);
       renderScreen();  // Render plain text message immediately
     }
 

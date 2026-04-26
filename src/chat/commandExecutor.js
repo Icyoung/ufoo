@@ -117,6 +117,7 @@ function createCommandExecutor(options = {}) {
     parseCommand = () => null,
     escapeBlessed = (value) => String(value || ""),
     logMessage = () => {},
+    resolveStatusLine = null,
     renderScreen = () => {},
     getActiveAgents = () => [],
     getActiveAgentMetaMap = () => new Map(),
@@ -156,6 +157,10 @@ function createCommandExecutor(options = {}) {
   if (!projectRoot) {
     throw new Error("createCommandExecutor requires projectRoot");
   }
+
+  const statusMsg = typeof resolveStatusLine === "function"
+    ? resolveStatusLine
+    : (text) => logMessage("status", text);
 
   async function handleDoctorCommand() {
     logMessage("system", "{white-fg}⚙{/white-fg} Running health check...");
@@ -221,51 +226,51 @@ function createCommandExecutor(options = {}) {
 
     if (subcommand === "start") {
       if (isDaemonRunning(targetRoot)) {
-        logMessage("system", "{white-fg}⚠{/white-fg} Daemon already running");
+        statusMsg("{gray-fg}⚠{/gray-fg} Daemon already running");
       } else {
-        logMessage("system", "{white-fg}⚙{/white-fg} Starting daemon...");
+        statusMsg("{gray-fg}⚙{/gray-fg} Starting daemon...");
         startDaemon(targetRoot);
         await sleep(1000);
         if (isDaemonRunning(targetRoot)) {
-          logMessage("system", "{white-fg}✓{/white-fg} Daemon started");
+          statusMsg("{gray-fg}✓{/gray-fg} Daemon started");
         } else {
-          logMessage("error", "{white-fg}✗{/white-fg} Failed to start daemon");
+          statusMsg("{gray-fg}✗{/gray-fg} Failed to start daemon");
         }
       }
       return;
     }
 
     if (subcommand === "stop") {
-      logMessage("system", "{white-fg}⚙{/white-fg} Stopping daemon...");
+      statusMsg("{gray-fg}⚙{/gray-fg} Stopping daemon...");
       stopDaemon(targetRoot);
       await sleep(1000);
       if (!isDaemonRunning(targetRoot)) {
-        logMessage("system", "{white-fg}✓{/white-fg} Daemon stopped");
+        statusMsg("{gray-fg}✓{/gray-fg} Daemon stopped");
       } else {
-        logMessage("error", "{white-fg}✗{/white-fg} Failed to stop daemon");
+        statusMsg("{gray-fg}✗{/gray-fg} Failed to stop daemon");
       }
       return;
     }
 
     if (subcommand === "restart") {
-      logMessage("system", "{white-fg}⚙{/white-fg} Restarting daemon...");
+      statusMsg("{gray-fg}⚙{/gray-fg} Restarting daemon...");
       stopDaemon(targetRoot);
       await sleep(500);
       startDaemon(targetRoot);
       await sleep(1000);
       if (isDaemonRunning(targetRoot)) {
-        logMessage("system", "{white-fg}✓{/white-fg} Daemon restarted");
+        statusMsg("{gray-fg}✓{/gray-fg} Daemon restarted");
       } else {
-        logMessage("error", "{white-fg}✗{/white-fg} Failed to restart daemon");
+        statusMsg("{gray-fg}✗{/gray-fg} Failed to restart daemon");
       }
       return;
     }
 
     if (subcommand === "status") {
       if (isDaemonRunning(targetRoot)) {
-        logMessage("system", "{white-fg}✓{/white-fg} Daemon is running");
+        statusMsg("{gray-fg}✓{/gray-fg} Daemon is running");
       } else {
-        logMessage("system", "{white-fg}✗{/white-fg} Daemon is not running");
+        statusMsg("{gray-fg}✗{/gray-fg} Daemon is not running");
       }
       return;
     }

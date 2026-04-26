@@ -1905,6 +1905,7 @@ async function runChat(projectRoot, options = {}) {
     renderDashboard,
     renderScreen: () => screen.render(),
     logMessage,
+    resolveStatusLine,
     escapeBlessed,
   });
 
@@ -1919,6 +1920,7 @@ async function runChat(projectRoot, options = {}) {
     parseCommand,
     escapeBlessed,
     logMessage,
+    resolveStatusLine,
     renderScreen: () => screen.render(),
     getActiveAgents: () => activeAgents,
     getActiveAgentMetaMap: () => activeAgentMetaMap,

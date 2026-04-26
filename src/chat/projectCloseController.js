@@ -23,10 +23,14 @@ function createProjectCloseController(options = {}) {
     renderDashboard = () => {},
     renderScreen = () => {},
     logMessage = () => {},
+    resolveStatusLine = null,
     escapeBlessed = (value) => String(value || ""),
   } = options;
 
   let closingProject = false;
+  const statusMsg = typeof resolveStatusLine === "function"
+    ? resolveStatusLine
+    : (text) => logMessage("status", text);
 
   function pickFallbackProjectRoot(targetProjectRoot) {
     const rows = Array.isArray(getProjects()) ? getProjects() : [];
@@ -61,7 +65,7 @@ function createProjectCloseController(options = {}) {
 
     closingProject = true;
     try {
-      logMessage("status", `{white-fg}⚙{/white-fg} Closing project ${escapedName} daemon and agents...`);
+      statusMsg(`{gray-fg}⚙{/gray-fg} Closing project ${escapedName} daemon and agents...`);
 
       let switchedTo = "";
       if (activeProjectRoot === projectRoot) {
@@ -89,9 +93,9 @@ function createProjectCloseController(options = {}) {
       renderScreen();
 
       if (wasRunning) {
-        logMessage("status", `{white-fg}✓{/white-fg} Closed project ${escapedName} daemon and agents`);
+        statusMsg(`{gray-fg}✓{/gray-fg} Closed project ${escapedName} daemon and agents`);
       } else {
-        logMessage("status", `{white-fg}✓{/white-fg} Project ${escapedName} daemon already stopped`);
+        statusMsg(`{gray-fg}✓{/gray-fg} Project ${escapedName} daemon already stopped`);
       }
 
       return {

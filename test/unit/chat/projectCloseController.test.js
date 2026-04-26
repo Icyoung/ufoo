@@ -22,6 +22,7 @@ describe("chat projectCloseController", () => {
       renderDashboard: jest.fn(),
       renderScreen: jest.fn(),
       logMessage: jest.fn(),
+      resolveStatusLine: jest.fn(),
       escapeBlessed: jest.fn((value) => String(value || "")),
       ...overrides,
     };
@@ -49,10 +50,10 @@ describe("chat projectCloseController", () => {
     expect(deps.switchProject).not.toHaveBeenCalled();
     expect(deps.stopDaemon).toHaveBeenCalledWith("/tmp/beta");
     expect(deps.refreshProjects).toHaveBeenCalled();
-    expect(deps.logMessage).toHaveBeenCalledWith(
-      "status",
-      "{white-fg}✓{/white-fg} Closed project beta daemon and agents"
+    expect(deps.resolveStatusLine).toHaveBeenCalledWith(
+      "{gray-fg}✓{/gray-fg} Closed project beta daemon and agents"
     );
+    expect(deps.logMessage).not.toHaveBeenCalledWith("status", expect.anything());
   });
 
   test("closing active project switches fallback before stopping daemon", async () => {

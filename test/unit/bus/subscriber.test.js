@@ -146,6 +146,43 @@ describe('SubscriberManager', () => {
       expect(result2.nickname).toBe('claude-2');
       expect(result3.nickname).toBe('claude-3');
     });
+
+    it('should not inherit nickname from a displaced subscriber with a different agent type', async () => {
+      busData.agents['claude-code:old'] = {
+        agent_type: 'claude-code',
+        nickname: 'claude-23',
+        status: 'active',
+        tty: '/dev/ttys777',
+      };
+
+      const result = await manager.join('newcodex', 'codex', '', {
+        tty: '/dev/ttys777',
+      });
+
+      expect(result.subscriber).toBe('codex:newcodex');
+      expect(result.nickname).toBe('codex-1');
+      expect(busData.agents['claude-code:old']).toBeUndefined();
+      expect(busData.agents['codex:newcodex'].nickname).toBe('codex-1');
+      expect(busData.agents['codex:newcodex'].scoped_nickname).toBe('codex-1');
+    });
+
+    it('should still inherit nickname when replacing the same agent type on the same tty', async () => {
+      busData.agents['codex:old'] = {
+        agent_type: 'codex',
+        nickname: 'builder',
+        status: 'active',
+        tty: '/dev/ttys778',
+      };
+
+      const result = await manager.join('newcodex', 'codex', '', {
+        tty: '/dev/ttys778',
+      });
+
+      expect(result.subscriber).toBe('codex:newcodex');
+      expect(result.nickname).toBe('builder');
+      expect(busData.agents['codex:old']).toBeUndefined();
+      expect(busData.agents['codex:newcodex'].nickname).toBe('builder');
+    });
   });
 
   describe('leave', () => {

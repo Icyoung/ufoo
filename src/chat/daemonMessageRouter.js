@@ -37,6 +37,14 @@ function createDaemonMessageRouter(options = {}) {
     return text.includes(":") && !text.includes(" ");
   }
 
+  function speakerPrefix(label, color = "cyan") {
+    const escapedLabel = escapeBlessed(label);
+    if (color === "white") {
+      return `{white-fg}${escapedLabel}{/white-fg} {gray-fg}·{/gray-fg} `;
+    }
+    return `{cyan-fg}${escapedLabel}{/cyan-fg} {gray-fg}·{/gray-fg} `;
+  }
+
   function normalizeDisplayMessage(raw) {
     let displayMessage = raw || "";
     let streamPayload = null;
@@ -77,9 +85,9 @@ function createDaemonMessageRouter(options = {}) {
         resolveBusStatus(item);
         if (text) {
           const prefix = data.phase === BUS_STATUS_PHASES.ERROR
-            ? "{white-fg}✗{/white-fg}"
-            : "{white-fg}✓{/white-fg}";
-          logMessage("status", `${prefix} ${escapeBlessed(text)}`, data);
+            ? "{gray-fg}✗{/gray-fg}"
+            : "{gray-fg}✓{/gray-fg}";
+          resolveStatusLine(`${prefix} ${escapeBlessed(text)}`, data);
         }
       } else {
         enqueueBusStatus(item);
@@ -214,7 +222,7 @@ function createDaemonMessageRouter(options = {}) {
       );
       // Suppress lifecycle confirmations from chat history — status line plus structured payload is enough.
       if (!isLifecycleStatusOnly && !isGroupStartedConfirmation) {
-        logMessage("reply", `{white-fg}←{/white-fg} ${escapeBlessed(replyText)}`);
+        logMessage("reply", `${speakerPrefix("ufoo", "white")}${escapeBlessed(replyText)}`);
       }
     }
 
@@ -352,15 +360,11 @@ function createDaemonMessageRouter(options = {}) {
       const publisher = report.agent_id || data.publisher || "ufoo-agent";
       const displayName = resolveAgentDisplayName(publisher);
       const detail = report.summary || report.message || data.message || report.task_id || "report";
-      logMessage(
-        "system",
-        `{gray-fg}↥{/gray-fg} {cyan-fg}${escapeBlessed(displayName)}{/cyan-fg} {gray-fg}→ ufoo-agent{/gray-fg} ${escapeBlessed(detail)}`
-      );
+      logMessage("bus", `${speakerPrefix(displayName)}${escapeBlessed(detail)}`);
       requestStatus();
       renderScreen();
       return true;
     }
-    const prefix = data.event === "broadcast" ? "{gray-fg}⇢{/gray-fg}" : "{gray-fg}↔{/gray-fg}";
     const publisher = data.publisher && data.publisher !== "unknown"
       ? data.publisher
       : (data.event === "broadcast" ? "broadcast" : "bus");
@@ -399,7 +403,7 @@ function createDaemonMessageRouter(options = {}) {
     }
 
     const pendingBeforeMessage = getPendingState(publisher, displayName);
-    const prefixLabel = `${prefix} {gray-fg}${escapeBlessed(displayName)}{/gray-fg}: `;
+    const prefixLabel = speakerPrefix(displayName);
     const continuationPrefix = " ".repeat(stripBlessedTags(prefixLabel).length);
 
     if (streamPayload) {
