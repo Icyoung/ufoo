@@ -530,6 +530,7 @@ describe("ucode core agent nl path", () => {
         return { ok: true, output: "", error: "" };
       };
       const runNl = jest.fn(async () => ({ ok: true, summary: "done", artifacts: [], logs: [], error: "" }));
+      const abortController = new AbortController();
 
       const result = await runUbusCommand(state, {
         workspaceRoot: projectRoot,
@@ -537,11 +538,15 @@ describe("ucode core agent nl path", () => {
         execShell: shell,
         runNaturalLanguageTaskImpl: runNl,
         formatNlResultImpl: (res) => String(res.summary || ""),
+        signal: abortController.signal,
       });
 
       expect(result.ok).toBe(true);
       expect(result.handled).toBe(1);
-      expect(runNl).toHaveBeenCalledWith("run tests", state, expect.objectContaining({ onProgress: expect.any(Function) }));
+      expect(runNl).toHaveBeenCalledWith("run tests", state, expect.objectContaining({
+        onProgress: expect.any(Function),
+        signal: abortController.signal,
+      }));
       expect(shellCalls.some((cmd) => cmd.startsWith("ufoo bus send"))).toBe(true);
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });

@@ -147,8 +147,9 @@ async function runDecomposedTask({
         }
       }
 
-      // Stop on error for critical steps
-      if (!stepResult.ok && (step.id === "identify" || step.id === "locate")) {
+      // Stop on any step failure. A failed tool/provider call means the
+      // current plan is no longer reliable, and continuing can trigger loops.
+      if (!stepResult.ok) {
         return {
           ok: false,
           error: `Failed at ${step.name}: ${stepResult.error}`,

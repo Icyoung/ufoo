@@ -9,6 +9,8 @@ const { getBashToolDescription } = require("./prompts/toolDescriptions/bash");
 const CORE_TOOL_NAMES = new Set(["read", "write", "edit", "bash"]);
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1";
+const DEFAULT_MAX_NATIVE_TOOL_CALLS = 12;
+const DEFAULT_MAX_NATIVE_TOOL_ERRORS = 1;
 
 function nowMs() {
   return Date.now();
@@ -18,6 +20,36 @@ function normalizeTimeoutMs(value) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return 300000;
   return Math.max(1000, Math.floor(parsed));
+}
+
+function normalizePositiveInt(value, fallback) {
+  const parsed = Number.parseInt(String(value || ""), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.floor(parsed);
+}
+
+function resolveNativeToolBudget(env = process.env) {
+  return {
+    maxToolCalls: normalizePositiveInt(env.UFOO_UCODE_MAX_TOOL_CALLS, DEFAULT_MAX_NATIVE_TOOL_CALLS),
+    maxToolErrors: normalizePositiveInt(env.UFOO_UCODE_MAX_TOOL_ERRORS, DEFAULT_MAX_NATIVE_TOOL_ERRORS),
+  };
+}
+
+function enforceNativeToolBudget({
+  toolCallsExecuted = 0,
+  toolErrors = 0,
+  maxToolCalls = DEFAULT_MAX_NATIVE_TOOL_CALLS,
+  maxToolErrors = DEFAULT_MAX_NATIVE_TOOL_ERRORS,
+  lastTool = "",
+  lastError = "",
+} = {}) {
+  if (toolCallsExecuted > maxToolCalls) {
+    throw new Error(`tool call budget exceeded (${maxToolCalls})`);
+  }
+  if (toolErrors >= maxToolErrors) {
+    const detail = [lastTool, lastError].filter(Boolean).join(": ");
+    throw new Error(`tool error budget exceeded (${maxToolErrors})${detail ? `: ${detail}` : ""}`);
+  }
 }
 
 function createGuards({ signal = null, timeoutMs = 300000 } = {}) {
@@ -907,6 +939,8 @@ async function runNativeLoopOpenAi({
   let aggregated = "";
   let streamed = false;
   let toolCallsExecuted = 0;
+  let toolErrors = 0;
+  const toolBudget = resolveNativeToolBudget();
 
   while (true) {
     guards.ensureActive();
@@ -991,6 +1025,17 @@ async function runNativeLoopOpenAi({
         onToolEvent,
       });
       toolCallsExecuted += 1;
+      if (!toolResult || toolResult.ok === false) {
+        toolErrors += 1;
+      }
+      enforceNativeToolBudget({
+        toolCallsExecuted,
+        toolErrors,
+        maxToolCalls: toolBudget.maxToolCalls,
+        maxToolErrors: toolBudget.maxToolErrors,
+        lastTool: toolCall.function.name,
+        lastError: toolResult && toolResult.error ? String(toolResult.error) : "",
+      });
       messages.push({
         role: "tool",
         tool_call_id: toolCall.id,
@@ -1034,6 +1079,8 @@ async function runNativeLoopAnthropic({
   let aggregated = "";
   let streamed = false;
   let toolCallsExecuted = 0;
+  let toolErrors = 0;
+  const toolBudget = resolveNativeToolBudget();
 
   while (true) {
     guards.ensureActive();
@@ -1109,6 +1156,17 @@ async function runNativeLoopAnthropic({
         onToolEvent,
       });
       toolCallsExecuted += 1;
+      if (!toolResult || toolResult.ok === false) {
+        toolErrors += 1;
+      }
+      enforceNativeToolBudget({
+        toolCallsExecuted,
+        toolErrors,
+        maxToolCalls: toolBudget.maxToolCalls,
+        maxToolErrors: toolBudget.maxToolErrors,
+        lastTool: call.name,
+        lastError: toolResult && toolResult.error ? String(toolResult.error) : "",
+      });
       toolResults.push({
         type: "tool_result",
         tool_use_id: String(call.id || ""),

@@ -1119,6 +1119,7 @@ async function runUbusCommand(state = {}, options = {}) {
         // eslint-disable-next-line no-await-in-loop
         nlResult = await runNl(message.task, state, {
           onProgress: progressReporter,
+          signal: options.signal,
         });
       } catch (err) {
         sendErrors.push(`task from ${message.publisher} failed: ${err && err.message ? err.message : "task failed"}`);
@@ -1180,7 +1181,9 @@ async function runUbusCommand(state = {}, options = {}) {
         });
       }
 
-      const nlResult = await runNl(item.task, state);
+      const nlResult = await runNl(item.task, state, {
+        signal: options.signal,
+      });
       const reply = String(formatNl(nlResult, false) || "").replace(/\s+/g, " ").trim() || "Done.";
       const sendRes = shell(`ufoo bus send ${shellQuote(item.publisher)} ${shellQuote(reply.slice(0, 2000))}`);
       if (!sendRes.ok) {

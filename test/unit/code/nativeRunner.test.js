@@ -58,6 +58,8 @@ describe("ucode native runner", () => {
   const originalAnthropicBase = process.env.ANTHROPIC_BASE_URL;
   const originalUcodeProvider = process.env.UFOO_UCODE_PROVIDER;
   const originalUcodeModel = process.env.UFOO_UCODE_MODEL;
+  const originalMaxToolCalls = process.env.UFOO_UCODE_MAX_TOOL_CALLS;
+  const originalMaxToolErrors = process.env.UFOO_UCODE_MAX_TOOL_ERRORS;
   let workspaceRoot = "";
 
   beforeEach(() => {
@@ -67,6 +69,8 @@ describe("ucode native runner", () => {
     delete process.env.ANTHROPIC_BASE_URL;
     delete process.env.UFOO_UCODE_PROVIDER;
     delete process.env.UFOO_UCODE_MODEL;
+    delete process.env.UFOO_UCODE_MAX_TOOL_CALLS;
+    delete process.env.UFOO_UCODE_MAX_TOOL_ERRORS;
     workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-native-runner-"));
     fs.mkdirSync(path.join(workspaceRoot, ".ufoo"), { recursive: true });
     fs.writeFileSync(path.join(workspaceRoot, ".ufoo", "config.json"), JSON.stringify({
@@ -97,6 +101,10 @@ describe("ucode native runner", () => {
     else delete process.env.UFOO_UCODE_PROVIDER;
     if (typeof originalUcodeModel === "string") process.env.UFOO_UCODE_MODEL = originalUcodeModel;
     else delete process.env.UFOO_UCODE_MODEL;
+    if (typeof originalMaxToolCalls === "string") process.env.UFOO_UCODE_MAX_TOOL_CALLS = originalMaxToolCalls;
+    else delete process.env.UFOO_UCODE_MAX_TOOL_CALLS;
+    if (typeof originalMaxToolErrors === "string") process.env.UFOO_UCODE_MAX_TOOL_ERRORS = originalMaxToolErrors;
+    else delete process.env.UFOO_UCODE_MAX_TOOL_ERRORS;
   });
 
   test("streams model output through openai-compatible provider", async () => {
@@ -223,6 +231,66 @@ describe("ucode native runner", () => {
         phase: "start",
         args: { path: "AGENTS.md" },
         error: "",
+      },
+    ]);
+  });
+
+  test("stops native tool loop immediately after bash tool error", async () => {
+    global.fetch.mockImplementation(() => Promise.resolve(makeSseResponse([
+      {
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call_bad_bash",
+                  type: "function",
+                  function: {
+                    name: "bash",
+                    arguments: '{"command":"exit 1"}',
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ])));
+    runToolCall.mockReturnValue({
+      ok: false,
+      code: 1,
+      stdout: "",
+      stderr: "",
+      error: "command exited with 1",
+    });
+
+    const events = [];
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "run failing command",
+      provider: "openai",
+      model: "gpt-test",
+      onToolEvent: (event) => events.push(event),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("tool error budget exceeded (1)");
+    expect(result.error).toContain("bash: command exited with 1");
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(runToolCall).toHaveBeenCalledTimes(1);
+    expect(events).toEqual([
+      {
+        tool: "bash",
+        phase: "start",
+        args: { command: "exit 1" },
+        error: "",
+      },
+      {
+        tool: "bash",
+        phase: "error",
+        args: { command: "exit 1" },
+        error: "command exited with 1",
       },
     ]);
   });

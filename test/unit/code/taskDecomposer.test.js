@@ -247,6 +247,27 @@ Let me verify this`,
       expect(result.error).toContain("Identifying");
     });
 
+    it("stops on error at fix step instead of continuing to verify", async () => {
+      runNativeAgentTask
+        .mockResolvedValueOnce({ ok: true, output: "identified issue" })
+        .mockResolvedValueOnce({ ok: true, output: "located src/code/file.js" })
+        .mockResolvedValueOnce({ ok: false, error: "tool error budget exceeded (1): bash: command exited with 1" })
+        .mockResolvedValueOnce({ ok: true, output: "verify should not run" });
+
+      const result = await runDecomposedTask({
+        task: "fix the error",
+        workspaceRoot: "/tmp",
+        provider: "openai",
+        model: "gpt-4",
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain("Failed at Applying the fix");
+      expect(result.error).toContain("tool error budget exceeded");
+      expect(runNativeAgentTask).toHaveBeenCalledTimes(3);
+      expect(result.results).toHaveLength(3);
+    });
+
     it("early exits when fix is found in identify step", async () => {
       runNativeAgentTask.mockResolvedValue({
         ok: true,

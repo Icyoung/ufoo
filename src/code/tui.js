@@ -993,6 +993,7 @@ function runUcodeTui({
         const ubusResult = await runUbusCommand(state, {
           workspaceRoot,
           subscriberId: autoBusSubscriberId,
+          signal: abortController.signal,
           onMessageReceived: (msg) => {
             // Display the incoming message immediately
             const { extractAgentNickname } = require("./agent");
@@ -1254,59 +1255,63 @@ function runUcodeTui({
         });
         let streamState = null;
         let renderedToolLogCount = 0;
-        const nlResult = await runNaturalLanguageTask(result.task, state, {
-          signal: abortController.signal,
-          onDelta: (delta) => {
-            const text = escapeStripper.write(String(delta || ""));
-            if (!text) return;
+        let nlResult = null;
+        try {
+          nlResult = await runNaturalLanguageTask(result.task, state, {
+            signal: abortController.signal,
+            onDelta: (delta) => {
+              const text = escapeStripper.write(String(delta || ""));
+              if (!text) return;
+              if (!streamState) {
+                streamState = createNlStreamState();
+              }
+              appendNlStreamDelta(streamState, text);
+            },
+            onToolLog: (entry) => {
+              renderedToolLogCount += 1;
+              logToolHint(entry);
+            },
+          });
+          const tail = escapeStripper.flush();
+          if (tail) {
             if (!streamState) {
               streamState = createNlStreamState();
             }
-            appendNlStreamDelta(streamState, text);
-          },
-          onToolLog: (entry) => {
-            renderedToolLogCount += 1;
-            logToolHint(entry);
-          },
-        });
-        const tail = escapeStripper.flush();
-        if (tail) {
-          if (!streamState) {
-            streamState = createNlStreamState();
+            appendNlStreamDelta(streamState, tail);
           }
-          appendNlStreamDelta(streamState, tail);
-        }
-        pendingTask = null;
-        updateStatus("", "none");
-        let finalStreamInfo = { lastChar: "" };
-        if (streamState) {
-          finalStreamInfo = finalizeNlStream(streamState);
-        }
-        if (Array.isArray(nlResult && nlResult.logs) && nlResult.logs.length > renderedToolLogCount) {
-          for (const entry of nlResult.logs.slice(renderedToolLogCount)) {
-            logToolHint(entry);
+          let finalStreamInfo = { lastChar: "" };
+          if (streamState) {
+            finalStreamInfo = finalizeNlStream(streamState);
           }
-        }
-        const streamed = Boolean(nlResult && nlResult.streamed);
-        const hasVisibleStreamText = Boolean(
-          streamState
-          && typeof streamState.full === "string"
-          && /[^\s]/.test(streamState.full)
-        );
-        const streamLastChar = nlResult && typeof nlResult.streamLastChar === "string"
-          ? nlResult.streamLastChar.slice(-1)
-          : finalStreamInfo.lastChar;
-        if (streamed && hasVisibleStreamText && streamLastChar !== "\n") {
-          logBox.log("");
-          screen.render();
-        }
-        const shouldSkipSummary = Boolean(streamed && nlResult && nlResult.ok && hasVisibleStreamText);
-        if (!shouldSkipSummary) {
-          logText(formatNlResult(nlResult, false));
-        }
-        const persisted = persistSessionState(state);
-        if (!persisted || persisted.ok === false) {
-          logText(`Error: failed to persist session ${state.sessionId}: ${(persisted && persisted.error) || "unknown error"}`);
+          if (Array.isArray(nlResult && nlResult.logs) && nlResult.logs.length > renderedToolLogCount) {
+            for (const entry of nlResult.logs.slice(renderedToolLogCount)) {
+              logToolHint(entry);
+            }
+          }
+          const streamed = Boolean(nlResult && nlResult.streamed);
+          const hasVisibleStreamText = Boolean(
+            streamState
+            && typeof streamState.full === "string"
+            && /[^\s]/.test(streamState.full)
+          );
+          const streamLastChar = nlResult && typeof nlResult.streamLastChar === "string"
+            ? nlResult.streamLastChar.slice(-1)
+            : finalStreamInfo.lastChar;
+          if (streamed && hasVisibleStreamText && streamLastChar !== "\n") {
+            logBox.log("");
+            screen.render();
+          }
+          const shouldSkipSummary = Boolean(streamed && nlResult && nlResult.ok && hasVisibleStreamText);
+          if (!shouldSkipSummary) {
+            logText(formatNlResult(nlResult, false));
+          }
+          const persisted = persistSessionState(state);
+          if (!persisted || persisted.ok === false) {
+            logText(`Error: failed to persist session ${state.sessionId}: ${(persisted && persisted.error) || "unknown error"}`);
+          }
+        } finally {
+          pendingTask = null;
+          updateStatus("", "none");
         }
       }
     };
