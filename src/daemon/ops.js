@@ -44,6 +44,10 @@ function toTmuxBinary(agent = "") {
   return "";
 }
 
+function resolveUfooRunnerPath() {
+  return path.resolve(__dirname, "../../bin/ufoo.js");
+}
+
 function normalizeLaunchScope(value, fallback = "inplace") {
   const raw = String(value || "").trim().toLowerCase();
   if (!raw) return fallback;
@@ -546,7 +550,7 @@ async function spawnManagedHostAgent(
   if (hasPreRegisteredSubscriber) {
     // Group mode: use ufoo launcher for activity_state monitoring
     // This enables ReadyDetector and bootstrap to work correctly
-    const ufooRunner = path.join(projectRoot, "bin", "ufoo.js");
+    const ufooRunner = resolveUfooRunnerPath();
     const launchCmd = `${shellEscape(process.execPath)} ${shellEscape(ufooRunner)} agent-pty-runner ${shellEscape(normalizedAgent)}${argText}`.trim();
     runCmd = titleCmd
       ? `cd ${shellEscape(projectRoot)} && ${titleCmd} && ${launchCmd}`
@@ -591,7 +595,7 @@ async function spawnManagedHostAgent(
 }
 
 async function spawnInternalAgent(projectRoot, agent, count = 1, nickname = "", processManager = null, extraEnv = {}) {
-  const runner = path.join(projectRoot, "bin", "ufoo.js");
+  const runner = resolveUfooRunnerPath();
   const logDir = getUfooPaths(projectRoot).runDir;
   fs.mkdirSync(logDir, { recursive: true });
 

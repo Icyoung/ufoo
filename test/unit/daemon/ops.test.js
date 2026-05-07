@@ -137,6 +137,50 @@ describe("daemon ops recoverable agents", () => {
   });
 });
 
+describe("daemon ops internal launch", () => {
+  const projectRoot = "/tmp/ufoo-daemon-internal-launch-test";
+
+  function writeConfig(config) {
+    const configPath = path.join(projectRoot, ".ufoo", "config.json");
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+  }
+
+  beforeEach(() => {
+    if (fs.existsSync(projectRoot)) {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+    fs.mkdirSync(projectRoot, { recursive: true });
+    spawn.mockClear();
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(projectRoot)) {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("uses the installed ufoo runner instead of a project-local bin path", async () => {
+    writeConfig({ launchMode: "internal" });
+
+    await launchAgent(projectRoot, "codex", 1, "");
+
+    expect(spawn).toHaveBeenCalledWith(
+      process.execPath,
+      [
+        path.resolve(__dirname, "../../../bin/ufoo.js"),
+        "agent-pty-runner",
+        "codex",
+      ],
+      expect.objectContaining({
+        cwd: projectRoot,
+      }),
+    );
+    const projectLocalRunner = path.join(projectRoot, "bin", "ufoo.js");
+    expect(spawn.mock.calls.some(([, args]) => Array.isArray(args) && args[0] === projectLocalRunner)).toBe(false);
+  });
+});
+
 describe("daemon ops launch scope (tmux)", () => {
   const projectRoot = "/tmp/ufoo-daemon-launchscope-test";
   let tmuxPaneOriginal;

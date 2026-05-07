@@ -305,10 +305,15 @@ describe("hostAdapter with mock socket", () => {
   let mock;
   let originalSock;
   let originalDaemonSock;
+  let originalHorizonSock;
 
   beforeEach(() => {
     originalSock = process.env.UFOO_HOST_INJECT_SOCK;
     originalDaemonSock = process.env.UFOO_HOST_DAEMON_SOCK;
+    originalHorizonSock = process.env.HORIZON_INJECT_SOCK;
+    delete process.env.UFOO_HOST_INJECT_SOCK;
+    delete process.env.UFOO_HOST_DAEMON_SOCK;
+    delete process.env.HORIZON_INJECT_SOCK;
   });
 
   afterEach(async () => {
@@ -320,6 +325,8 @@ describe("hostAdapter with mock socket", () => {
     else delete process.env.UFOO_HOST_INJECT_SOCK;
     if (originalDaemonSock) process.env.UFOO_HOST_DAEMON_SOCK = originalDaemonSock;
     else delete process.env.UFOO_HOST_DAEMON_SOCK;
+    if (originalHorizonSock) process.env.HORIZON_INJECT_SOCK = originalHorizonSock;
+    else delete process.env.HORIZON_INJECT_SOCK;
   });
 
   test("connect performs capabilities handshake and enables dynamic flags", async () => {
@@ -634,9 +641,16 @@ describe("hostAdapter with mock socket", () => {
 describe("Terminal Host Protocol envelope", () => {
   let mock;
   let originalSock;
+  let originalDaemonSock;
+  let originalHorizonSock;
 
   beforeEach(() => {
     originalSock = process.env.UFOO_HOST_INJECT_SOCK;
+    originalDaemonSock = process.env.UFOO_HOST_DAEMON_SOCK;
+    originalHorizonSock = process.env.HORIZON_INJECT_SOCK;
+    delete process.env.UFOO_HOST_INJECT_SOCK;
+    delete process.env.UFOO_HOST_DAEMON_SOCK;
+    delete process.env.HORIZON_INJECT_SOCK;
   });
 
   afterEach(async () => {
@@ -646,6 +660,10 @@ describe("Terminal Host Protocol envelope", () => {
     }
     if (originalSock) process.env.UFOO_HOST_INJECT_SOCK = originalSock;
     else delete process.env.UFOO_HOST_INJECT_SOCK;
+    if (originalDaemonSock) process.env.UFOO_HOST_DAEMON_SOCK = originalDaemonSock;
+    else delete process.env.UFOO_HOST_DAEMON_SOCK;
+    if (originalHorizonSock) process.env.HORIZON_INJECT_SOCK = originalHorizonSock;
+    else delete process.env.HORIZON_INJECT_SOCK;
   });
 
   test("error response includes error_code", async () => {
