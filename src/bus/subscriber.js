@@ -94,6 +94,10 @@ function isInternalLaunchMode(meta) {
   return mode === "internal" || mode === "internal-pty";
 }
 
+function hasProviderSession(meta) {
+  return typeof meta?.provider_session_id === "string" && meta.provider_session_id.trim() !== "";
+}
+
 /**
  * 订阅者管理
  */
@@ -412,9 +416,26 @@ class SubscriberManager {
     if (!this.busData.agents) return;
 
     for (const [id, meta] of Object.entries(this.busData.agents)) {
-      if (isInternalLaunchMode(meta) && (meta.status === "inactive" || !isMetaActive(meta))) {
-        delete this.busData.agents[id];
-        this.cleanupSubscriberArtifacts(id);
+      if (isInternalLaunchMode(meta)) {
+        const recoverable = hasProviderSession(meta);
+        if (meta.status === "inactive") {
+          if (!recoverable) {
+            delete this.busData.agents[id];
+            this.cleanupSubscriberArtifacts(id);
+          }
+          continue;
+        }
+        if (!isMetaActive(meta)) {
+          if (recoverable) {
+            meta.status = "inactive";
+            meta.activity_state = "";
+            meta.last_seen = getTimestamp();
+            this.cleanupSubscriberArtifacts(id);
+          } else {
+            delete this.busData.agents[id];
+            this.cleanupSubscriberArtifacts(id);
+          }
+        }
         continue;
       }
       if (meta.status === "active" && !isMetaActive(meta)) {

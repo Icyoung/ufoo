@@ -434,7 +434,7 @@ describe('SubscriberManager', () => {
       expect(mockQueueManager.getOffsetPath).toHaveBeenCalledWith('claude-code:abc1');
     });
 
-    it('should remove dead internal subscribers from the registry', async () => {
+    it('should remove dead internal subscribers without provider sessions from the registry', async () => {
       await manager.join('abc1', 'claude-code', '', {
         launchMode: 'internal-pty',
         parentPid: 999999,
@@ -447,7 +447,25 @@ describe('SubscriberManager', () => {
       expect(mockQueueManager.getOffsetPath).toHaveBeenCalledWith('claude-code:abc1');
     });
 
-    it('should remove already inactive internal subscribers from the registry', () => {
+    it('should keep dead internal subscribers with provider sessions as recoverable', async () => {
+      await manager.join('abc1', 'claude-code', '', {
+        launchMode: 'internal-pty',
+        parentPid: 999999,
+        providerSessionId: 'sess-1',
+      });
+
+      manager.cleanupInactive();
+
+      expect(busData.agents['claude-code:abc1']).toMatchObject({
+        status: 'inactive',
+        provider_session_id: 'sess-1',
+        launch_mode: 'internal-pty',
+      });
+      expect(mockQueueManager.getQueueDir).toHaveBeenCalledWith('claude-code:abc1');
+      expect(mockQueueManager.getOffsetPath).toHaveBeenCalledWith('claude-code:abc1');
+    });
+
+    it('should remove already inactive internal subscribers without provider sessions from the registry', () => {
       busData.agents['codex:old'] = {
         agent_type: 'codex',
         nickname: 'codex-1',
@@ -459,6 +477,21 @@ describe('SubscriberManager', () => {
       manager.cleanupInactive();
 
       expect(busData.agents['codex:old']).toBeUndefined();
+    });
+
+    it('should keep already inactive internal subscribers with provider sessions as recoverable', () => {
+      busData.agents['codex:old'] = {
+        agent_type: 'codex',
+        nickname: 'codex-1',
+        status: 'inactive',
+        launch_mode: 'internal-pty',
+        provider_session_id: 'sess-1',
+        pid: 999999,
+      };
+
+      manager.cleanupInactive();
+
+      expect(busData.agents['codex:old']).toBeDefined();
     });
 
     it('should keep already inactive non-internal subscribers for resume', () => {

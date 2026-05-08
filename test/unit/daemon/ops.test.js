@@ -116,7 +116,7 @@ describe("daemon ops recoverable agents", () => {
     expect(result.recoverable[0].id).toBe("claude-code:b1");
   });
 
-  test("returns internal-mode skip reason and target-not-found reason", () => {
+  test("lists internal-mode provider sessions as recoverable and target-not-found reason", () => {
     writeConfig({ launchMode: "internal" });
     writeAgents({
       "codex:c1": {
@@ -128,8 +128,14 @@ describe("daemon ops recoverable agents", () => {
     });
 
     const internalResult = getRecoverableAgents(projectRoot);
-    expect(internalResult.recoverable).toHaveLength(0);
-    expect(internalResult.skipped.some((s) => s.id === "codex:c1" && s.reason === "internal mode not supported for resume")).toBe(true);
+    expect(internalResult.recoverable).toHaveLength(1);
+    expect(internalResult.recoverable[0]).toMatchObject({
+      id: "codex:c1",
+      nickname: "worker",
+      agent: "codex",
+      sessionId: "sess-i",
+      launchMode: "",
+    });
 
     const missingResult = getRecoverableAgents(projectRoot, "missing-target");
     expect(missingResult.recoverable).toHaveLength(0);

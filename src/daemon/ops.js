@@ -594,7 +594,16 @@ async function spawnManagedHostAgent(
   return { child: null, subscriberId: resultSubscriberId, subscriberIds: [resultSubscriberId].filter(Boolean), sessionId, injectSock };
 }
 
-async function spawnInternalAgent(projectRoot, agent, count = 1, nickname = "", processManager = null, extraEnv = {}) {
+async function spawnInternalAgent(
+  projectRoot,
+  agent,
+  count = 1,
+  nickname = "",
+  processManager = null,
+  extraEnv = {},
+  extraArgs = [],
+  options = {}
+) {
   const runner = resolveUfooRunnerPath();
   const logDir = getUfooPaths(projectRoot).runDir;
   fs.mkdirSync(logDir, { recursive: true });
@@ -627,10 +636,15 @@ async function spawnInternalAgent(projectRoot, agent, count = 1, nickname = "", 
     // Daemon 预先在 bus 中注册
     bus.loadBusData();
     process.env.UFOO_PARENT_PID = String(originalPid);
+    const replaceAgentId = typeof options.replaceAgentId === "string" ? options.replaceAgentId.trim() : "";
+    if (replaceAgentId && bus.busData.agents && bus.busData.agents[replaceAgentId]) {
+      delete bus.busData.agents[replaceAgentId];
+    }
 
     const requestedNickname = nickname
       ? (count > 1 ? `${nickname}-${i + 1}` : nickname)
       : "";
+    const providerSessionId = typeof options.providerSessionId === "string" ? options.providerSessionId.trim() : "";
     const usePty = process.env.UFOO_INTERNAL_PTY !== "0";
     const launchMode = usePty ? "internal-pty" : "internal";
 
@@ -638,12 +652,14 @@ async function spawnInternalAgent(projectRoot, agent, count = 1, nickname = "", 
     const joinResult = await bus.subscriberManager.join(sessionId, agentType, requestedNickname, {
       launchMode,
       parentPid: originalPid,
+      providerSessionId,
     });
     const finalNickname = joinResult.nickname || requestedNickname || "";
     bus.saveBusData();
 
     const runnerCmd = usePty ? "agent-pty-runner" : "agent-runner";
-    const child = spawn(process.execPath, [runner, runnerCmd, agent], {
+    const args = Array.isArray(extraArgs) ? extraArgs : [];
+    const child = spawn(process.execPath, [runner, runnerCmd, agent, ...args], {
       // 关键改动：不使用 detached，daemon 作为父进程
       detached: false,
       stdio: ["ignore", errLog, errLog],
@@ -657,6 +673,7 @@ async function spawnInternalAgent(projectRoot, agent, count = 1, nickname = "", 
         UFOO_NICKNAME: finalNickname,
         UFOO_LAUNCH_MODE: usePty ? "internal-pty" : "internal",
         UFOO_PARENT_PID: String(originalPid),
+        ...(providerSessionId ? { UFOO_PROVIDER_SESSION_ID: providerSessionId } : {}),
       },
     });
 
@@ -878,7 +895,8 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
       count,
       nickname,
       processManager,
-      launchEnvObject
+      launchEnvObject,
+      extraArgs
     );
     return { mode: "internal", launchScope, subscriberIds: result.subscriberIds };
   }
@@ -1072,11 +1090,6 @@ function collectRecoverableAgents(projectRoot, target = "") {
       continue;
     }
 
-    if (mode === "internal") {
-      skipped.push({ id, reason: "internal mode not supported for resume" });
-      continue;
-    }
-
     recoverableEntries.push({ id, meta, agent });
   }
 
@@ -1113,19 +1126,48 @@ async function resumeAgents(projectRoot, target = "", processManager = null) {
   for (const item of recoverableEntries) {
     const nickname = resolveDisplayNickname(projectRoot, item.meta);
     const sessionId = item.meta.provider_session_id;
-    const reused = await tryReuseTerminal(projectRoot, item.id, item.meta, item.agent, sessionId);
-    if (!reused) {
-      const args = buildResumeArgs(item.agent, sessionId);
-      const envPrefix = "UFOO_SKIP_SESSION_PROBE=1";
-      if (mode === "tmux") {
-        // eslint-disable-next-line no-await-in-loop
-        await spawnTmuxWindow(projectRoot, item.agent, nickname, args, envPrefix);
-      } else {
-        // eslint-disable-next-line no-await-in-loop
-        await spawnManagedTerminalAgent(projectRoot, item.agent, nickname, processManager, args, envPrefix);
+    const args = buildResumeArgs(item.agent, sessionId);
+    let reused = false;
+    let resumedId = item.id;
+    if (mode === "internal") {
+      // Internal agents have no terminal/pane to reattach. Start a fresh
+      // daemon-managed runner and replace the old recoverable registration.
+      // The provider session is still reused via the normal provider args.
+      // eslint-disable-next-line no-await-in-loop
+      const launchResult = await spawnInternalAgent(
+        projectRoot,
+        item.agent,
+        1,
+        nickname,
+        processManager,
+        { UFOO_SKIP_SESSION_PROBE: "1" },
+        args,
+        { replaceAgentId: item.id, providerSessionId: sessionId }
+      );
+      resumedId = launchResult.subscriberIds && launchResult.subscriberIds[0]
+        ? launchResult.subscriberIds[0]
+        : item.id;
+    } else {
+      reused = await tryReuseTerminal(projectRoot, item.id, item.meta, item.agent, sessionId);
+      if (!reused) {
+        const envPrefix = "UFOO_SKIP_SESSION_PROBE=1";
+        if (mode === "tmux") {
+          // eslint-disable-next-line no-await-in-loop
+          await spawnTmuxWindow(projectRoot, item.agent, nickname, args, envPrefix);
+        } else {
+          // eslint-disable-next-line no-await-in-loop
+          await spawnManagedTerminalAgent(projectRoot, item.agent, nickname, processManager, args, envPrefix);
+        }
       }
     }
-    resumed.push({ id: item.id, nickname, agent: item.agent, sessionId, reused });
+    resumed.push({
+      id: resumedId,
+      previous_id: resumedId === item.id ? undefined : item.id,
+      nickname,
+      agent: item.agent,
+      sessionId,
+      reused,
+    });
   }
 
   return { ok: true, resumed, skipped };
