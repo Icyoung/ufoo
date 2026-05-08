@@ -89,6 +89,11 @@ function getJoinedPid() {
   return process.pid;
 }
 
+function isInternalLaunchMode(meta) {
+  const mode = String(meta?.launch_mode || "").trim();
+  return mode === "internal" || mode === "internal-pty";
+}
+
 /**
  * 订阅者管理
  */
@@ -407,6 +412,11 @@ class SubscriberManager {
     if (!this.busData.agents) return;
 
     for (const [id, meta] of Object.entries(this.busData.agents)) {
+      if (isInternalLaunchMode(meta) && (meta.status === "inactive" || !isMetaActive(meta))) {
+        delete this.busData.agents[id];
+        this.cleanupSubscriberArtifacts(id);
+        continue;
+      }
       if (meta.status === "active" && !isMetaActive(meta)) {
         meta.status = "inactive";
         meta.activity_state = "";
