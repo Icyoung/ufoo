@@ -51,24 +51,33 @@ function safeStrWidth(strWidth, value) {
 }
 
 function getInnerWidth({ input, screen, promptWidth = 2 }) {
-  const lpos = input.lpos || input._getCoords();
+  const targetInput = input && typeof input === "object" ? input : {};
+  const targetScreen = screen && typeof screen === "object" ? screen : {};
+  let lpos = targetInput.lpos || null;
+  if (!lpos && typeof targetInput._getCoords === "function") {
+    try {
+      lpos = targetInput._getCoords();
+    } catch {
+      lpos = null;
+    }
+  }
   if (lpos && Number.isFinite(lpos.xl) && Number.isFinite(lpos.xi)) {
     return Math.max(1, lpos.xl - lpos.xi);
   }
-  if (typeof input.width === "number") return Math.max(1, input.width);
-  if (typeof input.width === "string") {
-    const match = input.width.match(/^100%-([0-9]+)$/);
-    if (match && typeof screen.width === "number") {
-      return Math.max(1, screen.width - parseInt(match[1], 10));
+  if (typeof targetInput.width === "number") return Math.max(1, targetInput.width);
+  if (typeof targetInput.width === "string") {
+    const match = targetInput.width.match(/^100%-([0-9]+)$/);
+    if (match && typeof targetScreen.width === "number") {
+      return Math.max(1, targetScreen.width - parseInt(match[1], 10));
     }
   }
-  if (typeof screen.width === "number") return Math.max(1, screen.width - promptWidth);
-  if (typeof screen.cols === "number") return Math.max(1, screen.cols - promptWidth);
+  if (typeof targetScreen.width === "number") return Math.max(1, targetScreen.width - promptWidth);
+  if (typeof targetScreen.cols === "number") return Math.max(1, targetScreen.cols - promptWidth);
   return 1;
 }
 
 function getWrapWidth(input, fallbackWidth) {
-  if (input._clines && typeof input._clines.width === "number") {
+  if (input && input._clines && typeof input._clines.width === "number") {
     return Math.max(1, input._clines.width);
   }
   return Math.max(1, fallbackWidth || 1);

@@ -52,10 +52,20 @@ describe("chat inputMath helpers", () => {
     expect(getInnerWidth({ input, screen, promptWidth: 3 })).toBe(47);
   });
 
+  test("getInnerWidth tolerates detached or missing input state", () => {
+    expect(getInnerWidth({ input: null, screen: { width: 42 }, promptWidth: 2 })).toBe(40);
+    expect(getInnerWidth({
+      input: { _getCoords: () => { throw new Error("detached"); } },
+      screen: { cols: 30 },
+      promptWidth: 4,
+    })).toBe(26);
+  });
+
   test("getWrapWidth uses clines width when available", () => {
     const input = { _clines: { width: 17 } };
     expect(getWrapWidth(input, 10)).toBe(17);
     expect(getWrapWidth({}, 10)).toBe(10);
+    expect(getWrapWidth(null, 12)).toBe(12);
   });
 
   test("countLines accounts for wrapping and newlines", () => {

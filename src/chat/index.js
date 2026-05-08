@@ -355,7 +355,7 @@ async function runChat(projectRoot, options = {}) {
   let preferredCol = null;
 
   function getInnerWidth() {
-    const promptWidth = typeof promptBox.width === "number" ? promptBox.width : 2;
+    const promptWidth = promptBox && typeof promptBox.width === "number" ? promptBox.width : 2;
     return inputMath.getInnerWidth({ input, screen, promptWidth });
   }
 
