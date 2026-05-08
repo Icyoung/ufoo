@@ -179,6 +179,28 @@ describe("daemon ops internal launch", () => {
     const projectLocalRunner = path.join(projectRoot, "bin", "ufoo.js");
     expect(spawn.mock.calls.some(([, args]) => Array.isArray(args) && args[0] === projectLocalRunner)).toBe(false);
   });
+
+  test("uses bus-generated numbered nickname for default internal codex launch", async () => {
+    writeConfig({ launchMode: "internal" });
+
+    const result = await launchAgent(projectRoot, "codex", 1, "");
+    const agents = JSON.parse(fs.readFileSync(getUfooPaths(projectRoot).agentsFile, "utf8")).agents;
+    const subscriberId = result.subscriberIds[0];
+
+    expect(agents[subscriberId].nickname).toBe("codex-1");
+    expect(spawn.mock.calls[0][2].env.UFOO_NICKNAME).toBe("codex-1");
+  });
+
+  test("uses bus-generated numbered nickname for default internal claude launch", async () => {
+    writeConfig({ launchMode: "internal" });
+
+    const result = await launchAgent(projectRoot, "claude", 1, "");
+    const agents = JSON.parse(fs.readFileSync(getUfooPaths(projectRoot).agentsFile, "utf8")).agents;
+    const subscriberId = result.subscriberIds[0];
+
+    expect(agents[subscriberId].nickname).toBe("claude-1");
+    expect(spawn.mock.calls[0][2].env.UFOO_NICKNAME).toBe("claude-1");
+  });
 });
 
 describe("daemon ops launch scope (tmux)", () => {

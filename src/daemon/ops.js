@@ -628,17 +628,18 @@ async function spawnInternalAgent(projectRoot, agent, count = 1, nickname = "", 
     bus.loadBusData();
     process.env.UFOO_PARENT_PID = String(originalPid);
 
-    // For ucode/ufoo agents, default nickname to "ucode" if not specified
-    const defaultNickname = agentType === "ufoo-code" ? "ucode" : agent;
-    const finalNickname = count > 1 ? `${nickname || defaultNickname}-${i + 1}` : (nickname || defaultNickname);
+    const requestedNickname = nickname
+      ? (count > 1 ? `${nickname}-${i + 1}` : nickname)
+      : "";
     const usePty = process.env.UFOO_INTERNAL_PTY !== "0";
     const launchMode = usePty ? "internal-pty" : "internal";
 
     // 传递 launch_mode 和 parent PID 到 join
-    await bus.subscriberManager.join(sessionId, agentType, finalNickname, {
+    const joinResult = await bus.subscriberManager.join(sessionId, agentType, requestedNickname, {
       launchMode,
       parentPid: originalPid,
     });
+    const finalNickname = joinResult.nickname || requestedNickname || "";
     bus.saveBusData();
 
     const runnerCmd = usePty ? "agent-pty-runner" : "agent-runner";
