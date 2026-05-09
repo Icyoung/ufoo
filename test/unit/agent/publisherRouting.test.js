@@ -5,6 +5,7 @@ const path = require("path");
 const {
   isManagedAgentPublisher,
   parseStreamEnvelope,
+  shouldAutoReplyFromPtyToPublisher,
   shouldForwardStreamToPublisher,
 } = require("../../../src/agent/publisherRouting");
 const { getUfooPaths } = require("../../../src/ufoo/paths");
@@ -33,6 +34,8 @@ describe("agent publisher routing", () => {
     expect(isManagedAgentPublisher(projectRoot, "claude-code:chat-session")).toBe(false);
     expect(shouldForwardStreamToPublisher(projectRoot, "codex:abc")).toBe(false);
     expect(shouldForwardStreamToPublisher(projectRoot, "claude-code:chat-session")).toBe(true);
+    expect(shouldAutoReplyFromPtyToPublisher(projectRoot, "codex:abc")).toBe(false);
+    expect(shouldAutoReplyFromPtyToPublisher(projectRoot, "claude-code:chat-session")).toBe(true);
   });
 
   test("recognizes stream envelopes", () => {

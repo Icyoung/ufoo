@@ -9,6 +9,7 @@ const { ActivityDetector } = require("./activityDetector");
 const { createActivityStatePublisher } = require("./activityStatePublisher");
 const {
   parseStreamEnvelope,
+  shouldAutoReplyFromPtyToPublisher,
   shouldForwardStreamToPublisher,
 } = require("./publisherRouting");
 
@@ -192,7 +193,6 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
   let suppressEcho = false;
   let echoMarker = "";
   let suppressTimer = null;
-  let managedReplyBuffer = "";
   let ptyProcess = null;
   let restartCount = 0;
   let lastSpawnTime = 0;
@@ -254,45 +254,23 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
     return result;
   }
 
-  function appendManagedReply(chunk) {
-    const text = String(chunk || "");
-    if (!text) return;
-    managedReplyBuffer += text;
-    if (managedReplyBuffer.length > 40000) {
-      managedReplyBuffer = managedReplyBuffer.slice(-40000);
-    }
-  }
-
-  function takeManagedReply() {
-    const reply = sanitizeChunk(managedReplyBuffer)
-      .replace(/\n{3,}/g, "\n\n")
-      .trim();
-    managedReplyBuffer = "";
-    return reply;
-  }
-
   function completePublisherResponse(reason, fallbackNote = "") {
     if (!currentPublisher) return;
     if (flushTimer) {
       clearTimeout(flushTimer);
       flushTimer = null;
     }
+    if (!shouldAutoReplyFromPtyToPublisher(projectRoot, currentPublisher)) {
+      outputBuffer = "";
+      return;
+    }
     if (outputBuffer) {
       const remaining = outputBuffer;
       outputBuffer = "";
       deliverChunk(remaining);
     }
-    if (canStreamToPublisher(currentPublisher)) {
-      if (fallbackNote) enqueueSend(currentPublisher, fallbackNote);
-      enqueueSend(currentPublisher, JSON.stringify({ stream: true, done: true, reason }));
-      return;
-    }
-    const reply = takeManagedReply();
-    if (reply) {
-      enqueueSend(currentPublisher, reply);
-    } else if (fallbackNote) {
-      enqueueSend(currentPublisher, fallbackNote);
-    }
+    if (fallbackNote) enqueueSend(currentPublisher, fallbackNote);
+    enqueueSend(currentPublisher, JSON.stringify({ stream: true, done: true, reason }));
   }
 
   // TTY view subscribers (same protocol as launcher inject.sock)
@@ -623,8 +601,6 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
     if (currentPublisher) {
       if (canStreamToPublisher(currentPublisher)) {
         enqueueSend(currentPublisher, payload);
-      } else {
-        appendManagedReply(cleaned);
       }
     } else {
       pendingOutput.push(payload);
@@ -699,7 +675,6 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
       }
       busy = false;
       currentPublisher = "";
-      managedReplyBuffer = "";
       processQueue();
     }
   });
@@ -752,7 +727,6 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
           busy = false;
           activityDetector.markIdle();
           currentPublisher = "";
-          managedReplyBuffer = "";
           if (watchdogTimer) {
             clearTimeout(watchdogTimer);
             watchdogTimer = null;
@@ -793,7 +767,6 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
           busy = false;
           activityDetector.markIdle();
           currentPublisher = "";
-          managedReplyBuffer = "";
           processQueue();
         }, idleMs);
       }
@@ -833,7 +806,6 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
       activityDetector.markIdle();
       currentPublisher = "";
       currentMarker = "";
-      managedReplyBuffer = "";
 
       // If stop() was called, let the runner exit
       if (!running) return;
@@ -969,7 +941,6 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
     activityDetector.markWorking();
     currentPublisher = next.publisher;
     currentMarker = next.marker || "";
-    managedReplyBuffer = "";
     if (suppressTimer) {
       clearTimeout(suppressTimer);
       suppressTimer = null;
@@ -1040,7 +1011,6 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
       busy = false;
       activityDetector.markIdle();
       currentPublisher = "";
-      managedReplyBuffer = "";
       processQueue();
     }, watchdogMs);
   }

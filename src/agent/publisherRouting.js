@@ -33,6 +33,10 @@ function shouldForwardStreamToPublisher(projectRoot, publisher) {
   return !isManagedAgentPublisher(projectRoot, id);
 }
 
+function shouldAutoReplyFromPtyToPublisher(projectRoot, publisher) {
+  return shouldForwardStreamToPublisher(projectRoot, publisher);
+}
+
 function parseStreamEnvelope(message) {
   if (typeof message !== "string" || !message.trim()) return null;
   try {
@@ -50,5 +54,6 @@ module.exports = {
   isManagedAgentPublisher,
   normalizePublisher,
   parseStreamEnvelope,
+  shouldAutoReplyFromPtyToPublisher,
   shouldForwardStreamToPublisher,
 };
