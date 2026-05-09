@@ -7,6 +7,10 @@ const { PTY_SOCKET_MESSAGE_TYPES, PTY_SOCKET_SUBSCRIBE_MODES } = require("../sha
 const { getUfooPaths } = require("../ufoo/paths");
 const { ActivityDetector } = require("./activityDetector");
 const { createActivityStatePublisher } = require("./activityStatePublisher");
+const {
+  parseStreamEnvelope,
+  shouldForwardStreamToPublisher,
+} = require("./publisherRouting");
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -64,11 +68,14 @@ function drainQueue(queueFile) {
 }
 
 function stripAnsi(text) {
-  return text.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
+  return text
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
 }
 
 function parseInputMessage(message) {
   if (!message) return { raw: false, text: "" };
+  if (parseStreamEnvelope(message)) return null;
   try {
     const parsed = JSON.parse(message);
     if (parsed && typeof parsed === "object") {
@@ -185,6 +192,7 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
   let suppressEcho = false;
   let echoMarker = "";
   let suppressTimer = null;
+  let managedReplyBuffer = "";
   let ptyProcess = null;
   let restartCount = 0;
   let lastSpawnTime = 0;
@@ -201,6 +209,7 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
   const watchdogMs = 120000;
   const maxQueue = 200;
   let sendQueue = Promise.resolve();
+  const streamPublisherCache = new Map();
   const DROP_LINE_PATTERNS = [
     /__UFOO_DONE_/,
     /请在完成后输出以下标记/,
@@ -208,6 +217,7 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
     /esc to interrupt/i,
     /for shortcuts/i,
     /Preparing to run session start commands/i,
+    /^[•\s]*(working|thinking|loading|reading|editing|running|checking)[•\s]*$/i,
   ];
 
   function shouldDropLine(line) {
@@ -234,6 +244,55 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
     sendQueue = sendQueue.then(() => eventBus.send(target, message, subscriber)).catch((err) => {
       logNote(`[send-error] target=${target} err=${err.message || err}`);
     });
+  }
+
+  function canStreamToPublisher(target) {
+    if (!target) return false;
+    if (streamPublisherCache.has(target)) return streamPublisherCache.get(target);
+    const result = shouldForwardStreamToPublisher(projectRoot, target);
+    streamPublisherCache.set(target, result);
+    return result;
+  }
+
+  function appendManagedReply(chunk) {
+    const text = String(chunk || "");
+    if (!text) return;
+    managedReplyBuffer += text;
+    if (managedReplyBuffer.length > 40000) {
+      managedReplyBuffer = managedReplyBuffer.slice(-40000);
+    }
+  }
+
+  function takeManagedReply() {
+    const reply = sanitizeChunk(managedReplyBuffer)
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+    managedReplyBuffer = "";
+    return reply;
+  }
+
+  function completePublisherResponse(reason, fallbackNote = "") {
+    if (!currentPublisher) return;
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    if (outputBuffer) {
+      const remaining = outputBuffer;
+      outputBuffer = "";
+      deliverChunk(remaining);
+    }
+    if (canStreamToPublisher(currentPublisher)) {
+      if (fallbackNote) enqueueSend(currentPublisher, fallbackNote);
+      enqueueSend(currentPublisher, JSON.stringify({ stream: true, done: true, reason }));
+      return;
+    }
+    const reply = takeManagedReply();
+    if (reply) {
+      enqueueSend(currentPublisher, reply);
+    } else if (fallbackNote) {
+      enqueueSend(currentPublisher, fallbackNote);
+    }
   }
 
   // TTY view subscribers (same protocol as launcher inject.sock)
@@ -550,6 +609,7 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
     if (!currentPublisher || pendingOutput.length === 0) return;
     const chunks = pendingOutput;
     pendingOutput = [];
+    if (!canStreamToPublisher(currentPublisher)) return;
     for (const chunk of chunks) {
       enqueueSend(currentPublisher, chunk);
     }
@@ -561,7 +621,11 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
     if (!cleaned) return;
     const payload = JSON.stringify({ stream: true, delta: cleaned });
     if (currentPublisher) {
-      enqueueSend(currentPublisher, payload);
+      if (canStreamToPublisher(currentPublisher)) {
+        enqueueSend(currentPublisher, payload);
+      } else {
+        appendManagedReply(cleaned);
+      }
     } else {
       pendingOutput.push(payload);
       if (pendingOutput.length > 50) pendingOutput.shift();
@@ -631,10 +695,11 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
         watchdogTimer = null;
       }
       if (currentPublisher) {
-        enqueueSend(currentPublisher, JSON.stringify({ stream: true, done: true, reason: "idle" }));
+        completePublisherResponse("idle");
       }
       busy = false;
       currentPublisher = "";
+      managedReplyBuffer = "";
       processQueue();
     }
   });
@@ -681,12 +746,13 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
             deliverChunk(before);
           }
           if (currentPublisher) {
-            enqueueSend(currentPublisher, JSON.stringify({ stream: true, done: true, reason: "marker" }));
+            completePublisherResponse("marker");
           }
           currentMarker = "";
           busy = false;
           activityDetector.markIdle();
           currentPublisher = "";
+          managedReplyBuffer = "";
           if (watchdogTimer) {
             clearTimeout(watchdogTimer);
             watchdogTimer = null;
@@ -722,11 +788,12 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
         idleTimer = setTimeout(() => {
           idleTimer = null;
           if (currentPublisher) {
-            enqueueSend(currentPublisher, JSON.stringify({ stream: true, done: true, reason: "idle" }));
+            completePublisherResponse("idle");
           }
           busy = false;
           activityDetector.markIdle();
           currentPublisher = "";
+          managedReplyBuffer = "";
           processQueue();
         }, idleMs);
       }
@@ -758,7 +825,7 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
         watchdogTimer = null;
       }
       const note = `[internal-pty] process exited code=${exitCode} signal=${signal || ""}`.trim();
-      if (currentPublisher) enqueueSend(currentPublisher, note);
+      if (currentPublisher) completePublisherResponse("exit", note);
       logNote(note);
 
       // Reset busy state
@@ -766,6 +833,7 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
       activityDetector.markIdle();
       currentPublisher = "";
       currentMarker = "";
+      managedReplyBuffer = "";
 
       // If stop() was called, let the runner exit
       if (!running) return;
@@ -901,6 +969,7 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
     activityDetector.markWorking();
     currentPublisher = next.publisher;
     currentMarker = next.marker || "";
+    managedReplyBuffer = "";
     if (suppressTimer) {
       clearTimeout(suppressTimer);
       suppressTimer = null;
@@ -962,9 +1031,8 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
       watchdogTimer = null;
       if (!busy) return;
       const timeoutNote = `[internal-pty] marker timeout; restarting PTY`;
-      if (currentPublisher) enqueueSend(currentPublisher, timeoutNote);
       if (currentPublisher) {
-        enqueueSend(currentPublisher, JSON.stringify({ stream: true, done: true, reason: "timeout" }));
+        completePublisherResponse("timeout", timeoutNote);
       }
       logNote(timeoutNote);
       restartPty("marker timeout");
@@ -972,6 +1040,7 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
       busy = false;
       activityDetector.markIdle();
       currentPublisher = "";
+      managedReplyBuffer = "";
       processQueue();
     }, watchdogMs);
   }
@@ -1013,7 +1082,9 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
       }
       for (const evt of events) {
         if (!evt || !evt.data || typeof evt.data.message !== "string") continue;
-        const { raw, text } = parseInputMessage(evt.data.message);
+        const input = parseInputMessage(evt.data.message);
+        if (!input) continue;
+        const { raw, text } = input;
         if (messageQueue.length >= maxQueue) {
           messageQueue.shift();
         }
@@ -1030,4 +1101,4 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
   }
 }
 
-module.exports = { runPtyRunner };
+module.exports = { parseInputMessage, runPtyRunner };

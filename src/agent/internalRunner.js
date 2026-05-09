@@ -20,6 +20,7 @@ const { buildUpstreamAuthFromCredential } = require("./credentials");
 const { listToolsForCallerTier, CALLER_TIERS } = require("../tools");
 const { redactToolCallPayload, redactSecrets } = require("../providerapi/redactor");
 const { buildCachedMemoryPrefix } = require("../memory");
+const { shouldForwardStreamToPublisher } = require("./publisherRouting");
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -151,10 +152,12 @@ async function handleEvent(
   const publisher = evt.publisher || "unknown";
   const sandbox = "workspace-write";
   const streamState = { emitted: false, lastChar: "" };
+  const streamToPublisher = shouldForwardStreamToPublisher(projectRoot, publisher);
 
   const emitStreamDelta = (delta) => {
     const text = String(delta || "");
     if (!text) return;
+    if (!streamToPublisher) return;
     streamState.emitted = true;
     streamState.lastChar = text.slice(-1);
     busSender.enqueue(publisher, JSON.stringify({ stream: true, delta: text }));
@@ -168,6 +171,7 @@ async function handleEvent(
       prompt,
       busSender,
       emitStreamDelta,
+      streamToPublisher,
       threadRuntime,
     });
     if (!threadedResult || !threadedResult.fallbackToLegacy) {
@@ -248,22 +252,33 @@ async function handleThreadedEvent({
   prompt,
   busSender,
   emitStreamDelta,
+  streamToPublisher = true,
   threadRuntime,
 }) {
   try {
+    const plainReplyParts = [];
     for await (const event of threadRuntime.thread.runStreamed(prompt, {})) {
       if (!event || typeof event !== "object") continue;
       if (event.type === "text_delta" && event.delta) {
-        emitStreamDelta(event.delta);
+        if (streamToPublisher) {
+          emitStreamDelta(event.delta);
+        } else {
+          plainReplyParts.push(String(event.delta));
+        }
       } else if (event.type === "turn_failed") {
         throw new Error(event.error || `thread turn failed for ${agentType}`);
       }
     }
 
-    busSender.enqueue(
-      publisher,
-      JSON.stringify({ stream: true, done: true, reason: "complete" })
-    );
+    if (streamToPublisher) {
+      busSender.enqueue(
+        publisher,
+        JSON.stringify({ stream: true, done: true, reason: "complete" })
+      );
+    } else {
+      const reply = plainReplyParts.join("").trim();
+      if (reply) busSender.enqueue(publisher, reply);
+    }
     await busSender.flush();
   } catch (err) {
     if (shouldFallbackToLegacyThreadProvider(err, provider)) {
@@ -272,17 +287,19 @@ async function handleThreadedEvent({
     if (threadRuntime && typeof threadRuntime.rebuildThread === "function") {
       await threadRuntime.rebuildThread();
     }
-    busSender.enqueue(
-      publisher,
-      JSON.stringify({
-        stream: true,
-        delta: `[internal:${agentType}] error: ${err && err.message ? err.message : "unknown error"}`,
-      })
-    );
-    busSender.enqueue(
-      publisher,
-      JSON.stringify({ stream: true, done: true, reason: "error" })
-    );
+    const errorText = `[internal:${agentType}] error: ${err && err.message ? err.message : "unknown error"}`;
+    if (streamToPublisher) {
+      busSender.enqueue(
+        publisher,
+        JSON.stringify({ stream: true, delta: errorText })
+      );
+      busSender.enqueue(
+        publisher,
+        JSON.stringify({ stream: true, done: true, reason: "error" })
+      );
+    } else {
+      busSender.enqueue(publisher, errorText);
+    }
     await busSender.flush();
     return { fallbackToLegacy: false };
   }

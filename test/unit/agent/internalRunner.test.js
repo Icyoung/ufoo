@@ -47,6 +47,22 @@ describe("agent internalRunner stream forwarding", () => {
     jest.clearAllMocks();
   });
 
+  function makeProjectWithAgent(agentId = "codex:peer") {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-internal-runner-"));
+    const agentsFile = path.join(projectRoot, ".ufoo", "agent", "all-agents.json");
+    fs.mkdirSync(path.dirname(agentsFile), { recursive: true });
+    fs.writeFileSync(agentsFile, JSON.stringify({
+      agents: {
+        [agentId]: {
+          agent_type: "codex",
+          nickname: "peer",
+          status: "active",
+        },
+      },
+    }));
+    return projectRoot;
+  }
+
   test("forwards stream delta envelopes and done marker", async () => {
     runCliAgent.mockImplementationOnce(async (params) => {
       params.onStreamDelta("hello");
@@ -82,6 +98,42 @@ describe("agent internalRunner stream forwarding", () => {
     );
     expect(busSender.enqueue).not.toHaveBeenCalledWith("chat:1", "hello world");
     expect(busSender.flush).toHaveBeenCalled();
+  });
+
+  test("does not send stream envelopes back to managed agent publishers", async () => {
+    runCliAgent.mockImplementationOnce(async (params) => {
+      params.onStreamDelta("partial ");
+      params.onStreamDelta("reply");
+      return { ok: true, output: [{ item: { type: "agent_message", text: "final reply" } }] };
+    });
+    normalizeCliOutput.mockReturnValue("final reply");
+
+    const busSender = {
+      enqueue: jest.fn(),
+      flush: jest.fn(async () => {}),
+    };
+    const state = { cliSessionId: null, needsSave: false };
+    const projectRoot = makeProjectWithAgent("codex:peer");
+    const evt = { publisher: "codex:peer", data: { message: "say hi" } };
+
+    await handleEvent(
+      projectRoot,
+      "codex",
+      "codex-cli",
+      "",
+      "codex:worker",
+      "worker",
+      evt,
+      state,
+      busSender
+    );
+
+    expect(busSender.enqueue).toHaveBeenCalledTimes(1);
+    expect(busSender.enqueue).toHaveBeenCalledWith("codex:peer", "final reply");
+    expect(busSender.enqueue).not.toHaveBeenCalledWith(
+      "codex:peer",
+      expect.stringContaining("\"stream\":true")
+    );
   });
 
   test("falls back to plain reply when no stream delta exists", async () => {
@@ -286,6 +338,44 @@ describe("agent internalRunner stream forwarding", () => {
       "chat:9",
       JSON.stringify({ stream: true, done: true, reason: "complete" })
     );
+  });
+
+  test("thread runtime sends a plain reply to managed agent publishers", async () => {
+    const busSender = {
+      enqueue: jest.fn(),
+      flush: jest.fn(async () => {}),
+    };
+    const state = { cliSessionId: null, needsSave: false };
+    const projectRoot = makeProjectWithAgent("codex:peer");
+    const evt = { publisher: "codex:peer", data: { message: "task" } };
+    const threadRuntime = {
+      enabled: true,
+      thread: {
+        runStreamed: jest.fn(async function* () {
+          yield { type: "text_delta", delta: "hello " };
+          yield { type: "text_delta", delta: "sdk" };
+        }),
+      },
+      rebuildThread: jest.fn(async () => {}),
+    };
+
+    await handleEvent(
+      projectRoot,
+      "codex",
+      "codex-cli",
+      "",
+      "codex:sdk",
+      "codex-sdk",
+      evt,
+      state,
+      busSender,
+      [],
+      threadRuntime
+    );
+
+    expect(runCliAgent).not.toHaveBeenCalled();
+    expect(busSender.enqueue).toHaveBeenCalledTimes(1);
+    expect(busSender.enqueue).toHaveBeenCalledWith("codex:peer", "hello sdk");
   });
 
   test("rebuilds codex thread after threaded failure", async () => {
