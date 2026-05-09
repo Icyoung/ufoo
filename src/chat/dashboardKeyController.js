@@ -57,6 +57,11 @@ function createDashboardKeyController(options = {}) {
     return Boolean(caps && caps.supportsSocketProtocol);
   }
 
+  function supportsInternalQueue(agentId) {
+    const caps = getAgentCapabilities(agentId);
+    return Boolean(caps && caps.supportsInternalQueueLoop);
+  }
+
   function withAgentInputFocus() {
     state.focusMode = "input";
     state.agentOutputSuppressed = false;
@@ -73,7 +78,7 @@ function createDashboardKeyController(options = {}) {
 
   function switchAgentView(agentId) {
     withAgentInputFocus();
-    enterAgentView(agentId);
+    enterAgentView(agentId, { useBus: supportsInternalQueue(agentId) && !supportsSocket(agentId) });
   }
 
   function exitAgentDashboardToInput() {
@@ -154,7 +159,7 @@ function createDashboardKeyController(options = {}) {
           } else {
             withAgentInputFocus();
             state.selectedAgentIndex = nextIndex + 1;
-            enterAgentView(nextAgent);
+            enterAgentView(nextAgent, { useBus: supportsInternalQueue(nextAgent) && !supportsSocket(nextAgent) });
           }
         } else {
           exitAgentView();
@@ -509,6 +514,16 @@ function createDashboardKeyController(options = {}) {
           state.selectedAgentIndex = -1;
           setScreenGrabKeys(false);
           enterAgentView(agentId);
+          return true;
+        }
+
+        if (supportsInternalQueue(agentId)) {
+          clearTargetAgent();
+          state.focusMode = "input";
+          state.dashboardView = "agents";
+          state.selectedAgentIndex = -1;
+          setScreenGrabKeys(false);
+          enterAgentView(agentId, { useBus: true });
           return true;
         }
       }

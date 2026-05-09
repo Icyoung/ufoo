@@ -116,11 +116,6 @@ function computeInjectedSubmitDelayMs(agentType, text) {
   return delayMs;
 }
 
-function buildPrompt(text, marker) {
-  if (!marker) return text;
-  return `${text}\n\n请在完成后输出以下标记（单独一行）：\n${marker}\n`;
-}
-
 function resolveCommand(agentType, extraArgs = []) {
   const normalizedAgent = String(agentType || "").trim().toLowerCase();
   const extra = Array.isArray(extraArgs) ? extraArgs : [];
@@ -172,9 +167,11 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
     UFOO_INTERNAL_PTY: "1",
   };
 
+  const idleMs = Number.parseInt(process.env.UFOO_INTERNAL_PTY_IDLE_MS || "", 10) || 30000;
   const eventBus = new EventBus(projectRoot);
   const activityDetector = new ActivityDetector(agentType, {
     mode: "internal-pty",
+    quietWindowMs: idleMs,
   });
   const agentsFilePath = getUfooPaths(projectRoot).agentsFile;
 
@@ -184,15 +181,11 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
   let ptyReady = false;
   let readyTimer = null;
   let currentPublisher = "";
-  let currentMarker = "";
   let pendingOutput = [];
   let outputBuffer = "";
   let flushTimer = null;
   let idleTimer = null;
   let watchdogTimer = null;
-  let suppressEcho = false;
-  let echoMarker = "";
-  let suppressTimer = null;
   let ptyProcess = null;
   let restartCount = 0;
   let lastSpawnTime = 0;
@@ -205,14 +198,11 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
   const injectServer = setupInjectServer();
   initScreenBuffer(80, 24);
   const maxChunk = 2000;
-  const idleMs = 30000;
   const watchdogMs = 120000;
   const maxQueue = 200;
   let sendQueue = Promise.resolve();
   const streamPublisherCache = new Map();
   const DROP_LINE_PATTERNS = [
-    /__UFOO_DONE_/,
-    /请在完成后输出以下标记/,
     /context left/i,
     /esc to interrupt/i,
     /for shortcuts/i,
@@ -660,8 +650,7 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
       detail: snap.detail,
     });
     // Quiet-window detector may classify IDLE sooner than stream fallback timer.
-    // Release queue only when no explicit marker is being awaited.
-    if (newState === "idle" && busy && !currentMarker && !suppressEcho) {
+    if (newState === "idle" && busy) {
       if (idleTimer) {
         clearTimeout(idleTimer);
         idleTimer = null;
@@ -696,49 +685,6 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
       if (!clean) return;
       outputBuffer += clean;
       activityDetector.processOutput(clean);
-      if (suppressEcho) {
-        if (echoMarker && outputBuffer.includes(echoMarker)) {
-          const idx = outputBuffer.indexOf(echoMarker);
-          outputBuffer = outputBuffer.slice(idx + echoMarker.length);
-          outputBuffer = outputBuffer.replace(/^\n+/, "");
-          suppressEcho = false;
-          currentMarker = echoMarker;
-          echoMarker = "";
-          if (suppressTimer) {
-            clearTimeout(suppressTimer);
-            suppressTimer = null;
-          }
-        } else {
-          return;
-        }
-      }
-      if (currentMarker) {
-        const idx = outputBuffer.indexOf(currentMarker);
-        if (idx !== -1) {
-          const before = outputBuffer.slice(0, idx);
-          outputBuffer = "";
-          if (before) {
-            deliverChunk(before);
-          }
-          if (currentPublisher) {
-            completePublisherResponse("marker");
-          }
-          currentMarker = "";
-          busy = false;
-          activityDetector.markIdle();
-          currentPublisher = "";
-          if (watchdogTimer) {
-            clearTimeout(watchdogTimer);
-            watchdogTimer = null;
-          }
-          if (idleTimer) {
-            clearTimeout(idleTimer);
-            idleTimer = null;
-          }
-          processQueue();
-          return;
-        }
-      }
       scheduleFlush();
       // Ready detection: during TUI startup, reset the quiet timer on each output.
       // Once output stops for READY_QUIET_MS, the TUI is considered initialized.
@@ -805,7 +751,6 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
       busy = false;
       activityDetector.markIdle();
       currentPublisher = "";
-      currentMarker = "";
 
       // If stop() was called, let the runner exit
       if (!running) return;
@@ -940,11 +885,6 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
     busy = true;
     activityDetector.markWorking();
     currentPublisher = next.publisher;
-    currentMarker = next.marker || "";
-    if (suppressTimer) {
-      clearTimeout(suppressTimer);
-      suppressTimer = null;
-    }
     flushPending();
     if (next.text) {
       if (next.raw) {
@@ -952,30 +892,16 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
       } else {
         // Write text first, then send Enter separately.
         // Codex Ink TUI requires text and submit key as separate writes.
-        // IMPORTANT: Defer marker detection until after Enter is sent,
-        // because the prompt echo (TextInput display) contains the marker text.
-        const prompt = buildPrompt(next.text, currentMarker);
-        const savedMarker = currentMarker;
-        suppressEcho = true;
-        echoMarker = savedMarker;
-        currentMarker = ""; // Disable marker detection during prompt echo & formatted display
-        ptyProcess.write(prompt);
+        ptyProcess.write(next.text);
         setTimeout(() => {
           if (ptyProcess && ptyAlive) {
+            // Drop the local TUI input echo from any forwarded stream output.
             outputBuffer = "";
             const isClaude = agentType === "claude-code";
             if (isClaude) {
               // Claude Code: send CR directly without ESC.
               // ESC before CR is interpreted as Alt+Enter (newline).
               ptyProcess.write("\r");
-              suppressTimer = setTimeout(() => {
-                suppressTimer = null;
-                if (!suppressEcho) return;
-                suppressEcho = false;
-                echoMarker = "";
-                currentMarker = savedMarker;
-                outputBuffer = "";
-              }, 1500);
             } else {
               // Codex/others: ESC dismisses autocomplete, then CR submits.
               ptyProcess.write("\x1b");
@@ -983,14 +909,6 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
                 if (ptyProcess && ptyAlive) {
                   ptyProcess.write("\r");
                 }
-                suppressTimer = setTimeout(() => {
-                  suppressTimer = null;
-                  if (!suppressEcho) return;
-                  suppressEcho = false;
-                  echoMarker = "";
-                  currentMarker = savedMarker;
-                  outputBuffer = "";
-                }, 1500);
               }, 100);
             }
           }
@@ -1001,13 +919,12 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
     watchdogTimer = setTimeout(() => {
       watchdogTimer = null;
       if (!busy) return;
-      const timeoutNote = `[internal-pty] marker timeout; restarting PTY`;
+      const timeoutNote = `[internal-pty] task timeout; restarting PTY`;
       if (currentPublisher) {
         completePublisherResponse("timeout", timeoutNote);
       }
       logNote(timeoutNote);
-      restartPty("marker timeout");
-      currentMarker = "";
+      restartPty("task timeout");
       busy = false;
       activityDetector.markIdle();
       currentPublisher = "";
@@ -1058,11 +975,10 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
         if (messageQueue.length >= maxQueue) {
           messageQueue.shift();
         }
-        const marker = raw ? "" : `__UFOO_DONE_${Date.now()}_${Math.random().toString(16).slice(2)}__`;
         const publisher = typeof evt.publisher === "object" && evt.publisher
           ? (evt.publisher.subscriber || evt.publisher.nickname || "unknown")
           : (evt.publisher || "unknown");
-        messageQueue.push({ publisher, raw, text, marker });
+        messageQueue.push({ publisher, raw, text });
       }
     }
     processQueue();

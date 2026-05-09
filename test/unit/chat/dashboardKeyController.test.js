@@ -210,7 +210,7 @@ describe("chat dashboardKeyController", () => {
 
     expect(controller.handleDashboardKey({ name: "x", ctrl: true })).toBe(true);
     expect(deps.requestCloseAgent).toHaveBeenCalledWith("codex:1");
-    expect(deps.enterAgentView).toHaveBeenCalledWith("codex:3");
+    expect(deps.enterAgentView).toHaveBeenCalledWith("codex:3", { useBus: true });
     expect(deps.setAgentBarVisible).toHaveBeenCalledWith(true);
     expect(state.focusMode).toBe("input");
     expect(state.agentOutputSuppressed).toBe(false);

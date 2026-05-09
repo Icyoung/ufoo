@@ -12,12 +12,10 @@ jest.mock("../../../src/agent/normalizeOutput", () => ({
 
 jest.mock("../../../src/agent/codexThreadProvider", () => ({
   createCodexThreadProvider: jest.fn(),
-  defaultCodexTransportStreamFactory: jest.fn(),
 }));
 
 jest.mock("../../../src/agent/claudeThreadProvider", () => ({
   createClaudeThreadProvider: jest.fn(),
-  defaultClaudeTransportStreamFactory: jest.fn(),
 }));
 
 jest.mock("../../../src/agent/credentials/claude", () => ({
@@ -40,6 +38,9 @@ const {
   getClaudeThreadMode,
   buildClaudeAuthProvider,
   shouldFallbackToLegacyThreadProvider,
+  parseAgentViewRawInput,
+  createInteractiveInputSession,
+  persistProviderSessionId,
 } = require("../../../src/agent/internalRunner");
 
 describe("agent internalRunner stream forwarding", () => {
@@ -569,7 +570,6 @@ describe("internalRunner codex thread mode", () => {
       cwd: projectRoot,
       extraArgs: ["--model", "gpt-5-codex"],
       tools: [],
-      streamFactory: expect.any(Function),
     });
 
     fs.rmSync(projectRoot, { recursive: true, force: true });
@@ -591,6 +591,32 @@ describe("internalRunner codex thread mode", () => {
     });
 
     expect(runtime.enabled).toBe(false);
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  test("createThreadRuntime resumes codex provider session when provided", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-sdk-resume-"));
+    process.env.UFOO_CODEX_INTERNAL_THREAD_MODE = "api";
+    const resumeThread = jest.fn(() => ({
+      id: "thread-prev",
+      runStreamed: async function* () {},
+      close: jest.fn(async () => {}),
+    }));
+    const startThread = jest.fn();
+    createCodexThreadProvider.mockReturnValue({ startThread, resumeThread });
+
+    const runtime = createThreadRuntime({
+      projectRoot,
+      provider: "codex-cli",
+      model: "gpt-5-codex",
+      extraArgs: [],
+      subscriber: "codex:sdk-resume",
+      providerSessionId: "thread-prev",
+    });
+
+    expect(runtime.enabled).toBe(true);
+    expect(resumeThread).toHaveBeenCalledWith("thread-prev");
+    expect(startThread).not.toHaveBeenCalled();
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
@@ -747,6 +773,46 @@ describe("internalRunner codex thread mode", () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
+  test("parseAgentViewRawInput accepts internal view raw envelopes only", () => {
+    expect(parseAgentViewRawInput(JSON.stringify({ raw: true, data: "h" }))).toBe("h");
+    expect(parseAgentViewRawInput(JSON.stringify({ raw: false, data: "h" }))).toBeNull();
+    expect(parseAgentViewRawInput("plain")).toBeNull();
+  });
+
+  test("createInteractiveInputSession echoes line editing and returns submitted prompts", () => {
+    const writes = [];
+    const session = createInteractiveInputSession({
+      write: (text) => writes.push(text),
+    });
+
+    expect(session.handleRaw("hi")).toEqual([]);
+    expect(session.getBuffer()).toBe("hi");
+    expect(session.handleRaw("\u007f!")).toEqual([]);
+    expect(session.getBuffer()).toBe("h!");
+    expect(session.handleRaw("\r")).toEqual(["h!"]);
+    session.writeResponsePrompt();
+
+    expect(writes.join("")).toBe("hi\b \b!\r\n\r\n> ");
+  });
+
+  test("persistProviderSessionId writes session id into active agent metadata", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-provider-session-"));
+    const agentsFile = path.join(projectRoot, ".ufoo", "agent", "all-agents.json");
+    fs.mkdirSync(path.dirname(agentsFile), { recursive: true });
+    fs.writeFileSync(agentsFile, JSON.stringify({
+      agents: {
+        "codex:abc": { agent_type: "codex", status: "active" },
+      },
+    }));
+
+    expect(persistProviderSessionId(projectRoot, "codex:abc", "thread-new")).toBe(true);
+    const after = JSON.parse(fs.readFileSync(agentsFile, "utf8"));
+    expect(after.agents["codex:abc"].provider_session_id).toBe("thread-new");
+    expect(after.agents["codex:abc"].provider_session_updated_at).toBeTruthy();
+
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
   test("claude thread mode defaults to legacy", () => {
     delete process.env.UFOO_CLAUDE_INTERNAL_THREAD_MODE;
     expect(getClaudeThreadMode()).toBe("legacy");
@@ -818,7 +884,8 @@ describe("internalRunner codex thread mode", () => {
     expect(runtime.enabled).toBe(true);
     expect(createClaudeThreadProvider).toHaveBeenCalledWith(expect.objectContaining({
       model: "claude-sonnet",
-      authProvider: expect.any(Function),
+      cwd: projectRoot,
+      extraArgs: [],
     }));
 
     fs.rmSync(projectRoot, { recursive: true, force: true });

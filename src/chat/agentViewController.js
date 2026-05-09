@@ -126,7 +126,10 @@ function createAgentViewController(options = {}) {
 
     agentInputSuppressUntil = now() + 300;
     agentViewUsesBus = Boolean(options.useBus);
-    if (!agentViewUsesBus) {
+    if (agentViewUsesBus) {
+      const label = getAgentLabel(agentId);
+      processStdout.write(`ufoo internal · ${label}\r\n\r\n> `);
+    } else {
       const sockPath = getInjectSockPath(agentId);
       connectAgentOutput(sockPath);
       connectAgentInput(sockPath);

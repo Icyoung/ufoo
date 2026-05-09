@@ -7,14 +7,8 @@ const { runCliAgent } = require("./cliRunner");
 const { normalizeCliOutput } = require("./normalizeOutput");
 const { createActivityStatePublisher } = require("./activityStatePublisher");
 const { loadConfig, normalizeCodexInternalThreadMode } = require("../config");
-const {
-  createCodexThreadProvider,
-  defaultCodexTransportStreamFactory,
-} = require("./codexThreadProvider");
-const {
-  createClaudeThreadProvider,
-  defaultClaudeTransportStreamFactory,
-} = require("./claudeThreadProvider");
+const { createCodexThreadProvider } = require("./codexThreadProvider");
+const { createClaudeThreadProvider } = require("./claudeThreadProvider");
 const { resolveClaudeUpstreamCredentials } = require("./credentials/claude");
 const { buildUpstreamAuthFromCredential } = require("./credentials");
 const { listToolsForCallerTier, CALLER_TIERS } = require("../tools");
@@ -129,6 +123,73 @@ function drainQueue(queueFile) {
   }
   if (!content.trim()) return [];
   return content.split(/\r?\n/).filter(Boolean);
+}
+
+function parseAgentViewRawInput(message) {
+  if (typeof message !== "string" || !message.trim()) return null;
+  try {
+    const parsed = JSON.parse(message);
+    if (parsed && parsed.raw === true && typeof parsed.data === "string") {
+      return parsed.data;
+    }
+  } catch {
+    // Not a raw agent-view envelope.
+  }
+  return null;
+}
+
+function createInteractiveInputSession({ write = () => {} } = {}) {
+  let buffer = "";
+
+  function writePrompt() {
+    write("> ");
+  }
+
+  function handleRaw(data) {
+    const submissions = [];
+    const text = String(data || "");
+    for (const char of text) {
+      if (char === "\r" || char === "\n") {
+        const submitted = buffer.trim();
+        buffer = "";
+        write("\r\n");
+        if (submitted) submissions.push(submitted);
+        else writePrompt();
+        continue;
+      }
+
+      if (char === "\u0003") {
+        buffer = "";
+        write("^C\r\n");
+        writePrompt();
+        continue;
+      }
+
+      if (char === "\u007f" || char === "\b") {
+        if (buffer.length > 0) {
+          buffer = buffer.slice(0, -1);
+          write("\b \b");
+        }
+        continue;
+      }
+
+      if (char >= " " && char !== "\u007f") {
+        buffer += char;
+        write(char);
+      }
+    }
+    return submissions;
+  }
+
+  return {
+    handleRaw,
+    writePrompt,
+    writeResponsePrompt: () => {
+      write("\r\n");
+      writePrompt();
+    },
+    getBuffer: () => buffer,
+  };
 }
 
 async function handleEvent(
@@ -259,6 +320,9 @@ async function handleThreadedEvent({
     const plainReplyParts = [];
     for await (const event of threadRuntime.thread.runStreamed(prompt, {})) {
       if (!event || typeof event !== "object") continue;
+      if (typeof threadRuntime.syncProviderSessionId === "function") {
+        threadRuntime.syncProviderSessionId();
+      }
       if (event.type === "text_delta" && event.delta) {
         if (streamToPublisher) {
           emitStreamDelta(event.delta);
@@ -268,6 +332,9 @@ async function handleThreadedEvent({
       } else if (event.type === "turn_failed") {
         throw new Error(event.error || `thread turn failed for ${agentType}`);
       }
+    }
+    if (typeof threadRuntime.syncProviderSessionId === "function") {
+      threadRuntime.syncProviderSessionId();
     }
 
     if (streamToPublisher) {
@@ -420,14 +487,46 @@ function buildClaudeAuthProvider(projectRoot) {
   };
 }
 
-function createThreadRuntime({ projectRoot, provider, model, extraArgs = [], subscriber = "" }) {
+function persistProviderSessionId(projectRoot, subscriber, providerSessionId) {
+  const id = String(providerSessionId || "").trim();
+  if (!projectRoot || !subscriber || !id) return false;
+  try {
+    const agentsFile = getUfooPaths(projectRoot).agentsFile;
+    const parsed = fs.existsSync(agentsFile)
+      ? JSON.parse(fs.readFileSync(agentsFile, "utf8"))
+      : {};
+    if (!parsed.agents || typeof parsed.agents !== "object") return false;
+    if (!parsed.agents[subscriber] || typeof parsed.agents[subscriber] !== "object") return false;
+    if (parsed.agents[subscriber].provider_session_id === id) return false;
+    parsed.agents[subscriber].provider_session_id = id;
+    parsed.agents[subscriber].provider_session_updated_at = new Date().toISOString();
+    fs.writeFileSync(agentsFile, `${JSON.stringify(parsed, null, 2)}\n`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function createThreadRuntime({ projectRoot, provider, model, extraArgs = [], subscriber = "", providerSessionId = "" }) {
   const disabledRuntime = {
     enabled: false,
     thread: null,
     toolRuntime: { enabled: false, mode: "disabled", tools: [] },
     close: async () => {},
     rebuildThread: async () => {},
+    syncProviderSessionId: () => false,
   };
+
+  const initialProviderSessionId = String(providerSessionId || "").trim();
+  let savedProviderSessionId = initialProviderSessionId;
+
+  function rememberProviderSessionId(thread) {
+    const id = String(thread && thread.id ? thread.id : "").trim();
+    if (!id || id === savedProviderSessionId) return false;
+    const changed = persistProviderSessionId(projectRoot, subscriber, id);
+    if (changed) savedProviderSessionId = id;
+    return changed;
+  }
 
   if (provider === "codex-cli") {
     if (getCodexThreadMode(projectRoot) !== "api") {
@@ -444,15 +543,19 @@ function createThreadRuntime({ projectRoot, provider, model, extraArgs = [], sub
         cwd: projectRoot,
         extraArgs,
         tools: toolRuntime.tools,
-        streamFactory: defaultCodexTransportStreamFactory,
       });
-      let thread = providerInstance.startThread();
+      let thread = initialProviderSessionId
+        ? providerInstance.resumeThread(initialProviderSessionId)
+        : providerInstance.startThread();
 
       return {
         enabled: true,
         toolRuntime,
         get thread() {
           return thread;
+        },
+        syncProviderSessionId() {
+          return rememberProviderSessionId(thread);
         },
         async rebuildThread() {
           if (thread && typeof thread.close === "function") {
@@ -463,9 +566,10 @@ function createThreadRuntime({ projectRoot, provider, model, extraArgs = [], sub
             cwd: projectRoot,
             extraArgs,
             tools: toolRuntime.tools,
-            streamFactory: defaultCodexTransportStreamFactory,
           });
-          thread = providerInstance.startThread();
+          thread = savedProviderSessionId
+            ? providerInstance.resumeThread(savedProviderSessionId)
+            : providerInstance.startThread();
         },
         async close() {
           if (thread && typeof thread.close === "function") {
@@ -482,22 +586,27 @@ function createThreadRuntime({ projectRoot, provider, model, extraArgs = [], sub
     if (getClaudeThreadMode() !== "api") {
       return disabledRuntime;
     }
-    if (typeof createClaudeThreadProvider !== "function" || typeof resolveClaudeUpstreamCredentials !== "function") {
+    if (typeof createClaudeThreadProvider !== "function") {
       return disabledRuntime;
     }
 
     try {
       let providerInstance = createClaudeThreadProvider({
         model,
-        authProvider: buildClaudeAuthProvider(projectRoot),
-        streamFactory: defaultClaudeTransportStreamFactory,
+        cwd: projectRoot,
+        extraArgs,
       });
-      let thread = providerInstance.startThread();
+      let thread = initialProviderSessionId
+        ? providerInstance.resumeThread(initialProviderSessionId)
+        : providerInstance.startThread();
 
       return {
         enabled: true,
         get thread() {
           return thread;
+        },
+        syncProviderSessionId() {
+          return rememberProviderSessionId(thread);
         },
         async rebuildThread() {
           if (thread && typeof thread.close === "function") {
@@ -505,10 +614,12 @@ function createThreadRuntime({ projectRoot, provider, model, extraArgs = [], sub
           }
           providerInstance = createClaudeThreadProvider({
             model,
-            authProvider: buildClaudeAuthProvider(projectRoot),
-            streamFactory: defaultClaudeTransportStreamFactory,
+            cwd: projectRoot,
+            extraArgs,
           });
-          thread = providerInstance.startThread();
+          thread = savedProviderSessionId
+            ? providerInstance.resumeThread(savedProviderSessionId)
+            : providerInstance.startThread();
         },
         async close() {
           if (thread && typeof thread.close === "function") {
@@ -538,12 +649,14 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
   const provider = normalizedAgentType === "codex" ? "codex-cli" : "claude-cli";
   const model = process.env.UFOO_AGENT_MODEL || "";
   const busSender = createBusSender(projectRoot, subscriber);
+  const interactiveSessions = new Map();
   const threadRuntime = createThreadRuntime({
     projectRoot,
     provider,
     model,
     extraArgs,
     subscriber,
+    providerSessionId: process.env.UFOO_PROVIDER_SESSION_ID || "",
   });
 
   // Session state management for CLI continuity
@@ -586,6 +699,18 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
     activityPublisher.publish(state);
   }
 
+  function getInteractiveSession(publisher) {
+    const key = String(publisher || "unknown");
+    if (interactiveSessions.has(key)) return interactiveSessions.get(key);
+    const session = createInteractiveInputSession({
+      write: (delta) => {
+        busSender.enqueue(key, JSON.stringify({ stream: true, delta: String(delta || "") }));
+      },
+    });
+    interactiveSessions.set(key, session);
+    return session;
+  }
+
   setActivityState("ready");
 
   // 心跳更新函数
@@ -615,7 +740,6 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
       try {
         const lines = drainQueue(queueFile);
         if (lines.length > 0) {
-          setActivityState("working");
           const events = [];
           for (const line of lines) {
             try {
@@ -625,7 +749,33 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
             }
           }
 
+          const runnableEvents = [];
           for (const evt of events) {
+            const rawInput = parseAgentViewRawInput(evt && evt.data ? evt.data.message : "");
+            if (rawInput === null) {
+              runnableEvents.push(evt);
+              continue;
+            }
+
+            const session = getInteractiveSession(evt.publisher || "unknown");
+            const submissions = session.handleRaw(rawInput);
+            for (const message of submissions) {
+              runnableEvents.push({
+                ...evt,
+                __agentViewRaw: true,
+                data: {
+                  ...(evt.data || {}),
+                  message,
+                },
+              });
+            }
+          }
+
+          if (runnableEvents.length > 0) {
+            setActivityState("working");
+          }
+
+          for (const evt of runnableEvents) {
             // eslint-disable-next-line no-await-in-loop
             await handleEvent(
               projectRoot,
@@ -640,6 +790,9 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
               extraArgs,
               threadRuntime
             );
+            if (evt.__agentViewRaw) {
+              getInteractiveSession(evt.publisher || "unknown").writeResponsePrompt();
+            }
           }
 
           // Persist CLI session state after processing (only if changed and for claude)
@@ -659,7 +812,10 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
           // 处理消息后更新心跳
           updateHeartbeat();
           lastHeartbeat = now;
-          setActivityState("idle");
+          if (runnableEvents.length > 0) {
+            setActivityState("idle");
+          }
+          await busSender.flush();
         }
       } finally {
         processing = false;
@@ -684,4 +840,7 @@ module.exports = {
   getClaudeThreadMode,
   buildClaudeAuthProvider,
   shouldFallbackToLegacyThreadProvider,
+  parseAgentViewRawInput,
+  createInteractiveInputSession,
+  persistProviderSessionId,
 };

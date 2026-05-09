@@ -5,13 +5,21 @@ const {
   buildClaudeSystemBlocks,
   ClaudeApiThread,
   ClaudeThreadProvider,
-  defaultClaudeTransportStreamFactory,
+  buildClaudeAgentOptions,
+  defaultClaudeAgentStreamFactory,
+  extraArgsToObject,
   normalizeMessageInput,
   normalizeToolDefinition,
   withCacheControlOnLastBlock,
 } = require("../../../src/agent/claudeThreadProvider");
 
 describe("agent claudeThreadProvider", () => {
+  function makeMessages(messages) {
+    return (async function* messageStream() {
+      for (const message of messages) yield message;
+    })();
+  }
+
   test("builds cacheable static and semistatic system blocks", () => {
     expect(buildClaudeSystemBlocks({
       systemPrompt: "static rules",
@@ -69,6 +77,122 @@ describe("agent claudeThreadProvider", () => {
       description: "Route",
       input_schema: { type: "object", properties: { target: { type: "string" } } },
     });
+  });
+
+  test("default Agent SDK stream uses query, streams partials, and captures session id", async () => {
+    const sdk = {
+      query: jest.fn(() => makeMessages([
+        {
+          type: "system",
+          subtype: "init",
+          session_id: "11111111-1111-4111-8111-111111111111",
+        },
+        {
+          type: "stream_event",
+          session_id: "11111111-1111-4111-8111-111111111111",
+          event: { type: "message_start", message: { id: "msg-1", usage: { input_tokens: 3 } } },
+        },
+        {
+          type: "stream_event",
+          session_id: "11111111-1111-4111-8111-111111111111",
+          event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hello" } },
+        },
+        {
+          type: "stream_event",
+          session_id: "11111111-1111-4111-8111-111111111111",
+          event: { type: "message_stop" },
+        },
+        {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          result: "hello",
+          usage: { input_tokens: 3, output_tokens: 2 },
+          session_id: "11111111-1111-4111-8111-111111111111",
+        },
+      ])),
+    };
+    const thread = new ClaudeApiThread({
+      model: "claude-sonnet",
+      cwd: process.cwd(),
+      extraArgs: ["--permission-mode", "acceptEdits"],
+      sdk,
+      streamFactory: defaultClaudeAgentStreamFactory,
+    });
+
+    const events = [];
+    for await (const event of thread.runStreamed("hi")) events.push(event);
+
+    expect(sdk.query).toHaveBeenCalledWith({
+      prompt: "hi",
+      options: expect.objectContaining({
+        model: "claude-sonnet",
+        cwd: process.cwd(),
+        includePartialMessages: true,
+        extraArgs: { "permission-mode": "acceptEdits" },
+      }),
+    });
+    expect(thread.id).toBe("11111111-1111-4111-8111-111111111111");
+    expect(events).toEqual([
+      { type: "thread_started", threadId: "11111111-1111-4111-8111-111111111111" },
+      { type: "turn_started", turnId: "msg-1" },
+      { type: "text_delta", delta: "hello", itemType: "text" },
+      { type: "turn_completed", turnId: "msg-1", usage: { input_tokens: 3, output_tokens: 0, cache_creation_tokens: 0, cache_read_tokens: 0 }, stopReason: "" },
+    ]);
+  });
+
+  test("Agent SDK resume passes prior session id", async () => {
+    const sdk = {
+      query: jest.fn(() => makeMessages([
+        {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          result: "ok",
+          session_id: "22222222-2222-4222-8222-222222222222",
+        },
+      ])),
+    };
+    const provider = new ClaudeThreadProvider({
+      model: "claude-sonnet",
+      cwd: process.cwd(),
+      sdk,
+    });
+
+    const thread = provider.resumeThread("22222222-2222-4222-8222-222222222222");
+    const events = [];
+    for await (const event of thread.runStreamed("again")) events.push(event);
+
+    expect(sdk.query).toHaveBeenCalledWith({
+      prompt: "again",
+      options: expect.objectContaining({
+        resume: "22222222-2222-4222-8222-222222222222",
+      }),
+    });
+    expect(events[0]).toEqual({
+      type: "thread_started",
+      threadId: "22222222-2222-4222-8222-222222222222",
+    });
+    expect(events.find((event) => event.type === "text_delta").delta).toBe("ok");
+  });
+
+  test("buildClaudeAgentOptions maps cwd, model, resume, and extra args", () => {
+    expect(extraArgsToObject(["--permission-mode", "acceptEdits", "--debug"])).toEqual({
+      "permission-mode": "acceptEdits",
+      debug: null,
+    });
+    expect(buildClaudeAgentOptions({
+      model: "claude-sonnet",
+      cwd: "/tmp/project",
+      threadId: "session-1",
+      extraArgs: ["--debug"],
+    })).toEqual(expect.objectContaining({
+      model: "claude-sonnet",
+      cwd: "/tmp/project",
+      resume: "session-1",
+      includePartialMessages: true,
+      extraArgs: { debug: null },
+    }));
   });
 
   test("runStreamed emits normalized events, preserves thread state, and forwards tools", async () => {
@@ -289,7 +413,7 @@ describe("agent claudeThreadProvider", () => {
     expect(firstEvents.find((event) => event.type === "turn_completed").usage.cache_creation_tokens).toBe(7);
   });
 
-  test("transport stream factory can synthesize a Claude event stream from a unified upstream response", async () => {
+  test("custom stream factory preserves Claude message history", async () => {
     const streamFactory = jest.fn()
       .mockImplementationOnce(async function* ({ request }) {
         expect(request.messages).toEqual([
@@ -342,6 +466,5 @@ describe("agent claudeThreadProvider", () => {
       cache_creation_tokens: 0,
       cache_read_tokens: 0,
     });
-    expect(defaultClaudeTransportStreamFactory).toBeInstanceOf(Function);
   });
 });
