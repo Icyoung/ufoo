@@ -8,6 +8,13 @@ const {
   cycleAgentSelectionIndex,
   shouldClearAgentSelectionOnUp,
   moveCursorHorizontally,
+  clampCursorPos,
+  findLogicalLineStart,
+  findLogicalLineEnd,
+  moveCursorToVisualLineBoundary,
+  moveCursorVertically,
+  deleteWordBeforeCursor,
+  moveCursorByWord,
   resolveHistoryDownTransition,
   filterSelectableAgents,
   stripLeakedEscapeTags,
@@ -309,6 +316,50 @@ describe("ucode tui switch", () => {
     expect(moveCursorHorizontally(4, "hello", "right")).toBe(5);
     expect(moveCursorHorizontally(5, "hello", "right")).toBe(5);
     expect(moveCursorHorizontally(3, "hello", "left")).toBe(2);
+  });
+
+  test("input cursor helpers clamp and find logical line bounds", () => {
+    expect(clampCursorPos(20, "hello")).toBe(5);
+    expect(clampCursorPos(-2, "hello")).toBe(0);
+    expect(findLogicalLineStart("aa\nbbb\nc", 5)).toBe(3);
+    expect(findLogicalLineEnd("aa\nbbb\nc", 5)).toBe(6);
+  });
+
+  test("input cursor helpers move across wrapped visual lines", () => {
+    const text = "abcdef";
+    expect(moveCursorToVisualLineBoundary({
+      cursorPos: 4,
+      inputValue: text,
+      width: 3,
+      boundary: "start",
+    })).toBe(3);
+    expect(moveCursorToVisualLineBoundary({
+      cursorPos: 4,
+      inputValue: text,
+      width: 3,
+      boundary: "end",
+    })).toBe(6);
+    expect(moveCursorVertically({
+      cursorPos: 4,
+      inputValue: text,
+      width: 3,
+      direction: "up",
+    })).toMatchObject({ moved: true, nextCursorPos: 1 });
+    expect(moveCursorVertically({
+      cursorPos: 1,
+      inputValue: text,
+      width: 3,
+      direction: "up",
+    })).toMatchObject({ moved: false, boundary: "top" });
+  });
+
+  test("input word helpers match shell-style editing", () => {
+    expect(deleteWordBeforeCursor("alpha beta  ", 12)).toEqual({
+      value: "alpha",
+      cursorPos: 5,
+    });
+    expect(moveCursorByWord("alpha beta", 10, "backward")).toBe(6);
+    expect(moveCursorByWord("alpha beta", 0, "forward")).toBe(5);
   });
 
   test("resolveHistoryDownTransition moves through history then stops at latest", () => {

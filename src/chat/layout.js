@@ -4,6 +4,8 @@ function createChatLayout(options = {}) {
     currentInputHeight = 4,
     dashboardHeight = 1,
     version = "unknown",
+    logBorder = false,
+    logScrollbar = false,
   } = options;
   const normalizedDashboardHeight = Number.isFinite(dashboardHeight) && dashboardHeight > 0
     ? Math.floor(dashboardHeight)
@@ -32,24 +34,38 @@ function createChatLayout(options = {}) {
     }
   }
 
-  // Log area (no border for cleaner look)
+  // Log area
   const logBox = blessed.log({
     parent: screen,
     top: 0,
     left: 0,
     width: "100%",
     height: `100%-${reservedBottomLines}`, // Will be adjusted dynamically
+    border: logBorder ? { type: "line" } : null,
     tags: true,
     scrollable: true,
     alwaysScroll: true,
     scrollback: 10000,
-    scrollbar: null,
+    scrollbar: logScrollbar
+      ? {
+        ch: " ",
+        track: { bg: "black" },
+        style: { bg: "gray" },
+      }
+      : null,
     keys: true,
     vi: true,
     // Mouse handled globally (toggleable) to keep copy working
     mouse: false,
     // Ensure proper wrapping and width calculation
     wrap: true,
+    padding: logBorder ? { left: 1, right: 1 } : undefined,
+    style: logBorder
+      ? {
+        border: { fg: "gray" },
+        scrollbar: { bg: "gray" },
+      }
+      : undefined,
   });
 
   // Status line just above input

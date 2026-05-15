@@ -293,6 +293,111 @@ function moveCursorHorizontally(cursorPos = 0, inputValue = "", direction = "rig
   return Math.min(max, pos + 1);
 }
 
+function clampCursorPos(cursorPos = 0, inputValue = "") {
+  const text = String(inputValue || "");
+  const pos = Number.isFinite(cursorPos) ? Math.floor(cursorPos) : 0;
+  return Math.max(0, Math.min(text.length, pos));
+}
+
+function findLogicalLineStart(inputValue = "", cursorPos = 0) {
+  const text = String(inputValue || "");
+  const pos = clampCursorPos(cursorPos, text);
+  const prevNewline = text.lastIndexOf("\n", Math.max(0, pos - 1));
+  return prevNewline === -1 ? 0 : prevNewline + 1;
+}
+
+function findLogicalLineEnd(inputValue = "", cursorPos = 0) {
+  const text = String(inputValue || "");
+  const pos = clampCursorPos(cursorPos, text);
+  const nextNewline = text.indexOf("\n", pos);
+  return nextNewline === -1 ? text.length : nextNewline;
+}
+
+function moveCursorToVisualLineBoundary({
+  cursorPos = 0,
+  inputValue = "",
+  width = 80,
+  boundary = "start",
+  strWidth,
+} = {}) {
+  const inputMath = require("../chat/inputMath");
+  const text = String(inputValue || "");
+  const normalizedWidth = Number.isFinite(width) ? Math.max(1, Math.floor(width)) : 1;
+  const pos = clampCursorPos(cursorPos, text);
+  const { row } = inputMath.getCursorRowCol(text, pos, normalizedWidth, strWidth);
+  if (boundary === "end") {
+    return inputMath.getCursorPosForRowCol(text, row, normalizedWidth, normalizedWidth, strWidth);
+  }
+  return inputMath.getCursorPosForRowCol(text, row, 0, normalizedWidth, strWidth);
+}
+
+function moveCursorVertically({
+  cursorPos = 0,
+  inputValue = "",
+  width = 80,
+  direction = "down",
+  preferredCol = null,
+  strWidth,
+} = {}) {
+  const inputMath = require("../chat/inputMath");
+  const text = String(inputValue || "");
+  const normalizedWidth = Number.isFinite(width) ? Math.max(1, Math.floor(width)) : 1;
+  const pos = clampCursorPos(cursorPos, text);
+  const { row, col } = inputMath.getCursorRowCol(text, pos, normalizedWidth, strWidth);
+  const totalRows = inputMath.countLines(text, normalizedWidth, strWidth);
+  const targetCol = Number.isFinite(preferredCol) ? preferredCol : col;
+
+  if (direction === "up") {
+    if (row <= 0) {
+      return { moved: false, nextCursorPos: pos, preferredCol: targetCol, boundary: "top" };
+    }
+    return {
+      moved: true,
+      nextCursorPos: inputMath.getCursorPosForRowCol(text, row - 1, targetCol, normalizedWidth, strWidth),
+      preferredCol: targetCol,
+      boundary: "",
+    };
+  }
+
+  if (row >= totalRows - 1) {
+    return { moved: false, nextCursorPos: pos, preferredCol: targetCol, boundary: "bottom" };
+  }
+  return {
+    moved: true,
+    nextCursorPos: inputMath.getCursorPosForRowCol(text, row + 1, targetCol, normalizedWidth, strWidth),
+    preferredCol: targetCol,
+    boundary: "",
+  };
+}
+
+function deleteWordBeforeCursor(inputValue = "", cursorPos = 0) {
+  const text = String(inputValue || "");
+  const pos = clampCursorPos(cursorPos, text);
+  if (pos <= 0) return { value: text, cursorPos: pos };
+  const before = text.slice(0, pos);
+  const after = text.slice(pos);
+  const match = before.match(/\s*\S+\s*$/);
+  const start = match ? pos - match[0].length : Math.max(0, pos - 1);
+  return {
+    value: before.slice(0, start) + after,
+    cursorPos: start,
+  };
+}
+
+function moveCursorByWord(inputValue = "", cursorPos = 0, direction = "forward") {
+  const text = String(inputValue || "");
+  const pos = clampCursorPos(cursorPos, text);
+  if (direction === "backward") {
+    const before = text.slice(0, pos);
+    const trimmedEnd = before.search(/\S\s*$/) >= 0 ? before.replace(/\s+$/, "") : before;
+    const match = trimmedEnd.match(/\S+$/);
+    return match ? trimmedEnd.length - match[0].length : 0;
+  }
+  const after = text.slice(pos);
+  const match = after.match(/^\s*\S+/);
+  return match ? Math.min(text.length, pos + match[0].length) : text.length;
+}
+
 function resolveHistoryDownTransition({
   inputHistory = [],
   historyIndex = 0,
@@ -499,6 +604,11 @@ function runUcodeTui({
     let lastMergedToolGroup = null;
     let toolMergeId = 0;
     let cursorPos = 0;
+    let preferredCol = null;
+    let currentInputHeight = 4;
+    const MIN_INPUT_CONTENT_HEIGHT = 1;
+    const MAX_INPUT_CONTENT_HEIGHT = 8;
+    const DASHBOARD_HEIGHT = 1;
     let autoBusTimer = null;
     let autoBusQueued = false;
     let autoBusError = "";
@@ -510,12 +620,15 @@ function runUcodeTui({
       statusLine,
       completionPanel,
       dashboard,
+      inputTopLine,
       promptBox,
       input,
     } = createChatLayout({
       blessed,
       currentInputHeight: 4,
       version: UCODE_VERSION,
+      logBorder: true,
+      logScrollbar: true,
     });
 
     if (completionPanel && typeof completionPanel.hide === "function") {
@@ -555,6 +668,7 @@ function runUcodeTui({
       promptBox.width = Math.max(2, plain.length + 1);
       input.left = promptBox.width;
       input.width = `100%-${promptBox.width}`;
+      resizeInput();
     };
 
     // --- Cursor position helpers (mirrors chat inputListenerController) ---
@@ -564,6 +678,10 @@ function runUcodeTui({
     };
 
     const getWrapWidth = () => inputMath.getWrapWidth(input, getInnerWidth());
+
+    const resetPreferredCol = () => {
+      preferredCol = null;
+    };
 
     const ensureInputCursorVisible = () => {
       const innerWidth = getWrapWidth();
@@ -581,6 +699,105 @@ function runUcodeTui({
         input.childBase = base;
         if (typeof input.scrollTo === "function") input.scrollTo(base);
       }
+    };
+
+    const resizeInput = () => {
+      const innerWidth = getWrapWidth();
+      if (innerWidth <= 0) return;
+      const totalRows = inputMath.countLines(input.value || "", innerWidth, (v) => input.strWidth(v));
+      const contentHeight = Math.min(
+        MAX_INPUT_CONTENT_HEIGHT,
+        Math.max(MIN_INPUT_CONTENT_HEIGHT, totalRows)
+      );
+      const targetHeight = contentHeight + DASHBOARD_HEIGHT + 2;
+      if (targetHeight !== currentInputHeight) {
+        currentInputHeight = targetHeight;
+        input.height = contentHeight;
+        promptBox.height = contentHeight;
+        if (inputTopLine) inputTopLine.bottom = currentInputHeight - 1;
+      }
+      statusLine.bottom = currentInputHeight;
+      logBox.height = Math.max(1, screen.height - currentInputHeight - 1);
+      ensureInputCursorVisible();
+    };
+
+    const renderInput = () => {
+      resizeInput();
+      ensureInputCursorVisible();
+      input._updateCursor();
+      screen.render();
+    };
+
+    const setCursor = (nextPos) => {
+      cursorPos = clampCursorPos(nextPos, input.value || "");
+      ensureInputCursorVisible();
+      input._updateCursor();
+      screen.render();
+    };
+
+    const setInputValue = (value) => {
+      input.setValue(value || "");
+      cursorPos = (value || "").length;
+      resetPreferredCol();
+      renderInput();
+    };
+
+    const replaceInputRange = (start, end, replacement = "") => {
+      const value = input.value || "";
+      const safeStart = clampCursorPos(start, value);
+      const safeEnd = clampCursorPos(end, value);
+      const from = Math.min(safeStart, safeEnd);
+      const to = Math.max(safeStart, safeEnd);
+      input.value = value.slice(0, from) + String(replacement || "") + value.slice(to);
+      cursorPos = from + String(replacement || "").length;
+      resetPreferredCol();
+      renderInput();
+    };
+
+    const insertTextAtCursor = (text = "") => {
+      const normalized = inputMath.normalizePaste(text);
+      if (!normalized) return;
+      replaceInputRange(cursorPos, cursorPos, normalized);
+    };
+
+    const deleteBeforeCursor = () => {
+      if (cursorPos <= 0) return;
+      replaceInputRange(cursorPos - 1, cursorPos, "");
+    };
+
+    const deleteAtCursor = () => {
+      const value = input.value || "";
+      if (cursorPos >= value.length) return;
+      replaceInputRange(cursorPos, cursorPos + 1, "");
+    };
+
+    const deleteToBoundary = (boundary) => {
+      const value = input.value || "";
+      const innerWidth = getWrapWidth();
+      const target = boundary === "end"
+        ? moveCursorToVisualLineBoundary({
+          cursorPos,
+          inputValue: value,
+          width: innerWidth,
+          boundary: "end",
+          strWidth: (v) => input.strWidth(v),
+        })
+        : moveCursorToVisualLineBoundary({
+          cursorPos,
+          inputValue: value,
+          width: innerWidth,
+          boundary: "start",
+          strWidth: (v) => input.strWidth(v),
+        });
+      if (target === cursorPos && boundary === "end" && value[cursorPos] === "\n") {
+        replaceInputRange(cursorPos, cursorPos + 1, "");
+        return;
+      }
+      if (target === cursorPos && boundary === "start" && value[cursorPos - 1] === "\n") {
+        replaceInputRange(cursorPos - 1, cursorPos, "");
+        return;
+      }
+      replaceInputRange(Math.min(cursorPos, target), Math.max(cursorPos, target), "");
     };
 
     // Override _updateCursor to use our tracked cursorPos
@@ -603,8 +820,8 @@ function runUcodeTui({
     };
 
     // Override _listener to support cursor-aware editing
-    const origDone = input._done ? input._done.bind(input) : null;
     let lastKeyRef = null;
+    let skipSubmitKeyRef = null;
     input._listener = function (ch, key) {
       const keyName = key && key.name;
 
@@ -614,67 +831,159 @@ function runUcodeTui({
       if (key && key === lastKeyRef) return;
       lastKeyRef = key || null;
 
-      // Let enter/return/escape pass through to blessed key handlers
-      if (keyName === "return" || keyName === "enter" || keyName === "escape") return;
+      if (keyName === "escape") return;
+
+      if (keyName === "return" || keyName === "enter") {
+        const value = this.value || "";
+        if (key && (key.shift || key.meta)) {
+          insertTextAtCursor("\n");
+          skipSubmitKeyRef = key || true;
+          return;
+        }
+        if (cursorPos > 0 && value[cursorPos - 1] === "\\") {
+          replaceInputRange(cursorPos - 1, cursorPos, "\n");
+          skipSubmitKeyRef = key || true;
+          return;
+        }
+        return;
+      }
 
       // Arrow keys handled by input.key() handlers below
       if (keyName === "left" || keyName === "right" || keyName === "up" || keyName === "down") return;
 
+      if (key && key.ctrl) {
+        if (keyName === "a") {
+          setCursor(moveCursorToVisualLineBoundary({
+            cursorPos,
+            inputValue: this.value || "",
+            width: getWrapWidth(),
+            boundary: "start",
+            strWidth: (v) => this.strWidth(v),
+          }));
+          resetPreferredCol();
+          return;
+        }
+        if (keyName === "e") {
+          setCursor(moveCursorToVisualLineBoundary({
+            cursorPos,
+            inputValue: this.value || "",
+            width: getWrapWidth(),
+            boundary: "end",
+            strWidth: (v) => this.strWidth(v),
+          }));
+          resetPreferredCol();
+          return;
+        }
+        if (keyName === "b") {
+          setCursor(moveCursorHorizontally(cursorPos, this.value || "", "left"));
+          resetPreferredCol();
+          return;
+        }
+        if (keyName === "f") {
+          setCursor(moveCursorHorizontally(cursorPos, this.value || "", "right"));
+          resetPreferredCol();
+          return;
+        }
+        if (keyName === "d") {
+          deleteAtCursor();
+          return;
+        }
+        if (keyName === "h") {
+          deleteBeforeCursor();
+          return;
+        }
+        if (keyName === "k") {
+          deleteToBoundary("end");
+          return;
+        }
+        if (keyName === "u") {
+          deleteToBoundary("start");
+          return;
+        }
+        if (keyName === "w") {
+          const next = deleteWordBeforeCursor(this.value || "", cursorPos);
+          this.value = next.value;
+          cursorPos = next.cursorPos;
+          resetPreferredCol();
+          renderInput();
+          return;
+        }
+      }
+
+      if (key && key.meta) {
+        if (keyName === "b") {
+          setCursor(moveCursorByWord(this.value || "", cursorPos, "backward"));
+          resetPreferredCol();
+          return;
+        }
+        if (keyName === "f") {
+          setCursor(moveCursorByWord(this.value || "", cursorPos, "forward"));
+          resetPreferredCol();
+          return;
+        }
+        if (keyName === "d") {
+          const end = moveCursorByWord(this.value || "", cursorPos, "forward");
+          replaceInputRange(cursorPos, end, "");
+          return;
+        }
+      }
+
       if (keyName === "backspace") {
-        if (cursorPos > 0 && this.value) {
-          this.value = this.value.slice(0, cursorPos - 1) + this.value.slice(cursorPos);
-          cursorPos -= 1;
-          ensureInputCursorVisible();
-          this._updateCursor();
-          this.screen.render();
+        if (key && (key.meta || key.ctrl)) {
+          const next = deleteWordBeforeCursor(this.value || "", cursorPos);
+          this.value = next.value;
+          cursorPos = next.cursorPos;
+          resetPreferredCol();
+          renderInput();
+        } else {
+          deleteBeforeCursor();
         }
         return;
       }
 
       if (keyName === "delete") {
-        if (this.value && cursorPos < this.value.length) {
-          this.value = this.value.slice(0, cursorPos) + this.value.slice(cursorPos + 1);
-          ensureInputCursorVisible();
-          this._updateCursor();
-          this.screen.render();
+        if (key && key.meta) {
+          deleteToBoundary("end");
+        } else {
+          deleteAtCursor();
         }
         return;
       }
 
       if (keyName === "home") {
-        cursorPos = 0;
-        ensureInputCursorVisible();
-        this._updateCursor();
-        this.screen.render();
+        setCursor(moveCursorToVisualLineBoundary({
+          cursorPos,
+          inputValue: this.value || "",
+          width: getWrapWidth(),
+          boundary: "start",
+          strWidth: (v) => this.strWidth(v),
+        }));
+        resetPreferredCol();
         return;
       }
 
       if (keyName === "end") {
-        cursorPos = (this.value || "").length;
-        ensureInputCursorVisible();
-        this._updateCursor();
-        this.screen.render();
+        setCursor(moveCursorToVisualLineBoundary({
+          cursorPos,
+          inputValue: this.value || "",
+          width: getWrapWidth(),
+          boundary: "end",
+          strWidth: (v) => this.strWidth(v),
+        }));
+        resetPreferredCol();
+        return;
+      }
+
+      if (ch && ch.length > 1 && (!keyName || keyName.length !== 1)) {
+        insertTextAtCursor(ch);
         return;
       }
 
       // Normal character insertion at cursor position
       const insertChar = (ch && ch.length === 1) ? ch : (keyName && keyName.length === 1 ? keyName : null);
       if (insertChar && !/^[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]$/.test(insertChar)) {
-        this.value = (this.value || "").slice(0, cursorPos) + insertChar + (this.value || "").slice(cursorPos);
-        cursorPos += 1;
-        ensureInputCursorVisible();
-        this._updateCursor();
-        this.screen.render();
+        insertTextAtCursor(insertChar);
       }
-    };
-
-    // Helper to set input value and reset cursor to end
-    const setInputValue = (value) => {
-      input.setValue(value || "");
-      cursorPos = (value || "").length;
-      ensureInputCursorVisible();
-      input._updateCursor();
-      screen.render();
     };
 
     const renderDashboard = () => {
@@ -922,7 +1231,7 @@ function runUcodeTui({
         statusInterval = null;
       }
       if (!message) {
-        statusLine.setContent(escapeBlessed(`UCODE · Ready${getBackgroundSuffix()}`));
+        statusLine.setContent(escapeBlessed(`UCODE · Ready · Enter send · Shift/Alt+Enter newline · PgUp/PgDn log · Ctrl+O tools${getBackgroundSuffix()}`));
         screen.render();
         return;
       }
@@ -1321,6 +1630,8 @@ function runUcodeTui({
       const trimmed = raw.trim();
       input.setValue("");
       cursorPos = 0;
+      resetPreferredCol();
+      resizeInput();
       screen.render();
       agentSelectionMode = false;
 
@@ -1345,7 +1656,11 @@ function runUcodeTui({
         });
     };
 
-    input.key(["enter"], () => {
+    input.key(["enter"], (ch, key) => {
+      if (skipSubmitKeyRef && (!key || skipSubmitKeyRef === key || skipSubmitKeyRef === true)) {
+        skipSubmitKeyRef = null;
+        return false;
+      }
       submitInput(input.getValue());
       return false;
     });
@@ -1355,7 +1670,6 @@ function runUcodeTui({
         agentSelectionMode,
         inputValue: currentValue,
       })) {
-        const previousTarget = targetAgent;
         targetAgent = null;
         selectedAgentIndex = -1;
         agentSelectionMode = false;
@@ -1365,12 +1679,43 @@ function runUcodeTui({
         input.focus();
         return false;
       }
-      if (inputHistory.length === 0) return;
+      if (currentValue) {
+        const move = moveCursorVertically({
+          cursorPos,
+          inputValue: currentValue,
+          width: getWrapWidth(),
+          direction: "up",
+          preferredCol,
+          strWidth: (v) => input.strWidth(v),
+        });
+        preferredCol = move.preferredCol;
+        if (move.moved) {
+          setCursor(move.nextCursorPos);
+          return false;
+        }
+      }
+      if (inputHistory.length === 0) return false;
       historyIndex = Math.max(0, historyIndex - 1);
       setInputValue(inputHistory[historyIndex] || "");
+      return false;
     });
     input.key(["down"], () => {
       const currentValue = input.getValue();
+      if (currentValue) {
+        const move = moveCursorVertically({
+          cursorPos,
+          inputValue: currentValue,
+          width: getWrapWidth(),
+          direction: "down",
+          preferredCol,
+          strWidth: (v) => input.strWidth(v),
+        });
+        preferredCol = move.preferredCol;
+        if (move.moved) {
+          setCursor(move.nextCursorPos);
+          return false;
+        }
+      }
       const historyTransition = resolveHistoryDownTransition({
         inputHistory,
         historyIndex,
@@ -1428,10 +1773,8 @@ function runUcodeTui({
       }
       const next = moveCursorHorizontally(cursorPos, currentValue, "left");
       if (next !== cursorPos) {
-        cursorPos = next;
-        ensureInputCursorVisible();
-        input._updateCursor();
-        screen.render();
+        setCursor(next);
+        resetPreferredCol();
       }
       return false;
     });
@@ -1450,10 +1793,8 @@ function runUcodeTui({
       }
       const next = moveCursorHorizontally(cursorPos, currentValue, "right");
       if (next !== cursorPos) {
-        cursorPos = next;
-        ensureInputCursorVisible();
-        input._updateCursor();
-        screen.render();
+        setCursor(next);
+        resetPreferredCol();
       }
       return false;
     });
@@ -1496,6 +1837,14 @@ function runUcodeTui({
       }
       screen.render();
     });
+    screen.key(["pageup"], () => {
+      logBox.scroll(-Math.max(1, Math.floor((logBox.height || 10) / 2)));
+      screen.render();
+    });
+    screen.key(["pagedown"], () => {
+      logBox.scroll(Math.max(1, Math.floor((logBox.height || 10) / 2)));
+      screen.render();
+    });
     input.key(["escape"], () => {
       if (pendingTask && pendingTask.abortController && !pendingTask.abortController.signal.aborted) {
         try {
@@ -1510,11 +1859,10 @@ function runUcodeTui({
         });
         return false;
       }
-      const previousTarget = targetAgent;
       targetAgent = null;
       selectedAgentIndex = -1;
       agentSelectionMode = false;
-      input.setValue("");
+      setInputValue("");
       setPrompt();
       renderDashboard();
       // Target selection cleared - removed redundant log
@@ -1573,6 +1921,13 @@ module.exports = {
   cycleAgentSelectionIndex,
   shouldClearAgentSelectionOnUp,
   moveCursorHorizontally,
+  clampCursorPos,
+  findLogicalLineStart,
+  findLogicalLineEnd,
+  moveCursorToVisualLineBoundary,
+  moveCursorVertically,
+  deleteWordBeforeCursor,
+  moveCursorByWord,
   resolveHistoryDownTransition,
   filterSelectableAgents,
   stripLeakedEscapeTags,

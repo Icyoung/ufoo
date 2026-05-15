@@ -108,6 +108,19 @@ describe("chat inputListenerController", () => {
     expect(textarea._done).not.toHaveBeenCalled();
   });
 
+  test("meta+enter inserts newline and backslash+enter converts to newline", () => {
+    const { controller, options, textarea, state } = createHarness();
+    controller.handleKey("", { name: "enter", meta: true }, textarea);
+    expect(options.insertTextAtCursor).toHaveBeenCalledWith("\n");
+
+    textarea.value = "hello\\";
+    state.cursorPos = 6;
+    controller.handleKey("", { name: "enter" }, textarea);
+    expect(textarea.value).toBe("hello\n");
+    expect(options.setCursorPos).toHaveBeenLastCalledWith(6);
+    expect(textarea._done).not.toHaveBeenCalled();
+  });
+
   test("enter submits current input", () => {
     const { controller, options, textarea } = createHarness();
     textarea.value = "hello";
@@ -140,6 +153,23 @@ describe("chat inputListenerController", () => {
     expect(h2.completionController.hide).toHaveBeenCalled();
   });
 
+  test("up/down move cursor within multiline before history or dashboard", () => {
+    const { controller, options, state, textarea } = createHarness({
+      getCursorRowCol: jest.fn(() => ({ row: 1, col: 2 })),
+      countLines: jest.fn(() => 3),
+      getCursorPosForRowCol: jest.fn(() => 4),
+    });
+    textarea.value = "line1\nline2";
+    state.cursorPos = 8;
+
+    controller.handleKey("", { name: "up" }, textarea);
+
+    expect(options.historyUp).not.toHaveBeenCalled();
+    expect(options.setPreferredCol).toHaveBeenCalledWith(2);
+    expect(options.setCursorPos).toHaveBeenCalledWith(4);
+    expect(options.enterDashboardMode).not.toHaveBeenCalled();
+  });
+
   test("down at last row enters dashboard mode", () => {
     const { controller, options, textarea } = createHarness({
       getCursorRowCol: jest.fn(() => ({ row: 2, col: 4 })),
@@ -150,6 +180,21 @@ describe("chat inputListenerController", () => {
     textarea.value = "abc";
     controller.handleKey("", { name: "down" }, textarea);
     expect(options.enterDashboardMode).toHaveBeenCalled();
+  });
+
+  test("down at last row advances recalled history before dashboard", () => {
+    const { controller, options, completionController, textarea } = createHarness({
+      getCursorRowCol: jest.fn(() => ({ row: 0, col: 3 })),
+      countLines: jest.fn(() => 1),
+      historyDown: jest.fn(() => true),
+    });
+    textarea.value = "abc";
+
+    controller.handleKey("", { name: "down" }, textarea);
+
+    expect(options.historyDown).toHaveBeenCalled();
+    expect(completionController.hide).toHaveBeenCalled();
+    expect(options.enterDashboardMode).not.toHaveBeenCalled();
   });
 
   test("down enters dashboard mode when wrap width is unavailable", () => {
@@ -184,6 +229,35 @@ describe("chat inputListenerController", () => {
 
     expect(textarea.value).toBe("@a");
     expect(completionController.show).toHaveBeenCalledWith("@a");
+  });
+
+  test("ctrl/meta editing shortcuts mutate text like shell input", () => {
+    const { controller, options, state, textarea } = createHarness();
+    textarea.value = "alpha beta";
+    state.cursorPos = textarea.value.length;
+
+    controller.handleKey("", { name: "w", ctrl: true }, textarea);
+
+    expect(textarea.value).toBe("alpha");
+    expect(options.setCursorPos).toHaveBeenCalledWith(5);
+    expect(options.updateDraftFromInput).toHaveBeenCalled();
+
+    controller.handleKey("", { name: "b", meta: true }, textarea);
+    expect(options.setCursorPos).toHaveBeenLastCalledWith(0);
+  });
+
+  test("home/end move to visual line boundaries", () => {
+    const { controller, options, state, textarea } = createHarness({
+      getCursorRowCol: jest.fn(() => ({ row: 1, col: 2 })),
+      getCursorPosForRowCol: jest.fn((value, row, col) => (col === 0 ? 3 : 6)),
+    });
+    textarea.value = "abcdef";
+    state.cursorPos = 4;
+
+    controller.handleKey("", { name: "home" }, textarea);
+    expect(options.setCursorPos).toHaveBeenCalledWith(3);
+    controller.handleKey("", { name: "end" }, textarea);
+    expect(options.setCursorPos).toHaveBeenCalledWith(6);
   });
 
   test("printable char inserts and updates completion", () => {
