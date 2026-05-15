@@ -739,6 +739,10 @@ function startBusBridge(projectRoot, provider, onEvent, onStatus, shouldDrain) {
     subscriber: null,
     queueFile: null,
     pending: new Set(),
+    watchedAgents: new Set(),
+    lastEventSeq: 0,
+    emittedEventKeys: [],
+    emittedEventKeySet: new Set(),
   };
   const eventBus = new EventBus(projectRoot);
   let joinInProgress = false;
@@ -756,6 +760,169 @@ function startBusBridge(projectRoot, provider, onEvent, onStatus, shouldDrain) {
       // Ignore errors, return original ID
     }
     return agentId;
+  }
+
+  function getEventDedupeKey(evt) {
+    if (!evt || typeof evt !== "object") return "";
+    const seq = Number(evt.seq);
+    if (Number.isFinite(seq) && seq > 0) return `seq:${seq}`;
+    return [
+      "event",
+      evt.timestamp || evt.ts || "",
+      evt.event || "",
+      evt.publisher || "",
+      evt.target || "",
+      JSON.stringify(evt.data || {}),
+    ].join(":");
+  }
+
+  function rememberEmittedEvent(evt) {
+    const key = getEventDedupeKey(evt);
+    if (!key) return false;
+    if (state.emittedEventKeySet.has(key)) return true;
+    state.emittedEventKeySet.add(key);
+    state.emittedEventKeys.push(key);
+    if (state.emittedEventKeys.length > 500) {
+      const removed = state.emittedEventKeys.splice(0, state.emittedEventKeys.length - 500);
+      for (const item of removed) state.emittedEventKeySet.delete(item);
+    }
+    return false;
+  }
+
+  function hasPositiveSeq(seq) {
+    const value = Number(seq);
+    return Number.isFinite(value) && value > 0;
+  }
+
+  function toBridgeEvent(evt) {
+    const data = evt.data && typeof evt.data === "object" ? evt.data : {};
+    return {
+      seq: evt.seq,
+      event: evt.event,
+      publisher: evt.publisher,
+      target: evt.target,
+      data,
+      message: data.message || "",
+      state: data.state || "",
+      previous: data.previous || "",
+      subscriber: data.subscriber || "",
+      source: data.source || "",
+      injection_mode: data.injection_mode || "",
+      ts: evt.timestamp || evt.ts,
+    };
+  }
+
+  function emitBusEvent(evt) {
+    if (!evt || !onEvent) return;
+    if (rememberEmittedEvent(evt)) return;
+    onEvent(toBridgeEvent(evt));
+  }
+
+  function readAgentsData() {
+    try {
+      const busPath = getUfooPaths(projectRoot).agentsFile;
+      return JSON.parse(fs.readFileSync(busPath, "utf8"));
+    } catch {
+      return {};
+    }
+  }
+
+  function buildWatchedAliases() {
+    const aliases = new Set();
+    const bus = readAgentsData();
+    for (const agentId of state.watchedAgents) {
+      aliases.add(agentId);
+      const meta = bus.agents && bus.agents[agentId];
+      if (!meta) continue;
+      if (meta.nickname) aliases.add(meta.nickname);
+      if (meta.scoped_nickname) aliases.add(meta.scoped_nickname);
+      if (meta.display_nickname) aliases.add(meta.display_nickname);
+    }
+    return aliases;
+  }
+
+  function isWatchedEvent(evt, aliases = buildWatchedAliases()) {
+    if (!evt || (evt.event !== "message" && evt.event !== "activity_state_changed")) return false;
+    const publisher = String(evt.publisher || "");
+    const target = String(evt.target || "");
+    const subscriber = evt.data && evt.data.subscriber ? String(evt.data.subscriber) : "";
+    return aliases.has(publisher) || aliases.has(target) || aliases.has(subscriber);
+  }
+
+  function getEventFiles() {
+    try {
+      const dir = getUfooPaths(projectRoot).busEventsDir;
+      return fs.readdirSync(dir)
+        .filter((name) => name.endsWith(".jsonl"))
+        .sort()
+        .map((name) => path.join(dir, name));
+    } catch {
+      return [];
+    }
+  }
+
+  function readCurrentSeq() {
+    try {
+      const raw = fs.readFileSync(path.join(getUfooPaths(projectRoot).busDir, "seq.counter"), "utf8").trim();
+      const seq = Number(raw);
+      return Number.isFinite(seq) ? seq : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  function readEventFile(file) {
+    try {
+      return fs.readFileSync(file, "utf8")
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((line) => {
+          try {
+            return JSON.parse(line);
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
+  function emitRecentWatchedEvents(agentId, limit = 80) {
+    if (!agentId) return;
+    const previous = new Set(state.watchedAgents);
+    state.watchedAgents.add(agentId);
+    const aliases = buildWatchedAliases();
+    state.watchedAgents = previous;
+    const matches = [];
+    const files = getEventFiles().slice(-3);
+    for (const file of files) {
+      for (const evt of readEventFile(file)) {
+        if (isWatchedEvent(evt, aliases)) matches.push(evt);
+      }
+    }
+    for (const evt of matches.slice(-limit)) emitBusEvent(evt);
+  }
+
+  function pollWatchedEvents() {
+    if (state.watchedAgents.size === 0) {
+      state.lastEventSeq = readCurrentSeq();
+      return;
+    }
+    const aliases = buildWatchedAliases();
+    let maxSeq = state.lastEventSeq;
+    for (const file of getEventFiles().slice(-2)) {
+      for (const evt of readEventFile(file)) {
+        const seq = Number(evt.seq);
+        if (hasPositiveSeq(seq)) {
+          if (seq <= state.lastEventSeq) continue;
+          if (seq > maxSeq) maxSeq = seq;
+        }
+        if (isWatchedEvent(evt, aliases)) emitBusEvent(evt);
+      }
+    }
+    state.lastEventSeq = Math.max(state.lastEventSeq, maxSeq);
   }
 
   function ensureSubscriber() {
@@ -785,9 +952,7 @@ function startBusBridge(projectRoot, provider, onEvent, onStatus, shouldDrain) {
     })();
   }
 
-  function poll() {
-    ensureSubscriber();
-    if (typeof shouldDrain === "function" && !shouldDrain()) return;
+  function pollQueue() {
     if (!state.queueFile) return;
     if (!fs.existsSync(state.queueFile)) return;
     let content = "";
@@ -828,15 +993,7 @@ function startBusBridge(projectRoot, provider, onEvent, onStatus, shouldDrain) {
         continue;
       }
       if (!evt) continue;
-      if (onEvent) {
-        onEvent({
-          event: evt.event,
-          publisher: evt.publisher,
-          target: evt.target,
-          message: evt.data?.message || "",
-          ts: evt.timestamp || evt.ts,
-        });
-      }
+      emitBusEvent(evt);
       if (evt.publisher && state.pending.has(evt.publisher)) {
         state.pending.delete(evt.publisher);
         if (onStatus) {
@@ -845,6 +1002,13 @@ function startBusBridge(projectRoot, provider, onEvent, onStatus, shouldDrain) {
         }
       }
     }
+  }
+
+  function poll() {
+    ensureSubscriber();
+    if (typeof shouldDrain === "function" && !shouldDrain()) return;
+    pollQueue();
+    pollWatchedEvents();
   }
 
   const interval = setInterval(poll, 1000);
@@ -864,6 +1028,19 @@ function startBusBridge(projectRoot, provider, onEvent, onStatus, shouldDrain) {
           `subscriber: ${state.subscriber || "NULL"}\nqueue: ${state.queueFile || "NULL"}\n`);
       } catch {}
       return state.subscriber;
+    },
+    watchAgent(agentId, enabled = true) {
+      if (!agentId) return;
+      if (enabled) {
+        emitRecentWatchedEvents(agentId);
+        state.watchedAgents.add(agentId);
+        state.lastEventSeq = Math.max(state.lastEventSeq, readCurrentSeq());
+      } else {
+        state.watchedAgents.delete(agentId);
+        if (state.watchedAgents.size === 0) {
+          state.lastEventSeq = readCurrentSeq();
+        }
+      }
     },
     stop() {
       clearInterval(interval);
@@ -1184,6 +1361,13 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
           })}
 `,
         );
+      }
+      return;
+    }
+    if (req.type === IPC_REQUEST_TYPES.BUS_WATCH) {
+      const agentId = String(req.agent_id || "").trim();
+      if (agentId) {
+        busBridge.watchAgent(agentId, req.enabled !== false);
       }
       return;
     }

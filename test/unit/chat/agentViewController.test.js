@@ -46,6 +46,7 @@ function createHarness(overrides = {}) {
   const disconnectAgentInput = jest.fn();
   const sendRaw = jest.fn();
   const sendBusMessage = jest.fn();
+  const sendBusWatch = jest.fn();
   const sendResize = jest.fn();
   const requestScreenSnapshot = jest.fn();
   const setFocusMode = jest.fn((value) => { focusMode = value; });
@@ -97,6 +98,7 @@ function createHarness(overrides = {}) {
     disconnectAgentInput,
     sendRaw,
     sendBusMessage,
+    sendBusWatch,
     sendResize,
     requestScreenSnapshot,
     ...overrides,
@@ -113,6 +115,7 @@ function createHarness(overrides = {}) {
     disconnectAgentInput,
     sendRaw,
     sendBusMessage,
+    sendBusWatch,
     sendResize,
     requestScreenSnapshot,
     setFocusMode,
@@ -165,6 +168,7 @@ describe("chat agentViewController", () => {
       connectAgentOutput,
       connectAgentInput,
       processStdout,
+      sendBusWatch,
     } = createHarness();
 
     controller.enterAgentView("codex:1", { useBus: true });
@@ -173,6 +177,7 @@ describe("chat agentViewController", () => {
     expect(controller.isAgentViewUsesBus()).toBe(true);
     expect(connectAgentOutput).not.toHaveBeenCalled();
     expect(connectAgentInput).not.toHaveBeenCalled();
+    expect(sendBusWatch).toHaveBeenCalledWith("codex:1", true);
     expect(output).toContain("╭");
     expect(output).toContain(">_ OpenAI Codex (ufoo v");
     expect(output).toContain("model:     codex:1 · managed headless");
@@ -186,6 +191,16 @@ describe("chat agentViewController", () => {
     expect(output).not.toContain("│> ");
   });
 
+  test("exitAgentView unsubscribes internal bus watch", () => {
+    const { controller, sendBusWatch } = createHarness();
+
+    controller.enterAgentView("codex:1", { useBus: true });
+    controller.exitAgentView();
+
+    expect(sendBusWatch).toHaveBeenCalledWith("codex:1", true);
+    expect(sendBusWatch).toHaveBeenCalledWith("codex:1", false);
+  });
+
   test("enterAgentView in claude internal bus mode renders claude-style header", () => {
     const { controller, processStdout } = createHarness();
 
@@ -195,10 +210,10 @@ describe("chat agentViewController", () => {
     const plain = stripAnsi(output);
     expect(output).toContain("\x1b[38;2;217;119;87m▐▛███▜▌\x1b[0m");
     expect(output).toContain("\x1b[38;2;217;119;87m▝▜█████▛▘\x1b[0m");
-    expect(output).toContain("\x1b[38;2;217;119;87m▘▘▝▝\x1b[0m");
-    expect(plain).toContain("▐▛███▜▌ ClaudeCodev");
+    expect(output).toContain("\x1b[38;2;217;119;87m ▘▘▝▝\x1b[0m");
+    expect(plain).toContain("▐▛███▜▌  ClaudeCodev");
     expect(plain).toContain("▝▜█████▛▘claude-code:1 · managed headless");
-    expect(plain).toContain("▘▘▝▝    ~/Code/ufoo");
+    expect(plain).toContain(" ▘▘▝▝    ~/Code/ufoo");
     expect(output).not.toContain("Welcome to ufoo internal");
   });
 
@@ -261,6 +276,28 @@ describe("chat agentViewController", () => {
     expect(lines.length).toBeGreaterThan(0);
     expect(lines.every((line) => line.length <= resizeStdout.columns)).toBe(true);
     expect(lines.join("\n")).toContain("OpenAI Codex");
+  });
+
+  test("internal resize uses blessed screen dimensions when available", () => {
+    const { controller, screen, processStdout, sendResize } = createHarness();
+    screen.width = 44;
+    screen.height = 18;
+    processStdout.columns = 100;
+    processStdout.rows = 30;
+
+    controller.enterAgentView("codex:1", { useBus: true });
+    sendResize.mockClear();
+    processStdout.write.mockClear();
+
+    expect(controller.handleResizeInAgentView()).toBe(true);
+    expect(sendResize).toHaveBeenCalledWith(44, 17);
+
+    const lines = processStdout.write.mock.calls
+      .map((call) => call[0])
+      .filter((value) => value.includes("╭") || value.includes("│ ") || value.includes("╰"))
+      .map((value) => stripAnsi(value.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")));
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines.every((line) => line.length <= 44)).toBe(true);
   });
 
   test("internal bus mode positions cursor by display width for wide input", () => {

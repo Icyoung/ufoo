@@ -245,6 +245,29 @@ describe("chat commandExecutor", () => {
     expect(options.renderScreen).toHaveBeenCalled();
   });
 
+  test("handleSkillsCommand list labels skills as built-in ufoo capabilities", async () => {
+    const { executor, logs, skills, options } = createHarness();
+    skills.list.mockReturnValue(["ubus", "uctx"]);
+
+    await executor.handleSkillsCommand(["list"]);
+
+    expect(logs.some((entry) => entry.text.includes("Available built-in ufoo skills"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("ubus"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("uctx"))).toBe(true);
+    expect(options.renderScreen).toHaveBeenCalled();
+  });
+
+  test("handleSkillsCommand treats bare /skills as list", async () => {
+    const { executor, logs, skills, options } = createHarness();
+    skills.list.mockReturnValue(["ufoo"]);
+
+    await executor.handleSkillsCommand([]);
+
+    expect(logs.some((entry) => entry.text.includes("Available built-in ufoo skills"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("ufoo"))).toBe(true);
+    expect(options.renderScreen).toHaveBeenCalled();
+  });
+
   test("handleLaunchCommand parses nickname/count and schedules refresh", async () => {
     const { executor, options, logs } = createHarness();
 

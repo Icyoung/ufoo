@@ -448,12 +448,12 @@ function createCommandExecutor(options = {}) {
         try {
           const skills = createSkills(projectRoot);
 
-          if (subcommand === "list") {
+          if (!subcommand || subcommand === "list") {
             const skillList = skills.list();
             if (skillList.length === 0) {
-              logMessage("system", "{white-fg}No skills found{/white-fg}");
+              logMessage("system", "{white-fg}No built-in ufoo skills found{/white-fg}");
             } else {
-              logMessage("system", `{cyan-fg}Available skills:{/cyan-fg} ${skillList.length}`);
+              logMessage("system", `{cyan-fg}Available built-in ufoo skills:{/cyan-fg} ${skillList.length}`);
               for (const skill of skillList) {
                 logMessage("system", `  • ${skill}`);
               }

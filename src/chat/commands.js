@@ -129,10 +129,10 @@ const COMMAND_TREE = {
     },
   },
   "/skills": {
-    desc: "Skills management",
+    desc: "List ufoo built-in skills and preset workflows",
     children: {
-      install: { desc: "Install skills (use: all or name)" },
-      list: { desc: "List available skills" },
+      install: { desc: "Install built-in skills (use: all or name)" },
+      list: { desc: "List built-in skills for discovery" },
     },
   },
   "/status": { desc: "Status display" },

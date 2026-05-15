@@ -1581,6 +1581,14 @@ async function runChat(projectRoot, options = {}) {
         source: "chat-internal-agent-view",
       });
     },
+    sendBusWatch: (agentId, enabled) => {
+      if (!agentId) return;
+      send({
+        type: IPC_REQUEST_TYPES.BUS_WATCH,
+        agent_id: agentId,
+        enabled: enabled !== false,
+      });
+    },
     sendResize: (cols, rows) => {
       sendResizeWithCapabilities(cols, rows);
     },
@@ -1612,6 +1620,21 @@ async function runChat(projectRoot, options = {}) {
     getCurrentView: () => getCurrentView(),
     isAgentViewUsesBus: () => isAgentViewUsesBus(),
     getViewingAgent: () => getViewingAgent(),
+    isAgentEventForViewingAgent: (data, viewingAgent, publisher) => {
+      if (!viewingAgent) return false;
+      const label = getAgentLabel(viewingAgent);
+      const candidates = [
+        publisher,
+        data && data.publisher,
+        data && data.target,
+        data && data.subscriber,
+      ].filter(Boolean);
+      return candidates.some((value) => (
+        value === viewingAgent ||
+        value === label ||
+        resolveAgentId(value) === viewingAgent
+      ));
+    },
     writeToAgentTerm,
     consumePendingDelivery,
     getPendingState,

@@ -133,7 +133,9 @@ ufoo resume <ucode|uclaude|ucodex|nickname>
 ufoo recover list
 ```
 
-常见 chat 命令包括 `/status`、`/bus list`、`/bus status`、`/settings`、`/project list`、`/project switch <index|path>`、`/open <path>`、`/resume list`、`/group status` 和 `@nickname <message>`。
+常见 chat 命令包括 `/status`、`/bus list`、`/bus status`、`/settings`、`/project list`、`/project switch <index|path>`、`/open <path>`、`/resume list`、`/group status`、`/skills` 和 `@nickname <message>`。
+
+在 `ufoo chat` 中，`/skills` 用于列出 ufoo 内置的可用 skills 和预设工作流能力，方便用户发现和选择。它本身不等于执行任务，也不表示某个 agent 的私有能力列表。
 
 ### 事件总线
 
@@ -211,7 +213,11 @@ ufoo ucode build
 ucode-core submit --tool read --args-json '{"path":"README.md"}' --json
 ucode-core run-once --json
 ucode-core list --json
+ucode-core skills list --json
+ucode-core skills show <name>
 ```
+
+`ucode-core skills list` 用于发现 ufoo/ucode 内置和本地 `SKILL.md` 预设工作流能力，输出的是供选择的元数据；完整 skill 内容只会在用户显式引用 `$demo` 或直接链接某个 `SKILL.md` 时由 ucode 加载。
 
 ## 命令参考
 
@@ -228,7 +234,7 @@ ucode-core list --json
 | Online | `ufoo online server|token|room|channel|connect|send|inbox` |
 | History | `ufoo history build|show|prompt` |
 | Skills | `ufoo skills list|install` |
-| Chat 设置 | `/settings`, `/settings agent`, `/settings router`, `/settings ucode` |
+| Chat 命令 | `/skills`, `/settings`, `/settings agent`, `/settings router`, `/settings ucode` |
 
 ## 配置
 

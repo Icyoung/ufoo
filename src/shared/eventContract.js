@@ -5,6 +5,7 @@ const IPC_REQUEST_TYPES = {
   PROMPT: "prompt",
   CRON: "cron",
   BUS_SEND: "bus_send",
+  BUS_WATCH: "bus_watch",
   CLOSE_AGENT: "close_agent",
   LAUNCH_AGENT: "launch_agent",
   LAUNCH_GROUP: "launch_group",

@@ -25,6 +25,12 @@ const {
   loadSessionSnapshot,
 } = require("./sessionStore");
 const { buildPromptContext } = require("./prompts");
+const {
+  buildSkillInjections,
+  formatSkillsList,
+  listUcodeSkills,
+  showSkill,
+} = require("./skills");
 
 function printPrompt() {
   process.stdout.write("> ");
@@ -243,6 +249,61 @@ function createToolLogCollector(logs = [], onToolLog = null) {
   };
 }
 
+function pushSkillWarning(logs = [], onToolLog = null, warning = "") {
+  const text = String(warning || "").trim();
+  if (!text) return null;
+  const entry = {
+    type: "skills",
+    phase: "warning",
+    message: text,
+    error: text,
+  };
+  if (Array.isArray(logs)) logs.push(entry);
+  if (typeof onToolLog === "function") {
+    try {
+      onToolLog(entry);
+    } catch {
+      // ignore callback failures
+    }
+  }
+  return entry;
+}
+
+function stripSkillBlocksFromText(value = "") {
+  return String(value || "")
+    .replace(/<skill>\s*[\s\S]*?<\/skill>\s*/g, "")
+    .trim();
+}
+
+function stripSkillBlocksFromMessages(messages = []) {
+  if (!Array.isArray(messages)) return [];
+  return messages.map((message) => {
+    if (!message || typeof message !== "object" || Array.isArray(message)) return message;
+    if (typeof message.content === "string") {
+      return {
+        ...message,
+        content: stripSkillBlocksFromText(message.content),
+      };
+    }
+    if (Array.isArray(message.content)) {
+      return {
+        ...message,
+        content: message.content.map((item) => {
+          if (!item || typeof item !== "object" || Array.isArray(item)) return item;
+          if (typeof item.text === "string") {
+            return {
+              ...item,
+              text: stripSkillBlocksFromText(item.text),
+            };
+          }
+          return item;
+        }),
+      };
+    }
+    return message;
+  });
+}
+
 function isProjectAnalysisTask(task = "") {
   const text = String(task || "").trim().toLowerCase();
   if (!text) return false;
@@ -398,6 +459,16 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
   const taskPrompt = analysisTask
     ? `${taskText}\n\nAnalysis requirements:\n- Inspect repository evidence before concluding.\n- Cite concrete file observations.\n- Keep findings concise and actionable.`
     : taskText;
+  const skillInjections = buildSkillInjections({
+    prompt: taskPrompt,
+    workspaceRoot,
+  });
+  for (const warning of skillInjections.warnings || []) {
+    pushSkillWarning(logs, onToolLog, warning);
+  }
+  const effectiveTaskPrompt = Array.isArray(skillInjections.blocks) && skillInjections.blocks.length > 0
+    ? `${skillInjections.blocks.join("\n\n")}\n\n${taskPrompt}`
+    : taskPrompt;
   const systemContext = [String(state.context || "").trim(), preflightContext]
     .filter(Boolean)
     .join("\n\n");
@@ -422,7 +493,7 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
     workspaceRoot,
     provider,
     model,
-    prompt: taskPrompt,
+    prompt: effectiveTaskPrompt,
     systemPrompt: systemContext,
     messages: Array.isArray(state.nlMessages) ? state.nlMessages : [],
     sessionId: String(sessionIdValue || ""),
@@ -440,7 +511,7 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
     // Use decomposed runner for bug fix tasks
     if (useDecomposition) {
       const decomposedResult = await runDecomposedTask({
-        task: taskText,
+        task: effectiveTaskPrompt,
         state,
         onProgress: options.onProgress,
         onToolEvent: pushToolLog,
@@ -497,7 +568,7 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
       state.sessionId = cliRes.sessionId.trim();
     }
     if (cliRes && Array.isArray(cliRes.messages)) {
-      state.nlMessages = cliRes.messages;
+      state.nlMessages = stripSkillBlocksFromMessages(cliRes.messages);
     }
     const normalized = String(cliRes.output || "").trim();
     const summary = extractJsonSummary(normalized);
@@ -1235,6 +1306,8 @@ function runSingleCommand(line = "", workspaceRoot = process.cwd()) {
         "  help",
         "  exit|quit",
         "  ubus|/ubus",
+        "  skills [list]",
+        "  skills show <name>",
         "  bg|/bg <task>",
         "  resume <session-id>",
         "  tool <read|write|edit|bash> <args-json>",
@@ -1252,6 +1325,45 @@ function runSingleCommand(line = "", workspaceRoot = process.cwd()) {
   if (text === "ubus" || text === "/ubus") {
     return {
       kind: "ubus",
+    };
+  }
+  const skillsMatch = text.match(/^(?:\/skills|skills)(?:\s+(.*))?$/i);
+  if (skillsMatch) {
+    const args = String(skillsMatch[1] || "").trim().split(/\s+/).filter(Boolean);
+    const action = String(args[0] || "list").toLowerCase();
+    if (action === "list" || action === "ls") {
+      const outcome = listUcodeSkills({ workspaceRoot });
+      return {
+        kind: "skills",
+        output: formatSkillsList(outcome),
+        skills: outcome.skills,
+        errors: outcome.errors,
+      };
+    }
+    if (action === "show") {
+      const name = String(args[1] || "").trim();
+      if (!name) {
+        return {
+          kind: "error",
+          output: "usage: skills show <name>",
+        };
+      }
+      const result = showSkill({ name, workspaceRoot });
+      if (!result.ok) {
+        return {
+          kind: "error",
+          output: result.error,
+        };
+      }
+      return {
+        kind: "skills",
+        output: result.output,
+        skill: result.skill,
+      };
+    }
+    return {
+      kind: "error",
+      output: "usage: skills [list] | skills show <name>",
     };
   }
   if (text === "bg" || text === "/bg") {
@@ -1498,7 +1610,7 @@ async function runUcodeCoreAgent({
       if (result.kind === "probe") {
         return;
       }
-      if (result.kind === "help" || result.kind === "tool" || result.kind === "error") {
+      if (result.kind === "help" || result.kind === "tool" || result.kind === "skills" || result.kind === "error") {
         stdout.write(`${result.output}\n`);
       }
       if (result.kind === "ubus") {
@@ -1701,6 +1813,8 @@ module.exports = {
   normalizeToolLogEvent,
   isProjectAnalysisTask,
   buildNlFallbackSummary,
+  buildNlContext,
+  stripSkillBlocksFromMessages,
   resolvePlannerProvider,
   extractJsonSummary,
   enrichNativeError,

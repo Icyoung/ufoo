@@ -4,6 +4,11 @@ const {
   listResults,
 } = require("./runtime");
 const { runUcodeCoreAgent } = require("./agent");
+const {
+  formatSkillsList,
+  listUcodeSkills,
+  showSkill,
+} = require("./skills");
 
 function parseArgs(argv = []) {
   const args = Array.isArray(argv) ? argv.slice() : [];
@@ -16,11 +21,21 @@ function parseArgs(argv = []) {
     max: 1,
     num: 20,
     taskId: "",
+    skillsAction: "",
+    skillsName: "",
   };
 
   for (let i = 1; i < args.length; i += 1) {
     const item = String(args[i] || "").trim();
     if (!item) continue;
+    if (out.command === "skills" && !item.startsWith("-")) {
+      if (!out.skillsAction) {
+        out.skillsAction = item.toLowerCase();
+      } else if (!out.skillsName) {
+        out.skillsName = item;
+      }
+      continue;
+    }
     if (item === "--json") {
       out.json = true;
       continue;
@@ -69,6 +84,8 @@ function usage() {
     "  submit --tool <read|write|edit|bash> --args-json <json> [--workspace <path>] [--task-id <id>]",
     "  run-once [--max <n>] [--workspace <path>]",
     "  list [--num <n>]",
+    "  skills list [--workspace <path>]",
+    "  skills show <name> [--workspace <path>]",
     "",
     "Flags:",
     "  --json    Output JSON",
@@ -145,6 +162,36 @@ async function runUcodeCoreCli({
     }
     const lines = rows.map((row) => `${row.task_id || "-"} ${row.tool || "-"} ${row.ok === false ? "error" : "ok"}`);
     return { exitCode: 0, output: `${lines.join("\n")}${lines.length ? "\n" : ""}` };
+  }
+
+  if (cmd === "skills") {
+    const action = options.skillsAction || "list";
+    const workspaceRoot = options.workspace || projectRoot;
+    if (action === "list" || action === "ls") {
+      const outcome = listUcodeSkills({ workspaceRoot });
+      if (options.json) {
+        return { exitCode: 0, output: `${JSON.stringify({ ok: true, ...outcome })}\n` };
+      }
+      return { exitCode: 0, output: `${formatSkillsList(outcome)}\n` };
+    }
+    if (action === "show") {
+      if (!options.skillsName) {
+        return { exitCode: 1, output: "skills show requires <name>\n" };
+      }
+      const result = showSkill({
+        name: options.skillsName,
+        workspaceRoot,
+        asJson: options.json,
+      });
+      if (!result.ok) {
+        return { exitCode: 1, output: `${options.json ? JSON.stringify({ ok: false, error: result.error }) : result.error}\n` };
+      }
+      if (options.json) {
+        return { exitCode: 0, output: `${JSON.stringify(result)}\n` };
+      }
+      return { exitCode: 0, output: `${result.output}\n` };
+    }
+    return { exitCode: 1, output: "unknown skills command: use list or show\n" };
   }
 
   return { exitCode: 1, output: `unknown command: ${cmd}\n` };

@@ -19,6 +19,8 @@ function createDaemonMessageRouter(options = {}) {
     getCurrentView = () => "main",
     isAgentViewUsesBus = () => false,
     getViewingAgent = () => "",
+    isAgentEventForViewingAgent = (data, viewingAgent, publisher) =>
+      Boolean(viewingAgent && (publisher === viewingAgent || data?.target === viewingAgent)),
     writeToAgentTerm = () => {},
     consumePendingDelivery = () => false,
     getPendingState = () => null,
@@ -352,6 +354,19 @@ function createDaemonMessageRouter(options = {}) {
   function handleBusMessage(msg) {
     const data = msg.data || {};
     if (data.event === "activity_state_changed") {
+      const publisher = data.publisher && data.publisher !== "unknown"
+        ? data.publisher
+        : (data.subscriber || "bus");
+      const viewingAgent = getViewingAgent();
+      if (
+        getCurrentView() === "agent" &&
+        isAgentViewUsesBus() &&
+        viewingAgent &&
+        isAgentEventForViewingAgent(data, viewingAgent, publisher)
+      ) {
+        const state = data.state || (data.data && data.data.state) || "";
+        if (state) writeToAgentTerm(`[state] ${state}\r\n`);
+      }
       requestStatus();
       return true;
     }
@@ -375,11 +390,12 @@ function createDaemonMessageRouter(options = {}) {
     if (data.silent && !streamPayload) return true;
     if (!displayMessage && !streamPayload) return true;
 
+    const viewingAgent = getViewingAgent();
     const isAgentViewTarget =
       getCurrentView() === "agent" &&
       isAgentViewUsesBus() &&
-      getViewingAgent() &&
-      publisher === getViewingAgent();
+      viewingAgent &&
+      isAgentEventForViewingAgent(data, viewingAgent, publisher);
 
     const displayName = resolveAgentDisplayName(publisher);
 

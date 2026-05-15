@@ -164,6 +164,30 @@ describe("chat daemonMessageRouter", () => {
     expect(options.writeToAgentTerm).toHaveBeenCalledWith("hello\nworld\r\n");
   });
 
+  test("agent view bus passthrough accepts watched target events", () => {
+    const { router, options } = createHarness({
+      getCurrentView: jest.fn(() => "agent"),
+      isAgentViewUsesBus: jest.fn(() => true),
+      getViewingAgent: jest.fn(() => "codex:1"),
+      isAgentEventForViewingAgent: jest.fn((data, viewingAgent, publisher) =>
+        publisher === viewingAgent || data.target === viewingAgent
+      ),
+    });
+
+    const stop = router.handleMessage({
+      type: IPC_RESPONSE_TYPES.BUS,
+      data: {
+        event: "message",
+        publisher: "ufoo-agent",
+        target: "codex:1",
+        message: "assigned task",
+      },
+    });
+
+    expect(stop).toBe(true);
+    expect(options.writeToAgentTerm).toHaveBeenCalledWith("assigned task\r\n");
+  });
+
   test("delivery event consumes pending and requests status without logging to chat", () => {
     const { router, options } = createHarness({
       consumePendingDelivery: jest.fn(() => true),
@@ -201,6 +225,29 @@ describe("chat daemonMessageRouter", () => {
     expect(stop).toBe(true);
     expect(options.requestStatus).toHaveBeenCalledTimes(1);
     expect(options.logMessage).not.toHaveBeenCalled();
+  });
+
+  test("activity_state_changed writes visible state in internal agent view", () => {
+    const { router, options } = createHarness({
+      getCurrentView: jest.fn(() => "agent"),
+      isAgentViewUsesBus: jest.fn(() => true),
+      getViewingAgent: jest.fn(() => "codex:1"),
+      isAgentEventForViewingAgent: jest.fn((data, viewingAgent, publisher) =>
+        publisher === viewingAgent
+      ),
+    });
+
+    router.handleMessage({
+      type: IPC_RESPONSE_TYPES.BUS,
+      data: {
+        event: "activity_state_changed",
+        publisher: "codex:1",
+        state: "working",
+      },
+    });
+
+    expect(options.writeToAgentTerm).toHaveBeenCalledWith("[state] working\r\n");
+    expect(options.requestStatus).toHaveBeenCalledTimes(1);
   });
 
   test("controller_report bus event inserts chat record and refreshes status", () => {

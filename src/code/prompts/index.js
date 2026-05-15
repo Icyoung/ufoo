@@ -9,7 +9,12 @@ const { getOutputEfficiencySection } = require("./efficiency");
 const { getUfooIntegrationSection } = require("./ufoo");
 const { getEnvironmentSection } = require("./environment");
 const {
+  listUcodeSkills,
+  renderSkillsSection,
+} = require("../skills");
+const {
   systemPromptSection,
+  uncachedSection,
   resolveSections,
   clearSectionCache,
 } = require("./sections");
@@ -68,6 +73,10 @@ function getSystemPrompt({
     systemPromptSection("environment", () =>
       getEnvironmentSection({ workspaceRoot, model, provider }),
     ),
+    uncachedSection("skills", () => {
+      const outcome = listUcodeSkills({ workspaceRoot: workspaceRoot || process.cwd() });
+      return renderSkillsSection(outcome.skills);
+    }),
   ];
   const dynamicSections = resolveSections(dynamicSectionDefs);
 

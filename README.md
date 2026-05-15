@@ -143,7 +143,9 @@ ufoo resume <ucode|uclaude|ucodex|nickname>
 ufoo recover list
 ```
 
-Common chat commands include `/status`, `/bus list`, `/bus status`, `/settings`, `/project list`, `/project switch <index|path>`, `/open <path>`, `/resume list`, `/group status`, and `@nickname <message>`.
+Common chat commands include `/status`, `/bus list`, `/bus status`, `/settings`, `/project list`, `/project switch <index|path>`, `/open <path>`, `/resume list`, `/group status`, `/skills`, and `@nickname <message>`.
+
+In `ufoo chat`, `/skills` lists ufoo's built-in available skills and preset workflow capabilities so users can discover and choose them. It does not execute a task by itself, and it is not a private capability list for any one agent.
 
 ### Event Bus
 
@@ -197,7 +199,7 @@ Use decisions sparingly for plan-level constraints. Durable project facts belong
 | Online | `ufoo online server|token|room|channel|connect|send|inbox` |
 | History | `ufoo history build|show|prompt` |
 | Skills | `ufoo skills list|install` |
-| Chat settings | `/settings`, `/settings agent`, `/settings router`, `/settings ucode` |
+| Chat commands | `/skills`, `/settings`, `/settings agent`, `/settings router`, `/settings ucode` |
 
 ### Groups
 
@@ -246,7 +248,11 @@ Use the low-level queue runtime:
 ucode-core submit --tool read --args-json '{"path":"README.md"}' --json
 ucode-core run-once --json
 ucode-core list --json
+ucode-core skills list --json
+ucode-core skills show <name>
 ```
+
+`ucode-core skills list` discovers ufoo/ucode built-in and local `SKILL.md` preset workflow capabilities for selection. It lists metadata only; full skill bodies are loaded by ucode only when the user explicitly references a skill such as `$demo` or a direct `SKILL.md` link.
 
 ## Configuration
 

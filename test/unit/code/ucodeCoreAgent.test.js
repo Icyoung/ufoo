@@ -55,6 +55,8 @@ const {
   resolveUfooProjectRoot,
   extractAgentNickname,
   buildNlFallbackSummary,
+  buildNlContext,
+  stripSkillBlocksFromMessages,
 } = require("../../../src/code/agent");
 
 describe("ucode core agent nl path", () => {
@@ -156,6 +158,149 @@ describe("ucode core agent nl path", () => {
     expect(result.ok).toBe(true);
     expect(result.summary).toBe("implemented");
     expect(state.sessionId).toBe("sess-1");
+  });
+
+  test("buildNlContext includes skills metadata without full body", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-context-"));
+    const oldHome = process.env.HOME;
+    const oldCodexHome = process.env.CODEX_HOME;
+    process.env.HOME = path.join(tmp, "home");
+    process.env.CODEX_HOME = path.join(tmp, "codex-home");
+    fs.mkdirSync(path.join(tmp, "workspace", ".agents", "skills", "demo"), { recursive: true });
+    fs.mkdirSync(process.env.HOME, { recursive: true });
+    fs.mkdirSync(process.env.CODEX_HOME, { recursive: true });
+    fs.writeFileSync(
+      path.join(tmp, "workspace", ".agents", "skills", "demo", "SKILL.md"),
+      "---\nname: demo\ndescription: Demo workflow\n---\n\nSECRET BODY\n",
+      "utf8"
+    );
+
+    try {
+      const context = buildNlContext({
+        workspaceRoot: path.join(tmp, "workspace"),
+        provider: "openai",
+        model: "gpt-5.2-codex",
+      });
+
+      expect(context).toContain("## Skills");
+      expect(context).toContain("demo");
+      expect(context).toContain("Demo workflow");
+      expect(context).not.toContain("SECRET BODY");
+    } finally {
+      if (oldHome === undefined) delete process.env.HOME;
+      else process.env.HOME = oldHome;
+      if (oldCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = oldCodexHome;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("runNaturalLanguageTask injects explicitly mentioned skill body once", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-inject-"));
+    const oldHome = process.env.HOME;
+    const oldCodexHome = process.env.CODEX_HOME;
+    process.env.HOME = path.join(tmp, "home");
+    process.env.CODEX_HOME = path.join(tmp, "codex-home");
+    const workspace = path.join(tmp, "workspace");
+    fs.mkdirSync(path.join(workspace, ".agents", "skills", "demo"), { recursive: true });
+    fs.mkdirSync(process.env.HOME, { recursive: true });
+    fs.mkdirSync(process.env.CODEX_HOME, { recursive: true });
+    fs.writeFileSync(
+      path.join(workspace, ".agents", "skills", "demo", "SKILL.md"),
+      "---\nname: demo\ndescription: Demo workflow\n---\n\nDemo body\n",
+      "utf8"
+    );
+    runNativeAgentTask.mockImplementationOnce(async (params) => ({
+      ok: true,
+      output: "done",
+      sessionId: "sess-skill",
+      messages: [
+        { role: "user", content: params.prompt },
+        { role: "assistant", content: "done" },
+      ],
+    }));
+
+    try {
+      const state = {
+        workspaceRoot: workspace,
+        provider: "openai",
+        model: "gpt-5.2-codex",
+        context: "",
+        sessionId: "",
+        timeoutMs: 30000,
+      };
+
+      const result = await runNaturalLanguageTask("use $demo to inspect this", state);
+
+      expect(result.ok).toBe(true);
+      const prompt = runNativeAgentTask.mock.calls[0][0].prompt;
+      expect(prompt).toContain("<skill>");
+      expect(prompt).toContain("<name>demo</name>");
+      expect(prompt).toContain("Demo body");
+      expect((prompt.match(/<skill>/g) || []).length).toBe(1);
+      const persisted = JSON.stringify(state.nlMessages);
+      expect(persisted).toContain("use $demo to inspect this");
+      expect(persisted).not.toContain("<skill>");
+      expect(persisted).not.toContain("Demo body");
+    } finally {
+      if (oldHome === undefined) delete process.env.HOME;
+      else process.env.HOME = oldHome;
+      if (oldCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = oldCodexHome;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("stripSkillBlocksFromMessages removes injected skill blocks from string and text content", () => {
+    const messages = stripSkillBlocksFromMessages([
+      {
+        role: "user",
+        content: "<skill>\n<name>demo</name>\nSECRET BODY\n</skill>\n\nuse $demo",
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: "<skill>\nSECRET BODY\n</skill>\n\ncontinue",
+          },
+        ],
+      },
+    ]);
+
+    expect(messages[0].content).toBe("use $demo");
+    expect(messages[1].content[0].text).toBe("continue");
+    expect(JSON.stringify(messages)).not.toContain("SECRET BODY");
+  });
+
+  test("runSingleCommand lists skills from ucode command surface", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-command-"));
+    const oldHome = process.env.HOME;
+    const oldCodexHome = process.env.CODEX_HOME;
+    process.env.HOME = path.join(tmp, "home");
+    process.env.CODEX_HOME = path.join(tmp, "codex-home");
+    const workspace = path.join(tmp, "workspace");
+    fs.mkdirSync(path.join(workspace, ".agents", "skills", "demo"), { recursive: true });
+    fs.mkdirSync(process.env.HOME, { recursive: true });
+    fs.mkdirSync(process.env.CODEX_HOME, { recursive: true });
+    fs.writeFileSync(
+      path.join(workspace, ".agents", "skills", "demo", "SKILL.md"),
+      "---\nname: demo\ndescription: Demo workflow\n---\n\nDemo body\n",
+      "utf8"
+    );
+
+    try {
+      const result = runSingleCommand("skills list", workspace);
+      expect(result.kind).toBe("skills");
+      expect(result.output).toContain("Available ufoo/ucode skills");
+      expect(result.output).toContain("demo");
+    } finally {
+      if (oldHome === undefined) delete process.env.HOME;
+      else process.env.HOME = oldHome;
+      if (oldCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = oldCodexHome;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   test("runNaturalLanguageTask forwards stream deltas to caller", async () => {

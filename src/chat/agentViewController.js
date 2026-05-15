@@ -42,6 +42,7 @@ function createAgentViewController(options = {}) {
     sendBusMessage = () => {},
     sendResize = () => {},
     requestScreenSnapshot = () => {},
+    sendBusWatch = () => {},
   } = options;
 
   if (!screen || typeof screen.render !== "function") {
@@ -69,10 +70,14 @@ function createAgentViewController(options = {}) {
   };
 
   function getRows() {
+    if (Number.isFinite(screen.height) && screen.height > 0) return screen.height;
+    if (Number.isFinite(screen.rows) && screen.rows > 0) return screen.rows;
     return processStdout.rows || 24;
   }
 
   function getCols() {
+    if (Number.isFinite(screen.width) && screen.width > 0) return screen.width;
+    if (Number.isFinite(screen.cols) && screen.cols > 0) return screen.cols;
     return processStdout.columns || 80;
   }
 
@@ -257,10 +262,13 @@ function createAgentViewController(options = {}) {
   function forceScreenRepaint() {
     if (typeof screen.realloc === "function") {
       screen.realloc();
-      return;
-    }
-    if (typeof screen.alloc === "function") {
+    } else if (typeof screen.alloc === "function") {
       screen.alloc(true);
+    }
+    try {
+      originalRender();
+    } catch {
+      // Ignore repaint failures while restoring from raw agent view.
     }
   }
 
@@ -297,13 +305,15 @@ function createAgentViewController(options = {}) {
     const projectPath = compactProjectPath(getProjectRoot());
     const product = "ClaudeCode";
     const detail = label ? `${label} · managed headless` : "managed headless";
-    const iconTop = `${CLAUDE_ORANGE}▐▛███▜▌${ANSI_RESET}`;
-    const iconMiddle = `${CLAUDE_ORANGE}▝▜█████▛▘${ANSI_RESET}`;
-    const iconBottom = `${CLAUDE_ORANGE}▘▘▝▝${ANSI_RESET}`;
+    const iconWidth = 9;
+    const iconLine = (icon = "", text = "") => {
+      const pad = " ".repeat(Math.max(0, iconWidth - displayWidth(icon)));
+      return `${CLAUDE_ORANGE}${icon}${ANSI_RESET}${pad}${text}`;
+    };
     const lines = [
-      ` ${iconTop} ${product}v${packageVersion}`,
-      `${iconMiddle}${detail}`,
-      ` ${iconBottom}    ${projectPath}`,
+      iconLine("▐▛███▜▌", `${product}v${packageVersion}`),
+      iconLine("▝▜█████▛▘", detail),
+      iconLine(" ▘▘▝▝", projectPath),
       "",
     ];
     if (width < 44) return lines;
@@ -464,6 +474,7 @@ function createAgentViewController(options = {}) {
   function enterAgentView(agentId, options = {}) {
     if (currentView === "agent" && viewingAgent === agentId) return;
     if (currentView === "agent") {
+      if (agentViewUsesBus && viewingAgent) sendBusWatch(viewingAgent, false);
       disconnectAgentOutput();
       disconnectAgentInput();
     }
@@ -488,6 +499,7 @@ function createAgentViewController(options = {}) {
     agentInputSuppressUntil = now() + 300;
     agentViewUsesBus = Boolean(options.useBus);
     if (agentViewUsesBus) {
+      sendBusWatch(agentId, true);
       resetBusView(agentId);
       renderBusView();
     } else {
@@ -511,6 +523,7 @@ function createAgentViewController(options = {}) {
 
     disconnectAgentOutput();
     disconnectAgentInput();
+    if (agentViewUsesBus && viewingAgent) sendBusWatch(viewingAgent, false);
     agentViewUsesBus = false;
     agentOutputSuppressed = false;
     agentBarVisible = false;
@@ -536,11 +549,11 @@ function createAgentViewController(options = {}) {
     setDashboardView("agents");
     setSelectedAgentIndex(-1);
     setScreenGrabKeys(false);
-    forceScreenRepaint();
     clearTargetAgent();
     renderDashboard();
     focusInput();
     resizeInput();
+    forceScreenRepaint();
     try {
       if (screen.program && typeof screen.program.showCursor === "function") {
         screen.program.showCursor();
