@@ -194,12 +194,12 @@ ufoo online server --host 127.0.0.1 --port 8787
 ufoo online token codex:abc123 --nickname builder
 ufoo online channel list --nickname builder
 ufoo online room create --nickname builder --name review-room --type private --password secret
-ufoo online connect --nickname builder --room review-room --room-password secret
-ufoo online send --nickname builder --room review-room --text "handoff ready"
+ufoo online connect --nickname builder --room <room_id> --room-password secret
+ufoo online send --nickname builder --room <room_id> --text "handoff ready"
 ufoo online inbox builder --unread
 ```
 
-默认公开服务地址是 `https://online.ufoo.dev`；本地开发可用 `ufoo online server` 启动自己的 relay。
+`room create` 会返回生成的 room ID，例如 `room_000000`；`connect` 和 `send` 的 `--room` 应使用这个 ID。`--name` 是展示元数据，不是加入/发送时的标识。默认公开服务地址是 `https://online.ufoo.dev`；本地开发可用 `ufoo online server` 启动自己的 relay。
 
 ### 原生 ucode 运行时
 
@@ -298,22 +298,46 @@ ufoo/
   test/                Jest 单元测试和集成测试
 ```
 
-`ufoo init` 后的项目运行态：
+执行 `ufoo init --modules context,bus` 后创建：
 
 ```text
 your-project/
   .ufoo/
-    agent/             Agent 元数据和运行文件
-    bus/               queues、events、offsets、locks
-    context/           decision 文件和索引
-    daemon/            bus daemon pid/log/counts
-    groups/            group runtime instances
-    history/           Agent 输入时间线
-    memory/            长期项目事实
-    run/               project daemon pid、log、ufoo.sock
-    docs -> docs/      当项目存在 docs/ 时创建的 symlink
+    memory/                         长期项目事实
+    context/
+      decisions/                    decision 文件
+      decisions.jsonl               decision 索引
+    bus/
+      events/                       event log files
+      queues/                       per-agent queues
+      logs/                         bus logs
+      offsets/                      read offsets
+    agent/
+      all-agents.json               Agent 元数据注册表
+    daemon/
+      counts/                       bus daemon delivery counts
+    docs -> docs/                   当项目存在 docs/ 时创建的可选 symlink
   AGENTS.md            规范 Agent 指令文件
   CLAUDE.md            Claude 兼容指令文件
+```
+
+运行时或相关功能使用后创建：
+
+```text
+.ufoo/run/
+  ufoo.sock                         project daemon IPC socket
+  ufoo-daemon.pid                   project daemon pid
+  ufoo-daemon.log                   project daemon log
+.ufoo/daemon/
+  daemon.pid                        bus auto-inject daemon pid
+  daemon.log                        bus auto-inject daemon log
+.ufoo/chat/                         chat runtime state
+.ufoo/groups/                       group runtime instances
+.ufoo/history/                      Agent 输入时间线
+.ufoo/agent/
+  reports/                          Agent report records
+  private-inbox/                    private controller inbox
+  sessions/                         provider/session metadata
 ```
 
 全局运行态位于 `~/.ufoo/`，包括 `~/.ufoo/config.json` 的 `ucode` provider 设置，以及 `~/.ufoo/projects/runtime/*.json` 的全局 chat 项目注册记录。

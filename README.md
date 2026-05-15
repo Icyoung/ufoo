@@ -223,12 +223,12 @@ ufoo online server --host 127.0.0.1 --port 8787
 ufoo online token codex:abc123 --nickname builder
 ufoo online channel list --nickname builder
 ufoo online room create --nickname builder --name review-room --type private --password secret
-ufoo online connect --nickname builder --room review-room --room-password secret
-ufoo online send --nickname builder --room review-room --text "handoff ready"
+ufoo online connect --nickname builder --room <room_id> --room-password secret
+ufoo online send --nickname builder --room <room_id> --text "handoff ready"
 ufoo online inbox builder --unread
 ```
 
-The default public service URL is `https://online.ufoo.dev`; local development can run its own relay with `ufoo online server`.
+`room create` returns a generated room ID such as `room_000000`; use that ID for `--room`. The room `--name` is display metadata, not the join/send identifier. The default public service URL is `https://online.ufoo.dev`; local development can run its own relay with `ufoo online server`.
 
 ### Native ucode Runtime
 
@@ -316,22 +316,46 @@ ufoo/
   test/                Jest unit and integration tests
 ```
 
-After `ufoo init`, a project contains:
+Created by `ufoo init --modules context,bus`:
 
 ```text
 your-project/
   .ufoo/
-    agent/             agent metadata and runtime files
-    bus/               queues, events, offsets, locks
-    context/           decision files and index
-    daemon/            daemon socket, pid, and runtime state
-    groups/            group runtime instances
-    history/           agent input timeline
-    memory/            durable project facts
-    run/               project daemon pid, log, and ufoo.sock
-    docs -> docs/      symlink when project docs exist
+    memory/                         durable project facts
+    context/
+      decisions/                    decision files
+      decisions.jsonl               decision index
+    bus/
+      events/                       event log files
+      queues/                       per-agent queues
+      logs/                         bus logs
+      offsets/                      read offsets
+    agent/
+      all-agents.json               agent metadata registry
+    daemon/
+      counts/                       bus daemon delivery counts
+    docs -> docs/                   optional symlink when project docs exist
   AGENTS.md            canonical agent instructions
   CLAUDE.md            Claude-compatible instructions file
+```
+
+Created at runtime or when the related feature is used:
+
+```text
+.ufoo/run/
+  ufoo.sock                         project daemon IPC socket
+  ufoo-daemon.pid                   project daemon pid
+  ufoo-daemon.log                   project daemon log
+.ufoo/daemon/
+  daemon.pid                        bus auto-inject daemon pid
+  daemon.log                        bus auto-inject daemon log
+.ufoo/chat/                         chat runtime state
+.ufoo/groups/                       group runtime instances
+.ufoo/history/                      agent input timeline
+.ufoo/agent/
+  reports/                          agent report records
+  private-inbox/                    private controller inbox
+  sessions/                         provider/session metadata
 ```
 
 `CLAUDE.md` may be a regular file or a symlink; project instructions should be edited in `AGENTS.md`.

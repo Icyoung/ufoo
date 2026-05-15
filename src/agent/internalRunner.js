@@ -184,6 +184,16 @@ function createBusSender(projectRoot, subscriber) {
   return { enqueue, flush };
 }
 
+function isChatUiSource(source = "") {
+  const value = String(source || "").trim();
+  return value === "chat-direct" || value === "chat-internal-agent-view";
+}
+
+function shouldStreamReplyToPublisher(projectRoot, publisher, evt = {}) {
+  if (isChatUiSource(evt && evt.data ? evt.data.source : "")) return true;
+  return shouldForwardStreamToPublisher(projectRoot, publisher);
+}
+
 function drainQueue(queueFile) {
   if (!fs.existsSync(queueFile)) return [];
   const processingFile = `${queueFile}.processing.${process.pid}.${Date.now()}`;
@@ -304,7 +314,7 @@ async function handleEvent(
     .filter(Boolean)
     .join("\n\n");
   const publisher = evt.publisher || "unknown";
-  const streamToPublisher = shouldForwardStreamToPublisher(projectRoot, publisher);
+  const streamToPublisher = shouldStreamReplyToPublisher(projectRoot, publisher, evt);
 
   const emitStreamDelta = (delta) => {
     const text = String(delta || "");

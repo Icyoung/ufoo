@@ -187,6 +187,51 @@ describe("agent internalRunner stream forwarding", () => {
     expect(busSender.enqueue).toHaveBeenCalledWith("codex:peer", "hello sdk");
   });
 
+  test("thread runtime streams replies for chat UI publishers even when managed", async () => {
+    const busSender = {
+      enqueue: jest.fn(),
+      flush: jest.fn(async () => {}),
+    };
+    const projectRoot = makeProjectWithAgent("ufoo-agent");
+    const evt = {
+      publisher: "ufoo-agent",
+      data: {
+        message: "task",
+        source: "chat-internal-agent-view",
+      },
+    };
+    const threadRuntime = {
+      enabled: true,
+      thread: {
+        runStreamed: jest.fn(async function* () {
+          yield { type: "text_delta", delta: "hello " };
+          yield { type: "text_delta", delta: "sdk" };
+        }),
+      },
+      rebuildThread: jest.fn(async () => {}),
+    };
+
+    await handleEvent(
+      projectRoot,
+      "codex",
+      "codex-cli",
+      "",
+      "codex:sdk",
+      "codex-sdk",
+      evt,
+      busSender,
+      [],
+      threadRuntime
+    );
+
+    expect(busSender.enqueue).toHaveBeenCalledWith("ufoo-agent", JSON.stringify({ stream: true, delta: "hello " }));
+    expect(busSender.enqueue).toHaveBeenCalledWith("ufoo-agent", JSON.stringify({ stream: true, delta: "sdk" }));
+    expect(busSender.enqueue).toHaveBeenCalledWith(
+      "ufoo-agent",
+      JSON.stringify({ stream: true, done: true, reason: "complete" })
+    );
+  });
+
   test("rebuilds codex thread after threaded failure", async () => {
     const busSender = {
       enqueue: jest.fn(),
