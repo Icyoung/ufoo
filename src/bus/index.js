@@ -60,7 +60,8 @@ class EventBus {
     this.queueManager = new QueueManager(this.busDir);
     this.subscriberManager = new SubscriberManager(
       this.busData,
-      this.queueManager
+      this.queueManager,
+      { agentsFile: this.agentsFile }
     );
     this.messageManager = new MessageManager(
       this.busDir,

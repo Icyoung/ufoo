@@ -1,4 +1,5 @@
 const { getTimestamp, readJSON, writeJSON } = require("../bus/utils");
+const { appendAgentRegistryDiagnostic, summarizeAgents } = require("./agentRegistryDiagnostics");
 
 const AGENTS_SCHEMA_VERSION = 1;
 
@@ -89,9 +90,23 @@ function normalizeAgentsData(data) {
 function loadAgentsData(filePath) {
   const data = readJSON(filePath, null);
   if (!data) {
+    appendAgentRegistryDiagnostic(filePath, "load_agents_empty", {
+      source: "ufoo.agentsStore.loadAgentsData",
+      reason: "missing_or_unreadable_registry",
+    });
     return normalizeAgentsData({});
   }
-  return normalizeAgentsData(data);
+  const normalized = normalizeAgentsData(data);
+  const beforeSummary = summarizeAgents(data);
+  const afterSummary = summarizeAgents(normalized);
+  if (JSON.stringify(beforeSummary) !== JSON.stringify(afterSummary)) {
+    appendAgentRegistryDiagnostic(filePath, "load_agents_normalized", {
+      source: "ufoo.agentsStore.loadAgentsData",
+      before: beforeSummary,
+      after: afterSummary,
+    });
+  }
+  return normalized;
 }
 
 function parseTimestampMs(value) {
@@ -125,13 +140,27 @@ function mergeExternalActivityFields(targetMeta, diskMeta) {
   }
 }
 
-function saveAgentsData(filePath, data) {
+function saveAgentsData(filePath, data, options = {}) {
+  const source = typeof options.source === "string" && options.source
+    ? options.source
+    : "ufoo.agentsStore.saveAgentsData";
   const normalized = normalizeAgentsData(data);
 
   // Merge externally-managed fields from disk to avoid daemon in-memory writes
   // overwriting fresher runner/notifier state updates.
   const disk = readJSON(filePath, null);
   if (disk && disk.agents && normalized.agents) {
+    const droppedIds = Object.keys(disk.agents)
+      .filter((id) => !Object.prototype.hasOwnProperty.call(normalized.agents, id))
+      .sort();
+    if (droppedIds.length > 0) {
+      appendAgentRegistryDiagnostic(filePath, "save_agents_dropping_disk_entries", {
+        source,
+        dropped_ids: droppedIds,
+        disk: summarizeAgents(disk),
+        next: summarizeAgents(normalized),
+      });
+    }
     for (const [id, diskMeta] of Object.entries(disk.agents)) {
       if (!diskMeta || typeof diskMeta !== "object") continue;
       const targetMeta = normalized.agents[id];
@@ -140,6 +169,13 @@ function saveAgentsData(filePath, data) {
     }
   }
 
+  const nextSummary = summarizeAgents(normalized);
+  if (nextSummary.count === 0 || options.trace === true) {
+    appendAgentRegistryDiagnostic(filePath, "save_agents_data", {
+      source,
+      next: nextSummary,
+    });
+  }
   writeJSON(filePath, normalized);
 }
 

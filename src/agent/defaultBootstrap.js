@@ -23,7 +23,7 @@ function hasArg(args = [], names = []) {
 }
 
 function hasMetaCommandArgs(args = []) {
-  return hasArg(args, ["-h", "--help", "-v", "--version"]);
+  return hasArg(args, ["-h", "--help", "-v", "--version", "resume"]);
 }
 
 function readOptionalFile(filePath) {
@@ -54,7 +54,7 @@ function buildDefaultStartupBootstrapPrompt({ agentType = "", projectRoot = "" }
   const normalizedAgent = asTrimmedString(agentType).toLowerCase();
   const displayAgent = normalizedAgent === "claude-code"
     ? "Claude"
-    : (normalizedAgent === "codex" ? "Codex" : "agent");
+    : (normalizedAgent === "codex" ? "Codex" : (normalizedAgent === "ufoo-code" ? "ucode" : "agent"));
 
   const segments = [
     `Session bootstrap for ${displayAgent}.`,
@@ -100,6 +100,28 @@ function mergePromptSegments(...segments) {
     .map((item) => String(item || "").trim())
     .filter(Boolean)
     .join("\n\n");
+}
+
+const CODEX_OPTIONS_WITH_VALUE = new Set([
+  "-m",
+  "--model",
+  "-c",
+  "--config",
+  "--profile",
+  "--sandbox",
+  "-s",
+  "--approval-mode",
+  "--ask-for-approval",
+  "--cd",
+  "--cwd",
+  "--color",
+  "--output-schema",
+]);
+
+function isValueForCodexOption(args = [], index = -1) {
+  if (!Array.isArray(args) || index <= 0) return false;
+  const previous = asTrimmedString(args[index - 1]);
+  return CODEX_OPTIONS_WITH_VALUE.has(previous);
 }
 
 function mergeClaudePromptArgs({
@@ -160,7 +182,9 @@ function mergeCodexPromptArgs({ args = [], bootstrapText = "" } = {}) {
   const lastIndex = currentArgs.length - 1;
   if (lastIndex < 0) return null;
   const lastItem = asTrimmedString(currentArgs[lastIndex]);
-  const promptIndex = lastItem && !lastItem.startsWith("-") ? lastIndex : -1;
+  const promptIndex = lastItem && !lastItem.startsWith("-") && !isValueForCodexOption(currentArgs, lastIndex)
+    ? lastIndex
+    : -1;
 
   if (promptIndex < 0) return null;
 
@@ -262,6 +286,7 @@ function resolveDefaultManualBootstrap({
 module.exports = {
   hasArg,
   hasMetaCommandArgs,
+  isValueForCodexOption,
   buildDefaultStartupBootstrapPrompt,
   defaultBootstrapFile,
   prepareDefaultBootstrapFile,

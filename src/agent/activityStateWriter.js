@@ -1,4 +1,6 @@
 const fs = require("fs");
+const { readJSON, writeJSON } = require("../bus/utils");
+const { appendAgentRegistryDiagnostic } = require("../ufoo/agentRegistryDiagnostics");
 
 /**
  * Centralized helper for writing activity_state to all-agents.json.
@@ -12,8 +14,17 @@ function writeActivityState(agentsFilePath, subscriber, state, options = {}) {
   const { since, force = false } = options;
   try {
     if (!agentsFilePath || !fs.existsSync(agentsFilePath)) return false;
-    const data = JSON.parse(fs.readFileSync(agentsFilePath, "utf8"));
-    if (!data.agents || !data.agents[subscriber]) return false;
+    const data = readJSON(agentsFilePath, null);
+    if (!data) return false;
+    if (!data.agents || !data.agents[subscriber]) {
+      appendAgentRegistryDiagnostic(agentsFilePath, "activity_state_subscriber_missing", {
+        source: "agent.activityStateWriter.writeActivityState",
+        subscriber,
+        state,
+        known_ids: Object.keys(data.agents || {}).sort(),
+      });
+      return false;
+    }
 
     const current = data.agents[subscriber].activity_state;
 
@@ -30,7 +41,7 @@ function writeActivityState(agentsFilePath, subscriber, state, options = {}) {
     data.agents[subscriber].activity_since = since
       ? new Date(since).toISOString()
       : new Date().toISOString();
-    fs.writeFileSync(agentsFilePath, JSON.stringify(data, null, 2));
+    writeJSON(agentsFilePath, data);
     return true;
   } catch {
     return false;

@@ -1,8 +1,10 @@
 const fs = require("fs");
 const path = require("path");
 const EventBus = require("../bus");
+const { readJSON, writeJSON } = require("../bus/utils");
 const Injector = require("../bus/inject");
 const { getUfooPaths } = require("../ufoo/paths");
+const { appendAgentRegistryDiagnostic } = require("../ufoo/agentRegistryDiagnostics");
 const { shakeTerminalByTty } = require("../bus/shake");
 const { isITerm2 } = require("../terminal/detect");
 const iterm2 = require("../terminal/iterm2");
@@ -62,7 +64,8 @@ class AgentNotifier {
   getNickname() {
     try {
       if (!this.agentsFile || !fs.existsSync(this.agentsFile)) return "";
-      const data = JSON.parse(fs.readFileSync(this.agentsFile, "utf8"));
+      const data = readJSON(this.agentsFile, null);
+      if (!data) return "";
       const meta = data.agents && data.agents[this.subscriber];
       return (meta && meta.nickname) ? String(meta.nickname) : "";
     } catch {
@@ -109,11 +112,18 @@ class AgentNotifier {
   updateHeartbeat() {
     try {
       if (!this.agentsFile || !fs.existsSync(this.agentsFile)) return;
-      const data = JSON.parse(fs.readFileSync(this.agentsFile, "utf8"));
+      const data = readJSON(this.agentsFile, null);
+      if (!data) return;
       if (data.agents && data.agents[this.subscriber]) {
         data.agents[this.subscriber].last_seen = new Date().toISOString();
-        fs.writeFileSync(this.agentsFile, JSON.stringify(data, null, 2));
+        writeJSON(this.agentsFile, data);
+        return;
       }
+      appendAgentRegistryDiagnostic(this.agentsFile, "heartbeat_subscriber_missing", {
+        source: "agent.notifier.updateHeartbeat",
+        subscriber: this.subscriber,
+        known_ids: Object.keys(data.agents || {}).sort(),
+      });
     } catch {
       // 心跳更新失败时静默忽略
     }
@@ -132,7 +142,8 @@ class AgentNotifier {
   getCurrentActivityState() {
     try {
       if (!this.agentsFile || !fs.existsSync(this.agentsFile)) return "";
-      const data = JSON.parse(fs.readFileSync(this.agentsFile, "utf8"));
+      const data = readJSON(this.agentsFile, null);
+      if (!data) return "";
       const meta = data.agents && data.agents[this.subscriber];
       return meta && typeof meta.activity_state === "string"
         ? String(meta.activity_state).trim().toLowerCase()

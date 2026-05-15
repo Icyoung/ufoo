@@ -29,6 +29,7 @@ const DEFAULT_UCODE_CONFIG = {
 function normalizeLaunchMode(value) {
   if (value === "auto") return "auto";
   if (value === "internal") return "internal";
+  if (value === "internal-pty") return "internal-pty";
   if (value === "tmux") return "tmux";
   if (value === "terminal") return "terminal";
   if (value === "host") return "host";

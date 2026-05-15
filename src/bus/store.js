@@ -5,6 +5,7 @@ const path = require("path");
 const { getTimestamp, ensureDir, safeNameToSubscriber, getTtyProcessInfo } = require("./utils");
 const { getUfooPaths } = require("../ufoo/paths");
 const { loadAgentsData, saveAgentsData } = require("../ufoo/agentsStore");
+const { appendAgentRegistryDiagnostic } = require("../ufoo/agentRegistryDiagnostics");
 
 function readQueueTty(queueDir) {
   try {
@@ -25,7 +26,7 @@ function buildUsedNicknameSet(agents = {}) {
   return set;
 }
 
-function recoverQueueEntry(data, subscriber, queueDir, usedNicknames, now) {
+function recoverQueueEntry(data, subscriber, queueDir, usedNicknames, now, agentsFile) {
   if (!subscriber || data.agents[subscriber]) return false;
 
   if (subscriber === "ufoo-agent") {
@@ -45,6 +46,17 @@ function recoverQueueEntry(data, subscriber, queueDir, usedNicknames, now) {
     };
     return true;
   }
+  appendAgentRegistryDiagnostic(
+    agentsFile,
+    "queue_entry_not_recovered",
+    {
+      source: "bus.store.recoverQueueEntry",
+      subscriber,
+      queue_dir: queueDir,
+      reason: "non_controller_queue_without_registry_entry",
+      used_nicknames: Array.from(usedNicknames || []).sort(),
+    }
+  );
   return false;
 }
 
@@ -112,20 +124,20 @@ class BusStore {
       if (!stat.isDirectory()) continue;
 
       const subscriber = safeNameToSubscriber(entry);
-      recovered = recoverQueueEntry(data, subscriber, queueDir, usedNicknames, now) || recovered;
+      recovered = recoverQueueEntry(data, subscriber, queueDir, usedNicknames, now, this.agentsFile) || recovered;
     }
 
     recovered = reconcileReservedControllerAliases(data, now) || recovered;
 
     if (recovered) {
-      saveAgentsData(this.agentsFile, data);
+      saveAgentsData(this.agentsFile, data, { source: "bus.store.load.recoverQueueEntry", trace: true });
     }
     return data;
   }
 
   save(busData) {
     if (busData) {
-      saveAgentsData(this.agentsFile, busData);
+      saveAgentsData(this.agentsFile, busData, { source: "bus.store.save" });
     }
   }
 
@@ -144,7 +156,7 @@ class BusStore {
         created_at: getTimestamp(),
         agents: {},
       };
-      saveAgentsData(this.agentsFile, busData);
+      saveAgentsData(this.agentsFile, busData, { source: "bus.store.init", trace: true });
     }
   }
 

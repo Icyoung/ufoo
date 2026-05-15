@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { getUfooPaths } = require("../ufoo/paths");
+const { buildDefaultStartupBootstrapPrompt } = require("./defaultBootstrap");
 
 function readFileSafe(filePath = "") {
   if (!filePath) return "";
@@ -74,11 +75,27 @@ function buildBootstrapContent({
   return `${lines.join("\n")}\n`;
 }
 
+function hasUfooProtocolPrompt(promptText = "") {
+  const text = String(promptText || "");
+  return text.includes("ufoo protocol:") && text.includes("ufoo ctx decisions -l");
+}
+
+function mergeDefaultUfooProtocolPrompt(projectRoot = "", promptText = "") {
+  const currentPrompt = String(promptText || "").trim();
+  if (hasUfooProtocolPrompt(currentPrompt)) return currentPrompt;
+  const defaultPrompt = buildDefaultStartupBootstrapPrompt({
+    agentType: "ufoo-code",
+    projectRoot,
+  }).trim();
+  return [defaultPrompt, currentPrompt].filter(Boolean).join("\n\n");
+}
+
 function prepareUcodeBootstrap({
   projectRoot = process.cwd(),
   promptFile = "",
   promptText = "",
   targetFile = "",
+  includeDefaultProtocol = true,
 } = {}) {
   const resolvedProjectRoot = path.resolve(projectRoot);
   const resolvedPrompt = String(promptFile || "").trim();
@@ -86,11 +103,14 @@ function prepareUcodeBootstrap({
 
   const inlinePromptText = String(promptText || "").trim();
   const resolvedPromptText = inlinePromptText || readFileSafe(resolvedPrompt);
+  const finalPromptText = includeDefaultProtocol
+    ? mergeDefaultUfooProtocolPrompt(resolvedProjectRoot, resolvedPromptText)
+    : resolvedPromptText;
   const rules = resolveProjectRules(resolvedProjectRoot);
   const content = buildBootstrapContent({
     projectRoot: resolvedProjectRoot,
     promptFile: resolvedPrompt,
-    promptText: resolvedPromptText,
+    promptText: finalPromptText,
     rules,
   });
 
@@ -107,6 +127,8 @@ function prepareUcodeBootstrap({
 }
 
 module.exports = {
+  hasUfooProtocolPrompt,
+  mergeDefaultUfooProtocolPrompt,
   readFileSafe,
   resolveProjectRules,
   defaultBootstrapPath,

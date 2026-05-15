@@ -29,6 +29,18 @@ describe("config save/load", () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
+  test("saveConfig preserves internal-pty launch mode", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-config-internal-pty-"));
+    fs.mkdirSync(path.join(projectRoot, ".ufoo"), { recursive: true });
+
+    saveConfig(projectRoot, { launchMode: "internal-pty" });
+
+    const loaded = loadConfig(projectRoot);
+    expect(loaded.launchMode).toBe("internal-pty");
+
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
   test("saveConfig preserves host launch mode", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-config-host-"));
     fs.mkdirSync(path.join(projectRoot, ".ufoo"), { recursive: true });

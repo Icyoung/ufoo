@@ -12,6 +12,10 @@ const {
   shouldAutoReplyFromPtyToPublisher,
   shouldForwardStreamToPublisher,
 } = require("./publisherRouting");
+const {
+  isValueForCodexOption,
+  resolveDefaultManualBootstrap,
+} = require("./defaultBootstrap");
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -116,22 +120,70 @@ function computeInjectedSubmitDelayMs(agentType, text) {
   return delayMs;
 }
 
-function resolveCommand(agentType, extraArgs = []) {
+function hasPromptArg(args = []) {
+  if (!Array.isArray(args) || args.length === 0) return false;
+  const lastIndex = args.length - 1;
+  const lastItem = String(args[lastIndex] || "").trim();
+  if (!lastItem || lastItem.startsWith("-")) return false;
+  return !isValueForCodexOption(args, lastIndex);
+}
+
+function appendStartupBootstrapArg(agentType, extraArgs = [], env = process.env) {
   const normalizedAgent = String(agentType || "").trim().toLowerCase();
-  const extra = Array.isArray(extraArgs) ? extraArgs : [];
+  const args = Array.isArray(extraArgs) ? extraArgs.slice() : [];
+  if (normalizedAgent !== "codex") return args;
+  if (hasPromptArg(args)) return args;
+  const startupBootstrapText = String(env.UFOO_STARTUP_BOOTSTRAP_TEXT || "").trim();
+  if (!startupBootstrapText) return args;
+  return [...args, startupBootstrapText];
+}
+
+function resolvePtyBootstrapArgs(agentType, extraArgs = [], {
+  projectRoot = process.cwd(),
+  env = process.env,
+} = {}) {
+  const normalizedAgent = String(agentType || "").trim().toLowerCase();
+  const args = Array.isArray(extraArgs) ? extraArgs.slice() : [];
+  if (normalizedAgent !== "codex" && normalizedAgent !== "claude" && normalizedAgent !== "claude-code") {
+    return { args, env: {} };
+  }
+
+  const bootstrapAgentType = normalizedAgent === "codex" ? "codex" : "claude-code";
+  const resolved = resolveDefaultManualBootstrap({
+    projectRoot,
+    agentType: bootstrapAgentType,
+    args,
+    env,
+  });
+  const resolvedArgs = resolved && resolved.mode !== "skip" && Array.isArray(resolved.args)
+    ? resolved.args
+    : args;
+  const resolvedEnv = resolved && resolved.mode !== "skip" && resolved.env && typeof resolved.env === "object"
+    ? resolved.env
+    : {};
+  return {
+    args: appendStartupBootstrapArg(normalizedAgent, resolvedArgs, { ...env, ...resolvedEnv }),
+    env: resolvedEnv,
+  };
+}
+
+function resolveCommand(agentType, extraArgs = [], options = {}) {
+  const normalizedAgent = String(agentType || "").trim().toLowerCase();
+  const bootstrap = resolvePtyBootstrapArgs(normalizedAgent, extraArgs, options);
+  const extra = bootstrap.args;
   const rawCmd = String(process.env.UFOO_PTY_CMD || "").trim();
   if (rawCmd) {
     const rawArgs = String(process.env.UFOO_PTY_ARGS || "").trim();
     const args = rawArgs ? rawArgs.split(/\s+/).filter(Boolean) : [];
-    return { command: rawCmd, args: [...args, ...extra] };
+    return { command: rawCmd, args: [...args, ...extra], env: bootstrap.env };
   }
   if (normalizedAgent === "claude" || normalizedAgent === "claude-code") {
-    return { command: "claude", args: [...extra] };
+    return { command: "claude", args: [...extra], env: bootstrap.env };
   }
   if (normalizedAgent === "ufoo" || normalizedAgent === "ucode" || normalizedAgent === "ufoo-code") {
-    return { command: "ucode", args: [...extra] };
+    return { command: "ucode", args: [...extra], env: bootstrap.env };
   }
-  return { command: "codex", args: ["--no-alt-screen", "--sandbox", "workspace-write", ...extra] };
+  return { command: "codex", args: ["--no-alt-screen", "--sandbox", "workspace-write", ...extra], env: bootstrap.env };
 }
 
 async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }) {
@@ -160,9 +212,13 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
   const logFile = path.join(runDir, "pty-runner.log");
   const injectSockPath = path.join(queueDir, "inject.sock");
 
-  const { command, args } = resolveCommand(agentType, extraArgs);
+  const { command, args, env: commandEnv } = resolveCommand(agentType, extraArgs, {
+    projectRoot,
+    env: process.env,
+  });
   const env = {
     ...process.env,
+    ...(commandEnv && typeof commandEnv === "object" ? commandEnv : {}),
     UFOO_LAUNCH_MODE: "internal-pty",
     UFOO_INTERNAL_PTY: "1",
   };
@@ -987,4 +1043,10 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
   }
 }
 
-module.exports = { parseInputMessage, runPtyRunner };
+module.exports = {
+  appendStartupBootstrapArg,
+  parseInputMessage,
+  resolvePtyBootstrapArgs,
+  resolveCommand,
+  runPtyRunner,
+};

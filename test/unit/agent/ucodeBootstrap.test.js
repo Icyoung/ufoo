@@ -3,6 +3,7 @@ const os = require("os");
 const path = require("path");
 const {
   defaultBootstrapPath,
+  mergeDefaultUfooProtocolPrompt,
   prepareUcodeBootstrap,
   resolveProjectRules,
 } = require("../../../src/agent/ucodeBootstrap");
@@ -31,6 +32,8 @@ describe("ucode bootstrap preparation", () => {
 
     const content = fs.readFileSync(result.file, "utf8");
     expect(content).toContain("# ucode Bootstrap");
+    expect(content).toContain("Session bootstrap for ucode.");
+    expect(content).toContain("ufoo ctx decisions -l");
     expect(content).toContain("Core prompt line");
     expect(content).toContain("Project rule line");
 
@@ -54,8 +57,17 @@ describe("ucode bootstrap preparation", () => {
 
     expect(result.ok).toBe(true);
     const content = fs.readFileSync(result.file, "utf8");
+    expect(content).toContain("ufoo ctx decisions -l");
     expect(content).toContain("Inline prompt body");
 
     fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  test("default ufoo protocol merge is idempotent", () => {
+    const once = mergeDefaultUfooProtocolPrompt("/tmp/project-x", "Custom prompt");
+    const twice = mergeDefaultUfooProtocolPrompt("/tmp/project-x", once);
+
+    expect(once).toContain("ufoo ctx decisions -l");
+    expect(twice.match(/ufoo ctx decisions -l/g)).toHaveLength(1);
   });
 });

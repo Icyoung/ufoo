@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const { redactSecrets } = require("../providerapi/redactor");
+const { appendAgentRegistryDiagnostic } = require("../ufoo/agentRegistryDiagnostics");
 
 /**
  * 获取当前 UTC 时间戳（ISO 8601 格式）
@@ -200,6 +201,11 @@ function readJSON(filePath, defaultValue = null) {
     const content = fs.readFileSync(filePath, "utf8");
     return JSON.parse(content);
   } catch (err) {
+    appendAgentRegistryDiagnostic(filePath, "read_json_failed", {
+      source: "bus.utils.readJSON",
+      error: err && err.message ? err.message : String(err || "unknown"),
+      default_returned: defaultValue === null ? "null" : typeof defaultValue,
+    });
     return defaultValue;
   }
 }

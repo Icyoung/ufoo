@@ -1,14 +1,8 @@
 const fs = require("fs");
 const { runUfooAgent, runUfooRouteAgent } = require("../../../src/agent/ufooAgent");
 
-jest.mock("../../../src/agent/cliRunner", () => ({
-  runCliAgent: jest.fn(),
-}));
 jest.mock("../../../src/daemon/status", () => ({
   buildStatus: jest.fn(),
-}));
-jest.mock("../../../src/agent/normalizeOutput", () => ({
-  normalizeCliOutput: jest.fn((value) => String(value || "")),
 }));
 jest.mock("../../../src/agent/credentials/codex", () => ({
   resolveCodexUpstreamCredentials: jest.fn(),
@@ -28,7 +22,6 @@ jest.mock("../../../src/projects/registry", () => ({
   listProjectRuntimes: jest.fn(() => []),
 }));
 
-const { runCliAgent } = require("../../../src/agent/cliRunner");
 const { resolveCodexUpstreamCredentials } = require("../../../src/agent/credentials/codex");
 const { buildStatus } = require("../../../src/daemon/status");
 const { listProjectRuntimes } = require("../../../src/projects/registry");
@@ -61,11 +54,6 @@ describe("ufooAgent prompt schema", () => {
     }
     fs.mkdirSync(projectRoot, { recursive: true });
     buildStatus.mockReturnValue({ active_meta: [] });
-    runCliAgent.mockResolvedValue({
-      ok: true,
-      sessionId: "sess-1",
-      output: "{\"reply\":\"ok\",\"dispatch\":[],\"ops\":[]}",
-    });
     resolveCodexUpstreamCredentials.mockResolvedValue({
       provider: "codex",
       credentialKind: "api-key",
@@ -93,7 +81,6 @@ describe("ufooAgent prompt schema", () => {
     });
 
     expect(res.ok).toBe(true);
-    expect(runCliAgent).not.toHaveBeenCalled();
     const systemPrompt = lastDirectSystemPrompt();
     expect(systemPrompt).not.toContain("\"assistant_call\": {");
     expect(systemPrompt).toContain("legacy assistant_call / helper-agent path has been removed");
@@ -166,7 +153,6 @@ describe("ufooAgent prompt schema", () => {
 
     expect(res.ok).toBe(true);
     expect(res.payload.reply).toBe("direct ok");
-    expect(runCliAgent).not.toHaveBeenCalled();
     expect(global.fetch).toHaveBeenCalledWith(
       "https://api.openai.com/v1/chat/completions",
       expect.objectContaining({
@@ -194,7 +180,18 @@ describe("ufooAgent prompt schema", () => {
 
     expect(res.ok).toBe(false);
     expect(res.error).toContain("Codex auth unavailable");
-    expect(runCliAgent).not.toHaveBeenCalled();
+  });
+
+  test("unsupported provider returns explicit error without CLI fallback", async () => {
+    const res = await runUfooAgent({
+      projectRoot,
+      prompt: "inspect",
+      provider: "local-cli",
+      model: "local-model",
+    });
+
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain("cliRunner fallback has been removed");
   });
 
   test("keeps assistant_call removed under loop controller mode (non-loop-runtime path)", async () => {
@@ -431,8 +428,7 @@ describe("ufooAgent prompt schema", () => {
 
     expect(res.ok).toBe(true);
     expect(res.payload.reply).toBe("native ok");
-    // Should NOT have called the CLI runner
-    expect(runCliAgent).not.toHaveBeenCalled();
+    // Should NOT have called the CLI runner 
     // Should have called fetch
     expect(global.fetch).toHaveBeenCalledTimes(1);
     const [url, opts] = global.fetch.mock.calls[0];
@@ -463,8 +459,7 @@ describe("ufooAgent prompt schema", () => {
     });
 
     expect(res.ok).toBe(true);
-    expect(res.payload.reply).toBe("fenced ok");
-    expect(runCliAgent).not.toHaveBeenCalled();
+    expect(res.payload.reply).toBe("fenced ok"); 
   });
 
   test("ucode provider handles fetch failure gracefully", async () => {
@@ -477,8 +472,7 @@ describe("ufooAgent prompt schema", () => {
       model: "",
     });
 
-    expect(res.ok).toBe(false);
-    expect(runCliAgent).not.toHaveBeenCalled();
+    expect(res.ok).toBe(false); 
   });
 
   test("runUfooRouteAgent uses the native gate-router path and normalizes the route result", async () => {
@@ -514,8 +508,7 @@ describe("ufooAgent prompt schema", () => {
       reason: "continuity",
       message: "Continue with reviewer",
       injection_mode: "immediate",
-    });
-    expect(runCliAgent).not.toHaveBeenCalled();
+    }); 
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 });

@@ -3,8 +3,7 @@ const path = require("path");
 const { getUfooPaths } = require("../ufoo/paths");
 const { spawnSync } = require("child_process");
 const EventBus = require("../bus");
-const { runCliAgent } = require("./cliRunner");
-const { normalizeCliOutput } = require("./normalizeOutput");
+const { readJSON, writeJSON } = require("../bus/utils");
 const { createActivityStatePublisher } = require("./activityStatePublisher");
 const { loadConfig, normalizeCodexInternalThreadMode } = require("../config");
 const { createCodexThreadProvider } = require("./codexThreadProvider");
@@ -15,6 +14,11 @@ const { listToolsForCallerTier, CALLER_TIERS } = require("../tools");
 const { redactToolCallPayload, redactSecrets } = require("../providerapi/redactor");
 const { buildCachedMemoryPrefix } = require("../memory");
 const { shouldForwardStreamToPublisher } = require("./publisherRouting");
+const { appendAgentRegistryDiagnostic } = require("../ufoo/agentRegistryDiagnostics");
+const {
+  buildDefaultStartupBootstrapPrompt,
+  isValueForCodexOption,
+} = require("./defaultBootstrap");
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -56,6 +60,98 @@ function safeSubscriber(subscriber) {
   return subscriber.replace(/:/g, "_");
 }
 
+function readFileSafe(filePath = "") {
+  const target = String(filePath || "").trim();
+  if (!target) return "";
+  try {
+    return fs.readFileSync(target, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function hasUfooProtocolPrompt(promptText = "") {
+  const text = String(promptText || "");
+  return text.includes("ufoo protocol:") && text.includes("ufoo ctx decisions -l");
+}
+
+function hasPromptArg(args = []) {
+  if (!Array.isArray(args) || args.length === 0) return false;
+  const lastIndex = args.length - 1;
+  const lastItem = String(args[lastIndex] || "").trim();
+  if (!lastItem || lastItem.startsWith("-")) return false;
+  return !isValueForCodexOption(args, lastIndex);
+}
+
+function consumeClaudeAppendSystemPrompt(args = []) {
+  const nextArgs = [];
+  const promptSegments = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const item = String(args[index] || "");
+    if (item === "--append-system-prompt") {
+      const filePath = String(args[index + 1] || "");
+      const content = readFileSafe(filePath);
+      if (content.trim()) promptSegments.push(content.trim());
+      index += 1;
+      continue;
+    }
+    if (item.startsWith("--append-system-prompt=")) {
+      const filePath = item.slice("--append-system-prompt=".length);
+      const content = readFileSafe(filePath);
+      if (content.trim()) promptSegments.push(content.trim());
+      continue;
+    }
+    nextArgs.push(item);
+  }
+  return {
+    args: nextArgs,
+    promptText: promptSegments.filter(Boolean).join("\n\n"),
+  };
+}
+
+function resolveInternalBootstrap({
+  projectRoot = process.cwd(),
+  agentType = "codex",
+  extraArgs = [],
+  env = process.env,
+} = {}) {
+  const normalizedAgent = String(agentType || "").trim().toLowerCase();
+  const bootstrapAgentType = normalizedAgent === "claude" || normalizedAgent === "claude-code"
+    ? "claude-code"
+    : (normalizedAgent === "codex" ? "codex" : "");
+  const args = Array.isArray(extraArgs) ? extraArgs.slice() : [];
+  if (!bootstrapAgentType) {
+    return { promptText: "", extraArgs: args };
+  }
+
+  let promptText = "";
+  let nextArgs = args;
+
+  if (bootstrapAgentType === "claude-code") {
+    const consumed = consumeClaudeAppendSystemPrompt(args);
+    promptText = consumed.promptText;
+    nextArgs = consumed.args;
+  } else if (hasPromptArg(args)) {
+    promptText = String(args[args.length - 1] || "").trim();
+    nextArgs = args.slice(0, -1);
+  } else {
+    promptText = String(env.UFOO_STARTUP_BOOTSTRAP_TEXT || "").trim();
+  }
+
+  if (!hasUfooProtocolPrompt(promptText)) {
+    const defaultPrompt = buildDefaultStartupBootstrapPrompt({
+      agentType: bootstrapAgentType,
+      projectRoot,
+    }).trim();
+    promptText = [defaultPrompt, promptText.trim()].filter(Boolean).join("\n\n");
+  }
+
+  return {
+    promptText,
+    extraArgs: nextArgs,
+  };
+}
+
 function buildMemoryPrefix(projectRoot, limit = 50) {
   try {
     return buildCachedMemoryPrefix(projectRoot, { limit }).prefix.trim();
@@ -86,10 +182,6 @@ function createBusSender(projectRoot, subscriber) {
   }
 
   return { enqueue, flush };
-}
-
-function shouldFallbackToLegacyThreadProvider() {
-  return false;
 }
 
 function drainQueue(queueFile) {
@@ -200,32 +292,29 @@ async function handleEvent(
   subscriber,
   nickname,
   evt,
-  cliSessionState,
   busSender,
   extraArgs = [],
-  threadRuntime = null
+  threadRuntime = null,
+  bootstrapText = ""
 ) {
   if (!evt || !evt.data || !evt.data.message) return;
   const memoryPrefix = buildMemoryPrefix(projectRoot);
-  const prompt = memoryPrefix
-    ? `${memoryPrefix}\n\n${evt.data.message}`
-    : evt.data.message;
+  const prompt = [bootstrapText, memoryPrefix, evt.data.message]
+    .map((item) => String(item || "").trim())
+    .filter(Boolean)
+    .join("\n\n");
   const publisher = evt.publisher || "unknown";
-  const sandbox = "workspace-write";
-  const streamState = { emitted: false, lastChar: "" };
   const streamToPublisher = shouldForwardStreamToPublisher(projectRoot, publisher);
 
   const emitStreamDelta = (delta) => {
     const text = String(delta || "");
     if (!text) return;
     if (!streamToPublisher) return;
-    streamState.emitted = true;
-    streamState.lastChar = text.slice(-1);
     busSender.enqueue(publisher, JSON.stringify({ stream: true, delta: text }));
   };
 
   if (threadRuntime && threadRuntime.enabled && threadRuntime.thread) {
-    const threadedResult = await handleThreadedEvent({
+    await handleThreadedEvent({
       agentType,
       provider,
       publisher,
@@ -235,74 +324,18 @@ async function handleEvent(
       streamToPublisher,
       threadRuntime,
     });
-    if (!threadedResult || !threadedResult.fallbackToLegacy) {
-      return;
-    }
-  }
-
-  let res = await runCliAgent({
-    provider,
-    model,
-    prompt,
-    sessionId: cliSessionState.cliSessionId,
-    sandbox,
-    cwd: projectRoot,
-    extraArgs,
-    onStreamDelta: emitStreamDelta,
-  });
-
-  // Handle session errors with immediate retry (only for claude)
-  if (!res.ok && provider === "claude-cli") {
-    const errMsg = (res.error || "").toLowerCase();
-    if (errMsg.includes("session") || errMsg.includes("already in use")) {
-      // Clear session and retry immediately with new session
-      cliSessionState.cliSessionId = null;
-      cliSessionState.needsSave = true;
-
-      res = await runCliAgent({
-        provider,
-        model,
-        prompt,
-        sessionId: null, // Let runCliAgent generate new session
-        sandbox,
-        cwd: projectRoot,
-        extraArgs,
-        onStreamDelta: emitStreamDelta,
-      });
-    }
-  }
-
-  // Update CLI session ID for continuity (only for claude)
-  if (res.ok && res.sessionId && provider === "claude-cli") {
-    cliSessionState.cliSessionId = res.sessionId;
-    cliSessionState.needsSave = true;
-  }
-
-  let reply = "";
-  if (res.ok) {
-    reply = normalizeCliOutput(res.output) || "";
-  } else {
-    reply = `[internal:${agentType}] error: ${res.error || "unknown error"}`;
-  }
-
-  if (streamState.emitted) {
-    if (!res.ok) {
-      if (streamState.lastChar !== "\n") {
-        busSender.enqueue(publisher, JSON.stringify({ stream: true, delta: "\n" }));
-      }
-      busSender.enqueue(publisher, JSON.stringify({ stream: true, delta: reply }));
-    }
-    busSender.enqueue(
-      publisher,
-      JSON.stringify({ stream: true, done: true, reason: res.ok ? "complete" : "error" })
-    );
-    await busSender.flush();
     return;
   }
 
-  if (!reply) return;
-
-  busSender.enqueue(publisher, reply);
+  const errorText = `[internal:${agentType}] error: no thread runtime available for provider ${provider}; cliRunner fallback has been removed`;
+  // eslint-disable-next-line no-console
+  console.error(errorText);
+  if (streamToPublisher) {
+    busSender.enqueue(publisher, JSON.stringify({ stream: true, delta: errorText }));
+    busSender.enqueue(publisher, JSON.stringify({ stream: true, done: true, reason: "error" }));
+  } else {
+    busSender.enqueue(publisher, errorText);
+  }
   await busSender.flush();
 }
 
@@ -348,13 +381,12 @@ async function handleThreadedEvent({
     }
     await busSender.flush();
   } catch (err) {
-    if (shouldFallbackToLegacyThreadProvider(err, provider)) {
-      return { fallbackToLegacy: true };
-    }
     if (threadRuntime && typeof threadRuntime.rebuildThread === "function") {
       await threadRuntime.rebuildThread();
     }
     const errorText = `[internal:${agentType}] error: ${err && err.message ? err.message : "unknown error"}`;
+    // eslint-disable-next-line no-console
+    console.error(errorText);
     if (streamToPublisher) {
       busSender.enqueue(
         publisher,
@@ -368,7 +400,6 @@ async function handleThreadedEvent({
       busSender.enqueue(publisher, errorText);
     }
     await busSender.flush();
-    return { fallbackToLegacy: false };
   }
 }
 
@@ -471,8 +502,9 @@ function buildWorkerThreadToolRuntime({ projectRoot, subscriber, observer }) {
 function getClaudeThreadMode() {
   const envValue = process.env.UFOO_CLAUDE_INTERNAL_THREAD_MODE;
   const raw = String(envValue || "").trim().toLowerCase();
+  if (raw === "legacy" || raw === "off" || raw === "disabled" || raw === "0") return "legacy";
   if (raw === "api") return "api";
-  return "legacy";
+  return "api";
 }
 
 function buildClaudeAuthProvider(projectRoot) {
@@ -493,14 +525,22 @@ function persistProviderSessionId(projectRoot, subscriber, providerSessionId) {
   try {
     const agentsFile = getUfooPaths(projectRoot).agentsFile;
     const parsed = fs.existsSync(agentsFile)
-      ? JSON.parse(fs.readFileSync(agentsFile, "utf8"))
+      ? readJSON(agentsFile, null)
       : {};
+    if (!parsed) return false;
     if (!parsed.agents || typeof parsed.agents !== "object") return false;
-    if (!parsed.agents[subscriber] || typeof parsed.agents[subscriber] !== "object") return false;
+    if (!parsed.agents[subscriber] || typeof parsed.agents[subscriber] !== "object") {
+      appendAgentRegistryDiagnostic(agentsFile, "provider_session_subscriber_missing", {
+        source: "agent.internalRunner.persistProviderSessionId",
+        subscriber,
+        known_ids: Object.keys(parsed.agents || {}).sort(),
+      });
+      return false;
+    }
     if (parsed.agents[subscriber].provider_session_id === id) return false;
     parsed.agents[subscriber].provider_session_id = id;
     parsed.agents[subscriber].provider_session_updated_at = new Date().toISOString();
-    fs.writeFileSync(agentsFile, `${JSON.stringify(parsed, null, 2)}\n`);
+    writeJSON(agentsFile, parsed);
     return true;
   } catch {
     return false;
@@ -648,34 +688,22 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
   }
   const provider = normalizedAgentType === "codex" ? "codex-cli" : "claude-cli";
   const model = process.env.UFOO_AGENT_MODEL || "";
+  const bootstrap = resolveInternalBootstrap({
+    projectRoot,
+    agentType: normalizedAgentType,
+    extraArgs,
+    env: process.env,
+  });
   const busSender = createBusSender(projectRoot, subscriber);
   const interactiveSessions = new Map();
   const threadRuntime = createThreadRuntime({
     projectRoot,
     provider,
     model,
-    extraArgs,
+    extraArgs: bootstrap.extraArgs,
     subscriber,
     providerSessionId: process.env.UFOO_PROVIDER_SESSION_ID || "",
   });
-
-  // Session state management for CLI continuity
-  // Use stable path based on nickname (if exists) or agent type, NOT subscriber ID
-  const stableKey = nickname || `${agentType}-default`;
-  const sessionDir = path.join(getUfooPaths(projectRoot).agentDir, "sessions");
-  fs.mkdirSync(sessionDir, { recursive: true });
-  const stateFile = path.join(sessionDir, `${stableKey}.json`);
-
-  let cliSessionId = null;
-  // Only load session for claude (codex doesn't support sessions)
-  if (provider === "claude-cli") {
-    try {
-      const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
-      cliSessionId = state.cliSessionId;
-    } catch {
-      // No previous session
-    }
-  }
 
   let running = true;
   let processing = false;
@@ -689,7 +717,6 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
 
-  const cliSessionState = { cliSessionId, needsSave: false };
   const agentsFile = getUfooPaths(projectRoot).agentsFile;
   const activityPublisher = createActivityStatePublisher({
     agentsFile, subscriber, projectRoot,
@@ -785,30 +812,15 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
               subscriber,
               nickname,
               evt,
-              cliSessionState,
               busSender,
-              extraArgs,
-              threadRuntime
+              bootstrap.extraArgs,
+              threadRuntime,
+              bootstrap.promptText
             );
             if (evt.__agentViewRaw) {
               getInteractiveSession(evt.publisher || "unknown").writeResponsePrompt();
             }
           }
-
-          // Persist CLI session state after processing (only if changed and for claude)
-          if (cliSessionState.needsSave && provider === "claude-cli") {
-            try {
-              fs.writeFileSync(stateFile, JSON.stringify({
-                cliSessionId: cliSessionState.cliSessionId,
-                nickname: nickname || "",
-                updated_at: new Date().toISOString(),
-              }));
-              cliSessionState.needsSave = false;
-            } catch {
-              // ignore save errors
-            }
-          }
-
           // 处理消息后更新心跳
           updateHeartbeat();
           lastHeartbeat = now;
@@ -839,8 +851,8 @@ module.exports = {
   normalizeWorkerThreadToolMode,
   getClaudeThreadMode,
   buildClaudeAuthProvider,
-  shouldFallbackToLegacyThreadProvider,
   parseAgentViewRawInput,
   createInteractiveInputSession,
+  resolveInternalBootstrap,
   persistProviderSessionId,
 };

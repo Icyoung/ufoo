@@ -65,7 +65,7 @@ const {
   pruneTransientAgentStates,
 } = require("./transientAgentState");
 
-const MODE_OPTIONS = ["auto", "host", "terminal", "tmux", "internal"];
+const MODE_OPTIONS = ["auto", "host", "terminal", "tmux", "internal-pty", "internal"];
 
 async function runChat(projectRoot, options = {}) {
   const globalMode = options && options.globalMode === true;

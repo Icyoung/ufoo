@@ -101,7 +101,7 @@ describe("chat dashboardKeyController", () => {
     });
 
     expect(controller.handleDashboardKey({ name: "left" })).toBe(true);
-    expect(state.selectedModeIndex).toBe(4);
+    expect(state.selectedModeIndex).toBe(5);
 
     expect(controller.handleDashboardKey({ name: "down" })).toBe(true);
     expect(state.dashboardView).toBe("provider");

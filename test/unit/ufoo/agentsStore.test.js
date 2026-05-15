@@ -6,6 +6,7 @@ const {
   saveAgentsData,
   loadAgentsData,
 } = require("../../../src/ufoo/agentsStore");
+const { getRegistryLogPath } = require("../../../src/ufoo/agentRegistryDiagnostics");
 
 describe("agentsStore normalizeAgentsData", () => {
   test("heals double-prefixed subscriber id and leaked nickname object", () => {
@@ -121,6 +122,59 @@ describe("agentsStore saveAgentsData external activity fields", () => {
     const after = JSON.parse(fs.readFileSync(filePath, "utf8"));
     expect(after.agents["codex:abc123"].activity_state).toBe("blocked");
     expect(after.agents["codex:abc123"].activity_since).toBe("2026-03-08T00:10:00.000Z");
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("agentsStore diagnostics", () => {
+  test("records unreadable all-agents registry loads", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-agents-store-"));
+    const filePath = path.join(dir, ".ufoo", "agent", "all-agents.json");
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, "{not json", "utf8");
+
+    const loaded = loadAgentsData(filePath);
+
+    expect(loaded.agents).toEqual({});
+    const logPath = getRegistryLogPath(filePath);
+    const lines = fs.readFileSync(logPath, "utf8").trim().split("\n").map(JSON.parse);
+    expect(lines.map((line) => line.event)).toEqual(
+      expect.arrayContaining(["read_json_failed", "load_agents_empty"])
+    );
+    expect(lines.find((line) => line.event === "read_json_failed")).toMatchObject({
+      source: "bus.utils.readJSON",
+    });
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("records save attempts that would drop existing disk agents", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-agents-store-"));
+    const filePath = path.join(dir, ".ufoo", "agent", "all-agents.json");
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify({
+      created_at: "2026-03-08T00:00:00.000Z",
+      agents: {
+        "codex:keep": { status: "active" },
+        "codex:drop": { status: "active" },
+      },
+    }, null, 2));
+
+    saveAgentsData(filePath, {
+      created_at: "2026-03-08T00:00:00.000Z",
+      agents: {
+        "codex:keep": { status: "active" },
+      },
+    }, { source: "test.drop" });
+
+    const logPath = getRegistryLogPath(filePath);
+    const lines = fs.readFileSync(logPath, "utf8").trim().split("\n").map(JSON.parse);
+    const dropLine = lines.find((line) => line.event === "save_agents_dropping_disk_entries");
+    expect(dropLine).toMatchObject({
+      source: "test.drop",
+      dropped_ids: ["codex:drop"],
+    });
 
     fs.rmSync(dir, { recursive: true, force: true });
   });

@@ -442,7 +442,9 @@ function createDaemonMessageRouter(options = {}) {
   }
 
   function handleErrorMessage(msg) {
-    resolveStatusLine(`{gray-fg}✗{/gray-fg} Error: ${msg.error}`);
+    const error = String(msg.error || "unknown error");
+    resolveStatusLine(`{gray-fg}✗{/gray-fg} Error: ${error}`);
+    logMessage("error", `{white-fg}✗{/white-fg} ${escapeBlessed(error)}`);
     renderScreen();
     return false;
   }

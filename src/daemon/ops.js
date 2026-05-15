@@ -14,6 +14,7 @@ const {
 const {
   createSession: createHostSession,
 } = require("../terminal/adapters/hostAdapter");
+const { resolveDefaultManualBootstrap } = require("../agent/defaultBootstrap");
 
 function normalizeLaunchAgent(agent = "") {
   const value = String(agent || "").trim().toLowerCase();
@@ -42,6 +43,43 @@ function toTmuxBinary(agent = "") {
   if (agent === "claude") return "uclaude";
   if (agent === "ufoo") return "ucode";
   return "";
+}
+
+function applyDefaultManagedBootstrap(projectRoot, normalizedAgent, args = [], extraEnv = {}) {
+  const agentType = toBusAgentType(normalizedAgent);
+  if (!agentType || agentType === "ufoo-code") {
+    return {
+      args: Array.isArray(args) ? args.slice() : [],
+      extraEnv: extraEnv && typeof extraEnv === "object" ? { ...extraEnv } : {},
+      applied: false,
+    };
+  }
+
+  const currentArgs = Array.isArray(args) ? args.slice() : [];
+  const currentExtraEnv = extraEnv && typeof extraEnv === "object" ? { ...extraEnv } : {};
+  const resolved = resolveDefaultManualBootstrap({
+    projectRoot,
+    agentType,
+    args: currentArgs,
+    env: {
+      ...process.env,
+      ...currentExtraEnv,
+    },
+  });
+
+  if (!resolved || resolved.mode === "skip") {
+    return { args: currentArgs, extraEnv: currentExtraEnv, applied: false };
+  }
+
+  return {
+    args: Array.isArray(resolved.args) ? resolved.args : currentArgs,
+    extraEnv: {
+      ...currentExtraEnv,
+      ...(resolved.env && typeof resolved.env === "object" ? resolved.env : {}),
+      UFOO_SKIP_DEFAULT_BOOTSTRAP: "1",
+    },
+    applied: true,
+  };
 }
 
 function resolveUfooRunnerPath() {
@@ -116,7 +154,7 @@ function resolveHostLaunchContext(options = {}) {
 
 function resolveConfiguredLaunchMode(configuredMode = "", options = {}) {
   const mode = normalizeOptionalString(configuredMode);
-  if (mode === "internal" || mode === "tmux" || mode === "terminal" || mode === "host") {
+  if (mode === "internal" || mode === "internal-pty" || mode === "tmux" || mode === "terminal" || mode === "host") {
     return mode;
   }
   const hostContext = resolveHostLaunchContext(options);
@@ -518,7 +556,9 @@ async function spawnManagedHostAgent(
     subscriberId = "";
   }
 
-  const args = Array.isArray(extraArgs) ? extraArgs : [];
+  const hostBootstrap = applyDefaultManagedBootstrap(projectRoot, normalizedAgent, extraArgs, extraEnv);
+  const args = hostBootstrap.args;
+  const hostExtraEnv = hostBootstrap.extraEnv;
   const argText = args.length > 0 ? ` ${args.map(shellEscape).join(" ")}` : "";
 
   const titleCmd = buildTitleCmd(nickname);
@@ -538,8 +578,8 @@ async function spawnManagedHostAgent(
     env.UFOO_NICKNAME = nickname;
   }
   // Parse extraEnv string (e.g., "UFOO_UCODE_BOOTSTRAP_FILE=/path/to/file") and add to env
-  if (extraEnv && typeof extraEnv === "object") {
-    for (const [key, value] of Object.entries(extraEnv)) {
+  if (hostExtraEnv && typeof hostExtraEnv === "object") {
+    for (const [key, value] of Object.entries(hostExtraEnv)) {
       if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(String(key || ""))) {
         env[String(key)] = String(value ?? "");
       }
@@ -645,7 +685,9 @@ async function spawnInternalAgent(
       ? (count > 1 ? `${nickname}-${i + 1}` : nickname)
       : "";
     const providerSessionId = typeof options.providerSessionId === "string" ? options.providerSessionId.trim() : "";
-    const usePty = process.env.UFOO_INTERNAL_PTY !== "0";
+    const usePty = typeof options.usePty === "boolean"
+      ? options.usePty
+      : process.env.UFOO_INTERNAL_PTY !== "0";
     const launchMode = usePty ? "internal-pty" : "internal";
 
     // 传递 launch_mode 和 parent PID 到 join
@@ -657,8 +699,9 @@ async function spawnInternalAgent(
     const finalNickname = joinResult.nickname || requestedNickname || "";
     bus.saveBusData();
 
+    const managedBootstrap = applyDefaultManagedBootstrap(projectRoot, normalizedAgent, extraArgs, extraEnv);
     const runnerCmd = usePty ? "agent-pty-runner" : "agent-runner";
-    const args = Array.isArray(extraArgs) ? extraArgs : [];
+    const args = managedBootstrap.args;
     const child = spawn(process.execPath, [runner, runnerCmd, agent, ...args], {
       // 关键改动：不使用 detached，daemon 作为父进程
       detached: false,
@@ -666,7 +709,7 @@ async function spawnInternalAgent(
       cwd: projectRoot,
       env: {
         ...process.env,
-        ...(extraEnv && typeof extraEnv === "object" ? extraEnv : {}),
+        ...(managedBootstrap.extraEnv && typeof managedBootstrap.extraEnv === "object" ? managedBootstrap.extraEnv : {}),
         UFOO_INTERNAL_AGENT: "1",
         UFOO_INTERNAL_PTY: usePty ? "1" : "0",
         UFOO_SUBSCRIBER_ID: subscriberId,  // 直接传递 subscriber ID
@@ -888,7 +931,8 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
     throw new Error(`unsupported agent type: ${agent}`);
   }
 
-  if (mode === "internal") {
+  if (mode === "internal" || mode === "internal-pty") {
+    const usePty = mode === "internal-pty";
     const result = await spawnInternalAgent(
       projectRoot,
       normalizedAgent,
@@ -896,9 +940,10 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
       nickname,
       processManager,
       launchEnvObject,
-      extraArgs
+      extraArgs,
+      { usePty }
     );
-    return { mode: "internal", launchScope, subscriberIds: result.subscriberIds };
+    return { mode, launchScope, subscriberIds: result.subscriberIds };
   }
   if (mode === "tmux") {
     // Check if tmux is available
@@ -1129,7 +1174,7 @@ async function resumeAgents(projectRoot, target = "", processManager = null) {
     const args = buildResumeArgs(item.agent, sessionId);
     let reused = false;
     let resumedId = item.id;
-    if (mode === "internal") {
+    if (mode === "internal" || mode === "internal-pty") {
       // Internal agents have no terminal/pane to reattach. Start a fresh
       // daemon-managed runner and replace the old recoverable registration.
       // The provider session is still reused via the normal provider args.
@@ -1142,7 +1187,7 @@ async function resumeAgents(projectRoot, target = "", processManager = null) {
         processManager,
         { UFOO_SKIP_SESSION_PROBE: "1" },
         args,
-        { replaceAgentId: item.id, providerSessionId: sessionId }
+        { replaceAgentId: item.id, providerSessionId: sessionId, usePty: mode === "internal-pty" }
       );
       resumedId = launchResult.subscriberIds && launchResult.subscriberIds[0]
         ? launchResult.subscriberIds[0]

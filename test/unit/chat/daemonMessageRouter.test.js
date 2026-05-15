@@ -311,9 +311,9 @@ describe("chat daemonMessageRouter", () => {
     router.handleMessage({ type: "error", error: "boom" });
 
     expect(options.resolveStatusLine).toHaveBeenCalledWith("{gray-fg}✗{/gray-fg} Error: boom");
-    expect(options.logMessage).not.toHaveBeenCalledWith(
+    expect(options.logMessage).toHaveBeenCalledWith(
       "error",
-      expect.anything()
+      "{white-fg}✗{/white-fg} ESC(boom)"
     );
   });
 

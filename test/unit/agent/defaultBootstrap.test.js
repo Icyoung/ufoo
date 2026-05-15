@@ -15,6 +15,7 @@ describe("default bootstrap", () => {
   test("detects help and version meta args", () => {
     expect(hasMetaCommandArgs(["--help"])).toBe(true);
     expect(hasMetaCommandArgs(["-v"])).toBe(true);
+    expect(hasMetaCommandArgs(["resume", "session-id"])).toBe(true);
     expect(hasMetaCommandArgs(["--model", "gpt-5"])).toBe(false);
   });
 
@@ -129,5 +130,31 @@ describe("default bootstrap", () => {
     expect(resolved.mode).toBe("post-launch-inject");
     expect(resolved.args).toEqual(["exec", "--json"]);
     expect(resolved.env.UFOO_STARTUP_BOOTSTRAP_TEXT).toContain("ufoo ctx decisions -l");
+  });
+
+  test("keeps codex option values intact when adding post-launch bootstrap", () => {
+    const resolved = resolveDefaultManualBootstrap({
+      projectRoot: "/tmp/ufoo",
+      agentType: "codex",
+      args: ["--model", "gpt-5"],
+      env: {},
+    });
+    expect(resolved.mode).toBe("post-launch-inject");
+    expect(resolved.args).toEqual(["--model", "gpt-5"]);
+    expect(resolved.env.UFOO_STARTUP_BOOTSTRAP_TEXT).toContain("ufoo ctx decisions -l");
+  });
+
+  test("still merges codex bootstrap when a prompt follows option values", () => {
+    const resolved = resolveDefaultManualBootstrap({
+      projectRoot: "/tmp/ufoo",
+      agentType: "codex",
+      args: ["--model", "gpt-5", "fix the flaky test"],
+      env: {},
+    });
+    expect(resolved.mode).toBe("initial-prompt-arg");
+    expect(resolved.args[0]).toBe("--model");
+    expect(resolved.args[1]).toBe("gpt-5");
+    expect(resolved.args[2]).toContain("Session bootstrap for Codex.");
+    expect(resolved.args[2]).toContain("fix the flaky test");
   });
 });

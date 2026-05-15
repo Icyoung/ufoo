@@ -96,14 +96,14 @@ describe("daemon resumeAgents", () => {
     expect(agents.agents["claude-code:b1"].nickname).toBe("neptune-reviewer");
   });
 
-  test("resumes recoverable target in internal mode with a fresh internal runner", async () => {
+  test("resumes recoverable target in internal mode with a fresh headless runner", async () => {
     writeConfig({ launchMode: "internal" });
     writeAgents({
       "codex:old1": {
         agent_type: "codex",
         nickname: "codex-1",
         status: "inactive",
-        launch_mode: "internal-pty",
+        launch_mode: "internal",
         provider_session_id: "sess-i1",
       },
     });
@@ -126,6 +126,50 @@ describe("daemon resumeAgents", () => {
     expect(agents.agents[result.resumed[0].id]).toMatchObject({
       nickname: "codex-1",
       provider_session_id: "sess-i1",
+      launch_mode: "internal",
+    });
+    expect(spawn).toHaveBeenCalledWith(
+      process.execPath,
+      [
+        path.resolve(__dirname, "../../../bin/ufoo.js"),
+        "agent-runner",
+        "codex",
+        "resume",
+        "sess-i1",
+      ],
+      expect.objectContaining({
+        cwd: projectRoot,
+        env: expect.objectContaining({
+          UFOO_NICKNAME: "codex-1",
+          UFOO_SKIP_SESSION_PROBE: "1",
+          UFOO_PROVIDER_SESSION_ID: "sess-i1",
+          UFOO_INTERNAL_PTY: "0",
+          UFOO_LAUNCH_MODE: "internal",
+        }),
+      })
+    );
+  });
+
+  test("resumes recoverable target in internal-pty mode with a fresh PTY runner", async () => {
+    writeConfig({ launchMode: "internal-pty" });
+    writeAgents({
+      "codex:old1": {
+        agent_type: "codex",
+        nickname: "codex-1",
+        status: "inactive",
+        launch_mode: "internal-pty",
+        provider_session_id: "sess-i1",
+      },
+    });
+
+    const result = await resumeAgents(projectRoot, "codex-1");
+    const agents = JSON.parse(fs.readFileSync(getUfooPaths(projectRoot).agentsFile, "utf8"));
+
+    expect(result.ok).toBe(true);
+    expect(result.resumed[0].previous_id).toBe("codex:old1");
+    expect(agents.agents[result.resumed[0].id]).toMatchObject({
+      nickname: "codex-1",
+      provider_session_id: "sess-i1",
       launch_mode: "internal-pty",
     });
     expect(spawn).toHaveBeenCalledWith(
@@ -140,9 +184,8 @@ describe("daemon resumeAgents", () => {
       expect.objectContaining({
         cwd: projectRoot,
         env: expect.objectContaining({
-          UFOO_NICKNAME: "codex-1",
-          UFOO_SKIP_SESSION_PROBE: "1",
-          UFOO_PROVIDER_SESSION_ID: "sess-i1",
+          UFOO_INTERNAL_PTY: "1",
+          UFOO_LAUNCH_MODE: "internal-pty",
         }),
       })
     );

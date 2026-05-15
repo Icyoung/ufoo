@@ -2,6 +2,7 @@ const fs = require("fs");
 const { getTimestamp, isAgentPidAlive, isMetaActive, isValidTty, getTtyProcessInfo } = require("./utils");
 const NicknameManager = require("./nickname");
 const { spawnSync } = require("child_process");
+const { appendAgentRegistryDiagnostic } = require("../ufoo/agentRegistryDiagnostics");
 
 function detectTerminalAppFromEnv() {
   const termProgram = process.env.TERM_PROGRAM || "";
@@ -102,9 +103,14 @@ function hasProviderSession(meta) {
  * 订阅者管理
  */
 class SubscriberManager {
-  constructor(busData, queueManager) {
+  constructor(busData, queueManager, options = {}) {
     this.busData = busData;
     this.queueManager = queueManager;
+    this.agentsFile = options.agentsFile || "";
+  }
+
+  logRegistry(event, payload = {}) {
+    appendAgentRegistryDiagnostic(this.agentsFile, event, payload);
   }
 
   cleanupSubscriberArtifacts(subscriber) {
@@ -152,6 +158,15 @@ class SubscriberManager {
           inheritedNickname = meta.nickname;
         }
         // Remove stale subscriber using same tty
+        this.logRegistry("cleanup_duplicate_tty", {
+          source: "bus.subscriber.cleanupDuplicateTty",
+          subscriber: id,
+          replacement: currentSubscriber,
+          tty: ttyPath,
+          same_agent_type: sameAgentType,
+          status: meta?.status || "",
+          nickname: meta?.nickname || "",
+        });
         delete this.busData.agents[id];
         try {
           const queueDir = this.queueManager.getQueueDir(id);
@@ -420,6 +435,16 @@ class SubscriberManager {
         const recoverable = hasProviderSession(meta);
         if (meta.status === "inactive") {
           if (!recoverable) {
+            this.logRegistry("cleanup_inactive_delete", {
+              source: "bus.subscriber.cleanupInactive",
+              subscriber: id,
+              reason: "internal_already_inactive_without_provider_session",
+              status: meta.status || "",
+              launch_mode: meta.launch_mode || "",
+              pid: meta.pid || 0,
+              tty: meta.tty || "",
+              last_seen: meta.last_seen || "",
+            });
             delete this.busData.agents[id];
             this.cleanupSubscriberArtifacts(id);
           }
@@ -427,11 +452,31 @@ class SubscriberManager {
         }
         if (!isMetaActive(meta)) {
           if (recoverable) {
+            this.logRegistry("cleanup_inactive_mark", {
+              source: "bus.subscriber.cleanupInactive",
+              subscriber: id,
+              reason: "internal_inactive_but_recoverable_provider_session",
+              status: meta.status || "",
+              launch_mode: meta.launch_mode || "",
+              pid: meta.pid || 0,
+              tty: meta.tty || "",
+              last_seen: meta.last_seen || "",
+            });
             meta.status = "inactive";
             meta.activity_state = "";
             meta.last_seen = getTimestamp();
             this.cleanupSubscriberArtifacts(id);
           } else {
+            this.logRegistry("cleanup_inactive_delete", {
+              source: "bus.subscriber.cleanupInactive",
+              subscriber: id,
+              reason: "internal_inactive_without_provider_session",
+              status: meta.status || "",
+              launch_mode: meta.launch_mode || "",
+              pid: meta.pid || 0,
+              tty: meta.tty || "",
+              last_seen: meta.last_seen || "",
+            });
             delete this.busData.agents[id];
             this.cleanupSubscriberArtifacts(id);
           }
@@ -439,6 +484,17 @@ class SubscriberManager {
         continue;
       }
       if (meta.status === "active" && !isMetaActive(meta)) {
+        this.logRegistry("cleanup_inactive_mark", {
+          source: "bus.subscriber.cleanupInactive",
+          subscriber: id,
+          reason: "active_meta_failed_liveness",
+          status: meta.status || "",
+          launch_mode: meta.launch_mode || "",
+          pid: meta.pid || 0,
+          tty: meta.tty || "",
+          tty_shell_pid: meta.tty_shell_pid || 0,
+          last_seen: meta.last_seen || "",
+        });
         meta.status = "inactive";
         meta.activity_state = "";
         meta.last_seen = getTimestamp();

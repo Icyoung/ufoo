@@ -1,7 +1,5 @@
 const fs = require("fs");
 const path = require("path");
-const { runCliAgent } = require("./cliRunner");
-const { normalizeCliOutput } = require("./normalizeOutput");
 const { buildStatus } = require("../daemon/status");
 const { getUfooPaths } = require("../ufoo/paths");
 const { normalizeGateRouterResult } = require("../controller/gateRouter");
@@ -633,7 +631,6 @@ async function runUfooAgent({
   loopRuntime = null,
   controllerMode = null,
 }) {
-  const state = loadSessionState(projectRoot);
   const mode = String(routingMode || (routingContext && routingContext.mode) || "").trim().toLowerCase();
   const resolvedControllerMode = String(
     controllerMode
@@ -660,7 +657,6 @@ async function runUfooAgent({
   let res;
 
   const useDirectProvider = shouldUseDirectProvider(provider);
-  let usedDirectProvider = false;
 
   if (useDirectProvider) {
     res = await runNativeRouterCall({
@@ -671,47 +667,22 @@ async function runUfooAgent({
       model,
     });
     if (!res.ok) {
+      // eslint-disable-next-line no-console
+      console.error(`[ufoo-agent] native provider failed: ${res.error || "unknown error"}`);
       return { ok: false, error: res.error };
     } else {
-      usedDirectProvider = true;
       res = { ok: true, output: res.output, sessionId: "", provider: res.provider, model: res.model };
     }
   }
 
   if (!useDirectProvider) {
-    res = await runCliAgent({
-      provider,
-      model,
-      prompt: fullPrompt,
-      systemPrompt,
-      sessionId: state.data?.sessionId,
-      disableSession: provider === "claude-cli",
-      cwd: projectRoot,
-    });
-
-    if (!res.ok) {
-      const msg = (res.error || "").toLowerCase();
-      if (msg.includes("session id") || msg.includes("session-id") || msg.includes("already in use")) {
-        res = await runCliAgent({
-          provider,
-          model,
-          prompt: fullPrompt,
-          systemPrompt,
-          sessionId: undefined,
-          disableSession: provider === "claude-cli",
-          cwd: projectRoot,
-        });
-      }
-    }
-
-    if (!res.ok) {
-      return { ok: false, error: res.error };
-    }
+    const error = `unsupported ufoo-agent provider "${provider || ""}"; cliRunner fallback has been removed`;
+    // eslint-disable-next-line no-console
+    console.error(`[ufoo-agent] ${error}`);
+    return { ok: false, error };
   }
 
-  const rawText = usedDirectProvider
-    ? String(res.output || "").trim()
-    : normalizeCliOutput(res.output);
+  const rawText = String(res.output || "").trim();
   const text = stripMarkdownFence(rawText);
   let payload = null;
   try {

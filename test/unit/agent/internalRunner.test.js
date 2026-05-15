@@ -2,14 +2,6 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-jest.mock("../../../src/agent/cliRunner", () => ({
-  runCliAgent: jest.fn(),
-}));
-
-jest.mock("../../../src/agent/normalizeOutput", () => ({
-  normalizeCliOutput: jest.fn(),
-}));
-
 jest.mock("../../../src/agent/codexThreadProvider", () => ({
   createCodexThreadProvider: jest.fn(),
 }));
@@ -22,8 +14,6 @@ jest.mock("../../../src/agent/credentials/claude", () => ({
   resolveClaudeUpstreamCredentials: jest.fn(),
 }));
 
-const { runCliAgent } = require("../../../src/agent/cliRunner");
-const { normalizeCliOutput } = require("../../../src/agent/normalizeOutput");
 const { createCodexThreadProvider } = require("../../../src/agent/codexThreadProvider");
 const { createClaudeThreadProvider } = require("../../../src/agent/claudeThreadProvider");
 const { resolveClaudeUpstreamCredentials } = require("../../../src/agent/credentials/claude");
@@ -37,9 +27,9 @@ const {
   normalizeWorkerThreadToolMode,
   getClaudeThreadMode,
   buildClaudeAuthProvider,
-  shouldFallbackToLegacyThreadProvider,
   parseAgentViewRawInput,
   createInteractiveInputSession,
+  resolveInternalBootstrap,
   persistProviderSessionId,
 } = require("../../../src/agent/internalRunner");
 
@@ -64,240 +54,64 @@ describe("agent internalRunner stream forwarding", () => {
     return projectRoot;
   }
 
-  test("forwards stream delta envelopes and done marker", async () => {
-    runCliAgent.mockImplementationOnce(async (params) => {
-      params.onStreamDelta("hello");
-      params.onStreamDelta(" world");
-      return { ok: true, output: [{ item: { type: "agent_message", text: "hello world" } }], sessionId: "sess-1" };
-    });
-    normalizeCliOutput.mockReturnValue("hello world");
+  test("skips event with no data or message", async () => {
+    const busSender = { enqueue: jest.fn(), flush: jest.fn(async () => {}) };
 
-    const busSender = {
-      enqueue: jest.fn(),
-      flush: jest.fn(async () => {}),
-    };
-    const state = { cliSessionId: null, needsSave: false };
-    const evt = { publisher: "chat:1", data: { message: "say hi" } };
+    await handleEvent("/tmp", "codex", "codex-cli", "", "codex:x", "n", null, busSender);
+    expect(busSender.enqueue).not.toHaveBeenCalled();
 
-    await handleEvent(
-      process.cwd(),
-      "codex",
-      "codex-cli",
-      "gpt-5.2-codex",
-      "codex:abc",
-      "codex-1",
-      evt,
-      state,
-      busSender
-    );
-
-    expect(busSender.enqueue).toHaveBeenCalledWith("chat:1", JSON.stringify({ stream: true, delta: "hello" }));
-    expect(busSender.enqueue).toHaveBeenCalledWith("chat:1", JSON.stringify({ stream: true, delta: " world" }));
-    expect(busSender.enqueue).toHaveBeenCalledWith(
-      "chat:1",
-      JSON.stringify({ stream: true, done: true, reason: "complete" })
-    );
-    expect(busSender.enqueue).not.toHaveBeenCalledWith("chat:1", "hello world");
-    expect(busSender.flush).toHaveBeenCalled();
+    await handleEvent("/tmp", "codex", "codex-cli", "", "codex:x", "n", { data: {} }, busSender);
+    expect(busSender.enqueue).not.toHaveBeenCalled();
   });
 
-  test("does not send stream envelopes back to managed agent publishers", async () => {
-    runCliAgent.mockImplementationOnce(async (params) => {
-      params.onStreamDelta("partial ");
-      params.onStreamDelta("reply");
-      return { ok: true, output: [{ item: { type: "agent_message", text: "final reply" } }] };
+  test("reports missing thread runtime instead of using cli fallback", async () => {
+    const busSender = { enqueue: jest.fn(), flush: jest.fn(async () => {}) };
+    const evt = { publisher: "chat:4", data: { message: "do" } };
+
+    await handleEvent("/tmp", "codex", "codex-cli", "", "codex:y", "n", evt, busSender);
+
+    expect(busSender.enqueue.mock.calls[0][0]).toBe("chat:4");
+    expect(JSON.parse(busSender.enqueue.mock.calls[0][1])).toEqual({
+      stream: true,
+      delta: expect.stringContaining("cliRunner fallback has been removed"),
     });
-    normalizeCliOutput.mockReturnValue("final reply");
-
-    const busSender = {
-      enqueue: jest.fn(),
-      flush: jest.fn(async () => {}),
-    };
-    const state = { cliSessionId: null, needsSave: false };
-    const projectRoot = makeProjectWithAgent("codex:peer");
-    const evt = { publisher: "codex:peer", data: { message: "say hi" } };
-
-    await handleEvent(
-      projectRoot,
-      "codex",
-      "codex-cli",
-      "",
-      "codex:worker",
-      "worker",
-      evt,
-      state,
-      busSender
-    );
-
-    expect(busSender.enqueue).toHaveBeenCalledTimes(1);
-    expect(busSender.enqueue).toHaveBeenCalledWith("codex:peer", "final reply");
-    expect(busSender.enqueue).not.toHaveBeenCalledWith(
-      "codex:peer",
-      expect.stringContaining("\"stream\":true")
-    );
-  });
-
-  test("falls back to plain reply when no stream delta exists", async () => {
-    runCliAgent.mockResolvedValueOnce({ ok: true, output: [{ item: { type: "agent_message", text: "done" } }] });
-    normalizeCliOutput.mockReturnValueOnce("done");
-
-    const busSender = {
-      enqueue: jest.fn(),
-      flush: jest.fn(async () => {}),
-    };
-    const state = { cliSessionId: null, needsSave: false };
-    const evt = { publisher: "chat:2", data: { message: "task" } };
-
-    await handleEvent(
-      process.cwd(),
-      "codex",
-      "codex-cli",
-      "gpt-5.2-codex",
-      "codex:def",
-      "codex-2",
-      evt,
-      state,
-      busSender
-    );
-
-    expect(busSender.enqueue).toHaveBeenCalledTimes(1);
-    expect(busSender.enqueue).toHaveBeenCalledWith("chat:2", "done");
-    expect(busSender.flush).toHaveBeenCalled();
-  });
-
-  test("appends error to stream and sends done:error on failure", async () => {
-    runCliAgent.mockImplementationOnce(async (params) => {
-      params.onStreamDelta("partial");
-      return { ok: false, error: "boom" };
-    });
-    normalizeCliOutput.mockReturnValue("");
-
-    const busSender = {
-      enqueue: jest.fn(),
-      flush: jest.fn(async () => {}),
-    };
-    const state = { cliSessionId: null, needsSave: false };
-    const evt = { publisher: "chat:3", data: { message: "task" } };
-
-    await handleEvent(
-      process.cwd(),
-      "codex",
-      "codex-cli",
-      "gpt-5.2-codex",
-      "codex:ghi",
-      "codex-3",
-      evt,
-      state,
-      busSender
-    );
-
-    expect(busSender.enqueue).toHaveBeenCalledWith("chat:3", JSON.stringify({ stream: true, delta: "partial" }));
-    expect(busSender.enqueue).toHaveBeenCalledWith("chat:3", JSON.stringify({ stream: true, delta: "\n" }));
     expect(busSender.enqueue).toHaveBeenCalledWith(
-      "chat:3",
-      JSON.stringify({ stream: true, delta: "[internal:codex] error: boom" })
-    );
-    expect(busSender.enqueue).toHaveBeenCalledWith(
-      "chat:3",
+      "chat:4",
       JSON.stringify({ stream: true, done: true, reason: "error" })
     );
   });
 
-  test("skips event with no data or message", async () => {
+  test("prefixes bootstrap text into thread runtime prompts", async () => {
     const busSender = { enqueue: jest.fn(), flush: jest.fn(async () => {}) };
-    const state = { cliSessionId: null, needsSave: false };
-
-    await handleEvent("/tmp", "codex", "codex-cli", "", "codex:x", "n", null, state, busSender);
-    expect(busSender.enqueue).not.toHaveBeenCalled();
-
-    await handleEvent("/tmp", "codex", "codex-cli", "", "codex:x", "n", { data: {} }, state, busSender);
-    expect(busSender.enqueue).not.toHaveBeenCalled();
-  });
-
-  test("sends plain error reply when no stream and error", async () => {
-    runCliAgent.mockResolvedValueOnce({ ok: false, error: "fail" });
-    normalizeCliOutput.mockReturnValueOnce("");
-
-    const busSender = { enqueue: jest.fn(), flush: jest.fn(async () => {}) };
-    const state = { cliSessionId: null, needsSave: false };
-    const evt = { publisher: "chat:4", data: { message: "do" } };
-
-    await handleEvent("/tmp", "codex", "codex-cli", "", "codex:y", "n", evt, state, busSender);
-
-    expect(busSender.enqueue).toHaveBeenCalledWith(
-      "chat:4",
-      "[internal:codex] error: fail"
-    );
-  });
-
-  test("skips enqueue when reply is empty and no stream", async () => {
-    runCliAgent.mockResolvedValueOnce({ ok: true, output: "" });
-    normalizeCliOutput.mockReturnValueOnce("");
-
-    const busSender = { enqueue: jest.fn(), flush: jest.fn(async () => {}) };
-    const state = { cliSessionId: null, needsSave: false };
-    const evt = { publisher: "chat:5", data: { message: "do" } };
-
-    await handleEvent("/tmp", "codex", "codex-cli", "", "codex:z", "n", evt, state, busSender);
-
-    expect(busSender.enqueue).not.toHaveBeenCalled();
-  });
-
-  test("retries with new session on claude session errors", async () => {
-    runCliAgent
-      .mockResolvedValueOnce({ ok: false, error: "session already in use" })
-      .mockResolvedValueOnce({ ok: true, output: "ok", sessionId: "new-sess" });
-    normalizeCliOutput.mockReturnValue("ok");
-
-    const busSender = { enqueue: jest.fn(), flush: jest.fn(async () => {}) };
-    const state = { cliSessionId: "old-sess", needsSave: false };
-    const evt = { publisher: "chat:6", data: { message: "do" } };
-
-    await handleEvent("/tmp", "claude-code", "claude-cli", "", "claude:a", "n", evt, state, busSender);
-
-    expect(runCliAgent).toHaveBeenCalledTimes(2);
-    expect(state.cliSessionId).toBe("new-sess");
-    expect(state.needsSave).toBe(true);
-  });
-
-  test("updates session ID on successful claude response", async () => {
-    runCliAgent.mockResolvedValueOnce({ ok: true, output: "done", sessionId: "sess-42" });
-    normalizeCliOutput.mockReturnValue("done");
-
-    const busSender = { enqueue: jest.fn(), flush: jest.fn(async () => {}) };
-    const state = { cliSessionId: null, needsSave: false };
-    const evt = { publisher: "chat:7", data: { message: "task" } };
-
-    await handleEvent("/tmp", "claude-code", "claude-cli", "", "claude:b", "n", evt, state, busSender);
-
-    expect(state.cliSessionId).toBe("sess-42");
-    expect(state.needsSave).toBe(true);
-  });
-
-  test("passes extra args through to runCliAgent", async () => {
-    runCliAgent.mockResolvedValueOnce({ ok: true, output: "done" });
-    normalizeCliOutput.mockReturnValue("done");
-
-    const busSender = { enqueue: jest.fn(), flush: jest.fn(async () => {}) };
-    const state = { cliSessionId: null, needsSave: false };
-    const evt = { publisher: "chat:8", data: { message: "task" } };
+    const evt = { publisher: "chat:bootstrap", data: { message: "task body" } };
+    const threadRuntime = {
+      enabled: true,
+      thread: {
+        runStreamed: jest.fn(async function* () {
+          yield { type: "text_delta", delta: "done" };
+        }),
+      },
+    };
 
     await handleEvent(
       process.cwd(),
       "codex",
       "codex-cli",
       "",
-      "codex:c8",
-      "codex-8",
+      "codex:boot",
+      "codex-boot",
       evt,
-      state,
       busSender,
-      ["--model", "gpt-5.4-mini", "--approval-mode", "full-auto"]
+      ["--json"],
+      threadRuntime,
+      "ufoo protocol bootstrap"
     );
 
-    expect(runCliAgent).toHaveBeenCalledWith(expect.objectContaining({
-      extraArgs: ["--model", "gpt-5.4-mini", "--approval-mode", "full-auto"],
-    }));
+    expect(threadRuntime.thread.runStreamed).toHaveBeenCalledWith(
+      expect.stringContaining("ufoo protocol bootstrap\n\n"),
+      {}
+    );
+    expect(threadRuntime.thread.runStreamed.mock.calls[0][0]).toContain("task body");
   });
 
   test("uses codex thread runtime when enabled", async () => {
@@ -305,7 +119,6 @@ describe("agent internalRunner stream forwarding", () => {
       enqueue: jest.fn(),
       flush: jest.fn(async () => {}),
     };
-    const state = { cliSessionId: null, needsSave: false };
     const evt = { publisher: "chat:9", data: { message: "task" } };
     const threadRuntime = {
       enabled: true,
@@ -326,13 +139,11 @@ describe("agent internalRunner stream forwarding", () => {
       "codex:sdk",
       "codex-sdk",
       evt,
-      state,
       busSender,
       [],
       threadRuntime
     );
 
-    expect(runCliAgent).not.toHaveBeenCalled();
     expect(busSender.enqueue).toHaveBeenCalledWith("chat:9", JSON.stringify({ stream: true, delta: "hello " }));
     expect(busSender.enqueue).toHaveBeenCalledWith("chat:9", JSON.stringify({ stream: true, delta: "sdk" }));
     expect(busSender.enqueue).toHaveBeenCalledWith(
@@ -346,7 +157,6 @@ describe("agent internalRunner stream forwarding", () => {
       enqueue: jest.fn(),
       flush: jest.fn(async () => {}),
     };
-    const state = { cliSessionId: null, needsSave: false };
     const projectRoot = makeProjectWithAgent("codex:peer");
     const evt = { publisher: "codex:peer", data: { message: "task" } };
     const threadRuntime = {
@@ -368,13 +178,11 @@ describe("agent internalRunner stream forwarding", () => {
       "codex:sdk",
       "codex-sdk",
       evt,
-      state,
       busSender,
       [],
       threadRuntime
     );
 
-    expect(runCliAgent).not.toHaveBeenCalled();
     expect(busSender.enqueue).toHaveBeenCalledTimes(1);
     expect(busSender.enqueue).toHaveBeenCalledWith("codex:peer", "hello sdk");
   });
@@ -384,7 +192,6 @@ describe("agent internalRunner stream forwarding", () => {
       enqueue: jest.fn(),
       flush: jest.fn(async () => {}),
     };
-    const state = { cliSessionId: null, needsSave: false };
     const evt = { publisher: "chat:10", data: { message: "task" } };
     const threadRuntime = {
       enabled: true,
@@ -404,7 +211,6 @@ describe("agent internalRunner stream forwarding", () => {
       "codex:sdk2",
       "codex-sdk-2",
       evt,
-      state,
       busSender,
       [],
       threadRuntime
@@ -426,7 +232,6 @@ describe("agent internalRunner stream forwarding", () => {
       enqueue: jest.fn(),
       flush: jest.fn(async () => {}),
     };
-    const state = { cliSessionId: null, needsSave: false };
     const evt = { publisher: "chat:11", data: { message: "task" } };
     const threadRuntime = {
       enabled: true,
@@ -448,14 +253,12 @@ describe("agent internalRunner stream forwarding", () => {
       "claude:fallback",
       "claude-fallback",
       evt,
-      state,
       busSender,
       ["--dangerously-skip-permissions"],
       threadRuntime
     );
 
     expect(threadRuntime.rebuildThread).toHaveBeenCalled();
-    expect(runCliAgent).not.toHaveBeenCalled();
     expect(busSender.enqueue).toHaveBeenCalledWith(
       "chat:11",
       JSON.stringify({ stream: true, delta: "[internal:claude-code] error: oauth unavailable" })
@@ -464,6 +267,73 @@ describe("agent internalRunner stream forwarding", () => {
       "chat:11",
       JSON.stringify({ stream: true, done: true, reason: "error" })
     );
+  });
+});
+
+describe("internalRunner bootstrap resolution", () => {
+  test("builds a default ufoo protocol prompt when no role prompt exists", () => {
+    const resolved = resolveInternalBootstrap({
+      projectRoot: process.cwd(),
+      agentType: "codex",
+      extraArgs: ["--model", "gpt-5"],
+      env: {},
+    });
+
+    expect(resolved.promptText).toContain("Session bootstrap for Codex.");
+    expect(resolved.promptText).toContain("ufoo ctx decisions -l");
+    expect(resolved.extraArgs).toEqual(["--model", "gpt-5"]);
+  });
+
+  test("preserves codex config option values while adding default prompt", () => {
+    const samples = [
+      ["-c", "key=value"],
+      ["--cwd", "/tmp"],
+      ["--ask-for-approval", "on-request"],
+    ];
+
+    for (const extraArgs of samples) {
+      const resolved = resolveInternalBootstrap({
+        projectRoot: process.cwd(),
+        agentType: "codex",
+        extraArgs,
+        env: {},
+      });
+
+      expect(resolved.promptText).toContain("ufoo ctx decisions -l");
+      expect(resolved.extraArgs).toEqual(extraArgs);
+    }
+  });
+
+  test("consumes codex role prompt from positional extra args", () => {
+    const resolved = resolveInternalBootstrap({
+      projectRoot: process.cwd(),
+      agentType: "codex",
+      extraArgs: ["--json", "role prompt with ufoo protocol:\nufoo ctx decisions -l"],
+      env: {},
+    });
+
+    expect(resolved.promptText).toContain("role prompt");
+    expect(resolved.extraArgs).toEqual(["--json"]);
+  });
+
+  test("consumes claude role prompt from append-system-prompt file", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-internal-bootstrap-"));
+    const promptFile = path.join(projectRoot, "role.md");
+    fs.writeFileSync(promptFile, "claude role prompt with ufoo protocol:\nufoo ctx decisions -l", "utf8");
+
+    try {
+      const resolved = resolveInternalBootstrap({
+        projectRoot,
+        agentType: "claude-code",
+        extraArgs: ["--append-system-prompt", promptFile, "--model", "sonnet"],
+        env: {},
+      });
+
+      expect(resolved.promptText).toContain("claude role prompt");
+      expect(resolved.extraArgs).toEqual(["--model", "sonnet"]);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
   });
 });
 
@@ -813,9 +683,9 @@ describe("internalRunner codex thread mode", () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  test("claude thread mode defaults to legacy", () => {
+  test("claude thread mode defaults to api", () => {
     delete process.env.UFOO_CLAUDE_INTERNAL_THREAD_MODE;
-    expect(getClaudeThreadMode()).toBe("legacy");
+    expect(getClaudeThreadMode()).toBe("api");
   });
 
   test("env override enables Claude API thread mode", () => {
@@ -847,9 +717,9 @@ describe("internalRunner codex thread mode", () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  test("createThreadRuntime stays disabled for Claude legacy mode", () => {
+  test("createThreadRuntime stays disabled for explicit Claude legacy mode", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-claude-legacy-"));
-    delete process.env.UFOO_CLAUDE_INTERNAL_THREAD_MODE;
+    process.env.UFOO_CLAUDE_INTERNAL_THREAD_MODE = "legacy";
 
     const runtime = createThreadRuntime({
       projectRoot,
@@ -859,6 +729,7 @@ describe("internalRunner codex thread mode", () => {
     });
 
     expect(runtime.enabled).toBe(false);
+    delete process.env.UFOO_CLAUDE_INTERNAL_THREAD_MODE;
     expect(createClaudeThreadProvider).not.toHaveBeenCalled();
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
@@ -907,16 +778,5 @@ describe("internalRunner codex thread mode", () => {
 
     expect(runtime.enabled).toBe(false);
     fs.rmSync(projectRoot, { recursive: true, force: true });
-  });
-
-  test("threaded direct providers do not fall back to legacy CLI", () => {
-    expect(shouldFallbackToLegacyThreadProvider({ code: "CLAUDE_AUTH_UNAVAILABLE" }, "claude-cli")).toBe(false);
-    expect(shouldFallbackToLegacyThreadProvider({ code: "claude_oauth_schema_unsupported" }, "claude-cli")).toBe(false);
-    expect(shouldFallbackToLegacyThreadProvider({ code: "ANTHROPIC_SDK_UNAVAILABLE" }, "claude-cli")).toBe(false);
-    expect(shouldFallbackToLegacyThreadProvider({ code: "ECONNRESET" }, "claude-cli")).toBe(false);
-    expect(shouldFallbackToLegacyThreadProvider({ code: "CLAUDE_AUTH_UNAVAILABLE" }, "codex-cli")).toBe(false);
-    expect(shouldFallbackToLegacyThreadProvider({ code: "CODEX_AUTH_UNAVAILABLE" }, "codex-cli")).toBe(false);
-    expect(shouldFallbackToLegacyThreadProvider({ code: "CODEX_AUTH_REFRESH_FAILED" }, "codex-cli")).toBe(false);
-    expect(shouldFallbackToLegacyThreadProvider({ code: "CODEX_UPSTREAM_FAILED" }, "codex-cli")).toBe(false);
   });
 });

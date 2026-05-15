@@ -166,11 +166,12 @@ describe("daemon ops internal launch", () => {
     }
   });
 
-  test("uses the installed ufoo runner instead of a project-local bin path", async () => {
-    writeConfig({ launchMode: "internal" });
+  test("internal-pty uses the installed ufoo PTY runner instead of a project-local bin path", async () => {
+    writeConfig({ launchMode: "internal-pty" });
 
-    await launchAgent(projectRoot, "codex", 1, "");
+    const result = await launchAgent(projectRoot, "codex", 1, "");
 
+    expect(result.mode).toBe("internal-pty");
     expect(spawn).toHaveBeenCalledWith(
       process.execPath,
       [
@@ -182,8 +183,29 @@ describe("daemon ops internal launch", () => {
         cwd: projectRoot,
       }),
     );
+    expect(spawn.mock.calls[0][2].env.UFOO_STARTUP_BOOTSTRAP_TEXT).toContain("ufoo ctx decisions -l");
+    expect(spawn.mock.calls[0][2].env.UFOO_SKIP_DEFAULT_BOOTSTRAP).toBe("1");
+    expect(spawn.mock.calls[0][2].env.UFOO_INTERNAL_PTY).toBe("1");
     const projectLocalRunner = path.join(projectRoot, "bin", "ufoo.js");
     expect(spawn.mock.calls.some(([, args]) => Array.isArray(args) && args[0] === projectLocalRunner)).toBe(false);
+  });
+
+  test("internal uses the headless agent runner", async () => {
+    writeConfig({ launchMode: "internal" });
+
+    const result = await launchAgent(projectRoot, "codex", 1, "");
+    const agents = JSON.parse(fs.readFileSync(getUfooPaths(projectRoot).agentsFile, "utf8")).agents;
+    const subscriberId = result.subscriberIds[0];
+
+    expect(result.mode).toBe("internal");
+    expect(spawn.mock.calls[0][1]).toEqual([
+      path.resolve(__dirname, "../../../bin/ufoo.js"),
+      "agent-runner",
+      "codex",
+    ]);
+    expect(spawn.mock.calls[0][2].env.UFOO_INTERNAL_PTY).toBe("0");
+    expect(spawn.mock.calls[0][2].env.UFOO_LAUNCH_MODE).toBe("internal");
+    expect(agents[subscriberId].launch_mode).toBe("internal");
   });
 
   test("uses bus-generated numbered nickname for default internal codex launch", async () => {
@@ -197,6 +219,23 @@ describe("daemon ops internal launch", () => {
     expect(spawn.mock.calls[0][2].env.UFOO_NICKNAME).toBe("codex-1");
   });
 
+  test("keeps codex option values intact when adding internal bootstrap", async () => {
+    writeConfig({ launchMode: "internal" });
+
+    await launchAgent(projectRoot, "codex", 1, "", null, {
+      extraArgs: ["--model", "gpt-5"],
+    });
+
+    expect(spawn.mock.calls[0][1]).toEqual([
+      path.resolve(__dirname, "../../../bin/ufoo.js"),
+      "agent-runner",
+      "codex",
+      "--model",
+      "gpt-5",
+    ]);
+    expect(spawn.mock.calls[0][2].env.UFOO_STARTUP_BOOTSTRAP_TEXT).toContain("ufoo ctx decisions -l");
+  });
+
   test("uses bus-generated numbered nickname for default internal claude launch", async () => {
     writeConfig({ launchMode: "internal" });
 
@@ -205,7 +244,15 @@ describe("daemon ops internal launch", () => {
     const subscriberId = result.subscriberIds[0];
 
     expect(agents[subscriberId].nickname).toBe("claude-1");
+    expect(spawn.mock.calls[0][1]).toEqual([
+      path.resolve(__dirname, "../../../bin/ufoo.js"),
+      "agent-runner",
+      "claude",
+      "--append-system-prompt",
+      expect.stringContaining(path.join("claude-code", "default-bootstrap.md")),
+    ]);
     expect(spawn.mock.calls[0][2].env.UFOO_NICKNAME).toBe("claude-1");
+    expect(spawn.mock.calls[0][2].env.UFOO_SKIP_DEFAULT_BOOTSTRAP).toBe("1");
   });
 });
 
@@ -413,6 +460,79 @@ describe("daemon ops host launch", () => {
     expect(result).toMatchObject({
       mode: "host",
       subscriberIds: ["codex:host-extra-env"],
+    });
+  });
+
+  test("host launch prepares default ufoo protocol bootstrap for codex", async () => {
+    writeConfig({ launchMode: "host" });
+    writeAgents({});
+
+    hostAdapter.createSession.mockImplementation(async (_sockPath, opts) => {
+      expect(opts.env).toEqual(expect.objectContaining({
+        UFOO_LAUNCH_MODE: "host",
+        UFOO_SKIP_DEFAULT_BOOTSTRAP: "1",
+        UFOO_STARTUP_BOOTSTRAP_TEXT: expect.stringContaining("ufoo ctx decisions -l"),
+      }));
+      writeAgents({
+        "codex:host-bootstrap": {
+          agent_type: "codex",
+          nickname: "neo",
+          status: "active",
+          launch_mode: "host",
+        },
+      });
+      return {
+        session_id: "HS-BOOT",
+        inject_sock: "/tmp/horizon-bootstrap.sock",
+      };
+    });
+
+    const result = await launchAgent(projectRoot, "codex", 1, "neo", null, {
+      hostDaemonSock: "/tmp/horizon-daemon.sock",
+      hostSessionId: "HS-SRC",
+    });
+
+    expect(result).toMatchObject({
+      mode: "host",
+      subscriberIds: ["codex:host-bootstrap"],
+    });
+  });
+
+  test("host launch prepares default ufoo protocol bootstrap file for claude", async () => {
+    writeConfig({ launchMode: "host" });
+    writeAgents({});
+
+    hostAdapter.createSession.mockImplementation(async (_sockPath, opts) => {
+      expect(opts.command).toContain("--append-system-prompt");
+      expect(opts.env).toEqual(expect.objectContaining({
+        UFOO_LAUNCH_MODE: "host",
+        UFOO_SKIP_DEFAULT_BOOTSTRAP: "1",
+      }));
+      const appendIndex = opts.command.indexOf("--append-system-prompt");
+      const commandTail = opts.command.slice(appendIndex);
+      expect(commandTail).toContain(path.join("claude-code", "default-bootstrap.md"));
+      writeAgents({
+        "claude-code:host-bootstrap": {
+          agent_type: "claude-code",
+          nickname: "architect",
+          status: "active",
+          launch_mode: "host",
+        },
+      });
+      return {
+        session_id: "HS-CLAUDE",
+        inject_sock: "/tmp/horizon-claude-bootstrap.sock",
+      };
+    });
+
+    const result = await launchAgent(projectRoot, "claude", 1, "architect", null, {
+      hostDaemonSock: "/tmp/horizon-daemon.sock",
+      hostSessionId: "HS-SRC",
+    });
+
+    expect(result).toMatchObject({
+      mode: "host",
+      subscriberIds: ["claude-code:host-bootstrap"],
     });
   });
 
