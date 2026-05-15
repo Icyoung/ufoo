@@ -87,20 +87,12 @@ function createAgentViewController(options = {}) {
     return clean.slice(0, normalizedWidth - 1) + "…";
   }
 
-  function boxTop(title = "", width = 80) {
-    const inner = Math.max(1, width - 2);
-    const label = title ? ` ${title} ` : "";
-    const safe = stripAnsi(label).slice(0, inner);
-    return `┌${safe}${"─".repeat(Math.max(0, inner - safe.length))}┐`;
+  function horizontalLine(width = 80) {
+    return "─".repeat(Math.max(1, width));
   }
 
-  function boxBottom(width = 80) {
-    return `└${"─".repeat(Math.max(1, width - 2))}┘`;
-  }
-
-  function boxMiddle(text = "", width = 80) {
-    const inner = Math.max(1, width - 2);
-    return `│${fitText(text, inner)}│`;
+  function plainLine(text = "", width = 80) {
+    return fitText(text, Math.max(1, width));
   }
 
   function wrapTextLine(text = "", width = 80) {
@@ -118,7 +110,7 @@ function createAgentViewController(options = {}) {
   }
 
   function getWrappedBusLogLines(width = 80) {
-    const inner = Math.max(1, width - 2);
+    const inner = Math.max(1, width);
     const wrapped = [];
     for (const line of busLogLines) {
       wrapped.push(...wrapTextLine(line, inner));
@@ -136,7 +128,6 @@ function createAgentViewController(options = {}) {
     const label = getAgentLabel(agentId);
     busLogLines = [
       `ufoo internal · ${label}`,
-      "Enter 发送 · Esc 返回 · ↓ agent bar",
       "",
     ];
   }
@@ -175,28 +166,23 @@ function createAgentViewController(options = {}) {
     const cols = getCols();
     const width = Math.max(20, cols);
     const inputTop = Math.max(4, rows - 3);
-    const logTop = 1;
-    const logBottom = Math.max(logTop + 1, inputTop - 1);
-    const logContentTop = logTop + 1;
-    const logContentBottom = logBottom - 1;
+    const logContentTop = 1;
+    const logContentBottom = Math.max(logContentTop, inputTop - 1);
     const logContentHeight = Math.max(1, logContentBottom - logContentTop + 1);
-    const label = getAgentLabel(viewingAgent);
 
     processStdout.write("\x1b[?25l");
-    writeAt(logTop, boxTop(`ufoo internal · ${label}`, width));
     const visibleLines = getWrappedBusLogLines(width).slice(-logContentHeight);
     for (let i = 0; i < logContentHeight; i += 1) {
-      writeAt(logContentTop + i, boxMiddle(visibleLines[i] || "", width));
+      writeAt(logContentTop + i, plainLine(visibleLines[i] || "", width));
     }
-    writeAt(logBottom, boxBottom(width));
 
-    writeAt(inputTop, boxTop("message", width));
+    writeAt(inputTop, horizontalLine(width));
     const viewport = getBusInputViewport(width);
-    writeAt(inputTop + 1, boxMiddle(`> ${viewport.text}`, width));
-    writeAt(inputTop + 2, boxBottom(width));
+    writeAt(inputTop + 1, plainLine(`> ${viewport.text}`, width));
+    writeAt(inputTop + 2, horizontalLine(width));
 
     renderAgentDashboard();
-    const cursorCol = clamp(4 + viewport.cursorCol, 1, width);
+    const cursorCol = clamp(3 + viewport.cursorCol, 1, width);
     processStdout.write(`\x1b[${inputTop + 1};${cursorCol}H\x1b[?25h`);
   }
 

@@ -152,7 +152,7 @@ describe("chat agentViewController", () => {
     expect(processStdout.write).toHaveBeenCalled();
   });
 
-  test("enterAgentView in internal bus mode renders bordered log and input", () => {
+  test("enterAgentView in internal bus mode renders plain log and horizontal input lines", () => {
     const {
       controller,
       connectAgentOutput,
@@ -166,9 +166,12 @@ describe("chat agentViewController", () => {
     expect(controller.isAgentViewUsesBus()).toBe(true);
     expect(connectAgentOutput).not.toHaveBeenCalled();
     expect(connectAgentInput).not.toHaveBeenCalled();
-    expect(output).toContain("┌ ufoo internal · codex:1 ");
-    expect(output).toContain("┌ message ");
-    expect(output).toContain("│> ");
+    expect(output).toContain("ufoo internal · codex:1");
+    expect(output).toContain("────────────────────");
+    expect(output).toContain("> ");
+    expect(output).not.toContain("Enter 发送 · Esc 返回 · ↓ agent bar");
+    expect(output).not.toContain("┌ ufoo internal");
+    expect(output).not.toContain("│> ");
   });
 
   test("internal bus mode edits local input and submits direct bus message", () => {
@@ -189,7 +192,8 @@ describe("chat agentViewController", () => {
 
     expect(sendBusMessage).toHaveBeenCalledWith("codex:1", "h!");
     const output = processStdout.write.mock.calls.map((call) => call[0]).join("");
-    expect(output).toContain("│> h!");
+    expect(output).toContain("> h!");
+    expect(output).not.toContain("│> h!");
   });
 
   test("internal bus mode separates submitted prompt from following reply", () => {
@@ -203,12 +207,12 @@ describe("chat agentViewController", () => {
     controller.writeToAgentTerm("answer");
 
     const output = processStdout.write.mock.calls.map((call) => call[0]).join("");
-    expect(output).toContain("│> q");
-    expect(output).toContain("│answer");
-    expect(output).not.toContain("│> qanswer");
+    expect(output).toContain("> q");
+    expect(output).toContain("answer");
+    expect(output).not.toContain("> qanswer");
   });
 
-  test("internal bus mode renders streamed output in bordered log", () => {
+  test("internal bus mode renders streamed output in plain log", () => {
     const { controller, processStdout } = createHarness();
 
     controller.enterAgentView("codex:1", { useBus: true });
@@ -216,8 +220,8 @@ describe("chat agentViewController", () => {
     controller.writeToAgentTerm("hello\r\nworld");
 
     const output = processStdout.write.mock.calls.map((call) => call[0]).join("");
-    expect(output).toContain("│hello");
-    expect(output).toContain("│world");
+    expect(output).toContain("hello");
+    expect(output).toContain("world");
   });
 
   test("internal bus mode wraps long output instead of truncating", () => {
@@ -235,8 +239,8 @@ describe("chat agentViewController", () => {
     controller.writeToAgentTerm("abcdefghijklmnopqrstuvwxyz");
 
     const output = narrowStdout.write.mock.calls.map((call) => call[0]).join("");
-    expect(output).toContain("│abcdefghijklmnopqr│");
-    expect(output).toContain("│stuvwxyz");
+    expect(output).toContain("abcdefghijklmnopqrst");
+    expect(output).toContain("uvwxyz");
     expect(output).not.toContain("…");
   });
 
