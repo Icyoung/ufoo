@@ -1,6 +1,9 @@
 const os = require("os");
 const { version: packageVersion } = require("../../package.json");
 
+const ANSI_RESET = "\x1b[0m";
+const CLAUDE_ORANGE = "\x1b[38;2;217;119;87m";
+
 function createAgentViewController(options = {}) {
   const {
     screen,
@@ -55,6 +58,8 @@ function createAgentViewController(options = {}) {
   let busInputValue = "";
   let busInputCursor = 0;
   let busLogLines = [];
+  let busStartupAgentId = "";
+  let busStartupLineCount = 0;
   const originalRender = screen.render.bind(screen);
   let renderFrozen = false;
 
@@ -74,6 +79,10 @@ function createAgentViewController(options = {}) {
   function stripAnsi(text = "") {
     return String(text || "").replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
       .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
+  }
+
+  function hasAnsi(text = "") {
+    return /\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-9;?]*[ -/]*[@-~])/.test(String(text || ""));
   }
 
   function clamp(value, min, max) {
@@ -141,12 +150,50 @@ function createAgentViewController(options = {}) {
     return `${truncateToWidth(clean, normalizedWidth - 1).trimEnd()}…`;
   }
 
+  function fitAnsiText(text = "", width = 1) {
+    const normalizedWidth = Math.max(1, width);
+    const raw = String(text || "").replace(/\r/g, "");
+    if (!hasAnsi(raw)) return fitText(raw, normalizedWidth);
+    if (displayWidth(raw) <= normalizedWidth) {
+      return padToWidth(raw, normalizedWidth);
+    }
+    if (normalizedWidth <= 1) return "…";
+
+    const ansiPattern = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]/g;
+    let out = "";
+    let cells = 0;
+    let index = 0;
+    while (index < raw.length && cells < normalizedWidth - 1) {
+      ansiPattern.lastIndex = index;
+      const match = ansiPattern.exec(raw);
+      if (match && match.index === index) {
+        out += match[0];
+        index += match[0].length;
+        continue;
+      }
+      const char = Array.from(raw.slice(index))[0] || "";
+      if (!char) break;
+      const charWidth = charDisplayWidth(char);
+      if (cells + charWidth > normalizedWidth - 1) break;
+      out += char;
+      cells += charWidth;
+      index += char.length;
+    }
+    const suffix = `${ANSI_RESET}…`;
+    return padToWidth(`${out}${suffix}`, normalizedWidth);
+  }
+
   function horizontalLine(width = 80) {
     return "─".repeat(Math.max(1, width));
   }
 
   function plainLine(text = "", width = 80) {
     return fitText(text, Math.max(1, width));
+  }
+
+  function logLine(text = "", width = 80) {
+    const normalizedWidth = Math.max(1, width);
+    return hasAnsi(text) ? fitAnsiText(text, normalizedWidth) : plainLine(text, normalizedWidth);
   }
 
   function sliceDisplayCells(text = "", startCell = 0, maxCells = 1) {
@@ -174,6 +221,7 @@ function createAgentViewController(options = {}) {
 
   function wrapTextLine(text = "", width = 80) {
     const inner = Math.max(1, width);
+    if (hasAnsi(text)) return [String(text || "")];
     const clean = stripAnsi(String(text || ""));
     if (!clean) return [""];
     const lines = [];
@@ -247,16 +295,19 @@ function createAgentViewController(options = {}) {
   function buildClaudeStartupLines(agentLabel = "", width = 80) {
     const label = String(agentLabel || "").trim();
     const projectPath = compactProjectPath(getProjectRoot());
-    const product = "Claude Code";
+    const product = "ClaudeCode";
     const detail = label ? `${label} · managed headless` : "managed headless";
+    const iconTop = `${CLAUDE_ORANGE}▐▛███▜▌${ANSI_RESET}`;
+    const iconMiddle = `${CLAUDE_ORANGE}▝▜█████▛▘${ANSI_RESET}`;
+    const iconBottom = `${CLAUDE_ORANGE}▘▘▝▝${ANSI_RESET}`;
     const lines = [
-      ` ▐▛███▜▌${product} v${packageVersion}`,
-      `▝▜█████▛▘${detail}`,
-      ` ▘▘▝▝${projectPath}`,
+      ` ${iconTop} ${product}v${packageVersion}`,
+      `${iconMiddle}${detail}`,
+      ` ${iconBottom}    ${projectPath}`,
       "",
     ];
     if (width < 44) return lines;
-    return lines.map((line) => padToWidth(line, Math.min(58, Math.max(1, width))));
+    return lines.map((line) => fitAnsiText(line, Math.min(58, Math.max(1, width))));
   }
 
   function buildCodexStartupLines(agentLabel = "", width = 80) {
@@ -288,11 +339,31 @@ function createAgentViewController(options = {}) {
     return buildClaudeStartupLines(agentLabel || agentId, width);
   }
 
+  function staticStartupLines(agentId = "", agentLabel = "", width = 80) {
+    const lines = buildInternalStartupLines(agentId, agentLabel, width);
+    if (lines.length > 0 && String(lines[lines.length - 1] || "") === "") {
+      return lines.slice(0, -1);
+    }
+    return lines;
+  }
+
   function resetBusView(agentId) {
     busInputValue = "";
     busInputCursor = 0;
+    busStartupAgentId = agentId || "";
     const label = getAgentLabel(agentId);
-    busLogLines = buildInternalStartupLines(agentId, label, getCols());
+    const startupLines = staticStartupLines(agentId, label, getCols());
+    busLogLines = startupLines.concat("");
+    busStartupLineCount = startupLines.length;
+  }
+
+  function refreshBusStartupLines(width = getCols()) {
+    if (!busStartupAgentId || busStartupLineCount <= 0) return;
+    const label = getAgentLabel(busStartupAgentId);
+    const startupLines = staticStartupLines(busStartupAgentId, label, width);
+    const tailLines = busLogLines.slice(busStartupLineCount);
+    busLogLines = startupLines.concat(tailLines.length > 0 ? tailLines : [""]);
+    busStartupLineCount = startupLines.length;
   }
 
   function appendBusLog(text = "") {
@@ -331,6 +402,7 @@ function createAgentViewController(options = {}) {
     const rows = getRows();
     const cols = getCols();
     const width = Math.max(20, cols);
+    refreshBusStartupLines(width);
     const inputTop = Math.max(4, rows - 3);
     const logContentTop = 1;
     const logContentBottom = Math.max(logContentTop, inputTop - 1);
@@ -339,7 +411,7 @@ function createAgentViewController(options = {}) {
     processStdout.write("\x1b[?25l");
     const visibleLines = getWrappedBusLogLines(width).slice(-logContentHeight);
     for (let i = 0; i < logContentHeight; i += 1) {
-      writeAt(logContentTop + i, plainLine(visibleLines[i] || "", width));
+      writeAt(logContentTop + i, logLine(visibleLines[i] || "", width));
     }
 
     writeAt(inputTop, horizontalLine(width));
@@ -445,6 +517,8 @@ function createAgentViewController(options = {}) {
     busInputValue = "";
     busInputCursor = 0;
     busLogLines = [];
+    busStartupAgentId = "";
+    busStartupLineCount = 0;
 
     currentView = "main";
     viewingAgent = null;

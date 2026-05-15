@@ -1,5 +1,10 @@
 const { createAgentViewController } = require("../../../src/chat/agentViewController");
 
+function stripAnsi(value = "") {
+  return String(value || "").replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
+}
+
 function createHarness(overrides = {}) {
   let focusMode = "input";
   let selectedAgentIndex = -1;
@@ -187,9 +192,13 @@ describe("chat agentViewController", () => {
     controller.enterAgentView("claude-code:1", { useBus: true });
 
     const output = processStdout.write.mock.calls.map((call) => call[0]).join("");
-    expect(output).toContain("▐▛███▜▌Claude Code v");
-    expect(output).toContain("▝▜█████▛▘claude-code:1 · managed headless");
-    expect(output).toContain("▘▘▝▝~/Code/ufoo");
+    const plain = stripAnsi(output);
+    expect(output).toContain("\x1b[38;2;217;119;87m▐▛███▜▌\x1b[0m");
+    expect(output).toContain("\x1b[38;2;217;119;87m▝▜█████▛▘\x1b[0m");
+    expect(output).toContain("\x1b[38;2;217;119;87m▘▘▝▝\x1b[0m");
+    expect(plain).toContain("▐▛███▜▌ ClaudeCodev");
+    expect(plain).toContain("▝▜█████▛▘claude-code:1 · managed headless");
+    expect(plain).toContain("▘▘▝▝    ~/Code/ufoo");
     expect(output).not.toContain("Welcome to ufoo internal");
   });
 
@@ -227,6 +236,31 @@ describe("chat agentViewController", () => {
     expect(lines.length).toBeGreaterThan(0);
     expect(lines.every((line) => line.length <= narrowStdout.columns)).toBe(true);
     expect(lines.join("\n")).toContain("…");
+  });
+
+  test("internal bus startup header adapts after terminal resize", () => {
+    const resizeStdout = {
+      rows: 30,
+      columns: 100,
+      write: jest.fn(),
+    };
+    const { controller } = createHarness({
+      processStdout: resizeStdout,
+    });
+
+    controller.enterAgentView("codex:1", { useBus: true });
+    resizeStdout.columns = 42;
+    resizeStdout.write.mockClear();
+
+    expect(controller.handleResizeInAgentView()).toBe(true);
+
+    const lines = resizeStdout.write.mock.calls
+      .map((call) => call[0])
+      .filter((value) => value.includes("╭") || value.includes("│ ") || value.includes("╰"))
+      .map((value) => stripAnsi(value.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")));
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines.every((line) => line.length <= resizeStdout.columns)).toBe(true);
+    expect(lines.join("\n")).toContain("OpenAI Codex");
   });
 
   test("internal bus mode positions cursor by display width for wide input", () => {
