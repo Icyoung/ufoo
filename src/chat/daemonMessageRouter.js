@@ -354,19 +354,6 @@ function createDaemonMessageRouter(options = {}) {
   function handleBusMessage(msg) {
     const data = msg.data || {};
     if (data.event === "activity_state_changed") {
-      const publisher = data.publisher && data.publisher !== "unknown"
-        ? data.publisher
-        : (data.subscriber || "bus");
-      const viewingAgent = getViewingAgent();
-      if (
-        getCurrentView() === "agent" &&
-        isAgentViewUsesBus() &&
-        viewingAgent &&
-        isAgentEventForViewingAgent(data, viewingAgent, publisher)
-      ) {
-        const state = data.state || (data.data && data.data.state) || "";
-        if (state) writeToAgentTerm(`[state] ${state}\r\n`);
-      }
       requestStatus();
       return true;
     }
@@ -391,6 +378,18 @@ function createDaemonMessageRouter(options = {}) {
     if (!displayMessage && !streamPayload) return true;
 
     const viewingAgent = getViewingAgent();
+    const isOwnInternalPrompt =
+      data.source === "chat-internal-agent-view" &&
+      viewingAgent &&
+      data.target === viewingAgent &&
+      publisher !== viewingAgent;
+    if (
+      getCurrentView() === "agent" &&
+      isAgentViewUsesBus() &&
+      isOwnInternalPrompt
+    ) {
+      return true;
+    }
     const isAgentViewTarget =
       getCurrentView() === "agent" &&
       isAgentViewUsesBus() &&

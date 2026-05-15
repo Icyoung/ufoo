@@ -306,14 +306,15 @@ function createAgentViewController(options = {}) {
     const product = "ClaudeCode";
     const detail = label ? `${label} · managed headless` : "managed headless";
     const iconWidth = 9;
+    const iconGap = "  ";
     const iconLine = (icon = "", text = "") => {
       const pad = " ".repeat(Math.max(0, iconWidth - displayWidth(icon)));
-      return `${CLAUDE_ORANGE}${icon}${ANSI_RESET}${pad}${text}`;
+      return `${CLAUDE_ORANGE}${icon}${ANSI_RESET}${pad}${iconGap}${text}`;
     };
     const lines = [
-      iconLine("▐▛███▜▌", `${product}v${packageVersion}`),
+      iconLine(" ▐▛███▜▌", `${product}v${packageVersion}`),
       iconLine("▝▜█████▛▘", detail),
-      iconLine(" ▘▘▝▝", projectPath),
+      iconLine("  ▘▘ ▝▝  ", projectPath),
       "",
     ];
     if (width < 44) return lines;

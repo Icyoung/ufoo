@@ -208,12 +208,12 @@ describe("chat agentViewController", () => {
 
     const output = processStdout.write.mock.calls.map((call) => call[0]).join("");
     const plain = stripAnsi(output);
-    expect(output).toContain("\x1b[38;2;217;119;87m▐▛███▜▌\x1b[0m");
+    expect(output).toContain("\x1b[38;2;217;119;87m ▐▛███▜▌\x1b[0m");
     expect(output).toContain("\x1b[38;2;217;119;87m▝▜█████▛▘\x1b[0m");
-    expect(output).toContain("\x1b[38;2;217;119;87m ▘▘▝▝\x1b[0m");
-    expect(plain).toContain("▐▛███▜▌  ClaudeCodev");
-    expect(plain).toContain("▝▜█████▛▘claude-code:1 · managed headless");
-    expect(plain).toContain(" ▘▘▝▝    ~/Code/ufoo");
+    expect(output).toContain("\x1b[38;2;217;119;87m  ▘▘ ▝▝  \x1b[0m");
+    expect(plain).toContain(" ▐▛███▜▌   ClaudeCodev");
+    expect(plain).toContain("▝▜█████▛▘  claude-code:1 · managed headless");
+    expect(plain).toContain("  ▘▘ ▝▝    ~/Code/ufoo");
     expect(output).not.toContain("Welcome to ufoo internal");
   });
 

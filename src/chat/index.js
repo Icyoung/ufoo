@@ -1062,11 +1062,12 @@ async function runChat(projectRoot, options = {}) {
       : `${prefix}>`;
 
     promptBox.setContent(content);
+    if (!input.parent || !promptBox.parent) return;
+
     promptBox.width = content.length + 1;  // content + spacer
     input.left = promptBox.width;
     input.width = `100%-${promptBox.width}`;
 
-    if (!input.parent || !promptBox.parent) return;
     resizeInput();
     if (typeof input._updateCursor === "function") {
       input._updateCursor();

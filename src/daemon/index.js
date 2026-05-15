@@ -889,22 +889,6 @@ function startBusBridge(projectRoot, provider, onEvent, onStatus, shouldDrain) {
     }
   }
 
-  function emitRecentWatchedEvents(agentId, limit = 80) {
-    if (!agentId) return;
-    const previous = new Set(state.watchedAgents);
-    state.watchedAgents.add(agentId);
-    const aliases = buildWatchedAliases();
-    state.watchedAgents = previous;
-    const matches = [];
-    const files = getEventFiles().slice(-3);
-    for (const file of files) {
-      for (const evt of readEventFile(file)) {
-        if (isWatchedEvent(evt, aliases)) matches.push(evt);
-      }
-    }
-    for (const evt of matches.slice(-limit)) emitBusEvent(evt);
-  }
-
   function pollWatchedEvents() {
     if (state.watchedAgents.size === 0) {
       state.lastEventSeq = readCurrentSeq();
@@ -1032,7 +1016,6 @@ function startBusBridge(projectRoot, provider, onEvent, onStatus, shouldDrain) {
     watchAgent(agentId, enabled = true) {
       if (!agentId) return;
       if (enabled) {
-        emitRecentWatchedEvents(agentId);
         state.watchedAgents.add(agentId);
         state.lastEventSeq = Math.max(state.lastEventSeq, readCurrentSeq());
       } else {
