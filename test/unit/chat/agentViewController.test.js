@@ -39,6 +39,7 @@ function createHarness(overrides = {}) {
   const connectAgentInput = jest.fn();
   const disconnectAgentInput = jest.fn();
   const sendRaw = jest.fn();
+  const sendBusMessage = jest.fn();
   const sendResize = jest.fn();
   const requestScreenSnapshot = jest.fn();
   const setFocusMode = jest.fn((value) => { focusMode = value; });
@@ -88,6 +89,7 @@ function createHarness(overrides = {}) {
     connectAgentInput,
     disconnectAgentInput,
     sendRaw,
+    sendBusMessage,
     sendResize,
     requestScreenSnapshot,
     ...overrides,
@@ -103,6 +105,7 @@ function createHarness(overrides = {}) {
     connectAgentInput,
     disconnectAgentInput,
     sendRaw,
+    sendBusMessage,
     sendResize,
     requestScreenSnapshot,
     setFocusMode,
@@ -147,6 +150,94 @@ describe("chat agentViewController", () => {
     expect(controller.getAgentInputSuppressUntil()).toBe(1300);
     expect(getState().focusMode).toBe("input");
     expect(processStdout.write).toHaveBeenCalled();
+  });
+
+  test("enterAgentView in internal bus mode renders bordered log and input", () => {
+    const {
+      controller,
+      connectAgentOutput,
+      connectAgentInput,
+      processStdout,
+    } = createHarness();
+
+    controller.enterAgentView("codex:1", { useBus: true });
+
+    const output = processStdout.write.mock.calls.map((call) => call[0]).join("");
+    expect(controller.isAgentViewUsesBus()).toBe(true);
+    expect(connectAgentOutput).not.toHaveBeenCalled();
+    expect(connectAgentInput).not.toHaveBeenCalled();
+    expect(output).toContain("┌ ufoo internal · codex:1 ");
+    expect(output).toContain("┌ message ");
+    expect(output).toContain("│> ");
+  });
+
+  test("internal bus mode edits local input and submits direct bus message", () => {
+    const {
+      controller,
+      sendBusMessage,
+      processStdout,
+    } = createHarness();
+
+    controller.enterAgentView("codex:1", { useBus: true });
+    processStdout.write.mockClear();
+
+    expect(controller.handleBusAgentKey("h", { name: "h" })).toBe(true);
+    expect(controller.handleBusAgentKey("i", { name: "i" })).toBe(true);
+    expect(controller.handleBusAgentKey("", { name: "backspace" })).toBe(true);
+    expect(controller.handleBusAgentKey("!", { name: "!" })).toBe(true);
+    expect(controller.handleBusAgentKey("", { name: "enter" })).toBe(true);
+
+    expect(sendBusMessage).toHaveBeenCalledWith("codex:1", "h!");
+    const output = processStdout.write.mock.calls.map((call) => call[0]).join("");
+    expect(output).toContain("│> h!");
+  });
+
+  test("internal bus mode separates submitted prompt from following reply", () => {
+    const { controller, processStdout } = createHarness();
+
+    controller.enterAgentView("codex:1", { useBus: true });
+    controller.handleBusAgentKey("q", { name: "q" });
+    controller.handleBusAgentKey("", { name: "enter" });
+    processStdout.write.mockClear();
+
+    controller.writeToAgentTerm("answer");
+
+    const output = processStdout.write.mock.calls.map((call) => call[0]).join("");
+    expect(output).toContain("│> q");
+    expect(output).toContain("│answer");
+    expect(output).not.toContain("│> qanswer");
+  });
+
+  test("internal bus mode renders streamed output in bordered log", () => {
+    const { controller, processStdout } = createHarness();
+
+    controller.enterAgentView("codex:1", { useBus: true });
+    processStdout.write.mockClear();
+    controller.writeToAgentTerm("hello\r\nworld");
+
+    const output = processStdout.write.mock.calls.map((call) => call[0]).join("");
+    expect(output).toContain("│hello");
+    expect(output).toContain("│world");
+  });
+
+  test("internal bus mode wraps long output instead of truncating", () => {
+    const narrowStdout = {
+      rows: 12,
+      columns: 20,
+      write: jest.fn(),
+    };
+    const { controller } = createHarness({
+      processStdout: narrowStdout,
+    });
+
+    controller.enterAgentView("codex:1", { useBus: true });
+    narrowStdout.write.mockClear();
+    controller.writeToAgentTerm("abcdefghijklmnopqrstuvwxyz");
+
+    const output = narrowStdout.write.mock.calls.map((call) => call[0]).join("");
+    expect(output).toContain("│abcdefghijklmnopqr│");
+    expect(output).toContain("│stuvwxyz");
+    expect(output).not.toContain("…");
   });
 
   test("exitAgentView restores blessed mode and focus", () => {

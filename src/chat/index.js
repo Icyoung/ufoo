@@ -1565,6 +1565,16 @@ async function runChat(projectRoot, options = {}) {
     sendRaw: (data) => {
       sendRawWithCapabilities(data);
     },
+    sendBusMessage: (target, message) => {
+      if (!target || !message) return;
+      send({
+        type: IPC_REQUEST_TYPES.BUS_SEND,
+        target,
+        message,
+        injection_mode: "immediate",
+        source: "chat-internal-agent-view",
+      });
+    },
     sendResize: (cols, rows) => {
       sendResizeWithCapabilities(cols, rows);
     },
@@ -2025,6 +2035,9 @@ async function runChat(projectRoot, options = {}) {
       // Ctrl+C exits entire app
       if (key && key.ctrl && key.name === "c") {
         return; // handled by screen.key(["C-c"])
+      }
+      if (agentViewController && agentViewController.handleBusAgentKey(ch, key)) {
+        return;
       }
       // Down arrow: enter agents bar (same pattern as normal chat dashboard)
       if (key && key.name === "down") {
