@@ -77,14 +77,64 @@ function createAgentViewController(options = {}) {
     return Math.max(min, Math.min(max, normalized));
   }
 
+  function charDisplayWidth(char = "") {
+    if (!char) return 0;
+    const code = char.codePointAt(0) || 0;
+    if (code === 0) return 0;
+    if (code < 32 || (code >= 0x7f && code < 0xa0)) return 0;
+    if ((code >= 0x0300 && code <= 0x036f) ||
+      (code >= 0x1ab0 && code <= 0x1aff) ||
+      (code >= 0x1dc0 && code <= 0x1dff) ||
+      (code >= 0x20d0 && code <= 0x20ff) ||
+      (code >= 0xfe20 && code <= 0xfe2f)) {
+      return 0;
+    }
+    if ((code >= 0x1100 && code <= 0x115f) ||
+      code === 0x2329 ||
+      code === 0x232a ||
+      (code >= 0x2e80 && code <= 0xa4cf) ||
+      (code >= 0xac00 && code <= 0xd7a3) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xfe10 && code <= 0xfe19) ||
+      (code >= 0xfe30 && code <= 0xfe6f) ||
+      (code >= 0xff00 && code <= 0xff60) ||
+      (code >= 0xffe0 && code <= 0xffe6) ||
+      (code >= 0x1f300 && code <= 0x1faff)) {
+      return 2;
+    }
+    return 1;
+  }
+
+  function displayWidth(text = "") {
+    return Array.from(stripAnsi(String(text || ""))).reduce((sum, char) => sum + charDisplayWidth(char), 0);
+  }
+
+  function padToWidth(text = "", width = 1) {
+    const cells = displayWidth(text);
+    return String(text || "") + " ".repeat(Math.max(0, width - cells));
+  }
+
+  function truncateToWidth(text = "", width = 1) {
+    const target = Math.max(1, width);
+    let out = "";
+    let cells = 0;
+    for (const char of Array.from(stripAnsi(String(text || "")))) {
+      const charWidth = charDisplayWidth(char);
+      if (cells + charWidth > target) break;
+      out += char;
+      cells += charWidth;
+    }
+    return padToWidth(out, target);
+  }
+
   function fitText(text = "", width = 1) {
     const normalizedWidth = Math.max(1, width);
     const clean = stripAnsi(String(text || "")).replace(/\r/g, "");
-    if (clean.length <= normalizedWidth) {
-      return clean + " ".repeat(normalizedWidth - clean.length);
+    if (displayWidth(clean) <= normalizedWidth) {
+      return padToWidth(clean, normalizedWidth);
     }
-    if (normalizedWidth <= 1) return clean.slice(0, normalizedWidth);
-    return clean.slice(0, normalizedWidth - 1) + "…";
+    if (normalizedWidth <= 1) return truncateToWidth(clean, normalizedWidth);
+    return `${truncateToWidth(clean, normalizedWidth - 1).trimEnd()}…`;
   }
 
   function horizontalLine(width = 80) {
@@ -95,17 +145,47 @@ function createAgentViewController(options = {}) {
     return fitText(text, Math.max(1, width));
   }
 
+  function sliceDisplayCells(text = "", startCell = 0, maxCells = 1) {
+    const targetStart = Math.max(0, startCell);
+    const targetWidth = Math.max(1, maxCells);
+    let out = "";
+    let cells = 0;
+    let started = false;
+    for (const char of Array.from(String(text || ""))) {
+      const charWidth = charDisplayWidth(char);
+      const nextCells = cells + charWidth;
+      if (!started) {
+        if (nextCells <= targetStart) {
+          cells = nextCells;
+          continue;
+        }
+        started = true;
+      }
+      if (displayWidth(out) + charWidth > targetWidth) break;
+      out += char;
+      cells = nextCells;
+    }
+    return out;
+  }
+
   function wrapTextLine(text = "", width = 80) {
     const inner = Math.max(1, width);
     const clean = stripAnsi(String(text || ""));
     if (!clean) return [""];
     const lines = [];
-    let rest = clean;
-    while (rest.length > inner) {
-      lines.push(rest.slice(0, inner));
-      rest = rest.slice(inner);
+    let current = "";
+    let cells = 0;
+    for (const char of Array.from(clean)) {
+      const charWidth = charDisplayWidth(char);
+      if (cells > 0 && cells + charWidth > inner) {
+        lines.push(current);
+        current = "";
+        cells = 0;
+      }
+      current += char;
+      cells += charWidth;
     }
-    lines.push(rest);
+    lines.push(current);
     return lines;
   }
 
@@ -122,14 +202,31 @@ function createAgentViewController(options = {}) {
     processStdout.write(`\x1b[${row};1H\x1b[2K${content}`);
   }
 
+  function buildInternalStartupLines(agentLabel = "", width = 80) {
+    const label = String(agentLabel || "").trim();
+    if (width < 48) {
+      return [
+        `Welcome to ufoo internal`,
+        label ? `agent ${label}` : "agent internal",
+        "",
+      ];
+    }
+    return [
+      "Welcome to ufoo internal",
+      "································",
+      "      ░░░░░░                 ██╗   ██╗",
+      "  ░░░   ░░░░░░░░░░           ██║   ██║",
+      "   ░░░░░░░░░░░░░░░░          ╚██████╔╝",
+      label ? `agent  ${label}` : "agent  internal",
+      "",
+    ];
+  }
+
   function resetBusView(agentId) {
     busInputValue = "";
     busInputCursor = 0;
     const label = getAgentLabel(agentId);
-    busLogLines = [
-      `ufoo internal · ${label}`,
-      "",
-    ];
+    busLogLines = buildInternalStartupLines(label, getCols());
   }
 
   function appendBusLog(text = "") {
@@ -148,15 +245,18 @@ function createAgentViewController(options = {}) {
   }
 
   function getBusInputViewport(width) {
-    const inner = Math.max(1, width - 4);
+    const inner = Math.max(1, width - 2);
     const value = String(busInputValue || "").replace(/\n/g, "⏎");
-    let start = 0;
-    if (busInputCursor >= inner) {
-      start = busInputCursor - inner + 1;
+    const beforeCursor = String(busInputValue || "").slice(0, busInputCursor).replace(/\n/g, "⏎");
+    const cursorCells = displayWidth(beforeCursor);
+    let startCell = 0;
+    if (cursorCells >= inner) {
+      startCell = cursorCells - inner + 1;
     }
+    const text = sliceDisplayCells(value, startCell, inner);
     return {
-      text: value.slice(start, start + inner),
-      cursorCol: Math.max(0, busInputCursor - start),
+      text,
+      cursorCol: Math.max(0, cursorCells - startCell),
     };
   }
 
@@ -333,10 +433,66 @@ function createAgentViewController(options = {}) {
     renderBusView();
   }
 
+  function inputBoundaries(text = "") {
+    const source = String(text || "");
+    if (!source) return [0];
+    try {
+      if (typeof Intl !== "undefined" && typeof Intl.Segmenter === "function") {
+        const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+        const boundaries = [0];
+        for (const part of segmenter.segment(source)) {
+          boundaries.push(part.index + part.segment.length);
+        }
+        return Array.from(new Set(boundaries)).sort((a, b) => a - b);
+      }
+    } catch {
+      // Fall through to code point boundaries.
+    }
+    const boundaries = [0];
+    let offset = 0;
+    for (const char of Array.from(source)) {
+      offset += char.length;
+      boundaries.push(offset);
+    }
+    return boundaries;
+  }
+
+  function clampInputCursor(pos = busInputCursor) {
+    const boundaries = inputBoundaries(busInputValue);
+    const target = clamp(pos, 0, busInputValue.length);
+    let best = 0;
+    for (const boundary of boundaries) {
+      if (boundary <= target) best = boundary;
+      else break;
+    }
+    return best;
+  }
+
+  function previousInputBoundary(pos = busInputCursor) {
+    const boundaries = inputBoundaries(busInputValue);
+    const target = clamp(pos, 0, busInputValue.length);
+    let prev = 0;
+    for (const boundary of boundaries) {
+      if (boundary < target) prev = boundary;
+      else break;
+    }
+    return prev;
+  }
+
+  function nextInputBoundary(pos = busInputCursor) {
+    const boundaries = inputBoundaries(busInputValue);
+    const target = clamp(pos, 0, busInputValue.length);
+    for (const boundary of boundaries) {
+      if (boundary > target) return boundary;
+    }
+    return busInputValue.length;
+  }
+
   function deleteBusInputBeforeCursor() {
     if (busInputCursor <= 0) return;
-    busInputValue = busInputValue.slice(0, busInputCursor - 1) + busInputValue.slice(busInputCursor);
-    busInputCursor -= 1;
+    const previous = previousInputBoundary();
+    busInputValue = busInputValue.slice(0, previous) + busInputValue.slice(busInputCursor);
+    busInputCursor = previous;
     renderBusView();
   }
 
@@ -392,12 +548,12 @@ function createAgentViewController(options = {}) {
       return true;
     }
     if (keyName === "left") {
-      busInputCursor = Math.max(0, busInputCursor - 1);
+      busInputCursor = previousInputBoundary();
       renderBusView();
       return true;
     }
     if (keyName === "right") {
-      busInputCursor = Math.min(busInputValue.length, busInputCursor + 1);
+      busInputCursor = nextInputBoundary();
       renderBusView();
       return true;
     }
@@ -417,7 +573,9 @@ function createAgentViewController(options = {}) {
     }
     if (keyName === "delete") {
       if (busInputCursor < busInputValue.length) {
-        busInputValue = busInputValue.slice(0, busInputCursor) + busInputValue.slice(busInputCursor + 1);
+        const next = nextInputBoundary();
+        busInputValue = busInputValue.slice(0, busInputCursor) + busInputValue.slice(next);
+        busInputCursor = clampInputCursor();
         renderBusView();
       }
       return true;

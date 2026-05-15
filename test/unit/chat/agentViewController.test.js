@@ -166,12 +166,40 @@ describe("chat agentViewController", () => {
     expect(controller.isAgentViewUsesBus()).toBe(true);
     expect(connectAgentOutput).not.toHaveBeenCalled();
     expect(connectAgentInput).not.toHaveBeenCalled();
-    expect(output).toContain("ufoo internal · codex:1");
+    expect(output).toContain("Welcome to ufoo internal");
+    expect(output).toContain("agent  codex:1");
     expect(output).toContain("────────────────────");
     expect(output).toContain("> ");
     expect(output).not.toContain("Enter 发送 · Esc 返回 · ↓ agent bar");
     expect(output).not.toContain("┌ ufoo internal");
     expect(output).not.toContain("│> ");
+  });
+
+  test("internal bus mode positions cursor by display width for wide input", () => {
+    const { controller, processStdout } = createHarness();
+
+    controller.enterAgentView("codex:1", { useBus: true });
+    processStdout.write.mockClear();
+    expect(controller.handleBusAgentKey("你", { name: "你" })).toBe(true);
+
+    const output = processStdout.write.mock.calls.map((call) => call[0]).join("");
+    expect(output).toContain("> 你");
+    expect(output).toContain("\x1b[28;5H");
+  });
+
+  test("internal bus mode deletes a full grapheme before cursor", () => {
+    const { controller, processStdout } = createHarness();
+
+    controller.enterAgentView("codex:1", { useBus: true });
+    processStdout.write.mockClear();
+    expect(controller.handleBusAgentKey("你", { name: "你" })).toBe(true);
+    processStdout.write.mockClear();
+    expect(controller.handleBusAgentKey("", { name: "backspace" })).toBe(true);
+
+    const output = processStdout.write.mock.calls.map((call) => call[0]).join("");
+    expect(output).toContain("> ");
+    expect(output).not.toContain("> 你");
+    expect(output).toContain("\x1b[28;3H");
   });
 
   test("internal bus mode edits local input and submits direct bus message", () => {

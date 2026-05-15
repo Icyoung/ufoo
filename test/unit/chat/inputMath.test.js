@@ -61,11 +61,40 @@ describe("chat inputMath helpers", () => {
     })).toBe(26);
   });
 
+  test("getInnerWidth tolerates detached blessed width getter", () => {
+    const input = {
+      lpos: null,
+      _getCoords: () => null,
+    };
+    Object.defineProperty(input, "width", {
+      get() {
+        throw new TypeError("Cannot read properties of null (reading 'width')");
+      },
+    });
+
+    expect(getInnerWidth({ input, screen: { width: 50 }, promptWidth: 3 })).toBe(47);
+  });
+
   test("getWrapWidth uses clines width when available", () => {
     const input = { _clines: { width: 17 } };
     expect(getWrapWidth(input, 10)).toBe(17);
     expect(getWrapWidth({}, 10)).toBe(10);
     expect(getWrapWidth(null, 12)).toBe(12);
+  });
+
+  test("getWrapWidth tolerates detached blessed clines getter", () => {
+    const input = {};
+    Object.defineProperty(input, "_clines", {
+      get() {
+        return {
+          get width() {
+            throw new TypeError("Cannot read properties of null (reading 'width')");
+          },
+        };
+      },
+    });
+
+    expect(getWrapWidth(input, 10)).toBe(10);
   });
 
   test("countLines accounts for wrapping and newlines", () => {

@@ -1,10 +1,10 @@
 # ufoo
 
-[中文文档](README.zh-CN.md)
+[Chinese documentation](README.zh-CN.md)
 
-🤖 Multi-agent AI collaboration framework for orchestrating Claude Code, OpenAI Codex, and custom AI agents.
+Multi-agent workspace protocol for running Claude Code, OpenAI Codex, ufoo's native `ucode`, and coordinated agent groups from one project-scoped runtime.
 
-📦 **npm**: [https://www.npmjs.com/package/u-foo](https://www.npmjs.com/package/u-foo)
+Package: [u-foo on npm](https://www.npmjs.com/package/u-foo)
 
 [![npm version](https://img.shields.io/npm/v/u-foo.svg)](https://www.npmjs.com/package/u-foo)
 [![npm downloads](https://img.shields.io/npm/dm/u-foo.svg)](https://www.npmjs.com/package/u-foo)
@@ -12,90 +12,227 @@
 [![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org)
 [![Platform](https://img.shields.io/badge/platform-macOS-blue.svg)](https://www.apple.com/macos)
 
-## Why ufoo?
+## What It Does
 
-ufoo solves the challenge of coordinating multiple AI coding agents:
+ufoo adds a coordination layer around coding agents:
 
-- **🔗 Unified Interface** - One chat UI to manage all your AI agents
-- **📬 Message Routing** - Agents can communicate and collaborate via event bus
-- **🧠 Context Sharing** - Shared decisions and knowledge across agents
-- **🚀 Auto-initialization** - Agent wrappers handle setup automatically
-- **📝 Decision Tracking** - Record architectural decisions and trade-offs
-- **⚡ Real-time Updates** - See agent status and messages instantly
+- `ufoo` / `ufoo chat` opens an interactive multi-agent dashboard.
+- `uclaude`, `ucodex`, and `ucode` launch agents with project bootstrap, bus identity, and ufoo protocol context.
+- `ufoo daemon` owns project runtime state, launch/resume operations, group orchestration, reports, and chat bridge requests.
+- `ufoo bus` provides project-local agent messaging, wake, listen, alert, and activation commands.
+- `ufoo ctx`, `ufoo memory`, and `ufoo history` keep decisions, durable facts, and input timeline context in `.ufoo/`.
+- `ufoo group` launches predefined multi-agent groups from templates under `templates/groups/`.
+- `ufoo online` provides relay helpers for remote channels, rooms, tokens, and inboxes.
 
-## Features
+## Requirements
 
-- **Chat Interface** - Interactive multi-agent chat UI (`ufoo chat`)
-  - Real-time agent communication and status monitoring
-  - Dashboard with agent list, online status, and quick actions
-  - Direct messaging to specific agents with `@agent-name`
-- **Event Bus** - Real-time inter-agent messaging (`ufoo bus`)
-- **Context Sharing** - Shared decisions and project context (`ufoo ctx`)
-- **Agent Wrappers** - Auto-initialization for Claude Code (`uclaude`), Codex (`ucodex`), and ucode assistant (`ucode`)
-  - **PTY Wrapper** - Intelligent terminal emulation with ready detection
-  - **Smart Probe Injection** - Waits for agent initialization before injecting commands
-  - **Consistent Branding** - Unified agent naming (e.g., ucode-1, claude-1, codex-1)
-- **Skills System** - Extensible agent capabilities (`ufoo skills`)
+- Node.js 18 or newer.
+- macOS for Terminal.app/iTerm2 launch and activation integrations.
+- Claude Code and/or Codex CLI installed if you use the `uclaude` or `ucodex` wrappers.
 
 ## Installation
 
+Install the published package:
+
 ```bash
-# Install globally from npm (recommended)
 npm install -g u-foo
 ```
 
-Or install from source:
+Or link this repository for local development:
 
 ```bash
-git clone https://github.com/Icyoung/ufoo.git ~/.ufoo
-cd ~/.ufoo && npm install && npm link
+git clone https://github.com/Icyoung/ufoo.git
+cd ufoo
+npm install
+npm link
 ```
 
-After installation, the following commands are available globally: `ufoo`, `uclaude`, `ucodex`, `ucode`.
+Installed binaries:
+
+- `ufoo`: main CLI and chat dashboard.
+- `uclaude`: Claude Code wrapper.
+- `ucodex`: Codex wrapper.
+- `ucode`: native ufoo coding-agent wrapper.
+- `ucode-core`: native queue/runtime helper.
 
 ## Quick Start
 
+Initialize a project and open chat:
+
 ```bash
-# Initialize a project
 cd your-project
-ufoo init
-
-# Launch chat interface (default command)
-ufoo chat
-# or just
+ufoo init --modules context,bus
 ufoo
-
-# Use agent wrappers (auto-init + bus join)
-uclaude   # Claude Code wrapper
-ucodex    # Codex wrapper
-ucode     # ucode assistant (self-developed AI coding agent)
 ```
 
-## Example Workflow
+Launch agents from the chat UI:
+
+```text
+> /launch claude
+> /launch codex
+> /launch ucode
+> @claude-1 read the project structure and summarize the risks
+```
+
+Or launch wrappers directly from a project directory:
 
 ```bash
-# 1. Start the chat interface
-$ ufoo
-
-# 2. Launch agents from chat
-> /launch claude
-> /launch ucode
-
-# 3. Send tasks to agents
-> @claude-1 Please analyze the current codebase structure
-> @ucode-1 Fix the bug in authentication module
-
-# 4. Agents communicate via bus
-claude-1: Analysis complete. Found 3 areas needing refactoring...
-ucode-1: Bug fixed. Running tests...
-
-# 5. Check decisions made
-> /decisions
+uclaude
+ucodex
+ucode
 ```
 
-Native self-developed implementation lives under `src/code`.
+`ufoo chat` starts the project daemon when needed. For global cross-project mode, use:
 
-Prepare and verify `ucode` runtime wiring:
+```bash
+ufoo -g
+```
+
+## Architecture
+
+```text
+                 ufoo chat / ufoo -g
+                         |
+                         v
+        +----------------+----------------+
+        | project daemon / IPC / reports  |
+        +----------------+----------------+
+                         |
+          +--------------+--------------+
+          |              |              |
+          v              v              v
+    controller       group runtime   project registry
+ gate/router loop    orchestration   ~/.ufoo/projects
+          |
+          v
+  provider API transports and tools
+  codex/claude/ucode, memory, bus, terminal
+          |
+          v
+  uclaude / ucodex / ucode agent sessions
+```
+
+The chat UI talks to a project daemon over `.ufoo/run/ufoo.sock`. The daemon owns launch/resume/recover, group orchestration, reporting, controller routing, and project registry updates. Agents communicate through the project event bus and can use shared decisions, memory, reports, prompt history, and tool handlers.
+
+## Core Usage
+
+### Project Runtime
+
+```bash
+ufoo init --modules context,bus,resources
+ufoo status
+ufoo doctor
+ufoo daemon --start
+ufoo daemon --status
+ufoo daemon --stop
+```
+
+`ufoo init` creates `.ufoo/`, injects the ufoo protocol block into `AGENTS.md` and `CLAUDE.md`, creates shared memory storage, and initializes selected modules. The default module set is `context`; pass `--modules context,bus` for the usual multi-agent project setup.
+
+### Chat And Agents
+
+```bash
+ufoo
+ufoo chat
+ufoo chat -g
+ufoo launch codex reviewer --profile review-critic
+ufoo solo list
+ufoo solo run implementation-lead --agent codex --nickname builder
+ufoo role ufoo-builder implementation-lead
+ufoo resume <ucode|uclaude|ucodex|nickname>
+ufoo recover list
+```
+
+Common chat commands include `/status`, `/bus list`, `/bus status`, `/settings`, `/project list`, `/project switch <index|path>`, `/open <path>`, `/resume list`, `/group status`, and `@nickname <message>`.
+
+### Event Bus
+
+```bash
+ufoo bus join
+ufoo bus status
+ufoo bus send codex:abc123 "Please implement the approved slice."
+ufoo bus check codex:abc123
+ufoo bus listen codex:abc123 --from-beginning
+ufoo bus alert codex:abc123 --daemon --notify
+ufoo bus wake ufoo-builder --reason follow-up
+ufoo bus activate ufoo-builder
+```
+
+Use `ufoo bus status` to find the real subscriber ID or resolvable nickname first. In this repository, group nicknames are project-scoped, such as `ufoo-builder`; a bare `builder` target may not resolve. Agents should execute pending bus work, reply to the sender, and acknowledge the queue after handling it.
+
+### Context, Memory, And Reports
+
+```bash
+ufoo ctx decisions -l
+ufoo ctx decisions -n 1
+ufoo ctx decisions new "Adopt API-backed loop architecture"
+
+ufoo memory add "Provider contract" --body "Durable fact..." --tags provider,contract
+ufoo memory list --tag provider
+ufoo memory show mem-0001
+
+ufoo history build
+ufoo history show 20
+ufoo history prompt 30
+
+ufoo report start "Implement README refresh" --task docs-readme --agent ufoo-builder
+ufoo report done "README updated" --task docs-readme --agent ufoo-builder
+ufoo report list
+```
+
+Use decisions sparingly for plan-level constraints. Durable project facts belong in memory.
+
+### Command Reference
+
+| Area | Commands |
+|------|----------|
+| Runtime | `ufoo`, `ufoo chat`, `ufoo -g`, `ufoo init`, `ufoo status`, `ufoo doctor`, `ufoo daemon --start|--status|--stop` |
+| Projects | `ufoo project list`, `ufoo project current`, `ufoo project switch` (chat-only in v1), chat `/open <path>` |
+| Agents | `ufoo launch`, `ufoo solo list|run`, `ufoo role`, `ufoo resume <target>`, `ufoo recover list|run` |
+| Bus | `ufoo bus join|status|send|check|listen|alert|wake|activate` |
+| Context | `ufoo ctx doctor`, `ufoo ctx decisions`, `ufoo ctx sync` |
+| Memory | `ufoo memory add|list|show|edit|forget|rebuild-index|audit` |
+| Reports | `ufoo report start|progress|done|error|list` |
+| Groups | `ufoo group templates|template|run|status|diagram|stop` |
+| Online | `ufoo online server|token|room|channel|connect|send|inbox` |
+| History | `ufoo history build|show|prompt` |
+| Skills | `ufoo skills list|install` |
+| Chat settings | `/settings`, `/settings agent`, `/settings router`, `/settings ucode` |
+
+### Groups
+
+Built-in group templates live in `templates/groups/`.
+
+```bash
+ufoo group templates
+ufoo group template show build-lane
+ufoo group template validate templates/groups/build-lane.json
+ufoo group run build-lane --dry-run
+ufoo group run build-lane --instance docs-refresh
+ufoo group status
+ufoo group diagram build-lane --mermaid
+ufoo group stop docs-refresh
+```
+
+Current built-ins include `build-lane`, `build-ultra`, `design-system`, `product-discovery`, `ui-plan-review`, `ui-polish`, and `verify-ship`.
+
+### Online Relay
+
+```bash
+ufoo online server --host 127.0.0.1 --port 8787
+ufoo online token codex:abc123 --nickname builder
+ufoo online channel list --nickname builder
+ufoo online room create --nickname builder --name review-room --type private --password secret
+ufoo online connect --nickname builder --room review-room --room-password secret
+ufoo online send --nickname builder --room review-room --text "handoff ready"
+ufoo online inbox builder --unread
+```
+
+The default public service URL is `https://online.ufoo.dev`; local development can run its own relay with `ufoo online server`.
+
+### Native ucode Runtime
+
+Prepare and inspect native `ucode` wiring:
 
 ```bash
 ufoo ucode doctor
@@ -103,304 +240,160 @@ ufoo ucode prepare
 ufoo ucode build
 ```
 
-Try native core queue runtime (WIP):
+Use the low-level queue runtime:
 
 ```bash
-ucode-core submit --tool read --args-json '{"path":"README.md"}'
+ucode-core submit --tool read --args-json '{"path":"README.md"}' --json
 ucode-core run-once --json
 ucode-core list --json
 ```
 
-## Global Chat (`ufoo -g`)
+## Configuration
 
-Use `ufoo -g` (or `ufoo --global`) to launch a cross-project chat dashboard. Instead of being scoped to the current working directory, global mode runs from a home-scoped controller context and stores its runtime under `~/.ufoo`, then connects to project daemons on demand.
+Project configuration is stored in `.ufoo/config.json`. `ucode` provider credentials are stored globally in `~/.ufoo/config.json` and merged into project config at load time.
 
-When global chat stays on the home-scoped controller, plain prompts first go through the controller's `ufoo-agent`, which picks the best registered project and forwards the prompt to that project's `ufoo-agent` for agent-level routing.
+Common project settings:
 
-```bash
-$ ufoo -g
-
-> /project list          # List all running project daemons
-> /project switch 2      # Switch to project #2
-> /open ~/Code/my-app    # Initialize/start/switch to a project by path
-> /launch claude scope=inplace   # Launch agent in current context
-> @claude-1 Start reviewing the auth module
-```
-
-| Command | Description |
-|---------|-------------|
-| `/project list` | List running projects from global runtime registry |
-| `/project switch <index\|path>` | Switch active project daemon connection |
-| `/open <path>` | Global-mode shortcut to initialize/start/open a project daemon by path |
-| `/launch <agent> scope=inplace` | Launch agent in current workspace |
-| `/launch <agent> scope=window` | Launch agent in separate terminal window |
-
-Notes:
-- If you just type a normal message in the controller view, global `ufoo-agent` will try to route it to the most relevant registered project first.
-- The selected project's `ufoo-agent` then continues the second-hop routing to a concrete coding agent.
-
-## Agent Configuration
-
-Configure AI providers in `.ufoo/config.json`:
-
-### ucode Configuration (Self-developed Assistant)
 ```json
 {
-  "ucodeProvider": "openai",          // or "anthropic", "azure", etc.
-  "ucodeModel": "gpt-4-turbo-preview",
-  "ucodeBaseUrl": "https://api.openai.com/v1",
-  "ucodeApiKey": "sk-***"
+  "launchMode": "auto",
+  "agentProvider": "codex-cli",
+  "controllerMode": "main",
+  "codexInternalThreadMode": "api",
+  "codexAuthPath": "",
+  "codexOauthRefreshWindowSec": 300,
+  "claudeOauthProfile": "",
+  "claudeOauthTokenPath": "",
+  "claudeOauthRefreshWindowSec": 300,
+  "routerProvider": "",
+  "routerModel": "",
+  "agentModel": "",
+  "autoResume": true
 }
 ```
 
-### Claude Configuration
-```json
-{
-  "claudeProvider": "claude-cli",     // Uses Claude CLI
-  "claudeModel": "claude-3-opus"      // or "claude-3-sonnet"
-}
-```
+Supported `launchMode` values are `auto`, `internal`, `internal-pty`, `tmux`, `terminal`, and `host`. `controllerMode` accepts `main`, `shadow`, `loop`, and legacy compatibility values.
 
-### Codex Configuration
-```json
-{
-  "codexProvider": "codex-cli",       // Uses Codex CLI
-  "codexModel": "gpt-4"               // or "gpt-4-turbo-preview"
-}
-```
+Global `ucode` settings:
 
-### Complete Example
 ```json
 {
-  "launchMode": "internal",
   "ucodeProvider": "openai",
-  "ucodeModel": "gpt-4-turbo-preview",
+  "ucodeModel": "gpt-4.1",
   "ucodeBaseUrl": "https://api.openai.com/v1",
-  "ucodeApiKey": "sk-***",
-  "claudeProvider": "claude-cli",
-  "claudeModel": "claude-3-opus",
-  "codexProvider": "codex-cli",
-  "codexModel": "gpt-4"
+  "ucodeApiKey": "sk-...",
+  "ucodeAgentDir": ""
 }
 ```
 
-`ucode` writes these into a global config directory (`~/.ufoo/agent/ucode/config`) and uses them for native planner/engine calls. Configure once, use across all projects. Project-level `.ufoo/config.json` can override global settings when needed.
+## Project Layout
 
-## Architecture
+Repository layout:
 
-```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│   uclaude   │     │   ucodex    │     │  other...   │
-└──────┬──────┘     └──────┬──────┘     └──────┬──────┘
-       │                   │                   │
-       └───────────────────┼───────────────────┘
-                           │
-                    ┌──────▼──────┐
-                    │  ufoo bus   │  Event Bus
-                    └──────┬──────┘
-                           │
-              ┌────────────┼────────────┐
-              │            │            │
-       ┌──────▼──────┐ ┌───▼───┐ ┌──────▼──────┐
-       │  .ufoo/bus  │ │context│ │  decisions  │
-       └─────────────┘ └───────┘ └─────────────┘
-```
-
-Bus state lives in `.ufoo/agent/all-agents.json` (metadata), `.ufoo/bus/*` (queues/events), and `.ufoo/daemon/*` (bus daemon runtime).
-
-## Commands
-
-### Core Commands
-| Command | Description |
-|---------|-------------|
-| `ufoo` | Launch chat interface (default) |
-| `ufoo chat` | Launch interactive multi-agent chat UI |
-| `ufoo -g` | Launch global chat mode (cross-project dashboard) |
-| `ufoo init` | Initialize .ufoo in current project |
-| `ufoo status` | Show banner, unread bus messages, open decisions |
-| `ufoo doctor` | Check installation health |
-
-### Agent Management
-| Command | Description |
-|---------|-------------|
-| `ufoo daemon start` | Start ufoo daemon |
-| `ufoo daemon stop` | Stop ufoo daemon |
-| `ufoo daemon status` | Check daemon status |
-| `ufoo resume [nickname]` | Resume agent sessions |
-
-### Event Bus
-| Command | Description |
-|---------|-------------|
-| `ufoo bus join` | Join event bus (auto by agent wrappers) |
-| `ufoo bus send <id> <msg>` | Send message to agent |
-| `ufoo bus check <id>` | Check pending messages |
-| `ufoo bus status` | Show bus status and online agents |
-
-### Context & Decisions
-| Command | Description |
-|---------|-------------|
-| `ufoo ctx decisions -l` | List all decisions |
-| `ufoo ctx decisions -n 1` | Show latest decision |
-| `ufoo ctx decisions new <title>` | Create new decision |
-
-### Skills
-| Command | Description |
-|---------|-------------|
-| `ufoo skills list` | List available skills |
-| `ufoo skills show <skill>` | Show skill details |
-
-Notes:
-- Claude CLI headless agent uses `--dangerously-skip-permissions`.
-
-## Project Structure
-
-```
+```text
 ufoo/
-├── bin/
-│   ├── ufoo         # Main CLI entry (bash)
-│   ├── ufoo.js      # Node wrapper
-│   ├── uclaude      # Claude Code wrapper
-│   ├── ucodex       # Codex wrapper
-│   └── ucode        # ucode assistant wrapper
-├── SKILLS/          # Global skills (uinit, ustatus)
-├── src/
-│   ├── bus/         # Event bus implementation (JS)
-│   ├── daemon/      # Daemon + chat bridge
-│   ├── agent/       # Agent launch/runtime
-│   └── code/        # Native ucode core implementation
-├── scripts/         # Legacy helpers (bash, deprecated)
-├── modules/
-│   ├── context/     # Decision/context protocol
-│   ├── bus/         # Bus module resources
-│   └── resources/   # UI/icons (optional)
-├── AGENTS.md        # Project instructions (canonical)
-└── CLAUDE.md        # Points to AGENTS.md
+  bin/                 CLI entry points
+  src/                 CommonJS implementation
+    agent/             agent launch, bootstrap, runtime, providers
+    bus/               project event bus
+    chat/              terminal dashboard UI
+    cli/               command adapters
+    code/              native ucode core
+    controller/        gate router, launch routing, shadow guards
+    context/           decisions and context checks
+    daemon/            project daemon, IPC, orchestration
+    group/             prompt profiles and group templates
+    memory/            shared memory store
+    online/            relay client/server helpers
+    projects/          global project registry
+    providerapi/       redaction and provider shadow-diff helpers
+    report/            agent report store
+    terminal/          Terminal.app, iTerm2, tmux, host adapters
+    tools/             controller/tool handler registry
+  templates/groups/    built-in multi-agent group templates
+  modules/             init templates and packaged module docs
+  SKILLS/              packaged agent skills
+  test/                Jest unit and integration tests
 ```
 
-## Per-Project Layout
+After `ufoo init`, a project contains:
 
-After `ufoo init`, your project gets:
-
-```
+```text
 your-project/
-├── .ufoo/
-│   ├── bus/
-│   │   ├── events/      # Event log (append-only)
-│   │   ├── queues/      # Per-agent message queues
-│   │   └── offsets/     # Read position tracking
-│   └── context/
-│       ├── decisions/   # Decision records
-│       └── decisions.jsonl  # Decision index
-├── scripts/             # Legacy symlink (optional)
-├── AGENTS.md            # Injected protocol blocks
-└── CLAUDE.md            # → AGENTS.md
+  .ufoo/
+    agent/             agent metadata and runtime files
+    bus/               queues, events, offsets, locks
+    context/           decision files and index
+    daemon/            daemon socket, pid, and runtime state
+    groups/            group runtime instances
+    history/           agent input timeline
+    memory/            durable project facts
+    run/               project daemon pid, log, and ufoo.sock
+    docs -> docs/      symlink when project docs exist
+  AGENTS.md            canonical agent instructions
+  CLAUDE.md            Claude-compatible instructions file
 ```
 
-## Chat Interface
+`CLAUDE.md` may be a regular file or a symlink; project instructions should be edited in `AGENTS.md`.
 
-The interactive chat UI provides a centralized hub for agent management:
-
-### Features
-- **Real-time Communication** - See all agent messages in one place
-- **Agent Dashboard** - Monitor online status, session IDs, and nicknames
-- **Direct Messaging** - Use `@agent-name` to target specific agents
-- **Command Completion** - Tab completion for commands and agent names
-- **Mouse Support** - Toggle with `Ctrl+M` for scrolling vs text selection
-- **Session History** - Persistent message history across sessions
-
-### Keyboard Shortcuts
-| Key | Action |
-|-----|--------|
-| `Tab` | Auto-complete commands/agents |
-| `Ctrl+C` | Exit chat |
-| `Ctrl+M` | Toggle mouse mode |
-| `Ctrl+L` | Clear screen |
-| `Ctrl+R` | Refresh agent list |
-| `↑/↓` | Navigate command history |
-
-### Chat Commands
-| Command | Description |
-|---------|-------------|
-| `/help` | Show available commands |
-| `/agents` | List online agents |
-| `/clear` | Clear chat history |
-| `/settings` | Configure chat preferences |
-| `@agent-name <message>` | Send to specific agent |
-
-## Agent Communication
-
-Agents communicate via the event bus:
-
-```bash
-# Agent A sends task to Agent B
-ufoo bus send "codex:abc123" "Please analyze the project structure"
-
-# Agent B checks and executes
-ufoo bus check "codex:abc123"
-# → Executes task automatically
-# → Replies with result
-ufoo bus send "claude-code:xyz789" "分析完成：..."
-```
-
-## Skills (for Agents)
-
-Built-in skills triggered by slash commands:
-
-- `/ubus` - Check and auto-execute pending messages
-- `/uctx` - Quick context status check
-- `/ustatus` - Unified status view (banner, unread bus, open decisions)
-- `/uinit` - Manual .ufoo initialization
-
-## Requirements
-
-- **macOS** - Required for Terminal.app/iTerm2 integration
-- **Node.js >= 18** - For npm installation and JavaScript runtime
-- **Bash 4+** - For shell scripts and command execution
-- **Terminal** - iTerm2 or Terminal.app for agent launching
-
-## Codex CLI Notes
-
-`ufoo chat` automatically starts the daemon if not running - no need to run `ufoo daemon start` separately.
-
-If Codex CLI fails with permission errors under `~/.codex` (e.g. sessions dir), set `CODEX_HOME` to a writable path:
-
-```bash
-export CODEX_HOME="$PWD/.ufoo/codex"
-ufoo chat  # daemon auto-starts
-```
+Global runtime state lives under `~/.ufoo/`, including `~/.ufoo/config.json` for `ucode` provider settings and `~/.ufoo/projects/runtime/*.json` for global chat project registry records.
 
 ## Development
 
-### Setup
 ```bash
-# Clone the repository
-git clone https://github.com/Icyoung/ufoo.git
-cd ufoo
-
-# Install dependencies
 npm install
-
-# Link for local development
 npm link
-
-# Run tests
+node bin/ufoo.js --help
 npm test
 ```
 
-### Contributing
-- Fork the repository
-- Create a feature branch (`git checkout -b feature/amazing-feature`)
-- Commit your changes (`git commit -m 'Add amazing feature'`)
-- Push to the branch (`git push origin feature/amazing-feature`)
-- Open a Pull Request
+Useful checks:
 
-### Project Structure
-- `src/` - Core JavaScript implementation
-- `bin/` - CLI entry points
-- `modules/` - Modular features (bus, context, etc.)
-- `test/` - Unit and integration tests
-- `SKILLS/` - Agent skill definitions
+```bash
+npm run test:watch
+npm run test:coverage
+npm run bench:global-switch
+node bin/ucode-core.js --help
+```
+
+The test runner is Jest with `testEnvironment: "node"`. Coverage ignores `node_modules` and `src/code/tui.js`.
+
+## Release
+
+There is no dedicated release script in `package.json`. Use the standard npm flow from a clean worktree:
+
+```bash
+npm test
+npm pack --dry-run
+npm version patch    # or minor/major
+npm publish
+git push --follow-tags
+```
+
+`npm pack --dry-run` should be used to verify the final tarball. The current package includes the CLI entry points, `src/`, built-in templates, scripts, packaged skills, modules, package metadata, license, and README files.
+
+## Troubleshooting
+
+If `ufoo` is not on `PATH`, run the repository entry directly:
+
+```bash
+node bin/ufoo.js --help
+```
+
+If Codex cannot write under its default home, point it at a project-local directory before launching chat or agents:
+
+```bash
+export CODEX_HOME="$PWD/.ufoo/codex"
+ufoo
+```
+
+For Codex-friendly notifications, prefer foreground or daemon bus helpers instead of terminal text injection:
+
+```bash
+ufoo bus alert codex:abc123 --daemon
+ufoo bus listen codex:abc123
+```
 
 ## License
 
-UNLICENSED (Private)
+UNLICENSED. See [LICENSE](LICENSE).

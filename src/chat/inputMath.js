@@ -50,10 +50,18 @@ function safeStrWidth(strWidth, value) {
   return Array.from(expanded).length;
 }
 
+function safeRead(getter, fallback = undefined) {
+  try {
+    return getter();
+  } catch {
+    return fallback;
+  }
+}
+
 function getInnerWidth({ input, screen, promptWidth = 2 }) {
   const targetInput = input && typeof input === "object" ? input : {};
   const targetScreen = screen && typeof screen === "object" ? screen : {};
-  let lpos = targetInput.lpos || null;
+  let lpos = safeRead(() => targetInput.lpos, null) || null;
   if (!lpos && typeof targetInput._getCoords === "function") {
     try {
       lpos = targetInput._getCoords();
@@ -64,21 +72,27 @@ function getInnerWidth({ input, screen, promptWidth = 2 }) {
   if (lpos && Number.isFinite(lpos.xl) && Number.isFinite(lpos.xi)) {
     return Math.max(1, lpos.xl - lpos.xi);
   }
-  if (typeof targetInput.width === "number") return Math.max(1, targetInput.width);
-  if (typeof targetInput.width === "string") {
-    const match = targetInput.width.match(/^100%-([0-9]+)$/);
-    if (match && typeof targetScreen.width === "number") {
-      return Math.max(1, targetScreen.width - parseInt(match[1], 10));
+  const inputWidth = safeRead(() => targetInput.width);
+  if (typeof inputWidth === "number") return Math.max(1, inputWidth);
+  if (typeof inputWidth === "string") {
+    const match = inputWidth.match(/^100%-([0-9]+)$/);
+    const screenWidth = safeRead(() => targetScreen.width);
+    if (match && typeof screenWidth === "number") {
+      return Math.max(1, screenWidth - parseInt(match[1], 10));
     }
   }
-  if (typeof targetScreen.width === "number") return Math.max(1, targetScreen.width - promptWidth);
-  if (typeof targetScreen.cols === "number") return Math.max(1, targetScreen.cols - promptWidth);
+  const screenWidth = safeRead(() => targetScreen.width);
+  if (typeof screenWidth === "number") return Math.max(1, screenWidth - promptWidth);
+  const screenCols = safeRead(() => targetScreen.cols);
+  if (typeof screenCols === "number") return Math.max(1, screenCols - promptWidth);
   return 1;
 }
 
 function getWrapWidth(input, fallbackWidth) {
-  if (input && input._clines && typeof input._clines.width === "number") {
-    return Math.max(1, input._clines.width);
+  const clines = safeRead(() => input && input._clines, null);
+  const clinesWidth = safeRead(() => clines && clines.width);
+  if (typeof clinesWidth === "number") {
+    return Math.max(1, clinesWidth);
   }
   return Math.max(1, fallbackWidth || 1);
 }

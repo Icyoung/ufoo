@@ -2,9 +2,9 @@
 
 [English](README.md)
 
-🤖 多Agent AI 协作框架，支持 Claude Code、OpenAI Codex 和自定义 AI Agent 的编排协作。
+ufoo 是一个多 Agent 工作区协议，用于在同一个项目运行 Claude Code、OpenAI Codex、ufoo 原生 `ucode`，以及按模板编排的 Agent 小组。
 
-📦 **npm**: [https://www.npmjs.com/package/u-foo](https://www.npmjs.com/package/u-foo)
+npm 包：[u-foo](https://www.npmjs.com/package/u-foo)
 
 [![npm version](https://img.shields.io/npm/v/u-foo.svg)](https://www.npmjs.com/package/u-foo)
 [![npm downloads](https://img.shields.io/npm/dm/u-foo.svg)](https://www.npmjs.com/package/u-foo)
@@ -12,393 +12,368 @@
 [![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org)
 [![Platform](https://img.shields.io/badge/platform-macOS-blue.svg)](https://www.apple.com/macos)
 
-## 为什么选择 ufoo？
+## 功能概览
 
-ufoo 解决多 AI 编程 Agent 协同工作的难题：
+- `ufoo` / `ufoo chat` 打开交互式多 Agent 仪表盘。
+- `uclaude`、`ucodex`、`ucode` 会带着项目 bootstrap、bus 身份和 ufoo 协议上下文启动 Agent。
+- `ufoo daemon` 负责项目运行态、启动/恢复、组编排、报告和 chat bridge 请求。
+- `ufoo bus` 提供项目内 Agent 消息、唤醒、监听、提醒和终端激活。
+- `ufoo ctx`、`ufoo memory`、`ufoo history` 把决策、长期事实和输入时间线写入 `.ufoo/`。
+- `ufoo group` 从 `templates/groups/` 的内置模板启动多 Agent 小组。
+- `ufoo online` 提供远程 relay、频道、房间、token 和 inbox 辅助命令。
 
-- **🔗 统一界面** - 一个聊天 UI 管理所有 AI Agent
-- **📬 消息路由** - Agent 之间通过事件总线通信协作
-- **🧠 上下文共享** - 跨 Agent 共享决策和知识
-- **🚀 自动初始化** - Agent 包装器自动完成配置
-- **📝 决策追踪** - 记录架构决策和权衡取舍
-- **⚡ 实时更新** - 即时查看 Agent 状态和消息
+## 环境要求
 
-## 功能特性
-
-- **聊天界面** - 交互式多 Agent 聊天 UI (`ufoo chat`)
-  - 实时 Agent 通信和状态监控
-  - 仪表盘展示 Agent 列表、在线状态和快捷操作
-  - 使用 `@agent-name` 向特定 Agent 发送消息
-- **事件总线** - Agent 间实时消息通信 (`ufoo bus`)
-- **上下文共享** - 共享决策和项目上下文 (`ufoo ctx`)
-- **Agent 包装器** - Claude Code (`uclaude`)、Codex (`ucodex`) 和 ucode 助手 (`ucode`) 自动初始化
-  - **PTY 包装器** - 智能终端模拟与就绪检测
-  - **智能探针注入** - 等待 Agent 初始化完成后再注入命令
-  - **统一命名** - 一致的 Agent 命名规范（如 ucode-1、claude-1、codex-1）
-- **技能系统** - 可扩展的 Agent 能力 (`ufoo skills`)
+- Node.js 18 或更新版本。
+- macOS，用于 Terminal.app/iTerm2 启动和激活集成。
+- 使用 `uclaude` 或 `ucodex` 时，需要本机已经安装 Claude Code 或 Codex CLI。
 
 ## 安装
 
+安装 npm 发布包：
+
 ```bash
-# 从 npm 全局安装（推荐）
 npm install -g u-foo
 ```
 
-或从源码安装：
+或从源码链接本仓库：
 
 ```bash
-git clone https://github.com/Icyoung/ufoo.git ~/.ufoo
-cd ~/.ufoo && npm install && npm link
+git clone https://github.com/Icyoung/ufoo.git
+cd ufoo
+npm install
+npm link
 ```
 
-安装后可使用以下全局命令：`ufoo`、`uclaude`、`ucodex`、`ucode`。
+安装后会提供这些命令：`ufoo`、`uclaude`、`ucodex`、`ucode`、`ucode-core`。
 
 ## 快速开始
 
 ```bash
-# 初始化项目
 cd your-project
-ufoo init
-
-# 启动聊天界面（默认命令）
-ufoo chat
-# 或直接
+ufoo init --modules context,bus
 ufoo
-
-# 使用 Agent 包装器（自动初始化 + 加入总线）
-uclaude   # Claude Code 包装器
-ucodex    # Codex 包装器
-ucode     # ucode 助手（自研 AI 编程 Agent）
 ```
 
-## 示例工作流
+在 chat UI 里启动 Agent：
+
+```text
+> /launch claude
+> /launch codex
+> /launch ucode
+> @claude-1 read the project structure and summarize the risks
+```
+
+也可以直接从项目目录启动包装器：
 
 ```bash
-# 1. 启动聊天界面
-$ ufoo
-
-# 2. 从聊天中启动 Agent
-> /launch claude
-> /launch ucode
-
-# 3. 向 Agent 发送任务
-> @claude-1 请分析当前代码库结构
-> @ucode-1 修复认证模块的 bug
-
-# 4. Agent 通过总线通信
-claude-1: 分析完成，发现 3 处需要重构...
-ucode-1: Bug 已修复，正在运行测试...
-
-# 5. 查看已做的决策
-> /decisions
+uclaude
+ucodex
+ucode
 ```
 
-原生自研实现位于 `src/code` 目录。
+`ufoo chat` 会按需启动项目 daemon。跨项目全局模式：
 
-准备和验证 `ucode` 运行时：
+```bash
+ufoo -g
+```
+
+## 架构
+
+```text
+                 ufoo chat / ufoo -g
+                         |
+                         v
+        +----------------+----------------+
+        | project daemon / IPC / reports  |
+        +----------------+----------------+
+                         |
+          +--------------+--------------+
+          |              |              |
+          v              v              v
+    controller       group runtime   project registry
+ gate/router loop    orchestration   ~/.ufoo/projects
+          |
+          v
+  provider API transports and tools
+  codex/claude/ucode, memory, bus, terminal
+          |
+          v
+  uclaude / ucodex / ucode agent sessions
+```
+
+Chat UI 通过 `.ufoo/run/ufoo.sock` 和项目 daemon 通信。daemon 负责启动、恢复、recover、group 编排、report、controller 路由和项目注册表更新。Agent 通过项目 bus 通信，并可使用共享决策、memory、report、prompt history 和工具处理器。
+
+## 常用命令
+
+### 项目运行态
+
+```bash
+ufoo init --modules context,bus,resources
+ufoo status
+ufoo doctor
+ufoo daemon --start
+ufoo daemon --status
+ufoo daemon --stop
+```
+
+`ufoo init` 会创建 `.ufoo/`，向 `AGENTS.md` 和 `CLAUDE.md` 注入 ufoo 协议块，创建 shared memory 存储，并初始化指定模块。默认模块是 `context`；常用多 Agent 项目建议使用 `--modules context,bus`。
+
+### Chat 和 Agent
+
+```bash
+ufoo
+ufoo chat
+ufoo chat -g
+ufoo launch codex reviewer --profile review-critic
+ufoo solo list
+ufoo solo run implementation-lead --agent codex --nickname builder
+ufoo role ufoo-builder implementation-lead
+ufoo resume <ucode|uclaude|ucodex|nickname>
+ufoo recover list
+```
+
+常见 chat 命令包括 `/status`、`/bus list`、`/bus status`、`/settings`、`/project list`、`/project switch <index|path>`、`/open <path>`、`/resume list`、`/group status` 和 `@nickname <message>`。
+
+### 事件总线
+
+```bash
+ufoo bus join
+ufoo bus status
+ufoo bus send codex:abc123 "Please implement the approved slice."
+ufoo bus check codex:abc123
+ufoo bus listen codex:abc123 --from-beginning
+ufoo bus alert codex:abc123 --daemon --notify
+ufoo bus wake ufoo-builder --reason follow-up
+ufoo bus activate ufoo-builder
+```
+
+先用 `ufoo bus status` 查看真实 subscriber ID 或可解析昵称。当前项目会给显式 group 昵称加项目前缀，例如 `ufoo-builder`；裸 `builder` 目标不一定能解析。
+
+### 上下文、Memory、Report
+
+```bash
+ufoo ctx decisions -l
+ufoo ctx decisions -n 1
+ufoo ctx decisions new "Adopt API-backed loop architecture"
+
+ufoo memory add "Provider contract" --body "Durable fact..." --tags provider,contract
+ufoo memory list --tag provider
+ufoo memory show mem-0001
+
+ufoo history build
+ufoo history show 20
+ufoo history prompt 30
+
+ufoo report start "Implement README refresh" --task docs-readme --agent ufoo-builder
+ufoo report done "README updated" --task docs-readme --agent ufoo-builder
+ufoo report list
+```
+
+决策只用于计划级约束；长期项目事实应写入 memory。
+
+### Group
+
+```bash
+ufoo group templates
+ufoo group template show build-lane
+ufoo group template validate templates/groups/build-lane.json
+ufoo group run build-lane --dry-run
+ufoo group run build-lane --instance docs-refresh
+ufoo group status
+ufoo group diagram build-lane --mermaid
+ufoo group stop docs-refresh
+```
+
+当前内置模板包括 `build-lane`、`build-ultra`、`design-system`、`product-discovery`、`ui-plan-review`、`ui-polish` 和 `verify-ship`。
+
+### Online Relay
+
+```bash
+ufoo online server --host 127.0.0.1 --port 8787
+ufoo online token codex:abc123 --nickname builder
+ufoo online channel list --nickname builder
+ufoo online room create --nickname builder --name review-room --type private --password secret
+ufoo online connect --nickname builder --room review-room --room-password secret
+ufoo online send --nickname builder --room review-room --text "handoff ready"
+ufoo online inbox builder --unread
+```
+
+默认公开服务地址是 `https://online.ufoo.dev`；本地开发可用 `ufoo online server` 启动自己的 relay。
+
+### 原生 ucode 运行时
 
 ```bash
 ufoo ucode doctor
 ufoo ucode prepare
 ufoo ucode build
-```
 
-尝试原生核心队列运行时（开发中）：
-
-```bash
-ucode-core submit --tool read --args-json '{"path":"README.md"}'
+ucode-core submit --tool read --args-json '{"path":"README.md"}' --json
 ucode-core run-once --json
 ucode-core list --json
 ```
 
-## 全局聊天（`ufoo -g`）
+## 命令参考
 
-使用 `ufoo -g`（或 `ufoo --global`）启动跨项目聊天仪表盘。全局模式不再绑定当前工作目录，而是使用一个基于家目录的控制器上下文，并将自身运行时写入 `~/.ufoo`，然后按需连接各项目的 ufoo 守护进程。
+| 范围 | 命令 |
+|------|------|
+| 运行态 | `ufoo`, `ufoo chat`, `ufoo -g`, `ufoo init`, `ufoo status`, `ufoo doctor`, `ufoo daemon --start|--status|--stop` |
+| 项目 | `ufoo project list`, `ufoo project current`, `ufoo project switch`（v1 中仅 chat 可切换）, chat `/open <path>` |
+| Agent | `ufoo launch`, `ufoo solo list|run`, `ufoo role`, `ufoo resume <target>`, `ufoo recover list|run` |
+| Bus | `ufoo bus join|status|send|check|listen|alert|wake|activate` |
+| Context | `ufoo ctx doctor`, `ufoo ctx decisions`, `ufoo ctx sync` |
+| Memory | `ufoo memory add|list|show|edit|forget|rebuild-index|audit` |
+| Report | `ufoo report start|progress|done|error|list` |
+| Group | `ufoo group templates|template|run|status|diagram|stop` |
+| Online | `ufoo online server|token|room|channel|connect|send|inbox` |
+| History | `ufoo history build|show|prompt` |
+| Skills | `ufoo skills list|install` |
+| Chat 设置 | `/settings`, `/settings agent`, `/settings router`, `/settings ucode` |
 
-当全局聊天停留在这个家目录控制器视图时，普通消息会先经过控制器侧的 `ufoo-agent`，由它在当前已注册的 Projects 里选择最合适的项目，再把消息转交给目标项目内的 `ufoo-agent` 继续做 agent 级路由。
+## 配置
 
-```bash
-$ ufoo -g
+项目配置文件是 `.ufoo/config.json`。`ucode` provider 凭据写入全局 `~/.ufoo/config.json`，加载项目配置时会合并进来。
 
-> /project list          # 列出所有运行中的项目守护进程
-> /project switch 2      # 切换到第 2 个项目
-> /open ~/Code/my-app    # 按路径初始化/启动/打开一个项目
-> /launch claude scope=inplace   # 在当前上下文启动 Agent
-> @claude-1 开始审查 auth 模块
+常见项目配置：
+
+```json
+{
+  "launchMode": "auto",
+  "agentProvider": "codex-cli",
+  "controllerMode": "main",
+  "codexInternalThreadMode": "api",
+  "codexAuthPath": "",
+  "codexOauthRefreshWindowSec": 300,
+  "claudeOauthProfile": "",
+  "claudeOauthTokenPath": "",
+  "claudeOauthRefreshWindowSec": 300,
+  "routerProvider": "",
+  "routerModel": "",
+  "agentModel": "",
+  "autoResume": true
+}
 ```
 
-| 命令 | 说明 |
-|------|------|
-| `/project list` | 列出全局运行时注册的项目 |
-| `/project switch <序号\|路径>` | 切换活动项目的 daemon 连接 |
-| `/open <path>` | 仅在全局模式下可用；按路径初始化、启动并打开项目 daemon |
-| `/launch <agent> scope=inplace` | 在当前工作区启动 Agent |
-| `/launch <agent> scope=window` | 在独立终端窗口启动 Agent |
+`launchMode` 支持 `auto`、`internal`、`internal-pty`、`tmux`、`terminal`、`host`。`controllerMode` 支持 `main`、`shadow`、`loop` 和 legacy 兼容值。
 
-说明：
-- 如果你在控制器视图里直接输入普通消息，全局 `ufoo-agent` 会先尝试把它路由到最相关的已注册项目。
-- 选中的项目里，项目侧 `ufoo-agent` 会继续完成第二跳路由，选择具体 coding agent。
+全局 `ucode` 配置：
 
-## Agent 配置
-
-在 `.ufoo/config.json` 中配置 AI 提供商：
-
-### ucode 配置（自研助手）
 ```json
 {
   "ucodeProvider": "openai",
-  "ucodeModel": "gpt-4-turbo-preview",
+  "ucodeModel": "gpt-4.1",
   "ucodeBaseUrl": "https://api.openai.com/v1",
-  "ucodeApiKey": "sk-***"
+  "ucodeApiKey": "sk-...",
+  "ucodeAgentDir": ""
 }
 ```
-
-### Claude 配置
-```json
-{
-  "claudeProvider": "claude-cli",
-  "claudeModel": "claude-3-opus"
-}
-```
-
-### Codex 配置
-```json
-{
-  "codexProvider": "codex-cli",
-  "codexModel": "gpt-4"
-}
-```
-
-### 完整示例
-```json
-{
-  "launchMode": "internal",
-  "ucodeProvider": "openai",
-  "ucodeModel": "gpt-4-turbo-preview",
-  "ucodeBaseUrl": "https://api.openai.com/v1",
-  "ucodeApiKey": "sk-***",
-  "claudeProvider": "claude-cli",
-  "claudeModel": "claude-3-opus",
-  "codexProvider": "codex-cli",
-  "codexModel": "gpt-4"
-}
-```
-
-`ucode` 会将配置写入全局目录（`~/.ufoo/agent/ucode/config`），用于原生 planner/engine 调用。配置一次，所有项目通用。项目级 `.ufoo/config.json` 可按需覆盖全局配置。
-
-## 架构
-
-```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│   uclaude   │     │   ucodex    │     │    ucode    │
-└──────┬──────┘     └──────┬──────┘     └──────┬──────┘
-       │                   │                   │
-       └───────────────────┼───────────────────┘
-                           │
-                    ┌──────▼──────┐
-                    │  ufoo bus   │  事件总线
-                    └──────┬──────┘
-                           │
-              ┌────────────┼────────────┐
-              │            │            │
-       ┌──────▼──────┐ ┌───▼───┐ ┌──────▼──────┐
-       │  .ufoo/bus  │ │context│ │  decisions  │
-       └─────────────┘ └───────┘ └─────────────┘
-```
-
-Bus 状态存放于 `.ufoo/agent/all-agents.json`（元数据）、`.ufoo/bus/*`（队列/事件）以及 `.ufoo/daemon/*`（bus daemon 运行态）。
-
-## 命令列表
-
-### 核心命令
-| 命令 | 说明 |
-|------|------|
-| `ufoo` | 启动聊天界面（默认） |
-| `ufoo chat` | 启动交互式多 Agent 聊天 UI |
-| `ufoo -g` | 启动全局聊天模式（跨项目仪表盘） |
-| `ufoo init` | 在当前项目初始化 .ufoo |
-| `ufoo status` | 显示 banner、未读消息和未处理决策 |
-| `ufoo doctor` | 检查安装状态 |
-
-### Agent 管理
-| 命令 | 说明 |
-|------|------|
-| `ufoo daemon start` | 启动 ufoo 守护进程 |
-| `ufoo daemon stop` | 停止 ufoo 守护进程 |
-| `ufoo daemon status` | 查看守护进程状态 |
-| `ufoo resume [nickname]` | 恢复 Agent 会话 |
-
-### 事件总线
-| 命令 | 说明 |
-|------|------|
-| `ufoo bus join` | 加入事件总线（Agent 包装器自动完成） |
-| `ufoo bus send <id> <msg>` | 发送消息给 Agent |
-| `ufoo bus check <id>` | 检查待处理消息 |
-| `ufoo bus status` | 查看总线状态和在线 Agent |
-
-### 上下文与决策
-| 命令 | 说明 |
-|------|------|
-| `ufoo ctx decisions -l` | 列出所有决策 |
-| `ufoo ctx decisions -n 1` | 显示最新决策 |
-| `ufoo ctx decisions new <title>` | 创建新决策 |
-
-### 技能
-| 命令 | 说明 |
-|------|------|
-| `ufoo skills list` | 列出可用技能 |
-| `ufoo skills show <skill>` | 显示技能详情 |
-
-备注：
-- Claude CLI 的 headless agent 使用 `--dangerously-skip-permissions`。
 
 ## 项目结构
 
-```
+仓库结构：
+
+```text
 ufoo/
-├── bin/
-│   ├── ufoo         # 主 CLI 入口 (bash)
-│   ├── ufoo.js      # Node 包装器
-│   ├── uclaude      # Claude Code 包装器
-│   ├── ucodex       # Codex 包装器
-│   └── ucode        # ucode 助手包装器
-├── SKILLS/          # 全局技能（uinit, ustatus）
-├── src/
-│   ├── bus/         # 事件总线实现（JS）
-│   ├── daemon/      # Daemon + chat bridge
-│   ├── agent/       # Agent 启动/运行
-│   └── code/        # 原生 ucode 核心实现
-├── modules/
-│   ├── context/     # 决策/上下文协议
-│   ├── bus/         # 总线模块资源
-│   └── resources/   # UI/图标（可选）
-├── AGENTS.md        # 项目指令（规范文件）
-└── CLAUDE.md        # 指向 AGENTS.md
+  bin/                 CLI 入口
+  src/                 CommonJS 实现
+    agent/             Agent 启动、bootstrap、运行时、provider
+    bus/               项目事件总线
+    chat/              终端 dashboard UI
+    cli/               命令适配层
+    code/              原生 ucode core
+    controller/        gate router、launch routing、shadow guard
+    context/           决策与上下文检查
+    daemon/            项目 daemon、IPC、编排
+    group/             prompt profiles 与 group templates
+    memory/            shared memory store
+    online/            relay client/server helpers
+    projects/          全局项目注册表
+    providerapi/       redaction 与 provider shadow-diff helpers
+    report/            Agent report store
+    terminal/          Terminal.app、iTerm2、tmux、host adapters
+    tools/             controller/tool handler registry
+  templates/groups/    内置多 Agent group 模板
+  modules/             init 模板和打包模块文档
+  SKILLS/              打包的 Agent skills
+  test/                Jest 单元测试和集成测试
 ```
 
-## 项目初始化后的目录结构
+`ufoo init` 后的项目运行态：
 
-执行 `ufoo init` 后，你的项目会包含：
-
-```
+```text
 your-project/
-├── .ufoo/
-│   ├── bus/
-│   │   ├── events/      # 事件日志（只追加）
-│   │   ├── queues/      # 每个 Agent 的消息队列
-│   │   └── offsets/     # 读取位置跟踪
-│   └── context/
-│       ├── decisions/   # 决策记录
-│       └── decisions.jsonl  # 决策索引
-├── AGENTS.md            # 注入的协议块
-└── CLAUDE.md            # → AGENTS.md
+  .ufoo/
+    agent/             Agent 元数据和运行文件
+    bus/               queues、events、offsets、locks
+    context/           decision 文件和索引
+    daemon/            bus daemon pid/log/counts
+    groups/            group runtime instances
+    history/           Agent 输入时间线
+    memory/            长期项目事实
+    run/               project daemon pid、log、ufoo.sock
+    docs -> docs/      当项目存在 docs/ 时创建的 symlink
+  AGENTS.md            规范 Agent 指令文件
+  CLAUDE.md            Claude 兼容指令文件
 ```
 
-## 聊天界面
-
-交互式聊天 UI 提供集中化的 Agent 管理中心：
-
-### 功能
-- **实时通信** - 在一个界面查看所有 Agent 消息
-- **Agent 仪表盘** - 监控在线状态、会话 ID 和昵称
-- **定向消息** - 使用 `@agent-name` 向特定 Agent 发送消息
-- **命令补全** - Tab 键补全命令和 Agent 名称
-- **鼠标支持** - `Ctrl+M` 切换鼠标模式（滚动 vs 文本选择）
-- **会话历史** - 跨会话持久化消息记录
-
-### 快捷键
-| 按键 | 操作 |
-|------|------|
-| `Tab` | 自动补全命令/Agent |
-| `Ctrl+C` | 退出聊天 |
-| `Ctrl+M` | 切换鼠标模式 |
-| `Ctrl+L` | 清屏 |
-| `Ctrl+R` | 刷新 Agent 列表 |
-| `↑/↓` | 浏览命令历史 |
-
-### 聊天命令
-| 命令 | 说明 |
-|------|------|
-| `/help` | 显示可用命令 |
-| `/agents` | 列出在线 Agent |
-| `/clear` | 清除聊天记录 |
-| `/settings` | 配置聊天偏好 |
-| `@agent-name <message>` | 向特定 Agent 发送消息 |
-
-## Agent 通信
-
-Agent 通过事件总线通信：
-
-```bash
-# Agent A 向 Agent B 发送任务
-ufoo bus send "codex:abc123" "请分析项目结构"
-
-# Agent B 检查并执行
-ufoo bus check "codex:abc123"
-# → 自动执行任务
-# → 回复结果
-ufoo bus send "claude-code:xyz789" "分析完成：..."
-```
-
-## 技能（供 Agent 使用）
-
-内置技能通过斜杠命令触发：
-
-- `/ubus` - 检查并自动执行待处理消息
-- `/uctx` - 快速检查上下文状态
-- `/ustatus` - 统一状态视图（横幅、未读消息、未决决策）
-- `/uinit` - 手动初始化 .ufoo
-
-## 系统要求
-
-- **macOS** - 用于 Terminal.app/iTerm2 集成
-- **Node.js >= 18** - npm 安装和 JavaScript 运行时
-- **Bash 4+** - Shell 脚本和命令执行
-- **终端** - iTerm2 或 Terminal.app 用于启动 Agent
-
-## Codex CLI 说明
-
-`ufoo chat` 会自动启动守护进程（无需单独运行 `ufoo daemon start`）。
-
-如果 Codex CLI 在 `~/.codex` 下报权限错误（例如 sessions 目录），请设置可写的 `CODEX_HOME`：
-
-```bash
-export CODEX_HOME="$PWD/.ufoo/codex"
-ufoo chat  # 守护进程自动启动
-```
+全局运行态位于 `~/.ufoo/`，包括 `~/.ufoo/config.json` 的 `ucode` provider 设置，以及 `~/.ufoo/projects/runtime/*.json` 的全局 chat 项目注册记录。
 
 ## 开发
 
-### 环境搭建
 ```bash
-# 克隆仓库
-git clone https://github.com/Icyoung/ufoo.git
-cd ufoo
-
-# 安装依赖
 npm install
-
-# 本地开发链接
 npm link
-
-# 运行测试
+node bin/ufoo.js --help
 npm test
 ```
 
-### 参与贡献
-- Fork 本仓库
-- 创建功能分支 (`git checkout -b feature/amazing-feature`)
-- 提交更改 (`git commit -m 'Add amazing feature'`)
-- 推送分支 (`git push origin feature/amazing-feature`)
-- 发起 Pull Request
+常用检查：
 
-### 项目结构
-- `src/` - 核心 JavaScript 实现
-- `bin/` - CLI 入口
-- `modules/` - 模块化功能（bus、context 等）
-- `test/` - 单元测试和集成测试
-- `SKILLS/` - Agent 技能定义
+```bash
+npm run test:watch
+npm run test:coverage
+npm run bench:global-switch
+node bin/ucode-core.js --help
+```
+
+测试框架是 Jest，`testEnvironment` 为 `node`。覆盖率忽略 `node_modules` 和 `src/code/tui.js`。
+
+## 发布
+
+`package.json` 没有专用 release script。请在干净工作区按标准 npm 流程发布：
+
+```bash
+npm test
+npm pack --dry-run
+npm version patch    # 或 minor/major
+npm publish
+git push --follow-tags
+```
+
+发布前用 `npm pack --dry-run` 检查最终 tarball。
+
+## 故障排查
+
+如果 `ufoo` 不在 `PATH`：
+
+```bash
+node bin/ufoo.js --help
+```
+
+如果 Codex 默认 home 不可写：
+
+```bash
+export CODEX_HOME="$PWD/.ufoo/codex"
+ufoo
+```
+
+Codex 场景下建议使用 bus alert/listen，而不是依赖终端文本注入提醒：
+
+```bash
+ufoo bus alert codex:abc123 --daemon
+ufoo bus listen codex:abc123
+```
 
 ## 许可证
 
-UNLICENSED（私有）
+UNLICENSED。详见 [LICENSE](LICENSE)。

@@ -1,52 +1,50 @@
 # UFOO Landing Page
 
-> Just Add u. That's It.
+Static marketing and product preview pages for `ufoo.dev`.
 
 ## Quick Start
 
 ```bash
-# Preview locally
-npx serve .
-
-# Or with npm
+cd landing
+npm install
 npm run dev
 ```
 
-## Deploy to Vercel
+The site is static. `npm run dev` and `npm run preview` both serve the current directory with `npx serve .`; `npm run build` is a no-op that documents that no build step is required.
 
-### First Time Setup
+## Pages
 
-1. Install Vercel CLI:
+- `index.html`: main landing page.
+- `docs.html`: static docs page.
+- `online.html`: ufoo online showcase page.
+- `room.html`: private room preview page.
+
+## Deploy To Vercel
+
+Install and log in to the Vercel CLI if needed:
+
 ```bash
 npm install -g vercel
-```
-
-2. Login to Vercel:
-```bash
 vercel login
 ```
 
-3. Deploy:
+Deploy from `landing/`:
+
 ```bash
-./scripts/deploy.sh
-# or manually:
 vercel --prod
 ```
 
-### Configure Custom Domain (ufoo.dev)
+## Custom Domain
 
-1. Go to [Vercel Dashboard](https://vercel.com/dashboard)
-2. Select your project → Settings → Domains
-3. Add `ufoo.dev` and `www.ufoo.dev`
-4. Configure DNS at your domain registrar:
+In the Vercel dashboard, add `ufoo.dev` and `www.ufoo.dev` under Settings -> Domains, then configure DNS:
 
-```
-# For root domain (ufoo.dev)
+```text
+# Root domain
 Type: A
 Name: @
 Value: 76.76.21.21
 
-# For www subdomain
+# www
 Type: CNAME
 Name: www
 Value: cname.vercel-dns.com
@@ -54,44 +52,25 @@ Value: cname.vercel-dns.com
 
 ## Project Structure
 
-```
+```text
 landing/
-├── index.html      # Main landing page
-├── online.html     # ufoo online showcase page
-├── style.css       # Styles (Terminal/Hacker aesthetic)
-├── online.css      # Styles (ufoo online preview)
-├── online.js       # Real online API + WebSocket binding
-├── package.json    # Package config
-├── vercel.json     # Vercel deployment config
-├── scripts/
-│   ├── deploy.sh       # Vercel deploy script
-│   └── publish-npm.sh  # npm publish helper
-└── README.md       # This file
+  index.html       main landing page
+  docs.html        documentation page
+  online.html      ufoo online showcase
+  room.html        room preview
+  style.css        main landing styles
+  docs.css         docs styles
+  online.css       online preview styles
+  online.js        online API/WebSocket binding
+  room.js          room preview behavior
+  i18n.js          landing page copy/localization helpers
+  package.json     npm scripts
+  vercel.json      Vercel routing/config
+  README.md        this file
 ```
 
-## Design System
+## Design Notes
 
-- **Font**: JetBrains Mono (monospace)
-- **Colors**:
-  - Background: `#0C0C0C` (near black)
-  - Card: `#1A1A1A`
-  - Cyan (u prefix): `#22D3EE`
-  - Green (success): `#22C55E`
-  - Orange (claude): `#F97316`
-  - Purple (bus/ctx): `#A78BFA`
-
-## npm Package Publishing
-
-To publish the main ufoo package to npm:
-
-```bash
-cd /path/to/ufoo-package
-../landing/scripts/publish-npm.sh
-```
-
-Or manually:
-
-```bash
-npm login
-npm publish --access public
-```
+- Font direction: terminal-oriented monospace.
+- Main palette: near-black background, cyan ufoo accent, green success, orange Claude accent, purple bus/context accent.
+- The landing directory does not contain deploy or publish helper scripts; use the root package release flow documented in `../README.md` for npm publishing.
