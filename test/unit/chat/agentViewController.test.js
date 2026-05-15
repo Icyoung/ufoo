@@ -21,6 +21,7 @@ function createHarness(overrides = {}) {
       children.push(child);
     }),
     alloc: jest.fn(),
+    realloc: jest.fn(),
     program: {
       showCursor: jest.fn(),
     },
@@ -76,6 +77,7 @@ function createHarness(overrides = {}) {
     getAgentListWindowStart: () => windowStart,
     setAgentListWindowStart,
     getAgentLabel: (id) => id,
+    getProjectRoot: () => "/Users/icy/Code/ufoo",
     setDashboardView,
     setScreenGrabKeys,
     clearTargetAgent,
@@ -166,13 +168,65 @@ describe("chat agentViewController", () => {
     expect(controller.isAgentViewUsesBus()).toBe(true);
     expect(connectAgentOutput).not.toHaveBeenCalled();
     expect(connectAgentInput).not.toHaveBeenCalled();
-    expect(output).toContain("Welcome to ufoo internal");
-    expect(output).toContain("agent  codex:1");
+    expect(output).toContain("╭");
+    expect(output).toContain(">_ OpenAI Codex (ufoo v");
+    expect(output).toContain("model:     codex:1 · managed headless");
+    expect(output).toContain("directory: ~/Code/ufoo");
     expect(output).toContain("────────────────────");
     expect(output).toContain("> ");
+    expect(output).not.toContain("Welcome to ufoo internal");
+    expect(output).not.toContain("▐▛███▜▌");
     expect(output).not.toContain("Enter 发送 · Esc 返回 · ↓ agent bar");
     expect(output).not.toContain("┌ ufoo internal");
     expect(output).not.toContain("│> ");
+  });
+
+  test("enterAgentView in claude internal bus mode renders claude-style header", () => {
+    const { controller, processStdout } = createHarness();
+
+    controller.enterAgentView("claude-code:1", { useBus: true });
+
+    const output = processStdout.write.mock.calls.map((call) => call[0]).join("");
+    expect(output).toContain("▐▛███▜▌Claude Code v");
+    expect(output).toContain("▝▜█████▛▘claude-code:1 · managed headless");
+    expect(output).toContain("▘▘▝▝~/Code/ufoo");
+    expect(output).not.toContain("Welcome to ufoo internal");
+  });
+
+  test("internal startup style uses subscriber id before display nickname", () => {
+    const { controller, processStdout } = createHarness({
+      getAgentLabel: () => "claude-ish nickname",
+    });
+
+    controller.enterAgentView("codex:1", { useBus: true });
+
+    const output = processStdout.write.mock.calls.map((call) => call[0]).join("");
+    expect(output).toContain(">_ OpenAI Codex (ufoo v");
+    expect(output).toContain("model:     claude-ish nickname · managed headless");
+    expect(output).not.toContain("▐▛███▜▌Claude Code");
+  });
+
+  test("codex startup box fits long labels and paths within terminal width", () => {
+    const narrowStdout = {
+      rows: 30,
+      columns: 48,
+      write: jest.fn(),
+    };
+    const { controller } = createHarness({
+      processStdout: narrowStdout,
+      getAgentLabel: () => "codex-with-a-very-long-display-name-that-would-wrap",
+      getProjectRoot: () => "/Users/icy/Code/some/really/long/project/path/that/would/wrap",
+    });
+
+    controller.enterAgentView("codex:1", { useBus: true });
+
+    const lines = narrowStdout.write.mock.calls
+      .map((call) => call[0])
+      .filter((value) => value.includes("╭") || value.includes("│ ") || value.includes("╰"))
+      .map((value) => value.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, ""));
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines.every((line) => line.length <= narrowStdout.columns)).toBe(true);
+    expect(lines.join("\n")).toContain("…");
   });
 
   test("internal bus mode positions cursor by display width for wide input", () => {
@@ -285,9 +339,12 @@ describe("chat agentViewController", () => {
       focusInput,
       resizeInput,
       renderScreen,
+      screen,
+      processStdout,
     } = createHarness();
 
     controller.enterAgentView("codex:1");
+    processStdout.write.mockClear();
     controller.exitAgentView();
 
     expect(controller.getCurrentView()).toBe("main");
@@ -297,11 +354,14 @@ describe("chat agentViewController", () => {
     expect(setDashboardView).toHaveBeenCalledWith("agents");
     expect(setSelectedAgentIndex).toHaveBeenCalledWith(-1);
     expect(setScreenGrabKeys).toHaveBeenCalledWith(false);
+    expect(screen.realloc).toHaveBeenCalled();
     expect(clearTargetAgent).toHaveBeenCalled();
     expect(renderDashboard).toHaveBeenCalled();
     expect(focusInput).toHaveBeenCalled();
     expect(resizeInput).toHaveBeenCalled();
     expect(renderScreen).toHaveBeenCalled();
+    const output = processStdout.write.mock.calls.map((call) => call[0]).join("");
+    expect(output).not.toContain("\x1b[2J\x1b[H");
   });
 
   test("enterAgentDashboardMode enables dashboard focus and output suppression", () => {

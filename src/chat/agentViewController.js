@@ -1,3 +1,6 @@
+const os = require("os");
+const { version: packageVersion } = require("../../package.json");
+
 function createAgentViewController(options = {}) {
   const {
     screen,
@@ -17,6 +20,7 @@ function createAgentViewController(options = {}) {
     setAgentListWindowStart = () => {},
     getAgentLabel = (id) => id,
     getAgentStates = () => ({}),
+    getProjectRoot = () => process.cwd(),
     setDashboardView = () => {},
     setScreenGrabKeys = (value) => {
       if (screen) screen.grabKeys = Boolean(value);
@@ -202,31 +206,93 @@ function createAgentViewController(options = {}) {
     processStdout.write(`\x1b[${row};1H\x1b[2K${content}`);
   }
 
-  function buildInternalStartupLines(agentLabel = "", width = 80) {
+  function forceScreenRepaint() {
+    if (typeof screen.realloc === "function") {
+      screen.realloc();
+      return;
+    }
+    if (typeof screen.alloc === "function") {
+      screen.alloc(true);
+    }
+  }
+
+  function compactProjectPath(projectRoot = "") {
+    const raw = String(projectRoot || process.cwd() || "").trim();
+    const home = os.homedir();
+    if (home && (raw === home || raw.startsWith(`${home}/`))) {
+      return `~${raw.slice(home.length)}`;
+    }
+    return raw || ".";
+  }
+
+  function borderedLines(lines = [], innerWidth = 56) {
+    const contentWidth = Math.max(1, innerWidth);
+    const out = [`╭${"─".repeat(contentWidth + 2)}╮`];
+    for (const line of lines) {
+      out.push(`│ ${fitText(line, contentWidth)} │`);
+    }
+    out.push(`╰${"─".repeat(contentWidth + 2)}╯`);
+    return out;
+  }
+
+  function normalizeAgentKind(agentId = "") {
+    const text = String(agentId || "").trim().toLowerCase();
+    if (text.startsWith("codex:") || text === "codex") return "codex";
+    if (text.startsWith("claude:") || text.startsWith("claude-code:") || text === "claude" || text === "claude-code") {
+      return "claude";
+    }
+    return "internal";
+  }
+
+  function buildClaudeStartupLines(agentLabel = "", width = 80) {
     const label = String(agentLabel || "").trim();
-    if (width < 48) {
+    const projectPath = compactProjectPath(getProjectRoot());
+    const product = "Claude Code";
+    const detail = label ? `${label} · managed headless` : "managed headless";
+    const lines = [
+      ` ▐▛███▜▌${product} v${packageVersion}`,
+      `▝▜█████▛▘${detail}`,
+      ` ▘▘▝▝${projectPath}`,
+      "",
+    ];
+    if (width < 44) return lines;
+    return lines.map((line) => padToWidth(line, Math.min(58, Math.max(1, width))));
+  }
+
+  function buildCodexStartupLines(agentLabel = "", width = 80) {
+    const label = String(agentLabel || "").trim();
+    const projectPath = compactProjectPath(getProjectRoot());
+    if (width < 36) {
       return [
-        `Welcome to ufoo internal`,
-        label ? `agent ${label}` : "agent internal",
+        `>_ OpenAI Codex`,
+        label ? `model: ${label}` : "model: managed headless",
+        `directory: ${projectPath}`,
         "",
       ];
     }
+    const innerWidth = Math.min(56, Math.max(24, width - 4));
     return [
-      "Welcome to ufoo internal",
-      "································",
-      "      ░░░░░░                 ██╗   ██╗",
-      "  ░░░   ░░░░░░░░░░           ██║   ██║",
-      "   ░░░░░░░░░░░░░░░░          ╚██████╔╝",
-      label ? `agent  ${label}` : "agent  internal",
+      ...borderedLines([
+        `>_ OpenAI Codex (ufoo v${packageVersion})`,
+        "",
+        `model:     ${label ? `${label} · managed headless` : "managed headless"}`,
+        `directory: ${projectPath}`,
+      ], innerWidth),
       "",
     ];
+  }
+
+  function buildInternalStartupLines(agentId = "", agentLabel = "", width = 80) {
+    const kind = normalizeAgentKind(agentId);
+    if (kind === "codex") return buildCodexStartupLines(agentLabel || agentId, width);
+    return buildClaudeStartupLines(agentLabel || agentId, width);
   }
 
   function resetBusView(agentId) {
     busInputValue = "";
     busInputCursor = 0;
     const label = getAgentLabel(agentId);
-    busLogLines = buildInternalStartupLines(label, getCols());
+    busLogLines = buildInternalStartupLines(agentId, label, getCols());
   }
 
   function appendBusLog(text = "") {
@@ -384,7 +450,7 @@ function createAgentViewController(options = {}) {
     viewingAgent = null;
 
     processStdout.write(`\x1b[1;${rows}r`);
-    processStdout.write("\x1b[2J\x1b[H");
+    processStdout.write("\x1b[?25h");
 
     if (detachedChildren) {
       for (const child of detachedChildren) screen.append(child);
@@ -396,9 +462,7 @@ function createAgentViewController(options = {}) {
     setDashboardView("agents");
     setSelectedAgentIndex(-1);
     setScreenGrabKeys(false);
-    if (typeof screen.alloc === "function") {
-      screen.alloc();
-    }
+    forceScreenRepaint();
     clearTargetAgent();
     renderDashboard();
     focusInput();

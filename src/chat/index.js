@@ -1543,6 +1543,7 @@ async function runChat(projectRoot, options = {}) {
       }
       return states;
     },
+    getProjectRoot: () => activeProjectRoot,
     setDashboardView: (value) => {
       dashboardView = value;
     },
