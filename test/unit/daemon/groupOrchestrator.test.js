@@ -245,6 +245,7 @@ function createTestOrchestrator(handleOps) {
       host_daemon_sock: "/tmp/host-daemon.sock",
       host_name: "horizon",
       host_session_id: "HS123",
+      terminal_app: "terminal",
       host_capabilities: { supportsSnapshot: true },
     });
 
@@ -258,6 +259,7 @@ function createTestOrchestrator(handleOps) {
         host_daemon_sock: "/tmp/host-daemon.sock",
         host_name: "horizon",
         host_session_id: "HS123",
+        terminal_app: "terminal",
         host_capabilities: { supportsSnapshot: true },
       })],
       null

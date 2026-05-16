@@ -21,9 +21,61 @@ jest.mock("../../../src/terminal/adapters/hostAdapter", () => ({
   sendToSocket: jest.fn(),
 }));
 
-const { launchAgent, getRecoverableAgents, closeAgent } = require("../../../src/daemon/ops");
+const { launchAgent, getRecoverableAgents, closeAgent, __private } = require("../../../src/daemon/ops");
 const { getUfooPaths } = require("../../../src/ufoo/paths");
 const hostAdapter = require("../../../src/terminal/adapters/hostAdapter");
+
+describe("daemon ops auto launch mode resolution", () => {
+  const originalEnv = { ...process.env };
+
+  afterEach(() => {
+    for (const key of Object.keys(process.env)) {
+      delete process.env[key];
+    }
+    Object.assign(process.env, originalEnv);
+  });
+
+  test("uses terminal in auto mode when launched from native Terminal.app despite stale host env", () => {
+    delete process.env.TMUX_PANE;
+    process.env.TERM_PROGRAM = "Apple_Terminal";
+
+    expect(__private.resolveConfiguredLaunchMode("auto", {
+      hostDaemonSock: "/tmp/host-daemon.sock",
+      hostSessionId: "GXVDQG4V",
+    })).toBe("terminal");
+  });
+
+  test("uses terminal in auto mode when request explicitly came from iTerm2", () => {
+    delete process.env.TMUX_PANE;
+
+    expect(__private.resolveConfiguredLaunchMode("auto", {
+      terminalApp: "iterm2",
+      hostDaemonSock: "/tmp/host-daemon.sock",
+      hostSessionId: "stale-host-session",
+    })).toBe("terminal");
+  });
+
+  test("keeps host auto mode when only host context is available", () => {
+    delete process.env.TMUX_PANE;
+    delete process.env.TERM_PROGRAM;
+    delete process.env.ITERM_SESSION_ID;
+
+    expect(__private.resolveConfiguredLaunchMode("auto", {
+      hostDaemonSock: "/tmp/host-daemon.sock",
+      hostSessionId: "HS-SRC",
+    })).toBe("host");
+  });
+
+  test("keeps tmux ahead of native terminal detection", () => {
+    process.env.TMUX_PANE = "%9";
+    process.env.TERM_PROGRAM = "Apple_Terminal";
+
+    expect(__private.resolveConfiguredLaunchMode("auto", {
+      terminalApp: "terminal",
+      hostDaemonSock: "/tmp/host-daemon.sock",
+    })).toBe("tmux");
+  });
+});
 
 function createMockProcess({ stdout = "", stderr = "", code = 0 } = {}) {
   const { EventEmitter } = require("events");

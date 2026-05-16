@@ -1753,6 +1753,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
       const hostDaemonSock = req.host_daemon_sock || req.hostDaemonSock || "";
       const hostName = req.host_name || req.hostName || "";
       const hostSessionId = req.host_session_id || req.hostSessionId || "";
+      const terminalApp = req.terminal_app || req.terminalApp || "";
       const hostCapabilities =
         req.host_capabilities && typeof req.host_capabilities === "object"
           ? req.host_capabilities
@@ -1768,6 +1769,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
           host_daemon_sock: hostDaemonSock,
           host_name: hostName,
           host_session_id: hostSessionId,
+          terminal_app: terminalApp,
           host_capabilities: hostCapabilities,
         });
         const ok = result && result.ok !== false;

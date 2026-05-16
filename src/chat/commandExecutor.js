@@ -78,6 +78,14 @@ function collectHostLaunchRequestContext(env = process.env) {
   return context;
 }
 
+function collectTerminalLaunchRequestContext(resolveTerminalApp = defaultResolveTerminalApp) {
+  const terminalApp = String(resolveTerminalApp() || "").trim().toLowerCase();
+  if (terminalApp === "terminal" || terminalApp === "iterm2") {
+    return { terminal_app: terminalApp };
+  }
+  return {};
+}
+
 async function withCapturedConsole(capture, fn) {
   const originalLog = console.log;
   const originalError = console.error;
@@ -551,11 +559,8 @@ function createCommandExecutor(options = {}) {
         prompt_profile: promptProfile,
         launch_scope: launchScope,
         ...collectHostLaunchRequestContext(),
+        ...collectTerminalLaunchRequestContext(resolveTerminalApp),
       };
-      const terminalApp = String(resolveTerminalApp() || "").trim().toLowerCase();
-      if (terminalApp === "terminal" || terminalApp === "iterm2") {
-        request.terminal_app = terminalApp;
-      }
       send(request);
       schedule(requestStatus, 1000);
     } catch (err) {
@@ -696,6 +701,7 @@ function createCommandExecutor(options = {}) {
         prompt_profile: profile,
         launch_scope: launchScope,
         ...collectHostLaunchRequestContext(),
+        ...collectTerminalLaunchRequestContext(resolveTerminalApp),
       });
       schedule(requestStatus, 1000);
     } catch (err) {
@@ -1106,6 +1112,7 @@ function createCommandExecutor(options = {}) {
         instance,
         dry_run: dryRun,
         ...collectHostLaunchRequestContext(),
+        ...collectTerminalLaunchRequestContext(resolveTerminalApp),
       });
       schedule(requestStatus, 1000);
       return;
@@ -1638,4 +1645,5 @@ function createCommandExecutor(options = {}) {
 module.exports = {
   createCommandExecutor,
   collectHostLaunchRequestContext,
+  collectTerminalLaunchRequestContext,
 };

@@ -242,11 +242,13 @@ function buildLaunchHostContext(params = {}) {
   const hostDaemonSock = asTrimmedString(params.host_daemon_sock || params.hostDaemonSock);
   const hostName = asTrimmedString(params.host_name || params.hostName);
   const hostSessionId = asTrimmedString(params.host_session_id || params.hostSessionId);
+  const terminalApp = asTrimmedString(params.terminal_app || params.terminalApp);
   const context = {};
   if (hostInjectSock) context.host_inject_sock = hostInjectSock;
   if (hostDaemonSock) context.host_daemon_sock = hostDaemonSock;
   if (hostName) context.host_name = hostName;
   if (hostSessionId) context.host_session_id = hostSessionId;
+  if (terminalApp) context.terminal_app = terminalApp;
   if (params.host_capabilities && typeof params.host_capabilities === "object") {
     context.host_capabilities = { ...params.host_capabilities };
   } else if (params.hostCapabilities && typeof params.hostCapabilities === "object") {

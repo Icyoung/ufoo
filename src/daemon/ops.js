@@ -152,14 +152,25 @@ function resolveHostLaunchContext(options = {}) {
   };
 }
 
+function resolveNativeTerminalApp(options = {}) {
+  const explicit = normalizeTerminalAppPreference(options.terminalApp);
+  if (explicit) return explicit;
+
+  const termProgram = normalizeTerminalAppPreference(process.env.TERM_PROGRAM || "");
+  if (termProgram) return termProgram;
+  if (process.env.ITERM_SESSION_ID) return "iterm2";
+  return "";
+}
+
 function resolveConfiguredLaunchMode(configuredMode = "", options = {}) {
   const mode = normalizeOptionalString(configuredMode);
   if (mode === "internal" || mode === "internal-pty" || mode === "tmux" || mode === "terminal" || mode === "host") {
     return mode;
   }
-  const hostContext = resolveHostLaunchContext(options);
-  if (hostContext.hostDaemonSock) return "host";
   if (process.env.TMUX_PANE) return "tmux";
+  const hostContext = resolveHostLaunchContext(options);
+  const nativeTerminalApp = resolveNativeTerminalApp(options);
+  if (hostContext.hostDaemonSock && !nativeTerminalApp) return "host";
   return "terminal";
 }
 
@@ -1303,4 +1314,14 @@ async function closeAgent(projectRoot, agentId) {
   };
 }
 
-module.exports = { launchAgent, closeAgent, getRecoverableAgents, resumeAgents };
+module.exports = {
+  launchAgent,
+  closeAgent,
+  getRecoverableAgents,
+  resumeAgents,
+  __private: {
+    resolveConfiguredLaunchMode,
+    resolveHostLaunchContext,
+    resolveNativeTerminalApp,
+  },
+};

@@ -548,6 +548,19 @@ describe("chat commandExecutor", () => {
     });
   });
 
+  test("handleSoloCommand run forwards terminal app preference", async () => {
+    const { executor, options } = createHarness({
+      resolveTerminalApp: jest.fn(() => "terminal"),
+    });
+
+    await executor.handleSoloCommand(["run", "design-critic"]);
+
+    expect(options.send).toHaveBeenCalledWith(expect.objectContaining({
+      type: "launch_agent",
+      terminal_app: "terminal",
+    }));
+  });
+
   test("handleResumeCommand supports list subcommand", async () => {
     const { executor, options, logs } = createHarness();
 
@@ -692,6 +705,19 @@ describe("chat commandExecutor", () => {
       process.env.UFOO_HOST_NAME = previousEnv.UFOO_HOST_NAME;
       process.env.UFOO_HOST_SESSION_ID = previousEnv.UFOO_HOST_SESSION_ID;
     }
+  });
+
+  test("handleGroupCommand run forwards terminal app preference", async () => {
+    const { executor, options } = createHarness({
+      resolveTerminalApp: jest.fn(() => "terminal"),
+    });
+
+    await executor.handleGroupCommand(["run", "dev-basic"]);
+
+    expect(options.send).toHaveBeenCalledWith(expect.objectContaining({
+      type: "launch_group",
+      terminal_app: "terminal",
+    }));
   });
 
   test("handleGroupCommand status/stop/validate/diagram send daemon requests", async () => {
