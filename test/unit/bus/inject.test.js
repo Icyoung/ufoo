@@ -295,5 +295,64 @@ describe("Injector", () => {
         server.close();
       }
     });
+
+    test("falls back to Terminal.app injection for terminal launch mode", async () => {
+      const queueDir = path.join(busDir, "queues", "codex_test");
+      fs.mkdirSync(queueDir, { recursive: true });
+      fs.writeFileSync(path.join(queueDir, "tty"), "/dev/ttys123\n");
+
+      const agentsFile = path.join(busDir, "agents.json");
+      fs.writeFileSync(
+        agentsFile,
+        JSON.stringify({
+          agents: {
+            "codex:test": {
+              launch_mode: "terminal",
+              terminal_app: "terminal",
+            },
+          },
+        })
+      );
+
+      const injector = new Injector(busDir, agentsFile);
+      injector.findTmuxPaneByTty = jest.fn().mockResolvedValue(null);
+      injector.injectMacTerminal = jest.fn().mockResolvedValue(undefined);
+
+      await injector.inject("codex:test", "hello");
+
+      expect(injector.injectMacTerminal).toHaveBeenCalledWith(
+        "/dev/ttys123",
+        "hello",
+        expect.objectContaining({ launch_mode: "terminal" })
+      );
+    });
+
+    test("uses agent metadata tty when queue tty file is missing", async () => {
+      const agentsFile = path.join(busDir, "agents.json");
+      fs.writeFileSync(
+        agentsFile,
+        JSON.stringify({
+          agents: {
+            "codex:test": {
+              launch_mode: "terminal",
+              tty: "/dev/ttys456",
+              terminal_app: "terminal",
+            },
+          },
+        })
+      );
+
+      const injector = new Injector(busDir, agentsFile);
+      injector.findTmuxPaneByTty = jest.fn().mockResolvedValue(null);
+      injector.injectMacTerminal = jest.fn().mockResolvedValue(undefined);
+
+      await injector.inject("codex:test", "hello");
+
+      expect(injector.injectMacTerminal).toHaveBeenCalledWith(
+        "/dev/ttys456",
+        "hello",
+        expect.objectContaining({ tty: "/dev/ttys456" })
+      );
+    });
   });
 });
