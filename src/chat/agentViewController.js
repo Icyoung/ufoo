@@ -524,6 +524,13 @@ function createAgentViewController(options = {}) {
     busStartupLineCount = startupLines.length;
   }
 
+  function trimBusLogLines() {
+    if (busLogLines.length <= 1000) return;
+    const removed = busLogLines.length - 1000;
+    busLogLines = busLogLines.slice(-1000);
+    busStartupLineCount = Math.max(0, busStartupLineCount - removed);
+  }
+
   function appendBusLog(text = "") {
     const clean = stripAnsi(String(text || "")).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
     if (busLogLines.length === 0) busLogLines.push("");
@@ -534,9 +541,7 @@ function createAgentViewController(options = {}) {
         busLogLines[busLogLines.length - 1] += char;
       }
     }
-    if (busLogLines.length > 1000) {
-      busLogLines = busLogLines.slice(-1000);
-    }
+    trimBusLogLines();
     if (clean.endsWith("\n")) {
       busAgentReplyActive = false;
     }
@@ -570,9 +575,7 @@ function createAgentViewController(options = {}) {
       }
       busLogLines[busLogLines.length - 1] += char;
     }
-    if (busLogLines.length > 1000) {
-      busLogLines = busLogLines.slice(-1000);
-    }
+    trimBusLogLines();
   }
 
   function getBusInputViewport(width) {

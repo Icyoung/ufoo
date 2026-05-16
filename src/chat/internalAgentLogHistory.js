@@ -17,19 +17,23 @@ function normalizeText(text = "") {
   return stripAnsi(decodeEscapedNewlines(text)).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
-function readJsonl(filePath) {
+function readMatchingEventsFromFileReverse(filePath, aliases, limit) {
+  if (limit <= 0) return [];
   try {
-    return fs.readFileSync(filePath, "utf8")
-      .split(/\r?\n/)
-      .filter(Boolean)
-      .map((line) => {
-        try {
-          return JSON.parse(line);
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean);
+    const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
+    const events = [];
+    for (let index = lines.length - 1; index >= 0 && events.length < limit; index -= 1) {
+      const line = lines[index];
+      if (!line) continue;
+      let evt = null;
+      try {
+        evt = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (isEventForAgent(evt, aliases)) events.push(evt);
+    }
+    return events;
   } catch {
     return [];
   }
@@ -88,6 +92,46 @@ function appendPrefixedText(lines, prefix, text) {
   });
 }
 
+function appendUserText(lines, text, state) {
+  appendPrefixedText(lines, "> ", text);
+  state.replyActive = false;
+}
+
+function ensureAgentReplyPrefix(lines, prefix = "• ") {
+  if (lines.length === 0) {
+    lines.push(prefix);
+    return;
+  }
+  if (lines[lines.length - 1] === "") {
+    lines[lines.length - 1] = prefix;
+    return;
+  }
+  lines.push(prefix);
+}
+
+function appendAgentStreamText(lines, text, state) {
+  const clean = normalizeText(text);
+  if (!clean) return;
+  for (const char of clean) {
+    if (char === "\n") {
+      lines.push("");
+      continue;
+    }
+    if (!state.replyActive) {
+      ensureAgentReplyPrefix(lines, "• ");
+      state.replyActive = true;
+    } else if (lines.length === 0 || lines[lines.length - 1] === "") {
+      ensureAgentReplyPrefix(lines, "  ");
+    }
+    lines[lines.length - 1] += char;
+  }
+}
+
+function appendAgentMessage(lines, text, state) {
+  appendPrefixedText(lines, "• ", text);
+  state.replyActive = false;
+}
+
 function loadInternalAgentLogHistory(projectRoot, agentId, options = {}) {
   const paths = getUfooPaths(projectRoot || process.cwd());
   const maxEvents = Number.isFinite(options.maxEvents) ? Math.max(1, options.maxEvents) : 400;
@@ -113,15 +157,16 @@ function loadInternalAgentLogHistory(projectRoot, agentId, options = {}) {
     return [];
   }
 
-  const events = [];
-  for (const file of files.slice(-7)) {
-    for (const evt of readJsonl(file)) {
-      if (isEventForAgent(evt, aliases)) events.push(evt);
-    }
+  const reversedEvents = [];
+  for (const file of files.slice(-7).reverse()) {
+    if (reversedEvents.length >= maxEvents) break;
+    const remaining = maxEvents - reversedEvents.length;
+    reversedEvents.push(...readMatchingEventsFromFileReverse(file, aliases, remaining));
   }
 
   const lines = [];
-  for (const evt of events.slice(-maxEvents)) {
+  const state = { replyActive: false };
+  for (const evt of reversedEvents.reverse()) {
     const data = eventData(evt);
     const rawMessage = typeof data.message === "string" ? data.message : "";
     const streamDelta = parseStreamMessage(rawMessage);
@@ -131,14 +176,18 @@ function loadInternalAgentLogHistory(projectRoot, agentId, options = {}) {
     const isToAgent = aliases.has(target) || aliases.has(String(data.subscriber || ""));
 
     if (streamDelta !== null) {
-      if (isFromAgent && streamDelta) appendPrefixedText(lines, "• ", streamDelta);
+      if (isFromAgent && streamDelta) {
+        appendAgentStreamText(lines, streamDelta, state);
+      } else if (isFromAgent) {
+        state.replyActive = false;
+      }
       continue;
     }
 
     if (isFromAgent) {
-      appendPrefixedText(lines, "• ", rawMessage);
+      appendAgentMessage(lines, rawMessage, state);
     } else if (isToAgent) {
-      appendPrefixedText(lines, "> ", rawMessage);
+      appendUserText(lines, rawMessage, state);
     }
   }
 

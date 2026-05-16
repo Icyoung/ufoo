@@ -463,6 +463,28 @@ describe("chat agentViewController", () => {
     expect(output).not.toContain("…");
   });
 
+  test("internal bus resize does not drop extra live log lines after trimming", () => {
+    const tallStdout = {
+      rows: 1020,
+      columns: 80,
+      write: jest.fn(),
+    };
+    const { controller } = createHarness({
+      processStdout: tallStdout,
+    });
+    const lines = Array.from({ length: 1005 }, (_, index) => `line ${index}`).join("\n");
+
+    controller.enterAgentView("codex:1", { useBus: true });
+    controller.writeToAgentTerm(lines);
+    tallStdout.write.mockClear();
+
+    expect(controller.handleResizeInAgentView()).toBe(true);
+
+    const output = tallStdout.write.mock.calls.map((call) => call[0]).join("");
+    expect(output).toContain("  line 5 ");
+    expect(output).not.toContain("  line 4 ");
+  });
+
   test("exitAgentView restores blessed mode and focus", () => {
     const {
       controller,
