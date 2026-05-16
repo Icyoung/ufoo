@@ -38,6 +38,7 @@ const { createDaemonMessageRouter } = require("./daemonMessageRouter");
 const { createChatLogController } = require("./chatLogController");
 const { createPasteController } = require("./pasteController");
 const { createAgentViewController } = require("./agentViewController");
+const { loadInternalAgentLogHistory } = require("./internalAgentLogHistory");
 const { createSettingsController } = require("./settingsController");
 const { createProjectCloseController } = require("./projectCloseController");
 const { createChatLayout } = require("./layout");
@@ -1628,6 +1629,7 @@ async function runChat(projectRoot, options = {}) {
     requestScreenSnapshot: () => {
       requestSnapshotWithCapabilities();
     },
+    getBusLogHistory: (agentId) => loadInternalAgentLogHistory(activeProjectRoot, agentId),
   });
 
   function requestStatus() {

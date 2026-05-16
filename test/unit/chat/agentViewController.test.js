@@ -191,6 +191,20 @@ describe("chat agentViewController", () => {
     expect(output).not.toContain("│> ");
   });
 
+  test("enterAgentView in internal bus mode restores persisted agent log history", () => {
+    const { controller, processStdout } = createHarness({
+      getBusLogHistory: jest.fn((agentId) => (
+        agentId === "codex:1" ? ["> routed task", "• previous answer"] : []
+      )),
+    });
+
+    controller.enterAgentView("codex:1", { useBus: true });
+
+    const output = processStdout.write.mock.calls.map((call) => call[0]).join("");
+    expect(output).toContain("> routed task");
+    expect(output).toContain("• previous answer");
+  });
+
   test("internal bus mode renders activity status with elapsed timer", () => {
     let nowMs = 16000;
     const intervalHandle = { unref: jest.fn() };
@@ -236,6 +250,21 @@ describe("chat agentViewController", () => {
 
     expect(sendBusWatch).toHaveBeenCalledWith("codex:1", true);
     expect(sendBusWatch).toHaveBeenCalledWith("codex:1", false);
+  });
+
+  test("switching between internal agent views preserves main chat children for ufoo return", () => {
+    const { controller, screen } = createHarness();
+    const originalChildren = [...screen.children];
+
+    controller.enterAgentView("codex:1", { useBus: true });
+    expect(screen.children).toEqual([]);
+
+    controller.enterAgentView("codex:2", { useBus: true });
+    expect(screen.children).toEqual([]);
+
+    controller.exitAgentView();
+
+    expect(screen.children).toEqual(originalChildren);
   });
 
   test("enterAgentView in claude internal bus mode renders claude-style header", () => {

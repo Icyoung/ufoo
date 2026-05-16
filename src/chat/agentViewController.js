@@ -52,6 +52,7 @@ function createAgentViewController(options = {}) {
     sendResize = () => {},
     requestScreenSnapshot = () => {},
     sendBusWatch = () => {},
+    getBusLogHistory = () => [],
   } = options;
 
   if (!screen || typeof screen.render !== "function") {
@@ -503,7 +504,14 @@ function createAgentViewController(options = {}) {
     busStartupAgentId = agentId || "";
     const label = getAgentLabel(agentId);
     const startupLines = staticStartupLines(agentId, label, getCols());
-    busLogLines = startupLines.concat("");
+    let historyLines = [];
+    try {
+      const loaded = getBusLogHistory(agentId);
+      historyLines = Array.isArray(loaded) ? loaded : [];
+    } catch {
+      historyLines = [];
+    }
+    busLogLines = startupLines.concat("", historyLines);
     busStartupLineCount = startupLines.length;
   }
 
@@ -654,18 +662,22 @@ function createAgentViewController(options = {}) {
 
   function enterAgentView(agentId, options = {}) {
     if (currentView === "agent" && viewingAgent === agentId) return;
+    const wasInAgentView = currentView === "agent";
     if (currentView === "agent") {
       if (agentViewUsesBus && viewingAgent) sendBusWatch(viewingAgent, false);
       disconnectAgentOutput();
       disconnectAgentInput();
+      stopBusStatusTimer();
     }
 
     currentView = "agent";
     viewingAgent = agentId;
     setFocusMode("input");
 
-    detachedChildren = [...screen.children];
-    for (const child of detachedChildren) screen.remove(child);
+    if (!wasInAgentView) {
+      detachedChildren = [...screen.children];
+      for (const child of detachedChildren) screen.remove(child);
+    }
 
     renderFrozen = true;
 
