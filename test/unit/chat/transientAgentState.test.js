@@ -1,6 +1,7 @@
 const {
   DEFAULT_TRANSIENT_AGENT_STATE_TTL_MS,
   setTransientAgentState,
+  getTransientAgentStateEntry,
   getTransientAgentState,
   pruneTransientAgentStates,
 } = require("../../../src/chat/transientAgentState");
@@ -12,6 +13,17 @@ describe("chat transientAgentState", () => {
 
     expect(getTransientAgentState(store, "codex:1", { now: 1000 + DEFAULT_TRANSIENT_AGENT_STATE_TTL_MS - 1 }))
       .toBe("working");
+  });
+
+  test("returns transient state entry with detail", () => {
+    const store = new Map();
+    setTransientAgentState(store, "codex:1", "working", { now: 1000, detail: "tool dispatch_message" });
+
+    expect(getTransientAgentStateEntry(store, "codex:1", { now: 1001 })).toEqual({
+      state: "working",
+      updatedAt: 1000,
+      detail: "tool dispatch_message",
+    });
   });
 
   test("expires stale transient state after ttl", () => {

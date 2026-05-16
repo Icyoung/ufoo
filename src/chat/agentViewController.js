@@ -3,6 +3,12 @@ const { version: packageVersion } = require("../../package.json");
 
 const ANSI_RESET = "\x1b[0m";
 const CLAUDE_ORANGE = "\x1b[38;2;217;119;87m";
+const BUS_STATUS_INDICATORS = {
+  working: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
+  starting: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
+  waiting_input: ["∙", "∙∙", "∙∙∙", "∙∙", "∙"],
+  blocked: ["!"],
+};
 
 function createAgentViewController(options = {}) {
   const {
@@ -11,6 +17,8 @@ function createAgentViewController(options = {}) {
     processStdout = process.stdout,
     now = () => Date.now(),
     setTimeoutFn = setTimeout,
+    setIntervalFn = setInterval,
+    clearIntervalFn = clearInterval,
     computeAgentBar = () => ({ bar: "", windowStart: 0 }),
     agentBarHints = { normal: "", dashboard: "" },
     maxAgentWindow = 4,
@@ -23,6 +31,7 @@ function createAgentViewController(options = {}) {
     setAgentListWindowStart = () => {},
     getAgentLabel = (id) => id,
     getAgentStates = () => ({}),
+    getAgentActivityMeta = () => ({}),
     getProjectRoot = () => process.cwd(),
     setDashboardView = () => {},
     setScreenGrabKeys = (value) => {
@@ -62,6 +71,10 @@ function createAgentViewController(options = {}) {
   let busStartupAgentId = "";
   let busStartupLineCount = 0;
   let busAgentReplyActive = false;
+  let busStatusInterval = null;
+  let busStatusIndex = 0;
+  let busStatusKey = "";
+  let busStatusLocalStartedAt = 0;
   const originalRender = screen.render.bind(screen);
   let renderFrozen = false;
 
@@ -200,6 +213,130 @@ function createAgentViewController(options = {}) {
   function logLine(text = "", width = 80) {
     const normalizedWidth = Math.max(1, width);
     return hasAnsi(text) ? fitAnsiText(text, normalizedWidth) : plainLine(text, normalizedWidth);
+  }
+
+  function parseTimeMs(value) {
+    if (Number.isFinite(value)) return Number(value);
+    const text = String(value || "").trim();
+    if (!text) return NaN;
+    const parsed = Date.parse(text);
+    return Number.isFinite(parsed) ? parsed : NaN;
+  }
+
+  function formatElapsed(ms = 0) {
+    const totalSeconds = Math.max(0, Math.floor(Number(ms) / 1000));
+    return `${totalSeconds} s`;
+  }
+
+  function normalizeActivityState(value = "") {
+    const state = String(value || "").trim().toLowerCase();
+    if (state === "waiting") return "waiting_input";
+    if (state === "busy" || state === "processing") return "working";
+    return state;
+  }
+
+  function getActivityLabel(state = "") {
+    if (state === "working") return "working";
+    if (state === "waiting_input") return "waiting";
+    if (state === "blocked") return "blocked";
+    if (state === "starting") return "starting";
+    if (state === "idle" || state === "ready") return "ready";
+    return state || "ready";
+  }
+
+  function isTimedActivityState(state = "") {
+    return state === "working"
+      || state === "waiting_input"
+      || state === "blocked"
+      || state === "starting";
+  }
+
+  function asActivityObject(value) {
+    return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  }
+
+  function pickActivityDetail(meta = {}) {
+    const candidates = [
+      meta.activity_detail,
+      meta.detail,
+      meta.status_text,
+      meta.command,
+      meta.tool_name,
+      meta.tool,
+    ];
+    return String(candidates.find((item) => String(item || "").trim()) || "").trim();
+  }
+
+  function getViewingAgentActivity() {
+    const states = getAgentStates() || {};
+    const stateEntry = viewingAgent && states ? states[viewingAgent] : "";
+    const stateObject = asActivityObject(stateEntry);
+    const meta = {
+      ...(stateObject || {}),
+      ...(asActivityObject(getAgentActivityMeta(viewingAgent)) || {}),
+    };
+    const state = normalizeActivityState(meta.activity_state || meta.state || (stateObject ? "" : stateEntry) || "");
+    const detail = pickActivityDetail(meta);
+    const sinceMs = parseTimeMs(meta.activity_since || meta.since || meta.updated_at || meta.updatedAt);
+    return { state: state || "ready", detail, sinceMs };
+  }
+
+  function resolveBusStatus() {
+    const activity = getViewingAgentActivity();
+    const state = activity.state || "ready";
+    const timed = isTimedActivityState(state);
+    const key = `${viewingAgent || ""}:${state}:${activity.detail || ""}`;
+    if (key !== busStatusKey) {
+      busStatusKey = key;
+      busStatusIndex = 0;
+      busStatusLocalStartedAt = now();
+    }
+    const startedAt = timed && Number.isFinite(activity.sinceMs)
+      ? activity.sinceMs
+      : busStatusLocalStartedAt;
+    return {
+      ...activity,
+      state,
+      label: getActivityLabel(state),
+      timed,
+      startedAt,
+    };
+  }
+
+  function buildBusStatusLine(width = 80, status = resolveBusStatus()) {
+    const normalizedWidth = Math.max(1, width);
+    const detail = status.detail ? ` · ${status.detail}` : "";
+    if (status.timed) {
+      const indicators = BUS_STATUS_INDICATORS[status.state] || BUS_STATUS_INDICATORS.working;
+      const indicator = indicators[busStatusIndex % indicators.length] || "";
+      const elapsed = formatElapsed(now() - status.startedAt);
+      return fitText(`${indicator} ${status.label} · ${elapsed}${detail}`, normalizedWidth);
+    }
+    if (normalizedWidth < 32) return fitText(`ufoo · ${status.label}`, normalizedWidth);
+    if (normalizedWidth < 48) return fitText(`ufoo · ${status.label} · Enter send`, normalizedWidth);
+    return fitText(`ufoo · ${status.label} · Enter send · Esc back${detail}`, normalizedWidth);
+  }
+
+  function stopBusStatusTimer() {
+    if (!busStatusInterval) return;
+    clearIntervalFn(busStatusInterval);
+    busStatusInterval = null;
+  }
+
+  function syncBusStatusTimer(status) {
+    const shouldTick = currentView === "agent" && agentViewUsesBus && status && status.timed;
+    if (!shouldTick) {
+      stopBusStatusTimer();
+      return;
+    }
+    if (busStatusInterval) return;
+    busStatusInterval = setIntervalFn(() => {
+      busStatusIndex += 1;
+      renderBusView();
+    }, 1000);
+    if (busStatusInterval && typeof busStatusInterval.unref === "function") {
+      busStatusInterval.unref();
+    }
   }
 
   function sliceDisplayCells(text = "", startCell = 0, maxCells = 1) {
@@ -456,12 +593,16 @@ function createAgentViewController(options = {}) {
     const logContentTop = 1;
     const logContentBottom = Math.max(logContentTop, inputTop - 1);
     const logContentHeight = Math.max(1, logContentBottom - logContentTop + 1);
+    const status = resolveBusStatus();
+    const logRows = Math.max(0, logContentHeight - 1);
+    const statusRow = logContentTop + logRows;
 
     processStdout.write("\x1b[?25l");
-    const visibleLines = getWrappedBusLogLines(width).slice(-logContentHeight);
-    for (let i = 0; i < logContentHeight; i += 1) {
+    const visibleLines = getWrappedBusLogLines(width).slice(-logRows);
+    for (let i = 0; i < logRows; i += 1) {
       writeAt(logContentTop + i, logLine(visibleLines[i] || "", width));
     }
+    writeAt(statusRow, logLine(buildBusStatusLine(width, status), width));
 
     writeAt(inputTop, horizontalLine(width));
     const viewport = getBusInputViewport(width);
@@ -471,6 +612,7 @@ function createAgentViewController(options = {}) {
     renderAgentDashboard();
     const cursorCol = clamp(3 + viewport.cursorCol, 1, width);
     processStdout.write(`\x1b[${inputTop + 1};${cursorCol}H\x1b[?25h`);
+    syncBusStatusTimer(status);
   }
 
   function renderAgentDashboard() {
@@ -566,6 +708,7 @@ function createAgentViewController(options = {}) {
     agentViewUsesBus = false;
     agentOutputSuppressed = false;
     agentBarVisible = false;
+    stopBusStatusTimer();
     busInputValue = "";
     busInputCursor = 0;
     busLogLines = [];
@@ -871,6 +1014,16 @@ function createAgentViewController(options = {}) {
     }
   }
 
+  function refreshAgentView() {
+    if (currentView !== "agent") return false;
+    if (agentViewUsesBus) {
+      renderBusView();
+    } else {
+      renderAgentDashboard();
+    }
+    return true;
+  }
+
   function isAgentBarVisible() {
     return agentBarVisible;
   }
@@ -882,6 +1035,7 @@ function createAgentViewController(options = {}) {
     getAgentInputSuppressUntil,
     getAgentOutputSuppressed,
     setAgentOutputSuppressed,
+    refreshAgentView,
     isAgentBarVisible,
     renderAgentDashboard,
     setAgentBarVisible,

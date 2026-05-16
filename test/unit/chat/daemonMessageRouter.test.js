@@ -58,7 +58,7 @@ describe("chat daemonMessageRouter", () => {
       type: IPC_RESPONSE_TYPES.STATUS,
       data: { phase: BUS_STATUS_PHASES.START, key: "codex:1", text: "processing" },
     });
-    expect(options.setTransientAgentState).toHaveBeenCalledWith("codex:1", "working");
+    expect(options.setTransientAgentState).toHaveBeenCalledWith("codex:1", "working", { detail: "processing" });
     expect(options.refreshDashboard).toHaveBeenCalled();
   });
 
@@ -245,10 +245,13 @@ describe("chat daemonMessageRouter", () => {
         event: "activity_state_changed",
         publisher: "codex:1",
         state: "waiting_input",
+        data: { detail: "Allow / Deny" },
       },
     });
 
     expect(stop).toBe(true);
+    expect(options.setTransientAgentState).toHaveBeenCalledWith("codex:1", "waiting_input", { detail: "Allow / Deny" });
+    expect(options.refreshDashboard).toHaveBeenCalledTimes(1);
     expect(options.requestStatus).toHaveBeenCalledTimes(1);
     expect(options.logMessage).not.toHaveBeenCalled();
   });
@@ -273,6 +276,7 @@ describe("chat daemonMessageRouter", () => {
     });
 
     expect(options.writeToAgentTerm).not.toHaveBeenCalled();
+    expect(options.setTransientAgentState).toHaveBeenCalledWith("codex:1", "working", { detail: "" });
     expect(options.requestStatus).toHaveBeenCalledTimes(1);
   });
 

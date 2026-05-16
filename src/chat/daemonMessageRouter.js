@@ -76,7 +76,7 @@ function createDaemonMessageRouter(options = {}) {
       const key = typeof data.key === "string" ? data.key : "";
       if (isLikelySubscriberId(key)) {
         if (data.phase === BUS_STATUS_PHASES.START) {
-          setTransientAgentState(key, "working");
+          setTransientAgentState(key, "working", { detail: text });
         } else if (data.phase === BUS_STATUS_PHASES.DONE || data.phase === BUS_STATUS_PHASES.ERROR) {
           clearTransientAgentState(key);
         }
@@ -354,6 +354,18 @@ function createDaemonMessageRouter(options = {}) {
   function handleBusMessage(msg) {
     const data = msg.data || {};
     if (data.event === "activity_state_changed") {
+      const agentId = String(data.subscriber || data.publisher || "").trim();
+      const state = String(data.state || data.activity_state || "").trim();
+      const detailSource = data.detail || (data.data && data.data.detail) || data.message || "";
+      if (agentId && state) {
+        const normalized = state.toLowerCase();
+        if (normalized === "idle" || normalized === "ready") {
+          clearTransientAgentState(agentId);
+        } else {
+          setTransientAgentState(agentId, state, { detail: detailSource });
+        }
+        refreshDashboard();
+      }
       requestStatus();
       return true;
     }

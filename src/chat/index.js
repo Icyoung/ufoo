@@ -61,6 +61,7 @@ const { loadPromptProfileRegistry } = require("../group/promptProfiles");
 const {
   DEFAULT_TRANSIENT_AGENT_STATE_TTL_MS,
   setTransientAgentState: setTransientAgentStateValue,
+  getTransientAgentStateEntry,
   getTransientAgentState,
   pruneTransientAgentStates,
 } = require("./transientAgentState");
@@ -1340,7 +1341,11 @@ async function runChat(projectRoot, options = {}) {
           selectedAgentIndex = 0;
         }
       }
-      renderAgentDashboard();
+      if (agentViewController && typeof agentViewController.refreshAgentView === "function") {
+        agentViewController.refreshAgentView();
+      } else {
+        renderAgentDashboard();
+      }
       return;
     }
     if (focusMode === "dashboard") {
@@ -1537,12 +1542,38 @@ async function runChat(projectRoot, options = {}) {
     getAgentLabel,
     getAgentStates: () => {
       const states = {};
-      if (activeAgentMetaMap) {
-        for (const [id, meta] of activeAgentMetaMap) {
-          if (meta && meta.activity_state) states[id] = meta.activity_state;
+      for (const id of activeAgents) {
+        let state = "";
+        if (activeAgentMetaMap) {
+          const meta = activeAgentMetaMap.get(id);
+          if (meta && meta.activity_state) state = meta.activity_state;
         }
+        if (!state) {
+          state = getTransientAgentState(transientAgentStateMap, id, {
+            ttlMs: DEFAULT_TRANSIENT_AGENT_STATE_TTL_MS,
+          });
+        }
+        if (state) states[id] = state;
       }
       return states;
+    },
+    getAgentActivityMeta: (agentId) => {
+      const id = String(agentId || "").trim();
+      const meta = activeAgentMetaMap && activeAgentMetaMap.get(id)
+        ? { ...activeAgentMetaMap.get(id) }
+        : {};
+      const transient = getTransientAgentStateEntry(transientAgentStateMap, id, {
+        ttlMs: DEFAULT_TRANSIENT_AGENT_STATE_TTL_MS,
+      });
+      if (transient) {
+        const previousState = meta.activity_state;
+        meta.activity_state = transient.state;
+        if ((!meta.activity_since || previousState !== transient.state) && Number.isFinite(transient.updatedAt)) {
+          meta.activity_since = new Date(transient.updatedAt).toISOString();
+        }
+        if (transient.detail) meta.activity_detail = transient.detail;
+      }
+      return meta;
     },
     getProjectRoot: () => activeProjectRoot,
     setDashboardView: (value) => {
@@ -1643,9 +1674,9 @@ async function runChat(projectRoot, options = {}) {
     appendStreamDelta,
     finalizeStream,
     hasStream: (publisher) => streamTracker.hasStream(publisher),
-    setTransientAgentState: (agentId, state) => {
+    setTransientAgentState: (agentId, state, options) => {
       if (!agentId || !state) return;
-      setTransientAgentStateValue(transientAgentStateMap, agentId, state);
+      setTransientAgentStateValue(transientAgentStateMap, agentId, state, options);
     },
     clearTransientAgentState: (agentId) => {
       if (!agentId) return;
@@ -1653,7 +1684,11 @@ async function runChat(projectRoot, options = {}) {
     },
     refreshDashboard: () => {
       if (getCurrentView() === "agent") {
-        renderAgentDashboard();
+        if (agentViewController && typeof agentViewController.refreshAgentView === "function") {
+          agentViewController.refreshAgentView();
+        } else {
+          renderAgentDashboard();
+        }
         return;
       }
       renderDashboard();

@@ -349,6 +349,27 @@ async function handleEvent(
   await busSender.flush();
 }
 
+function compactToolDetail(value = "", maxLength = 120) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 3))}...`;
+}
+
+function summarizeThreadToolCall(event = {}) {
+  const name = String(event.name || event.tool || event.tool_name || "tool").trim() || "tool";
+  const args = event.args && typeof event.args === "object" ? event.args : {};
+  const detail = args.command
+    || args.cmd
+    || args.code
+    || args.path
+    || args.file
+    || args.target
+    || args.query
+    || "";
+  return [name, compactToolDetail(detail)].filter(Boolean).join(" · ");
+}
+
 async function handleThreadedEvent({
   agentType,
   provider,
@@ -371,6 +392,11 @@ async function handleThreadedEvent({
           emitStreamDelta(event.delta);
         } else {
           plainReplyParts.push(String(event.delta));
+        }
+      } else if (event.type === "tool_call") {
+        const summary = summarizeThreadToolCall(event);
+        if (streamToPublisher && summary) {
+          emitStreamDelta(`\nTool: ${summary}\n`);
         }
       } else if (event.type === "turn_failed") {
         throw new Error(event.error || `thread turn failed for ${agentType}`);

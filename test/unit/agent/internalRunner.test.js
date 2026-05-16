@@ -152,6 +152,42 @@ describe("agent internalRunner stream forwarding", () => {
     );
   });
 
+  test("thread runtime streams tool call hints to chat publishers", async () => {
+    const busSender = {
+      enqueue: jest.fn(),
+      flush: jest.fn(async () => {}),
+    };
+    const evt = { publisher: "chat:9", data: { message: "task" } };
+    const threadRuntime = {
+      enabled: true,
+      thread: {
+        runStreamed: jest.fn(async function* () {
+          yield { type: "text_delta", delta: "before" };
+          yield { type: "tool_call", name: "bash", args: { command: "npm test" } };
+          yield { type: "text_delta", delta: "after" };
+        }),
+      },
+      rebuildThread: jest.fn(async () => {}),
+    };
+
+    await handleEvent(
+      process.cwd(),
+      "codex",
+      "codex-cli",
+      "",
+      "codex:sdk",
+      "codex-sdk",
+      evt,
+      busSender,
+      [],
+      threadRuntime
+    );
+
+    expect(busSender.enqueue).toHaveBeenCalledWith("chat:9", JSON.stringify({ stream: true, delta: "before" }));
+    expect(busSender.enqueue).toHaveBeenCalledWith("chat:9", JSON.stringify({ stream: true, delta: "\nTool: bash · npm test\n" }));
+    expect(busSender.enqueue).toHaveBeenCalledWith("chat:9", JSON.stringify({ stream: true, delta: "after" }));
+  });
+
   test("thread runtime sends a plain reply to managed agent publishers", async () => {
     const busSender = {
       enqueue: jest.fn(),

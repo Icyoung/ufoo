@@ -191,6 +191,43 @@ describe("chat agentViewController", () => {
     expect(output).not.toContain("│> ");
   });
 
+  test("internal bus mode renders activity status with elapsed timer", () => {
+    let nowMs = 16000;
+    const intervalHandle = { unref: jest.fn() };
+    const setIntervalFn = jest.fn(() => intervalHandle);
+    const clearIntervalFn = jest.fn();
+    const {
+      controller,
+      processStdout,
+    } = createHarness({
+      now: () => nowMs,
+      setIntervalFn,
+      clearIntervalFn,
+      getAgentStates: () => ({ "codex:1": "working" }),
+      getAgentActivityMeta: () => ({
+        activity_state: "working",
+        activity_since: new Date(10000).toISOString(),
+        activity_detail: "tool dispatch_message",
+      }),
+    });
+
+    controller.enterAgentView("codex:1", { useBus: true });
+
+    let output = stripAnsi(processStdout.write.mock.calls.map((call) => call[0]).join(""));
+    expect(output).toContain("working · 6 s · tool dispatch_message");
+    expect(setIntervalFn).toHaveBeenCalledWith(expect.any(Function), 1000);
+    expect(intervalHandle.unref).toHaveBeenCalled();
+
+    processStdout.write.mockClear();
+    nowMs = 17000;
+    setIntervalFn.mock.calls[0][0]();
+    output = stripAnsi(processStdout.write.mock.calls.map((call) => call[0]).join(""));
+    expect(output).toContain("working · 7 s · tool dispatch_message");
+
+    controller.exitAgentView();
+    expect(clearIntervalFn).toHaveBeenCalledWith(intervalHandle);
+  });
+
   test("exitAgentView unsubscribes internal bus watch", () => {
     const { controller, sendBusWatch } = createHarness();
 
