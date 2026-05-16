@@ -157,4 +157,91 @@ describe("activityStatePublisher", () => {
     pub.publish("working");
     expect(pub.getLastState()).toBe("working");
   });
+
+  test("publishes detail and emits same-state detail transitions", () => {
+    writeAgents(agentsFile, {
+      "codex:abc": { status: "active", activity_state: "starting" },
+    });
+
+    const pub = createActivityStatePublisher({
+      agentsFile,
+      subscriber: "codex:abc",
+      projectRoot: tmpDir,
+    });
+
+    expect(pub.publish("working", { detail: "thinking" })).toBe(true);
+    expect(pub.publish("working", { detail: "thinking" })).toBe(false);
+    expect(pub.publish("working", { detail: "tool bash" })).toBe(true);
+    expect(pub.getLastDetail()).toBe("tool bash");
+
+    const data = JSON.parse(fs.readFileSync(agentsFile, "utf8"));
+    expect(data.agents["codex:abc"].activity_state).toBe("working");
+    expect(data.agents["codex:abc"].activity_detail).toBe("tool bash");
+  });
+
+  test("activity_since stays stable across detail-only updates", () => {
+    writeAgents(agentsFile, {
+      "codex:abc": { status: "active", activity_state: "starting" },
+    });
+
+    const pub = createActivityStatePublisher({
+      agentsFile,
+      subscriber: "codex:abc",
+      projectRoot: tmpDir,
+    });
+
+    pub.publish("working", { detail: "thinking" });
+    const sinceA = JSON.parse(fs.readFileSync(agentsFile, "utf8"))
+      .agents["codex:abc"].activity_since;
+
+    pub.publish("working", { detail: "tool bash" });
+    const sinceB = JSON.parse(fs.readFileSync(agentsFile, "utf8"))
+      .agents["codex:abc"].activity_since;
+
+    expect(sinceB).toBe(sinceA);
+  });
+
+  test("activity_since refreshes when state changes", () => {
+    writeAgents(agentsFile, {
+      "codex:abc": {
+        status: "active",
+        activity_state: "ready",
+        activity_since: "2020-01-01T00:00:00.000Z",
+      },
+    });
+
+    const pub = createActivityStatePublisher({
+      agentsFile,
+      subscriber: "codex:abc",
+      projectRoot: tmpDir,
+    });
+
+    pub.publish("working", { detail: "thinking" });
+    const updated = JSON.parse(fs.readFileSync(agentsFile, "utf8"))
+      .agents["codex:abc"];
+    expect(updated.activity_state).toBe("working");
+    expect(updated.activity_since).not.toBe("2020-01-01T00:00:00.000Z");
+  });
+
+  test("clearing detail removes the field", () => {
+    writeAgents(agentsFile, {
+      "codex:abc": { status: "active", activity_state: "starting" },
+    });
+
+    const pub = createActivityStatePublisher({
+      agentsFile,
+      subscriber: "codex:abc",
+      projectRoot: tmpDir,
+    });
+
+    pub.publish("working", { detail: "tool bash" });
+    expect(JSON.parse(fs.readFileSync(agentsFile, "utf8"))
+      .agents["codex:abc"].activity_detail).toBe("tool bash");
+
+    pub.publish("idle");
+    const after = JSON.parse(fs.readFileSync(agentsFile, "utf8"))
+      .agents["codex:abc"];
+    expect(after.activity_state).toBe("idle");
+    expect(after.activity_detail).toBeUndefined();
+  });
 });

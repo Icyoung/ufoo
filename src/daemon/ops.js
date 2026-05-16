@@ -15,6 +15,7 @@ const {
   createSession: createHostSession,
 } = require("../terminal/adapters/hostAdapter");
 const { resolveDefaultManualBootstrap } = require("../agent/defaultBootstrap");
+const { detectLaunchEnvironment } = require("../agent/launchEnvironment");
 
 function normalizeLaunchAgent(agent = "") {
   const value = String(agent || "").trim().toLowerCase();
@@ -167,9 +168,19 @@ function resolveConfiguredLaunchMode(configuredMode = "", options = {}) {
   if (mode === "internal" || mode === "internal-pty" || mode === "tmux" || mode === "terminal" || mode === "host") {
     return mode;
   }
-  if (process.env.TMUX_PANE) return "tmux";
-  const hostContext = resolveHostLaunchContext(options);
+  // Auto mode: defer to the unified detector. Daemon ops differs from the
+  // launcher in two ways: host context can also arrive via `options`, and
+  // when running under a native terminal app we want to override a stale
+  // env-level UFOO_HOST_SESSION_ID. Both are handled here, on top of the
+  // detector's output.
+  const detected = detectLaunchEnvironment().mode;
+  if (detected === "tmux") return "tmux";
   const nativeTerminalApp = resolveNativeTerminalApp(options);
+  if (detected === "host") {
+    if (nativeTerminalApp) return "terminal";
+    return "host";
+  }
+  const hostContext = resolveHostLaunchContext(options);
   if (hostContext.hostDaemonSock && !nativeTerminalApp) return "host";
   return "terminal";
 }

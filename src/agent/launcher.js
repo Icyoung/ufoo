@@ -10,6 +10,7 @@ const { showBanner } = require("../utils/banner");
 const AgentNotifier = require("./notifier");
 const { ActivityDetector } = require("./activityDetector");
 const { createActivityStatePublisher } = require("./activityStatePublisher");
+const { detectLaunchEnvironment } = require("./launchEnvironment");
 const { getUfooPaths } = require("../ufoo/paths");
 const { createTerminalAdapterRouter } = require("../terminal/adapterRouter");
 const { probeHostCapabilities } = require("../terminal/adapters/hostAdapter");
@@ -191,18 +192,7 @@ function findPreviousSession(cwd, agentType, tty, tmuxPane) {
 }
 
 function resolveLaunchMode() {
-  const explicit = process.env.UFOO_LAUNCH_MODE || "";
-  if (explicit) return explicit;
-  if (process.env.UFOO_HOST_SESSION_ID) return "host";
-  // Deprecated: HORIZON_SESSION_ID fallback (remove after migration)
-  if (process.env.HORIZON_SESSION_ID) {
-    if (process.env.UFOO_DEBUG) {
-      console.error("[launcher] HORIZON_SESSION_ID is deprecated, use UFOO_HOST_SESSION_ID");
-    }
-    return "host";
-  }
-  if (process.env.TMUX_PANE) return "tmux";
-  return "terminal";
+  return detectLaunchEnvironment().mode;
 }
 
 function shouldShowLaunchBanner(agentType = "") {

@@ -7,6 +7,10 @@ const { writeActivityState } = require("./activityStateWriter");
  * Encapsulates the "write to disk + broadcast event" pattern used by
  * ptyRunner, launcher, notifier, and internalRunner.
  *
+ * Dedupe key is `state|detail` so that within the same canonical state
+ * (e.g. `working`) callers can publish detail transitions like
+ * `thinking` → `tool bash` and have them propagate to the dashboard.
+ *
  * @param {object} options
  * @param {string} options.agentsFile  - Path to all-agents.json
  * @param {string} options.subscriber  - Subscriber ID (e.g. "claude-code:abc123")
@@ -22,16 +26,23 @@ function createActivityStatePublisher(options = {}) {
   } = options;
 
   let lastState = "";
+  let lastDetail = "";
 
   function publish(state, extra = {}, publishOptions = {}) {
-    if (state === lastState) return false;
+    const detail = typeof extra.detail === "string" ? extra.detail : "";
+    if (state === lastState && detail === lastDetail) return false;
     const since = extra.since || undefined;
     const effectiveForce = typeof publishOptions.force === "boolean"
       ? publishOptions.force
       : force;
-    const changed = writeActivityState(agentsFile, subscriber, state, { since, force: effectiveForce });
+    const changed = writeActivityState(agentsFile, subscriber, state, {
+      since,
+      force: effectiveForce,
+      detail,
+    });
     if (!changed) return false;
     lastState = state;
+    lastDetail = detail;
     // Write to bus events directory for daemon bridge to pick up.
     // Writes directly to events dir to avoid queueing into subscriber pending files.
     try {
@@ -51,7 +62,7 @@ function createActivityStatePublisher(options = {}) {
           subscriber,
           state,
           previous: extra.previous || "",
-          ...extra.detail ? { detail: extra.detail } : {},
+          ...detail ? { detail } : {},
         },
       };
       fs.appendFileSync(eventFile, JSON.stringify(entry) + "\n");
@@ -65,7 +76,11 @@ function createActivityStatePublisher(options = {}) {
     return lastState;
   }
 
-  return { publish, getLastState };
+  function getLastDetail() {
+    return lastDetail;
+  }
+
+  return { publish, getLastState, getLastDetail };
 }
 
 module.exports = { createActivityStatePublisher };

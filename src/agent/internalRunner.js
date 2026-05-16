@@ -5,6 +5,7 @@ const { spawnSync } = require("child_process");
 const EventBus = require("../bus");
 const { readJSON, writeJSON } = require("../bus/utils");
 const { createActivityStatePublisher } = require("./activityStatePublisher");
+const { createActivityTracker } = require("./activityTracker");
 const { loadConfig, normalizeCodexInternalThreadMode } = require("../config");
 const { createCodexThreadProvider } = require("./codexThreadProvider");
 const { createClaudeThreadProvider } = require("./claudeThreadProvider");
@@ -305,7 +306,8 @@ async function handleEvent(
   busSender,
   extraArgs = [],
   threadRuntime = null,
-  bootstrapText = ""
+  bootstrapText = "",
+  tracker = null
 ) {
   if (!evt || !evt.data || !evt.data.message) return;
   const memoryPrefix = buildMemoryPrefix(projectRoot);
@@ -333,6 +335,7 @@ async function handleEvent(
       emitStreamDelta,
       streamToPublisher,
       threadRuntime,
+      tracker,
     });
     return;
   }
@@ -379,13 +382,20 @@ async function handleThreadedEvent({
   emitStreamDelta,
   streamToPublisher = true,
   threadRuntime,
+  tracker = null,
 }) {
   try {
     const plainReplyParts = [];
+    if (tracker && typeof tracker.notifyTurnStart === "function") {
+      tracker.notifyTurnStart();
+    }
     for await (const event of threadRuntime.thread.runStreamed(prompt, {})) {
       if (!event || typeof event !== "object") continue;
       if (typeof threadRuntime.syncProviderSessionId === "function") {
         threadRuntime.syncProviderSessionId();
+      }
+      if (tracker && typeof tracker.onProviderEvent === "function") {
+        tracker.onProviderEvent(event);
       }
       if (event.type === "text_delta" && event.delta) {
         if (streamToPublisher) {
@@ -419,6 +429,9 @@ async function handleThreadedEvent({
   } catch (err) {
     if (threadRuntime && typeof threadRuntime.rebuildThread === "function") {
       await threadRuntime.rebuildThread();
+    }
+    if (tracker && typeof tracker.markIdle === "function") {
+      tracker.markIdle();
     }
     const errorText = `[internal:${agentType}] error: ${err && err.message ? err.message : "unknown error"}`;
     // eslint-disable-next-line no-console
@@ -757,10 +770,7 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
   const activityPublisher = createActivityStatePublisher({
     agentsFile, subscriber, projectRoot,
   });
-
-  function setActivityState(state) {
-    activityPublisher.publish(state);
-  }
+  const activityTracker = createActivityTracker({ publisher: activityPublisher });
 
   function getInteractiveSession(publisher) {
     const key = String(publisher || "unknown");
@@ -774,7 +784,12 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
     return session;
   }
 
-  setActivityState("ready");
+  activityTracker.notifyStarting("runner");
+  if (threadRuntime && threadRuntime.enabled) {
+    activityTracker.notifyReady(provider || "");
+  } else {
+    activityTracker.notifyReady("");
+  }
 
   // 心跳更新函数
   const updateHeartbeat = () => {
@@ -835,7 +850,7 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
           }
 
           if (runnableEvents.length > 0) {
-            setActivityState("working");
+            activityTracker.notifyTurnStart("thinking");
           }
 
           for (const evt of runnableEvents) {
@@ -851,7 +866,8 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
               busSender,
               bootstrap.extraArgs,
               threadRuntime,
-              bootstrap.promptText
+              bootstrap.promptText,
+              activityTracker
             );
             if (evt.__agentViewRaw) {
               getInteractiveSession(evt.publisher || "unknown").writeResponsePrompt();
@@ -861,7 +877,7 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
           updateHeartbeat();
           lastHeartbeat = now;
           if (runnableEvents.length > 0) {
-            setActivityState("idle");
+            activityTracker.markIdle();
           }
           await busSender.flush();
         }
@@ -880,6 +896,7 @@ module.exports = {
   runInternalRunner,
   createBusSender,
   handleEvent,
+  handleThreadedEvent,
   createThreadRuntime,
   getCodexThreadMode,
   getWorkerThreadToolMode,

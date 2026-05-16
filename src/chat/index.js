@@ -1316,6 +1316,7 @@ async function runChat(projectRoot, options = {}) {
             ...currentMeta,
             activity_state: diskState,
             activity_since: currentMeta.activity_since || diskMeta.activity_since || "",
+            activity_detail: currentMeta.activity_detail || diskMeta.activity_detail || "",
           });
         }
       }

@@ -155,6 +155,7 @@ function buildStatus(projectRoot, options = {}) {
     const tty = meta?.tty || "";
     const activity_state = meta?.activity_state || "";
     const activity_since = meta?.activity_since || "";
+    const activity_detail = meta?.activity_detail || "";
     return {
       id,
       nickname,
@@ -166,6 +167,7 @@ function buildStatus(projectRoot, options = {}) {
       tty,
       activity_state,
       activity_since,
+      activity_detail,
       host_inject_sock: meta?.host_inject_sock || "",
       host_daemon_sock: meta?.host_daemon_sock || "",
       host_name: meta?.host_name || "",
