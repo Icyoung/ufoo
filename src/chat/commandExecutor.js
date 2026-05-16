@@ -9,6 +9,9 @@ const {
   loadGlobalUcodeConfig,
   saveGlobalUcodeConfig,
   normalizeControllerMode,
+  SETTINGS_MODEL_DEFAULTS,
+  defaultAgentModelForProvider,
+  defaultRouterModelForProvider,
 } = require("../config");
 const { resolveTransport } = require("../code/nativeRunner");
 const { resolveDisplayNickname } = require("../daemon/nicknameScope");
@@ -43,17 +46,6 @@ function defaultResolveTerminalApp() {
   return "";
 }
 
-const SETTINGS_MODEL_DEFAULTS = Object.freeze({
-  agent: Object.freeze({
-    codex: "gpt-5.5",
-    claude: "opus-4.7",
-  }),
-  router: Object.freeze({
-    codex: "gpt-5.4-mini",
-    claude: "sonnet-4.7",
-  }),
-});
-
 function normalizeSettingsProvider(value = "", fallback = "codex-cli") {
   const text = String(value || "").trim().toLowerCase();
   if (text === "claude" || text === "claude-cli" || text === "claude-code" || text === "anthropic") {
@@ -69,13 +61,8 @@ function agentProviderKey(value = "") {
   return normalizeSettingsProvider(value) === "claude-cli" ? "claude" : "codex";
 }
 
-function defaultAgentModelForProvider(value = "") {
-  return SETTINGS_MODEL_DEFAULTS.agent[agentProviderKey(value)] || SETTINGS_MODEL_DEFAULTS.agent.codex;
-}
-
 function defaultGateModelForProvider(value = "") {
-  const key = agentProviderKey(value);
-  return SETTINGS_MODEL_DEFAULTS.router[key] || SETTINGS_MODEL_DEFAULTS.router.codex;
+  return defaultRouterModelForProvider(value);
 }
 
 function collectHostLaunchRequestContext(env = process.env) {

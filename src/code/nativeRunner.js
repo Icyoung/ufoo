@@ -1,5 +1,5 @@
 const { randomUUID } = require("crypto");
-const { loadConfig } = require("../config");
+const { loadConfig, defaultAgentModelForProvider, sameModelProvider } = require("../config");
 const { runToolCall } = require("./dispatch");
 const { getReadToolDescription } = require("./prompts/toolDescriptions/read");
 const { getWriteToolDescription } = require("./prompts/toolDescriptions/write");
@@ -219,13 +219,15 @@ function resolveRuntimeConfig({ workspaceRoot = process.cwd(), provider = "", mo
       || configuredProvider
       || "openai"
   ) || "openai";
+  const configuredModel = sameModelProvider(config.ucodeProvider || config.agentProvider, selectedProvider)
+    ? (config.ucodeModel || config.agentModel)
+    : "";
 
   const selectedModel = String(
     model
       || process.env.UFOO_UCODE_MODEL
-      || config.ucodeModel
-      || config.agentModel
-      || ""
+      || configuredModel
+      || defaultAgentModelForProvider(selectedProvider)
   ).trim();
 
   const defaultBaseUrl = selectedProvider === "anthropic"

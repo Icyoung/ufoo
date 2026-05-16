@@ -136,6 +136,35 @@ describe("controller gateRouter", () => {
     });
   });
 
+  test("resolves provider-aware default gate-router models", () => {
+    expect(resolveGateRouterConfig({
+      projectRoot: "/tmp/project",
+      env: {},
+      loadConfigImpl: () => ({ agentProvider: "codex-cli" }),
+    })).toMatchObject({
+      provider: "codex",
+      model: "gpt-5.3-codex-spark",
+    });
+
+    expect(resolveGateRouterConfig({
+      projectRoot: "/tmp/project",
+      env: {},
+      loadConfigImpl: () => ({ agentProvider: "claude-cli" }),
+    })).toMatchObject({
+      provider: "claude",
+      model: "sonnet-4.7",
+    });
+
+    expect(resolveGateRouterConfig({
+      projectRoot: "/tmp/project",
+      env: { UFOO_AGENT_ROUTER_PROVIDER: "claude" },
+      loadConfigImpl: () => ({ routerProvider: "codex", routerModel: "gpt-5.3-codex-spark" }),
+    })).toMatchObject({
+      provider: "claude",
+      model: "sonnet-4.7",
+    });
+  });
+
   test("supports loop mode as a gate-router front door and normalizes upgrades to main router", () => {
     const loadConfigImpl = jest.fn(() => ({ controllerMode: "loop" }));
 

@@ -1,7 +1,12 @@
 "use strict";
 
 const { randomUUID } = require("crypto");
-const { loadConfig } = require("../config");
+const {
+  loadConfig,
+  defaultAgentModelForProvider,
+  defaultRouterModelForProvider,
+  sameModelProvider,
+} = require("../config");
 const {
   resolveRuntimeConfig,
   resolveCompletionUrl,
@@ -29,6 +34,16 @@ function clipText(value = "", maxChars = 500) {
 const CODEX_DEFAULT_BASE_URL = "https://chatgpt.com/backend-api/codex";
 const CODEX_DEFAULT_USER_AGENT = "codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)";
 const CODEX_DEFAULT_ORIGINATOR = "codex-tui";
+
+function resolveConfiguredModelForProvider(config = {}, provider = "") {
+  if (config.routerProvider && sameModelProvider(config.routerProvider, provider)) {
+    return config.routerModel;
+  }
+  if (config.agentProvider && sameModelProvider(config.agentProvider, provider)) {
+    return config.agentModel;
+  }
+  return "";
+}
 
 function buildOpenAiChatRequest({
   model = "",
@@ -217,7 +232,11 @@ async function resolveUpstreamRuntime({
     const baseUrl = useCodexResponses
       ? String(env.UFOO_CODEX_BASE_URL || "").trim() || CODEX_DEFAULT_BASE_URL
       : String(env.OPENAI_BASE_URL || "").trim() || "https://api.openai.com/v1";
-    const resolvedModel = String(model || config.routerModel || config.agentModel || "").trim();
+    const resolvedModel = String(
+      model
+        || resolveConfiguredModelForProvider(config, "codex")
+        || defaultRouterModelForProvider("codex")
+    ).trim();
     return {
       provider: "codex",
       transport: useCodexResponses ? "codex-responses" : "openai-chat",
@@ -237,7 +256,11 @@ async function resolveUpstreamRuntime({
       env,
     });
     const baseUrl = String(env.ANTHROPIC_BASE_URL || "").trim() || "https://api.anthropic.com/v1";
-    const resolvedModel = String(model || config.routerModel || config.agentModel || "").trim();
+    const resolvedModel = String(
+      model
+        || resolveConfiguredModelForProvider(config, "claude")
+        || defaultRouterModelForProvider("claude")
+    ).trim();
     return {
       provider: "claude",
       transport: "anthropic-messages",
@@ -252,7 +275,7 @@ async function resolveUpstreamRuntime({
   const runtime = resolveRuntimeConfig({
     workspaceRoot: projectRoot,
     provider: normalizedProvider === "ucode" ? "" : normalizedProvider,
-    model,
+    model: model || resolveConfiguredModelForProvider(config, normalizedProvider) || defaultAgentModelForProvider(config.agentProvider),
   });
   const auth = runtime.apiKey ? { apiKey: String(runtime.apiKey || "").trim() } : { headers: {} };
   return {

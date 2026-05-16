@@ -17,7 +17,7 @@ const {
   stripLeakedEscapeTags,
 } = require("./tui");
 const { stripBlessedTags } = require("../chat/text");
-const { loadConfig } = require("../config");
+const { loadConfig, defaultAgentModelForProvider, sameModelProvider } = require("../config");
 const {
   resolveSessionId,
   normalizeSessionId,
@@ -109,12 +109,14 @@ function resolveUcodeProviderModel({
       || ""
   ).trim();
   const resolvedProvider = resolvePlannerProvider(explicitProvider || fallbackProviderFromAgent);
+  const configuredModel = sameModelProvider(config.ucodeProvider || config.agentProvider, resolvedProvider)
+    ? (config.ucodeModel || config.agentModel)
+    : "";
   const resolvedModel = String(
     model
       || process.env.UFOO_UCODE_MODEL
-      || config.ucodeModel
-      || config.agentModel
-      || ""
+      || configuredModel
+      || defaultAgentModelForProvider(resolvedProvider)
   ).trim();
   return {
     provider: resolvedProvider,

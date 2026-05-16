@@ -1,6 +1,11 @@
 "use strict";
 
-const { loadConfig } = require("../config");
+const {
+  loadConfig,
+  defaultRouterProviderForAgentProvider,
+  defaultRouterModelForProvider,
+  sameModelProvider,
+} = require("../config");
 
 const DEFAULT_EXECUTION_PATH = "main";
 const DEFAULT_CONFIDENCE_THRESHOLD = 0.6;
@@ -122,18 +127,22 @@ function resolveGateRouterConfig({
   loadConfigImpl = loadConfig,
 } = {}) {
   const config = loadConfigImpl(projectRoot || process.cwd());
+  const requestProvider = requestMeta.router_provider || env.UFOO_AGENT_ROUTER_PROVIDER;
+  const provider = String(
+    requestProvider
+      || config.routerProvider
+      || defaultRouterProviderForAgentProvider(config.agentProvider)
+  ).trim();
+  const configuredRouterModel = !requestProvider || sameModelProvider(config.routerProvider, provider)
+    ? config.routerModel
+    : "";
   return {
-    provider: String(
-      requestMeta.router_provider
-        || env.UFOO_AGENT_ROUTER_PROVIDER
-        || config.routerProvider
-        || "ucode"
-    ).trim(),
+    provider,
     model: String(
       requestMeta.router_model
         || env.UFOO_AGENT_ROUTER_MODEL
-        || config.routerModel
-        || ""
+        || configuredRouterModel
+        || defaultRouterModelForProvider(provider)
     ).trim(),
     timeoutMs: toPositiveNumber(
       requestMeta.router_timeout_ms

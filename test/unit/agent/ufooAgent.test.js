@@ -77,7 +77,7 @@ describe("ufooAgent prompt schema", () => {
       projectRoot,
       prompt: "inspect project",
       provider: "codex-cli",
-      model: "gpt-5.4-mini",
+      model: "gpt-5.3-codex-spark",
     });
 
     expect(res.ok).toBe(true);
@@ -93,7 +93,7 @@ describe("ufooAgent prompt schema", () => {
       projectRoot,
       prompt: "inspect project",
       provider: "codex-cli",
-      model: "gpt-5.4-mini",
+      model: "gpt-5.3-codex-spark",
       loopRuntime: {
         enabled: true,
         maxRounds: 3,
@@ -114,7 +114,7 @@ describe("ufooAgent prompt schema", () => {
       projectRoot,
       prompt: "inspect",
       provider: "codex-cli",
-      model: "gpt-5.4-mini",
+      model: "gpt-5.3-codex-spark",
       controllerMode: "main",
     });
 
@@ -147,7 +147,7 @@ describe("ufooAgent prompt schema", () => {
       projectRoot,
       prompt: "inspect",
       provider: "codex-cli",
-      model: "gpt-5.4-mini",
+      model: "gpt-5.3-codex-spark",
       controllerMode: "main",
     });
 
@@ -174,7 +174,7 @@ describe("ufooAgent prompt schema", () => {
       projectRoot,
       prompt: "inspect",
       provider: "codex-cli",
-      model: "gpt-5.4-mini",
+      model: "gpt-5.3-codex-spark",
       controllerMode: "main",
     });
 
@@ -199,7 +199,7 @@ describe("ufooAgent prompt schema", () => {
       projectRoot,
       prompt: "inspect",
       provider: "codex-cli",
-      model: "gpt-5.4-mini",
+      model: "gpt-5.3-codex-spark",
       controllerMode: "loop",
     });
 
@@ -215,7 +215,7 @@ describe("ufooAgent prompt schema", () => {
       projectRoot,
       prompt: "inspect",
       provider: "codex-cli",
-      model: "gpt-5.4-mini",
+      model: "gpt-5.3-codex-spark",
       controllerMode: "shadow",
     });
 
@@ -260,7 +260,7 @@ describe("ufooAgent prompt schema", () => {
       projectRoot,
       prompt: "assign task",
       provider: "codex-cli",
-      model: "gpt-5.4-mini",
+      model: "gpt-5.3-codex-spark",
     });
 
     expect(res.ok).toBe(true);
@@ -314,7 +314,7 @@ describe("ufooAgent prompt schema", () => {
       projectRoot,
       prompt: "route new follow-up",
       provider: "codex-cli",
-      model: "gpt-5.4-mini",
+      model: "gpt-5.3-codex-spark",
     });
 
     expect(res.ok).toBe(true);
@@ -358,7 +358,7 @@ describe("ufooAgent prompt schema", () => {
       projectRoot,
       prompt: "Fix the billing issue",
       provider: "codex-cli",
-      model: "gpt-5.4-mini",
+      model: "gpt-5.3-codex-spark",
       routingMode: "global-router",
     });
 
@@ -383,7 +383,7 @@ describe("ufooAgent prompt schema", () => {
       projectRoot,
       prompt: "请处理这个路由/启动 agent 的 bug\n\nRouting request metadata (JSON):\n{\"source\":\"chat-dialog\"}",
       provider: "codex-cli",
-      model: "gpt-5.4-mini",
+      model: "gpt-5.3-codex-spark",
     });
 
     expect(res.ok).toBe(true);
@@ -402,7 +402,7 @@ describe("ufooAgent prompt schema", () => {
       projectRoot,
       prompt: "Please launch a codex agent named builder for this task.",
       provider: "codex-cli",
-      model: "gpt-5.4-mini",
+      model: "gpt-5.3-codex-spark",
     });
 
     expect(res.ok).toBe(true);

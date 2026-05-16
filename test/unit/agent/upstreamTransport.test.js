@@ -45,12 +45,12 @@ describe("agent upstreamTransport", () => {
 
   test("builds codex responses request with developer and user input items", () => {
     expect(buildCodexResponsesRequest({
-      model: "gpt-5.4-mini",
+      model: "gpt-5.3-codex-spark",
       systemPrompt: "system rules",
       prompt: "hello",
       messages: [{ role: "assistant", content: "prior reply" }],
     })).toEqual({
-      model: "gpt-5.4-mini",
+      model: "gpt-5.3-codex-spark",
       instructions: "system rules",
       stream: true,
       store: false,
@@ -95,13 +95,13 @@ describe("agent upstreamTransport", () => {
     await expect(resolveUpstreamRuntime({
       projectRoot: "/tmp/project",
       provider: "codex",
-      model: "gpt-5.4-mini",
+      model: "gpt-5.3-codex-spark",
       env: {},
       loadConfigImpl: () => ({ codexAuthPath: "/tmp/codex-auth.json" }),
     })).resolves.toMatchObject({
       provider: "codex",
       transport: "codex-responses",
-      model: "gpt-5.4-mini",
+      model: "gpt-5.3-codex-spark",
       baseUrl: "https://chatgpt.com/backend-api/codex",
       credentialSource: "auth-file",
       auth: {
@@ -124,7 +124,7 @@ describe("agent upstreamTransport", () => {
     await expect(sendUpstreamPrompt({
       projectRoot: "/tmp/project",
       provider: "codex",
-      model: "gpt-5.4-mini",
+      model: "gpt-5.3-codex-spark",
       prompt: "hello",
       env: {},
       loadConfigImpl: () => ({ codexAuthPath: "/tmp/missing.json" }),
@@ -132,7 +132,7 @@ describe("agent upstreamTransport", () => {
       ok: false,
       errorCode: "CODEX_AUTH_UNAVAILABLE",
       provider: "codex",
-      model: "gpt-5.4-mini",
+      model: "gpt-5.3-codex-spark",
     }));
   });
 
@@ -148,7 +148,7 @@ describe("agent upstreamTransport", () => {
     await expect(resolveUpstreamRuntime({
       projectRoot: "/tmp/project",
       provider: "codex",
-      model: "gpt-5.4-mini",
+      model: "gpt-5.3-codex-spark",
       env: { OPENAI_BASE_URL: "https://openai.example/v1" },
       loadConfigImpl: () => ({ codexAuthPath: "" }),
     })).resolves.toMatchObject({
@@ -187,6 +187,32 @@ describe("agent upstreamTransport", () => {
       auth: {
         apiKey: "claude-key",
       },
+    });
+  });
+
+  test("uses provider-specific default model when explicit provider has no model", async () => {
+    resolveClaudeUpstreamCredentials.mockResolvedValue({
+      provider: "claude",
+      credentialKind: "api-key",
+      apiKey: "claude-key",
+      tokenType: "Bearer",
+      source: "api-key",
+    });
+
+    await expect(resolveUpstreamRuntime({
+      projectRoot: "/tmp/project",
+      provider: "claude",
+      model: "",
+      env: {},
+      loadConfigImpl: () => ({
+        agentProvider: "codex-cli",
+        agentModel: "gpt-5.5",
+        routerProvider: "codex",
+        routerModel: "gpt-5.3-codex-spark",
+      }),
+    })).resolves.toMatchObject({
+      provider: "claude",
+      model: "sonnet-4.7",
     });
   });
 
@@ -230,7 +256,7 @@ describe("agent upstreamTransport", () => {
     const result = await sendUpstreamPrompt({
       projectRoot: "/tmp/project",
       provider: "codex",
-      model: "gpt-5.4-mini",
+      model: "gpt-5.3-codex-spark",
       prompt: "hello",
       systemPrompt: "system",
       fetchImpl,
@@ -241,7 +267,7 @@ describe("agent upstreamTransport", () => {
     expect(result).toMatchObject({
       ok: true,
       provider: "codex",
-      model: "gpt-5.4-mini",
+      model: "gpt-5.3-codex-spark",
       transport: "codex-responses",
       credentialSource: "auth-file",
       output: "{\"reply\":\"ok\"}",

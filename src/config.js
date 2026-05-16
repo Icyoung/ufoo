@@ -4,6 +4,17 @@ const path = require("path");
 
 const UCODE_FIELDS = ["ucodeProvider", "ucodeModel", "ucodeBaseUrl", "ucodeApiKey", "ucodeAgentDir"];
 
+const SETTINGS_MODEL_DEFAULTS = Object.freeze({
+  agent: Object.freeze({
+    codex: "gpt-5.5",
+    claude: "opus-4.7",
+  }),
+  router: Object.freeze({
+    codex: "gpt-5.3-codex-spark",
+    claude: "sonnet-4.7",
+  }),
+});
+
 const DEFAULT_CONFIG = {
   launchMode: "auto",
   agentProvider: "codex-cli",
@@ -15,6 +26,8 @@ const DEFAULT_CONFIG = {
   claudeOauthTokenPath: "",
   claudeOauthRefreshWindowSec: 300,
   agentModel: "",
+  routerProvider: "",
+  routerModel: "",
   autoResume: false,
 };
 
@@ -39,6 +52,33 @@ function normalizeLaunchMode(value) {
 function normalizeAgentProvider(value) {
   if (value === "claude-cli") return "claude-cli";
   return "codex-cli";
+}
+
+function providerKey(value = "") {
+  const text = String(value || "").trim().toLowerCase();
+  if (text === "claude" || text === "claude-cli" || text === "claude-code" || text === "anthropic") return "claude";
+  return "codex";
+}
+
+function sameModelProvider(left = "", right = "") {
+  return providerKey(left) === providerKey(right);
+}
+
+function defaultAgentModelForProvider(value = "") {
+  return SETTINGS_MODEL_DEFAULTS.agent[providerKey(value)] || SETTINGS_MODEL_DEFAULTS.agent.codex;
+}
+
+function defaultRouterProviderForAgentProvider(value = "") {
+  return providerKey(value) === "claude" ? "claude" : "codex";
+}
+
+function defaultRouterModelForProvider(value = "") {
+  return SETTINGS_MODEL_DEFAULTS.router[providerKey(value)] || SETTINGS_MODEL_DEFAULTS.router.codex;
+}
+
+function normalizeModel(value, fallback = "") {
+  const text = typeof value === "string" ? value.trim() : "";
+  return text || fallback;
 }
 
 function normalizeControllerMode(value) {
@@ -100,11 +140,19 @@ function loadJsonSafe(filePath) {
 function loadConfig(projectRoot) {
   try {
     const raw = loadJsonSafe(configPath(projectRoot));
+    const agentProvider = normalizeAgentProvider(raw.agentProvider);
+    const routerProvider = normalizeModel(
+      raw.routerProvider,
+      defaultRouterProviderForAgentProvider(agentProvider)
+    );
     return {
       ...DEFAULT_CONFIG,
       ...raw,
       launchMode: normalizeLaunchMode(raw.launchMode),
-      agentProvider: normalizeAgentProvider(raw.agentProvider),
+      agentProvider,
+      agentModel: normalizeModel(raw.agentModel, defaultAgentModelForProvider(agentProvider)),
+      routerProvider,
+      routerModel: normalizeModel(raw.routerModel, defaultRouterModelForProvider(routerProvider)),
       controllerMode: Object.prototype.hasOwnProperty.call(raw, "controllerMode")
         ? normalizeControllerMode(raw.controllerMode)
         : DEFAULT_CONFIG.controllerMode,
@@ -121,7 +169,15 @@ function loadConfig(projectRoot) {
       ...loadGlobalUcodeConfig(),
     };
   } catch {
-    return { ...DEFAULT_CONFIG, ...DEFAULT_UCODE_CONFIG };
+    const agentProvider = DEFAULT_CONFIG.agentProvider;
+    const routerProvider = defaultRouterProviderForAgentProvider(agentProvider);
+    return {
+      ...DEFAULT_CONFIG,
+      agentModel: defaultAgentModelForProvider(agentProvider),
+      routerProvider,
+      routerModel: defaultRouterModelForProvider(routerProvider),
+      ...DEFAULT_UCODE_CONFIG,
+    };
   }
 }
 
@@ -152,6 +208,9 @@ function saveConfig(projectRoot, config) {
   }
   merged.launchMode = normalizeLaunchMode(merged.launchMode);
   merged.agentProvider = normalizeAgentProvider(merged.agentProvider);
+  merged.agentModel = typeof merged.agentModel === "string" ? merged.agentModel.trim() : "";
+  merged.routerProvider = typeof merged.routerProvider === "string" ? merged.routerProvider.trim() : "";
+  merged.routerModel = typeof merged.routerModel === "string" ? merged.routerModel.trim() : "";
   merged.controllerMode = normalizeControllerMode(merged.controllerMode);
   merged.codexInternalThreadMode = normalizeCodexInternalThreadMode(merged.codexInternalThreadMode);
   merged.codexAuthPath = normalizeCodexAuthPath(merged.codexAuthPath);
@@ -190,12 +249,17 @@ function saveGlobalUcodeConfig(updates = {}) {
 }
 
 module.exports = {
+  SETTINGS_MODEL_DEFAULTS,
   loadConfig,
   saveConfig,
   loadGlobalUcodeConfig,
   saveGlobalUcodeConfig,
   normalizeLaunchMode,
   normalizeAgentProvider,
+  sameModelProvider,
+  defaultAgentModelForProvider,
+  defaultRouterProviderForAgentProvider,
+  defaultRouterModelForProvider,
   normalizeControllerMode,
   normalizeCodexInternalThreadMode,
   normalizeCodexAuthPath,

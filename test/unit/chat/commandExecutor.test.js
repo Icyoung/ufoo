@@ -976,7 +976,7 @@ describe("chat commandExecutor", () => {
       })),
       loadUcodeConfig: jest.fn(() => ({
         ucodeProvider: "openai",
-        ucodeModel: "gpt-5.4-mini",
+        ucodeModel: "gpt-5.3-codex-spark",
         ucodeBaseUrl: "",
         ucodeApiKey: "",
       })),
@@ -1020,7 +1020,7 @@ describe("chat commandExecutor", () => {
 
   test("handleSettingsCommand shows router mode", async () => {
     const { executor, options, logs } = createHarness({
-      loadConfig: jest.fn(() => ({ controllerMode: "main", routerProvider: "codex", routerModel: "gpt-5.4-mini" })),
+      loadConfig: jest.fn(() => ({ controllerMode: "main", routerProvider: "codex", routerModel: "gpt-5.3-codex-spark" })),
     });
 
     await executor.handleSettingsCommand(["router"]);
@@ -1029,7 +1029,7 @@ describe("chat commandExecutor", () => {
     expect(logs.some((entry) => entry.text.includes("gate router config:"))).toBe(true);
     expect(logs.some((entry) => entry.text.includes("controllerMode: main"))).toBe(true);
     expect(logs.some((entry) => entry.text.includes("provider: codex"))).toBe(true);
-    expect(logs.some((entry) => entry.text.includes("model: gpt-5.4-mini"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("model: gpt-5.3-codex-spark"))).toBe(true);
   });
 
   test("executeCommand routes /settings router loop to project config and daemon restart", async () => {
@@ -1067,7 +1067,7 @@ describe("chat commandExecutor", () => {
 
     expect(options.saveConfig).toHaveBeenCalledWith("/tmp/ufoo", {
       routerProvider: "codex",
-      routerModel: "gpt-5.4-mini",
+      routerModel: "gpt-5.3-codex-spark",
     });
     expect(options.restartDaemon).toHaveBeenCalledWith("/tmp/ufoo");
     expect(logs.some((entry) => entry.text.includes("gate router config updated"))).toBe(true);

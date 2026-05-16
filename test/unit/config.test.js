@@ -12,6 +12,8 @@ const {
   normalizeClaudeOauthProfile,
   normalizeClaudeOauthTokenPath,
   normalizeClaudeOauthRefreshWindowSec,
+  defaultAgentModelForProvider,
+  defaultRouterModelForProvider,
 } = require("../../src/config");
 
 describe("config save/load", () => {
@@ -27,6 +29,34 @@ describe("config save/load", () => {
     expect(loaded.agentModel).toBe("gpt-5.4");
 
     fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  test("loadConfig applies provider-aware default agent and router models", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-config-default-models-"));
+
+    expect(loadConfig(projectRoot)).toMatchObject({
+      agentProvider: "codex-cli",
+      agentModel: "gpt-5.5",
+      routerProvider: "codex",
+      routerModel: "gpt-5.3-codex-spark",
+    });
+
+    saveConfig(projectRoot, { agentProvider: "claude-cli", agentModel: "", routerProvider: "", routerModel: "" });
+    expect(loadConfig(projectRoot)).toMatchObject({
+      agentProvider: "claude-cli",
+      agentModel: "opus-4.7",
+      routerProvider: "claude",
+      routerModel: "sonnet-4.7",
+    });
+
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  test("default model helpers normalize provider aliases", () => {
+    expect(defaultAgentModelForProvider("codex")).toBe("gpt-5.5");
+    expect(defaultAgentModelForProvider("claude")).toBe("opus-4.7");
+    expect(defaultRouterModelForProvider("openai")).toBe("gpt-5.3-codex-spark");
+    expect(defaultRouterModelForProvider("anthropic")).toBe("sonnet-4.7");
   });
 
   test("saveConfig preserves internal-pty launch mode", () => {

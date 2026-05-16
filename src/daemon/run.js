@@ -1,14 +1,17 @@
 const path = require("path");
 const { startDaemon, stopDaemon, isRunning } = require("./index");
-const { loadConfig } = require("../config");
+const { loadConfig, defaultAgentModelForProvider } = require("../config");
 
 function runDaemonCli(argv) {
   const cmd = argv[1] || "start";
   const projectRoot = process.cwd();
   const config = loadConfig(projectRoot);
-  const provider = process.env.UFOO_AGENT_PROVIDER || config.agentProvider || "codex-cli";
+  const envProvider = process.env.UFOO_AGENT_PROVIDER;
+  const provider = envProvider || config.agentProvider || "codex-cli";
   const model =
-    process.env.UFOO_AGENT_MODEL || config.agentModel || (provider === "claude-cli" ? "opus" : "");
+    process.env.UFOO_AGENT_MODEL
+    || (envProvider && envProvider !== config.agentProvider ? "" : config.agentModel)
+    || defaultAgentModelForProvider(provider);
   const resumeMode = process.env.UFOO_FORCE_RESUME === "1" ? "force" : "auto";
   const launchMode = config.launchMode || "terminal";
 

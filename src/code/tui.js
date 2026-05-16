@@ -627,8 +627,8 @@ function runUcodeTui({
       blessed,
       currentInputHeight: 4,
       version: UCODE_VERSION,
-      logBorder: true,
-      logScrollbar: true,
+      logBorder: false,
+      logScrollbar: false,
     });
 
     if (completionPanel && typeof completionPanel.hide === "function") {
@@ -1031,7 +1031,7 @@ function runUcodeTui({
       if (!plain) return;
       const content = ` → ${escapeBlessed(plain)} `;
       const visibleLen = plain.length + 4; // " → " + text + " "
-      const boxWidth = (logBox.width || 80) - 2; // subtract border/padding
+      const boxWidth = logBox.width || 80;
       const pad = boxWidth > visibleLen ? " ".repeat(boxWidth - visibleLen) : "";
       logBox.log(`{cyan-bg}{white-fg}${content}${pad}{/white-fg}{/cyan-bg}`);
       logBox.log(""); // Add line break after user input

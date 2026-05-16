@@ -113,7 +113,7 @@ const COMMAND_TREE = {
           loop: { desc: "Set router mode to loop", order: 5 },
           legacy: { desc: "Set router mode to legacy", order: 6 },
           shadow: { desc: "Set router mode to shadow", order: 7 },
-          codex: { desc: "Use Codex gate model (gpt-5.4-mini)", order: 8 },
+          codex: { desc: "Use Codex gate model (gpt-5.3-codex-spark)", order: 8 },
           claude: { desc: "Use Claude gate model (sonnet-4.7)", order: 9 },
         },
       },

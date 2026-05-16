@@ -334,7 +334,11 @@ describe("ucode native runner", () => {
     expect(global.fetch.mock.calls[0][0]).toBe("https://api.anthropic.com/v1/messages");
   });
 
-  test("returns explicit error when model is missing", async () => {
+  test("uses default agent model when model is missing", async () => {
+    global.fetch.mockResolvedValueOnce(makeSseResponse([
+      { choices: [{ delta: { content: "Hello" } }] },
+    ]));
+
     const result = await runNativeAgentTask({
       workspaceRoot,
       prompt: "hello",
@@ -342,9 +346,10 @@ describe("ucode native runner", () => {
       model: "",
     });
 
-    expect(result.ok).toBe(false);
-    expect(result.error).toContain("model is not configured");
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(result.ok).toBe(true);
+    expect(result.output).toBe("Hello");
+    const requestBody = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(requestBody.model).toBe("gpt-5.5");
   });
 
   test("returns cancelled when signal aborted", async () => {
