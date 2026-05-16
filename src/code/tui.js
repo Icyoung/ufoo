@@ -18,6 +18,77 @@ const STATUS_INDICATORS = {
 
 const ANSI_PATTERN = /\x1B\[[0-9;?]*[ -/]*[@-~]/g;
 
+function charDisplayWidth(char = "") {
+  if (!char) return 0;
+  const code = char.codePointAt(0) || 0;
+  if (code === 0) return 0;
+  if (code < 32 || (code >= 0x7f && code < 0xa0)) return 0;
+  if ((code >= 0x0300 && code <= 0x036f) ||
+    (code >= 0x1ab0 && code <= 0x1aff) ||
+    (code >= 0x1dc0 && code <= 0x1dff) ||
+    (code >= 0x20d0 && code <= 0x20ff) ||
+    (code >= 0xfe20 && code <= 0xfe2f)) {
+    return 0;
+  }
+  if ((code >= 0x1100 && code <= 0x115f) ||
+    code === 0x2329 ||
+    code === 0x232a ||
+    (code >= 0x2e80 && code <= 0xa4cf) ||
+    (code >= 0xac00 && code <= 0xd7a3) ||
+    (code >= 0xf900 && code <= 0xfaff) ||
+    (code >= 0xfe10 && code <= 0xfe19) ||
+    (code >= 0xfe30 && code <= 0xfe6f) ||
+    (code >= 0xff00 && code <= 0xff60) ||
+    (code >= 0xffe0 && code <= 0xffe6) ||
+    (code >= 0x1f300 && code <= 0x1faff)) {
+    return 2;
+  }
+  return 1;
+}
+
+function displayCellWidth(text = "") {
+  return Array.from(String(text || "").replace(ANSI_PATTERN, "")).reduce(
+    (sum, char) => sum + charDisplayWidth(char),
+    0
+  );
+}
+
+function safeRead(getter, fallback = undefined) {
+  try {
+    return getter();
+  } catch {
+    return fallback;
+  }
+}
+
+function resolveLogContentWidth({ logBox = null, screen = null, fallback = 80 } = {}) {
+  const coords = safeRead(() => logBox && typeof logBox._getCoords === "function" ? logBox._getCoords() : null, null);
+  if (coords && Number.isFinite(coords.xl) && Number.isFinite(coords.xi)) {
+    return Math.max(1, coords.xl - coords.xi);
+  }
+  const width = safeRead(() => logBox && logBox.width, null);
+  if (typeof width === "number") return Math.max(1, width);
+  const screenWidth = safeRead(() => screen && screen.width, null);
+  if (typeof screenWidth === "number") return Math.max(1, screenWidth);
+  const screenCols = safeRead(() => screen && screen.cols, null);
+  if (typeof screenCols === "number") return Math.max(1, screenCols);
+  return Math.max(1, fallback);
+}
+
+function formatHighlightedUserInput(text = "", {
+  width = 80,
+  escapeText = (value) => String(value || ""),
+} = {}) {
+  const plain = String(text || "").trim();
+  if (!plain) return "";
+  const targetWidth = Math.max(1, Math.floor(Number(width) || 80) - 1);
+  const prefix = " → ";
+  const suffix = " ";
+  const contentWidth = displayCellWidth(`${prefix}${plain}${suffix}`);
+  const pad = " ".repeat(Math.max(0, targetWidth - contentWidth));
+  return `{cyan-bg}{white-fg}${prefix}${escapeText(plain)}${suffix}${pad}{/white-fg}{/cyan-bg}`;
+}
+
 // Stream buffer for smooth output
 class StreamBuffer {
   constructor(writer, options = {}) {
@@ -1027,13 +1098,12 @@ function runUcodeTui({
 
     const logUserInput = (text = "") => {
       activeToolMerge = null;
-      const plain = String(text || "").trim();
-      if (!plain) return;
-      const content = ` → ${escapeBlessed(plain)} `;
-      const visibleLen = plain.length + 4; // " → " + text + " "
-      const boxWidth = logBox.width || 80;
-      const pad = boxWidth > visibleLen ? " ".repeat(boxWidth - visibleLen) : "";
-      logBox.log(`{cyan-bg}{white-fg}${content}${pad}{/white-fg}{/cyan-bg}`);
+      const line = formatHighlightedUserInput(text, {
+        width: resolveLogContentWidth({ logBox, screen, fallback: (stdout && stdout.columns) || 80 }),
+        escapeText: escapeBlessed,
+      });
+      if (!line) return;
+      logBox.log(line);
       logBox.log(""); // Add line break after user input
       screen.render();
     };
@@ -1911,6 +1981,9 @@ module.exports = {
   UCODE_BANNER_LINES,
   UCODE_VERSION,
   StreamBuffer,
+  displayCellWidth,
+  resolveLogContentWidth,
+  formatHighlightedUserInput,
   buildUcodeBannerLines,
   buildUcodeBannerBlessedLines,
   parseActiveAgentsFromBusStatus,

@@ -61,6 +61,7 @@ function createAgentViewController(options = {}) {
   let busLogLines = [];
   let busStartupAgentId = "";
   let busStartupLineCount = 0;
+  let busAgentReplyActive = false;
   const originalRender = screen.render.bind(screen);
   let renderFrozen = false;
 
@@ -361,6 +362,7 @@ function createAgentViewController(options = {}) {
   function resetBusView(agentId) {
     busInputValue = "";
     busInputCursor = 0;
+    busAgentReplyActive = false;
     busStartupAgentId = agentId || "";
     const label = getAgentLabel(agentId);
     const startupLines = staticStartupLines(agentId, label, getCols());
@@ -386,6 +388,42 @@ function createAgentViewController(options = {}) {
       } else {
         busLogLines[busLogLines.length - 1] += char;
       }
+    }
+    if (busLogLines.length > 1000) {
+      busLogLines = busLogLines.slice(-1000);
+    }
+    if (clean.endsWith("\n")) {
+      busAgentReplyActive = false;
+    }
+  }
+
+  function ensureBusLinePrefix(prefix = "") {
+    if (busLogLines.length === 0) {
+      busLogLines.push(prefix);
+      return;
+    }
+    if (busLogLines[busLogLines.length - 1] === "") {
+      busLogLines[busLogLines.length - 1] = prefix;
+      return;
+    }
+    busLogLines.push(prefix);
+  }
+
+  function appendBusAgentReply(text = "") {
+    const clean = stripAnsi(String(text || "")).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    if (!clean) return;
+    for (const char of clean) {
+      if (char === "\n") {
+        busLogLines.push("");
+        continue;
+      }
+      if (!busAgentReplyActive) {
+        ensureBusLinePrefix("• ");
+        busAgentReplyActive = true;
+      } else if (busLogLines.length === 0 || busLogLines[busLogLines.length - 1] === "") {
+        ensureBusLinePrefix("  ");
+      }
+      busLogLines[busLogLines.length - 1] += char;
     }
     if (busLogLines.length > 1000) {
       busLogLines = busLogLines.slice(-1000);
@@ -533,6 +571,7 @@ function createAgentViewController(options = {}) {
     busLogLines = [];
     busStartupAgentId = "";
     busStartupLineCount = 0;
+    busAgentReplyActive = false;
 
     currentView = "main";
     viewingAgent = null;
@@ -661,6 +700,7 @@ function createAgentViewController(options = {}) {
       return;
     }
     appendBusLog(`> ${text}\n`);
+    busAgentReplyActive = false;
     busInputValue = "";
     busInputCursor = 0;
     sendBusMessage(viewingAgent, text);
@@ -767,7 +807,7 @@ function createAgentViewController(options = {}) {
       .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
       .replace(/\x1b\[(?:[?>=]?[0-9]*c|[?]?6n|5n)/g, "");
     if (agentViewUsesBus) {
-      appendBusLog(cleaned);
+      appendBusAgentReply(cleaned);
       renderBusView();
       return;
     }

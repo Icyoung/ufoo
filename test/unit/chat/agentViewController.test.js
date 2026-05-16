@@ -361,11 +361,11 @@ describe("chat agentViewController", () => {
 
     const output = processStdout.write.mock.calls.map((call) => call[0]).join("");
     expect(output).toContain("> q");
-    expect(output).toContain("answer");
+    expect(output).toContain("• answer");
     expect(output).not.toContain("> qanswer");
   });
 
-  test("internal bus mode renders streamed output in plain log", () => {
+  test("internal bus mode renders streamed output with reply marker", () => {
     const { controller, processStdout } = createHarness();
 
     controller.enterAgentView("codex:1", { useBus: true });
@@ -373,8 +373,8 @@ describe("chat agentViewController", () => {
     controller.writeToAgentTerm("hello\r\nworld");
 
     const output = processStdout.write.mock.calls.map((call) => call[0]).join("");
-    expect(output).toContain("hello");
-    expect(output).toContain("world");
+    expect(output).toContain("• hello");
+    expect(output).toContain("  world");
   });
 
   test("internal bus mode wraps long output instead of truncating", () => {
@@ -392,7 +392,7 @@ describe("chat agentViewController", () => {
     controller.writeToAgentTerm("abcdefghijklmnopqrstuvwxyz");
 
     const output = narrowStdout.write.mock.calls.map((call) => call[0]).join("");
-    expect(output).toContain("abcdefghijklmnopqrst");
+    expect(output).toContain("• abcdefghijklmnopqr");
     expect(output).toContain("uvwxyz");
     expect(output).not.toContain("…");
   });
