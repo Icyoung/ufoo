@@ -335,6 +335,123 @@ describe("ucode native runner", () => {
     expect(global.fetch.mock.calls[0][0]).toBe("https://api.anthropic.com/v1/messages");
   });
 
+  test("emits phase events for openai with reasoning_content and tool_request", async () => {
+    global.fetch.mockResolvedValueOnce(makeSseResponse([
+      { choices: [{ delta: { reasoning_content: "let me think" } }] },
+      { choices: [{ delta: { content: "Hello" } }] },
+      {
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call_a",
+                  type: "function",
+                  function: { name: "read", arguments: '{"path":"AGENTS.md"}' },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ]));
+    runToolCall.mockReturnValue({ ok: true, content: "ok" });
+    global.fetch.mockResolvedValueOnce(makeSseResponse([
+      { choices: [{ delta: { content: "done" } }] },
+    ]));
+
+    const phaseEvents = [];
+    const thinkingDeltas = [];
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "go",
+      provider: "openai",
+      model: "gpt-test",
+      onPhase: (event) => phaseEvents.push(event),
+      onThinkingDelta: (text) => thinkingDeltas.push(text),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(thinkingDeltas).toEqual(["let me think"]);
+    const types = phaseEvents.map((e) => e.type);
+    expect(types).toContain("request_start");
+    expect(types).toContain("thinking_delta");
+    expect(types).toContain("text_delta");
+    expect(types).toContain("tool_request");
+    const toolReq = phaseEvents.find((e) => e.type === "tool_request");
+    expect(toolReq.name).toBe("read");
+  });
+
+  test("emits phase events for anthropic with thinking_delta", async () => {
+    const sse = [
+      "event: content_block_start",
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}',
+      "",
+      "event: content_block_delta",
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"plan first"}}',
+      "",
+      "event: content_block_start",
+      'data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}',
+      "",
+      "event: content_block_delta",
+      'data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Hi"}}',
+      "",
+      "event: content_block_start",
+      'data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"t1","name":"read","input":{}}}',
+      "",
+      "event: content_block_delta",
+      'data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\\"path\\":\\"AGENTS.md\\"}"}}',
+      "",
+      "event: message_stop",
+      'data: {"type":"message_stop"}',
+      "",
+    ].join("\n");
+    global.fetch.mockResolvedValueOnce(new Response(sse, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    }));
+    runToolCall.mockReturnValue({ ok: true, content: "ok" });
+    global.fetch.mockResolvedValueOnce(new Response([
+      "event: content_block_start",
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}',
+      "",
+      "event: content_block_delta",
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"done"}}',
+      "",
+      "event: message_stop",
+      'data: {"type":"message_stop"}',
+      "",
+    ].join("\n"), {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    }));
+
+    const phaseEvents = [];
+    const thinkingDeltas = [];
+    const textDeltas = [];
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "go",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      onPhase: (event) => phaseEvents.push(event),
+      onThinkingDelta: (text) => thinkingDeltas.push(text),
+      onStreamDelta: (text) => textDeltas.push(text),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(thinkingDeltas).toEqual(["plan first"]);
+    expect(textDeltas).toContain("Hi");
+    const types = phaseEvents.map((e) => e.type);
+    expect(types).toContain("request_start");
+    expect(types).toContain("thinking_delta");
+    expect(types).toContain("text_delta");
+    expect(types).toContain("tool_request");
+    const toolReq = phaseEvents.find((e) => e.type === "tool_request");
+    expect(toolReq.name).toBe("read");
+  });
+
   test("uses default agent model when model is missing", async () => {
     global.fetch.mockResolvedValueOnce(makeSseResponse([
       { choices: [{ delta: { content: "Hello" } }] },

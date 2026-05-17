@@ -491,6 +491,8 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
   const runNativeAgentImpl = typeof options.runNativeAgentImpl === "function"
     ? options.runNativeAgentImpl
     : runNativeAgentTask;
+  const onPhase = typeof options.onPhase === "function" ? options.onPhase : null;
+  const onThinkingDelta = typeof options.onThinkingDelta === "function" ? options.onThinkingDelta : null;
   const invokeNative = (sessionIdValue = "", timeoutOverrideMs = timeoutMs) => runNativeAgentImpl({
     workspaceRoot,
     provider,
@@ -501,6 +503,8 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
     sessionId: String(sessionIdValue || ""),
     timeoutMs: timeoutOverrideMs,
     onStreamDelta: onStream,
+    onThinkingDelta,
+    onPhase,
     onToolEvent: (event) => {
       pushToolLog(event);
     },

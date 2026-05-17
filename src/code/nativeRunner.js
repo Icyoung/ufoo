@@ -512,12 +512,23 @@ function runCoreTool({ tool = "", args = {}, workspaceRoot = process.cwd(), onTo
   return result;
 }
 
+function emitPhase(callback, event = {}) {
+  if (typeof callback !== "function") return;
+  try {
+    callback(event);
+  } catch {
+    // ignore phase callback failures
+  }
+}
+
 async function runOpenAiLikeTurn({
   url = "",
   apiKey = "",
   model = "",
   messages = [],
   onTextDelta = null,
+  onThinkingDelta = null,
+  onPhase = null,
   signal = null,
   timeoutMs = 300000,
 } = {}) {
@@ -539,6 +550,8 @@ async function runOpenAiLikeTurn({
   }
 
   const request = createRequestController({ signal, timeoutMs });
+
+  emitPhase(onPhase, { type: "request_start" });
 
   try {
     const response = await fetch(url, {
@@ -574,6 +587,7 @@ async function runOpenAiLikeTurn({
     const toolCallMap = new Map();
     let rawBuffer = "";
     let responseText = "";
+    const announcedToolNames = new Set();
 
     while (true) {
       const { done, value } = await reader.read();
@@ -599,8 +613,19 @@ async function runOpenAiLikeTurn({
 
         const delta = choice.delta && typeof choice.delta === "object" ? choice.delta : {};
 
+        const reasoningChunk = typeof delta.reasoning_content === "string"
+          ? delta.reasoning_content
+          : (typeof delta.reasoning === "string" ? delta.reasoning : "");
+        if (reasoningChunk) {
+          emitPhase(onPhase, { type: "thinking_delta", text: reasoningChunk });
+          if (typeof onThinkingDelta === "function") {
+            onThinkingDelta(reasoningChunk);
+          }
+        }
+
         if (typeof delta.content === "string" && delta.content) {
           responseText += delta.content;
+          emitPhase(onPhase, { type: "text_delta", text: delta.content });
           if (typeof onTextDelta === "function") {
             onTextDelta(delta.content);
           }
@@ -629,6 +654,13 @@ async function runOpenAiLikeTurn({
             }
 
             toolCallMap.set(index, previous);
+
+            const toolName = previous.function.name;
+            const announceKey = `${index}:${toolName}`;
+            if (toolName && !announcedToolNames.has(announceKey)) {
+              announcedToolNames.add(announceKey);
+              emitPhase(onPhase, { type: "tool_request", name: toolName });
+            }
           }
         }
       }
@@ -716,6 +748,8 @@ async function runAnthropicTurn({
   systemPrompt = "",
   messages = [],
   onTextDelta = null,
+  onThinkingDelta = null,
+  onPhase = null,
   signal = null,
   timeoutMs = 300000,
 } = {}) {
@@ -740,6 +774,8 @@ async function runAnthropicTurn({
   }
 
   const request = createRequestController({ signal, timeoutMs });
+
+  emitPhase(onPhase, { type: "request_start" });
 
   try {
     const response = await fetch(url, {
@@ -811,6 +847,12 @@ async function runAnthropicTurn({
               type: "text",
               text: String(contentBlock.text || ""),
             });
+          } else if (contentBlock.type === "thinking") {
+            blockMap.set(index, {
+              order: index,
+              type: "thinking",
+              text: String(contentBlock.thinking || ""),
+            });
           } else if (contentBlock.type === "tool_use") {
             blockMap.set(index, {
               order: index,
@@ -822,6 +864,10 @@ async function runAnthropicTurn({
                 : {},
               inputJson: "",
             });
+            const toolName = String(contentBlock.name || "");
+            if (toolName) {
+              emitPhase(onPhase, { type: "tool_request", name: toolName });
+            }
           }
           continue;
         }
@@ -840,8 +886,23 @@ async function runAnthropicTurn({
             blockMap.set(index, current);
             if (deltaText) {
               responseText += deltaText;
+              emitPhase(onPhase, { type: "text_delta", text: deltaText });
               if (typeof onTextDelta === "function") {
                 onTextDelta(deltaText);
+              }
+            }
+            continue;
+          }
+
+          if (delta.type === "thinking_delta") {
+            const deltaText = String(delta.thinking || "");
+            current.type = "thinking";
+            current.text = `${String(current.text || "")}${deltaText}`;
+            blockMap.set(index, current);
+            if (deltaText) {
+              emitPhase(onPhase, { type: "thinking_delta", text: deltaText });
+              if (typeof onThinkingDelta === "function") {
+                onThinkingDelta(deltaText);
               }
             }
             continue;
@@ -859,6 +920,7 @@ async function runAnthropicTurn({
 
     const assistantContent = Array.from(blockMap.values())
       .sort((a, b) => a.order - b.order)
+      .filter((item) => item.type !== "thinking")
       .map((item) => {
         if (item.type === "text") {
           return {
@@ -919,6 +981,8 @@ async function runNativeLoopOpenAi({
   apiKey = "",
   timeoutMs = 300000,
   onStreamDelta = null,
+  onThinkingDelta = null,
+  onPhase = null,
   onToolEvent = null,
   signal = null,
   guards,
@@ -957,6 +1021,8 @@ async function runNativeLoopOpenAi({
       messages,
       signal,
       timeoutMs,
+      onPhase,
+      onThinkingDelta,
       onTextDelta: (chunk) => {
         const text = String(chunk || "");
         if (!text) return;
@@ -1061,6 +1127,8 @@ async function runNativeLoopAnthropic({
   apiKey = "",
   timeoutMs = 300000,
   onStreamDelta = null,
+  onThinkingDelta = null,
+  onPhase = null,
   onToolEvent = null,
   signal = null,
   guards,
@@ -1098,6 +1166,8 @@ async function runNativeLoopAnthropic({
       messages,
       signal,
       timeoutMs,
+      onPhase,
+      onThinkingDelta,
       onTextDelta: (chunk) => {
         const text = String(chunk || "");
         if (!text) return;
@@ -1198,6 +1268,8 @@ async function runNativeAgentTask({
   sessionId = "",
   timeoutMs = 300000,
   onStreamDelta = null,
+  onThinkingDelta = null,
+  onPhase = null,
   onToolEvent = null,
   signal = null,
 } = {}) {
@@ -1238,6 +1310,8 @@ async function runNativeAgentTask({
       apiKey: runtime.apiKey,
       timeoutMs,
       onStreamDelta,
+      onThinkingDelta,
+      onPhase,
       onToolEvent,
       signal,
       guards,

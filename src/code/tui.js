@@ -1615,29 +1615,44 @@ function runUcodeTui({
       }
 
       if (result.kind === "nl") {
-        const statusMessages = [
-          "Thinking...",
-          "Processing your request...",
-          "Analyzing...",
-          "Working on it...",
-        ];
-        const randomStatus = statusMessages[Math.floor(Math.random() * statusMessages.length)];
         const abortController = new AbortController();
         const escapeStripper = createEscapeTagStripper();
         pendingTask = {
           abortController,
           startedAt: Date.now(),
         };
-        updateStatus(randomStatus, "thinking", {
-          showTimer: true,
-          startedAt: pendingTask.startedAt,
-        });
+        const TOOL_LABELS = {
+          read: "Reading file",
+          write: "Writing file",
+          edit: "Editing file",
+          bash: "Running command",
+        };
+        const setNlStatus = (msg) => {
+          updateStatus(msg, "thinking", {
+            showTimer: true,
+            startedAt: pendingTask.startedAt,
+          });
+        };
+        setNlStatus("Waiting for model...");
         let streamState = null;
         let renderedToolLogCount = 0;
         let nlResult = null;
         try {
           nlResult = await runNaturalLanguageTask(result.task, state, {
             signal: abortController.signal,
+            onPhase: (event) => {
+              if (!event || typeof event !== "object") return;
+              if (event.type === "request_start") {
+                setNlStatus("Waiting for model...");
+              } else if (event.type === "thinking_delta") {
+                setNlStatus("Thinking...");
+              } else if (event.type === "text_delta") {
+                setNlStatus("Generating response...");
+              } else if (event.type === "tool_request") {
+                const label = TOOL_LABELS[String(event.name || "").toLowerCase()] || `Calling ${event.name}`;
+                setNlStatus(`${label}...`);
+              }
+            },
             onDelta: (delta) => {
               const text = escapeStripper.write(String(delta || ""));
               if (!text) return;
@@ -1648,6 +1663,10 @@ function runUcodeTui({
             },
             onToolLog: (entry) => {
               renderedToolLogCount += 1;
+              if (entry && entry.tool && entry.phase === "start") {
+                const label = TOOL_LABELS[String(entry.tool || "").toLowerCase()] || `Calling ${entry.tool}`;
+                setNlStatus(`${label}...`);
+              }
               logToolHint(entry);
             },
           });
