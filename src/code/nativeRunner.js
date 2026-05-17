@@ -9,8 +9,11 @@ const { getBashToolDescription } = require("./prompts/toolDescriptions/bash");
 const CORE_TOOL_NAMES = new Set(["read", "write", "edit", "bash"]);
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1";
-const DEFAULT_MAX_NATIVE_TOOL_CALLS = 12;
-const DEFAULT_MAX_NATIVE_TOOL_ERRORS = 1;
+// Claude Code SDK defaults to no turn limit; built-in agents cap at 30 (DreamTask)
+// to 200 (fork). We count individual tool calls (not turns), so 100 leaves headroom
+// for non-trivial tasks while still catching runaway loops. Override via env.
+const DEFAULT_MAX_NATIVE_TOOL_CALLS = 100;
+const DEFAULT_MAX_NATIVE_TOOL_ERRORS = 5;
 
 function nowMs() {
   return Date.now();

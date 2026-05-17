@@ -236,6 +236,7 @@ describe("ucode native runner", () => {
   });
 
   test("stops native tool loop immediately after bash tool error", async () => {
+    process.env.UFOO_UCODE_MAX_TOOL_ERRORS = "1";
     global.fetch.mockImplementation(() => Promise.resolve(makeSseResponse([
       {
         choices: [
