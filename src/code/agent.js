@@ -435,7 +435,7 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
     state.provider || process.env.UFOO_UCODE_PROVIDER || ""
   );
   const model = String(state.model || process.env.UFOO_UCODE_MODEL || "").trim();
-  const timeoutMs = Number.isFinite(state.timeoutMs) ? state.timeoutMs : 300000;
+  const timeoutMs = Number.isFinite(state.timeoutMs) ? state.timeoutMs : 600000;
   let streamed = false;
   let streamLastChar = "";
   const onDelta = typeof options.onDelta === "function"
@@ -1443,7 +1443,7 @@ async function runUcodeCoreAgent({
   appendSystemPrompt = "",
   systemPrompt = "",
   sessionId = "",
-  timeoutMs = 300000,
+  timeoutMs = 600000,
   jsonOutput = false,
   forceTui = false,
   disableTui = false,
@@ -1747,7 +1747,7 @@ function parseAgentArgs(argv = []) {
     appendSystemPrompt: "",
     systemPrompt: "",
     sessionId: "",
-    timeoutMs: 300000,
+    timeoutMs: 600000,
     jsonOutput: false,
     forceTui: false,
     disableTui: false,
