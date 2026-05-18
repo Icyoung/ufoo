@@ -566,6 +566,16 @@ function buildMergedToolExpandedLines(entries = []) {
   });
 }
 
+// Composed live-row text for an in-flight tool group: shows the merged
+// summary, plus a "(Ctrl+O expand)" hint once at least two entries are
+// present.
+function buildToolMergeRowText(entries = []) {
+  const list = Array.isArray(entries) ? entries : [];
+  const summary = buildMergedToolSummaryText(list);
+  if (list.length >= 2) return `· ${summary} (Ctrl+O expand)`;
+  return `· ${summary}`;
+}
+
 module.exports = {
   ANSI_PATTERN,
   STATUS_INDICATORS,
@@ -575,6 +585,7 @@ module.exports = {
   UCODE_VERSION,
   buildMergedToolExpandedLines,
   buildMergedToolSummaryText,
+  buildToolMergeRowText,
   buildUcodeBannerLines,
   charDisplayWidth,
   clampCursorPos,

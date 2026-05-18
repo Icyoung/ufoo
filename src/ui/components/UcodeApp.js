@@ -39,9 +39,17 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
     const [agents, setAgents] = useState([]);
     const [selectedAgentIndex, setSelectedAgentIndex] = useState(-1);
     const [agentSelectionMode, setAgentSelectionMode] = useState(false);
+    // activeMerge holds the in-flight group of consecutive tool calls.
+    // Rendered as a single live row below <Static>; promoted to <Static>
+    // and cleared whenever a non-tool log line arrives. lastMergeRef tracks
+    // the most recent group with >=2 entries so Ctrl+O can still expand it
+    // after the group has been frozen into the log.
+    const [activeMerge, setActiveMerge] = useState(null);
+    const lastMergeRef = useRef(null);
     const { exit } = useApp();
     const { stdout } = useStdout();
     const lineSeqRef = useRef(banner.length + 1);
+    const mergeIdRef = useRef(0);
 
     const targetAgent = agentSelectionMode && selectedAgentIndex >= 0
       ? agents[selectedAgentIndex]
@@ -138,14 +146,80 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       });
     }, []);
 
+    const renderMergeText = useCallback((merge) => {
+      if (!merge || !Array.isArray(merge.entries)) return "";
+      return fmt.buildToolMergeRowText(merge.entries);
+    }, []);
+
+    // Promote the in-flight tool group (if any) to a permanent log line.
+    // Called before any non-tool text is logged, so the group "freezes"
+    // exactly the way blessed updates the line in place when the next text
+    // arrives.
+    const flushActiveMerge = useCallback(() => {
+      setActiveMerge((current) => {
+        if (!current) return null;
+        appendLogLine(renderMergeText(current));
+        return null;
+      });
+    }, [appendLogLine, renderMergeText]);
+
+    const logToolHint = useCallback((entry, payload) => {
+      const tool = String((entry && entry.tool) || "").trim().toLowerCase();
+      if (!tool) return;
+      const resObj = payload && typeof payload === "object" ? payload : (entry && entry.result) || {};
+      const phase = String((entry && entry.phase) || "").trim().toLowerCase();
+      const isError = phase === "error" || resObj.ok === false;
+      const detail = tool === "bash" ? fmt.normalizeBashToolCommand(entry && entry.args, resObj) : "";
+      const errorText = String((entry && entry.error) || resObj.error || "").trim();
+      const toolEntry = fmt.normalizeToolMergeEntry({ tool, detail, isError, errorText });
+
+      setActiveMerge((current) => {
+        let next;
+        if (current) {
+          next = { ...current, entries: current.entries.concat([toolEntry]) };
+        } else {
+          mergeIdRef.current += 1;
+          next = { id: mergeIdRef.current, entries: [toolEntry], expanded: false };
+        }
+        if (next.entries.length >= 2) lastMergeRef.current = next;
+        return next;
+      });
+    }, []);
+
     const appendLogText = useCallback((text) => {
       // Multi-line text → split into separate log entries so <Static> keys
-      // stay stable when streaming arrives line-by-line.
+      // stay stable when streaming arrives line-by-line. Always promote any
+      // in-flight tool group first so it freezes above the new text.
       const raw = String(text == null ? "" : text);
       if (!raw) return;
+      flushActiveMerge();
       const lines = raw.split(/\r?\n/);
       for (const line of lines) appendLogLine(line);
-    }, [appendLogLine]);
+    }, [appendLogLine, flushActiveMerge]);
+
+    const expandLastMerge = useCallback(() => {
+      // Try the active group first; fall back to the most recent frozen one.
+      // Both paths must keep the "expand only once" guarantee that blessed
+      // enforces via group.expanded.
+      const active = activeMerge;
+      const candidate = (active && !active.expanded && active.entries.length >= 2)
+        ? active
+        : (lastMergeRef.current && !lastMergeRef.current.expanded && lastMergeRef.current.entries.length >= 2
+            ? lastMergeRef.current
+            : null);
+      if (!candidate) return;
+
+      const lines = fmt.buildMergedToolExpandedLines(candidate.entries);
+      for (let i = 0; i < lines.length; i += 1) {
+        const branch = i === lines.length - 1 ? "└" : "│";
+        appendLogLine(`${branch} ${lines[i]}`);
+      }
+      candidate.expanded = true;
+      if (active && active.id === candidate.id) setActiveMerge(null);
+      if (lastMergeRef.current && lastMergeRef.current.id === candidate.id) {
+        lastMergeRef.current = null;
+      }
+    }, [activeMerge, appendLogLine]);
 
     const runChainRef = useRef(Promise.resolve());
 
@@ -180,13 +254,13 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
           appendLogText(result.output || "");
           return;
         case "tool": {
-          // P1.4b will render this through the tool-merge state machine.
-          // For now just log a one-line summary so users see something.
           const payload = result.result && typeof result.result === "object" ? result.result : {};
-          const detail = fmt.normalizeBashToolCommand(result.args, payload);
-          const isError = payload.ok === false;
-          const marker = isError ? "✗" : "✓";
-          appendLogText(`${marker} ${result.tool || "tool"}${detail ? ` · ${detail}` : ""}`);
+          logToolHint({
+            tool: result.tool,
+            args: result.args,
+            phase: payload.ok === false ? "error" : "end",
+            error: payload.error || "",
+          }, payload);
           return;
         }
         case "nl": {
@@ -206,12 +280,8 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
                 streamBuf = parts[0];
               },
               onToolLog: (entry) => {
-                // P1.4b: merge into ToolGroup state. For now, one line each.
                 if (!entry || typeof entry !== "object") return;
-                const detail = fmt.normalizeBashToolCommand(entry.args, entry.result);
-                const phase = String(entry.phase || "").toLowerCase();
-                const marker = phase === "error" || (entry.error && entry.error.length > 0) ? "✗" : "·";
-                appendLogText(`${marker} ${entry.tool || "tool"}${detail ? ` · ${detail}` : ""}`);
+                logToolHint(entry, entry.result);
               },
             });
           } catch (err) {
@@ -259,15 +329,22 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       return () => stdout.off("resize", update);
     }, [stdout]);
 
-    // Top-level only catches Ctrl+C; the editor handles all text editing.
+    // Top-level only catches Ctrl+C and Ctrl+O (expand last tool group);
+    // the editor handles all text editing.
     useInput((input, key) => {
-      if (key.ctrl && input === "c") exit();
+      if (key.ctrl && input === "c") { exit(); return; }
+      if (key.ctrl && input === "o") { expandLastMerge(); return; }
     }, { isActive: interactive });
 
     return h(Box, { flexDirection: "column", width: "100%" },
       h(Static, { items: logLines }, (item) =>
         h(Text, { key: item.id }, item.text || " ")
       ),
+      activeMerge ? h(Box, null,
+        h(Text, { color: activeMerge.entries.some((e) => e.isError) ? "red" : "cyan" },
+          renderMergeText(activeMerge)
+        ),
+      ) : null,
       h(Box, { marginTop: 1 },
         h(Text, { color: "gray" }, statusText),
         size.cols > 0 ? h(Text, { color: "gray" }, ` · ${size.cols}x${size.rows}`) : null,
