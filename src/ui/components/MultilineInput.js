@@ -21,6 +21,11 @@
  *   onArrowRightAtEmpty(value)  Right pressed while value is empty
  *   width (number)              wrap width in display cells
  *   interactive (boolean)       gates useInput; pass false for non-TTY mounts
+ *   interceptArrowsAndEnter (boolean)
+ *                               when true, Up/Down/Left/Right/Return are
+ *                               suppressed inside the editor so a parent
+ *                               component (e.g. completion popup) can
+ *                               handle them. Plain editing keys still work.
  *   placeholder (string)        rendered in gray when value is empty
  *
  * Newlines: Enter submits. Use Alt+Enter (delivered as meta+Return) or end the
@@ -50,6 +55,7 @@ function createMultilineInput({ React, ink }) {
     onArrowRightAtEmpty,
     width = 80,
     interactive = true,
+    interceptArrowsAndEnter = false,
     placeholder = "",
     promptPrefix = "› ",
     promptColor = "magenta",
@@ -125,6 +131,14 @@ function createMultilineInput({ React, ink }) {
     }, [value, cursorPos, replaceRange]);
 
     useInput((input, key) => {
+      // Let the parent absorb arrow keys + Enter when a popup (e.g. the
+      // completion list) is open. We still process plain text input so
+      // typing continues to filter the popup live.
+      if (interceptArrowsAndEnter && (
+        key.upArrow || key.downArrow || key.leftArrow || key.rightArrow || key.return
+      )) {
+        return;
+      }
       // Submit: Enter without modifiers, except after a trailing backslash
       // (which is the legacy "\\\n" continuation trick). Alt+Enter inserts
       // a literal newline. Shift+Enter is intentionally NOT used: many

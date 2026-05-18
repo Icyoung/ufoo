@@ -200,26 +200,26 @@ function createChatApp({ React, ink, props, interactive = true }) {
           dispatch({ type: "status/idle" });
         } else if (type === IPC_RESPONSE_TYPES.STATUS) {
           // Daemon STATUS arrives as { type: "status", data: { active, active_meta, cron, ... } }.
-          // Build the agents list by zipping `active` (string ids) with the
-          // matching `active_meta` entries so the dashboard footer can show
-          // both the chip label and the nickname.
+          // active_meta entries are keyed by `meta.id` (the part after the
+          // colon), and the display name lives in display_nickname /
+          // nickname rather than a top-level field. Reuse buildAgentMaps
+          // from src/chat/agentDirectory so the lookup matches blessed
+          // exactly.
           const data = (msg && msg.data) || {};
           const activeIds = Array.isArray(data.active) ? data.active : [];
           const metaList = Array.isArray(data.active_meta) ? data.active_meta : [];
-          const metaById = new Map();
-          for (const m of metaList) {
-            if (!m || typeof m !== "object") continue;
-            const fullId = m.fullId || (m.type && m.id ? `${m.type}:${m.id}` : "");
-            if (fullId) metaById.set(fullId, m);
-          }
+          const { buildAgentMaps } = require("../../chat/agentDirectory");
+          const { labelMap, metaMap } = buildAgentMaps(activeIds, metaList);
           const agentsForDispatch = activeIds.map((id) => {
-            const meta = metaById.get(id) || {};
+            const meta = metaMap.get(id) || {};
             const colon = id.indexOf(":");
+            const fallbackType = colon > 0 ? id.slice(0, colon) : id;
+            const fallbackId = colon > 0 ? id.slice(colon + 1) : "";
             return {
               fullId: id,
-              type: meta.type || (colon > 0 ? id.slice(0, colon) : id),
-              id: meta.id || (colon > 0 ? id.slice(colon + 1) : ""),
-              nickname: meta.nickname || "",
+              type: meta.type || fallbackType,
+              id: meta.id || fallbackId,
+              nickname: labelMap.get(id) || id,
             };
           });
           dispatch({ type: "agents/set", list: agentsForDispatch });
@@ -397,9 +397,9 @@ function createChatApp({ React, ink, props, interactive = true }) {
     }, [state.agentSelectionMode, state.agents.length]);
 
     // Inline completions: shown above the input whenever the draft starts
-    // with "/" or "@". Tab fills in the top suggestion. The list reuses
-    // the pure buildCompletions helper from src/ui/format so jest can
-    // pin the source list without rendering ink.
+    // with "/" or "@". Tab/Enter accept the highlighted entry, ↑↓ move the
+    // selection. The list reuses the pure buildCompletions helper from
+    // src/ui/format so jest can pin the source list without rendering ink.
     const { COMMAND_REGISTRY } = require("../../chat/commands");
     const agentLabels = state.agents.map((id) =>
       getAgentLabelFor(state.activeAgentMeta.get(id), id)
@@ -411,18 +411,45 @@ function createChatApp({ React, ink, props, interactive = true }) {
       commands: COMMAND_REGISTRY,
       limit: 6,
     });
+    const [completionIndex, setCompletionIndex] = useState(0);
+    // Reset the selection cursor whenever the suggestion list shape changes.
+    useEffect(() => {
+      if (completions.length === 0) {
+        if (completionIndex !== 0) setCompletionIndex(0);
+      } else if (completionIndex >= completions.length) {
+        setCompletionIndex(completions.length - 1);
+      }
+    }, [completions.length, completionIndex]);
+    const completionsOpen = completions.length > 0;
+    const acceptCompletion = useCallback(() => {
+      if (!completionsOpen) return false;
+      const item = completions[Math.max(0, Math.min(completions.length - 1, completionIndex))];
+      if (item) dispatch({ type: "draft/set", value: item.replace });
+      setCompletionIndex(0);
+      return true;
+    }, [completionsOpen, completions, completionIndex]);
 
     useInput((input, key) => {
       if (key.ctrl && input === "c") { exit(); return; }
       if (key.ctrl && input === "o") { dispatch({ type: "merge/expand" }); return; }
-      if (key.tab) {
-        if (completions.length > 0) {
-          dispatch({ type: "draft/set", value: completions[0].replace });
+
+      // Completion popup steals arrow/Enter/Esc/Tab while it's open. The
+      // user types to filter, picks with the cursor and accepts with Tab
+      // or Enter; Esc dismisses by clearing the trigger character.
+      if (completionsOpen) {
+        if (key.upArrow) {
+          setCompletionIndex((i) => Math.max(0, i - 1));
           return;
         }
-        dispatch({ type: "focus/toggle" });
-        return;
+        if (key.downArrow) {
+          setCompletionIndex((i) => Math.min(completions.length - 1, i + 1));
+          return;
+        }
+        if (key.return || key.tab) { acceptCompletion(); return; }
+        if (key.escape) { dispatch({ type: "draft/clear" }); return; }
       }
+
+      if (key.tab) { dispatch({ type: "focus/toggle" }); return; }
       // Dashboard focus + agents view + agent selected + Enter: hand off
       // to the raw PTY mirror via the runChatInk loop.
       if (key.return && state.focusMode === "dashboard"
@@ -466,12 +493,12 @@ function createChatApp({ React, ink, props, interactive = true }) {
         h(Box, { flexGrow: 1 }),
         h(Text, { color: "gray" }, `v${fmt.UCODE_VERSION}`),
       ),
-      completions.length > 0 ? h(Box, { flexDirection: "column" },
+      completionsOpen ? h(Box, { flexDirection: "column" },
         ...completions.map((s, idx) => h(Box, { key: `cmp-${idx}` },
-          h(Text, { color: idx === 0 ? "cyan" : "gray", inverse: idx === 0 }, s.label),
+          h(Text, { color: idx === completionIndex ? "cyan" : "gray", inverse: idx === completionIndex }, s.label),
           s.description ? h(Text, { color: "gray" }, `  ${s.description}`) : null,
         )),
-        h(Text, { color: "gray" }, "  Tab to accept · type to filter · Esc to dismiss"),
+        h(Text, { color: "gray" }, "  ↑↓ select · Tab/Enter accept · Esc dismiss"),
       ) : null,
       h(Box, { width: "100%" },
         h(MultilineInput, {
@@ -485,6 +512,7 @@ function createChatApp({ React, ink, props, interactive = true }) {
           onArrowRightAtEmpty: () => onArrowSideAtEmpty("right"),
           width: inputWidth,
           interactive,
+          interceptArrowsAndEnter: completionsOpen,
           placeholder: targetAgentLabel ? `message @${targetAgentLabel}...` : "type a message...",
           promptPrefix: targetAgentLabel ? `›@${targetAgentLabel} ` : "› ",
         }),
