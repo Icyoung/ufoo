@@ -28,7 +28,7 @@ function createDashboardBar({ React, ink }) {
     h(Text, { key, color: selected ? undefined : "cyan", inverse: selected }, label);
 
   const renderHint = (hint) =>
-    hint ? h(Text, { color: "gray" }, `  │ ${hint}`) : null;
+    hint ? h(Text, { color: "gray" }, ` · ${hint}`) : null;
 
   const ChipsRow = ({ caption, items, selectedIndex, hint, leftMore, rightMore }) =>
     h(Box, null,
@@ -54,7 +54,7 @@ function createDashboardBar({ React, ink }) {
       return h(Box, null,
         h(Text, { color: "gray" }, "Projects: "),
         h(Text, { color: "cyan" }, "(none registered)"),
-        dashboardHint ? h(Text, { color: "gray" }, `  │ ${dashboardHint}`) : null,
+        dashboardHint ? h(Text, { color: "gray" }, ` · ${dashboardHint}`) : null,
       );
     }
     return h(Box, null,
@@ -66,7 +66,7 @@ function createDashboardBar({ React, ink }) {
           inverse: focused && idx === selectedIndex,
         }, proj.label || proj.id || ""),
       )),
-      dashboardHint ? h(Text, { color: "gray" }, `  │ ${dashboardHint}`) : null,
+      dashboardHint ? h(Text, { color: "gray" }, `    ${dashboardHint}`) : null,
     );
   };
 

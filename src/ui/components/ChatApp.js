@@ -315,8 +315,10 @@ function createChatApp({ React, ink, props, interactive = true }) {
         h(Text, { color: state.activeMerge.entries.some((e) => e.isError) ? "red" : "cyan" },
           fmt.buildToolMergeRowText(state.activeMerge.entries)),
       ) : null,
-      h(Box, { marginTop: 1 },
+      h(Box, { marginTop: 1, width: "100%" },
         h(Text, { color: "gray" }, statusText),
+        h(Box, { flexGrow: 1 }),
+        h(Text, { color: "gray" }, `v${fmt.UCODE_VERSION}`),
       ),
       h(Box, { width: "100%" },
         h(MultilineInput, {
@@ -362,16 +364,19 @@ function createChatApp({ React, ink, props, interactive = true }) {
 }
 
 function buildDashHints(state, targetAgentLabel) {
-  const agentsHint = state.agents.length === 0
-    ? "No target agents"
-    : (targetAgentLabel
-        ? `↓ select ${targetAgentLabel} · ←/→ switch · ↑ clear`
-        : "↓ select target · ←/→ switch");
+  void targetAgentLabel; // navigation hint removed by request
+  const launchMode = (state.settings && state.settings.launchMode) || "auto";
+  const engine = (state.settings && state.settings.agentProvider) || "codex";
+  const cronCount = Array.isArray(state.cronTasks) ? state.cronTasks.length : 0;
+  // The "Mode / Engine / Cron" suffix is the same compact summary the
+  // blessed dashboard surfaces in the bar — it is rendered after the
+  // Agents list so users see the project's settings at a glance.
+  const agentsHint = `Mode: ${launchMode} · Engine: ${engine} · Cron: ${cronCount}`;
   return {
     agents: agentsHint,
     agentsEmpty: agentsHint,
     mode: "↑↓ switch view · ←→ pick mode",
-    provider: "↑↓ switch view · ←→ pick agent",
+    provider: "↑↓ switch view · ←→ pick engine",
     resume: "↑↓ switch view · ←→ pick session",
     cron: "↑↓ switch view · ←→ select task",
     projects: state.globalMode ? "↑↓ switch view · ←→ pick project · Enter open" : "",

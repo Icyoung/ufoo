@@ -90,11 +90,23 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       return idTail ? `${agent.type}:${idTail}` : agent.type;
     }, []);
 
-    const agentsHint = agents.length === 0
-      ? "No target agents"
-      : (targetAgent
-          ? `↓ select ${getAgentLabel(targetAgent)} · ←/→ switch · ↑ clear`
-          : "↓ select target · ←/→ switch");
+    const ucodeModel = (props.state && props.state.model)
+      || process.env.UFOO_UCODE_MODEL
+      || "default";
+    let workspaceLabel = "";
+    try {
+      const os = require("os");
+      const path = require("path");
+      const root = props.workspaceRoot || process.cwd();
+      const home = os.homedir();
+      let normalized = root.startsWith(home) ? root.replace(home, "~") : root;
+      workspaceLabel = path.normalize(normalized);
+    } catch {
+      workspaceLabel = String(props.workspaceRoot || "");
+    }
+    const hintParts = [ucodeModel];
+    if (workspaceLabel) hintParts.push(workspaceLabel);
+    const agentsHint = hintParts.join(" · ");
 
     const selfSubscriberId = String(
       (props.autoBus && props.autoBus.subscriberId) ||
@@ -460,8 +472,10 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
           renderMergeText(activeMerge)
         ),
       ) : null,
-      h(Box, { marginTop: 1 },
+      h(Box, { marginTop: 1, width: "100%" },
         h(Text, { color: "gray" }, statusText),
+        h(Box, { flexGrow: 1 }),
+        h(Text, { color: "gray" }, `v${fmt.UCODE_VERSION}`),
       ),
       h(Box, { width: "100%" },
         h(MultilineInput, {
@@ -511,7 +525,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
               // and a few spaces for safety. We just clamp aggressively
               // when stdout.cols is unknown.
               const cols = size.cols || 80;
-              const reservedForHint = fmt.displayCellWidth(`  │ ${agentsHint}`);
+              const reservedForHint = fmt.displayCellWidth(` · ${agentsHint}`);
               const budget = Math.max(20, cols - 10 - reservedForHint);
               const plan = fmt.planAgentsFooter(
                 labels,
@@ -534,7 +548,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
                   : null,
               );
             })(),
-        h(Text, { wrap: "truncate", color: "gray" }, `  │ ${agentsHint}`),
+        h(Text, { wrap: "truncate", color: "gray" }, ` · ${agentsHint}`),
       ),
     );
   };
