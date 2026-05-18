@@ -701,7 +701,7 @@ function buildCompletions({
         kind: "command",
         label: `/${bare}`,
         replace: `/${bare} `,
-        description: (item && item.description) || "",
+        description: String((item && (item.desc || item.summary || item.description)) || ""),
       });
       if (out.length >= limit) break;
     }

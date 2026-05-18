@@ -438,11 +438,11 @@ function createChatApp({ React, ink, props, interactive = true }) {
       // or Enter; Esc dismisses by clearing the trigger character.
       if (completionsOpen) {
         if (key.upArrow) {
-          setCompletionIndex((i) => Math.max(0, i - 1));
+          setCompletionIndex((i) => (i - 1 + completions.length) % completions.length);
           return;
         }
         if (key.downArrow) {
-          setCompletionIndex((i) => Math.min(completions.length - 1, i + 1));
+          setCompletionIndex((i) => (i + 1) % completions.length);
           return;
         }
         if (key.return || key.tab) { acceptCompletion(); return; }
@@ -494,6 +494,7 @@ function createChatApp({ React, ink, props, interactive = true }) {
         h(Text, { color: "gray" }, `v${fmt.UCODE_VERSION}`),
       ),
       completionsOpen ? h(Box, { flexDirection: "column" },
+        h(Text, { color: "gray" }, "─".repeat(Math.max(8, size.cols || 80))),
         ...completions.map((s, idx) => h(Box, { key: `cmp-${idx}` },
           h(Text, { color: idx === completionIndex ? "cyan" : "gray", inverse: idx === completionIndex }, s.label),
           s.description ? h(Text, { color: "gray" }, `  ${s.description}`) : null,
