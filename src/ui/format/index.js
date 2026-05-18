@@ -577,10 +577,15 @@ function buildToolMergeRowText(entries = []) {
 }
 
 /**
- * Lay out the Agents footer inside a fixed cell budget. Returns an array of
- * { label, selected, truncated } items plus an `overflowed` flag so the
- * caller can append a "+N more" hint. We measure with displayCellWidth so
- * CJK names take their double-width into account.
+ * Lay out the Agents footer inside a fixed cell budget. Returns:
+ *   { items: [{ label, selected, truncated }], overflowed, hint }
+ *
+ * `hint` is the rendered "+N more" suffix (or "" when nothing was dropped),
+ * already including its leading separator. Callers should render
+ * items[0..n-1] separated by "  " then append hint with no extra spacing.
+ *
+ * The planner reserves room for the worst-case hint width up front so the
+ * trailing label never has to be removed once we decide to print "+N more".
  *
  * `labels` is the array of strings to render (already prefixed with "@").
  * `selectedIndex` is the agent under the selection cursor (or -1).
@@ -590,23 +595,42 @@ function buildToolMergeRowText(entries = []) {
 function planAgentsFooter(labels = [], selectedIndex = -1, maxCells = 80) {
   const items = Array.isArray(labels) ? labels.map(String) : [];
   const budget = Math.max(1, Math.floor(Number(maxCells) || 0));
-  const sepWidth = displayCellWidth("  ");
+  const sepText = " ";
+  const sepWidth = displayCellWidth(sepText);
   const overflowMarker = "...";
   const overflowMarkerWidth = displayCellWidth(overflowMarker);
 
+  // Reserve worst-case "+N more" width once, where N can be at most
+  // labels.length. We treat this as a hard upper bound so we never have
+  // to backtrack and pop a label after committing to it.
+  const worstCaseHint = items.length > 0
+    ? ` +${items.length} more`
+    : "";
+  const worstCaseHintWidth = displayCellWidth(worstCaseHint);
+
   const out = [];
   let used = 0;
+  let firstOverflowAt = -1;
+
   for (let i = 0; i < items.length; i += 1) {
     const label = items[i];
     const labelWidth = displayCellWidth(label);
     const lead = out.length === 0 ? 0 : sepWidth;
-    if (used + lead + labelWidth <= budget) {
+    const remainingItems = items.length - i - 1;
+    // Always keep room for the hint when there's at least one item that
+    // might not fit later. When this is the last label, the hint is empty
+    // so no reservation is needed.
+    const reserveHint = remainingItems > 0 ? worstCaseHintWidth : 0;
+
+    if (used + lead + labelWidth + reserveHint <= budget) {
       out.push({ label, selected: i === selectedIndex, truncated: false });
       used += lead + labelWidth;
       continue;
     }
-    // Try to fit a truncated version of this label. Need room for "...".
-    const remaining = budget - used - lead - overflowMarkerWidth;
+
+    // Try to fit a truncated version: room for "..." + at least 1 cell.
+    const reserveForCurrent = remainingItems > 0 ? worstCaseHintWidth : 0;
+    const remaining = budget - used - lead - overflowMarkerWidth - reserveForCurrent;
     if (remaining > 0) {
       let acc = "";
       let accWidth = 0;
@@ -623,11 +647,17 @@ function planAgentsFooter(labels = [], selectedIndex = -1, maxCells = 80) {
           truncated: true,
         });
         used += lead + accWidth + overflowMarkerWidth;
+        firstOverflowAt = i + 1;
+        break;
       }
     }
-    return { items: out, overflowed: items.length - out.length };
+    firstOverflowAt = i;
+    break;
   }
-  return { items: out, overflowed: 0 };
+
+  const overflowed = firstOverflowAt < 0 ? 0 : items.length - firstOverflowAt;
+  const hint = overflowed > 0 ? ` +${overflowed} more` : "";
+  return { items: out, overflowed, hint };
 }
 
 module.exports = {

@@ -56,6 +56,16 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
     // after the group has been frozen into the log.
     const [activeMerge, setActiveMerge] = useState(null);
     const lastMergeRef = useRef(null);
+    // pendingTaskRef holds the live AbortController for the current
+    // runNaturalLanguageTask call so Esc can cancel it. We use a ref (not
+    // state) because the value is consumed inside the run loop, not by
+    // render.
+    const pendingTaskRef = useRef(null);
+    // inputHistory mirrors blessed's flat history list. Up walks back
+    // through it when the editor reports the cursor is already on the top
+    // visual row (i.e. moveCursorVertically returned moved=false).
+    const [inputHistory, setInputHistory] = useState([]);
+    const [historyIndex, setHistoryIndex] = useState(0);
     const { exit } = useApp();
     const { stdout } = useStdout();
     const lineSeqRef = useRef(banner.length + 1);
@@ -115,7 +125,22 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       }
     }, [agents, selectedAgentIndex]);
 
-    const onArrowDownAtEnd = useCallback(() => {
+    const onArrowDownAtEnd = useCallback((currentValue) => {
+      // History first: if we're past the bottom of a multi-line edit, walk
+      // forward through the recent history. Reaching the end clears the
+      // input the same way blessed does.
+      if (inputHistory.length > 0) {
+        const transition = fmt.resolveHistoryDownTransition({
+          inputHistory,
+          historyIndex,
+          currentValue,
+        });
+        if (transition.moved) {
+          setHistoryIndex(transition.nextHistoryIndex);
+          setDraft(transition.nextValue);
+          return;
+        }
+      }
       if (agents.length === 0) return;
       const decision = fmt.resolveAgentSelectionOnDown({
         agentSelectionMode,
@@ -126,15 +151,24 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
         setSelectedAgentIndex(decision.index);
         setAgentSelectionMode(true);
       }
-      // 'hold' is a no-op (already in selection mode).
-    }, [agents, agentSelectionMode, selectedAgentIndex]);
+    }, [inputHistory, historyIndex, agents, agentSelectionMode, selectedAgentIndex]);
 
     const onArrowUpAtStart = useCallback(() => {
+      // History first: if we're already on the top visual row, walk back
+      // through the recent history before doing anything else.
+      if (inputHistory.length > 0) {
+        const nextIndex = Math.max(0, historyIndex - 1);
+        if (nextIndex !== historyIndex || draft !== inputHistory[nextIndex]) {
+          setHistoryIndex(nextIndex);
+          setDraft(inputHistory[nextIndex] || "");
+          return;
+        }
+      }
       if (agentSelectionMode) {
         setAgentSelectionMode(false);
         setSelectedAgentIndex(-1);
       }
-    }, [agentSelectionMode]);
+    }, [inputHistory, historyIndex, draft, agentSelectionMode]);
 
     const onArrowSideAtEmpty = useCallback((direction) => {
       if (!agentSelectionMode) return;
@@ -275,6 +309,8 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
         }
         case "nl": {
           const startedAt = Date.now();
+          const abortController = new AbortController();
+          pendingTaskRef.current = { abortController, startedAt };
           const setNlStatus = (msg) => setStatus({
             message: msg,
             type: "thinking",
@@ -287,6 +323,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
           let nlResult = null;
           try {
             nlResult = await props.runNaturalLanguageTask(result.task, props.state, {
+              signal: abortController.signal,
               onPhase: (event) => {
                 if (!event || typeof event !== "object") return;
                 if (event.type === "request_start") setNlStatus("Waiting for model...");
@@ -323,6 +360,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
             appendLogText(`Error: ${err && err.message ? err.message : "agent loop failed"}`);
             return;
           } finally {
+            pendingTaskRef.current = null;
             setStatus({ message: "", type: "thinking", showTimer: false, startedAt: 0 });
           }
           if (streamBuf) {
@@ -362,6 +400,11 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       const trimmed = value.trim();
       if (!trimmed) return;
       setDraft("");
+      setInputHistory((prev) => {
+        const next = prev.concat([trimmed]).slice(-200);
+        setHistoryIndex(next.length);
+        return next;
+      });
       // Serialize executions so streaming tasks don't interleave.
       runChainRef.current = runChainRef.current
         .then(() => executeLine(value))
@@ -415,9 +458,25 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
           onChange: (next) => setDraft(next),
           onSubmit: (value) => submit(value),
           onCancel: () => {
-            // Esc cancels in-flight work in P1.4. We deliberately do NOT
-            // clear the draft here — that matches blessed and avoids losing
-            // text the user just typed.
+            // If a task is in flight, Esc requests cancellation. Otherwise
+            // it clears the agent selection (matches blessed). The text
+            // value is left alone so the user doesn't lose what they typed.
+            const pending = pendingTaskRef.current;
+            if (pending && pending.abortController && !pending.abortController.signal.aborted) {
+              try { pending.abortController.abort(); } catch { /* ignore */ }
+              appendLogLine("⚙ Cancellation requested. Stopping the current task...");
+              setStatus({
+                message: "Cancelling...",
+                type: "waiting",
+                showTimer: true,
+                startedAt: pending.startedAt,
+              });
+              return;
+            }
+            if (agentSelectionMode) {
+              setAgentSelectionMode(false);
+              setSelectedAgentIndex(-1);
+            }
           },
           onArrowDownAtBottom: onArrowDownAtEnd,
           onArrowUpAtTop: onArrowUpAtStart,
@@ -451,7 +510,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
               return h(React.Fragment, null,
                 ...plan.items.map((item, idx) =>
                   h(React.Fragment, { key: idx },
-                    idx > 0 ? h(Text, { color: "gray" }, "  ") : null,
+                    idx > 0 ? h(Text, { color: "gray" }, " ") : null,
                     h(Text, {
                       wrap: "truncate",
                       color: item.selected ? undefined : "cyan",
@@ -459,8 +518,8 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
                     }, item.label),
                   )
                 ),
-                plan.overflowed > 0
-                  ? h(Text, { color: "gray" }, `  +${plan.overflowed} more`)
+                plan.hint
+                  ? h(Text, { wrap: "truncate", color: "gray" }, plan.hint)
                   : null,
               );
             })(),
