@@ -769,6 +769,10 @@ function createChatApp({ React, ink, props, interactive = true }) {
                 .then((res) => {
                   if (res && res.ok === false) {
                     dispatch({ type: "log/append", text: `Error: ${res.error || "switch failed"}` });
+                  } else {
+                    // Successful switch: enter project scope so the
+                    // Agents row reappears below the projects rail.
+                    dispatch({ type: "scope/set", scope: "project" });
                   }
                 })
                 .catch((err) => dispatch({ type: "log/append", text: `Error: ${err && err.message ? err.message : err}` }));
