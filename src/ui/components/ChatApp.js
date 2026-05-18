@@ -1036,10 +1036,10 @@ function buildDashHints(state, targetAgentLabel) {
   return {
     agents: agentsHint,
     agentsEmpty: agentsHint,
-    mode: "↑↓ switch view · ←→ pick mode",
-    provider: "↑↓ switch view · ←→ pick engine",
-    resume: "↑↓ switch view · ←→ pick session",
-    cron: "↑↓ switch view · ←→ select task",
+    mode: "",
+    provider: "",
+    resume: "",
+    cron: "",
     projects: "",
   };
 }
