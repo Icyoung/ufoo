@@ -462,7 +462,6 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       ) : null,
       h(Box, { marginTop: 1 },
         h(Text, { color: "gray" }, statusText),
-        size.cols > 0 ? h(Text, { color: "gray" }, ` · ${size.cols}x${size.rows}`) : null,
       ),
       h(Box, { width: "100%" },
         h(MultilineInput, {

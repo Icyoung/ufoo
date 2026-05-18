@@ -119,3 +119,165 @@ UFOO_TUI=ink ./bin/ucode.js
 - **Codex isn't a useful reference.** Its TUI is a Rust ratatui app
   (`codex-rs/tui`), not React-based. The architectural principle worth
   borrowing is its hard split between TUI and core protocol.
+
+## P2 dropped, folded into P3
+
+The internal-agent view in chat is not an independent program — it's a
+view mode owned by `src/chat/agentViewController.js`. Today it works by
+detaching `screen.children`, writing raw `\x1b[2J` to stdout, and
+flipping `screen.grabKeys`. There is no clean seam to mount an isolated
+ink subtree inside a still-blessed chat host, so attempting P2 in
+isolation would force us to build a stdout-arbitration layer we'd throw
+away once chat itself is on ink. P3.6 ports the agent view as a chat
+sub-mode instead.
+
+## P3 audit (chat TUI surface)
+
+Source: `src/chat/index.js` (2215 lines) + ~30 controllers in
+`src/chat/`. Highlights:
+
+### Lifecycle
+- Public entrypoint `runChat(projectRoot, { globalMode })` from
+  `src/chat/index.js`. Wires `daemonCoordinator.connect()` then loops
+  forever; exit goes through `process.exit(0)` from a screen `destroy`
+  hook.
+- Runners injected via closures: `daemonCoordinator.send`,
+  `executeCommand`, `inputSubmitHandler.handleSubmit`,
+  `daemonMessageRouter.handleMessage`.
+
+### View state machine
+- `dashboardView` ∈ `projects | agents | mode | provider | resume | cron`
+- `focusMode` ∈ `input | dashboard` — toggled by Tab and arrow keys
+- `globalMode` (boolean) + `globalScope` ∈ `controller | project` —
+  `globalMode=true` enables a multi-project rail; Esc/Enter walk the
+  scope ladder.
+- `enterDashboardMode()` / `exitDashboardMode()` are the two transition
+  points; `setGlobalScope()` runs an async, debounced project switch.
+
+### Input
+- Submit accepts `@mention`, `@target`, `/command`, plain text and
+  numeric disambiguation (when `pending.disambiguate` is set).
+- Editor keys cover Ctrl+A/E/B/F/D/H/K/U/W, Meta+B/F/D, arrows
+  (cursor + history when empty), Esc (3-layer: clear @target →
+  exit project scope → cancel input), bracketed paste, Tab (toggle
+  dashboard), PgUp/PgDn (scroll log).
+- Completion fires on `/` and `@` with sources from command registry,
+  group templates, solo profiles and agent mentions; Up arrow jumps to
+  the latest suggestion.
+- History is per-project, persisted to `input-history.jsonl` with
+  draft restoration on project switch.
+
+### Daemon stack
+- `daemonTransport` owns the socket path and retry policy.
+- `daemonConnection` owns the queue + lifecycle (`connect`, `send`,
+  `requestStatus`, `close`, `markExit`, `switchConnection`,
+  `getState`).
+- `daemonCoordinator` orchestrates project switches with a serialised
+  Promise chain.
+- `daemonMessageRouter.handleMessage(msg)` is a stateless dispatcher
+  that turns daemon responses into log appends, dashboard updates, PTY
+  writes and transient agent state changes.
+- `daemonReconnect.restartDaemonFlow()` provides a per-project lock for
+  daemon restarts.
+
+### Side controllers
+- `cronScheduler` — `/cron start|stop|list` + the cron dashboard view.
+- `settingsController` — launch mode / agent provider / autoResume,
+  with daemon restart on mode change.
+- `chatLogController` — log buffer + history file replay
+  (`loadHistory`, `appendHistory`, `markStreamStart`,
+  `setHistoryTarget`, `resetViewState`).
+- `statusLineController` — debounced status line with background-task
+  suffix (e.g. `(ufoo-agent processing)`); `queueStatusLine`,
+  `resolveStatusLine`, `enqueueBusStatus`, `resolveBusStatus`.
+- `streamTracker` — per-publisher stream state + markdown rendering
+  (`beginStream`, `appendStreamDelta`, `finalizeStream`,
+  `markPendingDelivery`, `consumePendingDelivery`).
+- `transientAgentState` — TTL-bounded `working / waiting_input /
+  blocked` markers per agent.
+- `projectCloseController` — `requestCloseProject(index)` runs daemon
+  stop + project switch.
+- `agentDirectory` — agent label resolution + window clamping (pure).
+- `internalAgentLogHistory` — bus log replay for internal agents.
+
+### Internal-agent sub-view (`agentViewController`, 1072 lines)
+- Public API: `getCurrentView`, `getViewingAgent`,
+  `isAgentViewUsesBus`, `getAgentInputSuppressUntil`,
+  `get/setAgentOutputSuppressed`, `renderAgentDashboard`,
+  `setAgentBarVisible`, `enterAgentView(agentId, options)`,
+  `exitAgentView`, `sendRawToAgent`, `sendResizeToAgent`,
+  `requestAgentSnapshot`, `writeToAgentTerm`, `placeAgentCursor`,
+  `handleBusAgentKey`, `handleResizeInAgentView`, `refreshAgentView`.
+- Two render modes inside it: PTY mirror (raw ANSI passthrough +
+  cursor placement, `agentSockets.connectOutput/Input`,
+  `requestSnapshot`) and an embedded bus subview (own input value,
+  cursor, log, animated status indicator).
+- `agentBar.computeAgentBar` renders the agent strip across both
+  modes.
+- `agentSockets.createAgentSockets` owns the PTY/bus socket
+  lifecycle.
+- Exit/restore reattaches `screen.children`, restores scroll region
+  and unfreezes `screen.render`.
+
+### Layout (`createChatLayout`)
+- 9 widgets: screen, logBox, statusLine, completionPanel, dashboard,
+  inputBottomLine, promptBox, input, inputTopLine.
+- Geometry rules: dashboard 1-2 lines, input 5-9 lines (autosizes by
+  content), log fills the rest. Many `height: "100%-N"` strings →
+  ink flex layout in the port.
+
+### Commands
+`/bus`, `/ctx`, `/daemon`, `/doctor`, `/cron`, `/group`, `/init`,
+`/open`, `/launch`, `/project`, `/role`, `/solo`, `/settings`,
+`/help`, plus nested subcommands (`/bus activate|list|rename|send|status`,
+`/cron start|list|stop`, etc.). `commandExecutor.executeCommand(text)`
+is the single dispatch point. `parseCommand(text)`, `parseAtTarget(text)`
+and `shouldEchoCommandInChat(text)` are pure.
+
+### Cross-cutting
+- `text.js`: `escapeBlessed`, `stripBlessedTags`, `stripAnsi`,
+  `truncateAnsi`, `decodeEscapedNewlines`. Pervasive — used by every
+  log message, status line and dashboard line. The blessed-tag
+  helpers (`escapeBlessed`/`stripBlessedTags`) become no-ops in ink;
+  the ANSI helpers stay relevant.
+- `rawKeyMap.keyToRaw(ch, key)`: converts ink-style key events to
+  PTY bytes for the agent view. Stays as-is.
+- `transport.js`: `startDaemon`, `stopDaemon`, `connectWithRetry`.
+  Framework-agnostic, no migration needed.
+
+### Migration concern shortlist (1 per section)
+1. **Entry**: 50+ `screen.render()` calls turn into React state
+   updates; build a `useReducer` so dispatchers are async-safe.
+2. **State machine**: `setGlobalScope` is async + debounced — model
+   it as an effect, not a setter.
+3. **Input**: cursor math already lives in `src/ui/format` (P0); we
+   reuse it.
+4. **Daemon**: keep `daemonConnection` / `daemonCoordinator` as-is;
+   wrap the message router in a `useEffect` subscription that pumps
+   into `dispatch`.
+5. **Side controllers**: keep the controllers as plain modules;
+   `useEffect` subscribes/unsubscribes instead of attaching to
+   blessed events.
+6. **Agent view**: ink can't render arbitrary ANSI inside a `<Box>`,
+   but it can yield stdout to a "raw mode" component that writes
+   straight through during PTY mirror; we'll model it with
+   `<Static>`-style raw write or by suspending ink's render and
+   passing stdout through, then re-mount on exit.
+7. **Layout**: replace `height: "100%-N"` with flexbox + `flexGrow`.
+8. **Commands**: long-running commands run on a serialised promise
+   chain like ucode's `runChainRef`.
+9. **Cross-cutting**: drop blessed-tag helpers from ink call sites;
+   ANSI/text helpers stay.
+
+### P3 phase plan
+
+| Step | Goal |
+|---|---|
+| P3.1 ✅ | This audit |
+| P3.2 | `UFOO_TUI=ink` switch in `runChat()` |
+| P3.3 | ChatApp shell (banner + log + input + status), runner stubs |
+| P3.4 | Five dashboard views as React components |
+| P3.5 | Wire daemonCoordinator, message router, completion, history, cron, settings |
+| P3.6 | Internal agent view (PTY mirror + bus subview) as a ChatApp mode |
+| P3.7 | Real-TTY checklist; flip default to ink; remove blessed dep in P4 |
+

@@ -69,7 +69,7 @@ const {
 
 const MODE_OPTIONS = ["auto", "host", "terminal", "tmux", "internal-pty", "internal"];
 
-async function runChat(projectRoot, options = {}) {
+async function runChatBlessed(projectRoot, options = {}) {
   const globalMode = options && options.globalMode === true;
   const DASHBOARD_HEIGHT = globalMode ? 2 : 1;
   let activeProjectRoot = projectRoot;
@@ -2209,6 +2209,14 @@ async function runChat(projectRoot, options = {}) {
     screen.render();
   });
   screen.render();
+}
+
+async function runChat(projectRoot, options = {}) {
+  if (String(process.env.UFOO_TUI || "").trim().toLowerCase() === "ink") {
+    const { runChatInk } = require("../ui/components/ChatApp");
+    return runChatInk(projectRoot, options);
+  }
+  return runChatBlessed(projectRoot, options);
 }
 
 module.exports = { runChat };
