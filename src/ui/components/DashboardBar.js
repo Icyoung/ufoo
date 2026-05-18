@@ -61,6 +61,8 @@ function createDashboardBar({ React, ink }) {
     maxAgentWindow = 4,
     projectListWindowStart = 0,
     maxProjectWindow = 5,
+    viewSequence,
+    viewportRows,
     getAgentLabel = (id) => id,
     modeOptions = [],
     selectedModeIndex = 0,
@@ -77,19 +79,20 @@ function createDashboardBar({ React, ink }) {
   }) {
     const dashboardFocused = focusMode === "dashboard";
 
-    // Compose dashboard rows. Both modes treat the dashboard as a flat
-    // list of views; the difference is the viewport size:
-    //   project mode → 1 visible row
-    //   global mode → 2 visible rows
-    // Each row renders one view; the highlighted row matches dashboardView.
-    const sequence = globalMode
-      ? ["projects", "agents", "mode", "provider", "cron"]
-      : ["agents", "mode", "provider", "cron"];
-    const viewportSize = globalMode ? 2 : 1;
+    // Compose dashboard rows. Both modes are the same model — a flat
+    // list of views with a sliding viewport. The caller decides how big
+    // the window is and what the list looks like; defaults to a single
+    // agents-only row, which is what the project-mode chat wants.
+    const sequence = Array.isArray(viewSequence) && viewSequence.length > 0
+      ? viewSequence
+      : (globalMode
+          ? ["projects", "agents", "mode", "provider", "cron"]
+          : ["agents", "mode", "provider", "cron"]);
+    const viewport = Math.max(1, viewportRows || (globalMode ? 2 : 1));
     const cursorIdx = Math.max(0, sequence.indexOf(dashboardView));
     let viewStart = cursorIdx;
-    if (cursorIdx >= viewportSize) viewStart = cursorIdx - viewportSize + 1;
-    const visibleViews = sequence.slice(viewStart, viewStart + viewportSize);
+    if (cursorIdx >= viewport) viewStart = cursorIdx - viewport + 1;
+    const visibleViews = sequence.slice(viewStart, viewStart + viewport);
 
     const renderForView = (view) => {
       if (view === "projects") {

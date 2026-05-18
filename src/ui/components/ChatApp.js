@@ -996,6 +996,10 @@ function createChatApp({ React, ink, props, interactive = true }) {
         focusMode: state.focusMode,
         globalMode: state.globalMode,
         globalScope: state.globalScope,
+        viewSequence: state.globalMode
+          ? ["projects", "agents", "mode", "provider", "cron"]
+          : ["agents", "mode", "provider", "cron"],
+        viewportRows: state.globalMode ? 2 : 1,
         activeAgents: state.agents,
         activeAgentMeta: state.activeAgentMeta,
         selectedAgentIndex: state.selectedAgentIndex,
