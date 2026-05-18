@@ -703,7 +703,6 @@ function createChatApp({ React, ink, props, interactive = true }) {
         const start = Math.min(completionWindowStart, Math.max(0, completions.length - POPUP_PAGE_SIZE));
         const end = Math.min(completions.length, start + POPUP_PAGE_SIZE);
         const visible = completions.slice(start, end);
-        const totalIfPaged = completions.length > POPUP_PAGE_SIZE;
         return h(Box, { flexDirection: "column" },
           h(Text, { color: "gray" }, "─".repeat(Math.max(8, size.cols || 80))),
           ...visible.map((s, idxInWindow) => {
@@ -713,9 +712,6 @@ function createChatApp({ React, ink, props, interactive = true }) {
               s.description ? h(Text, { color: "gray" }, `  ${s.description}`) : null,
             );
           }),
-          totalIfPaged
-            ? h(Text, { color: "gray" }, `  (${completionIndex + 1}/${completions.length})`)
-            : null,
         );
       })() : null,
       h(Box, { width: "100%" },
