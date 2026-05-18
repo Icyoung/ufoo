@@ -660,6 +660,80 @@ function planAgentsFooter(labels = [], selectedIndex = -1, maxCells = 80) {
   return { items: out, overflowed, hint };
 }
 
+/**
+ * Build a list of inline-completion suggestions for the current input.
+ * Returns at most `limit` items; an empty list means "no popup".
+ *
+ * Triggers:
+ *   "/<prefix>"   → top-level slash commands matching <prefix>
+ *   "@<prefix>"   → known agent ids/labels matching <prefix>
+ * Anything else returns no suggestions. Sub-commands (e.g. `/cron `) are
+ * intentionally NOT autocompleted yet — that needs commandExecutor's full
+ * sub-tree, which lands later.
+ */
+function buildCompletions({
+  text = "",
+  agents = [],
+  agentLabels = [],
+  commands = [],
+  limit = 8,
+} = {}) {
+  const raw = String(text || "");
+  if (!raw) return [];
+  const trimmed = raw.trimStart();
+
+  if (trimmed.startsWith("/")) {
+    const after = trimmed.slice(1);
+    if (after.includes(" ")) return []; // sub-commands handled later
+    const prefix = after.toLowerCase();
+    const list = Array.isArray(commands) ? commands : [];
+    const out = [];
+    for (const item of list) {
+      const name = String((item && item.cmd) || item || "").toLowerCase();
+      if (!name) continue;
+      if (!name.startsWith(prefix)) continue;
+      out.push({
+        kind: "command",
+        label: `/${name}`,
+        replace: `/${name} `,
+        description: (item && item.description) || "",
+      });
+      if (out.length >= limit) break;
+    }
+    return out;
+  }
+
+  if (trimmed.startsWith("@")) {
+    const after = trimmed.slice(1);
+    if (after.includes(" ")) return [];
+    const prefix = after.toLowerCase();
+    const idList = Array.isArray(agents) ? agents : [];
+    const labelList = Array.isArray(agentLabels) ? agentLabels : [];
+    const seen = new Set();
+    const out = [];
+    for (let i = 0; i < idList.length; i += 1) {
+      const id = String(idList[i] || "");
+      const label = String((labelList[i] != null ? labelList[i] : id) || "");
+      if (!id) continue;
+      if (seen.has(id)) continue;
+      const idMatch = id.toLowerCase().startsWith(prefix);
+      const labelMatch = label.toLowerCase().startsWith(prefix);
+      if (!idMatch && !labelMatch) continue;
+      seen.add(id);
+      out.push({
+        kind: "agent",
+        label: `@${label}`,
+        replace: `@${label} `,
+        description: id !== label ? id : "",
+      });
+      if (out.length >= limit) break;
+    }
+    return out;
+  }
+
+  return [];
+}
+
 module.exports = {
   ANSI_PATTERN,
   STATUS_INDICATORS,
@@ -670,6 +744,7 @@ module.exports = {
   buildMergedToolExpandedLines,
   buildMergedToolSummaryText,
   buildToolMergeRowText,
+  buildCompletions,
   buildUcodeBannerLines,
   charDisplayWidth,
   clampCursorPos,

@@ -396,10 +396,33 @@ function createChatApp({ React, ink, props, interactive = true }) {
       dispatch({ type: "agents/cycle", direction });
     }, [state.agentSelectionMode, state.agents.length]);
 
+    // Inline completions: shown above the input whenever the draft starts
+    // with "/" or "@". Tab fills in the top suggestion. The list reuses
+    // the pure buildCompletions helper from src/ui/format so jest can
+    // pin the source list without rendering ink.
+    const { COMMAND_REGISTRY } = require("../../chat/commands");
+    const agentLabels = state.agents.map((id) =>
+      getAgentLabelFor(state.activeAgentMeta.get(id), id)
+    );
+    const completions = fmt.buildCompletions({
+      text: state.draft,
+      agents: state.agents,
+      agentLabels,
+      commands: COMMAND_REGISTRY,
+      limit: 6,
+    });
+
     useInput((input, key) => {
       if (key.ctrl && input === "c") { exit(); return; }
       if (key.ctrl && input === "o") { dispatch({ type: "merge/expand" }); return; }
-      if (key.tab) { dispatch({ type: "focus/toggle" }); return; }
+      if (key.tab) {
+        if (completions.length > 0) {
+          dispatch({ type: "draft/set", value: completions[0].replace });
+          return;
+        }
+        dispatch({ type: "focus/toggle" });
+        return;
+      }
       // Dashboard focus + agents view + agent selected + Enter: hand off
       // to the raw PTY mirror via the runChatInk loop.
       if (key.return && state.focusMode === "dashboard"
@@ -443,6 +466,13 @@ function createChatApp({ React, ink, props, interactive = true }) {
         h(Box, { flexGrow: 1 }),
         h(Text, { color: "gray" }, `v${fmt.UCODE_VERSION}`),
       ),
+      completions.length > 0 ? h(Box, { flexDirection: "column" },
+        ...completions.map((s, idx) => h(Box, { key: `cmp-${idx}` },
+          h(Text, { color: idx === 0 ? "cyan" : "gray", inverse: idx === 0 }, s.label),
+          s.description ? h(Text, { color: "gray" }, `  ${s.description}`) : null,
+        )),
+        h(Text, { color: "gray" }, "  Tab to accept · type to filter · Esc to dismiss"),
+      ) : null,
       h(Box, { width: "100%" },
         h(MultilineInput, {
           value: state.draft,
