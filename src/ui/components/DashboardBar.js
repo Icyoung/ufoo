@@ -206,6 +206,13 @@ function createDashboardBar({ React, ink }) {
       });
     }
 
+    // In controller scope (top-level global mode) there are no agents —
+    // only the projects rail. Hide the agents row entirely so we don't
+    // print an empty 'Agents: none' line that confuses the user.
+    if (globalMode && globalScope === "controller") {
+      return projectRow || null;
+    }
+
     if (projectRow) {
       return h(Box, { flexDirection: "column" }, projectRow, agentsRow);
     }

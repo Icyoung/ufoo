@@ -761,7 +761,11 @@ function createChatApp({ React, ink, props, interactive = true }) {
               dispatch({ type: "log/appendMany", lines: persisted });
             }
             if (props.daemonCoordinator && typeof props.daemonCoordinator.switchProject === "function") {
-              Promise.resolve(props.daemonCoordinator.switchProject({ target }))
+              const { socketPath } = require("../../daemon");
+              Promise.resolve(props.daemonCoordinator.switchProject({
+                projectRoot: target,
+                sockPath: socketPath(target),
+              }))
                 .then((res) => {
                   if (res && res.ok === false) {
                     dispatch({ type: "log/append", text: `Error: ${res.error || "switch failed"}` });
