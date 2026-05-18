@@ -36,9 +36,13 @@ layout, hooks, and proper isolation of pure logic from rendering.
   `daemonMessageRouter` parity (markdown streams, transient agent
   state, bus subview) is intentionally deferred to P4 — see
   "Deferred to P4".
-- **P4** ⏳ flip the default to ink, remove blessed dep, port the
-  remaining `daemonMessageRouter` callbacks, retire the
-  `runChatBlessed` / `runUcodeBlessedTui` paths.
+- **P4** ⏳ 部分完成。已做:STATUS 字段修复(agents 真刷新)、slash 命令识别 +
+  /help 内联、inputHistory 持久化、daemon BUS stream 流式渲染、`/`/`@`
+  inline completion(Tab 接受)。
+  待办:`commandExecutor` 完整接通(/cron /group /role /solo /settings /doctor /init
+  /launch /project /open)、`daemonMessageRouter` 全 callback(transient agent
+  state TTL、bus subview)、`settingsController` UI、cron 调度 UI、project
+  rail 切换、翻默认到 ink + 删 blessed。
 
 ## P1 ucode TUI — what's wired
 
@@ -372,4 +376,43 @@ UFOO_TUI=ink ./bin/ufoo.js chat --global          # global controller mode
   toggles.
 - Project rail row in global controller mode beyond static rendering.
 - Flipping the default away from blessed.
+
+## P4 progress
+
+Done:
+- **STATUS handler fix** — chat now reads `msg.data.active` /
+  `msg.data.active_meta` / `msg.data.cron.tasks` so the agents and cron
+  counts in the footer actually update.
+- **Slash command parsing** — `parseCommand` runs in submit; `/help`
+  is routed inline, every other slash command shows
+  `[/<cmd>] not yet ported in ink mode — unset UFOO_TUI to use blessed
+  TUI` instead of being shipped to the LLM as a prompt.
+- **Input history persistence** — `<projectRoot>/.ufoo/chat/input-history.jsonl`
+  is loaded on mount and appended on every submit; format matches the
+  blessed inputHistoryController.
+- **BUS stream rendering** — `data.message` is decoded as the
+  `{ stream, delta, done, reason }` envelope, partial output renders
+  live below `<Static>`, and the accumulated text is folded into the
+  log on `done`. New reducer actions: `stream/begin`, `stream/delta`,
+  `stream/end`.
+- **Inline completion popup** — `/<prefix>` matches commands from
+  `COMMAND_REGISTRY`; `@<prefix>` matches the live agents list. Tab
+  accepts the top suggestion. Pure helper `buildCompletions` lives in
+  `src/ui/format` with full jest coverage.
+- **Exit hygiene** — Ctrl+C now flushes `\x1b[2J\x1b[H` so the shell
+  prompt comes back to a clean screen instead of sitting under the
+  final ink frame; `runUcodeInkTui` returns `{ code: 0 }` so
+  `agent.js`'s `process.exit(res.code)` no longer crashes.
+
+Still deferred (real-TTY exposure or independent PR):
+- `commandExecutor` full slash dispatch
+  (`/cron`, `/group`, `/role`, `/solo`, `/settings`, `/doctor`,
+  `/init`, `/launch`, `/project`, `/open`).
+- Full `daemonMessageRouter` callbacks: bus phase animations,
+  transient agent state TTL, pending delivery markers, closeAgent
+  flow, loop summary.
+- `settingsController` UI (launchMode / agentProvider / autoResume).
+- `cronScheduler` UI.
+- Project rail switching in global mode.
+- Flipping the default to ink + removing the blessed dependency.
 
