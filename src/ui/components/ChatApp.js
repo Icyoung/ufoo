@@ -581,7 +581,7 @@ function createChatApp({ React, ink, props, interactive = true }) {
       commandTree: COMMAND_TREE,
       groupTemplates: dynamicSourcesRef.current.groupTemplates,
       soloProfiles: dynamicSourcesRef.current.soloProfiles,
-      limit: 8,
+      limit: 20,
     });
     const [completionIndex, setCompletionIndex] = useState(0);
     // Bumped whenever the completion popup writes a new value into the
