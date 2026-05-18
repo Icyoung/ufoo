@@ -229,10 +229,31 @@ function createChatApp({ React, ink, props, interactive = true }) {
       dispatch({ type: "history/push", value: trimmed });
       dispatch({ type: "log/append", text: targetAgentLabel ? `›@${targetAgentLabel} ${trimmed}` : `› ${trimmed}` });
 
-      // Slash commands are surfaced for now without going through
-      // commandExecutor; full command wiring lands in P3.7. For free-text,
-      // bus targeting and PROMPT requests, we hand off to the daemon
-      // directly.
+      // Slash commands. The ink TUI doesn't fully port commandExecutor
+      // yet (~1650 lines, ~30 controller callbacks); for now the daemon
+      // round-trips one we can route directly and everything else gets a
+      // helpful "fall back to blessed" hint instead of being shipped to
+      // the LLM as a prompt.
+      if (trimmed.startsWith("/")) {
+        const { parseCommand } = require("../../chat/commands");
+        const parsed = parseCommand(trimmed);
+        const cmd = parsed ? String(parsed.command || "") : "";
+        if (cmd === "help") {
+          dispatch({ type: "log/appendMany", lines: [
+            "Available commands (ink TUI partial port):",
+            "  /help                 — this hint",
+            "  @<agent> <message>    — send via bus",
+            "  <free text>           — prompt the daemon",
+            "Other slash commands (/cron /group /role /solo /settings /doctor",
+            "/init /launch /project /open) are not yet ported. Run with",
+            "UFOO_TUI unset to use the blessed TUI for those.",
+          ] });
+          return;
+        }
+        dispatch({ type: "log/append", text: `[/${cmd}] not yet ported in ink mode — unset UFOO_TUI to use blessed TUI` });
+        return;
+      }
+
       if (!props.daemonConnection || typeof props.daemonConnection.send !== "function") {
         dispatch({ type: "log/append", text: "Error: daemon connection unavailable" });
         return;
