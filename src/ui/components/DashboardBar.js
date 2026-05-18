@@ -153,7 +153,9 @@ function createDashboardBar({ React, ink }) {
     }
 
     // dashboardView === "projects" or "agents" (or fallback)
-    const showProjects = globalMode && (dashboardView === "projects" || focusMode === "dashboard" && dashboardView === "agents");
+    // Global mode always shows the projects rail above whichever
+    // second-tier view (agents/mode/provider/cron) is active.
+    const showProjects = globalMode;
     const projectRow = showProjects && projects.length > 0
       ? h(ProjectRail, {
           projects: projects.map((p) => ({
