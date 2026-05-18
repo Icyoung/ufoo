@@ -84,7 +84,43 @@ async function ensureSubscriberId(projectRoot) {
 
 function inputHistoryFilePath(projectRoot) {
   const { getUfooPaths } = require("../../ufoo/paths");
-  return path.join(getUfooPaths(projectRoot).ufooDir, "chat", "input-history.jsonl");
+  return path.join(getUfooPaths(projectRoot || process.cwd()).ufooDir, "chat", "input-history.jsonl");
+}
+
+function chatHistoryFilePath(projectRoot) {
+  const { getUfooPaths } = require("../../ufoo/paths");
+  return path.join(getUfooPaths(projectRoot || process.cwd()).ufooDir, "chat", "history.jsonl");
+}
+
+function loadChatHistory(projectRoot, cap = 200) {
+  const file = chatHistoryFilePath(projectRoot);
+  try {
+    if (!fs.existsSync(file)) return [];
+    const raw = fs.readFileSync(file, "utf8");
+    const lines = raw.split(/\r?\n/).filter(Boolean);
+    const out = [];
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line);
+        if (!entry) continue;
+        if (entry.type === "spacer") {
+          out.push("");
+          continue;
+        }
+        const text = String(entry.text || "");
+        if (!text) continue;
+        // Strip blessed-tag markup that the legacy log writer used; ink
+        // can't render those tags and we don't want them shown literally.
+        const stripped = text.replace(/\{[^{}]+\}/g, "");
+        out.push(stripped);
+      } catch {
+        // ignore malformed lines
+      }
+    }
+    return out.slice(-cap);
+  } catch {
+    return [];
+  }
 }
 
 function loadInputHistory(projectRoot, cap = 200) {
@@ -131,6 +167,38 @@ function getAgentLabelFor(meta, agentId) {
   return tail ? `${head}:${tail}` : head;
 }
 
+const CHAT_BANNER_LINES = [
+  "█ █ █▀▀ █▀█ █▀▄   █▀▀ █ █ ▄▀█ ▀█▀",
+  "█ █ █   █ █ █ █   █   █▀█ █▀█  █ ",
+  "▀▀▀ ▀▀▀ ▀▀▀ ▀▀    ▀▀▀ ▀ ▀ ▀ ▀  ▀ ",
+];
+
+function buildChatBannerLines(props, version) {
+  const os = require("os");
+  const home = os.homedir();
+  const root = props.activeProjectRoot || process.cwd();
+  const shortRoot = root.startsWith(home) ? root.replace(home, "~") : root;
+  const modeLabel = props.globalMode
+    ? `global (${props.globalScope || "controller"})`
+    : "project";
+  const padding = " ".repeat(
+    CHAT_BANNER_LINES.reduce((max, line) => Math.max(max, line.length), 0)
+  );
+  const info = [
+    `Version: ${version}`,
+    `Mode: ${modeLabel}`,
+    `Dictionary: ${shortRoot}`,
+  ];
+  const rows = Math.max(CHAT_BANNER_LINES.length, info.length);
+  const out = [];
+  for (let i = 0; i < rows; i += 1) {
+    const left = CHAT_BANNER_LINES[i] || padding;
+    const right = info[i] || "";
+    out.push(`  ${left}  ${right}`);
+  }
+  return out;
+}
+
 function createChatApp({ React, ink, props, interactive = true }) {
   const { useReducer, useEffect, useState, useCallback } = React;
   const { Box, Text, Static, useInput, useApp, useStdout } = ink;
@@ -138,18 +206,23 @@ function createChatApp({ React, ink, props, interactive = true }) {
   const MultilineInput = createMultilineInput({ React, ink });
   const DashboardBar = createDashboardBar({ React, ink });
 
-  const banner = [
-    `ufoo chat · ${props.activeProjectRoot}`,
-    props.globalMode ? `mode: global (${props.globalScope || "controller"})` : "mode: project",
-    "(daemon and command execution land in P3.5)",
-  ];
+  // Build the initial log: chat history if there is any, otherwise an
+  // ASCII banner with project / mode / version info. We resolve history
+  // synchronously here so the very first paint already shows it instead
+  // of rendering an empty banner and then flashing in the lines.
+  const versionLabel = String(fmt.UCODE_VERSION || "");
+  const banner = buildChatBannerLines(props, versionLabel);
+  const persistedHistory = loadChatHistory(props.projectRoot, 200);
+  const initialLogText = persistedHistory.length > 0
+    ? banner.concat(["", "─── history ───"]).concat(persistedHistory).concat([""])
+    : banner.concat([""]);
 
   return function ChatApp() {
     const [state, dispatch] = useReducer(
       reducer,
       undefined,
       () => createInitialState({
-        banner,
+        banner: initialLogText,
         globalMode: props.globalMode,
         globalScope: props.globalScope || "controller",
       })
