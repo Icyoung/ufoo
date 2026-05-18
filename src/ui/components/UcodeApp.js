@@ -570,7 +570,7 @@ function runUcodeInkTui(props = {}) {
       .then(async (handle) => {
         try {
           await handle.waitUntilExit();
-          resolve();
+          resolve({ code: 0 });
         } catch (err) {
           reject(err);
         }
