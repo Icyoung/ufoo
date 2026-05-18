@@ -170,15 +170,7 @@ function createDashboardBar({ React, ink }) {
       : null;
 
     let agentsRow;
-    // Controller scope: just render the Mode/Engine/Cron summary line
-    // without the 'Agents: none' prefix. The user is picking projects,
-    // not agents, so the prefix is noise.
-    if (globalMode && globalScope === "controller") {
-      const hintText = String(dashHints.agents || "").trim();
-      agentsRow = hintText
-        ? h(Text, { wrap: "truncate", color: "gray" }, hintText)
-        : h(Box, null);
-    } else if (activeAgents.length === 0) {
+    if (activeAgents.length === 0) {
       agentsRow = h(NoneRow, {
         caption: "Agents",
         hint: dashHints.agentsEmpty || "",
