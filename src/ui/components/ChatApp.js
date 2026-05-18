@@ -390,7 +390,16 @@ function createChatApp({ React, ink, props, interactive = true }) {
           globalMode: Boolean(props.globalMode),
           listProjects: () => state.projects,
           getCurrentProject: () => ({ projectRoot: props.projectRoot }),
-          switchProject: async () => ({ ok: false, error: "project switching not yet wired in ink TUI" }),
+          switchProject: async (target) => {
+            if (props.daemonCoordinator && typeof props.daemonCoordinator.switchProject === "function") {
+              try {
+                return await props.daemonCoordinator.switchProject(target || {});
+              } catch (err) {
+                return { ok: false, error: err && err.message ? err.message : "switch failed" };
+              }
+            }
+            return { ok: false, error: "daemon coordinator unavailable" };
+          },
         });
       } catch (err) {
         dispatch({ type: "log/append", text: `Error: command executor unavailable (${err && err.message ? err.message : err})` });
@@ -418,6 +427,34 @@ function createChatApp({ React, ink, props, interactive = true }) {
       const timer = setInterval(tick, 3000);
       return () => clearInterval(timer);
     }, [interactive]);
+
+    // Refresh the project rail in global mode. blessed pulls this off the
+    // local registry; we do the same so the dashboard's first row tracks
+    // every running project without needing a daemon round-trip.
+    useEffect(() => {
+      if (!interactive || !props.globalMode) return undefined;
+      const refresh = () => {
+        try {
+          const { listProjectRuntimes } = require("../../projects");
+          const rows = listProjectRuntimes({ validate: true, cleanupTmp: true }) || [];
+          const list = rows.map((row) => ({
+            id: row.project_id || row.project_root || "",
+            label: row.project_name || (row.project_root ? require("path").basename(row.project_root) : ""),
+            root: row.project_root || "",
+            status: row.status || "",
+            active: row.project_root === props.activeProjectRoot,
+          }));
+          dispatch({
+            type: "projects/set",
+            list,
+            activeProjectRoot: props.activeProjectRoot,
+          });
+        } catch { /* ignore */ }
+      };
+      refresh();
+      const timer = setInterval(refresh, 4000);
+      return () => clearInterval(timer);
+    }, [interactive, props.globalMode]);
 
     useEffect(() => {
       if (!state.status.message || state.status.type === "none") return undefined;
@@ -669,6 +706,61 @@ function createChatApp({ React, ink, props, interactive = true }) {
         }
         return;
       }
+      // Dashboard focus + projects view: ←/→ moves the highlighted
+      // project, Enter switches the daemon connection to that project,
+      // Ctrl+X stops it.
+      if (state.focusMode === "dashboard" && state.dashboardView === "projects" && state.projects.length > 0) {
+        if (key.leftArrow || key.rightArrow) {
+          const dir = key.leftArrow ? -1 : 1;
+          const cur = Number.isFinite(state.selectedProjectIndex) && state.selectedProjectIndex >= 0
+            ? state.selectedProjectIndex : 0;
+          const next = (cur + dir + state.projects.length) % state.projects.length;
+          dispatch({ type: "projects/select", index: next });
+          return;
+        }
+        if (key.return) {
+          const cur = state.selectedProjectIndex >= 0 ? state.selectedProjectIndex : 0;
+          const proj = state.projects[cur];
+          const target = proj && (proj.root || proj.id);
+          if (target && props.daemonCoordinator && typeof props.daemonCoordinator.switchProject === "function") {
+            dispatch({ type: "log/append", text: `⚙ Switching to ${proj.label || target}...` });
+            Promise.resolve(props.daemonCoordinator.switchProject({ target }))
+              .then((res) => {
+                if (res && res.ok === false) {
+                  dispatch({ type: "log/append", text: `Error: ${res.error || "switch failed"}` });
+                }
+              })
+              .catch((err) => dispatch({ type: "log/append", text: `Error: ${err && err.message ? err.message : err}` }));
+          }
+          dispatch({ type: "focus/set", mode: "input" });
+          return;
+        }
+        if (key.ctrl && input === "x") {
+          const cur = state.selectedProjectIndex >= 0 ? state.selectedProjectIndex : 0;
+          const proj = state.projects[cur];
+          const target = proj && (proj.root || proj.id);
+          if (!target) return;
+          dispatch({ type: "log/append", text: `⚙ Closing ${proj.label || target}...` });
+          try {
+            const { stopDaemon } = require("../../chat/transport");
+            stopDaemon(target);
+            dispatch({ type: "log/append", text: `✓ Closed ${proj.label || target}` });
+          } catch (err) {
+            dispatch({ type: "log/append", text: `Error: ${err && err.message ? err.message : err}` });
+          }
+          return;
+        }
+        if (key.upArrow) {
+          // Up out of projects → toggle back to input.
+          dispatch({ type: "focus/set", mode: "input" });
+          return;
+        }
+        if (key.downArrow) {
+          // Down from projects → agents row stays in dashboard focus.
+          dispatch({ type: "view/set", view: "agents" });
+          return;
+        }
+      }
     }, { isActive: interactive });
 
     const statusText = computeStatusText(state.status, spinnerTick);
@@ -720,7 +812,20 @@ function createChatApp({ React, ink, props, interactive = true }) {
           valueVersion: draftVersion,
           onChange: (next) => dispatch({ type: "draft/set", value: next }),
           onSubmit: (value) => submit(value),
-          onCancel: () => { /* P3.5: cancel pending daemon op */ },
+          onCancel: () => {
+            // Esc clears the current target if one is locked, otherwise
+            // dismisses the in-flight task status. There's no per-request
+            // AbortController on daemonConnection (the IPC layer is fire-
+            // and-forget), so we clear the spinner so the user knows the
+            // UI is responsive again.
+            if (state.agentSelectionMode) {
+              dispatch({ type: "agents/clearTarget" });
+              return;
+            }
+            if (state.status && state.status.message) {
+              dispatch({ type: "status/idle" });
+            }
+          },
           onArrowUpAtTop,
           onArrowDownAtBottom,
           onArrowLeftAtEmpty: () => onArrowSideAtEmpty("left"),
@@ -815,6 +920,8 @@ async function runChatInk(projectRoot, options = {}) {
   const { connectWithRetry } = require("../../chat/transport");
   const { createDaemonTransport } = require("../../chat/daemonTransport");
   const { createDaemonConnection } = require("../../chat/daemonConnection");
+  const { createDaemonCoordinator } = require("../../chat/daemonCoordinator");
+  const { startDaemon, stopDaemon } = require("../../chat/transport");
   const { startAgentMirror } = require("./agentMirror");
   const sock = socketPath(projectRoot);
   const daemonTransport = createDaemonTransport({
@@ -837,6 +944,16 @@ async function runChatInk(projectRoot, options = {}) {
     resolveStatusLine: () => {},
     logMessage: () => {},
   });
+  const daemonCoordinator = createDaemonCoordinator({
+    projectRoot,
+    daemonTransport,
+    daemonConnection,
+    stopDaemon,
+    startDaemon,
+    logMessage: () => {},
+    queueStatusLine: () => {},
+    resolveStatusLine: () => {},
+  });
 
   // We loop the ink mount so an "enter agent" request can unmount ink,
   // hand stdout/stdin to the raw PTY mirror, then bring ink back on exit.
@@ -848,6 +965,7 @@ async function runChatInk(projectRoot, options = {}) {
     globalScope: env.globalMode ? "controller" : "project",
     daemonConnection,
     daemonTransport,
+    daemonCoordinator,
     setDaemonMessageHandler: (fn) => { routedMessageHandler = typeof fn === "function" ? fn : () => {}; },
     requestEnterAgentView: (agentId) => { pendingEnter = agentId; },
   };
