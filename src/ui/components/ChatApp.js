@@ -557,6 +557,18 @@ function createChatApp({ React, ink, props, interactive = true }) {
           return;
         }
       }
+      // Global mode: first ↓ from the input goes to the projects rail (top
+      // tier of the dashboard). A second ↓ inside the projects rail drops
+      // to the agents row, handled by the dashboard-focus key path.
+      if (props.globalMode && state.projects.length > 0) {
+        dispatch({ type: "focus/set", mode: "dashboard" });
+        dispatch({ type: "view/set", view: "projects" });
+        if (state.selectedProjectIndex < 0) {
+          dispatch({ type: "projects/select", index: 0 });
+          dispatch({ type: "projects/window", windowStart: 0 });
+        }
+        return;
+      }
       if (state.agents.length === 0) return;
       const decision = fmt.resolveAgentSelectionOnDown({
         agentSelectionMode: state.agentSelectionMode,
@@ -566,7 +578,7 @@ function createChatApp({ React, ink, props, interactive = true }) {
       if (decision.action === "enter") {
         dispatch({ type: "agents/select", index: decision.index });
       }
-    }, [state.inputHistory, state.historyIndex, state.agents, state.agentSelectionMode, state.selectedAgentIndex]);
+    }, [state.inputHistory, state.historyIndex, state.agents, state.agentSelectionMode, state.selectedAgentIndex, state.projects.length, state.selectedProjectIndex, props.globalMode]);
 
     const onArrowSideAtEmpty = useCallback((direction) => {
       if (!state.agentSelectionMode || state.agents.length === 0) return;
@@ -716,22 +728,53 @@ function createChatApp({ React, ink, props, interactive = true }) {
             ? state.selectedProjectIndex : 0;
           const next = (cur + dir + state.projects.length) % state.projects.length;
           dispatch({ type: "projects/select", index: next });
+          // Slide the visible window to keep the cursor on screen. We mirror
+          // clampAgentWindowWithSelection's logic with maxProjectWindow=5.
+          const max = Math.max(1, Math.min(5, state.projects.length));
+          let nextStart = state.projectListWindowStart || 0;
+          if (next < nextStart) nextStart = next;
+          else if (next >= nextStart + max) nextStart = next - max + 1;
+          if (cur === state.projects.length - 1 && next === 0) nextStart = 0;
+          if (cur === 0 && next === state.projects.length - 1) {
+            nextStart = Math.max(0, state.projects.length - max);
+          }
+          if (nextStart !== state.projectListWindowStart) {
+            dispatch({ type: "projects/window", windowStart: nextStart });
+          }
+
+          // Switching projects with ←/→ also loads that project's chat
+          // log + delegates the daemon connection. Refresh STATUS so the
+          // agents footer redraws once the daemon catches up.
+          const proj = state.projects[next];
+          const target = proj && (proj.root || proj.id);
+          if (target && !proj.active) {
+            dispatch({ type: "log/clear" });
+            const banner = buildChatBannerLines({
+              ...props,
+              activeProjectRoot: target,
+            }, fmt.UCODE_VERSION || "");
+            dispatch({ type: "log/appendMany", lines: banner });
+            const persisted = loadChatHistory(target, 200);
+            if (persisted.length > 0) {
+              dispatch({ type: "log/append", text: "" });
+              dispatch({ type: "log/append", text: "─── history ───" });
+              dispatch({ type: "log/appendMany", lines: persisted });
+            }
+            if (props.daemonCoordinator && typeof props.daemonCoordinator.switchProject === "function") {
+              Promise.resolve(props.daemonCoordinator.switchProject({ target }))
+                .then((res) => {
+                  if (res && res.ok === false) {
+                    dispatch({ type: "log/append", text: `Error: ${res.error || "switch failed"}` });
+                  }
+                })
+                .catch((err) => dispatch({ type: "log/append", text: `Error: ${err && err.message ? err.message : err}` }));
+            }
+          }
           return;
         }
         if (key.return) {
-          const cur = state.selectedProjectIndex >= 0 ? state.selectedProjectIndex : 0;
-          const proj = state.projects[cur];
-          const target = proj && (proj.root || proj.id);
-          if (target && props.daemonCoordinator && typeof props.daemonCoordinator.switchProject === "function") {
-            dispatch({ type: "log/append", text: `⚙ Switching to ${proj.label || target}...` });
-            Promise.resolve(props.daemonCoordinator.switchProject({ target }))
-              .then((res) => {
-                if (res && res.ok === false) {
-                  dispatch({ type: "log/append", text: `Error: ${res.error || "switch failed"}` });
-                }
-              })
-              .catch((err) => dispatch({ type: "log/append", text: `Error: ${err && err.message ? err.message : err}` }));
-          }
+          // ←/→ already handled the switch; Enter on the projects rail
+          // just returns focus to the input box.
           dispatch({ type: "focus/set", mode: "input" });
           return;
         }
@@ -846,6 +889,8 @@ function createChatApp({ React, ink, props, interactive = true }) {
         activeAgentMeta: state.activeAgentMeta,
         selectedAgentIndex: state.selectedAgentIndex,
         agentListWindowStart: state.agentListWindowStart,
+        projectListWindowStart: state.projectListWindowStart,
+        maxProjectWindow: 5,
         getAgentLabel: (id, meta) => getAgentLabelFor(meta || state.activeAgentMeta.get(id), id),
         modeOptions: state.modeOptions,
         selectedModeIndex: state.selectedModeIndex,

@@ -49,7 +49,7 @@ function createDashboardBar({ React, ink }) {
       renderHint(hint),
     );
 
-  const ProjectRail = ({ projects, selectedIndex, focused, scope, dashboardHint }) => {
+  const ProjectRail = ({ projects, selectedIndex, focused, scope, dashboardHint, windowStart, maxItems }) => {
     if (!Array.isArray(projects) || projects.length === 0) {
       return h(Box, null,
         h(Text, { color: "gray" }, "Projects: "),
@@ -57,16 +57,35 @@ function createDashboardBar({ React, ink }) {
         dashboardHint ? h(Text, { color: "gray" }, ` · ${dashboardHint}`) : null,
       );
     }
-    return h(Box, null,
-      h(Text, { color: "gray" }, "Projects: "),
-      ...projects.map((proj, idx) => h(React.Fragment, { key: proj.label || idx },
-        idx > 0 ? sep(`p-${idx}`) : null,
-        h(Text, {
-          color: focused && idx === selectedIndex ? undefined : (proj.active ? "yellow" : "cyan"),
-          inverse: focused && idx === selectedIndex,
-        }, proj.label || proj.id || ""),
-      )),
-      dashboardHint ? h(Text, { color: "gray" }, `    ${dashboardHint}`) : null,
+    const max = Math.max(1, Math.min(maxItems || 5, projects.length));
+    const start = clampAgentWindowWithSelection({
+      activeCount: projects.length,
+      maxWindow: max,
+      windowStart: windowStart || 0,
+      selectionIndex: selectedIndex,
+    });
+    const end = start + max;
+    const visible = projects.slice(start, end);
+    const leftMore = start > 0;
+    const rightMore = end < projects.length;
+    return h(Box, { wrap: "truncate" },
+      h(Text, { wrap: "truncate", color: "gray" }, "Projects: "),
+      leftMore ? h(Text, { color: "gray" }, "< ") : null,
+      ...visible.map((proj, renderedIdx) => {
+        const idx = start + renderedIdx;
+        return h(React.Fragment, { key: `p-${idx}` },
+          renderedIdx > 0 ? sep(`p-sep-${idx}`) : null,
+          h(Text, {
+            wrap: "truncate",
+            color: focused && idx === selectedIndex
+              ? undefined
+              : (proj.active ? "yellow" : "cyan"),
+            inverse: focused && idx === selectedIndex,
+          }, proj.label || proj.id || ""),
+        );
+      }),
+      rightMore ? h(Text, { color: "gray" }, " >") : null,
+      dashboardHint ? h(Text, { wrap: "truncate", color: "gray" }, ` · ${dashboardHint}`) : null,
     );
   };
 
@@ -80,6 +99,8 @@ function createDashboardBar({ React, ink }) {
     selectedAgentIndex = -1,
     agentListWindowStart = 0,
     maxAgentWindow = 4,
+    projectListWindowStart = 0,
+    maxProjectWindow = 5,
     getAgentLabel = (id) => id,
     modeOptions = [],
     selectedModeIndex = 0,
@@ -143,6 +164,8 @@ function createDashboardBar({ React, ink }) {
           focused: dashboardFocused && dashboardView === "projects",
           scope: globalScope,
           dashboardHint: dashHints.projects || "",
+          windowStart: projectListWindowStart,
+          maxItems: maxProjectWindow,
         })
       : null;
 

@@ -577,6 +577,82 @@ function buildToolMergeRowText(entries = []) {
 }
 
 /**
+ * Lay out the global-mode project rail inside a single line. Like
+ * planAgentsFooter, but with two differences:
+ *   - the caller provides `windowStart` so the rail can scroll horizontally
+ *     under cursor control rather than dropping items at the end;
+ *   - we never truncate individual labels — projects either fit or are
+ *     hidden behind the < / > overflow markers.
+ *
+ * Returns { items, windowStart, leftMore, rightMore } where items is the
+ * sub-array of `labels` that fits and windowStart is the (possibly
+ * adjusted) starting index after clamping for the selection cursor.
+ */
+function planProjectsRail({
+  labels = [],
+  selectedIndex = -1,
+  windowStart = 0,
+  maxCells = 80,
+} = {}) {
+  const items = Array.isArray(labels) ? labels.map(String) : [];
+  if (items.length === 0) {
+    return { items: [], windowStart: 0, leftMore: false, rightMore: false };
+  }
+  const budget = Math.max(1, Math.floor(Number(maxCells) || 0));
+  const sepWidth = displayCellWidth("  ");
+  const moreLeft = "< ";
+  const moreRight = " >";
+  const moreLeftWidth = displayCellWidth(moreLeft);
+  const moreRightWidth = displayCellWidth(moreRight);
+
+  // Clamp the requested windowStart so the cursor is visible.
+  let start = Math.max(0, Math.min(items.length - 1, Math.floor(Number(windowStart) || 0)));
+  if (selectedIndex >= 0 && selectedIndex < items.length && selectedIndex < start) {
+    start = selectedIndex;
+  }
+
+  // Greedy fit forward from `start`, reserving room for the < and > arrows
+  // when we can't fit everything.
+  const tryFit = (s) => {
+    const out = [];
+    let used = 0;
+    for (let i = s; i < items.length; i += 1) {
+      const label = items[i];
+      const labelWidth = displayCellWidth(label);
+      const lead = out.length === 0 ? 0 : sepWidth;
+      const reserveLeft = s > 0 ? moreLeftWidth : 0;
+      const reserveRight = i < items.length - 1 ? moreRightWidth : 0;
+      if (used + lead + labelWidth + reserveLeft + reserveRight > budget) break;
+      out.push({ index: i, label });
+      used += lead + labelWidth;
+    }
+    return out;
+  };
+
+  let visible = tryFit(start);
+  // If the selected index would fall past the end of the visible window,
+  // slide forward until it's covered.
+  if (selectedIndex >= 0) {
+    while (visible.length > 0 && visible[visible.length - 1].index < selectedIndex && start < items.length - 1) {
+      start += 1;
+      visible = tryFit(start);
+    }
+  }
+  // Never let the window slide so far that the selection drops off.
+  if (selectedIndex >= 0 && visible.length > 0 && visible[0].index > selectedIndex) {
+    start = selectedIndex;
+    visible = tryFit(start);
+  }
+
+  return {
+    items: visible.map((v) => ({ label: v.label, absoluteIndex: v.index })),
+    windowStart: start,
+    leftMore: start > 0,
+    rightMore: visible.length > 0 && visible[visible.length - 1].index < items.length - 1,
+  };
+}
+
+/**
  * Lay out the Agents footer inside a fixed cell budget. Returns:
  *   { items: [{ label, selected, truncated }], overflowed, hint }
  *
@@ -850,6 +926,7 @@ module.exports = {
   normalizeToolMergeEntry,
   parseActiveAgentsFromBusStatus,
   planAgentsFooter,
+  planProjectsRail,
   renderLogLinesWithMarkdown,
   resolveAgentSelectionOnDown,
   resolveHistoryDownTransition,

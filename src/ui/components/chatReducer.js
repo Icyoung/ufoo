@@ -56,6 +56,7 @@ function createInitialState({ banner = [], globalMode = false, globalScope = "co
     agentListWindowStart: 0,
     projects: [],
     selectedProjectIndex: -1,
+    projectListWindowStart: 0,
     activeProjectRoot: "",
     modeOptions: ["auto", "host", "terminal", "tmux", "internal-pty", "internal"],
     selectedModeIndex: 0,
@@ -180,6 +181,8 @@ function reducer(state, action) {
       };
     case "projects/select":
       return { ...state, selectedProjectIndex: action.index };
+    case "projects/window":
+      return { ...state, projectListWindowStart: Math.max(0, action.windowStart | 0) };
     case "scope/set":
       return { ...state, globalScope: action.scope === "project" ? "project" : "controller" };
     case "status/set":
