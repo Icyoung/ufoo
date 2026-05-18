@@ -82,6 +82,45 @@ async function ensureSubscriberId(projectRoot) {
   process.env.UFOO_SUBSCRIBER_ID = `claude-code:${sessionId}`;
 }
 
+function inputHistoryFilePath(projectRoot) {
+  const { getUfooPaths } = require("../../ufoo/paths");
+  return path.join(getUfooPaths(projectRoot).ufooDir, "chat", "input-history.jsonl");
+}
+
+function loadInputHistory(projectRoot, cap = 200) {
+  const file = inputHistoryFilePath(projectRoot);
+  try {
+    if (!fs.existsSync(file)) return [];
+    const raw = fs.readFileSync(file, "utf8");
+    const lines = raw.split(/\r?\n/).filter(Boolean);
+    const out = [];
+    for (const line of lines) {
+      try {
+        const obj = JSON.parse(line);
+        const value = String((obj && obj.value) || "").trim();
+        if (value) out.push(value);
+      } catch {
+        // ignore malformed entries
+      }
+    }
+    return out.slice(-cap);
+  } catch {
+    return [];
+  }
+}
+
+function appendInputHistory(projectRoot, value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return;
+  const file = inputHistoryFilePath(projectRoot);
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.appendFileSync(file, `${JSON.stringify({ value: trimmed, ts: Date.now() })}\n`);
+  } catch {
+    // best-effort persistence; failure is not user-visible
+  }
+}
+
 function getAgentLabelFor(meta, agentId) {
   if (meta && meta.nickname) return meta.nickname;
   if (!agentId) return "";
@@ -128,6 +167,15 @@ function createChatApp({ React, ink, props, interactive = true }) {
       stdout.on("resize", update);
       return () => stdout.off("resize", update);
     }, [stdout]);
+
+    // Load persisted input history once on mount.
+    useEffect(() => {
+      try {
+        const history = loadInputHistory(props.projectRoot);
+        if (history.length > 0) dispatch({ type: "history/load", list: history });
+      } catch { /* ignore */ }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     // Wire daemon: register a message handler that turns IPC responses
     // into reducer dispatches, then kick off connect(). On unmount we
@@ -227,6 +275,7 @@ function createChatApp({ React, ink, props, interactive = true }) {
       if (!trimmed) return;
       dispatch({ type: "draft/clear" });
       dispatch({ type: "history/push", value: trimmed });
+      try { appendInputHistory(props.projectRoot, trimmed); } catch { /* ignore */ }
       dispatch({ type: "log/append", text: targetAgentLabel ? `›@${targetAgentLabel} ${trimmed}` : `› ${trimmed}` });
 
       // Slash commands. The ink TUI doesn't fully port commandExecutor

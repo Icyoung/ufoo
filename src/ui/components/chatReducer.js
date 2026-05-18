@@ -187,6 +187,11 @@ function reducer(state, action) {
       const next = state.inputHistory.concat([value]).slice(-HISTORY_CAP);
       return { ...state, inputHistory: next, historyIndex: next.length };
     }
+    case "history/load": {
+      const list = Array.isArray(action.list) ? action.list : [];
+      const next = list.slice(-HISTORY_CAP);
+      return { ...state, inputHistory: next, historyIndex: next.length };
+    }
     case "history/setIndex":
       return { ...state, historyIndex: Math.max(0, Math.min(state.inputHistory.length, action.index)) };
     case "merge/append": {
