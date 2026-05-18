@@ -33,8 +33,18 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       banner.concat([""]).map((line, idx) => ({ id: `b-${idx}`, text: line }))
     );
     const [draft, setDraft] = useState("");
-    // statusText becomes dynamic in P1.4 (spinner + phase + bg-task suffix).
-    const statusText = "UCODE · Ready";
+    // status: idle when message === "". `type` picks a STATUS_INDICATORS
+    // bucket; `showTimer` and `startedAt` reproduce the blessed spinner
+    // controls. P1.4d will append a "BG x/y/z" suffix when background
+    // tasks land.
+    const [status, setStatus] = useState({
+      message: "",
+      type: "thinking",
+      showTimer: false,
+      startedAt: 0,
+    });
+    const [spinnerTick, setSpinnerTick] = useState(0);
+    const [, setNowTick] = useState(0);
     const [size, setSize] = useState({ cols: 0, rows: 0 });
     const [agents, setAgents] = useState([]);
     const [selectedAgentIndex, setSelectedAgentIndex] = useState(-1);
@@ -264,15 +274,35 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
           return;
         }
         case "nl": {
+          const startedAt = Date.now();
+          const setNlStatus = (msg) => setStatus({
+            message: msg,
+            type: "thinking",
+            showTimer: true,
+            startedAt,
+          });
+          setNlStatus("Waiting for model...");
           let streamBuf = "";
+          let sawStreamText = false;
           let nlResult = null;
           try {
             nlResult = await props.runNaturalLanguageTask(result.task, props.state, {
-              onPhase: () => {
-                // P1.4c: drive the spinner from these events.
+              onPhase: (event) => {
+                if (!event || typeof event !== "object") return;
+                if (event.type === "request_start") setNlStatus("Waiting for model...");
+                else if (event.type === "thinking_delta") setNlStatus("Thinking...");
+                else if (event.type === "text_delta") setNlStatus("Generating response...");
+                else if (event.type === "tool_request") {
+                  const label = fmt.TOOL_LABELS[String(event.name || "").toLowerCase()] ||
+                    `Calling ${event.name}`;
+                  setNlStatus(`${label}...`);
+                }
               },
               onDelta: (delta) => {
-                streamBuf += String(delta || "");
+                const text = String(delta || "");
+                if (!text) return;
+                if (/[^\s]/.test(text)) sawStreamText = true;
+                streamBuf += text;
                 const parts = streamBuf.split(/\r?\n/);
                 while (parts.length > 1) {
                   appendLogLine(parts.shift());
@@ -281,16 +311,34 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
               },
               onToolLog: (entry) => {
                 if (!entry || typeof entry !== "object") return;
+                if (entry.tool && entry.phase === "start") {
+                  const label = fmt.TOOL_LABELS[String(entry.tool || "").toLowerCase()] ||
+                    `Calling ${entry.tool}`;
+                  setNlStatus(`${label}...`);
+                }
                 logToolHint(entry, entry.result);
               },
             });
           } catch (err) {
             appendLogText(`Error: ${err && err.message ? err.message : "agent loop failed"}`);
             return;
+          } finally {
+            setStatus({ message: "", type: "thinking", showTimer: false, startedAt: 0 });
           }
-          if (streamBuf) appendLogLine(streamBuf);
-          const summary = props.formatNlResult(nlResult, false);
-          if (summary) appendLogText(summary);
+          if (streamBuf) {
+            if (/[^\s]/.test(streamBuf)) sawStreamText = true;
+            appendLogLine(streamBuf);
+          }
+          // Skip the summary echo when the model already streamed its
+          // response in full — otherwise the user sees the same text twice.
+          // Mirrors the shouldSkipSummary check in tui.js.
+          const streamed = Boolean(nlResult && nlResult.streamed);
+          const ok = Boolean(nlResult && nlResult.ok);
+          const shouldSkipSummary = streamed && ok && sawStreamText;
+          if (!shouldSkipSummary) {
+            const summary = props.formatNlResult(nlResult, false);
+            if (summary) appendLogText(summary);
+          }
           try {
             const persisted = props.persistSessionState(props.state);
             if (persisted && persisted.ok === false) {
@@ -328,6 +376,18 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       stdout.on("resize", update);
       return () => stdout.off("resize", update);
     }, [stdout]);
+
+    // Drive the spinner + elapsed-timer redraws while a task is in flight.
+    useEffect(() => {
+      if (!status.message || status.type === "none") return undefined;
+      const timer = setInterval(() => {
+        setSpinnerTick((t) => t + 1);
+        if (status.showTimer) setNowTick((t) => t + 1);
+      }, 100);
+      return () => clearInterval(timer);
+    }, [status.message, status.type, status.showTimer]);
+
+    const statusText = useMemoStatusText(React, status, spinnerTick);
 
     // Top-level only catches Ctrl+C and Ctrl+O (expand last tool group);
     // the editor handles all text editing.
@@ -371,22 +431,40 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
           promptPrefix: targetAgent ? `›@${getAgentLabel(targetAgent)} ` : "› ",
         }),
       ),
-      h(Box, null,
-        h(Text, { color: "gray" }, "Agents: "),
+      h(Box, { width: "100%" },
+        h(Text, { wrap: "truncate", color: "gray" }, "Agents: "),
         agents.length === 0
-          ? h(Text, { color: "cyan" }, "none")
-          : h(Box, null, ...agents.map((agent, idx) => {
-              const label = getAgentLabel(agent);
-              const isSelected = agentSelectionMode && idx === selectedAgentIndex;
-              return h(React.Fragment, { key: agent.fullId || `${agent.type}:${idx}` },
-                idx > 0 ? h(Text, { color: "gray" }, "  ") : null,
-                h(Text, {
-                  color: isSelected ? undefined : "cyan",
-                  inverse: isSelected,
-                }, `@${label}`),
+          ? h(Text, { wrap: "truncate", color: "cyan" }, "none")
+          : (() => {
+              const labels = agents.map((a) => `@${getAgentLabel(a)}`);
+              // Reserve 1 col for borders, the "Agents: " prefix, the hint
+              // and a few spaces for safety. We just clamp aggressively
+              // when stdout.cols is unknown.
+              const cols = size.cols || 80;
+              const reservedForHint = fmt.displayCellWidth(`  │ ${agentsHint}`);
+              const budget = Math.max(20, cols - 10 - reservedForHint);
+              const plan = fmt.planAgentsFooter(
+                labels,
+                agentSelectionMode ? selectedAgentIndex : -1,
+                budget
               );
-            })),
-        h(Text, { color: "gray" }, `  │ ${agentsHint}`),
+              return h(React.Fragment, null,
+                ...plan.items.map((item, idx) =>
+                  h(React.Fragment, { key: idx },
+                    idx > 0 ? h(Text, { color: "gray" }, "  ") : null,
+                    h(Text, {
+                      wrap: "truncate",
+                      color: item.selected ? undefined : "cyan",
+                      inverse: item.selected,
+                    }, item.label),
+                  )
+                ),
+                plan.overflowed > 0
+                  ? h(Text, { color: "gray" }, `  +${plan.overflowed} more`)
+                  : null,
+              );
+            })(),
+        h(Text, { wrap: "truncate", color: "gray" }, `  │ ${agentsHint}`),
       ),
     );
   };
@@ -417,4 +495,32 @@ function runUcodeInkTui(props = {}) {
   });
 }
 
-module.exports = { runUcodeInkTui, createUcodeApp };
+module.exports = { runUcodeInkTui, createUcodeApp, computeStatusText };
+
+/**
+ * Pure status-line text builder used by the React component (and unit
+ * tests). Returns "UCODE · Ready" while idle and a spinner+message+timer
+ * combination while a task is in flight, mirroring updateStatus() in the
+ * blessed implementation.
+ */
+function computeStatusText(status, spinnerTick) {
+  const message = String((status && status.message) || "");
+  if (!message) return "UCODE · Ready";
+  const type = String((status && status.type) || "thinking");
+  const indicators = fmt.STATUS_INDICATORS[type] || fmt.STATUS_INDICATORS.thinking;
+  const indicator = indicators[Math.max(0, Math.floor(Number(spinnerTick) || 0)) % indicators.length];
+  const startedAt = Number.isFinite(status && status.startedAt) ? status.startedAt : 0;
+  const timerText = status && status.showTimer && startedAt
+    ? ` (${fmt.formatPendingElapsed(Date.now() - startedAt)}, esc cancel)`
+    : "";
+  return `${indicator} ${message}${timerText}`;
+}
+
+function useMemoStatusText(React, status, spinnerTick) {
+  // Dependencies intentionally include startedAt so the timer ticks even
+  // when the message string is unchanged.
+  return React.useMemo(
+    () => computeStatusText(status, spinnerTick),
+    [status, spinnerTick]
+  );
+}

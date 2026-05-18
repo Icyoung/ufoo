@@ -576,6 +576,60 @@ function buildToolMergeRowText(entries = []) {
   return `· ${summary}`;
 }
 
+/**
+ * Lay out the Agents footer inside a fixed cell budget. Returns an array of
+ * { label, selected, truncated } items plus an `overflowed` flag so the
+ * caller can append a "+N more" hint. We measure with displayCellWidth so
+ * CJK names take their double-width into account.
+ *
+ * `labels` is the array of strings to render (already prefixed with "@").
+ * `selectedIndex` is the agent under the selection cursor (or -1).
+ * `maxCells` is the total visual width available for the agent strip,
+ * separators included.
+ */
+function planAgentsFooter(labels = [], selectedIndex = -1, maxCells = 80) {
+  const items = Array.isArray(labels) ? labels.map(String) : [];
+  const budget = Math.max(1, Math.floor(Number(maxCells) || 0));
+  const sepWidth = displayCellWidth("  ");
+  const overflowMarker = "...";
+  const overflowMarkerWidth = displayCellWidth(overflowMarker);
+
+  const out = [];
+  let used = 0;
+  for (let i = 0; i < items.length; i += 1) {
+    const label = items[i];
+    const labelWidth = displayCellWidth(label);
+    const lead = out.length === 0 ? 0 : sepWidth;
+    if (used + lead + labelWidth <= budget) {
+      out.push({ label, selected: i === selectedIndex, truncated: false });
+      used += lead + labelWidth;
+      continue;
+    }
+    // Try to fit a truncated version of this label. Need room for "...".
+    const remaining = budget - used - lead - overflowMarkerWidth;
+    if (remaining > 0) {
+      let acc = "";
+      let accWidth = 0;
+      for (const ch of label) {
+        const w = displayCellWidth(ch);
+        if (accWidth + w > remaining) break;
+        acc += ch;
+        accWidth += w;
+      }
+      if (acc) {
+        out.push({
+          label: `${acc}${overflowMarker}`,
+          selected: i === selectedIndex,
+          truncated: true,
+        });
+        used += lead + accWidth + overflowMarkerWidth;
+      }
+    }
+    return { items: out, overflowed: items.length - out.length };
+  }
+  return { items: out, overflowed: 0 };
+}
+
 module.exports = {
   ANSI_PATTERN,
   STATUS_INDICATORS,
@@ -608,6 +662,7 @@ module.exports = {
   normalizeModelLabel,
   normalizeToolMergeEntry,
   parseActiveAgentsFromBusStatus,
+  planAgentsFooter,
   renderLogLinesWithMarkdown,
   resolveAgentSelectionOnDown,
   resolveHistoryDownTransition,
