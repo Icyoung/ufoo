@@ -544,12 +544,43 @@ function createChatApp({ React, ink, props, interactive = true }) {
     const agentLabels = state.agents.map((id) =>
       getAgentLabelFor(state.activeAgentMeta.get(id), id)
     );
+
+    // Lazy-load the dynamic completion sources once so /group run and
+    // /solo run get the same alias/profile suggestions blessed shows.
+    const dynamicSourcesRef = useRef(null);
+    if (!dynamicSourcesRef.current) {
+      const sources = { groupTemplates: [], soloProfiles: [] };
+      try {
+        const { loadTemplateRegistry } = require("../../group/templates");
+        const reg = typeof loadTemplateRegistry === "function" ? loadTemplateRegistry(props.projectRoot) : null;
+        if (reg && Array.isArray(reg.templates)) {
+          sources.groupTemplates = reg.templates.map((item) => ({
+            alias: item.alias,
+            cmd: item.alias,
+            desc: item.templateDescription || "",
+            source: item.source || "",
+          }));
+        }
+      } catch { /* ignore */ }
+      try {
+        const { loadPromptProfileRegistry } = require("../../group/promptProfiles");
+        const { buildPromptProfileCandidates } = require("../../solo/commands");
+        const reg = typeof loadPromptProfileRegistry === "function" ? loadPromptProfileRegistry(props.projectRoot) : null;
+        if (reg && typeof buildPromptProfileCandidates === "function") {
+          sources.soloProfiles = buildPromptProfileCandidates(reg) || [];
+        }
+      } catch { /* ignore */ }
+      dynamicSourcesRef.current = sources;
+    }
+
     const completions = fmt.buildCompletions({
       text: state.draft,
       agents: state.agents,
       agentLabels,
       commands: COMMAND_REGISTRY,
       commandTree: COMMAND_TREE,
+      groupTemplates: dynamicSourcesRef.current.groupTemplates,
+      soloProfiles: dynamicSourcesRef.current.soloProfiles,
       limit: 8,
     });
     const [completionIndex, setCompletionIndex] = useState(0);

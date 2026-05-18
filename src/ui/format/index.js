@@ -677,6 +677,8 @@ function buildCompletions({
   agentLabels = [],
   commands = [],
   commandTree = null,
+  groupTemplates = [],
+  soloProfiles = [],
   limit = 8,
 } = {}) {
   const raw = String(text || "");
@@ -687,6 +689,33 @@ function buildCompletions({
     const parts = trimmed.split(/\s+/);
     const head = parts[0]; // "/launch"
     const tail = parts.slice(1);
+
+    // Dynamic argument completion for /group run <alias> and
+    // /solo run <profile>. These pull from runtime sources (group
+    // templates, prompt-profile registry) rather than COMMAND_TREE.
+    const dynList = (head === "/group" && tail[0] === "run")
+      ? groupTemplates
+      : (head === "/solo" && tail[0] === "run")
+          ? soloProfiles
+          : null;
+    if (dynList && (tail.length >= 2 || trimmed.endsWith(" "))) {
+      const partial = String(tail[1] || "").toLowerCase();
+      const out = [];
+      for (const item of (Array.isArray(dynList) ? dynList : [])) {
+        const id = String((item && (item.alias || item.cmd || item.id || item.name)) || "");
+        if (!id) continue;
+        if (partial && !id.toLowerCase().startsWith(partial)) continue;
+        const desc = String((item && (item.desc || item.summary || item.description || item.source)) || "");
+        out.push({
+          kind: "argument",
+          label: `${head} ${tail[0]} ${id}`,
+          replace: `${head} ${tail[0]} ${id} `,
+          description: desc,
+        });
+        if (out.length >= limit) break;
+      }
+      return out;
+    }
 
     // Sub-command completion: "/cmd <prefix>" or "/cmd sub <prefix>".
     if (tail.length >= 1 && commandTree) {
