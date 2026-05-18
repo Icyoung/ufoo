@@ -40,12 +40,13 @@
 const fmt = require("../format");
 
 function createMultilineInput({ React, ink }) {
-  const { useState, useCallback, useMemo } = React;
+  const { useState, useCallback, useMemo, useEffect } = React;
   const { Box, Text, useInput } = ink;
   const h = React.createElement;
 
   return function MultilineInput({
     value = "",
+    valueVersion = 0,
     onChange = () => {},
     onSubmit = () => {},
     onCancel = () => {},
@@ -67,6 +68,16 @@ function createMultilineInput({ React, ink }) {
     const [cursorState, setCursorState] = useState(() => String(value || "").length);
     const [preferredCol, setPreferredCol] = useState(null);
     const cursorPos = fmt.clampCursorPos(cursorState, value);
+
+    // When the parent forces a new value via valueVersion (e.g. accepting
+    // a completion), park the cursor at the end of the freshly inserted
+    // text so the user can keep typing without arrow-keying back to the
+    // tail.
+    useEffect(() => {
+      setCursorState(String(value || "").length);
+      setPreferredCol(null);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [valueVersion]);
 
     const wrapWidth = Math.max(1, Math.floor(Number(width) || 80));
 

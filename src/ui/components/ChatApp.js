@@ -412,6 +412,11 @@ function createChatApp({ React, ink, props, interactive = true }) {
       limit: 6,
     });
     const [completionIndex, setCompletionIndex] = useState(0);
+    // Bumped whenever the completion popup writes a new value into the
+    // draft — MultilineInput watches this counter so it can park its
+    // cursor at the end of the freshly accepted suggestion instead of
+    // staying wherever the user last typed.
+    const [draftVersion, setDraftVersion] = useState(0);
     // Reset the selection cursor whenever the suggestion list shape changes.
     useEffect(() => {
       if (completions.length === 0) {
@@ -424,7 +429,10 @@ function createChatApp({ React, ink, props, interactive = true }) {
     const acceptCompletion = useCallback(() => {
       if (!completionsOpen) return false;
       const item = completions[Math.max(0, Math.min(completions.length - 1, completionIndex))];
-      if (item) dispatch({ type: "draft/set", value: item.replace });
+      if (item) {
+        dispatch({ type: "draft/set", value: item.replace });
+        setDraftVersion((v) => v + 1);
+      }
       setCompletionIndex(0);
       return true;
     }, [completionsOpen, completions, completionIndex]);
@@ -499,11 +507,11 @@ function createChatApp({ React, ink, props, interactive = true }) {
           h(Text, { color: idx === completionIndex ? "cyan" : "gray", inverse: idx === completionIndex }, s.label),
           s.description ? h(Text, { color: "gray" }, `  ${s.description}`) : null,
         )),
-        h(Text, { color: "gray" }, "↑↓ select · Tab/Enter accept · Esc dismiss"),
       ) : null,
       h(Box, { width: "100%" },
         h(MultilineInput, {
           value: state.draft,
+          valueVersion: draftVersion,
           onChange: (next) => dispatch({ type: "draft/set", value: next }),
           onSubmit: (value) => submit(value),
           onCancel: () => { /* P3.5: cancel pending daemon op */ },
