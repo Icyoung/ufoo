@@ -82,18 +82,43 @@ async function ensureSubscriberId(projectRoot) {
   process.env.UFOO_SUBSCRIBER_ID = `claude-code:${sessionId}`;
 }
 
-function inputHistoryFilePath(projectRoot) {
+function inputHistoryFilePath(projectRoot, options = {}) {
   const { getUfooPaths } = require("../../ufoo/paths");
+  const { globalMode } = options || {};
+  if (globalMode) {
+    const os = require("os");
+    const globalChatRoot = path.join(os.homedir(), ".ufoo", "chat");
+    const globalDir = path.join(globalChatRoot, "global-input-history");
+    const projectId = projectRootToId(projectRoot);
+    return path.join(globalDir, `${projectId}.jsonl`);
+  }
   return path.join(getUfooPaths(projectRoot || process.cwd()).ufooDir, "chat", "input-history.jsonl");
 }
 
-function chatHistoryFilePath(projectRoot) {
+function chatHistoryFilePath(projectRoot, options = {}) {
   const { getUfooPaths } = require("../../ufoo/paths");
+  const { globalMode } = options || {};
+  if (globalMode) {
+    const os = require("os");
+    const globalChatRoot = path.join(os.homedir(), ".ufoo", "chat");
+    const globalDir = path.join(globalChatRoot, "global-history");
+    const projectId = projectRootToId(projectRoot);
+    return path.join(globalDir, `${projectId}.jsonl`);
+  }
   return path.join(getUfooPaths(projectRoot || process.cwd()).ufooDir, "chat", "history.jsonl");
 }
 
-function loadChatHistory(projectRoot, cap = 200) {
-  const file = chatHistoryFilePath(projectRoot);
+function projectRootToId(projectRoot) {
+  try {
+    const { buildProjectId } = require("../../projects");
+    return buildProjectId(projectRoot || process.cwd());
+  } catch {
+    return crypto.createHash("sha256").update(String(projectRoot || "")).digest("hex").slice(0, 16);
+  }
+}
+
+function loadChatHistory(projectRoot, cap = 200, options = {}) {
+  const file = chatHistoryFilePath(projectRoot, options);
   try {
     if (!fs.existsSync(file)) return [];
     const raw = fs.readFileSync(file, "utf8");
@@ -123,8 +148,8 @@ function loadChatHistory(projectRoot, cap = 200) {
   }
 }
 
-function loadInputHistory(projectRoot, cap = 200) {
-  const file = inputHistoryFilePath(projectRoot);
+function loadInputHistory(projectRoot, cap = 200, options = {}) {
+  const file = inputHistoryFilePath(projectRoot, options);
   try {
     if (!fs.existsSync(file)) return [];
     const raw = fs.readFileSync(file, "utf8");
@@ -145,10 +170,10 @@ function loadInputHistory(projectRoot, cap = 200) {
   }
 }
 
-function appendInputHistory(projectRoot, value) {
+function appendInputHistory(projectRoot, value, options = {}) {
   const trimmed = String(value || "").trim();
   if (!trimmed) return;
-  const file = inputHistoryFilePath(projectRoot);
+  const file = inputHistoryFilePath(projectRoot, options);
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.appendFileSync(file, `${JSON.stringify({ value: trimmed, ts: Date.now() })}\n`);
@@ -212,7 +237,7 @@ function createChatApp({ React, ink, props, interactive = true }) {
   // of rendering an empty banner and then flashing in the lines.
   const versionLabel = String(fmt.UCODE_VERSION || "");
   const banner = buildChatBannerLines(props, versionLabel);
-  const persistedHistory = loadChatHistory(props.projectRoot, 200);
+  const persistedHistory = loadChatHistory(props.projectRoot, 200, { globalMode: props.globalMode });
   const initialLogText = persistedHistory.length > 0
     ? banner.concat(["", "─── history ───"]).concat(persistedHistory).concat([""])
     : banner.concat([""]);
@@ -244,7 +269,7 @@ function createChatApp({ React, ink, props, interactive = true }) {
     // Load persisted input history once on mount.
     useEffect(() => {
       try {
-        const history = loadInputHistory(props.projectRoot);
+        const history = loadInputHistory(props.projectRoot, 200, { globalMode: props.globalMode });
         if (history.length > 0) dispatch({ type: "history/load", list: history });
       } catch { /* ignore */ }
       // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -474,7 +499,7 @@ function createChatApp({ React, ink, props, interactive = true }) {
       if (!trimmed) return;
       dispatch({ type: "draft/clear" });
       dispatch({ type: "history/push", value: trimmed });
-      try { appendInputHistory(props.projectRoot, trimmed); } catch { /* ignore */ }
+      try { appendInputHistory(props.projectRoot, trimmed, { globalMode: props.globalMode }); } catch { /* ignore */ }
       dispatch({ type: "log/append", text: targetAgentLabel ? `›@${targetAgentLabel} ${trimmed}` : `› ${trimmed}` });
 
       // Slash commands route through the shared commandExecutor. The
@@ -754,7 +779,7 @@ function createChatApp({ React, ink, props, interactive = true }) {
               activeProjectRoot: target,
             }, fmt.UCODE_VERSION || "");
             dispatch({ type: "log/appendMany", lines: banner });
-            const persisted = loadChatHistory(target, 200);
+            const persisted = loadChatHistory(target, 200, { globalMode: props.globalMode });
             if (persisted.length > 0) {
               dispatch({ type: "log/append", text: "" });
               dispatch({ type: "log/append", text: "─── history ───" });
