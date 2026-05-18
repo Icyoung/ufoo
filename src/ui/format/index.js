@@ -689,13 +689,18 @@ function buildCompletions({
     const list = Array.isArray(commands) ? commands : [];
     const out = [];
     for (const item of list) {
-      const name = String((item && item.cmd) || item || "").toLowerCase();
-      if (!name) continue;
-      if (!name.startsWith(prefix)) continue;
+      // Registry entries already include the leading '/' in `cmd`. Strip
+      // it before matching the user's prefix and put it back when we
+      // render so we don't end up with '//cron'.
+      const rawName = String((item && item.cmd) || item || "");
+      const bare = rawName.startsWith("/") ? rawName.slice(1) : rawName;
+      const lower = bare.toLowerCase();
+      if (!bare) continue;
+      if (!lower.startsWith(prefix)) continue;
       out.push({
         kind: "command",
-        label: `/${name}`,
-        replace: `/${name} `,
+        label: `/${bare}`,
+        replace: `/${bare} `,
         description: (item && item.description) || "",
       });
       if (out.length >= limit) break;
