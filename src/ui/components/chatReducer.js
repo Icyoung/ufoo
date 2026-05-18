@@ -65,6 +65,7 @@ function createInitialState({ banner = [], globalMode = false, globalScope = "co
     selectedResumeIndex: 0,
     cronTasks: [],
     selectedCronIndex: -1,
+    viewingAgentId: null,
     inputHistory: [],
     historyIndex: 0,
     activeMerge: null,
@@ -227,6 +228,10 @@ function reducer(state, action) {
     }
     case "settings/set":
       return { ...state, settings: { ...state.settings, ...(action.patch || {}) } };
+    case "agentView/enter":
+      return { ...state, viewingAgentId: action.agentId || null };
+    case "agentView/exit":
+      return { ...state, viewingAgentId: null };
     default:
       return state;
   }

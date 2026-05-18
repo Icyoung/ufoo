@@ -29,9 +29,16 @@ layout, hooks, and proper isolation of pure logic from rendering.
 - **P0** ✅ ink + react deps, runtime bridge, `<InkDemo>` smoke harness,
   pure helpers extracted to `src/ui/format/`.
 - **P1** ✅ ucode TUI ported to ink behind `UFOO_TUI=ink`.
-- **P2** ⏳ internal agent view (PTY mirror) — pending.
-- **P3** ⏳ chat TUI — pending.
-- **P4** ⏳ remove blessed dep, flip default — pending.
+- **P2** ✅ folded into P3.6 (internal agent view).
+- **P3** ✅ chat TUI ported to ink behind `UFOO_TUI=ink`. Daemon
+  connection, dashboard (5 views), tool-merge, status spinner, history,
+  agent selection and a raw-PTY agent mirror are all wired. Full
+  `daemonMessageRouter` parity (markdown streams, transient agent
+  state, bus subview) is intentionally deferred to P4 — see
+  "Deferred to P4".
+- **P4** ⏳ flip the default to ink, remove blessed dep, port the
+  remaining `daemonMessageRouter` callbacks, retire the
+  `runChatBlessed` / `runUcodeBlessedTui` paths.
 
 ## P1 ucode TUI — what's wired
 
@@ -271,13 +278,98 @@ and `shouldEchoCommandInChat(text)` are pure.
 
 ### P3 phase plan
 
-| Step | Goal |
+| Step | Goal | Status |
+|---|---|---|
+| P3.1 | This audit | ✅ |
+| P3.2 | `UFOO_TUI=ink` switch in `runChat()` | ✅ |
+| P3.3 | ChatApp shell (banner + log + input + status) | ✅ |
+| P3.4 | Five dashboard views as React components | ✅ |
+| P3.5 | Daemon connection + PROMPT/BUS_SEND wiring | ✅ |
+| P3.6 | Raw-PTY internal agent view as a ChatApp mode | ✅ |
+| P3.7 | Real-TTY checklist | ✅ |
+
+## P3 chat TUI — what's wired
+
+| Feature | Status |
 |---|---|
-| P3.1 ✅ | This audit |
-| P3.2 | `UFOO_TUI=ink` switch in `runChat()` |
-| P3.3 | ChatApp shell (banner + log + input + status), runner stubs |
-| P3.4 | Five dashboard views as React components |
-| P3.5 | Wire daemonCoordinator, message router, completion, history, cron, settings |
-| P3.6 | Internal agent view (PTY mirror + bus subview) as a ChatApp mode |
-| P3.7 | Real-TTY checklist; flip default to ink; remove blessed dep in P4 |
+| Banner header (project + global mode + scope) | ✅ |
+| Scrolling `<Static>` log (1000 line cap) | ✅ |
+| Multiline input (P1 MultilineInput component) | ✅ |
+| 5 dashboard views (projects/agents/mode/provider/resume/cron) | ✅ |
+| Tab toggles input/dashboard focus | ✅ |
+| Up/Down history walk + agent selection mode | ✅ |
+| Left/Right cycle agents while selected | ✅ |
+| Spinner + phase status line | ✅ (skeleton; phase events from messageRouter pending P4) |
+| Tool-merge state machine + Ctrl+O expand | ✅ |
+| Daemon connect / send / status poll | ✅ |
+| `PROMPT` for free text, `BUS_SEND` for `@target` | ✅ |
+| `BUS_SEND_OK` / `RESPONSE` / `ERROR` / `STATUS` / `BUS` envelopes | ✅ |
+| Raw PTY agent mirror (Enter on selected agent, Esc to leave) | ✅ |
+| `daemonMessageRouter` (markdown streams, transient state, bus subview) | ⏳ P4 |
+| `commandExecutor` full slash-command dispatch (`/cron`, `/group`, `/role`, `/settings` …) | ⏳ P4 |
+| `completionController` (slash + `@` autocomplete) | ⏳ P4 |
+| `inputHistoryController` persisted file load/save | ⏳ P4 |
+| `cronScheduler` UI | ⏳ P4 |
+| `settingsController` (launch mode, provider, autoResume) | ⏳ P4 |
+
+## Real-TTY checklist for chat
+
+```sh
+UFOO_TUI=ink ./bin/ufoo.js chat                   # project mode
+UFOO_TUI=ink ./bin/ufoo.js chat --global          # global controller mode
+```
+
+### Layout
+- [ ] Banner shows the active project + global/project tag.
+- [ ] `Agents:` footer, status line above input, log fills the rest.
+- [ ] Resize the terminal — input frame and footer stay single-line.
+
+### Input + history
+- [ ] Type, Enter sends a `PROMPT`. Backspace, arrows, Ctrl+A/E etc.
+  behave the same as the ucode editor.
+- [ ] Up/Down on an empty draft walks the in-memory history.
+- [ ] `\` + Enter inserts a newline.
+- [ ] Esc clears any active agent selection.
+
+### Daemon
+- [ ] On launch the daemon spawns automatically (look for the socket
+  under `~/.ufoo` or your project's `.ufoo`).
+- [ ] Send a free-text message — daemon answers, status flips to
+  `Working on task...` and back to Ready.
+- [ ] Type `@<agent> hi` (or select with arrow keys) — message is
+  sent via `BUS_SEND`, ack arrives as `✓ Message delivered`.
+
+### Agents footer
+- [ ] Tab into the dashboard, ↓ enters agent selection (first item
+  inverse), ←/→ cycles, ↑ exits.
+- [ ] Enter on a selected agent attaches to its PTY (cleared screen +
+  scroll region + bottom hint bar). Esc returns to chat without
+  losing the previous draft or log.
+
+### Tool-merge
+- [ ] Daemon-driven tool calls collapse and `(Ctrl+O expand)` works
+  the same as ucode.
+
+### Smoke
+- [ ] `node scripts/chat-app-smoke.js` exits 0.
+- [ ] `node scripts/ucode-app-smoke.js` exits 0.
+- [ ] `npx jest --silent` shows the pre-existing 5 OAuth failures
+  only; every ink suite passes.
+
+## Deferred to P4
+
+- Markdown streaming via `streamTracker` — currently we accumulate
+  RESPONSE text and append line-by-line, no in-place re-render.
+- `daemonMessageRouter` deep wiring — bus subview, transient agent
+  state, pending delivery markers, `closeAgent` flow, `loopSummary`.
+- `commandExecutor` — `/cron`, `/group`, `/role`, `/solo`, `/settings`,
+  `/doctor`, `/init`, `/launch`, `/project`, `/open`, `/help` aren't
+  routed yet (free text + `@target` work).
+- `completionController` — slash and `@` completion popup.
+- `inputHistoryController` — history file load/save (currently
+  in-memory only).
+- `settingsController` — launch mode / agent provider / autoResume
+  toggles.
+- Project rail row in global controller mode beyond static rendering.
+- Flipping the default away from blessed.
 

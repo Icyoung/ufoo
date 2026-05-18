@@ -129,6 +129,64 @@ function createChatApp({ React, ink, props, interactive = true }) {
       return () => stdout.off("resize", update);
     }, [stdout]);
 
+    // Wire daemon: register a message handler that turns IPC responses
+    // into reducer dispatches, then kick off connect(). On unmount we
+    // close the connection so the next ink mount can attach cleanly.
+    useEffect(() => {
+      if (!interactive) return undefined;
+      const conn = props.daemonConnection;
+      const setHandler = props.setDaemonMessageHandler;
+      if (!conn || typeof conn.connect !== "function" || typeof setHandler !== "function") {
+        return undefined;
+      }
+      const { IPC_RESPONSE_TYPES } = require("../../shared/eventContract");
+      setHandler((msg) => {
+        if (!msg || typeof msg !== "object") return;
+        const type = msg.type;
+        if (type === IPC_RESPONSE_TYPES.RESPONSE) {
+          const text = String(msg.text || msg.summary || "").trim();
+          if (text) dispatch({ type: "log/appendMany", lines: text.split(/\r?\n/) });
+          dispatch({ type: "status/idle" });
+        } else if (type === IPC_RESPONSE_TYPES.ERROR) {
+          dispatch({ type: "log/append", text: `Error: ${msg.error || "unknown error"}` });
+          dispatch({ type: "status/idle" });
+        } else if (type === IPC_RESPONSE_TYPES.STATUS) {
+          // Status updates carry counts of agents, which we use to
+          // refresh the dashboard footer.
+          if (Array.isArray(msg.agents)) {
+            dispatch({ type: "agents/set", list: msg.agents });
+          }
+        } else if (type === IPC_RESPONSE_TYPES.BUS) {
+          // bus message envelope; render the body so the user sees
+          // delivery confirmations.
+          const body = String((msg && msg.body) || "").trim();
+          if (body) dispatch({ type: "log/appendMany", lines: body.split(/\r?\n/) });
+        } else if (type === IPC_RESPONSE_TYPES.BUS_SEND_OK) {
+          dispatch({ type: "log/append", text: `✓ Message delivered` });
+          dispatch({ type: "status/idle" });
+        }
+      });
+      conn.connect();
+      return () => {
+        try { if (typeof conn.close === "function") conn.close(); } catch { /* ignore */ }
+      };
+    }, [interactive]);
+
+    // Periodic STATUS poll to keep the agents footer fresh, mirroring
+    // blessed's requestStatus on a timer.
+    useEffect(() => {
+      if (!interactive) return undefined;
+      const conn = props.daemonConnection;
+      if (!conn || typeof conn.send !== "function") return undefined;
+      const { IPC_REQUEST_TYPES } = require("../../shared/eventContract");
+      const tick = () => {
+        try { conn.send({ type: IPC_REQUEST_TYPES.STATUS }); } catch { /* ignore */ }
+      };
+      tick();
+      const timer = setInterval(tick, 3000);
+      return () => clearInterval(timer);
+    }, [interactive]);
+
     useEffect(() => {
       if (!state.status.message || state.status.type === "none") return undefined;
       const timer = setInterval(() => setSpinnerTick((t) => t + 1), 100);
@@ -148,8 +206,43 @@ function createChatApp({ React, ink, props, interactive = true }) {
       dispatch({ type: "draft/clear" });
       dispatch({ type: "history/push", value: trimmed });
       dispatch({ type: "log/append", text: targetAgentLabel ? `›@${targetAgentLabel} ${trimmed}` : `› ${trimmed}` });
-      dispatch({ type: "log/append", text: "(daemon not wired yet — P3.5)" });
-    }, [state.draft, targetAgentLabel]);
+
+      // Slash commands are surfaced for now without going through
+      // commandExecutor; full command wiring lands in P3.7. For free-text,
+      // bus targeting and PROMPT requests, we hand off to the daemon
+      // directly.
+      if (!props.daemonConnection || typeof props.daemonConnection.send !== "function") {
+        dispatch({ type: "log/append", text: "Error: daemon connection unavailable" });
+        return;
+      }
+      const { IPC_REQUEST_TYPES } = require("../../shared/eventContract");
+      try {
+        if (targetAgentId) {
+          props.daemonConnection.send({
+            type: IPC_REQUEST_TYPES.BUS_SEND,
+            target: targetAgentId,
+            text: trimmed,
+          });
+          dispatch({ type: "agents/clearTarget" });
+          dispatch({
+            type: "status/set",
+            payload: { message: "Sending message...", type: "typing", showTimer: false, startedAt: Date.now() },
+          });
+        } else {
+          props.daemonConnection.send({
+            type: IPC_REQUEST_TYPES.PROMPT,
+            prompt: trimmed,
+          });
+          dispatch({
+            type: "status/set",
+            payload: { message: "Working on task...", type: "thinking", showTimer: true, startedAt: Date.now() },
+          });
+        }
+      } catch (err) {
+        dispatch({ type: "log/append", text: `Error: ${err && err.message ? err.message : "send failed"}` });
+        dispatch({ type: "status/idle" });
+      }
+    }, [state.draft, targetAgentLabel, targetAgentId]);
 
     const onArrowUpAtTop = useCallback(() => {
       if (state.inputHistory.length > 0) {
@@ -196,6 +289,19 @@ function createChatApp({ React, ink, props, interactive = true }) {
       if (key.ctrl && input === "c") { exit(); return; }
       if (key.ctrl && input === "o") { dispatch({ type: "merge/expand" }); return; }
       if (key.tab) { dispatch({ type: "focus/toggle" }); return; }
+      // Dashboard focus + agents view + agent selected + Enter: hand off
+      // to the raw PTY mirror via the runChatInk loop.
+      if (key.return && state.focusMode === "dashboard"
+          && state.dashboardView === "agents"
+          && state.agentSelectionMode
+          && state.selectedAgentIndex >= 0) {
+        const agentId = state.agents[state.selectedAgentIndex];
+        if (agentId && typeof props.requestEnterAgentView === "function") {
+          props.requestEnterAgentView(agentId);
+          exit();
+        }
+        return;
+      }
     }, { isActive: interactive });
 
     const statusText = computeStatusText(state.status, spinnerTick);
@@ -304,20 +410,75 @@ async function runChatInk(projectRoot, options = {}) {
     env.startDaemon(projectRoot);
   }
 
-  const props = {
+  const { socketPath } = require("../../daemon");
+  const { connectWithRetry } = require("../../chat/transport");
+  const { createDaemonTransport } = require("../../chat/daemonTransport");
+  const { createDaemonConnection } = require("../../chat/daemonConnection");
+  const { startAgentMirror } = require("./agentMirror");
+  const sock = socketPath(projectRoot);
+  const daemonTransport = createDaemonTransport({
+    projectRoot,
+    sockPath: sock,
+    isRunning: env.isRunning,
+    startDaemon: env.startDaemon,
+    connectWithRetry,
+  });
+
+  // The connection's `handleMessage` callback is filled in by ChatApp once
+  // it mounts and has its dispatcher ready. We expose a setter so the
+  // component can wire it without ChatApp needing to construct daemon
+  // internals itself.
+  let routedMessageHandler = () => {};
+  const daemonConnection = createDaemonConnection({
+    connectClient: daemonTransport.connectClient.bind(daemonTransport),
+    handleMessage: (msg) => routedMessageHandler(msg),
+    queueStatusLine: () => {},
+    resolveStatusLine: () => {},
+    logMessage: () => {},
+  });
+
+  // We loop the ink mount so an "enter agent" request can unmount ink,
+  // hand stdout/stdin to the raw PTY mirror, then bring ink back on exit.
+  let pendingEnter = null;
+  const baseProps = {
     activeProjectRoot: env.activeProjectRoot,
+    projectRoot,
     globalMode: env.globalMode,
     globalScope: env.globalMode ? "controller" : "project",
+    daemonConnection,
+    daemonTransport,
+    setDaemonMessageHandler: (fn) => { routedMessageHandler = typeof fn === "function" ? fn : () => {}; },
+    requestEnterAgentView: (agentId) => { pendingEnter = agentId; },
   };
 
-  const handle = await runInk(
-    (React, ink) => {
-      const ChatApp = createChatApp({ React, ink, props });
-      return React.createElement(ChatApp);
-    },
-    { stdin: process.stdin, stdout: process.stdout, exitOnCtrlC: true }
-  );
-  await handle.waitUntilExit();
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    pendingEnter = null;
+    const handle = await runInk(
+      (React, ink) => {
+        const ChatApp = createChatApp({ React, ink, props: baseProps });
+        return React.createElement(ChatApp);
+      },
+      { stdin: process.stdin, stdout: process.stdout, exitOnCtrlC: true }
+    );
+
+    // Wait until either the user exits the app or ChatApp asks to enter
+    // an agent view. The component triggers the latter by setting
+    // pendingEnter and then calling handle.unmount() via its onExit.
+    await handle.waitUntilExit();
+    if (!pendingEnter) return;
+
+    // Hand stdout/stdin to the mirror. When it exits, loop and re-mount.
+    const enteredAgentId = pendingEnter;
+    pendingEnter = null;
+    await new Promise((resolve) => {
+      startAgentMirror({
+        agentId: enteredAgentId,
+        projectRoot,
+        onExit: resolve,
+      });
+    });
+  }
 }
 
 module.exports = { runChatInk, createChatApp, bootstrapEnvironment };
