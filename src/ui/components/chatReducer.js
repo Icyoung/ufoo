@@ -241,6 +241,12 @@ function reducer(state, action) {
     }
     case "settings/set":
       return { ...state, settings: { ...state.settings, ...(action.patch || {}) } };
+    case "modeIndex/set":
+      return { ...state, selectedModeIndex: Math.max(0, action.index | 0) };
+    case "providerIndex/set":
+      return { ...state, selectedProviderIndex: Math.max(0, action.index | 0) };
+    case "cronIndex/set":
+      return { ...state, selectedCronIndex: Math.max(-1, action.index | 0) };
     case "cron/set":
       return { ...state, cronTasks: Array.isArray(action.list) ? action.list : [] };
     case "stream/begin":

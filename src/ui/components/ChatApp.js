@@ -582,9 +582,9 @@ function createChatApp({ React, ink, props, interactive = true }) {
           return;
         }
       }
-      // Global mode: first ↓ from the input goes to the projects rail (top
-      // tier of the dashboard). A second ↓ inside the projects rail drops
-      // to the agents row, handled by the dashboard-focus key path.
+      // Hand focus to the dashboard. Three-tier flow:
+      //   global mode  → projects → agents → mode/provider/cron
+      //   project mode → agents → mode/provider/cron
       if (props.globalMode && state.projects.length > 0) {
         dispatch({ type: "focus/set", mode: "dashboard" });
         dispatch({ type: "view/set", view: "projects" });
@@ -594,16 +594,12 @@ function createChatApp({ React, ink, props, interactive = true }) {
         }
         return;
       }
-      if (state.agents.length === 0) return;
-      const decision = fmt.resolveAgentSelectionOnDown({
-        agentSelectionMode: state.agentSelectionMode,
-        selectedAgentIndex: state.selectedAgentIndex,
-        totalAgents: state.agents.length,
-      });
-      if (decision.action === "enter") {
-        dispatch({ type: "agents/select", index: decision.index });
+      dispatch({ type: "focus/set", mode: "dashboard" });
+      dispatch({ type: "view/set", view: "agents" });
+      if (state.agents.length > 0 && state.selectedAgentIndex < 0) {
+        dispatch({ type: "agents/select", index: 0 });
       }
-    }, [state.inputHistory, state.historyIndex, state.agents, state.agentSelectionMode, state.selectedAgentIndex, state.projects.length, state.selectedProjectIndex, props.globalMode]);
+    }, [state.inputHistory, state.historyIndex, state.projects.length, state.selectedProjectIndex, state.agents.length, state.selectedAgentIndex, props.globalMode]);
 
     const onArrowSideAtEmpty = useCallback((direction) => {
       if (!state.agentSelectionMode || state.agents.length === 0) return;
@@ -835,6 +831,83 @@ function createChatApp({ React, ink, props, interactive = true }) {
           // Down from projects → agents row stays in dashboard focus.
           dispatch({ type: "view/set", view: "agents" });
           return;
+        }
+      }
+
+      // Dashboard focus on agents/mode/provider/cron — ↑↓ flip between
+      // sibling views, ←/→ pick within the active view, Esc returns to
+      // the input. Mirrors the blessed handlers in dashboardKeyController.
+      if (state.focusMode === "dashboard"
+          && (state.dashboardView === "agents"
+              || state.dashboardView === "mode"
+              || state.dashboardView === "provider"
+              || state.dashboardView === "cron")) {
+        if (key.escape) {
+          dispatch({ type: "focus/set", mode: "input" });
+          return;
+        }
+        if (state.dashboardView === "agents") {
+          if (key.leftArrow || key.rightArrow) {
+            const dir = key.leftArrow ? "left" : "right";
+            if (state.agents.length > 0) {
+              dispatch({ type: "agents/cycle", direction: dir });
+            }
+            return;
+          }
+          if (key.downArrow) {
+            dispatch({ type: "view/set", view: "mode" });
+            return;
+          }
+          if (key.upArrow) {
+            if (props.globalMode) dispatch({ type: "view/set", view: "projects" });
+            else dispatch({ type: "focus/set", mode: "input" });
+            return;
+          }
+        }
+        if (state.dashboardView === "mode") {
+          if (key.leftArrow || key.rightArrow) {
+            const len = state.modeOptions.length;
+            if (len > 0) {
+              const cur = state.selectedModeIndex;
+              const next = key.leftArrow
+                ? (cur - 1 + len) % len
+                : (cur + 1) % len;
+              dispatch({ type: "settings/set", patch: {} });
+              dispatch({ type: "view/set", view: "mode" });
+              // selectedModeIndex isn't tracked in reducer yet; we keep
+              // the value via a dedicated action below.
+              dispatch({ type: "modeIndex/set", index: next });
+            }
+            return;
+          }
+          if (key.downArrow) { dispatch({ type: "view/set", view: "provider" }); return; }
+          if (key.upArrow) { dispatch({ type: "view/set", view: "agents" }); return; }
+        }
+        if (state.dashboardView === "provider") {
+          if (key.leftArrow || key.rightArrow) {
+            const len = state.providerOptions.length;
+            if (len > 0) {
+              const cur = state.selectedProviderIndex;
+              const next = key.leftArrow ? (cur - 1 + len) % len : (cur + 1) % len;
+              dispatch({ type: "providerIndex/set", index: next });
+            }
+            return;
+          }
+          if (key.downArrow) { dispatch({ type: "view/set", view: "cron" }); return; }
+          if (key.upArrow) { dispatch({ type: "view/set", view: "mode" }); return; }
+        }
+        if (state.dashboardView === "cron") {
+          if (key.leftArrow || key.rightArrow) {
+            const len = state.cronTasks.length;
+            if (len > 0) {
+              const cur = state.selectedCronIndex < 0 ? 0 : state.selectedCronIndex;
+              const next = key.leftArrow ? (cur - 1 + len) % len : (cur + 1) % len;
+              dispatch({ type: "cronIndex/set", index: next });
+            }
+            return;
+          }
+          if (key.downArrow) { dispatch({ type: "view/set", view: "agents" }); return; }
+          if (key.upArrow) { dispatch({ type: "view/set", view: "provider" }); return; }
         }
       }
     }, { isActive: interactive });
