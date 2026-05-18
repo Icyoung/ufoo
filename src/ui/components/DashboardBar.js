@@ -49,46 +49,6 @@ function createDashboardBar({ React, ink }) {
       renderHint(hint),
     );
 
-  const ProjectRail = ({ projects, selectedIndex, focused, scope, dashboardHint, windowStart, maxItems }) => {
-    if (!Array.isArray(projects) || projects.length === 0) {
-      return h(Box, null,
-        h(Text, { color: "gray" }, "Projects: "),
-        h(Text, { color: "cyan" }, "(none registered)"),
-        dashboardHint ? h(Text, { color: "gray" }, ` · ${dashboardHint}`) : null,
-      );
-    }
-    const max = Math.max(1, Math.min(maxItems || 5, projects.length));
-    const start = clampAgentWindowWithSelection({
-      activeCount: projects.length,
-      maxWindow: max,
-      windowStart: windowStart || 0,
-      selectionIndex: selectedIndex,
-    });
-    const end = start + max;
-    const visible = projects.slice(start, end);
-    const leftMore = start > 0;
-    const rightMore = end < projects.length;
-    return h(Box, { wrap: "truncate" },
-      h(Text, { wrap: "truncate", color: "gray" }, "Projects: "),
-      leftMore ? h(Text, { color: "gray" }, "< ") : null,
-      ...visible.map((proj, renderedIdx) => {
-        const idx = start + renderedIdx;
-        return h(React.Fragment, { key: `p-${idx}` },
-          renderedIdx > 0 ? sep(`p-sep-${idx}`) : null,
-          h(Text, {
-            wrap: "truncate",
-            color: focused && idx === selectedIndex
-              ? undefined
-              : (proj.active ? "yellow" : "cyan"),
-            inverse: focused && idx === selectedIndex,
-          }, proj.label || proj.id || ""),
-        );
-      }),
-      rightMore ? h(Text, { color: "gray" }, " >") : null,
-      dashboardHint ? h(Text, { wrap: "truncate", color: "gray" }, ` · ${dashboardHint}`) : null,
-    );
-  };
-
   return function DashboardBar({
     dashboardView = "agents",
     focusMode = "input",
@@ -117,101 +77,121 @@ function createDashboardBar({ React, ink }) {
   }) {
     const dashboardFocused = focusMode === "dashboard";
 
-    if (dashboardView === "mode") {
-      return h(ChipsRow, {
-        caption: "Mode",
-        items: (modeOptions || []).map((m) => ({ label: m })),
-        selectedIndex: selectedModeIndex,
-        hint: dashHints.mode || "",
-      });
-    }
-    if (dashboardView === "provider") {
-      return h(ChipsRow, {
-        caption: "Agent",
-        items: (providerOptions || []).map((opt) => ({ label: opt.label || opt })),
-        selectedIndex: selectedProviderIndex,
-        hint: dashHints.provider || "",
-      });
-    }
-    if (dashboardView === "resume") {
-      return h(ChipsRow, {
-        caption: "Resume",
-        items: (resumeOptions || []).map((opt) => ({ label: opt.label || opt })),
-        selectedIndex: selectedResumeIndex,
-        hint: dashHints.resume || "",
-      });
-    }
-    if (dashboardView === "cron") {
-      const items = Array.isArray(cronTasks) ? cronTasks : [];
-      if (items.length === 0) return h(NoneRow, { caption: "Cron", hint: dashHints.cron || "" });
-      return h(ChipsRow, {
-        caption: "Cron",
-        items: items.map((it) => ({ label: it.label || it.summary || it.id || "" })).filter((x) => x.label),
-        selectedIndex: selectedCronIndex,
-        hint: dashHints.cron || "",
-      });
-    }
+    // Compose dashboard rows. Both modes treat the dashboard as a flat
+    // list of views; the difference is the viewport size:
+    //   project mode → 1 visible row
+    //   global mode → 2 visible rows
+    // Each row renders one view; the highlighted row matches dashboardView.
+    const sequence = globalMode
+      ? ["projects", "agents", "mode", "provider", "cron"]
+      : ["agents", "mode", "provider", "cron"];
+    const viewportSize = globalMode ? 2 : 1;
+    const cursorIdx = Math.max(0, sequence.indexOf(dashboardView));
+    let viewStart = cursorIdx;
+    if (cursorIdx >= viewportSize) viewStart = cursorIdx - viewportSize + 1;
+    const visibleViews = sequence.slice(viewStart, viewStart + viewportSize);
 
-    // dashboardView === "projects" or "agents" (or fallback)
-    // Global mode always shows the projects rail above whichever
-    // second-tier view (agents/mode/provider/cron) is active.
-    const showProjects = globalMode;
-    const projectRow = showProjects && projects.length > 0
-      ? h(ProjectRail, {
-          projects: projects.map((p) => ({
-            ...p,
-            active: p.root && p.root === activeProjectRoot,
-          })),
-          selectedIndex: selectedProjectIndex,
-          focused: dashboardFocused && dashboardView === "projects",
-          scope: globalScope,
-          dashboardHint: dashHints.projects || "",
-          windowStart: projectListWindowStart,
-          maxItems: maxProjectWindow,
-        })
-      : null;
+    const renderForView = (view) => {
+      if (view === "projects") {
+        if (!Array.isArray(projects) || projects.length === 0) {
+          return h(Box, null,
+            h(Text, { color: "gray" }, "Projects: "),
+            h(Text, { color: "cyan" }, "(none registered)"),
+          );
+        }
+        const max = Math.max(1, Math.min(maxProjectWindow || 5, projects.length));
+        const start = clampAgentWindowWithSelection({
+          activeCount: projects.length,
+          maxWindow: max,
+          windowStart: projectListWindowStart || 0,
+          selectionIndex: selectedProjectIndex,
+        });
+        const end = start + max;
+        const visible = projects.slice(start, end).map((p) => ({
+          ...p,
+          active: p.root && p.root === activeProjectRoot,
+        }));
+        return h(Box, { wrap: "truncate" },
+          h(Text, { wrap: "truncate", color: "gray" }, "Projects: "),
+          start > 0 ? h(Text, { color: "gray" }, "< ") : null,
+          ...visible.map((proj, renderedIdx) => {
+            const idx = start + renderedIdx;
+            const focused = dashboardFocused && view === dashboardView && idx === selectedProjectIndex;
+            return h(React.Fragment, { key: `p-${idx}` },
+              renderedIdx > 0 ? sep(`p-sep-${idx}`) : null,
+              h(Text, {
+                wrap: "truncate",
+                color: focused ? undefined : (proj.active ? "yellow" : "cyan"),
+                inverse: focused,
+              }, proj.label || proj.id || ""),
+            );
+          }),
+          end < projects.length ? h(Text, { color: "gray" }, " >") : null,
+        );
+      }
+      if (view === "agents") {
+        if (activeAgents.length === 0) {
+          return h(NoneRow, { caption: "Agents", hint: dashHints.agentsEmpty || "" });
+        }
+        const windowStart = clampAgentWindowWithSelection({
+          activeCount: activeAgents.length,
+          maxWindow: maxAgentWindow,
+          windowStart: agentListWindowStart,
+          selectionIndex: selectedAgentIndex,
+        });
+        const maxItems = Math.max(1, Math.min(maxAgentWindow, activeAgents.length));
+        const visible = activeAgents.slice(windowStart, windowStart + maxItems);
+        const items = visible.map((agentId, i) => {
+          const meta = activeAgentMeta.get && activeAgentMeta.get(agentId);
+          const label = `@${getAgentLabel(agentId, meta)}`;
+          return { label, selected: dashboardFocused && view === dashboardView && (windowStart + i) === selectedAgentIndex };
+        });
+        return h(ChipsRow, {
+          caption: "Agents",
+          items,
+          selectedIndex: dashboardFocused && view === dashboardView ? selectedAgentIndex - windowStart : -1,
+          leftMore: windowStart > 0,
+          rightMore: windowStart + maxItems < activeAgents.length,
+          hint: globalMode
+            ? (dashHints.agentsGlobal || dashHints.agents || "")
+            : (dashHints.agents || ""),
+        });
+      }
+      if (view === "mode") {
+        return h(ChipsRow, {
+          caption: "Mode",
+          items: (modeOptions || []).map((m) => ({ label: m })),
+          selectedIndex: dashboardFocused && view === dashboardView ? selectedModeIndex : -1,
+          hint: dashHints.mode || "",
+        });
+      }
+      if (view === "provider") {
+        return h(ChipsRow, {
+          caption: "Engine",
+          items: (providerOptions || []).map((opt) => ({ label: opt.label || opt })),
+          selectedIndex: dashboardFocused && view === dashboardView ? selectedProviderIndex : -1,
+          hint: dashHints.provider || "",
+        });
+      }
+      if (view === "cron") {
+        const items = Array.isArray(cronTasks) ? cronTasks : [];
+        if (items.length === 0) return h(NoneRow, { caption: "Cron", hint: dashHints.cron || "" });
+        return h(ChipsRow, {
+          caption: "Cron",
+          items: items.map((it) => ({ label: it.label || it.summary || it.id || "" })).filter((x) => x.label),
+          selectedIndex: dashboardFocused && view === dashboardView ? selectedCronIndex : -1,
+          hint: dashHints.cron || "",
+        });
+      }
+      return null;
+    };
 
-    let agentsRow;
-    if (activeAgents.length === 0) {
-      agentsRow = h(NoneRow, {
-        caption: "Agents",
-        hint: dashHints.agentsEmpty || "",
-      });
-    } else {
-      const windowStart = clampAgentWindowWithSelection({
-        activeCount: activeAgents.length,
-        maxWindow: maxAgentWindow,
-        windowStart: agentListWindowStart,
-        selectionIndex: selectedAgentIndex,
-      });
-      const maxItems = Math.max(1, Math.min(maxAgentWindow, activeAgents.length));
-      const visible = activeAgents.slice(windowStart, windowStart + maxItems);
-      const items = visible.map((agentId, i) => {
-        const meta = activeAgentMeta.get && activeAgentMeta.get(agentId);
-        const label = `@${getAgentLabel(agentId, meta)}`;
-        const absoluteIndex = windowStart + i;
-        return { label, selected: absoluteIndex === selectedAgentIndex };
-      });
-      const leftMore = windowStart > 0;
-      const rightMore = windowStart + maxItems < activeAgents.length;
-      // ChipsRow uses selectedIndex relative to its own items array.
-      const relSelected = selectedAgentIndex - windowStart;
-      agentsRow = h(ChipsRow, {
-        caption: "Agents",
-        items,
-        selectedIndex: relSelected,
-        leftMore,
-        rightMore,
-        hint: globalMode
-          ? (dashHints.agentsGlobal || dashHints.agents || "")
-          : (dashHints.agents || ""),
-      });
-    }
+    const rows = visibleViews.map((view, idx) =>
+      h(Box, { key: `dr-${view}-${idx}` }, renderForView(view))
+    );
 
-    if (projectRow) {
-      return h(Box, { flexDirection: "column" }, projectRow, agentsRow);
-    }
-    return agentsRow;
+    if (rows.length === 1) return rows[0];
+    return h(Box, { flexDirection: "column" }, ...rows);
   };
 }
 
