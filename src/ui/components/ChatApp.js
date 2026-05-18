@@ -1031,7 +1031,7 @@ function buildDashHints(state, targetAgentLabel) {
     provider: "↑↓ switch view · ←→ pick engine",
     resume: "↑↓ switch view · ←→ pick session",
     cron: "↑↓ switch view · ←→ select task",
-    projects: state.globalMode ? "↑↓ switch view · ←→ pick project · Enter open" : "",
+    projects: "",
   };
 }
 
