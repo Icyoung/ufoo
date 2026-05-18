@@ -584,6 +584,11 @@ function createChatApp({ React, ink, props, interactive = true }) {
       limit: 20,
     });
     const [completionIndex, setCompletionIndex] = useState(0);
+    // First visible row inside the popup. We show 8 rows at a time
+    // (POPUP_PAGE_SIZE) and slide the window when the cursor crosses
+    // the bottom or top, mimicking how a terminal list typically scrolls.
+    const POPUP_PAGE_SIZE = 8;
+    const [completionWindowStart, setCompletionWindowStart] = useState(0);
     // Bumped whenever the completion popup writes a new value into the
     // draft — MultilineInput watches this counter so it can park its
     // cursor at the end of the freshly accepted suggestion instead of
@@ -593,10 +598,12 @@ function createChatApp({ React, ink, props, interactive = true }) {
     useEffect(() => {
       if (completions.length === 0) {
         if (completionIndex !== 0) setCompletionIndex(0);
+        if (completionWindowStart !== 0) setCompletionWindowStart(0);
       } else if (completionIndex >= completions.length) {
         setCompletionIndex(completions.length - 1);
+        setCompletionWindowStart(Math.max(0, completions.length - POPUP_PAGE_SIZE));
       }
-    }, [completions.length, completionIndex]);
+    }, [completions.length, completionIndex, completionWindowStart]);
     const completionsOpen = completions.length > 0;
     const acceptCompletion = useCallback(() => {
       if (!completionsOpen) return false;
@@ -618,11 +625,30 @@ function createChatApp({ React, ink, props, interactive = true }) {
       // or Enter; Esc dismisses by clearing the trigger character.
       if (completionsOpen) {
         if (key.upArrow) {
-          setCompletionIndex((i) => (i - 1 + completions.length) % completions.length);
+          setCompletionIndex((i) => {
+            const next = (i - 1 + completions.length) % completions.length;
+            setCompletionWindowStart((ws) => {
+              if (next < ws) return next;
+              if (next === completions.length - 1) {
+                // wrapped to the bottom — snap window to the tail.
+                return Math.max(0, completions.length - POPUP_PAGE_SIZE);
+              }
+              return ws;
+            });
+            return next;
+          });
           return;
         }
         if (key.downArrow) {
-          setCompletionIndex((i) => (i + 1) % completions.length);
+          setCompletionIndex((i) => {
+            const next = (i + 1) % completions.length;
+            setCompletionWindowStart((ws) => {
+              if (next === 0) return 0; // wrapped to the head
+              if (next >= ws + POPUP_PAGE_SIZE) return next - POPUP_PAGE_SIZE + 1;
+              return ws;
+            });
+            return next;
+          });
           return;
         }
         if (key.return || key.tab) { acceptCompletion(); return; }
@@ -673,13 +699,25 @@ function createChatApp({ React, ink, props, interactive = true }) {
         h(Box, { flexGrow: 1 }),
         h(Text, { color: "gray" }, `v${fmt.UCODE_VERSION}`),
       ),
-      completionsOpen ? h(Box, { flexDirection: "column" },
-        h(Text, { color: "gray" }, "─".repeat(Math.max(8, size.cols || 80))),
-        ...completions.map((s, idx) => h(Box, { key: `cmp-${idx}` },
-          h(Text, { color: idx === completionIndex ? "cyan" : "gray", inverse: idx === completionIndex }, s.label),
-          s.description ? h(Text, { color: "gray" }, `  ${s.description}`) : null,
-        )),
-      ) : null,
+      completionsOpen ? (() => {
+        const start = Math.min(completionWindowStart, Math.max(0, completions.length - POPUP_PAGE_SIZE));
+        const end = Math.min(completions.length, start + POPUP_PAGE_SIZE);
+        const visible = completions.slice(start, end);
+        const totalIfPaged = completions.length > POPUP_PAGE_SIZE;
+        return h(Box, { flexDirection: "column" },
+          h(Text, { color: "gray" }, "─".repeat(Math.max(8, size.cols || 80))),
+          ...visible.map((s, idxInWindow) => {
+            const idx = start + idxInWindow;
+            return h(Box, { key: `cmp-${idx}` },
+              h(Text, { color: idx === completionIndex ? "cyan" : "gray", inverse: idx === completionIndex }, s.label),
+              s.description ? h(Text, { color: "gray" }, `  ${s.description}`) : null,
+            );
+          }),
+          totalIfPaged
+            ? h(Text, { color: "gray" }, `  (${completionIndex + 1}/${completions.length})`)
+            : null,
+        );
+      })() : null,
       h(Box, { width: "100%" },
         h(MultilineInput, {
           value: state.draft,
