@@ -859,6 +859,8 @@ function createChatApp({ React, ink, props, interactive = true }) {
             return;
           }
           if (key.upArrow) {
+            // Top of the agents tier: in global mode go back to projects,
+            // otherwise leave dashboard focus altogether.
             if (props.globalMode) dispatch({ type: "view/set", view: "projects" });
             else dispatch({ type: "focus/set", mode: "input" });
             return;
@@ -906,7 +908,10 @@ function createChatApp({ React, ink, props, interactive = true }) {
             }
             return;
           }
-          if (key.downArrow) { dispatch({ type: "view/set", view: "agents" }); return; }
+          if (key.downArrow) {
+            // Cron is the last tier — don't wrap back to agents.
+            return;
+          }
           if (key.upArrow) { dispatch({ type: "view/set", view: "provider" }); return; }
         }
       }
