@@ -228,6 +228,8 @@ function reducer(state, action) {
     }
     case "settings/set":
       return { ...state, settings: { ...state.settings, ...(action.patch || {}) } };
+    case "cron/set":
+      return { ...state, cronTasks: Array.isArray(action.list) ? action.list : [] };
     case "agentView/enter":
       return { ...state, viewingAgentId: action.agentId || null };
     case "agentView/exit":

@@ -151,15 +151,37 @@ function createChatApp({ React, ink, props, interactive = true }) {
           dispatch({ type: "log/append", text: `Error: ${msg.error || "unknown error"}` });
           dispatch({ type: "status/idle" });
         } else if (type === IPC_RESPONSE_TYPES.STATUS) {
-          // Status updates carry counts of agents, which we use to
-          // refresh the dashboard footer.
-          if (Array.isArray(msg.agents)) {
-            dispatch({ type: "agents/set", list: msg.agents });
+          // Daemon STATUS arrives as { type: "status", data: { active, active_meta, cron, ... } }.
+          // Build the agents list by zipping `active` (string ids) with the
+          // matching `active_meta` entries so the dashboard footer can show
+          // both the chip label and the nickname.
+          const data = (msg && msg.data) || {};
+          const activeIds = Array.isArray(data.active) ? data.active : [];
+          const metaList = Array.isArray(data.active_meta) ? data.active_meta : [];
+          const metaById = new Map();
+          for (const m of metaList) {
+            if (!m || typeof m !== "object") continue;
+            const fullId = m.fullId || (m.type && m.id ? `${m.type}:${m.id}` : "");
+            if (fullId) metaById.set(fullId, m);
+          }
+          const agentsForDispatch = activeIds.map((id) => {
+            const meta = metaById.get(id) || {};
+            const colon = id.indexOf(":");
+            return {
+              fullId: id,
+              type: meta.type || (colon > 0 ? id.slice(0, colon) : id),
+              id: meta.id || (colon > 0 ? id.slice(colon + 1) : ""),
+              nickname: meta.nickname || "",
+            };
+          });
+          dispatch({ type: "agents/set", list: agentsForDispatch });
+          if (data.cron && Array.isArray(data.cron.tasks)) {
+            dispatch({ type: "cron/set", list: data.cron.tasks });
           }
         } else if (type === IPC_RESPONSE_TYPES.BUS) {
           // bus message envelope; render the body so the user sees
           // delivery confirmations.
-          const body = String((msg && msg.body) || "").trim();
+          const body = String((msg && msg.body) || (msg && msg.data && msg.data.body) || "").trim();
           if (body) dispatch({ type: "log/appendMany", lines: body.split(/\r?\n/) });
         } else if (type === IPC_RESPONSE_TYPES.BUS_SEND_OK) {
           dispatch({ type: "log/append", text: `✓ Message delivered` });
