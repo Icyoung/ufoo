@@ -7,11 +7,14 @@
  * Activation: set UFOO_TUI=ink. The blessed path remains the default; flip
  * the switch in src/chat/index.js once P3 is signed off.
  *
- * Today's coverage: layout shell only — banner, scrolling <Static> log,
- * the ucode MultilineInput, status line. Daemon connection, dashboard
- * views, command execution, completion, history, agent view all come in
- * later P3 sub-tasks (3.4–3.6). The shell exists so we can iterate on
- * layout in real terminals while the heavier wiring lands in stages.
+ * Coverage today: layout shell + dashboard bar (5 modes: projects, agents,
+ * mode, provider, resume, cron) + multiline editor + status line +
+ * Tab/Esc focus + agent selection + Up/Down history. Daemon connection,
+ * command execution, completion and the internal-agent view land in
+ * later P3 sub-tasks (3.5, 3.6).
+ *
+ * Chat state is kept in chatReducer.js so the entire transition table can
+ * be exercised by jest without mounting ink.
  */
 
 const path = require("path");
@@ -21,6 +24,8 @@ const crypto = require("crypto");
 const { runInk } = require("../runInk");
 const fmt = require("../format");
 const { createMultilineInput } = require("./MultilineInput");
+const { createDashboardBar } = require("./DashboardBar");
+const { reducer, createInitialState } = require("./chatReducer");
 
 function bootstrapEnvironment(projectRoot, options = {}) {
   // Mirror of the early section of runChatBlessed: ensure ufoo dirs exist
@@ -77,38 +82,43 @@ async function ensureSubscriberId(projectRoot) {
   process.env.UFOO_SUBSCRIBER_ID = `claude-code:${sessionId}`;
 }
 
+function getAgentLabelFor(meta, agentId) {
+  if (meta && meta.nickname) return meta.nickname;
+  if (!agentId) return "";
+  const colon = agentId.indexOf(":");
+  if (colon < 0) return agentId;
+  const head = agentId.slice(0, colon);
+  const tail = agentId.slice(colon + 1).slice(0, 6);
+  return tail ? `${head}:${tail}` : head;
+}
+
 function createChatApp({ React, ink, props, interactive = true }) {
-  const { useState, useCallback, useEffect, useRef } = React;
-  const { Box, Text, Static, useInput, useApp } = ink;
+  const { useReducer, useEffect, useState, useCallback } = React;
+  const { Box, Text, Static, useInput, useApp, useStdout } = ink;
   const h = React.createElement;
   const MultilineInput = createMultilineInput({ React, ink });
+  const DashboardBar = createDashboardBar({ React, ink });
 
   const banner = [
     `ufoo chat · ${props.activeProjectRoot}`,
     props.globalMode ? `mode: global (${props.globalScope || "controller"})` : "mode: project",
-    "(daemon, dashboard and command execution land in P3.5)",
+    "(daemon and command execution land in P3.5)",
   ];
 
   return function ChatApp() {
-    const [logLines, setLogLines] = useState(() =>
-      banner.concat([""]).map((line, idx) => ({ id: `b-${idx}`, text: line }))
+    const [state, dispatch] = useReducer(
+      reducer,
+      undefined,
+      () => createInitialState({
+        banner,
+        globalMode: props.globalMode,
+        globalScope: props.globalScope || "controller",
+      })
     );
-    const [draft, setDraft] = useState("");
-    const statusText = "CHAT · Ready (ink shell — P3.3)";
     const [size, setSize] = useState({ cols: 0, rows: 0 });
-    const lineSeqRef = useRef(banner.length + 1);
+    const [spinnerTick, setSpinnerTick] = useState(0);
     const { exit } = useApp();
-    const { useStdout } = ink;
     const { stdout } = useStdout();
-
-    const appendLogLine = useCallback((text) => {
-      setLogLines((prev) => {
-        const id = `l-${lineSeqRef.current}`;
-        lineSeqRef.current += 1;
-        const next = prev.concat([{ id, text: String(text || "") }]);
-        return next.length > 1000 ? next.slice(-1000) : next;
-      });
-    }, []);
 
     useEffect(() => {
       if (!stdout) return undefined;
@@ -119,38 +129,160 @@ function createChatApp({ React, ink, props, interactive = true }) {
       return () => stdout.off("resize", update);
     }, [stdout]);
 
+    useEffect(() => {
+      if (!state.status.message || state.status.type === "none") return undefined;
+      const timer = setInterval(() => setSpinnerTick((t) => t + 1), 100);
+      return () => clearInterval(timer);
+    }, [state.status.message, state.status.type]);
+
+    const targetAgentId = state.agentSelectionMode && state.selectedAgentIndex >= 0
+      ? state.agents[state.selectedAgentIndex]
+      : null;
+    const targetAgentMeta = targetAgentId ? state.activeAgentMeta.get(targetAgentId) : null;
+    const targetAgentLabel = targetAgentId ? getAgentLabelFor(targetAgentMeta, targetAgentId) : "";
+
     const submit = useCallback((submitted) => {
-      const value = String(submitted == null ? draft : submitted).trim();
-      if (!value) return;
-      setDraft("");
-      appendLogLine(`› ${value}`);
-      appendLogLine("(daemon not wired yet — P3.5)");
-    }, [draft, appendLogLine]);
+      const value = String(submitted == null ? state.draft : submitted);
+      const trimmed = value.trim();
+      if (!trimmed) return;
+      dispatch({ type: "draft/clear" });
+      dispatch({ type: "history/push", value: trimmed });
+      dispatch({ type: "log/append", text: targetAgentLabel ? `›@${targetAgentLabel} ${trimmed}` : `› ${trimmed}` });
+      dispatch({ type: "log/append", text: "(daemon not wired yet — P3.5)" });
+    }, [state.draft, targetAgentLabel]);
+
+    const onArrowUpAtTop = useCallback(() => {
+      if (state.inputHistory.length > 0) {
+        const next = Math.max(0, state.historyIndex - 1);
+        if (next !== state.historyIndex || state.draft !== state.inputHistory[next]) {
+          dispatch({ type: "history/setIndex", index: next });
+          dispatch({ type: "draft/set", value: state.inputHistory[next] || "" });
+          return;
+        }
+      }
+      if (state.agentSelectionMode) dispatch({ type: "agents/clearTarget" });
+    }, [state.inputHistory, state.historyIndex, state.draft, state.agentSelectionMode]);
+
+    const onArrowDownAtBottom = useCallback((currentValue) => {
+      if (state.inputHistory.length > 0) {
+        const transition = fmt.resolveHistoryDownTransition({
+          inputHistory: state.inputHistory,
+          historyIndex: state.historyIndex,
+          currentValue,
+        });
+        if (transition.moved) {
+          dispatch({ type: "history/setIndex", index: transition.nextHistoryIndex });
+          dispatch({ type: "draft/set", value: transition.nextValue });
+          return;
+        }
+      }
+      if (state.agents.length === 0) return;
+      const decision = fmt.resolveAgentSelectionOnDown({
+        agentSelectionMode: state.agentSelectionMode,
+        selectedAgentIndex: state.selectedAgentIndex,
+        totalAgents: state.agents.length,
+      });
+      if (decision.action === "enter") {
+        dispatch({ type: "agents/select", index: decision.index });
+      }
+    }, [state.inputHistory, state.historyIndex, state.agents, state.agentSelectionMode, state.selectedAgentIndex]);
+
+    const onArrowSideAtEmpty = useCallback((direction) => {
+      if (!state.agentSelectionMode || state.agents.length === 0) return;
+      dispatch({ type: "agents/cycle", direction });
+    }, [state.agentSelectionMode, state.agents.length]);
 
     useInput((input, key) => {
-      if (key.ctrl && input === "c") exit();
+      if (key.ctrl && input === "c") { exit(); return; }
+      if (key.ctrl && input === "o") { dispatch({ type: "merge/expand" }); return; }
+      if (key.tab) { dispatch({ type: "focus/toggle" }); return; }
     }, { isActive: interactive });
 
+    const statusText = computeStatusText(state.status, spinnerTick);
+    const inputWidth = Math.max(20, (size.cols || 80) - 4);
+
     return h(Box, { flexDirection: "column", width: "100%" },
-      h(Static, { items: logLines }, (item) =>
+      h(Static, { items: state.logLines }, (item) =>
         h(Text, { key: item.id }, item.text || " ")
       ),
+      state.activeMerge ? h(Box, null,
+        h(Text, { color: state.activeMerge.entries.some((e) => e.isError) ? "red" : "cyan" },
+          fmt.buildToolMergeRowText(state.activeMerge.entries)),
+      ) : null,
       h(Box, { marginTop: 1 },
         h(Text, { color: "gray" }, statusText),
       ),
       h(Box, { width: "100%" },
         h(MultilineInput, {
-          value: draft,
-          onChange: (next) => setDraft(next),
+          value: state.draft,
+          onChange: (next) => dispatch({ type: "draft/set", value: next }),
           onSubmit: (value) => submit(value),
-          onCancel: () => { /* P3.5: clear pending state, etc. */ },
-          width: Math.max(20, (size.cols || 80) - 4),
+          onCancel: () => { /* P3.5: cancel pending daemon op */ },
+          onArrowUpAtTop,
+          onArrowDownAtBottom,
+          onArrowLeftAtEmpty: () => onArrowSideAtEmpty("left"),
+          onArrowRightAtEmpty: () => onArrowSideAtEmpty("right"),
+          width: inputWidth,
           interactive,
-          placeholder: "type a message...",
+          placeholder: targetAgentLabel ? `message @${targetAgentLabel}...` : "type a message...",
+          promptPrefix: targetAgentLabel ? `›@${targetAgentLabel} ` : "› ",
         }),
       ),
+      h(DashboardBar, {
+        dashboardView: state.dashboardView,
+        focusMode: state.focusMode,
+        globalMode: state.globalMode,
+        globalScope: state.globalScope,
+        activeAgents: state.agents,
+        activeAgentMeta: state.activeAgentMeta,
+        selectedAgentIndex: state.selectedAgentIndex,
+        agentListWindowStart: state.agentListWindowStart,
+        getAgentLabel: (id, meta) => getAgentLabelFor(meta || state.activeAgentMeta.get(id), id),
+        modeOptions: state.modeOptions,
+        selectedModeIndex: state.selectedModeIndex,
+        providerOptions: state.providerOptions,
+        selectedProviderIndex: state.selectedProviderIndex,
+        resumeOptions: state.resumeOptions,
+        selectedResumeIndex: state.selectedResumeIndex,
+        cronTasks: state.cronTasks,
+        selectedCronIndex: state.selectedCronIndex,
+        projects: state.projects,
+        selectedProjectIndex: state.selectedProjectIndex,
+        activeProjectRoot: props.activeProjectRoot,
+        dashHints: buildDashHints(state, targetAgentLabel),
+      }),
     );
   };
+}
+
+function buildDashHints(state, targetAgentLabel) {
+  const agentsHint = state.agents.length === 0
+    ? "No target agents"
+    : (targetAgentLabel
+        ? `↓ select ${targetAgentLabel} · ←/→ switch · ↑ clear`
+        : "↓ select target · ←/→ switch");
+  return {
+    agents: agentsHint,
+    agentsEmpty: agentsHint,
+    mode: "↑↓ switch view · ←→ pick mode",
+    provider: "↑↓ switch view · ←→ pick agent",
+    resume: "↑↓ switch view · ←→ pick session",
+    cron: "↑↓ switch view · ←→ select task",
+    projects: state.globalMode ? "↑↓ switch view · ←→ pick project · Enter open" : "",
+  };
+}
+
+function computeStatusText(status, spinnerTick) {
+  const message = String((status && status.message) || "");
+  if (!message) return "CHAT · Ready";
+  const type = String((status && status.type) || "thinking");
+  const indicators = fmt.STATUS_INDICATORS[type] || fmt.STATUS_INDICATORS.thinking;
+  const indicator = indicators[Math.max(0, Math.floor(Number(spinnerTick) || 0)) % indicators.length];
+  const startedAt = Number.isFinite(status && status.startedAt) ? status.startedAt : 0;
+  const timerText = status && status.showTimer && startedAt
+    ? ` (${fmt.formatPendingElapsed(Date.now() - startedAt)}, esc cancel)`
+    : "";
+  return `${indicator} ${message}${timerText}`;
 }
 
 async function runChatInk(projectRoot, options = {}) {
