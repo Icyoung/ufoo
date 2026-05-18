@@ -4,11 +4,19 @@
  * Ink-based ucode TUI. Behaviourally equivalent to runUcodeBlessedTui in
  * src/code/tui.js but rendered via React + ink.
  *
- * Activation: set UFOO_TUI=ink. The blessed path remains the default until
- * P1 is signed off and we flip the switch.
+ * Activation: set UFOO_TUI=ink. The blessed path remains the default; flip
+ * the switch in src/code/tui.js once P3 is signed off.
  *
- * This file currently only ships the layout shell (banner, log, status,
- * input). Runner wiring and tool-call merging land in P1.4.
+ * Coverage today: banner, scrolling log via <Static>, tool-call merge with
+ * Ctrl+O expand, multiline editor (see MultilineInput.js), spinner+phase
+ * status line, abortController-driven Esc cancel, input history Up/Down,
+ * agent selection footer, runSingleCommand + runNaturalLanguageTask path.
+ *
+ * Not yet wired (waiting on later sub-tasks or chat parity work):
+ *   - background tasks ("BG x/y/z" status suffix)
+ *   - ubus / resume / nl_bg / probe variants of runSingleCommand result
+ *     (current default branch dumps result.output as a fallback)
+ *   - autoBus polling that the blessed path runs in the background
  */
 
 const { runInk } = require("../runInk");
@@ -35,8 +43,8 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
     const [draft, setDraft] = useState("");
     // status: idle when message === "". `type` picks a STATUS_INDICATORS
     // bucket; `showTimer` and `startedAt` reproduce the blessed spinner
-    // controls. P1.4d will append a "BG x/y/z" suffix when background
-    // tasks land.
+    // controls. Background tasks ("BG x/y/z" suffix) are not wired yet —
+    // see the file header for the deferred parity items.
     const [status, setStatus] = useState({
       message: "",
       type: "thinking",
@@ -390,10 +398,14 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
           return;
         }
         default:
-          // ubus / resume / nl_bg etc. — wired in later P1.4 sub-tasks.
+          // ubus / resume / nl_bg / probe-like kinds aren't fully ported
+          // yet — fall back to dumping any output the runner returned.
           if (result.output) appendLogText(result.output);
       }
-    }, [appendLogLine, appendLogText, exit, props]);
+    }, [appendLogLine, appendLogText, exit, props, logToolHint]);
+    // ^ `props` is captured by the createUcodeApp closure on a single mount,
+    // so its reference is stable across renders even though it looks like a
+    // changing dep to React's exhaustive-deps lint.
 
     const submit = useCallback((submitted) => {
       const value = String(submitted == null ? draft : submitted);
