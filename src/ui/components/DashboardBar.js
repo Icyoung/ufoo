@@ -190,11 +190,11 @@ function createDashboardBar({ React, ink }) {
     };
 
     const rows = visibleViews.map((view, idx) =>
-      h(Box, { key: `dr-${view}-${idx}` }, renderForView(view))
+      h(Box, { key: `dr-${view}-${idx}`, width: "100%" }, renderForView(view))
     );
 
-    if (rows.length === 1) return rows[0];
-    return h(Box, { flexDirection: "column" }, ...rows);
+    if (rows.length === 1) return h(Box, { width: "100%" }, rows[0]);
+    return h(Box, { flexDirection: "column", width: "100%" }, ...rows);
   };
 }
 

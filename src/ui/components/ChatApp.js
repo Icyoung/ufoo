@@ -744,10 +744,12 @@ function createChatApp({ React, ink, props, interactive = true }) {
       // Ctrl+X stops it.
       if (state.focusMode === "dashboard" && state.dashboardView === "projects" && state.projects.length > 0) {
         if (key.leftArrow || key.rightArrow) {
-          const dir = key.leftArrow ? -1 : 1;
           const cur = Number.isFinite(state.selectedProjectIndex) && state.selectedProjectIndex >= 0
             ? state.selectedProjectIndex : 0;
-          const next = (cur + dir + state.projects.length) % state.projects.length;
+          const next = key.leftArrow
+            ? Math.max(0, cur - 1)
+            : Math.min(state.projects.length - 1, cur + 1);
+          if (next === cur) return;
           dispatch({ type: "projects/select", index: next });
           // Slide the visible window to keep the cursor on screen. We mirror
           // clampAgentWindowWithSelection's logic with maxProjectWindow=5.
@@ -755,10 +757,6 @@ function createChatApp({ React, ink, props, interactive = true }) {
           let nextStart = state.projectListWindowStart || 0;
           if (next < nextStart) nextStart = next;
           else if (next >= nextStart + max) nextStart = next - max + 1;
-          if (cur === state.projects.length - 1 && next === 0) nextStart = 0;
-          if (cur === 0 && next === state.projects.length - 1) {
-            nextStart = Math.max(0, state.projects.length - max);
-          }
           if (nextStart !== state.projectListWindowStart) {
             dispatch({ type: "projects/window", windowStart: nextStart });
           }
@@ -872,13 +870,9 @@ function createChatApp({ React, ink, props, interactive = true }) {
             if (len > 0) {
               const cur = state.selectedModeIndex;
               const next = key.leftArrow
-                ? (cur - 1 + len) % len
-                : (cur + 1) % len;
-              dispatch({ type: "settings/set", patch: {} });
-              dispatch({ type: "view/set", view: "mode" });
-              // selectedModeIndex isn't tracked in reducer yet; we keep
-              // the value via a dedicated action below.
-              dispatch({ type: "modeIndex/set", index: next });
+                ? Math.max(0, cur - 1)
+                : Math.min(len - 1, cur + 1);
+              if (next !== cur) dispatch({ type: "modeIndex/set", index: next });
             }
             return;
           }
@@ -890,8 +884,8 @@ function createChatApp({ React, ink, props, interactive = true }) {
             const len = state.providerOptions.length;
             if (len > 0) {
               const cur = state.selectedProviderIndex;
-              const next = key.leftArrow ? (cur - 1 + len) % len : (cur + 1) % len;
-              dispatch({ type: "providerIndex/set", index: next });
+              const next = key.leftArrow ? Math.max(0, cur - 1) : Math.min(len - 1, cur + 1);
+              if (next !== cur) dispatch({ type: "providerIndex/set", index: next });
             }
             return;
           }
@@ -903,8 +897,8 @@ function createChatApp({ React, ink, props, interactive = true }) {
             const len = state.cronTasks.length;
             if (len > 0) {
               const cur = state.selectedCronIndex < 0 ? 0 : state.selectedCronIndex;
-              const next = key.leftArrow ? (cur - 1 + len) % len : (cur + 1) % len;
-              dispatch({ type: "cronIndex/set", index: next });
+              const next = key.leftArrow ? Math.max(0, cur - 1) : Math.min(len - 1, cur + 1);
+              if (next !== cur) dispatch({ type: "cronIndex/set", index: next });
             }
             return;
           }

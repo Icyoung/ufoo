@@ -162,11 +162,10 @@ function reducer(state, action) {
       };
     case "agents/cycle": {
       if (state.agents.length === 0) return state;
-      const next = fmt.cycleAgentSelectionIndex(
-        state.selectedAgentIndex,
-        state.agents.length,
-        action.direction
-      );
+      const cur = state.selectedAgentIndex < 0 ? 0 : state.selectedAgentIndex;
+      const next = action.direction === "left"
+        ? Math.max(0, cur - 1)
+        : Math.min(state.agents.length - 1, cur + 1);
       return { ...state, selectedAgentIndex: next, agentSelectionMode: true };
     }
     case "agents/clearTarget":
