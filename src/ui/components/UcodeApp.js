@@ -138,6 +138,118 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       });
     }, []);
 
+    const appendLogText = useCallback((text) => {
+      // Multi-line text → split into separate log entries so <Static> keys
+      // stay stable when streaming arrives line-by-line.
+      const raw = String(text == null ? "" : text);
+      if (!raw) return;
+      const lines = raw.split(/\r?\n/);
+      for (const line of lines) appendLogLine(line);
+    }, [appendLogLine]);
+
+    const runChainRef = useRef(Promise.resolve());
+
+    const executeLine = useCallback(async (rawValue) => {
+      const normalized = String(rawValue || "").replace(/\r?\n/g, " ").trim();
+      if (!normalized) return;
+      appendLogLine(`› ${normalized}`);
+
+      const runtimeWorkspace = String(
+        (props.state && props.state.workspaceRoot) || props.workspaceRoot || process.cwd()
+      );
+
+      let result;
+      try {
+        result = props.runSingleCommand(normalized, runtimeWorkspace);
+      } catch (err) {
+        appendLogText(`Error: ${err && err.message ? err.message : "command parse failed"}`);
+        return;
+      }
+      if (!result || typeof result !== "object") return;
+
+      switch (result.kind) {
+        case "empty":
+          return;
+        case "exit":
+          exit();
+          return;
+        case "probe":
+          return;
+        case "help":
+        case "error":
+          appendLogText(result.output || "");
+          return;
+        case "tool": {
+          // P1.4b will render this through the tool-merge state machine.
+          // For now just log a one-line summary so users see something.
+          const payload = result.result && typeof result.result === "object" ? result.result : {};
+          const detail = fmt.normalizeBashToolCommand(result.args, payload);
+          const isError = payload.ok === false;
+          const marker = isError ? "✗" : "✓";
+          appendLogText(`${marker} ${result.tool || "tool"}${detail ? ` · ${detail}` : ""}`);
+          return;
+        }
+        case "nl": {
+          let streamBuf = "";
+          let nlResult = null;
+          try {
+            nlResult = await props.runNaturalLanguageTask(result.task, props.state, {
+              onPhase: () => {
+                // P1.4c: drive the spinner from these events.
+              },
+              onDelta: (delta) => {
+                streamBuf += String(delta || "");
+                const parts = streamBuf.split(/\r?\n/);
+                while (parts.length > 1) {
+                  appendLogLine(parts.shift());
+                }
+                streamBuf = parts[0];
+              },
+              onToolLog: (entry) => {
+                // P1.4b: merge into ToolGroup state. For now, one line each.
+                if (!entry || typeof entry !== "object") return;
+                const detail = fmt.normalizeBashToolCommand(entry.args, entry.result);
+                const phase = String(entry.phase || "").toLowerCase();
+                const marker = phase === "error" || (entry.error && entry.error.length > 0) ? "✗" : "·";
+                appendLogText(`${marker} ${entry.tool || "tool"}${detail ? ` · ${detail}` : ""}`);
+              },
+            });
+          } catch (err) {
+            appendLogText(`Error: ${err && err.message ? err.message : "agent loop failed"}`);
+            return;
+          }
+          if (streamBuf) appendLogLine(streamBuf);
+          const summary = props.formatNlResult(nlResult, false);
+          if (summary) appendLogText(summary);
+          try {
+            const persisted = props.persistSessionState(props.state);
+            if (persisted && persisted.ok === false) {
+              appendLogText(
+                `Error: failed to persist session ${(props.state && props.state.sessionId) || ""}: ${persisted.error || "unknown error"}`
+              );
+            }
+          } catch {
+            // persistSessionState failures shouldn't crash the TUI.
+          }
+          return;
+        }
+        default:
+          // ubus / resume / nl_bg etc. — wired in later P1.4 sub-tasks.
+          if (result.output) appendLogText(result.output);
+      }
+    }, [appendLogLine, appendLogText, exit, props]);
+
+    const submit = useCallback((submitted) => {
+      const value = String(submitted == null ? draft : submitted);
+      const trimmed = value.trim();
+      if (!trimmed) return;
+      setDraft("");
+      // Serialize executions so streaming tasks don't interleave.
+      runChainRef.current = runChainRef.current
+        .then(() => executeLine(value))
+        .catch((err) => appendLogText(`Error: ${err && err.message ? err.message : err}`));
+    }, [draft, executeLine, appendLogText]);
+
     useEffect(() => {
       if (!stdout) return undefined;
       const update = () =>
@@ -146,14 +258,6 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       stdout.on("resize", update);
       return () => stdout.off("resize", update);
     }, [stdout]);
-
-    const submit = useCallback((submitted) => {
-      const value = String(submitted == null ? draft : submitted).trim();
-      if (!value) return;
-      setDraft("");
-      appendLogLine(`› ${value}`);
-      appendLogLine("(runner not wired yet — P1.4)");
-    }, [draft, appendLogLine]);
 
     // Top-level only catches Ctrl+C; the editor handles all text editing.
     useInput((input, key) => {

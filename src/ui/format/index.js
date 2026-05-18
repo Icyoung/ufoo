@@ -26,6 +26,15 @@ const STATUS_INDICATORS = {
   waiting: ["∙", "∙∙", "∙∙∙", "∙∙", "∙"],
 };
 
+// Friendly labels for the tool-call events surfaced in the status line.
+// Keep this list in sync with the keys handled by buildMergedToolSummaryText.
+const TOOL_LABELS = {
+  read: "Reading file",
+  write: "Writing file",
+  edit: "Editing file",
+  bash: "Running command",
+};
+
 const ANSI_PATTERN = /\x1B\[[0-9;?]*[ -/]*[@-~]/g;
 
 function charDisplayWidth(char = "") {
@@ -561,6 +570,7 @@ module.exports = {
   ANSI_PATTERN,
   STATUS_INDICATORS,
   StreamBuffer,
+  TOOL_LABELS,
   UCODE_BANNER_LINES,
   UCODE_VERSION,
   buildMergedToolExpandedLines,
