@@ -498,7 +498,7 @@ function createChatApp({ React, ink, props, interactive = true }) {
           h(Text, { color: idx === completionIndex ? "cyan" : "gray", inverse: idx === completionIndex }, s.label),
           s.description ? h(Text, { color: "gray" }, `  ${s.description}`) : null,
         )),
-        h(Text, { color: "gray" }, "  ↑↓ select · Tab/Enter accept · Esc dismiss"),
+        h(Text, { color: "gray" }, "↑↓ select · Tab/Enter accept · Esc dismiss"),
       ) : null,
       h(Box, { width: "100%" },
         h(MultilineInput, {
