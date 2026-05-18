@@ -200,7 +200,7 @@ function buildChatBannerLines(props, version) {
 }
 
 function createChatApp({ React, ink, props, interactive = true }) {
-  const { useReducer, useEffect, useState, useCallback } = React;
+  const { useReducer, useEffect, useState, useCallback, useRef } = React;
   const { Box, Text, Static, useInput, useApp, useStdout } = ink;
   const h = React.createElement;
   const MultilineInput = createMultilineInput({ React, ink });
@@ -334,6 +334,76 @@ function createChatApp({ React, ink, props, interactive = true }) {
       };
     }, [interactive]);
 
+    // commandExecutor wiring. The blessed implementation reuses this
+    // module to dispatch every slash command (~30 callbacks). We adapt
+    // the callback surface to ink: log/status/render writes go through
+    // dispatch, daemon ops go through props.daemonConnection, and
+    // blessed-tag markup the executor sprinkles into log lines is
+    // stripped before rendering.
+    const commandExecutorRef = useRef(null);
+    useEffect(() => {
+      if (!interactive) return undefined;
+      const { createCommandExecutor } = require("../../chat/commandExecutor");
+      const { parseCommand: parseCmd } = require("../../chat/commands");
+      const { stripBlessedTags } = require("../../chat/text");
+      const conn = props.daemonConnection;
+      const tport = props.daemonTransport;
+
+      const safeLog = (kind, text) => {
+        const cleaned = stripBlessedTags(String(text || ""));
+        if (!cleaned) return;
+        const lines = cleaned.split(/\r?\n/);
+        if (kind === "error") {
+          dispatch({ type: "log/append", text: `Error: ${lines[0] || ""}` });
+          for (const line of lines.slice(1)) dispatch({ type: "log/append", text: line });
+        } else {
+          dispatch({ type: "log/appendMany", lines });
+        }
+      };
+
+      try {
+        commandExecutorRef.current = createCommandExecutor({
+          projectRoot: props.projectRoot,
+          getActiveProjectRoot: () => props.activeProjectRoot || props.projectRoot,
+          parseCommand: parseCmd,
+          escapeBlessed: (v) => String(v == null ? "" : v),
+          logMessage: safeLog,
+          resolveStatusLine: () => dispatch({ type: "status/idle" }),
+          renderScreen: () => {},
+          getActiveAgents: () => state.agents,
+          getActiveAgentMetaMap: () => state.activeAgentMeta,
+          getAgentLabel: (id) => getAgentLabelFor(state.activeAgentMeta.get(id), id),
+          isDaemonRunning: () => props.env && props.env.isRunning ? props.env.isRunning(props.projectRoot) : true,
+          startDaemon: () => props.env && props.env.startDaemon && props.env.startDaemon(props.projectRoot),
+          stopDaemon: () => {},
+          restartDaemon: async () => {
+            try { if (conn && typeof conn.close === "function") conn.close(); } catch { /* ignore */ }
+            try { if (typeof conn.connect === "function") conn.connect(); } catch { /* ignore */ }
+          },
+          send: (req) => { try { if (conn && typeof conn.send === "function") conn.send(req); } catch { /* ignore */ } },
+          requestStatus: () => {
+            try {
+              const { IPC_REQUEST_TYPES } = require("../../shared/eventContract");
+              if (conn && typeof conn.send === "function") conn.send({ type: IPC_REQUEST_TYPES.STATUS });
+            } catch { /* ignore */ }
+          },
+          globalMode: Boolean(props.globalMode),
+          listProjects: () => state.projects,
+          getCurrentProject: () => ({ projectRoot: props.projectRoot }),
+          switchProject: async () => ({ ok: false, error: "project switching not yet wired in ink TUI" }),
+        });
+      } catch (err) {
+        dispatch({ type: "log/append", text: `Error: command executor unavailable (${err && err.message ? err.message : err})` });
+      }
+      return undefined;
+      // We deliberately depend only on `interactive`; the executor reads
+      // dynamic state (agents, projects) through closures that close over
+      // `state`. React re-renders the component every state change, so
+      // those closures see fresh values without needing to recreate the
+      // executor.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [interactive]);
+
     // Periodic STATUS poll to keep the agents footer fresh, mirroring
     // blessed's requestStatus on a timer.
     useEffect(() => {
@@ -370,28 +440,25 @@ function createChatApp({ React, ink, props, interactive = true }) {
       try { appendInputHistory(props.projectRoot, trimmed); } catch { /* ignore */ }
       dispatch({ type: "log/append", text: targetAgentLabel ? `›@${targetAgentLabel} ${trimmed}` : `› ${trimmed}` });
 
-      // Slash commands. The ink TUI doesn't fully port commandExecutor
-      // yet (~1650 lines, ~30 controller callbacks); for now the daemon
-      // round-trips one we can route directly and everything else gets a
-      // helpful "fall back to blessed" hint instead of being shipped to
-      // the LLM as a prompt.
+      // Slash commands route through the shared commandExecutor. The
+      // executor pulls in /cron, /group, /role, /solo, /settings,
+      // /doctor, /init, /launch, /project, /open, /help, /skills, etc.
       if (trimmed.startsWith("/")) {
-        const { parseCommand } = require("../../chat/commands");
-        const parsed = parseCommand(trimmed);
-        const cmd = parsed ? String(parsed.command || "") : "";
-        if (cmd === "help") {
-          dispatch({ type: "log/appendMany", lines: [
-            "Available commands (ink TUI partial port):",
-            "  /help                 — this hint",
-            "  @<agent> <message>    — send via bus",
-            "  <free text>           — prompt the daemon",
-            "Other slash commands (/cron /group /role /solo /settings /doctor",
-            "/init /launch /project /open) are not yet ported. Run with",
-            "UFOO_TUI unset to use the blessed TUI for those.",
-          ] });
+        const exec = commandExecutorRef.current;
+        if (!exec || typeof exec.executeCommand !== "function") {
+          dispatch({ type: "log/append", text: "Error: command executor not ready yet" });
           return;
         }
-        dispatch({ type: "log/append", text: `[/${cmd}] not yet ported in ink mode — unset UFOO_TUI to use blessed TUI` });
+        try {
+          const maybe = exec.executeCommand(trimmed);
+          if (maybe && typeof maybe.then === "function") {
+            maybe.catch((err) => {
+              dispatch({ type: "log/append", text: `Error: ${err && err.message ? err.message : err}` });
+            });
+          }
+        } catch (err) {
+          dispatch({ type: "log/append", text: `Error: ${err && err.message ? err.message : err}` });
+        }
         return;
       }
 
