@@ -513,7 +513,7 @@ function createChatApp({ React, ink, props, interactive = true }) {
           width: inputWidth,
           interactive,
           interceptArrowsAndEnter: completionsOpen,
-          placeholder: targetAgentLabel ? `message @${targetAgentLabel}...` : "type a message...",
+          placeholder: "",
           promptPrefix: targetAgentLabel ? `›@${targetAgentLabel} ` : "› ",
         }),
       ),

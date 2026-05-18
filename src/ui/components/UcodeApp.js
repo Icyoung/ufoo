@@ -509,9 +509,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
           onArrowRightAtEmpty: () => onArrowSideAtEmpty("right"),
           width: Math.max(20, (size.cols || 80) - 4),
           interactive,
-          placeholder: targetAgent
-            ? `message @${getAgentLabel(targetAgent)}...`
-            : "type a message...",
+          placeholder: "",
           promptPrefix: targetAgent ? `›@${getAgentLabel(targetAgent)} ` : "› ",
         }),
       ),
