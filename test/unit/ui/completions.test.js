@@ -21,7 +21,9 @@ describe("buildCompletions", () => {
     expect(out[0].kind).toBe("command");
   });
 
-  test("/<full-name with space> stops completing (sub-command not yet supported)", () => {
+  test("/<cmd> <prefix> returns [] when no commandTree is supplied", () => {
+    // Sub-command completion needs the tree; without it the function
+    // can't know what children exist, so it falls back to no popup.
     const out = buildCompletions({
       text: "/cron sta",
       commands: [{ cmd: "cron" }],
@@ -45,5 +47,47 @@ describe("buildCompletions", () => {
     const commands = Array.from({ length: 20 }, (_, i) => ({ cmd: `c${i.toString().padStart(2, "0")}` }));
     const out = buildCompletions({ text: "/c", commands, limit: 5 });
     expect(out.length).toBe(5);
+  });
+
+  test("/<cmd> <prefix> walks into commandTree.children", () => {
+    const tree = {
+      "/cron": {
+        desc: "Cron scheduler operations",
+        children: {
+          start: { desc: "Create cron task", order: 1 },
+          stop: { desc: "Stop cron task", order: 2 },
+          list: { desc: "List cron tasks", order: 3 },
+        },
+      },
+    };
+    const out = buildCompletions({ text: "/cron s", commandTree: tree });
+    expect(out.map((s) => s.label)).toEqual(["/cron start", "/cron stop"]);
+    expect(out[0].replace).toBe("/cron start ");
+    expect(out[0].description).toBe("Create cron task");
+    expect(out[0].kind).toBe("subcommand");
+  });
+
+  test("/<cmd> <sub> <prefix> walks one level deeper", () => {
+    const tree = {
+      "/settings": {
+        desc: "Settings",
+        children: {
+          agent: {
+            desc: "Manage main agent",
+            children: {
+              show: { desc: "Show config", order: 1 },
+              set: { desc: "Set config", order: 2 },
+            },
+          },
+        },
+      },
+    };
+    const out = buildCompletions({ text: "/settings agent s", commandTree: tree });
+    expect(out.map((s) => s.label)).toEqual(["/settings agent show", "/settings agent set"]);
+  });
+
+  test("returns [] when the named command has no children", () => {
+    const tree = { "/help": { desc: "Help" } };
+    expect(buildCompletions({ text: "/help anything", commandTree: tree })).toEqual([]);
   });
 });

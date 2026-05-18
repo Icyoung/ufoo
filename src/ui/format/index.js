@@ -665,17 +665,18 @@ function planAgentsFooter(labels = [], selectedIndex = -1, maxCells = 80) {
  * Returns at most `limit` items; an empty list means "no popup".
  *
  * Triggers:
- *   "/<prefix>"   → top-level slash commands matching <prefix>
- *   "@<prefix>"   → known agent ids/labels matching <prefix>
- * Anything else returns no suggestions. Sub-commands (e.g. `/cron `) are
- * intentionally NOT autocompleted yet — that needs commandExecutor's full
- * sub-tree, which lands later.
+ *   "/<prefix>"             top-level slash commands matching <prefix>
+ *   "/<cmd> <prefix>"       sub-commands of <cmd> matching <prefix>
+ *   "/<cmd> <sub> <prefix>" sub-sub-commands (e.g. /settings agent set)
+ *   "@<prefix>"             known agent ids/labels matching <prefix>
+ * Anything else returns no suggestions.
  */
 function buildCompletions({
   text = "",
   agents = [],
   agentLabels = [],
   commands = [],
+  commandTree = null,
   limit = 8,
 } = {}) {
   const raw = String(text || "");
@@ -683,8 +684,55 @@ function buildCompletions({
   const trimmed = raw.trimStart();
 
   if (trimmed.startsWith("/")) {
+    const parts = trimmed.split(/\s+/);
+    const head = parts[0]; // "/launch"
+    const tail = parts.slice(1);
+
+    // Sub-command completion: "/cmd <prefix>" or "/cmd sub <prefix>".
+    if (tail.length >= 1 && commandTree) {
+      const headKey = head.startsWith("/") ? head : `/${head}`;
+      let node = commandTree[headKey];
+      if (!node || typeof node !== "object") return [];
+      // Walk into nested children for everything but the last token.
+      for (let i = 0; i < tail.length - 1; i += 1) {
+        const segment = tail[i];
+        if (!segment) return [];
+        const next = node && node.children && node.children[segment];
+        if (!next) return [];
+        node = next;
+      }
+      const children = node && node.children;
+      if (!children || typeof children !== "object") return [];
+      const partial = String(tail[tail.length - 1] || "").toLowerCase();
+      const prefixSoFar = `${head} ${tail.slice(0, -1).join(" ")}`.replace(/\s+$/, "");
+      // Sort by `order` (when present) then alphabetically — matches the
+      // sortCommands helper used by the blessed completion popup.
+      const entries = Object.keys(children).map((name) => ({
+        name,
+        ...children[name],
+      }));
+      entries.sort((a, b) => {
+        const orderA = Number.isFinite(a.order) ? a.order : 999;
+        const orderB = Number.isFinite(b.order) ? b.order : 999;
+        if (orderA !== orderB) return orderA - orderB;
+        return a.name.localeCompare(b.name);
+      });
+      const out = [];
+      for (const entry of entries) {
+        if (!entry.name.toLowerCase().startsWith(partial)) continue;
+        out.push({
+          kind: "subcommand",
+          label: `${prefixSoFar} ${entry.name}`.trim(),
+          replace: `${prefixSoFar} ${entry.name} `.replace(/^\s+/, ""),
+          description: String(entry.desc || entry.summary || entry.description || ""),
+        });
+        if (out.length >= limit) break;
+      }
+      return out;
+    }
+
+    // Top-level command completion.
     const after = trimmed.slice(1);
-    if (after.includes(" ")) return []; // sub-commands handled later
     const prefix = after.toLowerCase();
     const list = Array.isArray(commands) ? commands : [];
     const out = [];

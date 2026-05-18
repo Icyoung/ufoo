@@ -400,7 +400,7 @@ function createChatApp({ React, ink, props, interactive = true }) {
     // with "/" or "@". Tab/Enter accept the highlighted entry, ↑↓ move the
     // selection. The list reuses the pure buildCompletions helper from
     // src/ui/format so jest can pin the source list without rendering ink.
-    const { COMMAND_REGISTRY } = require("../../chat/commands");
+    const { COMMAND_REGISTRY, COMMAND_TREE } = require("../../chat/commands");
     const agentLabels = state.agents.map((id) =>
       getAgentLabelFor(state.activeAgentMeta.get(id), id)
     );
@@ -409,7 +409,8 @@ function createChatApp({ React, ink, props, interactive = true }) {
       agents: state.agents,
       agentLabels,
       commands: COMMAND_REGISTRY,
-      limit: 6,
+      commandTree: COMMAND_TREE,
+      limit: 8,
     });
     const [completionIndex, setCompletionIndex] = useState(0);
     // Bumped whenever the completion popup writes a new value into the
