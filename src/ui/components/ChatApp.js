@@ -227,10 +227,29 @@ function createChatApp({ React, ink, props, interactive = true }) {
             dispatch({ type: "cron/set", list: data.cron.tasks });
           }
         } else if (type === IPC_RESPONSE_TYPES.BUS) {
-          // bus message envelope; render the body so the user sees
-          // delivery confirmations.
-          const body = String((msg && msg.body) || (msg && msg.data && msg.data.body) || "").trim();
-          if (body) dispatch({ type: "log/appendMany", lines: body.split(/\r?\n/) });
+          // Bus messages can be plain delivery confirmations or streaming
+          // payloads. The streaming format is a JSON envelope inside the
+          // `message` string with { stream: true, delta, done, reason };
+          // see daemonMessageRouter.normalizeDisplayMessage.
+          const data = (msg && msg.data) || {};
+          const publisher = data.publisher || "bus";
+          const rawMessage = String(data.message || "");
+          let streamPayload = null;
+          if (rawMessage && rawMessage.charAt(0) === "{") {
+            try {
+              const parsed = JSON.parse(rawMessage);
+              if (parsed && typeof parsed === "object" && parsed.stream) streamPayload = parsed;
+            } catch { /* fall through to plain text */ }
+          }
+          if (streamPayload) {
+            const delta = String(streamPayload.delta || "");
+            if (delta) dispatch({ type: "stream/delta", publisher, delta });
+            if (streamPayload.done) dispatch({ type: "stream/end" });
+            return;
+          }
+          if (rawMessage) {
+            dispatch({ type: "log/appendMany", lines: rawMessage.split(/\r?\n/) });
+          }
         } else if (type === IPC_RESPONSE_TYPES.BUS_SEND_OK) {
           dispatch({ type: "log/append", text: `✓ Message delivered` });
           dispatch({ type: "status/idle" });
@@ -406,6 +425,18 @@ function createChatApp({ React, ink, props, interactive = true }) {
       state.activeMerge ? h(Box, null,
         h(Text, { color: state.activeMerge.entries.some((e) => e.isError) ? "red" : "cyan" },
           fmt.buildToolMergeRowText(state.activeMerge.entries)),
+      ) : null,
+      state.activeStream ? h(Box, { flexDirection: "column" },
+        ...(() => {
+          const lines = String(state.activeStream.text || "").split(/\r?\n/);
+          const prefix = state.activeStream.publisher
+            ? `${state.activeStream.publisher}: `
+            : "";
+          return lines.map((line, idx) => h(Text, {
+            key: `s-${idx}`,
+            color: "cyan",
+          }, idx === 0 ? `${prefix}${line}` : `  ${line}`));
+        })(),
       ) : null,
       h(Box, { marginTop: 1, width: "100%" },
         h(Text, { color: "gray" }, statusText),

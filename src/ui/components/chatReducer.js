@@ -66,6 +66,11 @@ function createInitialState({ banner = [], globalMode = false, globalScope = "co
     cronTasks: [],
     selectedCronIndex: -1,
     viewingAgentId: null,
+    // activeStream is the in-flight chunk-by-chunk publisher message (set
+    // while the daemon is streaming). Rendered live below <Static>;
+    // promoted to <Static> when the stream finishes the same way the
+    // tool-merge group is.
+    activeStream: null,
     inputHistory: [],
     historyIndex: 0,
     activeMerge: null,
@@ -235,6 +240,38 @@ function reducer(state, action) {
       return { ...state, settings: { ...state.settings, ...(action.patch || {}) } };
     case "cron/set":
       return { ...state, cronTasks: Array.isArray(action.list) ? action.list : [] };
+    case "stream/begin":
+      return {
+        ...state,
+        activeStream: { publisher: action.publisher || "", text: "" },
+      };
+    case "stream/delta": {
+      if (!state.activeStream) {
+        return {
+          ...state,
+          activeStream: { publisher: action.publisher || "", text: String(action.delta || "") },
+        };
+      }
+      return {
+        ...state,
+        activeStream: {
+          ...state.activeStream,
+          text: state.activeStream.text + String(action.delta || ""),
+        },
+      };
+    }
+    case "stream/end": {
+      if (!state.activeStream) return state;
+      const lines = String(state.activeStream.text || "").split(/\r?\n/);
+      const prefix = state.activeStream.publisher
+        ? `${state.activeStream.publisher}: `
+        : "";
+      const annotated = prefix && lines.length > 0
+        ? [`${prefix}${lines[0]}`, ...lines.slice(1).map((l) => `  ${l}`)]
+        : lines;
+      const next = appendLog(state, annotated);
+      return { ...next, activeStream: null };
+    }
     case "agentView/enter":
       return { ...state, viewingAgentId: action.agentId || null };
     case "agentView/exit":

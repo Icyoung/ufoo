@@ -89,4 +89,23 @@ describe("chatReducer", () => {
     expect(state.status.message).toBe("");
     expect(state.status.showTimer).toBe(false);
   });
+
+  test("stream/begin -> delta -> end folds into the log on completion", () => {
+    let state = createInitialState({ banner: [] });
+    state = reducer(state, { type: "stream/begin", publisher: "claude" });
+    expect(state.activeStream).toBeTruthy();
+    state = reducer(state, { type: "stream/delta", delta: "Hello, " });
+    state = reducer(state, { type: "stream/delta", delta: "world!" });
+    expect(state.activeStream.text).toBe("Hello, world!");
+    state = reducer(state, { type: "stream/end" });
+    expect(state.activeStream).toBeNull();
+    const last = state.logLines[state.logLines.length - 1].text;
+    expect(last).toBe("claude: Hello, world!");
+  });
+
+  test("stream/delta without prior begin still seeds the active stream", () => {
+    let state = createInitialState({ banner: [] });
+    state = reducer(state, { type: "stream/delta", publisher: "x", delta: "hi" });
+    expect(state.activeStream.text).toBe("hi");
+  });
 });
