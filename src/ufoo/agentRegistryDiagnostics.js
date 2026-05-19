@@ -1,6 +1,9 @@
 const fs = require("fs");
 const path = require("path");
 
+const MAX_DIAGNOSTIC_LOG_BYTES = 5 * 1024 * 1024;
+const emittedDiagnostics = new Set();
+
 function isAgentsFile(filePath) {
   return path.basename(filePath || "") === "all-agents.json"
     && path.basename(path.dirname(filePath || "")) === "agent";
@@ -62,11 +65,50 @@ function safePayload(payload = {}) {
   return out;
 }
 
+function diagnosticKey(agentsFilePath, event, payload = {}) {
+  if (event === "queue_entry_not_recovered") {
+    return [
+      agentsFilePath,
+      event,
+      payload.subscriber || "",
+      payload.reason || "",
+    ].join("\0");
+  }
+  return "";
+}
+
+function shouldSuppressDiagnostic(agentsFilePath, event, payload = {}) {
+  const key = diagnosticKey(agentsFilePath, event, payload);
+  if (!key) return false;
+  if (emittedDiagnostics.has(key)) return true;
+  emittedDiagnostics.add(key);
+  return false;
+}
+
+function enforceLogLimit(logPath) {
+  try {
+    const stat = fs.statSync(logPath);
+    if (stat.size <= MAX_DIAGNOSTIC_LOG_BYTES) return;
+    const line = JSON.stringify({
+      ts: new Date().toISOString(),
+      pid: process.pid,
+      ppid: process.ppid,
+      event: "diagnostics_log_truncated",
+      previous_size: stat.size,
+    });
+    fs.writeFileSync(logPath, `${line}\n`, "utf8");
+  } catch {
+    // Missing/unreadable log files are handled by the append path.
+  }
+}
+
 function appendAgentRegistryDiagnostic(agentsFilePath, event, payload = {}) {
   if (!agentsFilePath || !isAgentsFile(agentsFilePath)) return;
+  if (shouldSuppressDiagnostic(agentsFilePath, event, payload)) return;
   try {
     const logPath = getRegistryLogPath(agentsFilePath);
     fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    enforceLogLimit(logPath);
     const line = JSON.stringify({
       ts: new Date().toISOString(),
       pid: process.pid,
@@ -88,4 +130,5 @@ module.exports = {
   summarizeFile,
   isAgentsFile,
   getRegistryLogPath,
+  MAX_DIAGNOSTIC_LOG_BYTES,
 };

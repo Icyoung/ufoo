@@ -1161,12 +1161,25 @@ describe("chat commandExecutor", () => {
   test("handleDaemonCommand restart path calls stopDaemon then startDaemon", async () => {
     const { executor, options } = createHarness({
       parseCommand: jest.fn(() => ({ command: "daemon", args: ["restart"] })),
-      isDaemonRunning: jest.fn(() => true),
+      isDaemonRunning: jest.fn()
+        .mockReturnValueOnce(false)
+        .mockReturnValueOnce(true),
     });
     await executor.executeCommand("/daemon restart");
     expect(options.stopDaemon).toHaveBeenCalled();
     expect(options.startDaemon).toHaveBeenCalled();
     expect(options.resolveStatusLine).toHaveBeenCalledWith("{gray-fg}⚙{/gray-fg} Restarting daemon...");
+  });
+
+  test("handleDaemonCommand restart does not start when stop fails", async () => {
+    const { executor, options } = createHarness({
+      parseCommand: jest.fn(() => ({ command: "daemon", args: ["restart"] })),
+      isDaemonRunning: jest.fn(() => true),
+    });
+    await executor.executeCommand("/daemon restart");
+    expect(options.stopDaemon).toHaveBeenCalled();
+    expect(options.startDaemon).not.toHaveBeenCalled();
+    expect(options.resolveStatusLine).toHaveBeenCalledWith("{gray-fg}✗{/gray-fg} Failed to stop daemon");
   });
 
   test("handleDaemonCommand status shows running when daemon is active", async () => {

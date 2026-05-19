@@ -39,13 +39,17 @@ describe("chatReducer", () => {
     expect(state.focusMode).toBe("input");
   });
 
-  test("view/cycle wraps around the dashboard list", () => {
+  test("view/cycle clamps at dashboard list edges", () => {
     let state = createInitialState({ globalMode: false });
     expect(state.dashboardView).toBe("agents");
-    for (let i = 0; i < DASHBOARD_VIEWS.length; i += 1) {
+    state = reducer(state, { type: "view/cycle", direction: "left" });
+    expect(state.dashboardView).toBe("projects");
+    for (let i = 0; i < DASHBOARD_VIEWS.length + 2; i += 1) {
       state = reducer(state, { type: "view/cycle", direction: "right" });
     }
-    expect(state.dashboardView).toBe("agents");
+    expect(state.dashboardView).toBe("cron");
+    state = reducer(state, { type: "view/cycle", direction: "right" });
+    expect(state.dashboardView).toBe("cron");
   });
 
   test("agents/set clears selection when the list shrinks past the cursor", () => {
@@ -59,6 +63,68 @@ describe("chatReducer", () => {
     state = reducer(state, { type: "agents/set", list: [] });
     expect(state.selectedAgentIndex).toBe(-1);
     expect(state.agentSelectionMode).toBe(false);
+  });
+
+  test("agents/patchMeta overlays transient dashboard state", () => {
+    let state = createInitialState();
+    state = reducer(state, { type: "agents/set", list: [
+      { type: "codex", id: "1", fullId: "codex:1", nickname: "worker" },
+    ]});
+    state = reducer(state, {
+      type: "agents/patchMeta",
+      agentId: "codex:1",
+      patch: { activity_state: "working", activity_detail: "running" },
+    });
+
+    expect(state.activeAgentMeta.get("codex:1")).toMatchObject({
+      nickname: "worker",
+      activity_state: "working",
+      activity_detail: "running",
+    });
+  });
+
+  test("projects/set preserves selection by project root across dynamic reordering", () => {
+    let state = createInitialState({ globalMode: true });
+    state = reducer(state, { type: "projects/set", list: [
+      { label: "alpha", root: "/tmp/alpha" },
+      { label: "beta", root: "/tmp/beta" },
+      { label: "gamma", root: "/tmp/gamma" },
+    ]});
+    state = reducer(state, { type: "projects/select", index: 1 });
+    expect(state.selectedProjectRoot).toBe("/tmp/beta");
+
+    state = reducer(state, { type: "projects/set", list: [
+      { label: "gamma", root: "/tmp/gamma" },
+      { label: "alpha", root: "/tmp/alpha" },
+      { label: "beta", root: "/tmp/beta" },
+    ]});
+    expect(state.selectedProjectRoot).toBe("/tmp/beta");
+    expect(state.selectedProjectIndex).toBe(2);
+  });
+
+  test("projects/set clears selection when selected project disappears", () => {
+    let state = createInitialState({ globalMode: true });
+    state = reducer(state, { type: "projects/set", list: [
+      { label: "alpha", root: "/tmp/alpha" },
+      { label: "beta", root: "/tmp/beta" },
+    ]});
+    state = reducer(state, { type: "projects/select", index: 1 });
+    state = reducer(state, { type: "projects/set", list: [
+      { label: "alpha", root: "/tmp/alpha" },
+    ]});
+    expect(state.selectedProjectRoot).toBe("");
+    expect(state.selectedProjectIndex).toBe(-1);
+  });
+
+  test("projects/clearSelection clears preview project context", () => {
+    let state = createInitialState({ globalMode: true });
+    state = reducer(state, { type: "projects/set", list: [
+      { label: "alpha", root: "/tmp/alpha" },
+    ]});
+    state = reducer(state, { type: "projects/select", index: 0 });
+    state = reducer(state, { type: "projects/clearSelection" });
+    expect(state.selectedProjectRoot).toBe("");
+    expect(state.selectedProjectIndex).toBe(-1);
   });
 
   test("history/push trims to 200 and resets the cursor", () => {
@@ -88,6 +154,38 @@ describe("chatReducer", () => {
     state = reducer(state, { type: "status/idle" });
     expect(state.status.message).toBe("");
     expect(state.status.showTimer).toBe(false);
+  });
+
+  test("loop/set stores and clears controller loop summary", () => {
+    let state = createInitialState();
+    state = reducer(state, { type: "loop/set", summary: { rounds: 1 } });
+    expect(state.loopSummary).toEqual({ rounds: 1 });
+    state = reducer(state, { type: "loop/set", summary: null });
+    expect(state.loopSummary).toBeNull();
+  });
+
+  test("initial settings seed dashboard indices and settings", () => {
+    const state = createInitialState({
+      settings: { launchMode: "tmux", agentProvider: "claude-cli", autoResume: true },
+    });
+    expect(state.selectedModeIndex).toBe(state.modeOptions.indexOf("tmux"));
+    expect(state.selectedProviderIndex).toBe(1);
+    expect(state.settings).toEqual({
+      launchMode: "tmux",
+      agentProvider: "claude-cli",
+      autoResume: true,
+    });
+  });
+
+  test("settings apply actions copy selected dashboard values", () => {
+    let state = createInitialState();
+    state = reducer(state, { type: "modeIndex/set", index: 3 });
+    state = reducer(state, { type: "settings/applyMode" });
+    expect(state.settings.launchMode).toBe("tmux");
+
+    state = reducer(state, { type: "providerIndex/set", index: 1 });
+    state = reducer(state, { type: "settings/applyProvider" });
+    expect(state.settings.agentProvider).toBe("claude-cli");
   });
 
   test("stream/begin -> delta -> end folds into the log on completion", () => {

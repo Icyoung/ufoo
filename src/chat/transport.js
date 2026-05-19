@@ -2,6 +2,7 @@ const net = require("net");
 const path = require("path");
 const fs = require("fs");
 const { spawn, spawnSync } = require("child_process");
+const { resolveNodeExecutable } = require("../utils/nodeExecutable");
 
 function connectSocket(sockPath, options = {}) {
   const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
@@ -57,21 +58,33 @@ function startDaemon(projectRoot, options = {}) {
   const env = options.forceResume
     ? { ...process.env, UFOO_FORCE_RESUME: "1" }
     : process.env;
-  const child = spawn(process.execPath, [daemonBin, "daemon", "--start"], {
+  const child = spawn(resolveNodeExecutable(), [daemonBin, "daemon", "--start"], {
     detached: true,
     stdio: "ignore",
     cwd: projectRoot,
     env,
   });
+  child.on("error", (err) => {
+    if (typeof options.onError === "function") {
+      options.onError(err);
+    }
+  });
   child.unref();
+  return child;
 }
 
-function stopDaemon(projectRoot) {
+function stopDaemon(projectRoot, options = {}) {
   const daemonBin = resolveProjectFile(projectRoot, path.join("bin", "ufoo.js"), path.join("bin", "ufoo.js"));
-  spawnSync(process.execPath, [daemonBin, "daemon", "--stop"], {
+  const source = String(
+    options.source
+      || `chat-transport pid=${process.pid} cwd=${process.cwd()} argv=${process.argv.join(" ")}`
+  );
+  const result = spawnSync(resolveNodeExecutable(), [daemonBin, "daemon", "--stop"], {
     stdio: "ignore",
     cwd: projectRoot,
+    env: { ...process.env, UFOO_DAEMON_STOP_SOURCE: source },
   });
+  return Boolean(result && !result.error && result.status === 0);
 }
 
 async function connectWithRetry(sockPath, retries, delayMs, options = {}) {

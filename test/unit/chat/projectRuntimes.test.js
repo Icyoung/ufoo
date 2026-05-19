@@ -52,7 +52,7 @@ describe("chat projectRuntimes", () => {
     expect(sorted.map((row) => row.project_root)).toEqual(["/tmp/b", "/tmp/a"]);
   });
 
-  test("filterVisibleProjectRuntimes hides stopped projects", () => {
+  test("filterVisibleProjectRuntimes keeps only running projects", () => {
     const rows = [
       { project_name: "alpha", project_root: "/tmp/alpha", status: "running" },
       { project_name: "beta", project_root: "/tmp/beta", status: "stopped" },
@@ -63,7 +63,6 @@ describe("chat projectRuntimes", () => {
     const visible = filterVisibleProjectRuntimes(rows);
     expect(visible.map((row) => row.project_root)).toEqual([
       "/tmp/alpha",
-      "/tmp/gamma",
     ]);
   });
 });

@@ -2212,11 +2212,11 @@ async function runChatBlessed(projectRoot, options = {}) {
 }
 
 async function runChat(projectRoot, options = {}) {
-  if (String(process.env.UFOO_TUI || "").trim().toLowerCase() === "ink") {
-    const { runChatInk } = require("../ui/components/ChatApp");
-    return runChatInk(projectRoot, options);
+  if (String(process.env.UFOO_TUI || "").trim().toLowerCase() === "blessed") {
+    return runChatBlessed(projectRoot, options);
   }
-  return runChatBlessed(projectRoot, options);
+  const { runChatInk } = require("../ui/components/ChatApp");
+  return runChatInk(projectRoot, options);
 }
 
 module.exports = { runChat };

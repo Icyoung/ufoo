@@ -341,6 +341,30 @@ describe("chat daemonMessageRouter", () => {
     expect(options.finalizeStream).toHaveBeenCalledWith("codex:1", expect.any(Object), "end");
   });
 
+  test("agent view stream done frame notifies the active agent view even without delta", () => {
+    const { router, options } = createHarness({
+      getCurrentView: jest.fn(() => "agent"),
+      isAgentViewUsesBus: jest.fn(() => true),
+      getViewingAgent: jest.fn(() => "codex:1"),
+      isAgentEventForViewingAgent: jest.fn(() => true),
+    });
+
+    router.handleMessage({
+      type: IPC_RESPONSE_TYPES.BUS,
+      data: {
+        event: "message",
+        publisher: "codex:1",
+        message: JSON.stringify({ stream: true, done: true, reason: "end" }),
+      },
+    });
+
+    expect(options.writeToAgentTerm).toHaveBeenCalledWith("", expect.objectContaining({
+      done: true,
+      reason: "end",
+      streamPayload: expect.objectContaining({ done: true }),
+    }));
+  });
+
   test("response with recoverable payload logs recoverable and skipped entries", () => {
     const { router, options } = createHarness();
 

@@ -4,14 +4,13 @@
  * Ink-based chat TUI. Behaviourally equivalent to runChatBlessed in
  * src/chat/index.js but rendered via React + ink.
  *
- * Activation: set UFOO_TUI=ink. The blessed path remains the default; flip
- * the switch in src/chat/index.js once P3 is signed off.
+ * Activation: Ink is the default chat TUI. Set UFOO_TUI=blessed to use the
+ * legacy blessed renderer while it remains available as a fallback.
  *
  * Coverage today: layout shell + dashboard bar (5 modes: projects, agents,
- * mode, provider, resume, cron) + multiline editor + status line +
- * Tab/Esc focus + agent selection + Up/Down history. Daemon connection,
- * command execution, completion and the internal-agent view land in
- * later P3 sub-tasks (3.5, 3.6).
+ * mode, provider, cron) + multiline editor + status line +
+ * Tab/Esc focus + agent selection + Up/Down history, daemon routing,
+ * command execution, completion and internal-agent views.
  *
  * Chat state is kept in chatReducer.js so the entire transition table can
  * be exercised by jest without mounting ink.
@@ -182,6 +181,29 @@ function appendInputHistory(projectRoot, value, options = {}) {
   }
 }
 
+function appendChatHistory(projectRoot, type, text, meta = {}, options = {}) {
+  const value = String(text || "");
+  if (!value && type !== "spacer") return;
+  const file = chatHistoryFilePath(projectRoot, options);
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.appendFileSync(file, `${JSON.stringify({
+      ts: new Date().toISOString(),
+      type,
+      text: value,
+      meta: meta && typeof meta === "object" ? meta : {},
+    })}\n`);
+  } catch {
+    // best-effort persistence; failure is not user-visible
+  }
+}
+
+function chatHistoryOptionsForScope({ globalMode = false, globalScope = "controller" } = {}) {
+  return {
+    globalMode: Boolean(globalMode && globalScope !== "project"),
+  };
+}
+
 function getAgentLabelFor(meta, agentId) {
   if (meta && meta.nickname) return meta.nickname;
   if (!agentId) return "";
@@ -190,6 +212,594 @@ function getAgentLabelFor(meta, agentId) {
   const head = agentId.slice(0, colon);
   const tail = agentId.slice(colon + 1).slice(0, 6);
   return tail ? `${head}:${tail}` : head;
+}
+
+function buildActiveAgentLabelMap(activeAgents = [], activeAgentMeta = new Map()) {
+  const out = new Map();
+  const metaMap = activeAgentMeta instanceof Map ? activeAgentMeta : new Map();
+  for (const id of Array.isArray(activeAgents) ? activeAgents : []) {
+    out.set(id, getAgentLabelFor(metaMap.get(id), id));
+  }
+  return out;
+}
+
+function resolveActiveAgentId(label, activeAgents = [], activeAgentMeta = new Map()) {
+  const { resolveAgentId } = require("../../chat/agentDirectory");
+  const metaMap = activeAgentMeta instanceof Map ? activeAgentMeta : new Map();
+  return resolveAgentId({
+    label,
+    activeAgents: Array.isArray(activeAgents) ? activeAgents : [],
+    labelMap: buildActiveAgentLabelMap(activeAgents, metaMap),
+    lookupNickname: (nickname) => {
+      for (const [id, meta] of metaMap.entries()) {
+        if (!meta) continue;
+        if (meta.nickname === nickname || meta.scoped_nickname === nickname || meta.display_nickname === nickname) {
+          return id;
+        }
+      }
+      return null;
+    },
+  });
+}
+
+function buildDirectBusSendRequest({
+  text,
+  targetAgentId = null,
+  activeAgents = [],
+  activeAgentMeta = new Map(),
+} = {}) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return null;
+  if (targetAgentId) {
+    return {
+      target: targetAgentId,
+      message: trimmed,
+      source: "chat-direct",
+    };
+  }
+
+  const { parseAtTarget } = require("../../chat/commands");
+  const atTarget = parseAtTarget(trimmed);
+  if (!atTarget || !atTarget.message) return null;
+  const target = resolveActiveAgentId(atTarget.target, activeAgents, activeAgentMeta) || atTarget.target;
+  return {
+    target,
+    message: atTarget.message.trim(),
+    source: "chat-direct",
+  };
+}
+
+function resolveAgentEnterRequest({
+  agentId,
+  projectRoot = "",
+  activeAgentMeta = new Map(),
+  settings = {},
+} = {}) {
+  const id = String(agentId || "").trim();
+  if (!id) return null;
+
+  const metaMap = activeAgentMeta instanceof Map ? activeAgentMeta : new Map();
+  const meta = metaMap.get(id) || {};
+  const configuredLaunchMode = settings && settings.launchMode && settings.launchMode !== "auto"
+    ? settings.launchMode
+    : "";
+  const launchMode = String(meta.launch_mode || meta.launchMode || configuredLaunchMode || "").trim();
+  const { createTerminalAdapterRouter } = require("../../terminal/adapterRouter");
+  const adapter = createTerminalAdapterRouter().getAdapter({ launchMode, agentId: id, meta });
+  const caps = adapter && adapter.capabilities ? adapter.capabilities : {};
+
+  return {
+    agentId: id,
+    projectRoot: String(projectRoot || ""),
+    launchMode,
+    useBus: Boolean(caps.supportsInternalQueueLoop && !caps.supportsSocketProtocol),
+    supportsSocket: Boolean(caps.supportsSocketProtocol),
+    supportsInternalQueue: Boolean(caps.supportsInternalQueueLoop),
+    supportsActivate: Boolean(caps.supportsActivate),
+  };
+}
+
+function buildPromptIpcRequest(text) {
+  const { IPC_REQUEST_TYPES } = require("../../shared/eventContract");
+  return {
+    type: IPC_REQUEST_TYPES.PROMPT,
+    text,
+    request_meta: {
+      source: "chat-dialog",
+      dispatch_default_injection_mode: "immediate",
+      allow_relevance_queue: true,
+    },
+  };
+}
+
+function stripBlessedTags(text = "") {
+  return String(text || "")
+    .replace(/\{\/?[^{}\n]+\}/g, "")
+    .replace(/\r/g, "");
+}
+
+function normalizeInkLogLines(text = "") {
+  const clean = stripBlessedTags(text);
+  return clean.split(/\r?\n/);
+}
+
+function createInkStreamState({
+  dispatch,
+  appendHistory,
+  displayNameForPublisher = (value) => value,
+} = {}) {
+  const streams = new Map();
+  const pendingDeliveries = new Map();
+
+  function deliveryKey(agentId, agentLabel) {
+    return String(agentId || agentLabel || "").trim();
+  }
+
+  function markPendingDelivery(agentId, agentLabel) {
+    const key = deliveryKey(agentId, agentLabel);
+    if (!key) return;
+    const existing = pendingDeliveries.get(key) || { count: 0, keys: new Set() };
+    existing.count += 1;
+    for (const candidate of [agentId, agentLabel]) {
+      const value = String(candidate || "").trim();
+      if (value) {
+        pendingDeliveries.set(value, existing);
+        existing.keys.add(value);
+      }
+    }
+  }
+
+  function getPendingState(publisher, displayName) {
+    for (const candidate of [publisher, displayName]) {
+      const key = String(candidate || "").trim();
+      if (key && pendingDeliveries.has(key)) {
+        return { key, state: pendingDeliveries.get(key) };
+      }
+    }
+    return null;
+  }
+
+  function consumePendingDelivery(publisher, displayName) {
+    const hit = getPendingState(publisher, displayName);
+    if (!hit) return false;
+    hit.state.count -= 1;
+    if (hit.state.count <= 0) {
+      for (const key of hit.state.keys || []) pendingDeliveries.delete(key);
+    }
+    return true;
+  }
+
+  function beginStream(publisher, prefix, continuationPrefix, meta) {
+    const key = String(publisher || "bus");
+    let state = streams.get(key);
+    if (state) return state;
+    const displayName = stripBlessedTags(prefix || displayNameForPublisher(key) || key)
+      .replace(/\s*·\s*$/, "")
+      .trim() || displayNameForPublisher(key) || key;
+    state = {
+      publisher: key,
+      displayName,
+      prefix,
+      continuationPrefix,
+      full: "",
+      meta: meta || {},
+    };
+    streams.set(key, state);
+    dispatch({ type: "stream/begin", publisher: displayName });
+    return state;
+  }
+
+  function appendStreamDelta(state, delta) {
+    if (!state || !delta) return;
+    state.full += String(delta || "");
+    dispatch({ type: "stream/delta", publisher: state.displayName || state.publisher, delta: String(delta || "") });
+  }
+
+  function finalizeStream(publisher, meta, reason = "") {
+    const key = String(publisher || "bus");
+    const state = streams.get(key);
+    if (!state) return;
+    dispatch({ type: "stream/end" });
+    if (typeof appendHistory === "function") {
+      const text = state.displayName
+        ? `${state.displayName}: ${state.full}`
+        : state.full;
+      appendHistory("bus", text, { ...(meta || state.meta || {}), stream_done: true, stream_reason: reason });
+    }
+    streams.delete(key);
+  }
+
+  function hasStream(publisher) {
+    return streams.has(String(publisher || "bus"));
+  }
+
+  return {
+    markPendingDelivery,
+    getPendingState,
+    consumePendingDelivery,
+    beginStream,
+    appendStreamDelta,
+    finalizeStream,
+    hasStream,
+  };
+}
+
+function formatShellCommandResultLines(result = {}) {
+  const lines = [];
+  const stdout = String(result.stdout || "").trimEnd();
+  const stderr = String(result.stderr || "").trimEnd();
+  if (stdout) lines.push(...stdout.split(/\r?\n/).map((line) => ({ type: "system", text: line })));
+  if (stderr) lines.push(...stderr.split(/\r?\n/).map((line) => ({ type: result.ok ? "system" : "error", text: line })));
+  if (!stdout && !stderr) lines.push({ type: "system", text: "(no output)" });
+  if (!result.ok) {
+    const suffix = result.signal ? ` signal ${result.signal}` : ` exit ${result.code != null ? result.code : 1}`;
+    lines.push({ type: "error", text: `Command failed:${suffix}` });
+  }
+  return lines;
+}
+
+function fitPlainLine(text = "", width = 80) {
+  const limit = Math.max(1, Math.floor(Number(width) || 80));
+  const raw = String(text || "").replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
+  let out = "";
+  let cells = 0;
+  for (const char of Array.from(raw)) {
+    const charWidth = fmt.charDisplayWidth(char);
+    if (cells + charWidth > limit) break;
+    out += char;
+    cells += charWidth;
+  }
+  if (out.length < raw.length && limit > 1) {
+    while (fmt.displayCellWidth(out) > limit - 1) {
+      out = Array.from(out).slice(0, -1).join("");
+    }
+    out = `${out}…`;
+  }
+  return out || " ";
+}
+
+function stripInternalLogMarkup(text = "") {
+  return String(text || "")
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
+    .replace(/\{\/?[^{}\n]+\}/g, "");
+}
+
+function wrapInternalPlainLine(text = "", width = 80) {
+  const limit = Math.max(1, Math.floor(Number(width) || 80));
+  const clean = stripInternalLogMarkup(text).replace(/\r/g, "");
+  if (!clean) return [""];
+  const rows = [];
+  let row = "";
+  let cells = 0;
+  for (const char of Array.from(clean)) {
+    const charWidth = fmt.charDisplayWidth(char);
+    if (cells > 0 && cells + charWidth > limit) {
+      rows.push(row);
+      row = "";
+      cells = 0;
+    }
+    row += char;
+    cells += charWidth;
+  }
+  rows.push(row);
+  return rows;
+}
+
+function classifyInternalLogLine(line = "") {
+  const raw = stripInternalLogMarkup(line).replace(/\r/g, "");
+  if (!raw) return { kind: "spacer", text: "", markdown: false, bold: false };
+  if (raw.startsWith("> ")) return { kind: "user", text: raw.slice(2), markdown: false, bold: false };
+  if (raw.startsWith("* ")) return { kind: "agent", text: raw.slice(2), markdown: true, bold: false };
+  if (/^error:/i.test(raw) || /^\[error\]/i.test(raw)) {
+    return { kind: "error", text: raw, markdown: true, bold: false };
+  }
+  if (/^ufoo internal agent\b/i.test(raw)) {
+    return { kind: "system", text: raw, markdown: false, bold: true };
+  }
+  if (/^(agent|directory):/i.test(raw)) {
+    return { kind: "meta", text: raw, markdown: false, bold: false };
+  }
+  return { kind: "agent", text: raw, markdown: true, bold: false };
+}
+
+function internalLogPrefixes(kind) {
+  if (kind === "user") return { first: "› ", rest: "  " };
+  if (kind === "system") return { first: "· ", rest: "  " };
+  if (kind === "meta") return { first: "  ", rest: "  " };
+  return { first: "", rest: "" };
+}
+
+function buildInternalLogRows(lines = [], width = 80, maxRows = 20) {
+  const limit = Math.max(1, Math.floor(Number(width) || 80));
+  const rows = [];
+  const markdownState = {};
+  const source = Array.isArray(lines) ? lines : [];
+  for (const line of source) {
+    const classified = classifyInternalLogLine(line);
+    if (classified.kind === "spacer") {
+      rows.push({ kind: "spacer", text: " ", bold: false });
+      continue;
+    }
+
+    let rendered = [classified.text];
+    if (classified.markdown) {
+      try {
+        rendered = fmt.renderLogLinesWithMarkdown(classified.text, markdownState, (value) => String(value || ""))
+          .map(stripInternalLogMarkup);
+      } catch {
+        rendered = [classified.text];
+      }
+    }
+
+    const prefixes = internalLogPrefixes(classified.kind);
+    for (const renderedLine of rendered) {
+      const chunks = wrapInternalPlainLine(
+        renderedLine,
+        Math.max(1, limit - fmt.displayCellWidth(prefixes.first)),
+      );
+      chunks.forEach((chunk, idx) => {
+        const prefix = idx === 0 ? prefixes.first : prefixes.rest;
+        rows.push({
+          kind: classified.kind,
+          text: fitPlainLine(`${prefix}${chunk}`, limit),
+          bold: classified.bold,
+        });
+      });
+    }
+  }
+  return rows.slice(-Math.max(1, Math.floor(Number(maxRows) || 20)));
+}
+
+function internalInputBoundaries(text = "") {
+  const source = String(text || "");
+  if (!source) return [0];
+  try {
+    if (typeof Intl !== "undefined" && typeof Intl.Segmenter === "function") {
+      const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+      const boundaries = [0];
+      for (const part of segmenter.segment(source)) {
+        boundaries.push(part.index + part.segment.length);
+      }
+      return Array.from(new Set(boundaries)).sort((a, b) => a - b);
+    }
+  } catch {
+    // Fall through.
+  }
+  const boundaries = [0];
+  let offset = 0;
+  for (const char of Array.from(source)) {
+    offset += char.length;
+    boundaries.push(offset);
+  }
+  return boundaries;
+}
+
+function previousInternalBoundary(text = "", cursor = 0) {
+  const target = Math.max(0, Math.min(String(text || "").length, cursor));
+  let previous = 0;
+  for (const boundary of internalInputBoundaries(text)) {
+    if (boundary < target) previous = boundary;
+    else break;
+  }
+  return previous;
+}
+
+function nextInternalBoundary(text = "", cursor = 0) {
+  const source = String(text || "");
+  const target = Math.max(0, Math.min(source.length, cursor));
+  for (const boundary of internalInputBoundaries(source)) {
+    if (boundary > target) return boundary;
+  }
+  return source.length;
+}
+
+function resolveInternalKeyName(input = "", key = {}) {
+  const raw = String(input || "");
+  if (raw === "\x7f" || raw === "\b" || raw === "\x08") return "backspace";
+  if (raw === "\x1b[3~" || raw === "\u001b[3~") return "delete";
+  if (key && key.backspace) return "backspace";
+  if (key && key.delete) return "backspace";
+  if (key && key.name === "backspace") return "backspace";
+  if (key && key.name === "delete") return "backspace";
+  if (key && key.name) return String(key.name);
+  if (key && key.escape) return "escape";
+  if (key && key.return) return "return";
+  if (key && key.leftArrow) return "left";
+  if (key && key.rightArrow) return "right";
+  if (key && key.upArrow) return "up";
+  if (key && key.downArrow) return "down";
+  if (key && key.ctrl && raw.length === 1) return raw.toLowerCase();
+  return "";
+}
+
+function isInternalViewingAgent(agentId, meta, view = {}, viewingAgentId = "") {
+  const id = String(agentId || "").trim();
+  if (!id) return false;
+  const candidates = new Set([
+    viewingAgentId,
+    view && view.agentId,
+    view && view.label,
+    ...((view && Array.isArray(view.aliases)) ? view.aliases : []),
+  ].filter(Boolean).map((value) => String(value).trim()).filter(Boolean));
+  if (candidates.has(id)) return true;
+  const metaIds = [
+    meta && meta.fullId,
+    meta && meta.agent_id,
+    meta && meta.subscriber_id,
+    meta && meta.nickname,
+    meta && meta.scoped_nickname,
+    meta && meta.display_nickname,
+    meta && meta.type && meta.id ? `${meta.type}:${meta.id}` : "",
+    getAgentLabelFor(meta, id),
+  ].filter(Boolean).map((value) => String(value).trim()).filter(Boolean);
+  return metaIds.some((value) => candidates.has(value));
+}
+
+function compactDisplayProjectRoot(projectRoot = "") {
+  const os = require("os");
+  const raw = String(projectRoot || process.cwd() || "").trim();
+  const home = os.homedir();
+  if (home && (raw === home || raw.startsWith(`${home}/`))) return `~${raw.slice(home.length)}`;
+  return raw || ".";
+}
+
+function buildInternalAgentStartupLines({ agentId = "", label = "", projectRoot = "", width = 80 } = {}) {
+  return [
+    fitPlainLine(`ufoo internal agent · ${label || agentId}`, width),
+    fitPlainLine(`agent: ${agentId}`, width),
+    fitPlainLine(`directory: ${compactDisplayProjectRoot(projectRoot)}`, width),
+    "",
+  ];
+}
+
+function createInternalAgentViewState({
+  agentId,
+  label,
+  aliases = [],
+  projectRoot,
+  width = 80,
+} = {}) {
+  let history = [];
+  try {
+    const { loadInternalAgentLogHistory } = require("../../chat/internalAgentLogHistory");
+    history = loadInternalAgentLogHistory(projectRoot || process.cwd(), agentId, {
+      maxEvents: 400,
+      maxLines: 1000,
+    });
+  } catch {
+    history = [];
+  }
+  const safeAliases = [agentId, label].concat(aliases || []).filter(Boolean).map(String);
+  return {
+    agentId: String(agentId || ""),
+    label: String(label || agentId || ""),
+    aliases: Array.from(new Set(safeAliases)),
+    projectRoot: String(projectRoot || ""),
+    lines: buildInternalAgentStartupLines({ agentId, label, projectRoot, width })
+      .concat(history.length > 0 ? history : [""]),
+    input: "",
+    cursor: 0,
+    status: "ready",
+    detail: "",
+    statusStartedAt: 0,
+    barIndex: 0,
+  };
+}
+
+function appendInternalAgentText(view, text = "", options = {}) {
+  const current = view && typeof view === "object" ? view : {};
+  const lines = Array.isArray(current.lines) ? current.lines.slice() : [];
+  if (lines.length === 0) lines.push("");
+  const prefix = options.prefix || "";
+  const clean = String(text || "").replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n");
+  if (prefix && lines[lines.length - 1] !== "") lines.push("");
+  if (prefix && lines[lines.length - 1] === "") lines[lines.length - 1] = prefix;
+  for (const char of clean) {
+    if (char === "\n") {
+      lines.push("");
+    } else {
+      lines[lines.length - 1] += char;
+    }
+  }
+  return {
+    ...current,
+    lines: lines.slice(-1000),
+  };
+}
+
+function parseInternalBusPayload(raw = "") {
+  let displayMessage = String(raw || "");
+  let streamPayload = null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && parsed.reply) {
+      displayMessage = parsed.reply;
+    } else if (parsed && typeof parsed === "object" && parsed.stream) {
+      streamPayload = parsed;
+    }
+  } catch {
+    // Plain text.
+  }
+  return {
+    displayMessage: String(displayMessage || "").replace(/\\r\\n/g, "\n").replace(/\\n/g, "\n").replace(/\\r/g, "\n"),
+    streamPayload,
+  };
+}
+
+function internalStatusLabel(value = "") {
+  const state = String(value || "").trim().toLowerCase();
+  if (state === "waiting" || state === "waiting_input") return "waiting";
+  if (state === "blocked" || state === "error") return "blocked";
+  if (state === "busy" || state === "processing" || state === "working") return "working";
+  if (state === "idle" || state === "ready") return "ready";
+  return state || "ready";
+}
+
+function updateInternalViewStatus(view = {}, status = "", detail = "", now = Date.now()) {
+  const current = view && typeof view === "object" ? view : {};
+  const nextStatus = internalStatusLabel(status || current.status || "");
+  const nextDetail = String(detail || "").trim();
+  const timed = nextStatus === "working" || nextStatus === "waiting" || nextStatus === "blocked";
+  const previousStartedAt = Number.isFinite(current.statusStartedAt) ? current.statusStartedAt : 0;
+  const statusStartedAt = timed
+    ? (current.status === nextStatus && previousStartedAt ? previousStartedAt : now)
+    : 0;
+  return {
+    ...current,
+    status: nextStatus,
+    detail: nextDetail,
+    statusStartedAt,
+  };
+}
+
+function applyInternalAgentTermWrite(view = {}, activeAgentId = "", text = "", meta = {}) {
+  const current = view && typeof view === "object" ? view : {};
+  if (!current.agentId || current.agentId !== activeAgentId) return current;
+  const streamPayload = meta && meta.streamPayload && typeof meta.streamPayload === "object"
+    ? meta.streamPayload
+    : {};
+  const done = Boolean((meta && meta.done) || streamPayload.done);
+  const rawText = String(text || "");
+  const next = rawText
+    ? appendInternalAgentText(current, rawText, { prefix: "* " })
+    : current;
+  if (done) return updateInternalViewStatus(next, "ready", "");
+  return updateInternalViewStatus(next, "working", "");
+}
+
+function appendInternalErrorToView(view = {}, activeAgentId = "", message = "") {
+  const current = view && typeof view === "object" ? view : {};
+  if (!current.agentId || current.agentId !== activeAgentId) return current;
+  const detail = String(message || "unknown error");
+  const lines = Array.isArray(current.lines) ? current.lines : [];
+  const separator = lines.length > 0 && lines[lines.length - 1] ? "\n" : "";
+  return appendInternalAgentText(
+    updateInternalViewStatus(current, "blocked", detail),
+    `${separator}Error: ${detail}\n`,
+  );
+}
+
+function computeInternalStatusText(view = {}, spinnerTick = 0, now = Date.now()) {
+  const current = view && typeof view === "object" ? view : {};
+  const status = internalStatusLabel(current.status || "");
+  const label = String(current.label || current.agentId || "agent").trim();
+  const detail = String(current.detail || "").trim();
+  if (status === "ready") {
+    return `ufoo · ${label} · Ready · Enter send · Esc back`;
+  }
+  const type = status === "waiting" ? "waiting" : "thinking";
+  const indicators = fmt.STATUS_INDICATORS[type] || fmt.STATUS_INDICATORS.thinking;
+  const indicator = status === "blocked"
+    ? "!"
+    : indicators[Math.max(0, Math.floor(Number(spinnerTick) || 0)) % indicators.length];
+  const message = status === "waiting"
+    ? "Waiting for input"
+    : (status === "blocked" ? "Blocked" : "Working");
+  const startedAt = Number.isFinite(current.statusStartedAt) ? current.statusStartedAt : 0;
+  const timer = startedAt ? ` (${fmt.formatPendingElapsed(now - startedAt)})` : "";
+  return `${indicator} ${label} · ${message}${detail ? ` · ${detail}` : ""}${timer} · Esc back`;
 }
 
 const CHAT_BANNER_LINES = [
@@ -224,6 +834,72 @@ function buildChatBannerLines(props, version) {
   return out;
 }
 
+function resolveProjectRowRoot(row = {}) {
+  const raw = String((row && (row.root || row.project_root)) || "").trim();
+  if (!raw) return "";
+  try {
+    const { canonicalProjectRoot } = require("../../projects");
+    return canonicalProjectRoot(raw);
+  } catch {
+    return path.resolve(raw);
+  }
+}
+
+function loadGlobalProjectRows(activeProjectRoot = "") {
+  const {
+    listProjectRuntimes,
+    filterVisibleProjectRuntimes,
+    isGlobalControllerProjectRoot,
+    markProjectStopped,
+  } = require("../../projects");
+  let rows = listProjectRuntimes({ validate: true, cleanupTmp: true }) || [];
+  for (const row of rows) {
+    const status = String((row && row.status) || "").trim().toLowerCase();
+    const root = resolveProjectRowRoot(row);
+    if (status === "stale" && root && !isGlobalControllerProjectRoot(root)) {
+      try { markProjectStopped(root); } catch { /* ignore stale cleanup failures */ }
+    }
+  }
+  rows = filterVisibleProjectRuntimes(rows);
+  rows = rows.filter((row) => !isGlobalControllerProjectRoot(resolveProjectRowRoot(row)));
+  return rows.map((row) => ({
+    id: row.project_id || row.project_root || "",
+    label: row.project_name || (row.project_root ? path.basename(row.project_root) : ""),
+    root: row.project_root || "",
+    status: row.status || "",
+    active: resolveProjectRowRoot(row) === String(activeProjectRoot || ""),
+  }));
+}
+
+function readProjectAgentSnapshot(projectRoot = "") {
+  if (!projectRoot) return { agents: [], metaMap: new Map() };
+  try {
+    const { buildStatus } = require("../../daemon/status");
+    const { buildAgentMaps } = require("../../chat/agentDirectory");
+    const status = buildStatus(projectRoot);
+    const activeIds = Array.isArray(status.active) ? status.active : [];
+    const metaList = Array.isArray(status.active_meta) ? status.active_meta : [];
+    const { labelMap, metaMap } = buildAgentMaps(activeIds, metaList);
+    const merged = new Map();
+    for (const id of activeIds) {
+      const meta = metaMap.get(id) || {};
+      const colon = id.indexOf(":");
+      const fallbackType = colon > 0 ? id.slice(0, colon) : id;
+      const fallbackId = colon > 0 ? id.slice(colon + 1) : "";
+      merged.set(id, {
+        ...meta,
+        fullId: id,
+        type: meta.type || fallbackType,
+        id: meta.id || fallbackId,
+        nickname: labelMap.get(id) || id,
+      });
+    }
+    return { agents: activeIds, metaMap: merged };
+  } catch {
+    return { agents: [], metaMap: new Map() };
+  }
+}
+
 function createChatApp({ React, ink, props, interactive = true }) {
   const { useReducer, useEffect, useState, useCallback, useRef } = React;
   const { Box, Text, Static, useInput, useApp, useStdout } = ink;
@@ -250,12 +926,92 @@ function createChatApp({ React, ink, props, interactive = true }) {
         banner: initialLogText,
         globalMode: props.globalMode,
         globalScope: props.globalScope || "controller",
+        settings: props.initialSettings || {},
       })
     );
     const [size, setSize] = useState({ cols: 0, rows: 0 });
     const [spinnerTick, setSpinnerTick] = useState(0);
+    const [currentProjectRoot, setCurrentProjectRoot] = useState(props.activeProjectRoot || props.projectRoot || "");
+    const [internalAgentView, setInternalAgentView] = useState(() => createInternalAgentViewState());
+    const stateRef = useRef(state);
+    const currentProjectRootRef = useRef(currentProjectRoot);
+    const internalAgentViewRef = useRef(internalAgentView);
+    const pendingRef = useRef(null);
+    const streamStateRef = useRef(null);
+    const historyScopeRef = useRef(null);
+    const switchToProjectRootRef = useRef(null);
+    const activeChatHistoryRoot = currentProjectRoot || props.projectRoot;
+    const activeChatHistoryOptions = chatHistoryOptionsForScope({
+      globalMode: props.globalMode,
+      globalScope: state.globalScope,
+    });
     const { exit } = useApp();
     const { stdout } = useStdout();
+
+    useEffect(() => {
+      stateRef.current = state;
+    }, [state]);
+
+    useEffect(() => {
+      currentProjectRootRef.current = currentProjectRoot;
+    }, [currentProjectRoot]);
+
+    historyScopeRef.current = {
+      root: activeChatHistoryRoot,
+      options: activeChatHistoryOptions,
+    };
+
+    const appendScopedHistory = useCallback((kind, text, meta = {}) => {
+      appendChatHistory(activeChatHistoryRoot, kind, text, meta, activeChatHistoryOptions);
+    }, [activeChatHistoryRoot, activeChatHistoryOptions.globalMode]);
+
+    const setStatusText = useCallback((text, options = {}) => {
+      const clean = stripBlessedTags(text).trim();
+      if (!clean) {
+        dispatch({ type: "status/idle" });
+        return;
+      }
+      dispatch({
+        type: "status/set",
+        payload: {
+          message: clean,
+          type: options.type || "typing",
+          showTimer: options.showTimer === true,
+          startedAt: options.startedAt || Date.now(),
+        },
+      });
+    }, []);
+
+    const logInkMessage = useCallback((kind, text, meta = {}) => {
+      const type = String(kind || "system");
+      if (type === "status") {
+        setStatusText(text);
+        return;
+      }
+      const lines = normalizeInkLogLines(text);
+      if (lines.length === 0) return;
+      dispatch({ type: "log/appendMany", lines });
+      appendScopedHistory(type, stripBlessedTags(text), meta);
+    }, [appendScopedHistory, setStatusText]);
+
+    if (!streamStateRef.current) {
+      streamStateRef.current = createInkStreamState({
+        dispatch,
+        appendHistory: (kind, text, meta = {}) => {
+          const scope = historyScopeRef.current || {};
+          appendChatHistory(scope.root || props.projectRoot, kind, text, meta, scope.options || {});
+        },
+        displayNameForPublisher: (publisher) => {
+          const current = stateRef.current || {};
+          const meta = current.activeAgentMeta instanceof Map ? current.activeAgentMeta.get(publisher) : null;
+          return getAgentLabelFor(meta, publisher);
+        },
+      });
+    }
+
+    useEffect(() => {
+      internalAgentViewRef.current = internalAgentView;
+    }, [internalAgentView]);
 
     useEffect(() => {
       if (!stdout) return undefined;
@@ -275,9 +1031,178 @@ function createChatApp({ React, ink, props, interactive = true }) {
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
+    const sendInternalAgentWatch = (agentId, enabled) => {
+      if (!agentId || !props.daemonConnection || typeof props.daemonConnection.send !== "function") return;
+      try {
+        const { IPC_REQUEST_TYPES } = require("../../shared/eventContract");
+        props.daemonConnection.send({
+          type: IPC_REQUEST_TYPES.BUS_WATCH,
+          agent_id: agentId,
+          enabled: enabled !== false,
+        });
+      } catch { /* ignore */ }
+    };
+
+    const sendInternalAgentMessage = (agentId, message) => {
+      if (!agentId || !message || !props.daemonConnection || typeof props.daemonConnection.send !== "function") return;
+      try {
+        const { IPC_REQUEST_TYPES } = require("../../shared/eventContract");
+        props.daemonConnection.send({
+          type: IPC_REQUEST_TYPES.BUS_SEND,
+          target: agentId,
+          message,
+          injection_mode: "immediate",
+          source: "chat-internal-agent-view",
+        });
+      } catch (err) {
+        setInternalAgentView((prev) => appendInternalAgentText(
+          updateInternalViewStatus(prev, "blocked", err && err.message ? err.message : String(err || "")),
+          `Error: ${err && err.message ? err.message : err}\n`,
+        ));
+      }
+    };
+
+    const isInternalAlias = (view, value) => {
+      if (!view || !view.agentId) return false;
+      const text = String(value || "");
+      if (!text) return false;
+      const aliases = new Set((view.aliases || []).concat([view.agentId, view.label]).filter(Boolean).map(String));
+      return aliases.has(text);
+    };
+
+    const handleInternalStatus = (data = {}) => {
+      const view = internalAgentViewRef.current;
+      if (!view || !view.agentId) return;
+      const metaList = Array.isArray(data.active_meta) ? data.active_meta : [];
+      for (const meta of metaList) {
+        const metaId = meta && (meta.fullId || meta.subscriber_id || meta.id) ? String(meta.fullId || meta.subscriber_id || meta.id) : "";
+        const typedId = meta && meta.type && meta.id ? `${meta.type}:${meta.id}` : "";
+        if (!isInternalAlias(view, metaId) && !isInternalAlias(view, typedId)) continue;
+        const status = internalStatusLabel(meta.activity_state || meta.state || "");
+        const detail = String(meta.activity_detail || meta.detail || meta.status_text || "").trim();
+        setInternalAgentView((prev) => (
+          prev.agentId === view.agentId ? updateInternalViewStatus(prev, status, detail) : prev
+        ));
+        return;
+      }
+    };
+
+    const handleInternalBusMessage = (data = {}) => {
+      const view = internalAgentViewRef.current;
+      if (!view || !view.agentId) return false;
+      if (data.event === "activity_state_changed") {
+        const actor = String(data.subscriber || data.publisher || "").trim();
+        if (!isInternalAlias(view, actor)) return false;
+        setInternalAgentView((prev) => (
+          prev.agentId === view.agentId
+            ? {
+              ...updateInternalViewStatus(
+                prev,
+                data.state || data.activity_state || "",
+                data.detail || (data.data && data.data.detail) || data.message || "",
+              ),
+            }
+            : prev
+        ));
+        return true;
+      }
+      const publisher = String(data.publisher || (data.event === "broadcast" ? "broadcast" : "bus"));
+      const target = String(data.target || data.subscriber || "");
+      const fromAgent = isInternalAlias(view, publisher);
+      const toAgent = isInternalAlias(view, target);
+      if (!fromAgent && !toAgent) return false;
+      if (data.silent) return true;
+      if (data.source === "chat-internal-agent-view" && toAgent && !fromAgent) return true;
+
+      const { displayMessage, streamPayload } = parseInternalBusPayload(data.message || "");
+      if (streamPayload) {
+        if (!fromAgent) return true;
+        const delta = typeof streamPayload.delta === "string"
+          ? streamPayload.delta.replace(/\\r\\n/g, "\n").replace(/\\n/g, "\n").replace(/\\r/g, "\n")
+          : "";
+        if (delta) {
+          setInternalAgentView((prev) => (
+            prev.agentId === view.agentId
+              ? updateInternalViewStatus(
+                appendInternalAgentText(prev, delta, { prefix: "* " }),
+                streamPayload.done ? "ready" : "working",
+                streamPayload.reason || prev.detail || "",
+              )
+              : prev
+          ));
+        } else if (streamPayload.done) {
+          setInternalAgentView((prev) => (
+            prev.agentId === view.agentId ? updateInternalViewStatus(prev, "ready", "") : prev
+          ));
+        }
+        return true;
+      }
+      if (!displayMessage) return true;
+      setInternalAgentView((prev) => {
+        if (prev.agentId !== view.agentId) return prev;
+        const next = fromAgent
+          ? appendInternalAgentText(prev, `${displayMessage}\n`, { prefix: "* " })
+          : appendInternalAgentText(prev, `${displayMessage}\n`, { prefix: "> " });
+        return fromAgent ? updateInternalViewStatus(next, "ready", "") : next;
+      });
+      return true;
+    };
+
+    const handleInternalErrorMessage = (message = "") => {
+      const view = internalAgentViewRef.current;
+      if (!view || !view.agentId) return false;
+      setInternalAgentView((prev) => (
+        appendInternalErrorToView(prev, view.agentId, message)
+      ));
+      return true;
+    };
+
+    const handleInternalSendOk = () => {
+      const view = internalAgentViewRef.current;
+      if (!view || !view.agentId) return false;
+      setInternalAgentView((prev) => (
+        prev.agentId === view.agentId ? updateInternalViewStatus(prev, "ready", "") : prev
+      ));
+      return true;
+    };
+
+    const requestDaemonStatus = useCallback(() => {
+      try {
+        const { IPC_REQUEST_TYPES } = require("../../shared/eventContract");
+        const conn = props.daemonConnection;
+        if (conn && typeof conn.send === "function") conn.send({ type: IPC_REQUEST_TYPES.STATUS });
+      } catch { /* ignore */ }
+    }, [props.daemonConnection]);
+
+    const updateDashboardFromStatus = useCallback((data = {}) => {
+      const activeIds = Array.isArray(data.active) ? data.active : [];
+      const metaList = Array.isArray(data.active_meta) ? data.active_meta : [];
+      const { buildAgentMaps } = require("../../chat/agentDirectory");
+      const { labelMap, metaMap } = buildAgentMaps(activeIds, metaList);
+      const agentsForDispatch = activeIds.map((id) => {
+        const meta = metaMap.get(id) || {};
+        const colon = id.indexOf(":");
+        const fallbackType = colon > 0 ? id.slice(0, colon) : id;
+        const fallbackId = colon > 0 ? id.slice(colon + 1) : "";
+        return {
+          ...meta,
+          fullId: id,
+          type: meta.type || fallbackType,
+          id: meta.id || fallbackId,
+          nickname: labelMap.get(id) || id,
+        };
+      });
+      dispatch({ type: "agents/set", list: agentsForDispatch });
+      if (data.cron && Array.isArray(data.cron.tasks)) {
+        dispatch({ type: "cron/set", list: data.cron.tasks });
+      }
+      dispatch({ type: "loop/set", summary: data.loop || null });
+      handleInternalStatus(data);
+    }, []);
+
     // Wire daemon: register a message handler that turns IPC responses
-    // into reducer dispatches, then kick off connect(). On unmount we
-    // close the connection so the next ink mount can attach cleanly.
+    // through the same daemonMessageRouter blessed uses, then adapts the
+    // blessed callbacks to Ink state updates.
     useEffect(() => {
       if (!interactive) return undefined;
       const conn = props.daemonConnection;
@@ -286,78 +1211,108 @@ function createChatApp({ React, ink, props, interactive = true }) {
         return undefined;
       }
       const { IPC_RESPONSE_TYPES } = require("../../shared/eventContract");
+      const { createDaemonMessageRouter } = require("../../chat/daemonMessageRouter");
+      const streamState = streamStateRef.current;
+      const router = createDaemonMessageRouter({
+        escapeBlessed: (value) => String(value == null ? "" : value),
+        stripBlessedTags,
+        logMessage: logInkMessage,
+        renderScreen: () => {},
+        updateDashboard: updateDashboardFromStatus,
+        requestStatus: requestDaemonStatus,
+        resolveStatusLine: (text, data = {}) => {
+          setStatusText(text, {
+            type: data && data.phase === "error" ? "error" : "typing",
+            showTimer: false,
+          });
+        },
+        enqueueBusStatus: (item = {}) => setStatusText(item.text || "Processing bus message", { type: "typing" }),
+        resolveBusStatus: (item = {}) => setStatusText(item.text || "Bus message processed", { type: "typing" }),
+        getPending: () => pendingRef.current,
+        setPending: (value) => { pendingRef.current = value || null; },
+        resolveAgentDisplayName: (value) => {
+          const current = stateRef.current || {};
+          const meta = current.activeAgentMeta instanceof Map ? current.activeAgentMeta.get(value) : null;
+          return getAgentLabelFor(meta, value);
+        },
+        getCurrentView: () => {
+          const current = stateRef.current || {};
+          return current.viewingAgentId ? "agent" : "main";
+        },
+        isAgentViewUsesBus: () => Boolean(internalAgentViewRef.current && internalAgentViewRef.current.agentId),
+        getViewingAgent: () => {
+          const current = stateRef.current || {};
+          return current.viewingAgentId || (internalAgentViewRef.current && internalAgentViewRef.current.agentId) || "";
+        },
+        isAgentEventForViewingAgent: (data, viewingAgent, publisher) => {
+          const view = internalAgentViewRef.current || {};
+          if (!view.agentId && !viewingAgent) return false;
+          const candidates = [
+            viewingAgent,
+            publisher,
+            data && data.publisher,
+            data && data.target,
+            data && data.subscriber,
+          ];
+          return candidates.some((candidate) => isInternalAlias(view, candidate));
+        },
+        writeToAgentTerm: (text, meta = {}) => {
+          const view = internalAgentViewRef.current;
+          if (!view || !view.agentId) return;
+          setInternalAgentView((prev) => (
+            applyInternalAgentTermWrite(prev, view.agentId, text, meta)
+          ));
+        },
+        consumePendingDelivery: (...args) => streamState.consumePendingDelivery(...args),
+        getPendingState: (...args) => streamState.getPendingState(...args),
+        beginStream: (...args) => streamState.beginStream(...args),
+        appendStreamDelta: (...args) => streamState.appendStreamDelta(...args),
+        finalizeStream: (...args) => streamState.finalizeStream(...args),
+        hasStream: (...args) => streamState.hasStream(...args),
+        setTransientAgentState: (agentId, value, options = {}) => {
+          if (!agentId || !value) return;
+          dispatch({
+            type: "agents/patchMeta",
+            agentId,
+            patch: {
+              activity_state: value,
+              activity_detail: options.detail || "",
+            },
+          });
+        },
+        clearTransientAgentState: (agentId) => {
+          if (!agentId) return;
+          dispatch({
+            type: "agents/patchMeta",
+            agentId,
+            patch: {
+              activity_state: "",
+              activity_detail: "",
+            },
+          });
+        },
+        refreshDashboard: () => {},
+      });
       setHandler((msg) => {
         if (!msg || typeof msg !== "object") return;
-        const type = msg.type;
-        if (type === IPC_RESPONSE_TYPES.RESPONSE) {
-          const text = String(msg.text || msg.summary || "").trim();
-          if (text) dispatch({ type: "log/appendMany", lines: text.split(/\r?\n/) });
-          dispatch({ type: "status/idle" });
-        } else if (type === IPC_RESPONSE_TYPES.ERROR) {
-          dispatch({ type: "log/append", text: `Error: ${msg.error || "unknown error"}` });
-          dispatch({ type: "status/idle" });
-        } else if (type === IPC_RESPONSE_TYPES.STATUS) {
-          // Daemon STATUS arrives as { type: "status", data: { active, active_meta, cron, ... } }.
-          // active_meta entries are keyed by `meta.id` (the part after the
-          // colon), and the display name lives in display_nickname /
-          // nickname rather than a top-level field. Reuse buildAgentMaps
-          // from src/chat/agentDirectory so the lookup matches blessed
-          // exactly.
-          const data = (msg && msg.data) || {};
-          const activeIds = Array.isArray(data.active) ? data.active : [];
-          const metaList = Array.isArray(data.active_meta) ? data.active_meta : [];
-          const { buildAgentMaps } = require("../../chat/agentDirectory");
-          const { labelMap, metaMap } = buildAgentMaps(activeIds, metaList);
-          const agentsForDispatch = activeIds.map((id) => {
-            const meta = metaMap.get(id) || {};
-            const colon = id.indexOf(":");
-            const fallbackType = colon > 0 ? id.slice(0, colon) : id;
-            const fallbackId = colon > 0 ? id.slice(colon + 1) : "";
-            return {
-              fullId: id,
-              type: meta.type || fallbackType,
-              id: meta.id || fallbackId,
-              nickname: labelMap.get(id) || id,
-            };
-          });
-          dispatch({ type: "agents/set", list: agentsForDispatch });
-          if (data.cron && Array.isArray(data.cron.tasks)) {
-            dispatch({ type: "cron/set", list: data.cron.tasks });
-          }
-        } else if (type === IPC_RESPONSE_TYPES.BUS) {
-          // Bus messages can be plain delivery confirmations or streaming
-          // payloads. The streaming format is a JSON envelope inside the
-          // `message` string with { stream: true, delta, done, reason };
-          // see daemonMessageRouter.normalizeDisplayMessage.
-          const data = (msg && msg.data) || {};
-          const publisher = data.publisher || "bus";
-          const rawMessage = String(data.message || "");
-          let streamPayload = null;
-          if (rawMessage && rawMessage.charAt(0) === "{") {
-            try {
-              const parsed = JSON.parse(rawMessage);
-              if (parsed && typeof parsed === "object" && parsed.stream) streamPayload = parsed;
-            } catch { /* fall through to plain text */ }
-          }
-          if (streamPayload) {
-            const delta = String(streamPayload.delta || "");
-            if (delta) dispatch({ type: "stream/delta", publisher, delta });
-            if (streamPayload.done) dispatch({ type: "stream/end" });
-            return;
-          }
-          if (rawMessage) {
-            dispatch({ type: "log/appendMany", lines: rawMessage.split(/\r?\n/) });
-          }
-        } else if (type === IPC_RESPONSE_TYPES.BUS_SEND_OK) {
-          dispatch({ type: "log/append", text: `✓ Message delivered` });
-          dispatch({ type: "status/idle" });
+        if (msg.type === IPC_RESPONSE_TYPES.ERROR && handleInternalErrorMessage(msg.error || "unknown error")) {
+          return;
         }
+        if (msg.type === IPC_RESPONSE_TYPES.BUS_SEND_OK) {
+          if (handleInternalSendOk()) return;
+          const text = `✓ Message delivered`;
+          logInkMessage("system", text);
+          dispatch({ type: "status/idle" });
+          requestDaemonStatus();
+          return;
+        }
+        router.handleMessage(msg);
       });
       conn.connect();
       return () => {
         try { if (typeof conn.close === "function") conn.close(); } catch { /* ignore */ }
       };
-    }, [interactive]);
+    }, [interactive, logInkMessage, requestDaemonStatus, setStatusText, updateDashboardFromStatus]);
 
     // commandExecutor wiring. The blessed implementation reuses this
     // module to dispatch every slash command (~30 callbacks). We adapt
@@ -370,73 +1325,86 @@ function createChatApp({ React, ink, props, interactive = true }) {
       if (!interactive) return undefined;
       const { createCommandExecutor } = require("../../chat/commandExecutor");
       const { parseCommand: parseCmd } = require("../../chat/commands");
-      const { stripBlessedTags } = require("../../chat/text");
+      const { startDaemon: transportStartDaemon, stopDaemon: transportStopDaemon } = require("../../chat/transport");
+      const AgentActivator = require("../../bus/activate");
       const conn = props.daemonConnection;
-      const tport = props.daemonTransport;
-
-      const safeLog = (kind, text) => {
-        const cleaned = stripBlessedTags(String(text || ""));
-        if (!cleaned) return;
-        const lines = cleaned.split(/\r?\n/);
-        if (kind === "error") {
-          dispatch({ type: "log/append", text: `Error: ${lines[0] || ""}` });
-          for (const line of lines.slice(1)) dispatch({ type: "log/append", text: line });
-        } else {
-          dispatch({ type: "log/appendMany", lines });
-        }
-      };
 
       try {
         commandExecutorRef.current = createCommandExecutor({
           projectRoot: props.projectRoot,
-          getActiveProjectRoot: () => props.activeProjectRoot || props.projectRoot,
+          getActiveProjectRoot: () => currentProjectRootRef.current || props.projectRoot,
           parseCommand: parseCmd,
           escapeBlessed: (v) => String(v == null ? "" : v),
-          logMessage: safeLog,
-          resolveStatusLine: () => dispatch({ type: "status/idle" }),
+          logMessage: logInkMessage,
+          resolveStatusLine: (text) => setStatusText(text),
           renderScreen: () => {},
-          getActiveAgents: () => state.agents,
-          getActiveAgentMetaMap: () => state.activeAgentMeta,
-          getAgentLabel: (id) => getAgentLabelFor(state.activeAgentMeta.get(id), id),
-          isDaemonRunning: () => props.env && props.env.isRunning ? props.env.isRunning(props.projectRoot) : true,
-          startDaemon: () => props.env && props.env.startDaemon && props.env.startDaemon(props.projectRoot),
-          stopDaemon: () => {},
-          restartDaemon: async () => {
+          getActiveAgents: () => (stateRef.current && stateRef.current.agents) || [],
+          getActiveAgentMetaMap: () => (stateRef.current && stateRef.current.activeAgentMeta) || new Map(),
+          getAgentLabel: (id) => {
+            const metaMap = (stateRef.current && stateRef.current.activeAgentMeta) || new Map();
+            return getAgentLabelFor(metaMap.get(id), id);
+          },
+          isDaemonRunning: (root) => props.env && props.env.isRunning ? props.env.isRunning(root || props.projectRoot) : true,
+          startDaemon: (root, options = {}) => {
+            const targetRoot = root || props.projectRoot;
+            if (props.env && typeof props.env.startDaemon === "function") return props.env.startDaemon(targetRoot, options);
+            return transportStartDaemon(targetRoot, options);
+          },
+          stopDaemon: (root, options = {}) => transportStopDaemon(root || props.projectRoot, options),
+          restartDaemon: async (root) => {
+            const targetRoot = root || currentProjectRootRef.current || props.projectRoot;
+            if (
+              targetRoot === (currentProjectRootRef.current || props.projectRoot) &&
+              props.daemonCoordinator &&
+              typeof props.daemonCoordinator.restart === "function"
+            ) {
+              await props.daemonCoordinator.restart();
+              return;
+            }
             try { if (conn && typeof conn.close === "function") conn.close(); } catch { /* ignore */ }
-            try { if (typeof conn.connect === "function") conn.connect(); } catch { /* ignore */ }
+            transportStopDaemon(targetRoot, { source: "ink-command:/daemon restart" });
+            transportStartDaemon(targetRoot);
+            if (targetRoot === (currentProjectRootRef.current || props.projectRoot) && conn && typeof conn.connect === "function") {
+              await conn.connect();
+            }
           },
           send: (req) => { try { if (conn && typeof conn.send === "function") conn.send(req); } catch { /* ignore */ } },
-          requestStatus: () => {
+          requestStatus: requestDaemonStatus,
+          requestCron: (payload = {}) => {
             try {
               const { IPC_REQUEST_TYPES } = require("../../shared/eventContract");
-              if (conn && typeof conn.send === "function") conn.send({ type: IPC_REQUEST_TYPES.STATUS });
+              if (conn && typeof conn.send === "function") {
+                conn.send({ type: IPC_REQUEST_TYPES.CRON, ...payload });
+              }
             } catch { /* ignore */ }
           },
+          activateAgent: async (target) => {
+            const activator = new AgentActivator(currentProjectRootRef.current || props.projectRoot);
+            await activator.activate(target);
+          },
           globalMode: Boolean(props.globalMode),
-          listProjects: () => state.projects,
-          getCurrentProject: () => ({ projectRoot: props.projectRoot }),
+          listProjects: () => (stateRef.current && stateRef.current.projects) || [],
+          getCurrentProject: () => ({ project_root: currentProjectRootRef.current || props.projectRoot }),
           switchProject: async (target) => {
-            if (props.daemonCoordinator && typeof props.daemonCoordinator.switchProject === "function") {
-              try {
-                return await props.daemonCoordinator.switchProject(target || {});
-              } catch (err) {
-                return { ok: false, error: err && err.message ? err.message : "switch failed" };
-              }
+            const rawTarget = String((target && (target.projectRoot || target.project_root || target.target)) || target || "").trim();
+            let targetRoot = rawTarget;
+            if (/^\d+$/.test(rawTarget)) {
+              const idx = Number.parseInt(rawTarget, 10) - 1;
+              const projects = (stateRef.current && stateRef.current.projects) || [];
+              targetRoot = resolveProjectRowRoot(projects[idx]);
             }
-            return { ok: false, error: "daemon coordinator unavailable" };
+            const switchProject = switchToProjectRootRef.current;
+            if (typeof switchProject !== "function") {
+              return { ok: false, error: "project switching unavailable" };
+            }
+            return switchProject(targetRoot, { focusInput: true });
           },
         });
       } catch (err) {
         dispatch({ type: "log/append", text: `Error: command executor unavailable (${err && err.message ? err.message : err})` });
       }
       return undefined;
-      // We deliberately depend only on `interactive`; the executor reads
-      // dynamic state (agents, projects) through closures that close over
-      // `state`. React re-renders the component every state change, so
-      // those closures see fresh values without needing to recreate the
-      // executor.
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [interactive]);
+    }, [interactive, logInkMessage, requestDaemonStatus, setStatusText]);
 
     // Periodic STATUS poll to keep the agents footer fresh, mirroring
     // blessed's requestStatus on a timer.
@@ -456,106 +1424,442 @@ function createChatApp({ React, ink, props, interactive = true }) {
     // Refresh the project rail in global mode. blessed pulls this off the
     // local registry; we do the same so the dashboard's first row tracks
     // every running project without needing a daemon round-trip.
+    const refreshGlobalProjects = useCallback((activeRoot = currentProjectRoot) => {
+      if (!props.globalMode) return [];
+      const list = loadGlobalProjectRows(activeRoot);
+      dispatch({
+        type: "projects/set",
+        list,
+        activeProjectRoot: activeRoot,
+      });
+      return list;
+    }, [props.globalMode, currentProjectRoot]);
+
     useEffect(() => {
       if (!interactive || !props.globalMode) return undefined;
       const refresh = () => {
-        try {
-          const { listProjectRuntimes } = require("../../projects");
-          const rows = listProjectRuntimes({ validate: true, cleanupTmp: true }) || [];
-          const list = rows.map((row) => ({
-            id: row.project_id || row.project_root || "",
-            label: row.project_name || (row.project_root ? require("path").basename(row.project_root) : ""),
-            root: row.project_root || "",
-            status: row.status || "",
-            active: row.project_root === props.activeProjectRoot,
-          }));
-          dispatch({
-            type: "projects/set",
-            list,
-            activeProjectRoot: props.activeProjectRoot,
-          });
-        } catch { /* ignore */ }
+        try { refreshGlobalProjects(currentProjectRoot); } catch { /* ignore */ }
       };
       refresh();
       const timer = setInterval(refresh, 4000);
       return () => clearInterval(timer);
-    }, [interactive, props.globalMode]);
+    }, [interactive, props.globalMode, currentProjectRoot, refreshGlobalProjects]);
 
     useEffect(() => {
-      if (!state.status.message || state.status.type === "none") return undefined;
+      const internalStatus = state.viewingAgentId ? internalStatusLabel(internalAgentView.status) : "ready";
+      const internalActive = internalStatus !== "ready";
+      if ((!state.status.message || state.status.type === "none") && !internalActive) return undefined;
       const timer = setInterval(() => setSpinnerTick((t) => t + 1), 100);
       return () => clearInterval(timer);
-    }, [state.status.message, state.status.type]);
+    }, [state.status.message, state.status.type, state.viewingAgentId, internalAgentView.status]);
 
+    const selectedProject = state.selectedProjectIndex >= 0 ? state.projects[state.selectedProjectIndex] : null;
+    const selectedProjectRoot = state.selectedProjectRoot || resolveProjectRowRoot(selectedProject);
+    const currentProject = state.projects.find((row) => resolveProjectRowRoot(row) === currentProjectRoot) || null;
+    const currentProjectLabel = currentProject
+      ? String(currentProject.label || currentProject.project_name || path.basename(currentProjectRoot) || currentProjectRoot)
+      : "";
+    const inCommittedProjectScope = Boolean(props.globalMode && state.globalScope === "project" && currentProjectRoot);
+    const displayAgents = state.agents;
+    const displayAgentMeta = state.activeAgentMeta;
     const targetAgentId = state.agentSelectionMode && state.selectedAgentIndex >= 0
-      ? state.agents[state.selectedAgentIndex]
+      ? displayAgents[state.selectedAgentIndex]
       : null;
-    const targetAgentMeta = targetAgentId ? state.activeAgentMeta.get(targetAgentId) : null;
+    const targetAgentMeta = targetAgentId ? displayAgentMeta.get(targetAgentId) : null;
     const targetAgentLabel = targetAgentId ? getAgentLabelFor(targetAgentMeta, targetAgentId) : "";
+    const restartDaemonBestEffort = useCallback(() => {
+      const coordinator = props.daemonCoordinator;
+      if (coordinator && typeof coordinator.restart === "function") {
+        Promise.resolve(coordinator.restart()).catch((err) => {
+          dispatch({ type: "log/append", text: `Error: ${err && err.message ? err.message : err}` });
+        });
+        return;
+      }
+      const conn = props.daemonConnection;
+      try { if (conn && typeof conn.close === "function") conn.close(); } catch { /* ignore */ }
+      try { if (conn && typeof conn.connect === "function") conn.connect(); } catch { /* ignore */ }
+    }, []);
 
-    const submit = useCallback((submitted) => {
-      const value = String(submitted == null ? state.draft : submitted);
-      const trimmed = value.trim();
-      if (!trimmed) return;
-      dispatch({ type: "draft/clear" });
-      dispatch({ type: "history/push", value: trimmed });
-      try { appendInputHistory(props.projectRoot, trimmed, { globalMode: props.globalMode }); } catch { /* ignore */ }
-      dispatch({ type: "log/append", text: targetAgentLabel ? `›@${targetAgentLabel} ${trimmed}` : `› ${trimmed}` });
+    const persistSetting = useCallback((patch, statusText, restart = false) => {
+      try {
+        const { saveConfig } = require("../../config");
+        saveConfig(props.projectRoot, patch);
+      } catch (err) {
+        dispatch({ type: "log/append", text: `Error: ${err && err.message ? err.message : err}` });
+      }
+      if (statusText) {
+        dispatch({
+          type: "status/set",
+          payload: { message: statusText, type: "typing", showTimer: false, startedAt: Date.now() },
+        });
+      }
+      if (restart) restartDaemonBestEffort();
+    }, [restartDaemonBestEffort]);
 
-      // Slash commands route through the shared commandExecutor. The
-      // executor pulls in /cron, /group, /role, /solo, /settings,
-      // /doctor, /init, /launch, /project, /open, /help, /skills, etc.
-      if (trimmed.startsWith("/")) {
-        const exec = commandExecutorRef.current;
-        if (!exec || typeof exec.executeCommand !== "function") {
-          dispatch({ type: "log/append", text: "Error: command executor not ready yet" });
+    const clearUfooAgentIdentity = useCallback(() => {
+      try {
+        const { getUfooPaths } = require("../../ufoo/paths");
+        const agentDir = getUfooPaths(props.projectRoot).agentDir;
+        fs.rmSync(path.join(agentDir, "ufoo-agent.json"), { force: true });
+        fs.rmSync(path.join(agentDir, "ufoo-agent.history.jsonl"), { force: true });
+      } catch { /* ignore */ }
+    }, []);
+
+    const applySelectedMode = useCallback(() => {
+      const { normalizeLaunchMode } = require("../../config");
+      const mode = normalizeLaunchMode(state.modeOptions[state.selectedModeIndex]);
+      dispatch({ type: "settings/applyMode" });
+      persistSetting({ launchMode: mode }, `Launch mode: ${mode}`, true);
+      dispatch({ type: "focus/set", mode: "input" });
+    }, [state.modeOptions, state.selectedModeIndex, persistSetting]);
+
+    const applySelectedProvider = useCallback(() => {
+      const { normalizeAgentProvider } = require("../../config");
+      const selected = state.providerOptions[state.selectedProviderIndex];
+      const provider = normalizeAgentProvider(selected && selected.value);
+      dispatch({ type: "settings/applyProvider" });
+      clearUfooAgentIdentity();
+      persistSetting({ agentProvider: provider }, `ufoo-agent: ${provider === "claude-cli" ? "claude" : "codex"}`, true);
+      dispatch({ type: "focus/set", mode: "input" });
+    }, [state.providerOptions, state.selectedProviderIndex, clearUfooAgentIdentity, persistSetting]);
+
+    const sendCronStop = useCallback((taskId) => {
+      if (!taskId || !props.daemonConnection || typeof props.daemonConnection.send !== "function") return;
+      try {
+        const { IPC_REQUEST_TYPES } = require("../../shared/eventContract");
+        props.daemonConnection.send({ type: IPC_REQUEST_TYPES.CRON, operation: "stop", id: taskId });
+      } catch (err) {
+        dispatch({ type: "log/append", text: `Error: ${err && err.message ? err.message : err}` });
+      }
+    }, []);
+
+    const switchToProjectRoot = useCallback(async (targetRoot, options = {}) => {
+      const root = String(targetRoot || "").trim();
+      if (!root) return { ok: false, error: "project root unavailable" };
+      if (props.globalMode && props.env && typeof props.env.isRunning === "function" && !props.env.isRunning(root)) {
+        try {
+          const { markProjectStopped } = require("../../projects");
+          markProjectStopped(root);
+        } catch { /* ignore */ }
+        refreshGlobalProjects(currentProjectRoot);
+        dispatch({ type: "projects/clearSelection" });
+        dispatch({ type: "focus/set", mode: "input" });
+        const label = path.basename(root) || root;
+        const result = { ok: false, error: `project is not running: ${label}`, stopped: true };
+        dispatch({ type: "log/append", text: `Project ${label} is not running; removed stale dashboard entry` });
+        return result;
+      }
+      const focusInput = options.focusInput === true;
+      const selected = state.projects.find((row) => resolveProjectRowRoot(row) === root) || {};
+      dispatch({ type: "log/clear" });
+      const banner = buildChatBannerLines({
+        ...props,
+        activeProjectRoot: root,
+        globalScope: "project",
+      }, fmt.UCODE_VERSION || "");
+      dispatch({ type: "log/appendMany", lines: banner });
+      const persisted = loadChatHistory(root, 200, { globalMode: false });
+      if (persisted.length > 0) {
+        dispatch({ type: "log/append", text: "" });
+        dispatch({ type: "log/append", text: "─── history ───" });
+        dispatch({ type: "log/appendMany", lines: persisted });
+      }
+      if (props.daemonCoordinator && typeof props.daemonCoordinator.switchProject === "function") {
+        const { socketPath } = require("../../daemon");
+        const res = await Promise.resolve(props.daemonCoordinator.switchProject({
+          projectRoot: root,
+          sockPath: socketPath(root),
+          autoStart: false,
+        }));
+        if (!res || res.ok !== true) {
+          dispatch({ type: "log/append", text: `Error: ${(res && res.error) || "switch failed"}` });
+          return res || { ok: false, error: "switch failed" };
+        }
+      }
+      setCurrentProjectRoot(root);
+      dispatch({ type: "scope/set", scope: "project" });
+      dispatch({
+        type: "projects/select",
+        index: state.projects.indexOf(selected),
+        projectRoot: root,
+      });
+      refreshGlobalProjects(root);
+      if (focusInput) dispatch({ type: "focus/set", mode: "input" });
+      try {
+        const { IPC_REQUEST_TYPES } = require("../../shared/eventContract");
+        if (props.daemonConnection && typeof props.daemonConnection.send === "function") {
+          props.daemonConnection.send({ type: IPC_REQUEST_TYPES.STATUS });
+        }
+      } catch { /* ignore */ }
+      return { ok: true, project_root: root };
+    }, [
+      props,
+      props.daemonCoordinator,
+      props.daemonConnection,
+      props.env,
+      state.projects,
+      refreshGlobalProjects,
+      currentProjectRoot,
+    ]);
+
+    useEffect(() => {
+      switchToProjectRootRef.current = switchToProjectRoot;
+    }, [switchToProjectRoot]);
+
+    const switchToControllerRoot = useCallback(async () => {
+      const root = props.activeProjectRoot || props.projectRoot || "";
+      if (!root) return { ok: false, error: "controller root unavailable" };
+      if (props.daemonCoordinator && typeof props.daemonCoordinator.switchProject === "function") {
+        const { socketPath } = require("../../daemon");
+        const res = await Promise.resolve(props.daemonCoordinator.switchProject({
+          projectRoot: root,
+          sockPath: socketPath(root),
+        }));
+        if (!res || res.ok !== true) {
+          dispatch({ type: "log/append", text: `Error: ${(res && res.error) || "switch to global failed"}` });
+          return res || { ok: false, error: "switch to global failed" };
+        }
+      }
+
+      dispatch({ type: "projects/clearSelection" });
+      dispatch({ type: "scope/set", scope: "controller" });
+      setCurrentProjectRoot(root);
+      refreshGlobalProjects(root);
+
+      dispatch({ type: "log/clear" });
+      const banner = buildChatBannerLines({
+        ...props,
+        activeProjectRoot: root,
+        globalScope: "controller",
+      }, fmt.UCODE_VERSION || "");
+      dispatch({ type: "log/appendMany", lines: banner });
+      const persisted = loadChatHistory(root, 200, { globalMode: true });
+      if (persisted.length > 0) {
+        dispatch({ type: "log/append", text: "" });
+        dispatch({ type: "log/append", text: "─── history ───" });
+        dispatch({ type: "log/appendMany", lines: persisted });
+      }
+
+      const snapshot = readProjectAgentSnapshot(root);
+      dispatch({ type: "agents/set", list: snapshot.agents.map((id) => snapshot.metaMap.get(id) || { fullId: id }) });
+      try {
+        const { IPC_REQUEST_TYPES } = require("../../shared/eventContract");
+        if (props.daemonConnection && typeof props.daemonConnection.send === "function") {
+          props.daemonConnection.send({ type: IPC_REQUEST_TYPES.STATUS });
+        }
+      } catch { /* ignore */ }
+      return { ok: true, project_root: root };
+    }, [
+      props,
+      props.daemonCoordinator,
+      props.daemonConnection,
+      refreshGlobalProjects,
+    ]);
+
+    const closeSelectedProject = useCallback(async () => {
+      if (!props.globalMode || !Array.isArray(state.projects) || state.projects.length === 0) return;
+      const selectedIndex = state.selectedProjectIndex >= 0 ? state.selectedProjectIndex : 0;
+      const proj = state.projects[selectedIndex];
+      const targetRoot = resolveProjectRowRoot(proj);
+      const label = (proj && (proj.label || proj.project_name)) || targetRoot;
+      if (!targetRoot) {
+        dispatch({ type: "log/append", text: "Error: project root unavailable" });
+        return;
+      }
+
+      dispatch({ type: "log/append", text: `Closing project ${label} daemon and agents...` });
+      let activeRoot = currentProjectRoot;
+      try {
+        if (targetRoot === currentProjectRoot) {
+          const fallback = state.projects
+            .map(resolveProjectRowRoot)
+            .find((root) => root && root !== targetRoot);
+          if (!fallback) {
+            dispatch({ type: "log/append", text: "Error: Cannot close current project; switch to another project first" });
+            return;
+          }
+          if (!props.daemonCoordinator || typeof props.daemonCoordinator.switchProject !== "function") {
+            dispatch({ type: "log/append", text: "Error: project switching unavailable" });
+            return;
+          }
+          const { socketPath } = require("../../daemon");
+          const switched = await Promise.resolve(props.daemonCoordinator.switchProject({
+            projectRoot: fallback,
+            sockPath: socketPath(fallback),
+            autoStart: false,
+          }));
+          if (!switched || switched.ok !== true) {
+            dispatch({ type: "log/append", text: `Error: Failed to switch project before close: ${(switched && switched.error) || "switch failed"}` });
+            return;
+          }
+          activeRoot = fallback;
+          setCurrentProjectRoot(fallback);
+          dispatch({ type: "scope/set", scope: "project" });
+        }
+
+        const { stopDaemon } = require("../../chat/transport");
+        const { isRunning } = require("../../daemon");
+        stopDaemon(targetRoot, { source: `ink-project-close:${targetRoot}` });
+        refreshGlobalProjects(activeRoot);
+        if (isRunning(targetRoot)) {
+          dispatch({ type: "log/append", text: `Error: Project ${label} daemon is still running after stop` });
           return;
         }
-        try {
-          const maybe = exec.executeCommand(trimmed);
-          if (maybe && typeof maybe.then === "function") {
-            maybe.catch((err) => {
-              dispatch({ type: "log/append", text: `Error: ${err && err.message ? err.message : err}` });
-            });
-          }
-        } catch (err) {
-          dispatch({ type: "log/append", text: `Error: ${err && err.message ? err.message : err}` });
-        }
-        return;
+        dispatch({ type: "log/append", text: `Closed project ${label} daemon and agents` });
+      } catch (err) {
+        dispatch({ type: "log/append", text: `Error: ${err && err.message ? err.message : err}` });
       }
+    }, [
+      props.globalMode,
+      props.daemonCoordinator,
+      state.projects,
+      state.selectedProjectIndex,
+      currentProjectRoot,
+      refreshGlobalProjects,
+    ]);
 
-      if (!props.daemonConnection || typeof props.daemonConnection.send !== "function") {
-        dispatch({ type: "log/append", text: "Error: daemon connection unavailable" });
-        return;
+    const submit = useCallback(async (submitted) => {
+      const value = String(submitted == null ? state.draft : submitted);
+      const trimmed = value.trim();
+      if (props.globalMode && state.globalScope === "project" && selectedProjectRoot && selectedProjectRoot !== currentProjectRoot) {
+        const switched = await switchToProjectRoot(selectedProjectRoot, { focusInput: true });
+        if (!switched || switched.ok !== true) return;
       }
-      const { IPC_REQUEST_TYPES } = require("../../shared/eventContract");
-      try {
-        if (targetAgentId) {
-          props.daemonConnection.send({
-            type: IPC_REQUEST_TYPES.BUS_SEND,
-            target: targetAgentId,
-            text: trimmed,
-          });
-          dispatch({ type: "agents/clearTarget" });
-          dispatch({
-            type: "status/set",
-            payload: { message: "Sending message...", type: "typing", showTimer: false, startedAt: Date.now() },
-          });
-        } else {
-          props.daemonConnection.send({
-            type: IPC_REQUEST_TYPES.PROMPT,
-            prompt: trimmed,
-          });
-          dispatch({
-            type: "status/set",
-            payload: { message: "Working on task...", type: "thinking", showTimer: true, startedAt: Date.now() },
-          });
+      dispatch({ type: "draft/clear" });
+      const { createInputSubmitHandler } = require("../../chat/inputSubmitHandler");
+      const { parseAtTarget } = require("../../chat/commands");
+      const { resolveAgentId } = require("../../chat/agentDirectory");
+      const { subscriberToSafeName } = require("../../bus/utils");
+      const { getUfooPaths } = require("../../ufoo/paths");
+      const { createTerminalAdapterRouter } = require("../../terminal/adapterRouter");
+      const submitState = {};
+      Object.defineProperties(submitState, {
+        targetAgent: {
+          get: () => targetAgentId || null,
+          set: (next) => {
+            const id = String(next || "");
+            if (!id) {
+              dispatch({ type: "agents/clearTarget" });
+              return;
+            }
+            const idx = displayAgents.indexOf(id);
+            if (idx >= 0) dispatch({ type: "agents/select", index: idx });
+          },
+        },
+        pending: {
+          get: () => pendingRef.current,
+          set: (next) => { pendingRef.current = next || null; },
+        },
+        activeAgentMetaMap: {
+          get: () => displayAgentMeta,
+        },
+      });
+      const send = (req) => {
+        if (!props.daemonConnection || typeof props.daemonConnection.send !== "function") {
+          throw new Error("daemon connection unavailable");
         }
+        props.daemonConnection.send(req);
+      };
+      const handler = createInputSubmitHandler({
+        state: submitState,
+        parseAtTarget,
+        resolveAgentId: (label) => resolveAgentId({
+          label,
+          activeAgents: displayAgents,
+          labelMap: buildActiveAgentLabelMap(displayAgents, displayAgentMeta),
+          lookupNickname: (nickname) => {
+            for (const [id, meta] of displayAgentMeta.entries()) {
+              if (!meta) continue;
+              if (meta.nickname === nickname || meta.scoped_nickname === nickname || meta.display_nickname === nickname) return id;
+            }
+            return null;
+          },
+        }),
+        executeCommand: async (text) => {
+          const exec = commandExecutorRef.current;
+          if (!exec || typeof exec.executeCommand !== "function") {
+            throw new Error("command executor not ready yet");
+          }
+          return exec.executeCommand(text);
+        },
+        queueStatusLine: (text) => setStatusText(text, { type: "typing", showTimer: true }),
+        send,
+        logMessage: logInkMessage,
+        getAgentLabel: (id) => getAgentLabelFor(displayAgentMeta.get(id), id),
+        escapeBlessed: (next) => String(next == null ? "" : next),
+        markPendingDelivery: (agentId) => {
+          const meta = displayAgentMeta.get(agentId);
+          streamStateRef.current.markPendingDelivery(agentId, getAgentLabelFor(meta, agentId));
+        },
+        clearTargetAgent: () => dispatch({ type: "agents/clearTarget" }),
+        setTargetAgent: (agentId) => {
+          const idx = displayAgents.indexOf(agentId);
+          if (idx >= 0) dispatch({ type: "agents/select", index: idx });
+        },
+        enterAgentView: (agentId, options = {}) => {
+          const payload = buildAgentEnterPayload(agentId);
+          if (payload && options.useBus) payload.useBus = true;
+          if (payload && payload.useBus) {
+            enterInternalAgentView(payload);
+            return;
+          }
+          if (payload && typeof props.requestEnterAgentView === "function") {
+            props.requestEnterAgentView(agentId, payload);
+            exit();
+          }
+        },
+        getAgentAdapter: (agentId) => {
+          const meta = displayAgentMeta.get(agentId) || {};
+          const launchMode = String(meta.launch_mode || meta.launchMode || state.settings.launchMode || "").trim();
+          return createTerminalAdapterRouter().getAdapter({ launchMode, agentId, meta });
+        },
+        activateAgent: async (agentId) => {
+          const AgentActivator = require("../../bus/activate");
+          const activator = new AgentActivator(currentProjectRoot || props.projectRoot);
+          await activator.activate(agentId);
+        },
+        getInjectSockPath: (agentId) => {
+          const safeName = subscriberToSafeName(agentId);
+          return path.join(getUfooPaths(currentProjectRoot || props.projectRoot).busQueuesDir, safeName, "inject.sock");
+        },
+        existsSync: fs.existsSync,
+        commitInputHistory: (text) => {
+          dispatch({ type: "history/push", value: text });
+          try { appendInputHistory(props.projectRoot, text, { globalMode: props.globalMode }); } catch { /* ignore */ }
+        },
+        focusInput: () => dispatch({ type: "focus/set", mode: "input" }),
+        renderScreen: () => {},
+        getShellCwd: () => activeChatHistoryRoot,
+        runShellCommand: async (shellCommand, options = {}) => {
+          const { runShellCommand } = require("../../chat/shellCommand");
+          return runShellCommand(shellCommand, options);
+        },
+      });
+      try {
+        await handler.handleSubmit(value);
       } catch (err) {
         dispatch({ type: "log/append", text: `Error: ${err && err.message ? err.message : "send failed"}` });
         dispatch({ type: "status/idle" });
       }
-    }, [state.draft, targetAgentLabel, targetAgentId]);
+    }, [
+      state.draft,
+      targetAgentId,
+      props.globalMode,
+      props.projectRoot,
+      props.daemonConnection,
+      props.requestEnterAgentView,
+      selectedProjectRoot,
+      currentProjectRoot,
+      state.globalScope,
+      state.settings.launchMode,
+      switchToProjectRoot,
+      displayAgents,
+      displayAgentMeta,
+      activeChatHistoryRoot,
+      logInkMessage,
+      setStatusText,
+      exit,
+    ]);
 
     const onArrowUpAtTop = useCallback(() => {
       if (state.inputHistory.length > 0) {
@@ -563,6 +1867,8 @@ function createChatApp({ React, ink, props, interactive = true }) {
         if (next !== state.historyIndex || state.draft !== state.inputHistory[next]) {
           dispatch({ type: "history/setIndex", index: next });
           dispatch({ type: "draft/set", value: state.inputHistory[next] || "" });
+          setCompletionSuppressedDraft(state.inputHistory[next] || "");
+          setDraftVersion((v) => v + 1);
           return;
         }
       }
@@ -579,40 +1885,51 @@ function createChatApp({ React, ink, props, interactive = true }) {
         if (transition.moved) {
           dispatch({ type: "history/setIndex", index: transition.nextHistoryIndex });
           dispatch({ type: "draft/set", value: transition.nextValue });
+          setCompletionSuppressedDraft(transition.nextValue);
+          setDraftVersion((v) => v + 1);
           return;
         }
       }
       // Hand focus to the dashboard. Three-tier flow:
       //   global mode  → projects → agents → mode/provider/cron
       //   project mode → agents → mode/provider/cron
-      if (props.globalMode && state.projects.length > 0) {
+      if (props.globalMode) {
         dispatch({ type: "focus/set", mode: "dashboard" });
-        dispatch({ type: "view/set", view: "projects" });
-        if (state.selectedProjectIndex < 0) {
-          dispatch({ type: "projects/select", index: 0 });
+        if (state.projects.length > 0 && state.selectedProjectIndex < 0) {
+          dispatch({ type: "view/set", view: "projects" });
+          dispatch({ type: "projects/select", index: 0, projectRoot: resolveProjectRowRoot(state.projects[0]) });
           dispatch({ type: "projects/window", windowStart: 0 });
+        } else {
+          dispatch({ type: "view/set", view: "agents" });
+          if (displayAgents.length > 0 && state.selectedAgentIndex < 0) {
+            dispatch({ type: "agents/select", index: 0 });
+          }
         }
         return;
       }
       dispatch({ type: "focus/set", mode: "dashboard" });
       dispatch({ type: "view/set", view: "agents" });
-      if (state.agents.length > 0 && state.selectedAgentIndex < 0) {
+      if (displayAgents.length > 0 && state.selectedAgentIndex < 0) {
         dispatch({ type: "agents/select", index: 0 });
       }
-    }, [state.inputHistory, state.historyIndex, state.projects.length, state.selectedProjectIndex, state.agents.length, state.selectedAgentIndex, props.globalMode]);
+    }, [state.inputHistory, state.historyIndex, state.projects.length, state.selectedProjectIndex, displayAgents.length, state.selectedAgentIndex, props.globalMode]);
 
     const onArrowSideAtEmpty = useCallback((direction) => {
-      if (!state.agentSelectionMode || state.agents.length === 0) return;
-      dispatch({ type: "agents/cycle", direction });
-    }, [state.agentSelectionMode, state.agents.length]);
+      if (!state.agentSelectionMode || displayAgents.length === 0) return;
+      const cur = state.selectedAgentIndex < 0 ? 0 : state.selectedAgentIndex;
+      const next = direction === "left"
+        ? Math.max(0, cur - 1)
+        : Math.min(displayAgents.length - 1, cur + 1);
+      dispatch({ type: "agents/select", index: next });
+    }, [state.agentSelectionMode, state.selectedAgentIndex, displayAgents.length]);
 
     // Inline completions: shown above the input whenever the draft starts
     // with "/" or "@". Tab/Enter accept the highlighted entry, ↑↓ move the
     // selection. The list reuses the pure buildCompletions helper from
     // src/ui/format so jest can pin the source list without rendering ink.
     const { COMMAND_REGISTRY, COMMAND_TREE } = require("../../chat/commands");
-    const agentLabels = state.agents.map((id) =>
-      getAgentLabelFor(state.activeAgentMeta.get(id), id)
+    const agentLabels = displayAgents.map((id) =>
+      getAgentLabelFor(displayAgentMeta.get(id), id)
     );
 
     // Lazy-load the dynamic completion sources once so /group run and
@@ -645,7 +1962,7 @@ function createChatApp({ React, ink, props, interactive = true }) {
 
     const completions = fmt.buildCompletions({
       text: state.draft,
-      agents: state.agents,
+      agents: displayAgents,
       agentLabels,
       commands: COMMAND_REGISTRY,
       commandTree: COMMAND_TREE,
@@ -664,6 +1981,10 @@ function createChatApp({ React, ink, props, interactive = true }) {
     // cursor at the end of the freshly accepted suggestion instead of
     // staying wherever the user last typed.
     const [draftVersion, setDraftVersion] = useState(0);
+    // History recall should not immediately turn a recalled command such as
+    // "/history" into an active completion popup; otherwise ↑/↓ get captured
+    // by completion navigation and the user cannot keep walking history.
+    const [completionSuppressedDraft, setCompletionSuppressedDraft] = useState(null);
     // Reset the selection cursor whenever the suggestion list shape changes.
     useEffect(() => {
       if (completions.length === 0) {
@@ -674,21 +1995,265 @@ function createChatApp({ React, ink, props, interactive = true }) {
         setCompletionWindowStart(Math.max(0, completions.length - POPUP_PAGE_SIZE));
       }
     }, [completions.length, completionIndex, completionWindowStart]);
-    const completionsOpen = completions.length > 0;
+    const completionsOpen = completions.length > 0 && state.draft !== completionSuppressedDraft;
     const acceptCompletion = useCallback(() => {
       if (!completionsOpen) return false;
       const item = completions[Math.max(0, Math.min(completions.length - 1, completionIndex))];
       if (item) {
         dispatch({ type: "draft/set", value: item.replace });
+        setCompletionSuppressedDraft(item.hasChildren ? null : item.replace);
         setDraftVersion((v) => v + 1);
       }
       setCompletionIndex(0);
       return true;
     }, [completionsOpen, completions, completionIndex]);
 
+    const buildAgentEnterPayload = (agentId) => {
+      const agentMeta = displayAgentMeta.get(agentId);
+      const enterRequest = resolveAgentEnterRequest({
+        agentId,
+        projectRoot: currentProjectRoot || props.projectRoot,
+        activeAgentMeta: displayAgentMeta,
+        settings: state.settings,
+      });
+      return {
+        ...enterRequest,
+        agentLabel: getAgentLabelFor(agentMeta, agentId),
+        agentAliases: [
+          agentId,
+          agentMeta && agentMeta.nickname,
+          agentMeta && agentMeta.scoped_nickname,
+          agentMeta && agentMeta.display_nickname,
+        ].filter(Boolean).map(String),
+      };
+    };
+
+    const enterInternalAgentView = (enterRequest = {}) => {
+      const agentId = String(enterRequest.agentId || "").trim();
+      if (!agentId) return;
+      const previous = internalAgentViewRef.current;
+      if (previous && previous.agentId && previous.agentId !== agentId) {
+        sendInternalAgentWatch(previous.agentId, false);
+      }
+      const next = createInternalAgentViewState({
+        agentId,
+        label: enterRequest.agentLabel || agentId,
+        aliases: enterRequest.agentAliases || [],
+        projectRoot: enterRequest.projectRoot || currentProjectRoot || props.projectRoot,
+        width: size.cols || 80,
+      });
+      setInternalAgentView(next);
+      internalAgentViewRef.current = next;
+      dispatch({ type: "agentView/enter", agentId });
+      dispatch({ type: "focus/set", mode: "input" });
+      dispatch({ type: "agents/clearTarget" });
+      sendInternalAgentWatch(agentId, true);
+      try {
+        const { IPC_REQUEST_TYPES } = require("../../shared/eventContract");
+        if (props.daemonConnection && typeof props.daemonConnection.send === "function") {
+          props.daemonConnection.send({ type: IPC_REQUEST_TYPES.STATUS });
+        }
+      } catch { /* ignore */ }
+    };
+
+    const exitInternalAgentView = () => {
+      const view = internalAgentViewRef.current;
+      if (view && view.agentId) sendInternalAgentWatch(view.agentId, false);
+      const empty = createInternalAgentViewState();
+      setInternalAgentView(empty);
+      internalAgentViewRef.current = empty;
+      dispatch({ type: "agentView/exit" });
+      dispatch({ type: "view/set", view: "agents" });
+      dispatch({ type: "focus/set", mode: "input" });
+    };
+
+    const submitInternalAgentInput = () => {
+      const view = internalAgentViewRef.current;
+      const text = String((view && view.input) || "").trim();
+      if (!view || !view.agentId || !text) return;
+      setInternalAgentView((prev) => ({
+        ...updateInternalViewStatus(
+          appendInternalAgentText(prev, `${text}\n`, { prefix: "> " }),
+          "working",
+          "",
+        ),
+        input: "",
+        cursor: 0,
+      }));
+      sendInternalAgentMessage(view.agentId, text);
+    };
+
+    const handleInternalAgentDashboardKey = (input, key = {}) => {
+      const keyName = resolveInternalKeyName(input, key);
+      const totalItems = 1 + displayAgents.length;
+      const currentIndex = Math.max(
+        0,
+        Math.min(totalItems - 1, Number(internalAgentViewRef.current.barIndex) || 0),
+      );
+      if (keyName === "left") {
+        setInternalAgentView((prev) => ({
+          ...prev,
+          barIndex: Math.max(0, (Number(prev.barIndex) || 0) - 1),
+        }));
+        return true;
+      }
+      if (keyName === "right") {
+        setInternalAgentView((prev) => ({
+          ...prev,
+          barIndex: Math.min(totalItems - 1, (Number(prev.barIndex) || 0) + 1),
+        }));
+        return true;
+      }
+      if (keyName === "up") {
+        dispatch({ type: "focus/set", mode: "input" });
+        return true;
+      }
+      if (keyName === "return" || keyName === "enter") {
+        if (currentIndex === 0) {
+          exitInternalAgentView();
+          return true;
+        }
+        const agentId = displayAgents[currentIndex - 1];
+        if (!agentId) return true;
+        if (agentId === state.viewingAgentId) {
+          dispatch({ type: "focus/set", mode: "input" });
+          return true;
+        }
+        const payload = buildAgentEnterPayload(agentId);
+        if (payload && payload.useBus) {
+          enterInternalAgentView(payload);
+          return true;
+        }
+        if (payload && typeof props.requestEnterAgentView === "function") {
+          if (state.viewingAgentId) sendInternalAgentWatch(state.viewingAgentId, false);
+          props.requestEnterAgentView(agentId, payload);
+          exit();
+        }
+        return true;
+      }
+      if (key && key.ctrl && input === "x") {
+        if (currentIndex <= 0) return true;
+        const agentId = displayAgents[currentIndex - 1];
+        if (!agentId) return true;
+        try {
+          const { IPC_REQUEST_TYPES } = require("../../shared/eventContract");
+          if (props.daemonConnection && typeof props.daemonConnection.send === "function") {
+            props.daemonConnection.send({ type: IPC_REQUEST_TYPES.CLOSE_AGENT, agent_id: agentId });
+          }
+        } catch { /* ignore */ }
+        if (agentId === state.viewingAgentId) {
+          exitInternalAgentView();
+        } else {
+          setInternalAgentView((prev) => ({
+            ...prev,
+            barIndex: Math.min(Number(prev.barIndex) || 0, Math.max(0, displayAgents.length - 1)),
+          }));
+        }
+        return true;
+      }
+      return true;
+    };
+
+    const handleInternalAgentViewKey = (input, key = {}) => {
+      if (!state.viewingAgentId) return false;
+      const keyName = resolveInternalKeyName(input, key);
+
+      if (state.focusMode === "dashboard") {
+        return handleInternalAgentDashboardKey(input, key);
+      }
+
+      if (keyName === "escape") {
+        exitInternalAgentView();
+        return true;
+      }
+      if (keyName === "down") {
+        setInternalAgentView((prev) => ({ ...prev, barIndex: 0 }));
+        dispatch({ type: "focus/set", mode: "dashboard" });
+        return true;
+      }
+      if (keyName === "return" || keyName === "enter") {
+        submitInternalAgentInput();
+        return true;
+      }
+      if (key && key.ctrl && keyName === "u") {
+        setInternalAgentView((prev) => ({ ...prev, input: "", cursor: 0 }));
+        return true;
+      }
+      if (key && key.ctrl && keyName === "a") {
+        setInternalAgentView((prev) => ({ ...prev, cursor: 0 }));
+        return true;
+      }
+      if (key && key.ctrl && keyName === "e") {
+        setInternalAgentView((prev) => ({ ...prev, cursor: String(prev.input || "").length }));
+        return true;
+      }
+      if (keyName === "left") {
+        setInternalAgentView((prev) => ({
+          ...prev,
+          cursor: previousInternalBoundary(prev.input, prev.cursor),
+        }));
+        return true;
+      }
+      if (keyName === "right") {
+        setInternalAgentView((prev) => ({
+          ...prev,
+          cursor: nextInternalBoundary(prev.input, prev.cursor),
+        }));
+        return true;
+      }
+      if (keyName === "backspace") {
+        setInternalAgentView((prev) => {
+          const cursor = Number.isFinite(prev.cursor) ? prev.cursor : String(prev.input || "").length;
+          if (cursor <= 0) return prev;
+          const previous = previousInternalBoundary(prev.input, cursor);
+          return {
+            ...prev,
+            input: String(prev.input || "").slice(0, previous) + String(prev.input || "").slice(cursor),
+            cursor: previous,
+          };
+        });
+        return true;
+      }
+      if (keyName === "delete") {
+        setInternalAgentView((prev) => {
+          const text = String(prev.input || "");
+          const cursor = Number.isFinite(prev.cursor) ? prev.cursor : text.length;
+          if (cursor >= text.length) return prev;
+          const next = nextInternalBoundary(text, cursor);
+          return {
+            ...prev,
+            input: text.slice(0, cursor) + text.slice(next),
+            cursor,
+          };
+        });
+        return true;
+      }
+      if (input
+          && !(key && key.ctrl)
+          && !(key && key.meta)
+          && !/^[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]+$/.test(input)) {
+        const clean = String(input).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+        setInternalAgentView((prev) => {
+          const text = String(prev.input || "");
+          const cursor = Number.isFinite(prev.cursor) ? prev.cursor : text.length;
+          return {
+            ...prev,
+            input: text.slice(0, cursor) + clean + text.slice(cursor),
+            cursor: cursor + clean.length,
+          };
+        });
+        return true;
+      }
+      return true;
+    };
+
     useInput((input, key) => {
       if (key.ctrl && input === "c") { exit(); return; }
       if (key.ctrl && input === "o") { dispatch({ type: "merge/expand" }); return; }
+      if (state.viewingAgentId) {
+        handleInternalAgentViewKey(input, key);
+        return;
+      }
 
       // Completion popup steals arrow/Enter/Esc/Tab while it's open. The
       // user types to filter, picks with the cursor and accepts with Tab
@@ -722,19 +2287,49 @@ function createChatApp({ React, ink, props, interactive = true }) {
           return;
         }
         if (key.return || key.tab) { acceptCompletion(); return; }
-        if (key.escape) { dispatch({ type: "draft/clear" }); return; }
+        if (key.escape) {
+          setCompletionSuppressedDraft(null);
+          dispatch({ type: "draft/clear" });
+          return;
+        }
       }
 
-      if (key.tab) { dispatch({ type: "focus/toggle" }); return; }
+      if (key.tab) {
+        if (state.focusMode === "dashboard") {
+          dispatch({ type: "focus/set", mode: "input" });
+          return;
+        }
+        dispatch({ type: "focus/set", mode: "dashboard" });
+        dispatch({ type: "view/set", view: props.globalMode ? "projects" : "agents" });
+        if (props.globalMode && state.projects.length > 0 && state.selectedProjectIndex < 0) {
+          dispatch({ type: "view/set", view: "projects" });
+          dispatch({ type: "projects/select", index: 0, projectRoot: resolveProjectRowRoot(state.projects[0]) });
+        } else if (!props.globalMode && state.agents.length > 0 && state.selectedAgentIndex < 0) {
+          dispatch({ type: "agents/select", index: 0 });
+        } else if (props.globalMode && state.projects.length === 0) {
+          dispatch({ type: "view/set", view: "agents" });
+          if (displayAgents.length > 0 && state.selectedAgentIndex < 0) {
+            dispatch({ type: "agents/select", index: 0 });
+          }
+        }
+        return;
+      }
       // Dashboard focus + agents view + agent selected + Enter: hand off
-      // to the raw PTY mirror via the runChatInk loop.
+      // to the agent view. Queue-only internal agents stay inside Ink,
+      // matching blessed's useBus view; PTY/socket agents still hand off
+      // to the raw mirror via the runChatInk loop.
       if (key.return && state.focusMode === "dashboard"
           && state.dashboardView === "agents"
           && state.agentSelectionMode
           && state.selectedAgentIndex >= 0) {
-        const agentId = state.agents[state.selectedAgentIndex];
+        const agentId = displayAgents[state.selectedAgentIndex];
         if (agentId && typeof props.requestEnterAgentView === "function") {
-          props.requestEnterAgentView(agentId);
+          const enterPayload = buildAgentEnterPayload(agentId);
+          if (enterPayload.useBus) {
+            enterInternalAgentView(enterPayload);
+            return;
+          }
+          props.requestEnterAgentView(agentId, enterPayload);
           exit();
         }
         return;
@@ -742,6 +2337,19 @@ function createChatApp({ React, ink, props, interactive = true }) {
       // Dashboard focus + projects view: ←/→ moves the highlighted
       // project, Enter switches the daemon connection to that project,
       // Ctrl+X stops it.
+      if (state.focusMode === "dashboard" && state.dashboardView === "projects" && state.projects.length === 0) {
+        if (key.downArrow) {
+          dispatch({ type: "view/set", view: "agents" });
+          if (displayAgents.length > 0 && state.selectedAgentIndex < 0) {
+            dispatch({ type: "agents/select", index: 0 });
+          }
+          return;
+        }
+        if (key.upArrow || key.return || key.escape) {
+          dispatch({ type: "focus/set", mode: "input" });
+        }
+        return;
+      }
       if (state.focusMode === "dashboard" && state.dashboardView === "projects" && state.projects.length > 0) {
         if (key.leftArrow || key.rightArrow) {
           const cur = Number.isFinite(state.selectedProjectIndex) && state.selectedProjectIndex >= 0
@@ -750,7 +2358,7 @@ function createChatApp({ React, ink, props, interactive = true }) {
             ? Math.max(0, cur - 1)
             : Math.min(state.projects.length - 1, cur + 1);
           if (next === cur) return;
-          dispatch({ type: "projects/select", index: next });
+          dispatch({ type: "projects/select", index: next, projectRoot: resolveProjectRowRoot(state.projects[next]) });
           // Slide the visible window to keep the cursor on screen. We mirror
           // clampAgentWindowWithSelection's logic with maxProjectWindow=5.
           const max = Math.max(1, Math.min(5, state.projects.length));
@@ -761,75 +2369,77 @@ function createChatApp({ React, ink, props, interactive = true }) {
             dispatch({ type: "projects/window", windowStart: nextStart });
           }
 
-          // Switching projects with ←/→ also loads that project's chat
-          // log + delegates the daemon connection. Refresh STATUS so the
-          // agents footer redraws once the daemon catches up.
           const proj = state.projects[next];
-          const target = proj && (proj.root || proj.id);
-          if (target && !proj.active) {
-            dispatch({ type: "log/clear" });
-            const banner = buildChatBannerLines({
-              ...props,
-              activeProjectRoot: target,
-            }, fmt.UCODE_VERSION || "");
-            dispatch({ type: "log/appendMany", lines: banner });
-            const persisted = loadChatHistory(target, 200, { globalMode: props.globalMode });
-            if (persisted.length > 0) {
-              dispatch({ type: "log/append", text: "" });
-              dispatch({ type: "log/append", text: "─── history ───" });
-              dispatch({ type: "log/appendMany", lines: persisted });
-            }
-            if (props.daemonCoordinator && typeof props.daemonCoordinator.switchProject === "function") {
-              const { socketPath } = require("../../daemon");
-              Promise.resolve(props.daemonCoordinator.switchProject({
-                projectRoot: target,
-                sockPath: socketPath(target),
-              }))
-                .then((res) => {
-                  if (res && res.ok === false) {
-                    dispatch({ type: "log/append", text: `Error: ${res.error || "switch failed"}` });
-                  } else {
-                    // Successful switch: enter project scope so the
-                    // Agents row reappears below the projects rail.
-                    dispatch({ type: "scope/set", scope: "project" });
-                  }
-                })
-                .catch((err) => dispatch({ type: "log/append", text: `Error: ${err && err.message ? err.message : err}` }));
-            }
+          const target = resolveProjectRowRoot(proj);
+          if (target && state.globalScope === "project") {
+            void switchToProjectRoot(target);
           }
           return;
         }
         if (key.return) {
-          // ←/→ already handled the switch; Enter on the projects rail
-          // just returns focus to the input box.
-          dispatch({ type: "focus/set", mode: "input" });
+          const cur = state.selectedProjectIndex >= 0 ? state.selectedProjectIndex : 0;
+          const proj = state.projects[cur];
+          const target = resolveProjectRowRoot(proj);
+          void switchToProjectRoot(target, { focusInput: true });
+          return;
+        }
+        if (input
+            && !(key && key.ctrl)
+            && !(key && key.meta)
+            && !/^[\x00-\x1f\x7f]+$/.test(input)
+            && !input.includes("\n")
+            && !input.includes("\r")) {
+          const cur = state.selectedProjectIndex >= 0 ? state.selectedProjectIndex : 0;
+          const target = resolveProjectRowRoot(state.projects[cur]);
+          void switchToProjectRoot(target, { focusInput: true });
+          dispatch({ type: "draft/set", value: `${state.draft || ""}${input}` });
+          setDraftVersion((v) => v + 1);
           return;
         }
         if (key.ctrl && input === "x") {
-          const cur = state.selectedProjectIndex >= 0 ? state.selectedProjectIndex : 0;
-          const proj = state.projects[cur];
-          const target = proj && (proj.root || proj.id);
-          if (!target) return;
-          dispatch({ type: "log/append", text: `⚙ Closing ${proj.label || target}...` });
-          try {
-            const { stopDaemon } = require("../../chat/transport");
-            stopDaemon(target);
-            dispatch({ type: "log/append", text: `✓ Closed ${proj.label || target}` });
-          } catch (err) {
-            dispatch({ type: "log/append", text: `Error: ${err && err.message ? err.message : err}` });
-          }
+          void closeSelectedProject();
           return;
         }
         if (key.upArrow) {
           // Up out of projects → toggle back to input.
+          dispatch({ type: "projects/clearSelection" });
+          dispatch({ type: "focus/set", mode: "input" });
+          return;
+        }
+        if (key.escape) {
+          dispatch({ type: "projects/clearSelection" });
+          if (state.globalScope === "project") {
+            void switchToControllerRoot();
+            return;
+          }
           dispatch({ type: "focus/set", mode: "input" });
           return;
         }
         if (key.downArrow) {
           // Down from projects → agents row stays in dashboard focus.
           dispatch({ type: "view/set", view: "agents" });
+          if (displayAgents.length > 0 && state.selectedAgentIndex < 0) {
+            dispatch({ type: "agents/select", index: 0 });
+          }
           return;
         }
+      }
+
+      if (state.focusMode === "dashboard"
+          && state.dashboardView === "agents"
+          && input
+          && !(key && key.ctrl)
+          && !(key && key.meta)
+          && !/^[\x00-\x1f\x7f]+$/.test(input)
+          && !input.includes("\n")
+          && !input.includes("\r")) {
+        if (displayAgents.length > 0 && state.selectedAgentIndex < 0) {
+          dispatch({ type: "agents/select", index: 0 });
+        }
+        dispatch({ type: "focus/set", mode: "input" });
+        dispatch({ type: "draft/set", value: `${state.draft || ""}${input}` });
+        setDraftVersion((v) => v + 1);
+        return;
       }
 
       // Dashboard focus on agents/mode/provider/cron — ↑↓ flip between
@@ -841,24 +2451,51 @@ function createChatApp({ React, ink, props, interactive = true }) {
               || state.dashboardView === "provider"
               || state.dashboardView === "cron")) {
         if (key.escape) {
+          if (state.dashboardView === "agents") dispatch({ type: "agents/clearTarget" });
           dispatch({ type: "focus/set", mode: "input" });
           return;
         }
         if (state.dashboardView === "agents") {
           if (key.leftArrow || key.rightArrow) {
-            const dir = key.leftArrow ? "left" : "right";
-            if (state.agents.length > 0) {
-              dispatch({ type: "agents/cycle", direction: dir });
+            if (displayAgents.length > 0) {
+              const cur = state.selectedAgentIndex < 0 ? 0 : state.selectedAgentIndex;
+              const next = key.leftArrow
+                ? Math.max(0, cur - 1)
+                : Math.min(displayAgents.length - 1, cur + 1);
+              dispatch({ type: "agents/select", index: next });
             }
+            return;
+          }
+          if (key.ctrl && input === "x") {
+            if (state.selectedAgentIndex >= 0 && state.selectedAgentIndex < displayAgents.length) {
+              const agentId = displayAgents[state.selectedAgentIndex];
+              try {
+                const { IPC_REQUEST_TYPES } = require("../../shared/eventContract");
+                if (props.daemonConnection && typeof props.daemonConnection.send === "function") {
+                  props.daemonConnection.send({ type: IPC_REQUEST_TYPES.CLOSE_AGENT, agent_id: agentId });
+                }
+              } catch (err) {
+                dispatch({ type: "log/append", text: `Error: ${err && err.message ? err.message : err}` });
+              }
+              dispatch({ type: "agents/clearTarget" });
+              dispatch({ type: "focus/set", mode: "input" });
+            }
+            return;
+          }
+          if (key.return) {
+            dispatch({ type: "focus/set", mode: "input" });
             return;
           }
           if (key.downArrow) {
             dispatch({ type: "view/set", view: "mode" });
+            const launchModeIndex = state.modeOptions.indexOf(state.settings.launchMode);
+            dispatch({ type: "modeIndex/set", index: launchModeIndex >= 0 ? launchModeIndex : 0 });
             return;
           }
           if (key.upArrow) {
             // Top of the agents tier: in global mode go back to projects,
             // otherwise leave dashboard focus altogether.
+            dispatch({ type: "agents/clearTarget" });
             if (props.globalMode) dispatch({ type: "view/set", view: "projects" });
             else dispatch({ type: "focus/set", mode: "input" });
             return;
@@ -876,21 +2513,34 @@ function createChatApp({ React, ink, props, interactive = true }) {
             }
             return;
           }
-          if (key.downArrow) { dispatch({ type: "view/set", view: "provider" }); return; }
+          if (key.downArrow) {
+            dispatch({ type: "view/set", view: "provider" });
+            const providerIndex = state.providerOptions.findIndex((opt) => opt.value === state.settings.agentProvider);
+            dispatch({ type: "providerIndex/set", index: providerIndex >= 0 ? providerIndex : 0 });
+            return;
+          }
           if (key.upArrow) { dispatch({ type: "view/set", view: "agents" }); return; }
+          if (key.return) { applySelectedMode(); return; }
         }
         if (state.dashboardView === "provider") {
           if (key.leftArrow || key.rightArrow) {
             const len = state.providerOptions.length;
             if (len > 0) {
               const cur = state.selectedProviderIndex;
-              const next = key.leftArrow ? Math.max(0, cur - 1) : Math.min(len - 1, cur + 1);
+              const next = key.leftArrow
+                ? Math.max(0, cur - 1)
+                : Math.min(len - 1, cur + 1);
               if (next !== cur) dispatch({ type: "providerIndex/set", index: next });
             }
             return;
           }
-          if (key.downArrow) { dispatch({ type: "view/set", view: "cron" }); return; }
+          if (key.downArrow) {
+            dispatch({ type: "view/set", view: "cron" });
+            dispatch({ type: "cronIndex/set", index: state.cronTasks.length > 0 ? 0 : -1 });
+            return;
+          }
           if (key.upArrow) { dispatch({ type: "view/set", view: "mode" }); return; }
+          if (key.return) { applySelectedProvider(); return; }
         }
         if (state.dashboardView === "cron") {
           if (key.leftArrow || key.rightArrow) {
@@ -907,16 +2557,109 @@ function createChatApp({ React, ink, props, interactive = true }) {
             return;
           }
           if (key.upArrow) { dispatch({ type: "view/set", view: "provider" }); return; }
+          if (key.ctrl && input === "x") {
+            const maxIndex = state.cronTasks.length - 1;
+            if (maxIndex >= 0 && state.selectedCronIndex >= 0 && state.selectedCronIndex <= maxIndex) {
+              const task = state.cronTasks[state.selectedCronIndex];
+              const id = task && task.id ? String(task.id).trim() : "";
+              if (id) {
+                sendCronStop(id);
+                return;
+              }
+            }
+            dispatch({ type: "focus/set", mode: "input" });
+            return;
+          }
+          if (key.return) { dispatch({ type: "focus/set", mode: "input" }); return; }
         }
       }
     }, { isActive: interactive });
 
     const statusText = computeStatusText(state.status, spinnerTick);
     const inputWidth = Math.max(20, (size.cols || 80) - 4);
+    const promptPrefix = (() => {
+      const projectPrefix = inCommittedProjectScope && currentProjectLabel ? `${currentProjectLabel} ` : "";
+      if (targetAgentLabel) return `${projectPrefix}›@${targetAgentLabel} `;
+      return `${projectPrefix}› `;
+    })();
+
+    if (state.viewingAgentId) {
+      const maxWidth = Math.max(20, size.cols || 80);
+      const logRows = Math.max(1, (size.rows || 24) - 5);
+      const visibleRows = buildInternalLogRows(internalAgentView.lines || [], maxWidth, logRows);
+      const status = internalStatusLabel(internalAgentView.status);
+      const internalStatusText = computeInternalStatusText(internalAgentView, spinnerTick);
+      const internalStatusColor = status === "blocked" ? "red" : (status === "ready" ? "gray" : "cyan");
+      const inputText = String(internalAgentView.input || "");
+      const cursor = Math.max(0, Math.min(inputText.length, Number(internalAgentView.cursor) || 0));
+      const beforeCursor = inputText.slice(0, cursor);
+      const cursorChar = inputText.slice(cursor, nextInternalBoundary(inputText, cursor)) || " ";
+      const afterCursor = inputText.slice(cursor + (cursorChar === " " ? 0 : cursorChar.length));
+      const barFocused = state.focusMode === "dashboard";
+      const barIndex = Math.max(
+        0,
+        Math.min(displayAgents.length, Number(internalAgentView.barIndex) || 0),
+      );
+      const barHint = barFocused ? "│ ←/→ · Enter · ↑ · ^X" : "│ ↓ agents";
+      const barItem = (text, index, options = {}) => {
+        const keyboardSelected = barFocused && barIndex === index;
+        return h(Text, {
+          key: `agent-bar-${index}-${text}`,
+          color: keyboardSelected || options.current === true ? undefined : "cyan",
+          inverse: keyboardSelected,
+          bold: options.current === true,
+          wrap: "truncate",
+        }, text);
+      };
+      const agentBarChildren = displayAgents.length === 0
+        ? [h(Text, { key: "agent-bar-none", color: "cyan", wrap: "truncate" }, "none")]
+        : displayAgents.flatMap((id, idx) => {
+          const meta = displayAgentMeta.get(id);
+          return [
+            idx > 0 ? h(Text, { key: `agent-bar-space-${id}`, color: "gray", wrap: "truncate" }, "  ") : null,
+            barItem(getAgentLabelFor(meta, id), idx + 1, {
+              current: isInternalViewingAgent(id, meta, internalAgentView, state.viewingAgentId),
+            }),
+          ];
+        }).filter(Boolean);
+      return h(Box, { flexDirection: "column", width: "100%" },
+        h(Box, { flexDirection: "column", width: "100%" },
+          ...visibleRows.map((row, idx) => {
+            const kind = row && row.kind ? row.kind : "agent";
+            const color = kind === "user"
+              ? "cyan"
+              : (kind === "system" || kind === "meta" || kind === "spacer" ? "gray" : (kind === "error" ? "red" : undefined));
+            return h(Text, {
+              key: `agent-log-${idx}`,
+              color,
+              bold: Boolean(row && row.bold),
+              wrap: "truncate",
+            }, (row && row.text) || " ");
+          }),
+        ),
+        h(Text, { color: internalStatusColor, wrap: "truncate" },
+          fitPlainLine(internalStatusText, maxWidth)),
+        h(Text, { color: "gray", wrap: "truncate" }, "─".repeat(maxWidth)),
+        h(Box, { width: "100%" },
+          h(Text, { color: "magenta" }, "› "),
+          beforeCursor ? h(Text, { wrap: "truncate" }, beforeCursor) : null,
+          h(Text, { inverse: true }, cursorChar),
+          afterCursor ? h(Text, { wrap: "truncate" }, afterCursor) : null,
+        ),
+        h(Text, { color: "gray", wrap: "truncate" }, "─".repeat(maxWidth)),
+        h(Box, { width: "100%" },
+          h(Text, { color: "gray", wrap: "truncate" }, " "),
+          barItem("ufoo", 0),
+          h(Text, { color: "gray", wrap: "truncate" }, "  "),
+          ...agentBarChildren,
+          h(Text, { color: "gray", wrap: "truncate" }, `  ${barHint}`),
+        ),
+      );
+    }
 
     return h(Box, { flexDirection: "column", width: "100%" },
-      h(Static, { items: state.logLines }, (item) =>
-        h(Text, { key: item.id }, item.text || " ")
+      h(Box, { flexDirection: "column", width: "100%" },
+        ...state.logLines.map((item) => h(Text, { key: item.id }, item.text || " ")),
       ),
       state.activeMerge ? h(Box, null,
         h(Text, { color: state.activeMerge.entries.some((e) => e.isError) ? "red" : "cyan" },
@@ -958,9 +2701,22 @@ function createChatApp({ React, ink, props, interactive = true }) {
         h(MultilineInput, {
           value: state.draft,
           valueVersion: draftVersion,
-          onChange: (next) => dispatch({ type: "draft/set", value: next }),
-          onSubmit: (value) => submit(value),
+          onChange: (next) => {
+            if (completionSuppressedDraft !== null && next !== completionSuppressedDraft) {
+              setCompletionSuppressedDraft(null);
+            }
+            dispatch({ type: "draft/set", value: next });
+          },
+          onSubmit: (value) => {
+            setCompletionSuppressedDraft(null);
+            submit(value);
+          },
           onCancel: () => {
+            setCompletionSuppressedDraft(null);
+            if (props.globalMode && state.globalScope === "project") {
+              void switchToControllerRoot();
+              return;
+            }
             // Esc clears the current target if one is locked, otherwise
             // dismisses the in-flight task status. There's no per-request
             // AbortController on daemonConnection (the IPC layer is fire-
@@ -979,10 +2735,10 @@ function createChatApp({ React, ink, props, interactive = true }) {
           onArrowLeftAtEmpty: () => onArrowSideAtEmpty("left"),
           onArrowRightAtEmpty: () => onArrowSideAtEmpty("right"),
           width: inputWidth,
-          interactive,
+          interactive: interactive && state.focusMode !== "dashboard",
           interceptArrowsAndEnter: completionsOpen,
           placeholder: "",
-          promptPrefix: targetAgentLabel ? `›@${targetAgentLabel} ` : "› ",
+          promptPrefix,
         }),
       ),
       h(DashboardBar, {
@@ -990,28 +2746,30 @@ function createChatApp({ React, ink, props, interactive = true }) {
         focusMode: state.focusMode,
         globalMode: state.globalMode,
         globalScope: state.globalScope,
-        viewSequence: state.globalMode
-          ? ["projects", "agents", "mode", "provider", "cron"]
-          : ["agents", "mode", "provider", "cron"],
-        viewportRows: state.globalMode ? 2 : 1,
-        activeAgents: state.agents,
-        activeAgentMeta: state.activeAgentMeta,
+        activeAgents: displayAgents,
+        activeAgentMeta: displayAgentMeta,
+        activeAgentId: targetAgentId || "",
         selectedAgentIndex: state.selectedAgentIndex,
         agentListWindowStart: state.agentListWindowStart,
         projectListWindowStart: state.projectListWindowStart,
         maxProjectWindow: 5,
-        getAgentLabel: (id, meta) => getAgentLabelFor(meta || state.activeAgentMeta.get(id), id),
+        maxWidth: Math.max(20, size.cols || 80),
+        getAgentLabel: (id) => getAgentLabelFor(displayAgentMeta.get(id), id),
+        getAgentState: (id) => {
+          const meta = displayAgentMeta.get(id);
+          return meta && typeof meta.activity_state === "string" ? meta.activity_state : "";
+        },
+        launchMode: state.settings.launchMode,
+        agentProvider: state.settings.agentProvider,
         modeOptions: state.modeOptions,
         selectedModeIndex: state.selectedModeIndex,
         providerOptions: state.providerOptions,
         selectedProviderIndex: state.selectedProviderIndex,
-        resumeOptions: state.resumeOptions,
-        selectedResumeIndex: state.selectedResumeIndex,
         cronTasks: state.cronTasks,
         selectedCronIndex: state.selectedCronIndex,
         projects: state.projects,
         selectedProjectIndex: state.selectedProjectIndex,
-        activeProjectRoot: props.activeProjectRoot,
+        activeProjectRoot: currentProjectRoot,
         dashHints: buildDashHints(state, targetAgentLabel),
       }),
     );
@@ -1020,21 +2778,16 @@ function createChatApp({ React, ink, props, interactive = true }) {
 
 function buildDashHints(state, targetAgentLabel) {
   void targetAgentLabel; // navigation hint removed by request
-  const launchMode = (state.settings && state.settings.launchMode) || "auto";
-  const engine = (state.settings && state.settings.agentProvider) || "codex";
-  const cronCount = Array.isArray(state.cronTasks) ? state.cronTasks.length : 0;
-  // The "Mode / Engine / Cron" suffix is the same compact summary the
-  // blessed dashboard surfaces in the bar — it is rendered after the
-  // Agents list so users see the project's settings at a glance.
-  const agentsHint = `Mode: ${launchMode} · Engine: ${engine} · Cron: ${cronCount}`;
   return {
-    agents: agentsHint,
-    agentsEmpty: agentsHint,
-    mode: "",
-    provider: "",
-    resume: "",
-    cron: "",
-    projects: "",
+    agents: "←/→ select · Enter · ↓ mode · ↑ back",
+    agentsGlobal: "←/→ select · Enter · ↓ mode · ↑ projects",
+    agentsEmpty: "↓ mode · ↑ back",
+    mode: "←/→ select · Enter · ↓ provider · ↑ back",
+    provider: "←/→ select · Enter · ↓ cron · ↑ back",
+    cron: "←/→ switch · Ctrl+X stop · ↑ back",
+    projects: "Use /open <path> or /project switch <index|path>",
+    projectsFocus: "←/→ switch · Ctrl+X close · ↓ second row · Enter confirm · ↑ back",
+    projectsEmpty: "Run ufoo chat or ufoo daemon start in project directories",
   };
 }
 
@@ -1076,7 +2829,8 @@ async function runChatInk(projectRoot, options = {}) {
   const { createDaemonConnection } = require("../../chat/daemonConnection");
   const { createDaemonCoordinator } = require("../../chat/daemonCoordinator");
   const { startDaemon, stopDaemon } = require("../../chat/transport");
-  const { startAgentMirror } = require("./agentMirror");
+  const { loadConfig } = require("../../config");
+  const { startAgentMirror, startInternalAgentMirror } = require("./agentMirror");
   const sock = socketPath(projectRoot);
   const daemonTransport = createDaemonTransport({
     projectRoot,
@@ -1120,8 +2874,15 @@ async function runChatInk(projectRoot, options = {}) {
     daemonConnection,
     daemonTransport,
     daemonCoordinator,
+    env,
+    initialSettings: loadConfig(projectRoot),
     setDaemonMessageHandler: (fn) => { routedMessageHandler = typeof fn === "function" ? fn : () => {}; },
-    requestEnterAgentView: (agentId) => { pendingEnter = agentId; },
+    requestEnterAgentView: (agentId, enterOptions = {}) => {
+      pendingEnter = {
+        agentId,
+        options: enterOptions && typeof enterOptions === "object" ? enterOptions : {},
+      };
+    },
   };
 
   // eslint-disable-next-line no-constant-condition
@@ -1142,16 +2903,48 @@ async function runChatInk(projectRoot, options = {}) {
     if (!pendingEnter) return;
 
     // Hand stdout/stdin to the mirror. When it exits, loop and re-mount.
-    const enteredAgentId = pendingEnter;
+    const enterRequest = pendingEnter;
     pendingEnter = null;
+    const enteredAgentId = enterRequest && enterRequest.agentId;
+    const enterOptions = enterRequest && enterRequest.options ? enterRequest.options : {};
+    const enteredProjectRoot = enterOptions.projectRoot || projectRoot;
     await new Promise((resolve) => {
+      if (enterOptions.useBus) {
+        startInternalAgentMirror({
+          agentId: enteredAgentId,
+          agentLabel: enterOptions.agentLabel,
+          agentAliases: enterOptions.agentAliases,
+          projectRoot: enteredProjectRoot,
+          daemonConnection,
+          setDaemonMessageHandler: (fn) => {
+            routedMessageHandler = typeof fn === "function" ? fn : () => {};
+          },
+          onExit: resolve,
+        });
+        return;
+      }
       startAgentMirror({
         agentId: enteredAgentId,
-        projectRoot,
+        projectRoot: enteredProjectRoot,
         onExit: resolve,
       });
     });
   }
 }
 
-module.exports = { runChatInk, createChatApp, bootstrapEnvironment };
+module.exports = {
+  runChatInk,
+  createChatApp,
+  bootstrapEnvironment,
+  buildDirectBusSendRequest,
+  buildPromptIpcRequest,
+  chatHistoryOptionsForScope,
+  resolveActiveAgentId,
+  resolveAgentEnterRequest,
+  buildInternalLogRows,
+  computeInternalStatusText,
+  resolveInternalKeyName,
+  isInternalViewingAgent,
+  applyInternalAgentTermWrite,
+  appendInternalErrorToView,
+};

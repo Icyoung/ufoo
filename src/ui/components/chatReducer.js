@@ -14,15 +14,15 @@
  *   { type: "draft/clear" }
  *   { type: "focus/toggle" }               Tab between input/dashboard
  *   { type: "focus/set", mode }            "input" | "dashboard"
- *   { type: "view/set", view }             projects|agents|mode|provider|resume|cron
+ *   { type: "view/set", view }             projects|agents|mode|provider|cron
  *   { type: "view/cycle", direction }      "left" | "right"
  *   { type: "agents/set", list }           list of {fullId, type, id, nickname, …}
  *   { type: "agents/select", index }
  *   { type: "agents/cycle", direction }
  *   { type: "agents/clearTarget" }
  *   { type: "agents/window", windowStart }
- *   { type: "projects/set", list, activeIndex }
- *   { type: "projects/select", index }
+ *   { type: "projects/set", list, activeProjectRoot }
+ *   { type: "projects/select", index, projectRoot }
  *   { type: "scope/set", scope }           "controller" | "project"
  *   { type: "status/set", payload }        { message, type, showTimer, startedAt }
  *   { type: "status/idle" }
@@ -38,9 +38,19 @@ const fmt = require("../format");
 
 const LOG_CAP = 1000;
 const HISTORY_CAP = 200;
-const DASHBOARD_VIEWS = ["projects", "agents", "mode", "provider", "resume", "cron"];
+const DASHBOARD_VIEWS = ["projects", "agents", "mode", "provider", "cron"];
+const DEFAULT_PROVIDER_OPTIONS = [
+  { label: "codex", value: "codex-cli" },
+  { label: "claude", value: "claude-cli" },
+];
+function projectRootOf(row = {}) {
+  return String((row && (row.root || row.project_root || row.projectRoot)) || "");
+}
 
-function createInitialState({ banner = [], globalMode = false, globalScope = "controller" } = {}) {
+function createInitialState({ banner = [], globalMode = false, globalScope = "controller", settings = {} } = {}) {
+  const initialLaunchMode = settings.launchMode || "auto";
+  const initialAgentProvider = settings.agentProvider || "codex-cli";
+  const selectedProviderIndex = Math.max(0, DEFAULT_PROVIDER_OPTIONS.findIndex((opt) => opt.value === initialAgentProvider));
   return {
     logLines: banner.concat([""]).map((line, idx) => ({ id: `b-${idx}`, text: line })),
     lineSeq: banner.length + 1,
@@ -56,16 +66,16 @@ function createInitialState({ banner = [], globalMode = false, globalScope = "co
     agentListWindowStart: 0,
     projects: [],
     selectedProjectIndex: -1,
+    selectedProjectRoot: "",
     projectListWindowStart: 0,
     activeProjectRoot: "",
     modeOptions: ["auto", "host", "terminal", "tmux", "internal-pty", "internal"],
-    selectedModeIndex: 0,
-    providerOptions: [],
-    selectedProviderIndex: 0,
-    resumeOptions: [],
-    selectedResumeIndex: 0,
+    selectedModeIndex: Math.max(0, ["auto", "host", "terminal", "tmux", "internal-pty", "internal"].indexOf(initialLaunchMode)),
+    providerOptions: DEFAULT_PROVIDER_OPTIONS,
+    selectedProviderIndex,
     cronTasks: [],
     selectedCronIndex: -1,
+    loopSummary: null,
     viewingAgentId: null,
     // activeStream is the in-flight chunk-by-chunk publisher message (set
     // while the daemon is streaming). Rendered live below <Static>;
@@ -78,7 +88,7 @@ function createInitialState({ banner = [], globalMode = false, globalScope = "co
     lastMerge: null,
     mergeId: 0,
     status: { message: "", type: "thinking", showTimer: false, startedAt: 0 },
-    settings: { launchMode: "auto", agentProvider: "codex-cli", autoResume: false },
+    settings: { launchMode: initialLaunchMode, agentProvider: initialAgentProvider, autoResume: settings.autoResume === true },
   };
 }
 
@@ -131,7 +141,7 @@ function reducer(state, action) {
       const i = DASHBOARD_VIEWS.indexOf(state.dashboardView);
       const direction = action.direction === "left" ? -1 : 1;
       const start = i < 0 ? 0 : i;
-      const next = (start + direction + DASHBOARD_VIEWS.length) % DASHBOARD_VIEWS.length;
+      const next = Math.max(0, Math.min(DASHBOARD_VIEWS.length - 1, start + direction));
       return { ...state, dashboardView: DASHBOARD_VIEWS[next] };
     }
     case "agents/set": {
@@ -154,6 +164,14 @@ function reducer(state, action) {
         agentSelectionMode: nextMode,
       };
     }
+    case "agents/patchMeta": {
+      const agentId = String(action.agentId || "").trim();
+      if (!agentId) return state;
+      const meta = new Map(state.activeAgentMeta instanceof Map ? state.activeAgentMeta : []);
+      const current = meta.get(agentId) || {};
+      meta.set(agentId, { ...current, ...(action.patch || {}) });
+      return { ...state, activeAgentMeta: meta };
+    }
     case "agents/select":
       return {
         ...state,
@@ -172,14 +190,30 @@ function reducer(state, action) {
       return { ...state, selectedAgentIndex: -1, agentSelectionMode: false };
     case "agents/window":
       return { ...state, agentListWindowStart: action.windowStart };
-    case "projects/set":
+    case "projects/set": {
+      const list = Array.isArray(action.list) ? action.list : [];
+      const previousSelectedRoot = state.selectedProjectRoot
+        || projectRootOf(state.projects[state.selectedProjectIndex]);
+      const selectedRoot = String(action.selectedProjectRoot || previousSelectedRoot || "");
+      const selectedIndex = selectedRoot
+        ? list.findIndex((row) => projectRootOf(row) === selectedRoot)
+        : -1;
       return {
         ...state,
-        projects: Array.isArray(action.list) ? action.list : [],
+        projects: list,
+        selectedProjectRoot: selectedIndex >= 0 ? selectedRoot : "",
+        selectedProjectIndex: selectedIndex,
         activeProjectRoot: action.activeProjectRoot || state.activeProjectRoot,
       };
+    }
     case "projects/select":
-      return { ...state, selectedProjectIndex: action.index };
+      return {
+        ...state,
+        selectedProjectIndex: action.index,
+        selectedProjectRoot: String(action.projectRoot || projectRootOf(state.projects[action.index]) || ""),
+      };
+    case "projects/clearSelection":
+      return { ...state, selectedProjectIndex: -1, selectedProjectRoot: "" };
     case "projects/window":
       return { ...state, projectListWindowStart: Math.max(0, action.windowStart | 0) };
     case "scope/set":
@@ -240,6 +274,15 @@ function reducer(state, action) {
     }
     case "settings/set":
       return { ...state, settings: { ...state.settings, ...(action.patch || {}) } };
+    case "settings/applyMode": {
+      const mode = state.modeOptions[state.selectedModeIndex] || state.settings.launchMode;
+      return { ...state, settings: { ...state.settings, launchMode: mode } };
+    }
+    case "settings/applyProvider": {
+      const selected = state.providerOptions[state.selectedProviderIndex];
+      const agentProvider = selected && selected.value ? selected.value : state.settings.agentProvider;
+      return { ...state, settings: { ...state.settings, agentProvider } };
+    }
     case "modeIndex/set":
       return { ...state, selectedModeIndex: Math.max(0, action.index | 0) };
     case "providerIndex/set":
@@ -248,6 +291,8 @@ function reducer(state, action) {
       return { ...state, selectedCronIndex: Math.max(-1, action.index | 0) };
     case "cron/set":
       return { ...state, cronTasks: Array.isArray(action.list) ? action.list : [] };
+    case "loop/set":
+      return { ...state, loopSummary: action.summary && typeof action.summary === "object" ? action.summary : null };
     case "stream/begin":
       return {
         ...state,

@@ -21,6 +21,34 @@ describe("buildCompletions", () => {
     expect(out[0].kind).toBe("command");
   });
 
+  test("exact top-level command returns no popup so Enter can submit", () => {
+    expect(buildCompletions({
+      text: "/status",
+      commands: [{ cmd: "status" }],
+    })).toEqual([]);
+  });
+
+  test("exact top-level command with children keeps popup available", () => {
+    const tree = {
+      "/group": {
+        children: {
+          run: { desc: "Launch a group template" },
+        },
+      },
+    };
+    const out = buildCompletions({
+      text: "/group",
+      commands: [{ cmd: "group" }],
+      commandTree: tree,
+    });
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      label: "/group",
+      replace: "/group ",
+      hasChildren: true,
+    });
+  });
+
   test("/<cmd> <prefix> returns [] when no commandTree is supplied", () => {
     // Sub-command completion needs the tree; without it the function
     // can't know what children exist, so it falls back to no popup.
@@ -67,6 +95,34 @@ describe("buildCompletions", () => {
     expect(out[0].kind).toBe("subcommand");
   });
 
+  test("exact subcommand returns no popup so Enter can submit", () => {
+    const tree = {
+      "/daemon": {
+        children: {
+          restart: { desc: "Restart daemon" },
+        },
+      },
+    };
+    expect(buildCompletions({ text: "/daemon restart", commandTree: tree })).toEqual([]);
+  });
+
+  test("group run subcommand keeps popup available for template arguments", () => {
+    const tree = {
+      "/group": {
+        children: {
+          run: { desc: "Launch a group template" },
+        },
+      },
+    };
+    const out = buildCompletions({ text: "/group run", commandTree: tree });
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      label: "/group run",
+      replace: "/group run ",
+      hasChildren: true,
+    });
+  });
+
   test("/<cmd> <sub> <prefix> walks one level deeper", () => {
     const tree = {
       "/settings": {
@@ -89,5 +145,19 @@ describe("buildCompletions", () => {
   test("returns [] when the named command has no children", () => {
     const tree = { "/help": { desc: "Help" } };
     expect(buildCompletions({ text: "/help anything", commandTree: tree })).toEqual([]);
+  });
+
+  test("exact dynamic group template returns no popup so Enter can submit", () => {
+    expect(buildCompletions({
+      text: "/group run build-lane",
+      groupTemplates: [{ alias: "build-lane", desc: "Build lane" }],
+    })).toEqual([]);
+  });
+
+  test("exact dynamic group template with trailing space still returns no popup", () => {
+    expect(buildCompletions({
+      text: "/group run build-lane ",
+      groupTemplates: [{ alias: "build-lane", desc: "Build lane" }],
+    })).toEqual([]);
   });
 });

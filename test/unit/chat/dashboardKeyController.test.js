@@ -21,11 +21,9 @@ function createState(overrides = {}) {
     ]),
     selectedModeIndex: 0,
     selectedProviderIndex: 0,
-    selectedResumeIndex: 0,
     selectedCronIndex: 0,
     launchMode: "terminal",
     agentProvider: "codex-cli",
-    autoResume: true,
     cronTasks: [
       { id: "c1", label: "cron one" },
       { id: "c2", label: "cron two" },
@@ -33,10 +31,6 @@ function createState(overrides = {}) {
     providerOptions: [
       { label: "codex", value: "codex-cli" },
       { label: "claude", value: "claude-cli" },
-    ],
-    resumeOptions: [
-      { label: "Resume previous session", value: true },
-      { label: "Start new session", value: false },
     ],
     agentOutputSuppressed: true,
     ...overrides,
@@ -66,7 +60,6 @@ function createController(stateOverrides = {}, optionOverrides = {}) {
     exitDashboardMode: jest.fn(),
     setLaunchMode: jest.fn(),
     setAgentProvider: jest.fn(),
-    setAutoResume: jest.fn(),
     clampAgentWindow: jest.fn(),
     clampAgentWindowWithSelection: jest.fn(),
     requestProjectSwitch: jest.fn(),

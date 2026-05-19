@@ -4,19 +4,16 @@
  * Ink-based ucode TUI. Behaviourally equivalent to runUcodeBlessedTui in
  * src/code/tui.js but rendered via React + ink.
  *
- * Activation: set UFOO_TUI=ink. The blessed path remains the default; flip
- * the switch in src/code/tui.js once P3 is signed off.
+ * Activation: Ink is the default ucode TUI. Set UFOO_TUI=blessed to use
+ * the legacy blessed renderer while it remains available as a fallback.
  *
  * Coverage today: banner, scrolling log via <Static>, tool-call merge with
  * Ctrl+O expand, multiline editor (see MultilineInput.js), spinner+phase
  * status line, abortController-driven Esc cancel, input history Up/Down,
  * agent selection footer, runSingleCommand + runNaturalLanguageTask path.
  *
- * Not yet wired (waiting on later sub-tasks or chat parity work):
- *   - background tasks ("BG x/y/z" status suffix)
- *   - ubus / resume / nl_bg / probe variants of runSingleCommand result
- *     (current default branch dumps result.output as a fallback)
- *   - autoBus polling that the blessed path runs in the background
+ * Also covers blessed parity branches: background tasks, ubus, resume,
+ * nl_bg, and autoBus polling.
  */
 
 const { runInk } = require("../runInk");
@@ -43,8 +40,8 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
     const [draft, setDraft] = useState("");
     // status: idle when message === "". `type` picks a STATUS_INDICATORS
     // bucket; `showTimer` and `startedAt` reproduce the blessed spinner
-    // controls. Background tasks ("BG x/y/z" suffix) are not wired yet —
-    // see the file header for the deferred parity items.
+    // controls. The BG suffix is computed from backgroundTasksRef and
+    // appended by computeStatusText below.
     const [status, setStatus] = useState({
       message: "",
       type: "thinking",
@@ -69,6 +66,11 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
     // state) because the value is consumed inside the run loop, not by
     // render.
     const pendingTaskRef = useRef(null);
+    const backgroundTasksRef = useRef(new Map());
+    const backgroundSeqRef = useRef(0);
+    const autoBusQueuedRef = useRef(false);
+    const autoBusErrorRef = useRef("");
+    const [, setBackgroundVersion] = useState(0);
     // inputHistory mirrors blessed's flat history list. Up walks back
     // through it when the editor reports the cursor is already on the top
     // visual row (i.e. moveCursorVertically returned moved=false).
@@ -82,6 +84,27 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
     const targetAgent = agentSelectionMode && selectedAgentIndex >= 0
       ? agents[selectedAgentIndex]
       : null;
+
+    const bumpBackground = useCallback(() => setBackgroundVersion((v) => v + 1), []);
+
+    const getBackgroundSuffix = useCallback(() => {
+      const tasks = backgroundTasksRef.current;
+      if (!tasks || tasks.size === 0) return "";
+      let running = 0;
+      let done = 0;
+      let failed = 0;
+      for (const task of tasks.values()) {
+        if (!task) continue;
+        if (task.status === "running") running += 1;
+        else if (task.status === "done") done += 1;
+        else if (task.status === "failed") failed += 1;
+      }
+      const parts = [];
+      if (running) parts.push(`${running} running`);
+      if (done) parts.push(`${done} done`);
+      if (failed) parts.push(`${failed} failed`);
+      return parts.length ? ` · BG ${parts.join("/")}` : "";
+    }, []);
 
     const getAgentLabel = useCallback((agent) => {
       if (!agent) return "";
@@ -317,6 +340,54 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
         case "error":
           appendLogText(result.output || "");
           return;
+        case "ubus": {
+          setStatus({ message: "Checking bus messages...", type: "typing", showTimer: false, startedAt: Date.now() });
+          try {
+            const { extractAgentNickname } = require("../../code/agent");
+            const ubusResult = await props.runUbusCommand(props.state, {
+              workspaceRoot: runtimeWorkspace,
+              onMessageReceived: (msg) => {
+                const nickname = extractAgentNickname(msg && msg.from) || (msg && msg.from) || "bus";
+                appendLogText(`${nickname}: ${(msg && msg.task) || ""}`);
+              },
+            });
+            if (!ubusResult || !ubusResult.ok) {
+              appendLogText(`Error: ${(ubusResult && ubusResult.error) || "ubus failed"}`);
+              return;
+            }
+            const exchanges = Array.isArray(ubusResult.messageExchanges) ? ubusResult.messageExchanges : [];
+            if (exchanges.length > 0) {
+              for (const exchange of exchanges) {
+                const nickname = extractAgentNickname(exchange && exchange.from) || (exchange && exchange.from) || "bus";
+                appendLogText(`@${nickname} ${(exchange && exchange.reply) || ""}`);
+              }
+            } else if (Number(ubusResult.handled) === 0) {
+              appendLogText("ubus: no pending messages.");
+            }
+            if (typeof props.persistSessionState === "function") {
+              const persisted = props.persistSessionState(props.state);
+              if (!persisted || persisted.ok === false) {
+                appendLogText(`Error: failed to persist session ${(props.state && props.state.sessionId) || ""}: ${(persisted && persisted.error) || "unknown error"}`);
+              }
+            }
+          } finally {
+            setStatus({ message: "", type: "thinking", showTimer: false, startedAt: 0 });
+          }
+          return;
+        }
+        case "resume": {
+          if (typeof props.resumeSessionState !== "function") {
+            appendLogText("Error: resume unsupported");
+            return;
+          }
+          const resumed = props.resumeSessionState(props.state, result.sessionId, runtimeWorkspace);
+          if (!resumed || !resumed.ok) {
+            appendLogText(`Error: ${(resumed && resumed.error) || "resume failed"}`);
+            return;
+          }
+          appendLogText(`Resumed session ${resumed.sessionId} (${resumed.restoredMessages} messages).`);
+          return;
+        }
         case "tool": {
           const payload = result.result && typeof result.result === "object" ? result.result : {};
           logToolHint({
@@ -325,6 +396,54 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
             phase: payload.ok === false ? "error" : "end",
             error: payload.error || "",
           }, payload);
+          return;
+        }
+        case "nl_bg": {
+          backgroundSeqRef.current += 1;
+          const jobId = `bg-${Date.now().toString(36)}-${backgroundSeqRef.current.toString(36)}`;
+          const taskRecord = {
+            id: jobId,
+            task: result.task,
+            status: "running",
+            startedAt: Date.now(),
+            summary: "",
+          };
+          backgroundTasksRef.current.set(jobId, taskRecord);
+          bumpBackground();
+          setStatus({ message: "", type: "thinking", showTimer: false, startedAt: 0 });
+          appendLogText(`[${jobId}] started in background.`);
+
+          const bgState = {
+            workspaceRoot: props.state && props.state.workspaceRoot,
+            provider: props.state && props.state.provider,
+            model: props.state && props.state.model,
+            engine: props.state && props.state.engine,
+            context: props.state && props.state.context,
+            nlMessages: Array.isArray(props.state && props.state.nlMessages) ? props.state.nlMessages.slice() : [],
+            sessionId: "",
+            timeoutMs: props.state && props.state.timeoutMs,
+            jsonOutput: false,
+          };
+
+          Promise.resolve()
+            .then(() => props.runNaturalLanguageTask(result.task, bgState))
+            .then((nlResult) => {
+              taskRecord.status = nlResult && nlResult.ok ? "done" : "failed";
+              taskRecord.finishedAt = Date.now();
+              taskRecord.summary = String(props.formatNlResult(nlResult, false) || "").trim();
+              const title = taskRecord.status === "done" ? "done" : "failed";
+              appendLogText(`[${jobId}] ${title}: ${taskRecord.summary || "no summary"}`);
+            })
+            .catch((err) => {
+              taskRecord.status = "failed";
+              taskRecord.finishedAt = Date.now();
+              taskRecord.summary = err && err.message ? String(err.message) : "background task failed";
+              appendLogText(`[${jobId}] failed: ${taskRecord.summary}`);
+            })
+            .finally(() => {
+              bumpBackground();
+              setStatus({ message: "", type: "thinking", showTimer: false, startedAt: 0 });
+            });
           return;
         }
         case "nl": {
@@ -410,14 +529,99 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
           return;
         }
         default:
-          // ubus / resume / nl_bg / probe-like kinds aren't fully ported
-          // yet — fall back to dumping any output the runner returned.
           if (result.output) appendLogText(result.output);
       }
     }, [appendLogLine, appendLogText, exit, props, logToolHint]);
     // ^ `props` is captured by the createUcodeApp closure on a single mount,
     // so its reference is stable across renders even though it looks like a
     // changing dep to React's exhaustive-deps lint.
+
+    const runAutoBusOnce = useCallback(async () => {
+      const autoBus = props.autoBus || {};
+      if (!autoBus.enabled || pendingTaskRef.current) return;
+      const getPendingCount = typeof autoBus.getPendingCount === "function"
+        ? autoBus.getPendingCount
+        : () => 0;
+      if (Number(getPendingCount()) <= 0) {
+        autoBusErrorRef.current = "";
+        return;
+      }
+
+      const abortController = new AbortController();
+      const startedAt = Date.now();
+      pendingTaskRef.current = { abortController, startedAt };
+      setStatus({
+        message: "Processing bus messages...",
+        type: "thinking",
+        showTimer: true,
+        startedAt,
+      });
+
+      try {
+        const { extractAgentNickname } = require("../../code/agent");
+        const ubusResult = await props.runUbusCommand(props.state, {
+          workspaceRoot: props.workspaceRoot,
+          subscriberId: autoBus.subscriberId,
+          signal: abortController.signal,
+          onMessageReceived: (msg) => {
+            const nickname = extractAgentNickname(msg && msg.from) || (msg && msg.from) || "bus";
+            appendLogText(`${nickname}: ${(msg && msg.task) || ""}`);
+            setStatus({
+              message: "Working on task...",
+              type: "thinking",
+              showTimer: true,
+              startedAt,
+            });
+          },
+        });
+
+        if (!ubusResult || !ubusResult.ok) {
+          const nextError = String((ubusResult && ubusResult.error) || "ubus failed");
+          if (nextError !== autoBusErrorRef.current) {
+            autoBusErrorRef.current = nextError;
+            appendLogText(`Error: ${nextError}`);
+          }
+          return;
+        }
+
+        autoBusErrorRef.current = "";
+        const exchanges = Array.isArray(ubusResult.messageExchanges) ? ubusResult.messageExchanges : [];
+        for (const exchange of exchanges) {
+          const nickname = extractAgentNickname(exchange && exchange.from) || (exchange && exchange.from) || "bus";
+          appendLogText(`@${nickname} ${(exchange && exchange.reply) || ""}`);
+        }
+        if (Number(ubusResult.handled) > 0 && typeof props.persistSessionState === "function") {
+          const persisted = props.persistSessionState(props.state);
+          if (!persisted || persisted.ok === false) {
+            appendLogText(`Error: failed to persist session ${(props.state && props.state.sessionId) || ""}: ${(persisted && persisted.error) || "unknown error"}`);
+          }
+        }
+      } finally {
+        pendingTaskRef.current = null;
+        setStatus({ message: "", type: "thinking", showTimer: false, startedAt: 0 });
+      }
+    }, [appendLogText, props]);
+
+    useEffect(() => {
+      if (!interactive || !(props.autoBus && props.autoBus.enabled)) return undefined;
+      const schedule = () => {
+        if (autoBusQueuedRef.current || pendingTaskRef.current) return;
+        const getPendingCount = typeof props.autoBus.getPendingCount === "function"
+          ? props.autoBus.getPendingCount
+          : () => 0;
+        if (Number(getPendingCount()) <= 0) return;
+        autoBusQueuedRef.current = true;
+        runChainRef.current = runChainRef.current
+          .then(() => runAutoBusOnce())
+          .catch((err) => appendLogText(`Error: ${err && err.message ? err.message : "ubus failed"}`))
+          .finally(() => {
+            autoBusQueuedRef.current = false;
+          });
+      };
+      const timer = setInterval(schedule, 1500);
+      schedule();
+      return () => clearInterval(timer);
+    }, [interactive, props.autoBus, runAutoBusOnce, appendLogText]);
 
     const submit = useCallback((submitted) => {
       const value = String(submitted == null ? draft : submitted);
@@ -454,7 +658,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       return () => clearInterval(timer);
     }, [status.message, status.type, status.showTimer]);
 
-    const statusText = useMemoStatusText(React, status, spinnerTick);
+    const statusText = useMemoStatusText(React, status, spinnerTick, getBackgroundSuffix());
 
     // Top-level only catches Ctrl+C and Ctrl+O (expand last tool group);
     // the editor handles all text editing.
@@ -585,9 +789,10 @@ module.exports = { runUcodeInkTui, createUcodeApp, computeStatusText };
  * combination while a task is in flight, mirroring updateStatus() in the
  * blessed implementation.
  */
-function computeStatusText(status, spinnerTick) {
+function computeStatusText(status, spinnerTick, backgroundSuffix = "") {
   const message = String((status && status.message) || "");
-  if (!message) return "UCODE · Ready";
+  const suffix = String(backgroundSuffix || "");
+  if (!message) return `UCODE · Ready${suffix}`;
   const type = String((status && status.type) || "thinking");
   const indicators = fmt.STATUS_INDICATORS[type] || fmt.STATUS_INDICATORS.thinking;
   const indicator = indicators[Math.max(0, Math.floor(Number(spinnerTick) || 0)) % indicators.length];
@@ -595,14 +800,14 @@ function computeStatusText(status, spinnerTick) {
   const timerText = status && status.showTimer && startedAt
     ? ` (${fmt.formatPendingElapsed(Date.now() - startedAt)}, esc cancel)`
     : "";
-  return `${indicator} ${message}${timerText}`;
+  return `${indicator} ${message}${timerText}${suffix}`;
 }
 
-function useMemoStatusText(React, status, spinnerTick) {
+function useMemoStatusText(React, status, spinnerTick, backgroundSuffix = "") {
   // Dependencies intentionally include startedAt so the timer ticks even
   // when the message string is unchanged.
   return React.useMemo(
-    () => computeStatusText(status, spinnerTick),
-    [status, spinnerTick]
+    () => computeStatusText(status, spinnerTick, backgroundSuffix),
+    [status, spinnerTick, backgroundSuffix]
   );
 }

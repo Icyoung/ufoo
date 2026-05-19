@@ -41,4 +41,9 @@ describe("computeStatusText", () => {
     const text = computeStatusText({ message: "x", type: "nonsense" }, 0);
     expect(text.startsWith(fmt.STATUS_INDICATORS.thinking[0])).toBe(true);
   });
+
+  test("background suffix is appended while idle and busy", () => {
+    expect(computeStatusText({ message: "" }, 0, " · BG 1 running")).toBe("UCODE · Ready · BG 1 running");
+    expect(computeStatusText({ message: "Working", type: "thinking" }, 0, " · BG 1 running")).toContain("Working · BG 1 running");
+  });
 });

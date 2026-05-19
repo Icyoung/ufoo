@@ -115,11 +115,11 @@ function buildUcodeBannerBlessedLines({
 }
 
 function runUcodeTui(props = {}) {
-  if (String(process.env.UFOO_TUI || "").trim().toLowerCase() === "ink") {
-    const { runUcodeInkTui } = require("../ui/components/UcodeApp");
-    return runUcodeInkTui(props);
+  if (String(process.env.UFOO_TUI || "").trim().toLowerCase() === "blessed") {
+    return runUcodeBlessedTui(props);
   }
-  return runUcodeBlessedTui(props);
+  const { runUcodeInkTui } = require("../ui/components/UcodeApp");
+  return runUcodeInkTui(props);
 }
 
 function runUcodeBlessedTui({

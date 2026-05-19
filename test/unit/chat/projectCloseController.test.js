@@ -48,7 +48,10 @@ describe("chat projectCloseController", () => {
     expect(result.ok).toBe(true);
     expect(result.project_root).toBe("/tmp/beta");
     expect(deps.switchProject).not.toHaveBeenCalled();
-    expect(deps.stopDaemon).toHaveBeenCalledWith("/tmp/beta");
+    expect(deps.stopDaemon).toHaveBeenCalledWith(
+      "/tmp/beta",
+      expect.objectContaining({ source: "project-close:/tmp/beta" })
+    );
     expect(deps.refreshProjects).toHaveBeenCalled();
     expect(deps.resolveStatusLine).toHaveBeenCalledWith(
       "{gray-fg}✓{/gray-fg} Closed project beta daemon and agents"
@@ -67,7 +70,10 @@ describe("chat projectCloseController", () => {
     expect(result.project_root).toBe("/tmp/alpha");
     expect(result.switched_to).toBe("/tmp/beta");
     expect(deps.switchProject).toHaveBeenCalledWith("/tmp/beta");
-    expect(deps.stopDaemon).toHaveBeenCalledWith("/tmp/alpha");
+    expect(deps.stopDaemon).toHaveBeenCalledWith(
+      "/tmp/alpha",
+      expect.objectContaining({ source: "project-close:/tmp/alpha" })
+    );
   });
 
   test("fails to close active project when no fallback exists", async () => {

@@ -97,6 +97,32 @@ describe("chat daemonTransport", () => {
     expect(startDaemon).not.toHaveBeenCalled();
   });
 
+  test("connectClientForTarget honors autoStart false for project switches", async () => {
+    const connectWithRetry = jest.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null);
+    const startDaemon = jest.fn();
+    const isRunning = jest.fn(() => false);
+    const transport = createDaemonTransport({
+      projectRoot: "/tmp/project",
+      sockPath: "/tmp/ufoo.sock",
+      isRunning,
+      startDaemon,
+      connectWithRetry,
+      restartDelayMs: 0,
+    });
+
+    const connected = await transport.connectClientForTarget({
+      projectRoot: "/tmp/offline",
+      sockPath: "/tmp/offline.sock",
+      autoStart: false,
+    });
+
+    expect(connected).toBe(null);
+    expect(connectWithRetry).toHaveBeenCalledTimes(2);
+    expect(startDaemon).not.toHaveBeenCalled();
+  });
+
   test("setTarget updates future connect target without mutating call contract", async () => {
     const connectWithRetry = jest.fn().mockResolvedValue({ id: "c3" });
     const transport = createDaemonTransport({

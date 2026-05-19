@@ -1,7 +1,7 @@
 # Ink TUI Migration Plan
 
-Status: P1 (ucode TUI) feature-complete behind `UFOO_TUI=ink`. P2 (internal
-agent view) and P3 (chat TUI) outstanding.
+Status: Ink is the default TUI for chat and ucode. The legacy blessed
+renderer remains available with `UFOO_TUI=blessed` as a temporary fallback.
 
 ## Why
 
@@ -16,7 +16,8 @@ layout, hooks, and proper isolation of pure logic from rendering.
 
 ## Approach
 
-- Two TUIs coexist behind `UFOO_TUI=ink` until each phase signs off.
+- Ink is the default renderer; `UFOO_TUI=blessed` keeps the legacy path
+  available while fallback removal is evaluated separately.
 - Pure helpers live in `src/ui/format/` and are shared by both, so behaviour
   parity is enforced by test rather than copy/paste.
 - Components live in `src/ui/components/`, written in plain JS via
@@ -28,21 +29,15 @@ layout, hooks, and proper isolation of pure logic from rendering.
 
 - **P0** ✅ ink + react deps, runtime bridge, `<InkDemo>` smoke harness,
   pure helpers extracted to `src/ui/format/`.
-- **P1** ✅ ucode TUI ported to ink behind `UFOO_TUI=ink`.
+- **P1** ✅ ucode TUI ported to ink.
 - **P2** ✅ folded into P3.6 (internal agent view).
-- **P3** ✅ chat TUI ported to ink behind `UFOO_TUI=ink`. Daemon
+- **P3** ✅ chat TUI ported to ink. Daemon
   connection, dashboard (5 views), tool-merge, status spinner, history,
-  agent selection and a raw-PTY agent mirror are all wired. Full
-  `daemonMessageRouter` parity (markdown streams, transient agent
-  state, bus subview) is intentionally deferred to P4 — see
-  "Deferred to P4".
-- **P4** ⏳ 部分完成。已做:STATUS 字段修复(agents 真刷新)、slash 命令识别 +
-  /help 内联、inputHistory 持久化、daemon BUS stream 流式渲染、`/`/`@`
-  inline completion(Tab 接受)。
-  待办:`commandExecutor` 完整接通(/cron /group /role /solo /settings /doctor /init
-  /launch /project /open)、`daemonMessageRouter` 全 callback(transient agent
-  state TTL、bus subview)、`settingsController` UI、cron 调度 UI、project
-  rail 切换、翻默认到 ink + 删 blessed。
+  agent selection, raw-PTY mirror and internal bus agent view are wired.
+- **P4** ✅ parity close-out complete: full `commandExecutor` dispatch,
+  `daemonMessageRouter` callback coverage, persisted history, BUS streams,
+  transient agent state, loop summary, project rail switching, cron/settings
+  dashboard actions, completion popup, and default Ink entrypoints.
 
 ## P1 ucode TUI — what's wired
 
@@ -57,15 +52,16 @@ layout, hooks, and proper isolation of pure logic from rendering.
 | Spinner + phase status line (request/thinking/text/tool labels) | ✅ |
 | Esc abort with `AbortController` and "Cancelling..." status | ✅ |
 | Agents footer with single-line truncation + `+N more` hint | ✅ |
-| `runSingleCommand` empty/exit/probe/help/error/tool/nl kinds | ✅ |
-| Background tasks ("BG x/y/z" suffix) | ⏳ deferred |
-| ubus / resume / nl_bg branches | ⏳ deferred |
-| autoBus polling | ⏳ deferred |
+| `runSingleCommand` empty/exit/probe/help/error/tool/nl/ubus/resume/nl_bg kinds | ✅ |
+| Background tasks ("BG x/y/z" suffix) | ✅ |
+| ubus / resume / nl_bg branches | ✅ |
+| autoBus polling | ✅ |
 
-## Real-TTY checklist (run before flipping the default)
+## Real-TTY checklist
 
 ```sh
-UFOO_TUI=ink ./bin/ucode.js
+./bin/ucode.js
+# fallback: UFOO_TUI=blessed ./bin/ucode.js
 ```
 
 ### Editor
@@ -157,7 +153,7 @@ Source: `src/chat/index.js` (2215 lines) + ~30 controllers in
   `daemonMessageRouter.handleMessage`.
 
 ### View state machine
-- `dashboardView` ∈ `projects | agents | mode | provider | resume | cron`
+- `dashboardView` ∈ `projects | agents | mode | provider | cron`
 - `focusMode` ∈ `input | dashboard` — toggled by Tab and arrow keys
 - `globalMode` (boolean) + `globalScope` ∈ `controller | project` —
   `globalMode=true` enables a multi-project rail; Esc/Enter walk the
@@ -193,8 +189,8 @@ Source: `src/chat/index.js` (2215 lines) + ~30 controllers in
 
 ### Side controllers
 - `cronScheduler` — `/cron start|stop|list` + the cron dashboard view.
-- `settingsController` — launch mode / agent provider / autoResume,
-  with daemon restart on mode change.
+- `settingsController` — launch mode / agent provider,
+  with daemon restart on mode/provider change. `autoResume` stays config/command-driven.
 - `chatLogController` — log buffer + history file replay
   (`loadHistory`, `appendHistory`, `markStreamStart`,
   `setHistoryTarget`, `resetViewState`).
@@ -299,28 +295,29 @@ and `shouldEchoCommandInChat(text)` are pure.
 | Banner header (project + global mode + scope) | ✅ |
 | Scrolling `<Static>` log (1000 line cap) | ✅ |
 | Multiline input (P1 MultilineInput component) | ✅ |
-| 5 dashboard views (projects/agents/mode/provider/resume/cron) | ✅ |
+| 5 dashboard views (projects/agents/mode/provider/cron) | ✅ |
 | Tab toggles input/dashboard focus | ✅ |
 | Up/Down history walk + agent selection mode | ✅ |
 | Left/Right cycle agents while selected | ✅ |
-| Spinner + phase status line | ✅ (skeleton; phase events from messageRouter pending P4) |
+| Spinner + phase status line | ✅ |
 | Tool-merge state machine + Ctrl+O expand | ✅ |
 | Daemon connect / send / status poll | ✅ |
 | `PROMPT` for free text, `BUS_SEND` for `@target` | ✅ |
 | `BUS_SEND_OK` / `RESPONSE` / `ERROR` / `STATUS` / `BUS` envelopes | ✅ |
 | Raw PTY agent mirror (Enter on selected agent, Esc to leave) | ✅ |
-| `daemonMessageRouter` (markdown streams, transient state, bus subview) | ⏳ P4 |
-| `commandExecutor` full slash-command dispatch (`/cron`, `/group`, `/role`, `/settings` …) | ⏳ P4 |
-| `completionController` (slash + `@` autocomplete) | ⏳ P4 |
-| `inputHistoryController` persisted file load/save | ⏳ P4 |
-| `cronScheduler` UI | ⏳ P4 |
-| `settingsController` (launch mode, provider, autoResume) | ⏳ P4 |
+| `daemonMessageRouter` (markdown streams, transient state, bus subview) | ✅ |
+| `commandExecutor` full slash-command dispatch (`/cron`, `/group`, `/role`, `/settings` …) | ✅ |
+| Slash + `@` autocomplete | ✅ |
+| Input history persisted file load/save | ✅ |
+| Cron dashboard actions | ✅ |
+| Settings dashboard actions (launch mode, provider) | ✅ |
 
 ## Real-TTY checklist for chat
 
 ```sh
-UFOO_TUI=ink ./bin/ufoo.js chat                   # project mode
-UFOO_TUI=ink ./bin/ufoo.js chat --global          # global controller mode
+./bin/ufoo.js chat                   # project mode
+./bin/ufoo.js chat --global          # global controller mode
+# fallback: UFOO_TUI=blessed ./bin/ufoo.js chat
 ```
 
 ### Layout
@@ -360,41 +357,21 @@ UFOO_TUI=ink ./bin/ufoo.js chat --global          # global controller mode
 - [ ] `npx jest --silent` shows the pre-existing 5 OAuth failures
   only; every ink suite passes.
 
-## Deferred to P4
+## P4 close-out
 
-- Markdown streaming via `streamTracker` — currently we accumulate
-  RESPONSE text and append line-by-line, no in-place re-render.
-- `daemonMessageRouter` deep wiring — bus subview, transient agent
-  state, pending delivery markers, `closeAgent` flow, `loopSummary`.
-- `commandExecutor` — `/cron`, `/group`, `/role`, `/solo`, `/settings`,
-  `/doctor`, `/init`, `/launch`, `/project`, `/open`, `/help` aren't
-  routed yet (free text + `@target` work).
-- `completionController` — slash and `@` completion popup.
-- `inputHistoryController` — history file load/save (currently
-  in-memory only).
-- `settingsController` — launch mode / agent provider / autoResume
-  toggles.
-- Project rail row in global controller mode beyond static rendering.
-- Flipping the default away from blessed.
-
-## P4 progress
-
-Done:
 - **STATUS handler fix** — chat now reads `msg.data.active` /
   `msg.data.active_meta` / `msg.data.cron.tasks` so the agents and cron
   counts in the footer actually update.
-- **Slash command parsing** — `parseCommand` runs in submit; `/help`
-  is routed inline, every other slash command shows
-  `[/<cmd>] not yet ported in ink mode — unset UFOO_TUI to use blessed
-  TUI` instead of being shipped to the LLM as a prompt.
+- **Slash command dispatch** — `createCommandExecutor` is wired in Ink
+  with daemon stop/start/restart, cron IPC, project switching and agent
+  activation callbacks.
 - **Input history persistence** — `<projectRoot>/.ufoo/chat/input-history.jsonl`
   is loaded on mount and appended on every submit; format matches the
   blessed inputHistoryController.
-- **BUS stream rendering** — `data.message` is decoded as the
-  `{ stream, delta, done, reason }` envelope, partial output renders
-  live below `<Static>`, and the accumulated text is folded into the
-  log on `done`. New reducer actions: `stream/begin`, `stream/delta`,
-  `stream/end`.
+- **Daemon message routing** — Ink routes daemon envelopes through
+  `daemonMessageRouter`, including BUS phase status, transient states,
+  pending delivery markers, streams, close/launch refreshes and loop
+  summary dashboard display.
 - **Inline completion popup** — `/<prefix>` matches commands from
   `COMMAND_REGISTRY`; `@<prefix>` matches the live agents list. Tab
   accepts the top suggestion. Pure helper `buildCompletions` lives in
@@ -403,16 +380,3 @@ Done:
   prompt comes back to a clean screen instead of sitting under the
   final ink frame; `runUcodeInkTui` returns `{ code: 0 }` so
   `agent.js`'s `process.exit(res.code)` no longer crashes.
-
-Still deferred (real-TTY exposure or independent PR):
-- `commandExecutor` full slash dispatch
-  (`/cron`, `/group`, `/role`, `/solo`, `/settings`, `/doctor`,
-  `/init`, `/launch`, `/project`, `/open`).
-- Full `daemonMessageRouter` callbacks: bus phase animations,
-  transient agent state TTL, pending delivery markers, closeAgent
-  flow, loop summary.
-- `settingsController` UI (launchMode / agentProvider / autoResume).
-- `cronScheduler` UI.
-- Project rail switching in global mode.
-- Flipping the default to ink + removing the blessed dependency.
-

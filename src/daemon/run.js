@@ -1,6 +1,7 @@
 const path = require("path");
 const { startDaemon, stopDaemon, isRunning } = require("./index");
 const { loadConfig, defaultAgentModelForProvider } = require("../config");
+const { resolveNodeExecutable } = require("../utils/nodeExecutable");
 
 function runDaemonCli(argv) {
   const cmd = argv[1] || "start";
@@ -19,7 +20,7 @@ function runDaemonCli(argv) {
     if (isRunning(projectRoot)) return;
     if (!process.env.UFOO_DAEMON_CHILD) {
       const { spawn } = require("child_process");
-      const child = spawn(process.execPath, [path.join(__dirname, "..", "..", "bin", "ufoo.js"), "daemon", "start"], {
+      const child = spawn(resolveNodeExecutable(), [path.join(__dirname, "..", "..", "bin", "ufoo.js"), "daemon", "start"], {
         detached: true,
         stdio: "ignore",
         env: { ...process.env, UFOO_DAEMON_CHILD: "1" },
@@ -32,25 +33,31 @@ function runDaemonCli(argv) {
     return;
   }
   if (cmd === "stop" || cmd === "--stop") {
-    stopDaemon(projectRoot);
+    if (!stopDaemon(projectRoot, { source: process.env.UFOO_DAEMON_STOP_SOURCE || `daemon-cli:${cmd} pid=${process.pid}` })) {
+      process.exitCode = 1;
+    }
     return;
   }
   if (cmd === "restart" || cmd === "--restart") {
     // Stop if running
     if (isRunning(projectRoot)) {
-      stopDaemon(projectRoot);
+      const stopped = stopDaemon(projectRoot, { source: process.env.UFOO_DAEMON_STOP_SOURCE || `daemon-cli:${cmd} pid=${process.pid}` });
       // Wait for clean shutdown
       let attempts = 0;
       while (isRunning(projectRoot) && attempts < 50) {
         attempts++;
         require("child_process").spawnSync("sleep", ["0.1"]);
       }
+      if (!stopped && isRunning(projectRoot)) {
+        process.exitCode = 1;
+        return;
+      }
     }
     // Start fresh daemon
     if (!process.env.UFOO_DAEMON_CHILD) {
       const { spawn } = require("child_process");
       const childEnv = { ...process.env, UFOO_DAEMON_CHILD: "1" };
-      const child = spawn(process.execPath, [path.join(__dirname, "..", "..", "bin", "ufoo.js"), "daemon", "start"], {
+      const child = spawn(resolveNodeExecutable(), [path.join(__dirname, "..", "..", "bin", "ufoo.js"), "daemon", "start"], {
         detached: true,
         stdio: "ignore",
         env: childEnv,

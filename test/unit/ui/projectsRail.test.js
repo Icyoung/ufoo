@@ -45,4 +45,30 @@ describe("planProjectsRail", () => {
     expect(plan.windowStart).toBe(0);
     expect(plan.items[0].absoluteIndex).toBe(0);
   });
+
+  test("overlong selected label is truncated instead of disappearing", () => {
+    const plan = planProjectsRail({
+      labels: ["very-long-project-name-that-does-not-fit"],
+      selectedIndex: 0,
+      maxCells: 10,
+    });
+    expect(plan.items).toHaveLength(1);
+    expect(plan.items[0].absoluteIndex).toBe(0);
+    expect(plan.items[0].label).toBe("very-lo...");
+    expect(displayCellWidth(plan.items[0].label)).toBeLessThanOrEqual(10);
+    expect(plan.leftMore).toBe(false);
+    expect(plan.rightMore).toBe(false);
+  });
+
+  test("overlong unfocused window label is truncated instead of disappearing", () => {
+    const plan = planProjectsRail({
+      labels: ["very-long-project-name-that-does-not-fit"],
+      selectedIndex: -1,
+      maxCells: 10,
+    });
+    expect(plan.items).toHaveLength(1);
+    expect(plan.items[0].absoluteIndex).toBe(0);
+    expect(plan.items[0].label).toBe("very-lo...");
+    expect(displayCellWidth(plan.items[0].label)).toBeLessThanOrEqual(10);
+  });
 });

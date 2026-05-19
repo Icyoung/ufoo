@@ -237,7 +237,7 @@ function createCommandExecutor(options = {}) {
 
     if (subcommand === "stop") {
       statusMsg("{gray-fg}⚙{/gray-fg} Stopping daemon...");
-      stopDaemon(targetRoot);
+      stopDaemon(targetRoot, { source: "chat-command:/daemon stop" });
       await sleep(1000);
       if (!isDaemonRunning(targetRoot)) {
         statusMsg("{gray-fg}✓{/gray-fg} Daemon stopped");
@@ -249,8 +249,12 @@ function createCommandExecutor(options = {}) {
 
     if (subcommand === "restart") {
       statusMsg("{gray-fg}⚙{/gray-fg} Restarting daemon...");
-      stopDaemon(targetRoot);
+      stopDaemon(targetRoot, { source: "chat-command:/daemon restart" });
       await sleep(500);
+      if (isDaemonRunning(targetRoot)) {
+        statusMsg("{gray-fg}✗{/gray-fg} Failed to stop daemon");
+        return;
+      }
       startDaemon(targetRoot);
       await sleep(1000);
       if (isDaemonRunning(targetRoot)) {

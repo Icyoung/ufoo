@@ -251,6 +251,61 @@ describe("ucode core agent nl path", () => {
     }
   });
 
+  test("runNaturalLanguageTask keeps selected skill context through decomposed bug-fix steps", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-decomposed-skill-"));
+    const oldHome = process.env.HOME;
+    const oldCodexHome = process.env.CODEX_HOME;
+    process.env.HOME = path.join(tmp, "home");
+    process.env.CODEX_HOME = path.join(tmp, "codex-home");
+    const workspace = path.join(tmp, "workspace");
+    fs.mkdirSync(path.join(workspace, ".agents", "skills", "demo"), { recursive: true });
+    fs.mkdirSync(process.env.HOME, { recursive: true });
+    fs.mkdirSync(process.env.CODEX_HOME, { recursive: true });
+    fs.writeFileSync(
+      path.join(workspace, ".agents", "skills", "demo", "SKILL.md"),
+      "---\nname: demo\ndescription: Demo workflow\n---\n\nDemo body\n",
+      "utf8"
+    );
+    runNativeAgentTask.mockImplementation(async (params) => ({
+      ok: true,
+      output: `step ok: ${params.prompt.slice(0, 20)}`,
+      sessionId: "sess-decomposed-skill",
+      messages: [
+        { role: "user", content: params.prompt },
+        { role: "assistant", content: "step ok" },
+      ],
+    }));
+
+    try {
+      const state = {
+        workspaceRoot: workspace,
+        provider: "openai",
+        model: "gpt-5.2-codex",
+        context: "",
+        sessionId: "",
+        timeoutMs: 30000,
+      };
+
+      const result = await runNaturalLanguageTask("fix with $demo", state);
+
+      expect(result.ok).toBe(true);
+      expect(runNativeAgentTask).toHaveBeenCalledTimes(4);
+      for (const call of runNativeAgentTask.mock.calls) {
+        expect(call[0].prompt).toContain("<skill>");
+        expect(call[0].prompt).toContain("<name>demo</name>");
+        expect(call[0].prompt).toContain("Demo body");
+      }
+      expect(JSON.stringify(state.nlMessages || [])).not.toContain("<skill>");
+      expect(JSON.stringify(state.nlMessages || [])).not.toContain("Demo body");
+    } finally {
+      if (oldHome === undefined) delete process.env.HOME;
+      else process.env.HOME = oldHome;
+      if (oldCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = oldCodexHome;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   test("stripSkillBlocksFromMessages removes injected skill blocks from string and text content", () => {
     const messages = stripSkillBlocksFromMessages([
       {

@@ -174,11 +174,9 @@ function buildDashboardDetailLine(options = {}) {
     getAgentState = () => "",
     selectedModeIndex = 0,
     selectedProviderIndex = 0,
-    selectedResumeIndex = 0,
     selectedCronIndex = -1,
     cronTasks = [],
     providerOptions = [],
-    resumeOptions = [],
     dashHints = {},
     modeOptions = DEFAULT_MODE_OPTIONS,
   } = options;
@@ -207,18 +205,6 @@ function buildDashboardDetailLine(options = {}) {
     });
     content += `{gray-fg}Agent:{/gray-fg} ${providerParts.join("  ")}`;
     content += `  {gray-fg}│ ${dashHints.provider || ""}{/gray-fg}`;
-    return { content, windowStart };
-  }
-
-  if (dashboardView === "resume") {
-    const resumeParts = resumeOptions.map((opt, i) => {
-      if (i === selectedResumeIndex) {
-        return `{inverse}${opt.label}{/inverse}`;
-      }
-      return `{cyan-fg}${opt.label}{/cyan-fg}`;
-    });
-    content += `{gray-fg}Resume:{/gray-fg} ${resumeParts.join("  ")}`;
-    content += `  {gray-fg}│ ${dashHints.resume || ""}{/gray-fg}`;
     return { content, windowStart };
   }
 
@@ -295,13 +281,11 @@ function computeDashboardContent(options = {}) {
     agentProvider = "codex-cli",
     selectedModeIndex = 0,
     selectedProviderIndex = 0,
-    selectedResumeIndex = 0,
     selectedCronIndex = -1,
     cronTasks = [],
     loopSummary = null,
     pendingReports = 0,
     providerOptions = [],
-    resumeOptions = [],
     dashHints = {},
     modeOptions = DEFAULT_MODE_OPTIONS,
   } = options;
@@ -357,11 +341,9 @@ function computeDashboardContent(options = {}) {
       getAgentState,
       selectedModeIndex,
       selectedProviderIndex,
-      selectedResumeIndex,
       selectedCronIndex,
       cronTasks,
       providerOptions,
-      resumeOptions,
       dashHints,
       modeOptions,
     });
@@ -383,11 +365,9 @@ function computeDashboardContent(options = {}) {
       getAgentState,
       selectedModeIndex,
       selectedProviderIndex,
-      selectedResumeIndex,
       selectedCronIndex,
       cronTasks,
       providerOptions,
-      resumeOptions,
       dashHints,
       modeOptions,
     });

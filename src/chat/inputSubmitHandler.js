@@ -1,6 +1,7 @@
 const { IPC_REQUEST_TYPES } = require("../shared/eventContract");
 const { decodeEscapedNewlines } = require("./text");
 const { shouldEchoCommandInChat } = require("./commands");
+const { parseShellCommand, runShellCommand: defaultRunShellCommand } = require("./shellCommand");
 
 function createInputSubmitHandler(options = {}) {
   const {
@@ -24,6 +25,8 @@ function createInputSubmitHandler(options = {}) {
     commitInputHistory = () => {},
     focusInput = () => {},
     renderScreen = () => {},  // Add renderScreen callback
+    runShellCommand = defaultRunShellCommand,
+    getShellCwd = () => process.cwd(),
   } = options;
 
   if (!state || typeof state !== "object") {
@@ -89,6 +92,37 @@ function createInputSubmitHandler(options = {}) {
     }
 
     commitInputHistory(text);
+
+    const shellCommand = parseShellCommand(text);
+    if (shellCommand) {
+      logMessage("user", `{gray-fg}!{/gray-fg} ${escapeBlessed(shellCommand)}`);
+      queueStatusLine(`Running: ${escapeBlessed(shellCommand)}`);
+      renderScreen();
+      try {
+        const result = await runShellCommand(shellCommand, { cwd: getShellCwd() });
+        const stdout = String(result && result.stdout ? result.stdout : "").trimEnd();
+        const stderr = String(result && result.stderr ? result.stderr : "").trimEnd();
+        if (stdout) {
+          stdout.split(/\r?\n/).forEach((line) => logMessage("system", escapeBlessed(line)));
+        }
+        if (stderr) {
+          stderr.split(/\r?\n/).forEach((line) => logMessage(result && result.ok ? "system" : "error", escapeBlessed(line)));
+        }
+        if (!stdout && !stderr) {
+          logMessage("system", "{gray-fg}(no output){/gray-fg}");
+        }
+        if (result && result.ok) {
+          queueStatusLine(`Done: ${escapeBlessed(shellCommand)}`);
+        } else {
+          const suffix = result && result.signal ? ` signal ${result.signal}` : ` exit ${result && result.code != null ? result.code : 1}`;
+          logMessage("error", `{white-fg}✗{/white-fg} Command failed:${escapeBlessed(suffix)}`);
+        }
+      } catch (err) {
+        logMessage("error", `{white-fg}✗{/white-fg} Command error: ${escapeBlessed(err && err.message ? err.message : err)}`);
+      }
+      focusInput();
+      return;
+    }
 
     if (state.targetAgent) {
       const label = getAgentLabel(state.targetAgent);

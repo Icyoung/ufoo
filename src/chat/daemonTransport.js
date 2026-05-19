@@ -29,6 +29,7 @@ function createDaemonTransport(options = {}) {
 
   async function connectClientForTarget(override = {}) {
     const target = resolveTarget(override);
+    const autoStart = override.autoStart !== false;
     let client = await connectWithRetry(
       target.sockPath,
       primaryRetries,
@@ -39,7 +40,7 @@ function createDaemonTransport(options = {}) {
       // Retry once with a fresh daemon start and longer wait.
       // Check if a restart is already in progress via the explicit restart flow.
       const isExplicitRestartInProgress = restartLocks.get(target.projectRoot);
-      if (!isExplicitRestartInProgress && !isRunning(target.projectRoot)) {
+      if (autoStart && !isExplicitRestartInProgress && !isRunning(target.projectRoot)) {
         startDaemon(target.projectRoot);
         await new Promise((resolve) => setTimeout(resolve, restartDelayMs));
       }

@@ -423,6 +423,13 @@ function resolveHistoryDownTransition({
     };
   }
   const currentIndex = Number.isFinite(historyIndex) ? Math.max(0, Math.floor(historyIndex)) : 0;
+  if (currentIndex >= history.length) {
+    return {
+      moved: false,
+      nextHistoryIndex: history.length,
+      nextValue: String(currentValue || ""),
+    };
+  }
   const nextHistoryIndex = Math.min(history.length, currentIndex + 1);
   const nextValue = nextHistoryIndex >= history.length ? "" : String(history[nextHistoryIndex] || "");
   const moved = nextHistoryIndex !== currentIndex || nextValue !== String(currentValue || "");
@@ -581,8 +588,8 @@ function buildToolMergeRowText(entries = []) {
  * planAgentsFooter, but with two differences:
  *   - the caller provides `windowStart` so the rail can scroll horizontally
  *     under cursor control rather than dropping items at the end;
- *   - we never truncate individual labels — projects either fit or are
- *     hidden behind the < / > overflow markers.
+ *   - we normally avoid truncating individual labels, but the selected
+ *     project is always represented by at least one visible chip.
  *
  * Returns { items, windowStart, leftMore, rightMore } where items is the
  * sub-array of `labels` that fits and windowStart is the (possibly
@@ -604,6 +611,25 @@ function planProjectsRail({
   const moreRight = " >";
   const moreLeftWidth = displayCellWidth(moreLeft);
   const moreRightWidth = displayCellWidth(moreRight);
+  const overflowMarker = "...";
+
+  const truncateToCells = (label = "", cells = 1) => {
+    const limit = Math.max(1, Math.floor(Number(cells) || 0));
+    const text = String(label || "");
+    if (displayCellWidth(text) <= limit) return text;
+    const markerWidth = displayCellWidth(overflowMarker);
+    if (limit <= markerWidth) return overflowMarker.slice(0, limit);
+    let out = "";
+    let used = 0;
+    const bodyLimit = limit - markerWidth;
+    for (const ch of text) {
+      const width = displayCellWidth(ch);
+      if (used + width > bodyLimit) break;
+      out += ch;
+      used += width;
+    }
+    return `${out || text.slice(0, 1)}${overflowMarker}`;
+  };
 
   // Clamp the requested windowStart so the cursor is visible.
   let start = Math.max(0, Math.min(items.length - 1, Math.floor(Number(windowStart) || 0)));
@@ -642,6 +668,18 @@ function planProjectsRail({
   if (selectedIndex >= 0 && visible.length > 0 && visible[0].index > selectedIndex) {
     start = selectedIndex;
     visible = tryFit(start);
+  }
+
+  if (visible.length === 0) {
+    const fallbackIndex = selectedIndex >= 0 && selectedIndex < items.length ? selectedIndex : start;
+    start = fallbackIndex;
+    const reserveLeft = start > 0 ? moreLeftWidth : 0;
+    const reserveRight = fallbackIndex < items.length - 1 ? moreRightWidth : 0;
+    const labelBudget = Math.max(1, budget - reserveLeft - reserveRight);
+    visible = [{
+      index: fallbackIndex,
+      label: truncateToCells(items[fallbackIndex], labelBudget),
+    }];
   }
 
   return {
@@ -760,6 +798,7 @@ function buildCompletions({
   const raw = String(text || "");
   if (!raw) return [];
   const trimmed = raw.trimStart();
+  const endsWithWhitespace = /\s$/.test(trimmed);
 
   if (trimmed.startsWith("/")) {
     const parts = trimmed.split(/\s+/);
@@ -787,8 +826,13 @@ function buildCompletions({
           label: `${head} ${tail[0]} ${id}`,
           replace: `${head} ${tail[0]} ${id} `,
           description: desc,
+          hasChildren: false,
         });
         if (out.length >= limit) break;
+      }
+      if (partial && out.length === 1) {
+        const candidate = String(out[0].replace || "").trim().split(/\s+/).pop() || "";
+        if (candidate.toLowerCase() === partial && !out[0].hasChildren) return [];
       }
       return out;
     }
@@ -825,13 +869,20 @@ function buildCompletions({
       const out = [];
       for (const entry of entries) {
         if (!entry.name.toLowerCase().startsWith(partial)) continue;
+        const hasDynamicArguments = (head === "/group" && entry.name === "run")
+          || (head === "/solo" && entry.name === "run");
         out.push({
           kind: "subcommand",
           label: `${prefixSoFar} ${entry.name}`.trim(),
           replace: `${prefixSoFar} ${entry.name} `.replace(/^\s+/, ""),
           description: String(entry.desc || entry.summary || entry.description || ""),
+          hasChildren: Boolean((entry.children && typeof entry.children === "object") || hasDynamicArguments),
         });
         if (out.length >= limit) break;
+      }
+      if (!endsWithWhitespace && out.length === 1) {
+        const candidate = String(out[0].replace || "").trim().split(/\s+/).pop() || "";
+        if (candidate.toLowerCase() === partial && !out[0].hasChildren) return [];
       }
       return out;
     }
@@ -855,8 +906,13 @@ function buildCompletions({
         label: `/${bare}`,
         replace: `/${bare} `,
         description: String((item && (item.desc || item.summary || item.description)) || ""),
+        hasChildren: Boolean(commandTree && commandTree[`/${bare}`] && commandTree[`/${bare}`].children),
       });
       if (out.length >= limit) break;
+    }
+    if (!endsWithWhitespace && out.length === 1) {
+      const candidate = String(out[0].replace || "").trim().replace(/^\//, "").toLowerCase();
+      if (candidate === prefix && !out[0].hasChildren) return [];
     }
     return out;
   }
@@ -885,6 +941,10 @@ function buildCompletions({
         description: id !== label ? id : "",
       });
       if (out.length >= limit) break;
+    }
+    if (out.length === 1) {
+      const candidate = String(out[0].label || "").replace(/^@/, "").toLowerCase();
+      if (candidate === prefix) return [];
     }
     return out;
   }

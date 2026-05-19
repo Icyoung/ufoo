@@ -56,6 +56,9 @@ function createDaemonIpcServer(options = {}) {
   const server = net.createServer((socket) => {
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
+    socket.on("error", (err) => {
+      log(`ipc socket error: ${err && err.message ? err.message : String(err || "unknown error")}`);
+    });
     let buffer = "";
     socket.on("data", async (data) => {
       buffer += data.toString("utf8");
@@ -66,10 +69,29 @@ function createDaemonIpcServer(options = {}) {
         const items = parseJsonLines(line);
         for (const req of items) {
           if (!req || typeof req !== "object") continue;
-          await handleRequest(req, socket);
+          try {
+            await handleRequest(req, socket);
+          } catch (err) {
+            const message = err && err.message ? err.message : String(err || "request failed");
+            const requestType = String(req.type || "unknown");
+            log(`ipc request failed type=${requestType}: ${err && err.stack ? err.stack : message}`);
+            try {
+              socket.write(`${JSON.stringify({
+                type: IPC_RESPONSE_TYPES.ERROR,
+                error: message,
+                request_type: requestType,
+              })}\n`);
+            } catch {
+              // ignore failed error replies
+            }
+          }
         }
       }
     });
+  });
+
+  server.on("error", (err) => {
+    log(`ipc server error: ${err && err.message ? err.message : String(err || "unknown error")}`);
   });
 
   function listen(sockPath) {

@@ -94,7 +94,7 @@ describe("chat dashboardView", () => {
     expect(out.content).toContain("{gray-fg}│ EMPTY{/gray-fg}");
   });
 
-  test("provider/resume pages highlight selected options", () => {
+  test("provider page highlights selected option", () => {
     const providerOut = computeDashboardContent({
       focusMode: "dashboard",
       dashboardView: "provider",
@@ -107,19 +107,6 @@ describe("chat dashboardView", () => {
     });
     expect(providerOut.content).toContain("{inverse}claude{/inverse}");
     expect(providerOut.content).toContain("{gray-fg}│ PROVIDER{/gray-fg}");
-
-    const resumeOut = computeDashboardContent({
-      focusMode: "dashboard",
-      dashboardView: "resume",
-      resumeOptions: [
-        { label: "Resume previous session", value: true },
-        { label: "Start new session", value: false },
-      ],
-      selectedResumeIndex: 0,
-      dashHints,
-    });
-    expect(resumeOut.content).toContain("{inverse}Resume previous session{/inverse}");
-    expect(resumeOut.content).toContain("{gray-fg}│ RESUME{/gray-fg}");
   });
 
   test("cron page renders task summaries", () => {
@@ -146,8 +133,7 @@ describe("chat dashboardView", () => {
       focusMode: "input",
       projects: [
         { project_name: "alpha", project_root: "/tmp/alpha", status: "running" },
-        { project_name: "beta", project_root: "/tmp/beta", status: "stale" },
-        { project_name: "gamma", project_root: "/tmp/gamma", status: "stopped" },
+        { project_name: "beta", project_root: "/tmp/beta", status: "running" },
       ],
       selectedProjectIndex: 1,
       projectListWindowStart: 0,

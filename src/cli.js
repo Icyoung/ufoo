@@ -14,6 +14,7 @@ const { resolveSoloAgentType } = require("./solo/commands");
 const { listProjectRuntimes, getCurrentProjectRuntime } = require("./projects/registry");
 const { canonicalProjectRoot, buildProjectId } = require("./projects/projectId");
 const { getUfooPaths } = require("./ufoo/paths");
+const { resolveNodeExecutable } = require("./utils/nodeExecutable");
 
 function getPackageRoot() {
   return path.resolve(__dirname, "..");
@@ -60,7 +61,7 @@ async function connectWithRetry(sockPath, retries, delayMs) {
 async function ensureDaemonRunning(projectRoot) {
   if (isRunning(projectRoot)) return;
   const repoRoot = getPackageRoot();
-  run(process.execPath, [path.join(repoRoot, "bin", "ufoo.js"), "daemon", "start"]);
+  run(resolveNodeExecutable(), [path.join(repoRoot, "bin", "ufoo.js"), "daemon", "start"]);
   const sock = socketPath(projectRoot);
   for (let i = 0; i < 30; i += 1) {
     if (fs.existsSync(sock)) {
@@ -1733,7 +1734,7 @@ async function runCli(argv) {
     return;
   }
   if (cmd === "daemon") {
-    run(process.execPath, [path.join(repoRoot, "bin", "ufoo.js"), "daemon", ...rest]);
+    run(resolveNodeExecutable(), [path.join(repoRoot, "bin", "ufoo.js"), "daemon", ...rest]);
     return;
   }
   if (cmd === "chat") {
@@ -1741,7 +1742,7 @@ async function runCli(argv) {
     if (rest.includes("-g") || rest.includes("--global")) {
       chatArgs.push("-g");
     }
-    run(process.execPath, [path.join(repoRoot, "bin", "ufoo.js"), ...chatArgs]);
+    run(resolveNodeExecutable(), [path.join(repoRoot, "bin", "ufoo.js"), ...chatArgs]);
     return;
   }
   if (cmd === "project") {

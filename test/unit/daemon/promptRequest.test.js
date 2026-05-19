@@ -67,6 +67,35 @@ describe("daemon promptRequest", () => {
     });
   });
 
+  test("accepts legacy prompt field as text", async () => {
+    const socket = { write: jest.fn() };
+    const runPromptWithAssistant = jest.fn().mockResolvedValue({
+      ok: true,
+      payload: { reply: "done", dispatch: [], ops: [] },
+      opsResults: [],
+    });
+
+    const ok = await handlePromptRequest({
+      projectRoot: "/tmp/project",
+      req: { prompt: "legacy prompt" },
+      socket,
+      provider: "codex-cli",
+      model: "",
+      runPromptWithAssistant,
+      runUfooAgent: jest.fn(),
+      runAssistantTask: jest.fn(),
+      dispatchMessages: jest.fn(),
+      handleOps: jest.fn(),
+      markPending: jest.fn(),
+      log: jest.fn(),
+    });
+
+    expect(ok).toBe(true);
+    expect(runPromptWithAssistant).toHaveBeenCalledWith(
+      expect.objectContaining({ prompt: "legacy prompt" }),
+    );
+  });
+
   test("writes error when prompt loop returns failure", async () => {
     const socket = { write: jest.fn() };
     const runPromptWithAssistant = jest.fn().mockResolvedValue({

@@ -415,7 +415,15 @@ function createDaemonMessageRouter(options = {}) {
         const delta = typeof streamPayload.delta === "string"
           ? decodeEscapedNewlines(streamPayload.delta)
           : "";
-        if (delta) writeToAgentTerm(delta);
+        if (delta || streamPayload.done) {
+          writeToAgentTerm(delta, {
+            data,
+            publisher,
+            streamPayload,
+            done: Boolean(streamPayload.done),
+            reason: streamPayload.reason || "",
+          });
+        }
       } else if (displayMessage) {
         writeToAgentTerm(`${displayMessage}\r\n`);
       }

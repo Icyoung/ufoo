@@ -10,6 +10,7 @@ const { runNativeAgentTask } = require("./nativeRunner");
  */
 function decomposeBugFixTask(task) {
   const steps = [];
+  const taskContext = String(task || "");
 
   // Analyze task to determine if it's a bug fix
   const isBugFix = /fix|bug|issue|problem|error|broken|doesn't work|not work/i.test(task);
@@ -18,7 +19,7 @@ function decomposeBugFixTask(task) {
     steps.push({
       id: "identify",
       name: "Identifying the issue",
-      prompt: `Identify the specific problem: ${task}\n\nBe concise. Focus only on:\n1. What is broken\n2. What file/function is likely involved\n3. What the expected behavior should be\n\nDo NOT analyze entire codebases. Find the specific issue quickly.`,
+      prompt: `Task context:\n${taskContext}\n\nIdentify the specific problem.\n\nBe concise. Focus only on:\n1. What is broken\n2. What file/function is likely involved\n3. What the expected behavior should be\n\nDo NOT analyze entire codebases. Find the specific issue quickly.`,
       timeoutMs: 30000, // 30 seconds
       earlyExit: true,
     });
@@ -26,7 +27,7 @@ function decomposeBugFixTask(task) {
     steps.push({
       id: "locate",
       name: "Locating relevant code",
-      prompt: `Based on the identified issue, find the exact location of the bug.\n\nSearch for and read ONLY the relevant function/file. Stop as soon as you find the problematic code.`,
+      prompt: `Task context:\n${taskContext}\n\nBased on the identified issue, find the exact location of the bug.\n\nSearch for and read ONLY the relevant function/file. Stop as soon as you find the problematic code.`,
       timeoutMs: 30000,
       earlyExit: true,
     });
@@ -34,7 +35,7 @@ function decomposeBugFixTask(task) {
     steps.push({
       id: "fix",
       name: "Applying the fix",
-      prompt: `Apply the minimal fix needed. Do NOT refactor or improve unrelated code. Just fix the specific issue.`,
+      prompt: `Task context:\n${taskContext}\n\nApply the minimal fix needed. Do NOT refactor or improve unrelated code. Just fix the specific issue.`,
       timeoutMs: 60000,
       earlyExit: false,
     });
@@ -42,7 +43,7 @@ function decomposeBugFixTask(task) {
     steps.push({
       id: "verify",
       name: "Verifying the fix",
-      prompt: `Verify the fix resolves the issue. Check that:\n1. The specific problem is fixed\n2. No new issues were introduced\n\nBe brief.`,
+      prompt: `Task context:\n${taskContext}\n\nVerify the fix resolves the issue. Check that:\n1. The specific problem is fixed\n2. No new issues were introduced\n\nBe brief.`,
       timeoutMs: 20000,
       earlyExit: false,
     });

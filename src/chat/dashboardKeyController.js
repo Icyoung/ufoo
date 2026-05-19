@@ -18,7 +18,6 @@ function createDashboardKeyController(options = {}) {
     exitDashboardMode = () => {},
     setLaunchMode = () => {},
     setAgentProvider = () => {},
-    setAutoResume = () => {},
     clampAgentWindow = () => {},
     clampAgentWindowWithSelection = () => {},
     requestProjectSwitch = () => {},
@@ -314,44 +313,6 @@ function createDashboardKeyController(options = {}) {
     return true;
   }
 
-  function handleResumeKey(key) {
-    if (key.name === "left") {
-      state.selectedResumeIndex = state.selectedResumeIndex <= 0
-        ? state.resumeOptions.length - 1
-        : state.selectedResumeIndex - 1;
-      renderDashboardAndScreen();
-      return true;
-    }
-
-    if (key.name === "right") {
-      state.selectedResumeIndex = state.selectedResumeIndex >= state.resumeOptions.length - 1
-        ? 0
-        : state.selectedResumeIndex + 1;
-      renderDashboardAndScreen();
-      return true;
-    }
-
-    if (key.name === "up") {
-      state.dashboardView = "provider";
-      renderDashboardAndScreen();
-      return true;
-    }
-
-    if (key.name === "enter" || key.name === "return") {
-      const selected = state.resumeOptions[state.selectedResumeIndex];
-      if (selected) setAutoResume(selected.value);
-      exitDashboardMode(false);
-      return true;
-    }
-
-    if (key.name === "escape") {
-      exitDashboardMode(false);
-      return true;
-    }
-
-    return true;
-  }
-
   function handleProjectsKey(key) {
     const projects = Array.isArray(state.projects) ? state.projects : [];
     if (projects.length === 0) {
@@ -557,7 +518,6 @@ function createDashboardKeyController(options = {}) {
 
     if (state.dashboardView === "mode") return handleModeKey(key);
     if (state.dashboardView === "provider") return handleProviderKey(key);
-    if (state.dashboardView === "resume") return handleResumeKey(key);
     if (state.dashboardView === "cron") return handleCronKey(key);
 
     return handleAgentsKey(key);

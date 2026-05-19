@@ -36,6 +36,7 @@ const {
   resolveDisplayNickname,
   resolveScopedNickname,
 } = require("./nicknameScope");
+const { resolveNodeExecutable } = require("../utils/nodeExecutable");
 
 let providerSessions = null;
 let probeHandles = new Map();
@@ -124,6 +125,15 @@ function logPath(projectRoot) {
   return getUfooPaths(projectRoot).ufooDaemonLog;
 }
 
+function appendControlLog(projectRoot, msg) {
+  try {
+    ensureDir(path.dirname(logPath(projectRoot)));
+    fs.appendFileSync(logPath(projectRoot), `[daemon-control] ${new Date().toISOString()} ${msg}\n`);
+  } catch {
+    // ignore control logging errors
+  }
+}
+
 function writePid(projectRoot) {
   fs.writeFileSync(pidPath(projectRoot), String(process.pid));
 }
@@ -151,6 +161,10 @@ function checkPid(pid) {
   }
 }
 
+function pidAlive(pid) {
+  return checkPid(pid).alive;
+}
+
 function readProcessArgs(pid) {
   if (!Number.isFinite(pid) || pid <= 0) return "";
   try {
@@ -171,6 +185,32 @@ function readProcessArgs(pid) {
   return "";
 }
 
+function readProcessCwd(pid) {
+  if (!Number.isFinite(pid) || pid <= 0) return "";
+  try {
+    const res = spawnSync("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    if (!res || res.status !== 0 || !res.stdout) return "";
+    for (const line of String(res.stdout || "").split(/\r?\n/)) {
+      if (line.startsWith("n")) return line.slice(1);
+    }
+  } catch {
+    // ignore
+  }
+  return "";
+}
+
+function sameProjectRoot(a, b) {
+  if (!a || !b) return false;
+  try {
+    return fs.realpathSync(a) === fs.realpathSync(b);
+  } catch {
+    return path.resolve(a) === path.resolve(b);
+  }
+}
+
 function isLikelyDaemonProcess(pid) {
   const args = readProcessArgs(pid);
   if (!args || args === "__EPERM__") return null;
@@ -180,6 +220,37 @@ function isLikelyDaemonProcess(pid) {
   if (hasCliPattern || hasNodePattern) return true;
   if (text.includes("/src/daemon/run.js")) return true;
   return false;
+}
+
+function isPidFileDaemonForProject(projectRoot, pid, socketOwnerPids = new Set()) {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  if (socketOwnerPids.has(pid)) return true;
+  if (looksLikeRunningDaemon(projectRoot, pid)) return true;
+  if (isLikelyDaemonProcess(pid) !== true) return false;
+  const cwd = readProcessCwd(pid);
+  return sameProjectRoot(cwd, projectRoot);
+}
+
+function socketOwnerDaemonPids(projectRoot) {
+  const sock = socketPath(projectRoot);
+  const out = new Set();
+  try {
+    const res = spawnSync("lsof", ["-nP", "-U"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    if (!res || res.status !== 0 || !res.stdout) return [];
+    for (const line of String(res.stdout || "").split(/\r?\n/)) {
+      if (!line.includes(sock)) continue;
+      const parts = line.trim().split(/\s+/);
+      const pid = parseInt(parts[1], 10);
+      if (!Number.isFinite(pid) || pid <= 0) continue;
+      if (isLikelyDaemonProcess(pid) === true) out.add(pid);
+    }
+  } catch {
+    // ignore lsof failures; pid file fallback still applies
+  }
+  return Array.from(out);
 }
 
 function looksLikeRunningDaemon(projectRoot, pid) {
@@ -214,6 +285,16 @@ function cleanupStaleState(projectRoot) {
     // ignore
   }
   removeSocket(projectRoot);
+}
+
+function removePidIfOwned(projectRoot, expectedPid = process.pid) {
+  const pid = readPid(projectRoot);
+  if (pid !== expectedPid) return;
+  try {
+    fs.unlinkSync(pidPath(projectRoot));
+  } catch {
+    // ignore cleanup errors
+  }
 }
 
 function removeSocket(projectRoot) {
@@ -1093,8 +1174,26 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
   writePid(projectRoot);
 
   const logFile = fs.createWriteStream(logPath(projectRoot), { flags: "a" });
+  const formatLogLine = (msg) => `[daemon] ${new Date().toISOString()} ${msg}\n`;
   const log = (msg) => {
-    logFile.write(`[daemon] ${new Date().toISOString()} ${msg}\n`);
+    logFile.write(formatLogLine(msg));
+  };
+  const logSync = (msg) => {
+    const line = formatLogLine(msg);
+    try {
+      fs.appendFileSync(logPath(projectRoot), line);
+    } catch {
+      try {
+        logFile.write(line);
+      } catch {
+        // ignore fatal logging errors
+      }
+    }
+  };
+  const formatFatalReason = (err) => {
+    if (!err) return "unknown";
+    if (err instanceof Error) return err.stack || err.message;
+    return String(err);
   };
   const publishProjectRuntime = (status = "running") => {
     if (isGlobalControllerProjectRoot(projectRoot)) {
@@ -1226,12 +1325,13 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
           if (!isRunning(root)) {
             cleanupStaleState(root);
             const daemonBin = path.join(__dirname, "..", "..", "bin", "ufoo.js");
-            const child = spawn(process.execPath, [daemonBin, "daemon", "--start"], {
+            const child = spawn(resolveNodeExecutable(), [daemonBin, "daemon", "--start"], {
               detached: true,
               stdio: "ignore",
               cwd: root,
               env: process.env,
             });
+            child.on("error", () => {});
             child.unref();
           }
 
@@ -2462,10 +2562,11 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
   }
 
   let cleanedUp = false;
-  const cleanup = () => {
+  const cleanup = (reason = "exit", options = {}) => {
     if (cleanedUp) return;
     cleanedUp = true;
-    log(`Shutting down daemon (managed agents: ${processManager.count()})`);
+    const writeLog = options.sync ? logSync : log;
+    writeLog(`Shutting down daemon reason=${reason} (managed agents: ${processManager.count()})`);
     clearInterval(runtimeHeartbeat);
     try {
       if (!isGlobalControllerProjectRoot(projectRoot)) {
@@ -2487,6 +2588,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
     ipcServer.stop();
     busBridge.stop();
     removeSocket(projectRoot);
+    removePidIfOwned(projectRoot);
 
     // 释放锁文件
     try {
@@ -2502,46 +2604,84 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
     }
   };
 
-  process.on("exit", cleanup);
+  process.on("beforeExit", (code) => {
+    logSync(`beforeExit code=${code}`);
+  });
+  process.on("exit", (code) => {
+    cleanup(`exit code=${code}`, { sync: true });
+  });
   process.on("SIGTERM", () => {
-    cleanup();
+    cleanup("SIGTERM", { sync: true });
     process.exit(0);
   });
   process.on("SIGINT", () => {
-    cleanup();
+    cleanup("SIGINT", { sync: true });
     process.exit(0);
+  });
+  process.on("uncaughtException", (err) => {
+    logSync(`uncaughtException: ${formatFatalReason(err)}`);
+    cleanup("uncaughtException", { sync: true });
+    process.exit(1);
+  });
+  process.on("unhandledRejection", (reason) => {
+    logSync(`unhandledRejection: ${formatFatalReason(reason)}`);
+    cleanup("unhandledRejection", { sync: true });
+    process.exit(1);
   });
 }
 
-function stopDaemon(projectRoot) {
+function stopDaemon(projectRoot, options = {}) {
   const pid = readPid(projectRoot);
-  if (!pid) {
-    removeSocket(projectRoot);
-    return false;
+  const pids = new Set(socketOwnerDaemonPids(projectRoot));
+  if (pid && isPidFileDaemonForProject(projectRoot, pid, pids)) {
+    pids.add(pid);
   }
+  const source = String(
+    options.source
+      || process.env.UFOO_DAEMON_STOP_SOURCE
+      || `pid=${process.pid} cwd=${process.cwd()} argv=${process.argv.join(" ")}`
+  ).slice(0, 1200);
+  appendControlLog(
+    projectRoot,
+    `stop requested source=${JSON.stringify(source)} pid_file=${pid || ""} target_pids=[${Array.from(pids).join(",")}]`
+  );
   let killed = false;
-  try {
-    process.kill(pid, "SIGTERM");
-    const started = Date.now();
-    while (Date.now() - started < 1500) {
-      try {
-        process.kill(pid, 0);
-      } catch {
-        killed = true;
-        break;
+  for (const targetPid of pids) {
+    try {
+      process.kill(targetPid, "SIGTERM");
+      killed = true;
+    } catch {
+      // ignore kill errors (e.g., already dead)
+    }
+  }
+  const started = Date.now();
+  while (Date.now() - started < 1500) {
+    let anyAlive = false;
+    for (const targetPid of pids) {
+      if (pidAlive(targetPid)) {
+        anyAlive = true;
       }
     }
-    // Force kill if still alive.
+    if (!anyAlive) break;
+  }
+  // Force kill if still alive.
+  for (const targetPid of pids) {
     try {
-      process.kill(pid, 0);
-      process.kill(pid, "SIGKILL");
-      killed = true;
+      if (pidAlive(targetPid)) {
+        process.kill(targetPid, "SIGKILL");
+        killed = true;
+      }
     } catch {
       // ignore if already dead
     }
-  } catch {
-    // ignore kill errors (e.g., already dead)
   }
+
+  const stillAlive = Array.from(pids).filter((targetPid) => pidAlive(targetPid));
+  if (stillAlive.length > 0) {
+    appendControlLog(projectRoot, `stop failed still_alive=[${stillAlive.join(",")}]`);
+    return false;
+  }
+
   try {
     fs.unlinkSync(pidPath(projectRoot));
   } catch {
@@ -2567,7 +2707,9 @@ function stopDaemon(projectRoot) {
     // ignore
   }
 
-  return killed;
+  const stopped = killed || pids.size === 0;
+  appendControlLog(projectRoot, `stop completed stopped=${stopped} killed=${killed} target_count=${pids.size}`);
+  return stopped;
 }
 
 module.exports = { startDaemon, stopDaemon, isRunning, cleanupStaleState, socketPath };

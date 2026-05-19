@@ -150,4 +150,19 @@ describe("daemon ipcServer", () => {
 
     expect(handleRequest).toHaveBeenCalled();
   });
+
+  test("logs and replies with error when request handler rejects", async () => {
+    const handleRequest = jest.fn().mockRejectedValue(new Error("boom"));
+    const { server, log } = createServerHarness({ handleRequest });
+
+    const socket = createFakeSocket();
+    server.server._handler(socket);
+
+    socket.emit("data", Buffer.from(`${JSON.stringify({ type: "ping" })}\n`));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("ipc request failed type=ping"));
+    expect(socket.write).toHaveBeenCalledWith(expect.stringContaining('"type":"error"'));
+    expect(socket.write).toHaveBeenCalledWith(expect.stringContaining('"error":"boom"'));
+  });
 });

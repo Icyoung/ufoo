@@ -411,6 +411,16 @@ describe("ucode tui switch", () => {
       nextHistoryIndex: 3,
       nextValue: "",
     });
+
+    expect(resolveHistoryDownTransition({
+      inputHistory: ["a", "b", "c"],
+      historyIndex: 3,
+      currentValue: "draft",
+    })).toEqual({
+      moved: false,
+      nextHistoryIndex: 3,
+      nextValue: "draft",
+    });
   });
 
   test("filterSelectableAgents excludes current subscriber", () => {

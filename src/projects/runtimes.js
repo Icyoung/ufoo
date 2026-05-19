@@ -17,7 +17,7 @@ function filterVisibleProjectRuntimes(rows = []) {
   const sourceRows = Array.isArray(rows) ? rows : [];
   return sourceRows.filter((row) => {
     const status = String((row && row.status) || "").trim().toLowerCase();
-    return status !== "stopped";
+    return status === "running";
   });
 }
 

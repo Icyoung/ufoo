@@ -86,7 +86,7 @@ function createProjectCloseController(options = {}) {
       }
 
       const wasRunning = Boolean(isRunning(projectRoot));
-      stopDaemon(projectRoot);
+      stopDaemon(projectRoot, { source: `project-close:${projectRoot}` });
 
       refreshProjects();
       renderDashboard();

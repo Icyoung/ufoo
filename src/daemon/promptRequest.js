@@ -112,7 +112,7 @@ function summarizeShadowPayload(payload = {}) {
 async function handlePromptRequest(options = {}) {
   const {
     projectRoot,
-    req = {},
+    req: originalReq = {},
     socket,
     provider,
     model,
@@ -129,6 +129,11 @@ async function handlePromptRequest(options = {}) {
     forwardProjectPrompt = null,
     log = () => {},
   } = options;
+
+  const req = originalReq && typeof originalReq === "object" ? { ...originalReq } : {};
+  if ((req.text == null || req.text === "") && req.prompt != null) {
+    req.text = req.prompt;
+  }
 
   log(`prompt ${String(req.text || "").slice(0, 200)}`);
   const requestMeta = req.request_meta && typeof req.request_meta === "object" ? req.request_meta : {};
