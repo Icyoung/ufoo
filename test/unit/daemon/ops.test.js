@@ -733,3 +733,30 @@ describe("daemon ops closeAgent window close gate", () => {
     expect(data.agents["codex:a3"].status).toBe("inactive");
   });
 });
+
+describe("daemon ops agy provider mappings", () => {
+  test("normalizeLaunchAgent accepts agy and antigravity aliases", () => {
+    expect(__private.normalizeLaunchAgent("agy")).toBe("agy");
+    expect(__private.normalizeLaunchAgent("antigravity")).toBe("agy");
+    expect(__private.normalizeLaunchAgent("AGY")).toBe("agy");
+    // Sanity check: existing providers still resolve correctly.
+    expect(__private.normalizeLaunchAgent("codex")).toBe("codex");
+    expect(__private.normalizeLaunchAgent("claude-code")).toBe("claude");
+  });
+
+  test("toBusAgentType maps agy to the agy bus prefix", () => {
+    expect(__private.toBusAgentType("agy")).toBe("agy");
+    expect(__private.toBusAgentType("unknown")).toBe("");
+  });
+
+  test("toTerminalBinary and toTmuxBinary map agy to uagy", () => {
+    expect(__private.toTerminalBinary("agy")).toBe("uagy");
+    expect(__private.toTmuxBinary("agy")).toBe("uagy");
+  });
+
+  test("buildResumeArgs emits --conversation=<uuid> for agy", () => {
+    expect(__private.buildResumeArgs("agy", "9aeccc4f-cf41-42da-b4de-5203f63be95d"))
+      .toEqual(["--conversation=9aeccc4f-cf41-42da-b4de-5203f63be95d"]);
+    expect(__private.buildResumeArgs("agy", "")).toEqual([]);
+  });
+});

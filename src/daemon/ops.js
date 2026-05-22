@@ -21,6 +21,7 @@ function normalizeLaunchAgent(agent = "") {
   const value = String(agent || "").trim().toLowerCase();
   if (value === "codex") return "codex";
   if (value === "claude" || value === "claude-code") return "claude";
+  if (value === "agy" || value === "antigravity") return "agy";
   if (value === "ufoo" || value === "ucode" || value === "ufoo-code") return "ufoo";
   return "";
 }
@@ -28,6 +29,7 @@ function normalizeLaunchAgent(agent = "") {
 function toBusAgentType(agent = "") {
   if (agent === "codex") return "codex";
   if (agent === "claude") return "claude-code";
+  if (agent === "agy") return "agy";
   if (agent === "ufoo") return "ufoo-code";
   return "";
 }
@@ -35,6 +37,7 @@ function toBusAgentType(agent = "") {
 function toTerminalBinary(agent = "") {
   if (agent === "codex") return "ucodex";
   if (agent === "claude") return "uclaude";
+  if (agent === "agy") return "uagy";
   if (agent === "ufoo") return "ucode";
   return "";
 }
@@ -42,6 +45,7 @@ function toTerminalBinary(agent = "") {
 function toTmuxBinary(agent = "") {
   if (agent === "codex") return "ucodex";
   if (agent === "claude") return "uclaude";
+  if (agent === "agy") return "uagy";
   if (agent === "ufoo") return "ucode";
   return "";
 }
@@ -1100,6 +1104,9 @@ function buildResumeArgs(agent, sessionId) {
   if (!sessionId) return [];
   if (agent === "codex") return ["resume", sessionId];
   if (agent === "claude") return ["--session-id", sessionId];
+  // Agy resumes by conversation UUID; bin/uagy.js de-duplicates if the same
+  // flag is already injected via provider_session_id readback.
+  if (agent === "agy") return [`--conversation=${sessionId}`];
   return [];
 }
 
@@ -1152,7 +1159,7 @@ function collectRecoverableAgents(projectRoot, target = "") {
       continue;
     }
     const agent = normalizeAgentType(meta.agent_type);
-    if (agent !== "codex" && agent !== "claude") {
+    if (agent !== "codex" && agent !== "claude" && agent !== "agy") {
       skipped.push({ id, reason: "unsupported agent type" });
       continue;
     }
@@ -1334,5 +1341,10 @@ module.exports = {
     resolveConfiguredLaunchMode,
     resolveHostLaunchContext,
     resolveNativeTerminalApp,
+    normalizeLaunchAgent,
+    toBusAgentType,
+    toTerminalBinary,
+    toTmuxBinary,
+    buildResumeArgs,
   },
 };

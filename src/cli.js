@@ -688,8 +688,8 @@ async function runCli(argv) {
 
     program
       .command("launch")
-      .description("Launch an agent (ucode, uclaude, ucodex, uagy)")
-      .argument("<agent>", "Agent type: ucode|uclaude|ucodex|uagy|claude|codex|agy")
+      .description("Launch an agent (uclaude, ucodex, uagy, ucode)")
+      .argument("<agent>", "Agent type: uclaude|ucodex|uagy|ucode|claude|codex|agy")
       .argument("[nickname]", "Optional nickname for the agent")
       .option("--profile <id>", "Prompt profile to assign after launch")
       .action(async (agent, nickname, opts) => {
@@ -700,17 +700,17 @@ async function runCli(argv) {
           // Normalize agent type
           const agentLower = agent.toLowerCase();
           let normalizedAgent = "";
-          if (agentLower === "ucode" || agentLower === "ufoo-code" || agentLower === "ufoo") {
-            normalizedAgent = "ucode";
-          } else if (agentLower === "uclaude" || agentLower === "claude-code" || agentLower === "claude") {
+          if (agentLower === "uclaude" || agentLower === "claude-code" || agentLower === "claude") {
             normalizedAgent = "claude";
           } else if (agentLower === "ucodex" || agentLower === "codex" || agentLower === "openai") {
             normalizedAgent = "codex";
           } else if (agentLower === "uagy" || agentLower === "agy" || agentLower === "antigravity") {
             normalizedAgent = "agy";
+          } else if (agentLower === "ucode" || agentLower === "ufoo-code" || agentLower === "ufoo") {
+            normalizedAgent = "ucode";
           } else {
             console.error(`Unknown agent type: ${agent}`);
-            console.error("Valid types: ucode, uclaude, ucodex, uagy, claude, codex, agy");
+            console.error("Valid types: uclaude, ucodex, uagy, ucode, claude, codex, agy");
             process.exitCode = 1;
             return;
           }

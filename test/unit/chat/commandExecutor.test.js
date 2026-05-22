@@ -344,7 +344,7 @@ describe("chat commandExecutor", () => {
     await executor.handleLaunchCommand(["mystery"]);
     expect(options.send).not.toHaveBeenCalled();
     expect(logs.some((entry) => /Unknown agent type/.test(entry.text))).toBe(true);
-    expect(logs.some((entry) => /claude.*codex.*ucode.*agy/.test(entry.text))).toBe(true);
+    expect(logs.some((entry) => /claude.*codex.*agy.*ucode/.test(entry.text))).toBe(true);
   });
 
   test("handleLaunchCommand supports separate window scope", async () => {
@@ -441,7 +441,7 @@ describe("chat commandExecutor", () => {
     await executor.handleLaunchCommand(["ufoo", "nickname=core2"]);
 
     expect(options.send).not.toHaveBeenCalled();
-    expect(logs.some((entry) => entry.text.includes("Unknown agent type. Use: claude, codex, ucode, or agy"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("Unknown agent type. Use: claude, codex, agy, or ucode"))).toBe(true);
   });
 
   test("handleLaunchCommand forwards prompt profile", async () => {
