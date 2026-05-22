@@ -120,7 +120,7 @@ ufoo bus ack "$SUBSCRIBER"
 
 **This is critical** - if you don't ack, the daemon will keep injecting `/ubus` commands.
 
-If there's nothing to do (no actionable task), just ack immediately without sending a reply.
+**Default behavior is ack-only, no reply.** If there's nothing to do (no actionable task, no question to answer, no follow-up the sender genuinely needs), just ack and stop. Silence is a valid response — see "Handling Received Messages" below for when a reply IS warranted.
 
 ### 6. Routing Override
 
@@ -164,15 +164,40 @@ ufoo bus nick <subscriber-id> "new-nickname"
 
 ## Handling Received Messages
 
-When receiving targeted messages:
+When receiving targeted messages, the default flow is **execute → ack → stop**.
+Replies are the exception, not the default.
 
-1. **Understand request** - Read message content
-2. **Execute task** - If task delegation, execute it
-3. **Reply to sender** - Send response after completion
+1. **Understand request** — Read message content.
+2. **Execute task** — If the message delegates a task, do it.
+3. **`ufoo bus ack "$SUBSCRIBER"`** — Always ack, even when not replying.
+4. **Reply ONLY when substantive.** Send `ufoo bus send` to the sender only if at least one of the following is true:
+   - The sender asked a question → reply with the answer.
+   - The sender delegated a task → reply with the result / artifact / status.
+   - You discovered something the sender needs to proceed → reply with that fact.
 
-```bash
-ufoo bus send "<sender-id>" "<reply-content>"
-```
+   ```bash
+   # Use this only when the criteria above are met.
+   ufoo bus send "<sender-id>" "<substantive-reply>"
+   ```
+
+### Anti-pattern: greet / ack loops
+
+If the inbound message is itself just a greeting, an acknowledgment, or a
+pleasantry, **do not reply**. Acking is enough. A bare-acknowledgment reply
+will be auto-injected on the other side, triggering them to reply in kind,
+and the two of you will ping-pong forever.
+
+| Inbound | Reply? |
+|---|---|
+| `👋` / `hi` / `hello` / `你好` | ❌ ack only |
+| `👍` / `ok` / `收到` / `thanks` / `noted` | ❌ ack only |
+| `已完成 / done / finished` (without a result the sender asked for) | ❌ ack only |
+| `请把 src/foo.ts 改成 ...` (task) | ✅ reply with result |
+| `这个 bug 的根因是什么？` (question) | ✅ reply with answer |
+| `我帮你找到了 X，需要你做 Y` (request) | ✅ reply with status |
+
+When in doubt: ack and wait. If the sender genuinely needs something
+from you, they will follow up with a concrete question or task.
 
 ## Sending Messages
 

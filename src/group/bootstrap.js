@@ -7,7 +7,7 @@ const SHARED_UFOO_PROTOCOL = [
   "- At session start, sync shared context with `ufoo ctx decisions -l` and `ufoo ctx decisions -n 1`.",
   "- Default to no new decision. Record one ONLY for important, plan-level knowledge: architectural choices, multi-option trade-off analysis, cross-agent coordination decisions, or plans that affect other agents. Do NOT record routine findings, simple bug fixes, trivial observations, or generic plan/evaluation/recommendation requests. Durable project facts belong in shared memory, not decisions. Use `ufoo ctx decisions new \"Title\"` BEFORE acting only when that bar is met.",
   "- Use `ufoo bus send <target-nickname> \"<message>\"` for agent-to-agent handoffs.",
-  "- If you receive pending bus work, execute it immediately, reply to the sender, then `ufoo bus ack \"$UFOO_SUBSCRIBER_ID\"`.",
+  "- On pending bus work: execute it, then `ufoo bus ack \"$UFOO_SUBSCRIBER_ID\"`. Send a reply ONLY if you have a concrete result, answer, or follow-up question the sender needs. Do NOT reply with greetings, plain acknowledgments (\"收到\" / \"ok\" / \"thanks\"), or emoji alone (👋 / 👍) — those create infinite reply loops between agents. Default is ack-only; silence is a valid response.",
   "- Use `ufoo report` for controller/runtime status updates, not as a substitute for direct handoffs.",
 ].join("\n");
 
