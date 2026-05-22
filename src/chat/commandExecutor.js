@@ -51,6 +51,9 @@ function normalizeSettingsProvider(value = "", fallback = "codex-cli") {
   if (text === "claude" || text === "claude-cli" || text === "claude-code" || text === "anthropic") {
     return "claude-cli";
   }
+  if (text === "agy" || text === "agy-cli" || text === "antigravity") {
+    return "agy-cli";
+  }
   if (text === "codex" || text === "codex-cli" || text === "codex-code" || text === "openai") {
     return "codex-cli";
   }
@@ -58,7 +61,10 @@ function normalizeSettingsProvider(value = "", fallback = "codex-cli") {
 }
 
 function agentProviderKey(value = "") {
-  return normalizeSettingsProvider(value) === "claude-cli" ? "claude" : "codex";
+  const provider = normalizeSettingsProvider(value);
+  if (provider === "claude-cli") return "claude";
+  if (provider === "agy-cli") return "agy";
+  return "codex";
 }
 
 function defaultGateModelForProvider(value = "") {
@@ -1259,13 +1265,15 @@ function createCommandExecutor(options = {}) {
       logMessage("system", `  • provider: ${key}`);
       logMessage("system", `  • model: ${model || `(unset, recommended ${defaultAgentModelForProvider(provider)})`}`);
       logMessage("system", `  • defaults: codex=${SETTINGS_MODEL_DEFAULTS.agent.codex}, claude=${SETTINGS_MODEL_DEFAULTS.agent.claude}`);
-      logMessage("system", "  • use: /settings agent set provider=<codex|claude> model=<id>");
+      logMessage("system", "  • use: /settings agent set provider=<codex|claude|agy> model=<id>");
       return;
     }
 
-    if (action === "codex" || action === "claude") {
+    if (action === "codex" || action === "claude" || action === "agy") {
       const kv = parseKeyValueArgs(args.slice(1));
-      const provider = action === "claude" ? "claude-cli" : "codex-cli";
+      const provider = action === "claude"
+        ? "claude-cli"
+        : (action === "agy" ? "agy-cli" : "codex-cli");
       const model = String(kv.model || defaultAgentModelForProvider(provider)).trim();
       saveConfig(projectRoot, {
         agentProvider: provider,

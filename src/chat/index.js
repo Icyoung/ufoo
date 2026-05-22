@@ -736,6 +736,7 @@ async function runChatBlessed(projectRoot, options = {}) {
   const providerOptions = [
     { label: "codex", value: "codex-cli" },
     { label: "claude", value: "claude-cli" },
+    { label: "agy", value: "agy-cli" },
   ];
   let selectedProviderIndex = Math.max(0, providerOptions.findIndex((opt) => opt.value === agentProvider));
   const resumeOptions = [

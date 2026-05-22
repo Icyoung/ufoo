@@ -1,7 +1,8 @@
 const FALLBACK_LAUNCH_SUBCOMMANDS = [
-  { cmd: "claude", desc: "Launch Claude agent" },
-  { cmd: "codex", desc: "Launch Codex agent" },
-  { cmd: "ucode", desc: "Launch ucode core agent" },
+  { cmd: "claude", desc: "Launch Claude agent", order: 1 },
+  { cmd: "codex", desc: "Launch Codex agent", order: 2 },
+  { cmd: "agy", desc: "Launch Antigravity (agy) agent", order: 3 },
+  { cmd: "ucode", desc: "Launch ucode core agent", order: 4 },
 ];
 
 function sortSubcommandEntries(a, b) {

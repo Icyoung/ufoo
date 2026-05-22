@@ -156,9 +156,11 @@ describe("chat completionController", () => {
     controller.show(input.value);
 
     expect(controller.isActive()).toBe(true);
-    expect(controller.getCommandCount()).toBe(3);
+    // claude / codex / agy / ucode (agy joined the family)
+    expect(controller.getCommandCount()).toBe(4);
     expect(completionPanel.setContent).toHaveBeenLastCalledWith(expect.stringContaining("claude"));
     expect(completionPanel.setContent).toHaveBeenLastCalledWith(expect.stringContaining("ucode"));
+    expect(completionPanel.setContent).toHaveBeenLastCalledWith(expect.stringContaining("agy"));
     expect(completionPanel.setContent).not.toHaveBeenLastCalledWith(expect.stringContaining("ufoo"));
   });
 

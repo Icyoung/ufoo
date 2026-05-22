@@ -436,7 +436,31 @@ function createAgentViewController(options = {}) {
     if (text.startsWith("claude:") || text.startsWith("claude-code:") || text === "claude" || text === "claude-code") {
       return "claude";
     }
+    if (text.startsWith("agy:") || text === "agy") return "agy";
     return "internal";
+  }
+
+  function buildAgyStartupLines(agentLabel = "", width = 80) {
+    const label = String(agentLabel || "").trim();
+    const projectPath = compactProjectPath(getProjectRoot());
+    if (width < 36) {
+      return [
+        `>_ Antigravity CLI`,
+        label ? `agent: ${label}` : "agent: managed headless",
+        `directory: ${projectPath}`,
+        "",
+      ];
+    }
+    const innerWidth = Math.min(56, Math.max(24, width - 4));
+    return [
+      ...borderedLines([
+        `>_ Antigravity CLI (ufoo v${packageVersion})`,
+        "",
+        `agent:     ${label ? `${label} · managed headless` : "managed headless"}`,
+        `directory: ${projectPath}`,
+      ], innerWidth),
+      "",
+    ];
   }
 
   function buildClaudeStartupLines(agentLabel = "", width = 80) {
@@ -486,6 +510,7 @@ function createAgentViewController(options = {}) {
   function buildInternalStartupLines(agentId = "", agentLabel = "", width = 80) {
     const kind = normalizeAgentKind(agentId);
     if (kind === "codex") return buildCodexStartupLines(agentLabel || agentId, width);
+    if (kind === "agy") return buildAgyStartupLines(agentLabel || agentId, width);
     return buildClaudeStartupLines(agentLabel || agentId, width);
   }
 
