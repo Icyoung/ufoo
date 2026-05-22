@@ -480,14 +480,17 @@ function createCommandExecutor(options = {}) {
     if (args.length === 0) {
       logMessage(
         "error",
-        "{white-fg}✗{/white-fg} Usage: /launch <claude|codex|ucode> [nickname=<name>] [profile=<id>] [count=<n>] [scope=inplace|window]"
+        "{white-fg}✗{/white-fg} Usage: /launch <claude|codex|ucode|agy> [nickname=<name>] [profile=<id>] [count=<n>] [scope=inplace|window]"
       );
       return;
     }
 
-    const agentType = String(args[0] || "").trim().toLowerCase();
-    if (agentType !== "claude" && agentType !== "codex" && agentType !== "ucode") {
-      logMessage("error", "{white-fg}✗{/white-fg} Unknown agent type. Use: claude, codex, or ucode");
+    const agentTypeInput = String(args[0] || "").trim().toLowerCase();
+    // Accept friendly aliases the same way `ufoo launch` does in cli.js.
+    let agentType = agentTypeInput;
+    if (agentTypeInput === "antigravity" || agentTypeInput === "uagy") agentType = "agy";
+    if (agentType !== "claude" && agentType !== "codex" && agentType !== "ucode" && agentType !== "agy") {
+      logMessage("error", "{white-fg}✗{/white-fg} Unknown agent type. Use: claude, codex, ucode, or agy");
       return;
     }
     const normalizedAgent = agentType === "ucode" ? "ufoo" : agentType;

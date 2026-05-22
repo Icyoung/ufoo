@@ -324,6 +324,29 @@ describe("chat commandExecutor", () => {
     });
   });
 
+  test("handleLaunchCommand accepts agy and antigravity / uagy aliases", async () => {
+    for (const alias of ["agy", "antigravity", "uagy"]) {
+      const { executor, options } = createHarness();
+      await executor.handleLaunchCommand([alias, "nickname=lead"]);
+      expect(options.send).toHaveBeenCalledWith({
+        type: "launch_agent",
+        agent: "agy",
+        count: 1,
+        nickname: "lead",
+        prompt_profile: "",
+        launch_scope: "inplace",
+      });
+    }
+  });
+
+  test("handleLaunchCommand rejects unknown agent types but accepts agy in the error hint", async () => {
+    const { executor, options, logs } = createHarness();
+    await executor.handleLaunchCommand(["mystery"]);
+    expect(options.send).not.toHaveBeenCalled();
+    expect(logs.some((entry) => /Unknown agent type/.test(entry.text))).toBe(true);
+    expect(logs.some((entry) => /claude.*codex.*ucode.*agy/.test(entry.text))).toBe(true);
+  });
+
   test("handleLaunchCommand supports separate window scope", async () => {
     const { executor, options } = createHarness();
 
@@ -418,7 +441,7 @@ describe("chat commandExecutor", () => {
     await executor.handleLaunchCommand(["ufoo", "nickname=core2"]);
 
     expect(options.send).not.toHaveBeenCalled();
-    expect(logs.some((entry) => entry.text.includes("Unknown agent type. Use: claude, codex, or ucode"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("Unknown agent type. Use: claude, codex, ucode, or agy"))).toBe(true);
   });
 
   test("handleLaunchCommand forwards prompt profile", async () => {

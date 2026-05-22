@@ -55,6 +55,7 @@ const COMMAND_TREE = {
       claude: { desc: "Launch Claude agent" },
       codex: { desc: "Launch Codex agent" },
       ucode: { desc: "Launch ucode core agent" },
+      agy: { desc: "Launch Antigravity (agy) agent" },
     },
   },
   "/project": {
