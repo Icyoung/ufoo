@@ -342,6 +342,7 @@ function createDaemonCronController(options = {}) {
     };
 
     attachTaskTimer(task);
+    runTask(task);
     tasks.push(task);
     persistState();
 

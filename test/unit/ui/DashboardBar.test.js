@@ -362,4 +362,55 @@ describe("Ink DashboardBar view model", () => {
       selectedProjectIndex: 0,
     })).not.toThrow();
   });
+
+  test("mode detail row drops the long hint and uses overflow markers when narrow", () => {
+    const rows = buildDashboardRows({
+      focusMode: "dashboard",
+      dashboardView: "mode",
+      maxWidth: 22,
+      modeOptions: ["auto", "host", "terminal", "tmux", "internal-pty", "internal"],
+      selectedModeIndex: 3,
+      dashHints: { mode: "←/→ select · Enter · ↓ provider · ↑ back" },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].caption).toBe("Mode");
+    expect(rows[0].hint).toBe("");
+    expect(rows[0].leftMore || rows[0].rightMore).toBe(true);
+    expect(rows[0].items.some((item) => item.selected)).toBe(true);
+  });
+
+  test("provider detail row keeps selected option even with budget pressure", () => {
+    const rows = buildDashboardRows({
+      focusMode: "dashboard",
+      dashboardView: "provider",
+      maxWidth: 18,
+      providerOptions: [
+        { label: "codex", value: "codex-cli" },
+        { label: "claude", value: "claude-cli" },
+        { label: "ucode", value: "ufoo-code" },
+      ],
+      selectedProviderIndex: 2,
+      dashHints: { provider: "←/→ select · Enter · ↓ cron · ↑ back" },
+    });
+    const selected = rows[0].items.find((item) => item.selected);
+    expect(selected).toBeTruthy();
+    expect(selected.label).toBe("ucode");
+  });
+
+  test("agents detail scrolls labels around selection inside the budget", () => {
+    const rows = buildDashboardRows({
+      focusMode: "dashboard",
+      dashboardView: "agents",
+      maxWidth: 30,
+      activeAgents: ["a:1", "a:2", "a:3", "a:4", "a:5", "a:6"],
+      selectedAgentIndex: 5,
+      maxAgentWindow: 4,
+      getAgentLabel: (id) => id.slice(2),
+      getAgentState: () => "",
+      dashHints: { agents: "long-hint-that-may-not-fit" },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].items.some((item) => item.selected)).toBe(true);
+    expect(rows[0].leftMore || rows[0].rightMore).toBe(true);
+  });
 });

@@ -86,10 +86,13 @@ function stripProjectNicknamePrefix(projectRoot, nickname = "") {
 
 function resolveDisplayNickname(projectRoot, meta = {}, fallback = "") {
   const explicit = asTrimmedString(meta.nickname);
-  if (explicit) {
-    return meta.scoped_nickname ? explicit : stripProjectNicknamePrefix(projectRoot, explicit);
-  }
   const scoped = asTrimmedString(meta.scoped_nickname);
+  // Always strip the project prefix off whichever nickname we settle on:
+  // group startup (groupOrchestrator) writes the scoped form into both
+  // `nickname` and `scoped_nickname`, so the previous "if scoped exists,
+  // return nickname as-is" shortcut surfaced the project-prefixed form to
+  // the UI instead of the short display name.
+  if (explicit) return stripProjectNicknamePrefix(projectRoot, explicit);
   if (scoped) return stripProjectNicknamePrefix(projectRoot, scoped);
   return asTrimmedString(fallback);
 }

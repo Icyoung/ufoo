@@ -247,7 +247,7 @@ function startAgentMirror({
   // Clear screen + reserve a 1-line bar at the bottom for our exit hint.
   writeOut("\x1b[2J\x1b[H");
   writeOut(`\x1b[1;${Math.max(1, rows - 1)}r`);
-  writeOut(`\x1b[${rows};1H\x1b[7m esc \x1b[0m return to chat · attached to ${agentId}`);
+  writeOut(`\x1b[${rows};1H\x1b[7m esc esc \x1b[0m return to chat · attached to ${agentId}`);
   writeOut("\x1b[H");
 
   sockets.connectOutput(sockPath);
@@ -259,23 +259,30 @@ function startAgentMirror({
   if (typeof stdin.setRawMode === "function") stdin.setRawMode(true);
   stdin.resume();
 
+  let escCount = 0;
+  let escTimer = null;
+
   const onData = (chunk) => {
     if (stopped) return;
-    // Esc on its own (single 0x1b byte, no follow-up) exits the mirror.
-    // We can't perfectly distinguish a bare Esc from the start of an
-    // arrow-key sequence; the convention here is "Esc + nothing within
-    // 50ms means leave". Anything else gets forwarded as-is.
     if (chunk.length === 1 && chunk[0] === 0x1b) {
-      setTimeout(() => {
-        if (!stopped && pendingEsc === chunk) stop();
-      }, 50);
-      pendingEsc = chunk;
+      escCount += 1;
+      if (escCount >= 2) {
+        clearTimeout(escTimer);
+        escCount = 0;
+        stop();
+        return;
+      }
+      escTimer = setTimeout(() => { escCount = 0; }, 300);
       return;
     }
-    pendingEsc = null;
+    if (escCount > 0) {
+      clearTimeout(escTimer);
+      escCount = 0;
+      sockets.sendRaw(Buffer.concat([Buffer.from([0x1b]), chunk]));
+      return;
+    }
     sockets.sendRaw(chunk);
   };
-  let pendingEsc = null;
 
   const onResize = () => {
     if (stopped) return;

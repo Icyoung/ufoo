@@ -147,6 +147,7 @@ function createCommandExecutor(options = {}) {
     resolveTerminalApp = defaultResolveTerminalApp,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     schedule = (fn, ms) => setTimeout(fn, ms),
+    clearLog = null,
   } = options;
 
   if (!projectRoot) {
@@ -1566,6 +1567,13 @@ function createCommandExecutor(options = {}) {
     const { command, args } = parsed;
 
     switch (command) {
+      case "clear":
+        if (typeof clearLog === "function") {
+          clearLog();
+        } else {
+          logMessage("error", "{white-fg}✗{/white-fg} /clear is not available in this view");
+        }
+        return true;
       case "doctor":
         await handleDoctorCommand();
         return true;

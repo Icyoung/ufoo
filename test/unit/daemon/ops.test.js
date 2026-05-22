@@ -397,6 +397,7 @@ describe("daemon ops launch scope (tmux)", () => {
 
 describe("daemon ops host launch", () => {
   const projectRoot = "/tmp/ufoo-daemon-hostlaunch-test";
+  const originalEnv = { ...process.env };
 
   function writeConfig(config) {
     const configPath = path.join(projectRoot, ".ufoo", "config.json");
@@ -415,6 +416,14 @@ describe("daemon ops host launch", () => {
   }
 
   beforeEach(() => {
+    for (const key of Object.keys(process.env)) {
+      delete process.env[key];
+    }
+    Object.assign(process.env, originalEnv);
+    delete process.env.TERM_PROGRAM;
+    delete process.env.ITERM_SESSION_ID;
+    delete process.env.TMUX_PANE;
+
     if (fs.existsSync(projectRoot)) {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
@@ -425,6 +434,11 @@ describe("daemon ops host launch", () => {
   });
 
   afterEach(() => {
+    for (const key of Object.keys(process.env)) {
+      delete process.env[key];
+    }
+    Object.assign(process.env, originalEnv);
+
     if (fs.existsSync(projectRoot)) {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }

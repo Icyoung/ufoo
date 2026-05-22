@@ -205,6 +205,11 @@ function chatHistoryOptionsForScope({ globalMode = false, globalScope = "control
 }
 
 function getAgentLabelFor(meta, agentId) {
+  // Prefer the project-stripped display nickname so the dashboard never shows
+  // the scoped form ("neptune-builder"); fall back to the raw nickname (which
+  // may itself be unscoped depending on write path) and finally to a short
+  // form of the subscriber id.
+  if (meta && meta.display_nickname) return meta.display_nickname;
   if (meta && meta.nickname) return meta.nickname;
   if (!agentId) return "";
   const colon = agentId.indexOf(":");
@@ -1338,6 +1343,31 @@ function createChatApp({ React, ink, props, interactive = true }) {
           logMessage: logInkMessage,
           resolveStatusLine: (text) => setStatusText(text),
           renderScreen: () => {},
+          clearLog: () => {
+            // Clear the persisted chat history file so reopening the chat
+            // doesn't reload old messages.
+            try {
+              const root = currentProjectRootRef.current || props.projectRoot;
+              const historyOptions = chatHistoryOptionsForScope({
+                globalMode: props.globalMode,
+                globalScope: (stateRef.current && stateRef.current.globalScope) || "controller",
+              });
+              const file = chatHistoryFilePath(root, historyOptions);
+              if (file && fs.existsSync(file)) fs.writeFileSync(file, "");
+            } catch { /* ignore */ }
+            // ink redraws by erasing only as many lines as the last frame
+            // emitted. After log/clear the next frame is shorter, so the
+            // older log lines remain in the terminal scrollback. Wipe the
+            // visible screen + scrollback first, then dispatch — ink will
+            // repaint the (now small) frame onto a clean buffer.
+            try {
+              const out = (typeof process !== "undefined" && process.stdout) || null;
+              if (out && out.isTTY && typeof out.write === "function") {
+                out.write("\x1b[2J\x1b[3J\x1b[H");
+              }
+            } catch { /* ignore */ }
+            dispatch({ type: "log/clear" });
+          },
           getActiveAgents: () => (stateRef.current && stateRef.current.agents) || [],
           getActiveAgentMetaMap: () => (stateRef.current && stateRef.current.activeAgentMeta) || new Map(),
           getAgentLabel: (id) => {
@@ -2739,6 +2769,15 @@ function createChatApp({ React, ink, props, interactive = true }) {
           interceptArrowsAndEnter: completionsOpen,
           placeholder: "",
           promptPrefix,
+          // Dashboard renders 2 rows in global mode (always shows the
+          // projects rail) or when an agents/mode/provider/cron view is
+          // focused; otherwise it's a single summary row. Telling
+          // MultilineInput how many UI rows live below it lets the IME
+          // composition popup follow the on-screen caret instead of
+          // appearing at the bottom-right of the terminal.
+          linesBelowInput: props.globalMode
+            ? 2
+            : (state.focusMode === "dashboard" ? 2 : 1),
         }),
       ),
       h(DashboardBar, {

@@ -35,6 +35,7 @@ const COMMAND_TREE = {
       stop: { desc: "Stop cron task by id or all" },
     },
   },
+  "/clear": { desc: "Clear chat log on screen" },
   "/group": {
     desc: "Agent group orchestration",
     children: {
