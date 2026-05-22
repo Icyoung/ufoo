@@ -46,6 +46,27 @@ const INPUT_PATTERNS = {
     /\[Y\/n\]/,                        // Bracket-style prompt
     /\by\/n\b/i,                       // y/n prompt (common in confirmation dialogs)
   ],
+  // agy (Antigravity CLI) shows ink-style menus and y/n approvals.
+  agy: [
+    /Use arrow keys to navigate, Enter to select/, // Any agy menu selector
+    /Select login method:/,            // Initial OAuth login picker
+    /Yes, and run (?:in|without) sandbox/i, // Terminal command approval (sandbox toggle)
+    /\bn\b\s*-\s*Don't run/i,          // y/n/edit confirmation
+  ],
+};
+
+// Agent-specific FATAL patterns that immediately move the agent into BLOCKED
+// state (no quiet-window/timeout waiting). Reserved for hard backend errors
+// the user can't resolve by waiting — e.g. agy's account-eligibility / region
+// check failure, which returns 400 from the backend and the conversation
+// never advances.
+const FATAL_PATTERNS = {
+  agy: [
+    /Eligibility check failed/,        // 18+/region not allowed
+    /User location is not supported/,  // Geo restriction
+    /Account ineligible/,              // Generic account-state failure
+    /FAILED_PRECONDITION/,             // gRPC backend precondition reject
+  ],
 };
 
 const COMMON_PATTERNS = [
@@ -258,6 +279,22 @@ class ActivityDetector {
     }
 
     const tailBuffer = this._tailWindow();
+
+    // Fatal-pattern check first: these go straight to BLOCKED with no
+    // recovery timer. Used for backend errors the user can't wait out.
+    const fatalPatterns = FATAL_PATTERNS[this.agentType] || [];
+    for (const pattern of fatalPatterns) {
+      const match = pattern.exec(tailBuffer);
+      if (!match) continue;
+      const matchedText = String(match[0] || "");
+      const matchIndex = Number.isFinite(match.index)
+        ? match.index
+        : Math.max(0, tailBuffer.length - matchedText.length);
+      if (this._hasDeniedContext(tailBuffer, matchIndex, matchedText.length)) continue;
+      this._clearBlockedTimer();
+      this._setState(ACTIVITY_STATES.blocked, `fatal:${pattern.source}`);
+      return;
+    }
 
     // Check agent-specific patterns only after output has stabilized.
     const agentPatterns = INPUT_PATTERNS[this.agentType] || [];

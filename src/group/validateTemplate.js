@@ -1,6 +1,6 @@
 "use strict";
 
-const ALLOWED_AGENT_TYPES = new Set(["auto", "codex", "claude", "ucode"]);
+const ALLOWED_AGENT_TYPES = new Set(["auto", "codex", "claude", "ucode", "agy"]);
 const { resolvePromptProfileReference } = require("./promptProfiles");
 
 function isPlainObject(value) {

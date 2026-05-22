@@ -8,10 +8,16 @@ const SETTINGS_MODEL_DEFAULTS = Object.freeze({
   agent: Object.freeze({
     codex: "gpt-5.5",
     claude: "opus-4.7",
+    // agy (Antigravity CLI) only supports model selection via in-REPL
+    // `/model` slash command, which persists across launches. There is no
+    // command-line flag for model, so the value here is a placeholder for
+    // display; we never pass it on the agy command line.
+    agy: "",
   }),
   router: Object.freeze({
     codex: "gpt-5.3-codex-spark",
     claude: "sonnet-4.7",
+    agy: "",
   }),
 });
 
@@ -51,12 +57,14 @@ function normalizeLaunchMode(value) {
 
 function normalizeAgentProvider(value) {
   if (value === "claude-cli") return "claude-cli";
+  if (value === "agy-cli" || value === "agy" || value === "antigravity") return "agy-cli";
   return "codex-cli";
 }
 
 function providerKey(value = "") {
   const text = String(value || "").trim().toLowerCase();
   if (text === "claude" || text === "claude-cli" || text === "claude-code" || text === "anthropic") return "claude";
+  if (text === "agy" || text === "agy-cli" || text === "antigravity") return "agy";
   return "codex";
 }
 
@@ -69,7 +77,12 @@ function defaultAgentModelForProvider(value = "") {
 }
 
 function defaultRouterProviderForAgentProvider(value = "") {
-  return providerKey(value) === "claude" ? "claude" : "codex";
+  const key = providerKey(value);
+  if (key === "claude") return "claude";
+  // agy has no router-model API; fall back to codex (the controller still
+  // routes via codex/claude regardless of which agent provider runs).
+  if (key === "agy") return "codex";
+  return "codex";
 }
 
 function defaultRouterModelForProvider(value = "") {
@@ -256,6 +269,7 @@ module.exports = {
   saveGlobalUcodeConfig,
   normalizeLaunchMode,
   normalizeAgentProvider,
+  providerKey,
   sameModelProvider,
   defaultAgentModelForProvider,
   defaultRouterProviderForAgentProvider,

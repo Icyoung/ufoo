@@ -97,6 +97,31 @@ function buildUcodeTemplate(alias = "ucode-group") {
   };
 }
 
+function buildAgyTemplate(alias = "agy-group") {
+  return {
+    schema_version: 1,
+    template: {
+      id: alias,
+      alias,
+      name: alias,
+    },
+    agents: [
+      {
+        id: "explorer",
+        nickname: "explorer",
+        type: "agy",
+        role: "research",
+        prompt_profile: "task-breakdown",
+        startup_order: 1,
+        depends_on: [],
+        accept_from: [],
+        report_to: [],
+      },
+    ],
+    edges: [],
+  };
+}
+
 describe("daemon groupOrchestrator", () => {
   const projectRoot = path.join(TEST_ROOT, "project");
   const builtinDir = path.join(TEST_ROOT, "builtin");
@@ -725,5 +750,105 @@ function createTestOrchestrator(handleOps) {
     expect(stopResult.ok).toBe(false);
     expect(stopResult.error).toBe("invalid group_id");
     expect(stopResult.status).toBe("failed");
+  });
+
+  test("runGroup uses initial-prompt-arg strategy with -i flag for agy members", async () => {
+    writeJson(path.join(builtinDir, "agy-group.json"), buildAgyTemplate("agy-group"));
+    const handleOps = jest.fn(async (_root, ops) => {
+      const op = ops[0];
+      if (op.action === "launch") {
+        upsertAgentMeta(projectRoot, "agy:exp1", {
+          nickname: runtimeNick("explorer"),
+          status: "active",
+          activity_state: "ready",
+        });
+        return [{ action: "launch", ok: true, subscriber_ids: ["agy:exp1"], mode: "internal" }];
+      }
+      throw new Error(`unexpected op: ${JSON.stringify(op)}`);
+    });
+
+    const orchestrator = createTestOrchestrator(handleOps);
+    const result = await orchestrator.runGroup({ alias: "agy-group", instance: "grp-agy" });
+
+    expect(result.ok).toBe(true);
+    // Verify the launch op shape: agent type = "agy", extra_args = ["-i", "<bootstrap>"]
+    expect(handleOps).toHaveBeenCalledWith(
+      projectRoot,
+      [expect.objectContaining({
+        action: "launch",
+        agent: "agy",
+        nickname: runtimeNick("explorer"),
+        extra_args: expect.arrayContaining(["-i"]),
+      })],
+      null,
+    );
+    const launchCall = handleOps.mock.calls.find(([, ops]) => ops[0].action === "launch");
+    const extraArgs = launchCall[1][0].extra_args;
+    // -i must be followed by a non-empty bootstrap prompt.
+    expect(extraArgs[0]).toBe("-i");
+    expect(extraArgs[1]).toEqual(expect.any(String));
+    expect(extraArgs[1].length).toBeGreaterThan(0);
+    // No post-launch inject — agy receives bootstrap as a launch flag.
+    expect(injectMock).not.toHaveBeenCalled();
+  });
+
+  test("runGroup resolves auto agent type to agy when provider is agy-cli", async () => {
+    writeJson(path.join(builtinDir, "auto-agy-group.json"), {
+      schema_version: 1,
+      template: {
+        id: "auto-agy-group",
+        alias: "auto-agy-group",
+        name: "auto-agy-group",
+      },
+      agents: [
+        {
+          id: "lead",
+          nickname: "lead",
+          type: "auto",
+          role: "lead work",
+          prompt_profile: "implementation-lead",
+          startup_order: 1,
+          depends_on: [],
+          accept_from: [],
+          report_to: [],
+        },
+      ],
+      edges: [],
+    });
+    writeProjectConfig(projectRoot, { agentProvider: "agy-cli" });
+
+    const handleOps = jest.fn(async (_root, ops) => {
+      const op = ops[0];
+      if (op.action === "launch") {
+        upsertAgentMeta(projectRoot, "agy:auto1", {
+          nickname: runtimeNick("lead"),
+          status: "active",
+          activity_state: "ready",
+        });
+        return [{ action: "launch", ok: true, subscriber_ids: ["agy:auto1"], mode: "internal" }];
+      }
+      throw new Error(`unexpected op: ${JSON.stringify(op)}`);
+    });
+
+    const orchestrator = createTestOrchestrator(handleOps);
+    const result = await orchestrator.runGroup({ alias: "auto-agy-group", instance: "grp-auto-agy" });
+
+    expect(result.ok).toBe(true);
+    expect(handleOps).toHaveBeenCalledWith(
+      projectRoot,
+      [expect.objectContaining({
+        action: "launch",
+        agent: "agy",
+        nickname: runtimeNick("lead"),
+      })],
+      null,
+    );
+    expect(result.group.members[0]).toEqual(
+      expect.objectContaining({
+        requested_type: "auto",
+        type: "agy",
+        subscriber_id: "agy:auto1",
+      }),
+    );
   });
 });

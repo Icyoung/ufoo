@@ -141,6 +141,44 @@ describe("ActivityDetector", () => {
       jest.advanceTimersByTime(51);
       expect(detector.getState().state).toBe("waiting_input");
     });
+
+    test("agy: terminal command approval is waiting_input", () => {
+      jest.useFakeTimers();
+      const detector = createDetector("agy");
+      detector.markReady();
+      detector.processOutput("Run the following command?\nYes, and run in sandbox\n");
+      jest.advanceTimersByTime(51);
+      expect(detector.getState().state).toBe("waiting_input");
+    });
+
+    test("agy: menu selector is waiting_input", () => {
+      jest.useFakeTimers();
+      const detector = createDetector("agy");
+      detector.markReady();
+      detector.processOutput("Select login method:\n[Use arrow keys to navigate, Enter to select]");
+      jest.advanceTimersByTime(51);
+      expect(detector.getState().state).toBe("waiting_input");
+    });
+
+    test("agy: eligibility failure goes directly to BLOCKED (no waiting_input → timer)", () => {
+      jest.useFakeTimers();
+      const detector = createDetector("agy");
+      detector.markReady();
+      detector.processOutput("Eligibility Check\n");
+      detector.processOutput("Eligibility check failed: Your current account is not eligible for Antigravity.\n");
+      jest.advanceTimersByTime(51);
+      expect(detector.getState().state).toBe("blocked");
+      expect(detector.getState().detail).toContain("fatal");
+    });
+
+    test("agy: region restriction goes directly to BLOCKED", () => {
+      jest.useFakeTimers();
+      const detector = createDetector("agy");
+      detector.markReady();
+      detector.processOutput("FAILED_PRECONDITION: User location is not supported for the API use.");
+      jest.advanceTimersByTime(51);
+      expect(detector.getState().state).toBe("blocked");
+    });
   });
 
   describe("markWorking behavior", () => {

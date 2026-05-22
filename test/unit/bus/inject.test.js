@@ -239,6 +239,41 @@ describe("Injector", () => {
       );
     });
 
+    test("agy subscriber routes through bare 'ubus' (not '/ubus')", async () => {
+      // agy's `/` is reserved for its own slash-command namespace, so
+      // sending `/ubus xxx` would be interpreted as an unknown slash
+      // command. The injector must default to bare `ubus` for agy:* IDs
+      // — same convention as codex.
+      const sockPath = path.join(busDir, "queues", "agy_test", "inject.sock");
+      fs.mkdirSync(path.dirname(sockPath), { recursive: true });
+
+      const received = [];
+      const server = net.createServer((conn) => {
+        conn.on("data", (chunk) => {
+          received.push(chunk.toString("utf8"));
+          conn.write(JSON.stringify({ ok: true }) + "\n");
+        });
+      });
+      await new Promise((resolve) => server.listen(sockPath, resolve));
+
+      const agentsFile = path.join(busDir, "agents.json");
+      fs.writeFileSync(
+        agentsFile,
+        JSON.stringify({ agents: { "agy:test": {} } })
+      );
+
+      try {
+        const injector = new Injector(busDir, agentsFile);
+        await injector.inject("agy:test");
+      } finally {
+        server.close();
+      }
+
+      const sent = received.join("");
+      expect(sent).toContain('"ubus"');
+      expect(sent).not.toContain('"/ubus"');
+    });
+
     test("uses PTY socket when available", async () => {
       const sockPath = path.join(
         busDir,

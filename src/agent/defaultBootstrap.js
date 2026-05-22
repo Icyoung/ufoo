@@ -54,7 +54,11 @@ function buildDefaultStartupBootstrapPrompt({ agentType = "", projectRoot = "" }
   const normalizedAgent = asTrimmedString(agentType).toLowerCase();
   const displayAgent = normalizedAgent === "claude-code"
     ? "Claude"
-    : (normalizedAgent === "codex" ? "Codex" : (normalizedAgent === "ufoo-code" ? "ucode" : "agent"));
+    : (normalizedAgent === "codex"
+      ? "Codex"
+      : (normalizedAgent === "ufoo-code"
+        ? "ucode"
+        : (normalizedAgent === "agy" ? "Agy" : "agent")));
 
   const segments = [
     `Session bootstrap for ${displayAgent}.`,
@@ -196,6 +200,35 @@ function mergeCodexPromptArgs({ args = [], bootstrapText = "" } = {}) {
   };
 }
 
+/**
+ * Merge bootstrap text into an existing `-i <text>` / `--prompt-interactive
+ * <text>` / `--prompt-interactive=<text>` argument. Returns null if no such
+ * argument exists (caller should then prepend a fresh `-i <bootstrap>`).
+ *
+ * Agy treats `-i` as a single initial prompt that drops the user into an
+ * interactive session — same intent as codex's positional prompt.
+ */
+function mergeAgyPromptArgs({ args = [], bootstrapText = "" } = {}) {
+  const currentArgs = Array.isArray(args) ? args.slice() : [];
+  for (let index = 0; index < currentArgs.length; index += 1) {
+    const item = asTrimmedString(currentArgs[index]);
+    if (!item) continue;
+    if (item === "-i" || item === "--prompt-interactive") {
+      const existing = String(currentArgs[index + 1] || "");
+      const merged = mergePromptSegments(bootstrapText, existing);
+      currentArgs[index + 1] = merged;
+      return { args: currentArgs, promptText: merged };
+    }
+    if (item.startsWith("--prompt-interactive=")) {
+      const existing = item.slice("--prompt-interactive=".length);
+      const merged = mergePromptSegments(bootstrapText, existing);
+      currentArgs[index] = `--prompt-interactive=${merged}`;
+      return { args: currentArgs, promptText: merged };
+    }
+  }
+  return null;
+}
+
 function resolveDefaultManualBootstrap({
   projectRoot,
   agentType = "",
@@ -280,6 +313,31 @@ function resolveDefaultManualBootstrap({
     };
   }
 
+  if (normalizedAgent === "agy") {
+    const promptText = buildDefaultStartupBootstrapPrompt({ agentType: normalizedAgent, projectRoot });
+    // If the user passed -i / --prompt-interactive, fold the bootstrap into
+    // their text. Otherwise prepend a fresh `-i <bootstrap>` pair so the
+    // session starts with our protocol message already delivered.
+    const merged = mergeAgyPromptArgs({
+      args: currentArgs,
+      bootstrapText: promptText,
+    });
+    if (merged) {
+      return {
+        args: merged.args,
+        env: {},
+        mode: "initial-prompt-arg",
+        promptText: merged.promptText,
+      };
+    }
+    return {
+      args: ["-i", promptText, ...currentArgs],
+      env: {},
+      mode: "initial-prompt-arg",
+      promptText,
+    };
+  }
+
   return { args: currentArgs, env: {}, mode: "skip" };
 }
 
@@ -291,4 +349,5 @@ module.exports = {
   defaultBootstrapFile,
   prepareDefaultBootstrapFile,
   resolveDefaultManualBootstrap,
+  mergeAgyPromptArgs,
 };

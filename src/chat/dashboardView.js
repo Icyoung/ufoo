@@ -4,6 +4,7 @@ const DEFAULT_MODE_OPTIONS = ["auto", "host", "terminal", "tmux", "internal-pty"
 
 function providerLabel(value) {
   if (value === "claude-cli") return "claude";
+  if (value === "agy-cli" || value === "agy" || value === "antigravity") return "agy";
   if (value === "ucode" || value === "ufoo" || value === "ufoo-code") return "ucode";
   return "codex";
 }

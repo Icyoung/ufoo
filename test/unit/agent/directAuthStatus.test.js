@@ -156,6 +156,92 @@ describe("agent directAuthStatus", () => {
     expect(resolveCodexUpstreamCredentials).not.toHaveBeenCalled();
   });
 
+  test("agy: classifies successful OAuth handshake from log tail", () => {
+    const { classifyAgyLogTail } = require("../../../src/agent/directAuthStatus");
+    const tail = [
+      "I0521 23:48:51 server_oauth.go:217] OAuth: authenticated successfully as alice@example.com",
+      "I0521 23:48:52 server.go:766] Starting conversation update stream",
+    ].join("\n");
+    const out = classifyAgyLogTail(tail);
+    expect(out).toEqual(expect.objectContaining({
+      ok: true,
+      state: "fresh",
+      accountEmail: "alice@example.com",
+    }));
+  });
+
+  test("agy: classifies eligibility failure as ineligible (preserves email)", () => {
+    const { classifyAgyLogTail } = require("../../../src/agent/directAuthStatus");
+    const tail = [
+      "I0522 17:46:24 server_oauth.go:217] OAuth: authenticated successfully as bob@example.com",
+      "W0522 17:46:26 server_oauth.go:99] Account ineligible: Your current account is not eligible for Antigravity.",
+      "E0522 17:46:27 log.go:398] Eligibility check failed: Your current account is not eligible.",
+    ].join("\n");
+    const out = classifyAgyLogTail(tail);
+    expect(out).toEqual(expect.objectContaining({
+      ok: false,
+      state: "ineligible",
+      errorCode: "AGY_ACCOUNT_INELIGIBLE",
+      accountEmail: "bob@example.com",
+    }));
+  });
+
+  test("agy: classifies region rejection from FAILED_PRECONDITION log lines", () => {
+    const { classifyAgyLogTail } = require("../../../src/agent/directAuthStatus");
+    const tail = "E log.go FAILED_PRECONDITION: User location is not supported for the API use.";
+    const out = classifyAgyLogTail(tail);
+    expect(out).toEqual(expect.objectContaining({
+      ok: false,
+      state: "region_blocked",
+      errorCode: "AGY_REGION_BLOCKED",
+    }));
+  });
+
+  test("agy: returns AGY_AUTH_NO_LOG when log file is missing or empty", () => {
+    const { classifyAgyLogTail } = require("../../../src/agent/directAuthStatus");
+    expect(classifyAgyLogTail("")).toEqual(expect.objectContaining({
+      ok: false,
+      state: "unknown",
+      errorCode: "AGY_AUTH_NO_LOG",
+    }));
+  });
+
+  test("agy: inspectDirectAuthStatus routes to agy probe when provider is agy-cli", async () => {
+    const status = await inspectDirectAuthStatus({
+      projectRoot: "/tmp/ufoo",
+      loadConfigImpl: () => ({ agentProvider: "agy-cli" }),
+      provider: "agy-cli",
+      // Inject mocks so we don't touch the real filesystem.
+      resolveLogDirImpl: () => "/tmp/agy-log",
+      findLogImpl: () => "/tmp/agy-log/cli.log",
+      readLogTailImpl: () => "OAuth: authenticated successfully as ada@example.com",
+    });
+    expect(status.provider).toBe("agy");
+    expect(status.ok).toBe(true);
+    expect(status.accountEmail).toBe("ada@example.com");
+    expect(status.source).toBe("google-keyring");
+  });
+
+  test("agy: formatDirectAuthStatus renders compact OK and FAIL lines", () => {
+    const ok = formatDirectAuthStatus({
+      ok: true,
+      provider: "agy",
+      state: "fresh",
+      accountEmail: "carol@example.com",
+      source: "google-keyring",
+    }, { compact: true });
+    expect(ok[0]).toBe("Agy: OK · keyring · fresh");
+
+    const fail = formatDirectAuthStatus({
+      ok: false,
+      provider: "agy",
+      errorCode: "AGY_ACCOUNT_INELIGIBLE",
+      error: "agy account is signed in but not eligible",
+      hint: "Use an eligible account.",
+    }, { compact: true });
+    expect(fail[0]).toBe("Agy: FAIL · AGY_ACCOUNT_INELIGIBLE");
+  });
+
   test("formats compact claude status", () => {
     const lines = formatDirectAuthStatus({
       ok: true,

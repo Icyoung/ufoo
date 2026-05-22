@@ -688,8 +688,8 @@ async function runCli(argv) {
 
     program
       .command("launch")
-      .description("Launch an agent (ucode, uclaude, ucodex)")
-      .argument("<agent>", "Agent type: ucode|uclaude|ucodex|claude|codex")
+      .description("Launch an agent (ucode, uclaude, ucodex, uagy)")
+      .argument("<agent>", "Agent type: ucode|uclaude|ucodex|uagy|claude|codex|agy")
       .argument("[nickname]", "Optional nickname for the agent")
       .option("--profile <id>", "Prompt profile to assign after launch")
       .action(async (agent, nickname, opts) => {
@@ -706,9 +706,11 @@ async function runCli(argv) {
             normalizedAgent = "claude";
           } else if (agentLower === "ucodex" || agentLower === "codex" || agentLower === "openai") {
             normalizedAgent = "codex";
+          } else if (agentLower === "uagy" || agentLower === "agy" || agentLower === "antigravity") {
+            normalizedAgent = "agy";
           } else {
             console.error(`Unknown agent type: ${agent}`);
-            console.error("Valid types: ucode, uclaude, ucodex, claude, codex");
+            console.error("Valid types: ucode, uclaude, ucodex, uagy, claude, codex, agy");
             process.exitCode = 1;
             return;
           }
@@ -733,7 +735,7 @@ async function runCli(argv) {
       .description("Solo role agent operations")
       .argument("<action>", "run|list")
       .argument("[profile]", "Prompt profile id or alias")
-      .option("--agent <type>", "Agent type: codex|claude|ucode")
+      .option("--agent <type>", "Agent type: codex|claude|ucode|agy")
       .option("--nickname <name>", "Optional nickname")
       .option("--scope <scope>", "Launch scope: inplace|window", "inplace")
       .option("--json", "Output role list as JSON")
@@ -1687,7 +1689,7 @@ async function runCli(argv) {
     console.log("  ufoo group diagram <alias|groupId> [--ascii|--mermaid] [--json]");
     console.log("  ufoo group stop <groupId> [--json]");
     console.log("  ufoo solo list [--json]");
-    console.log("  ufoo solo run <profile> [--agent <codex|claude|ucode>] [--nickname <name>] [--scope <inplace|window>]");
+    console.log("  ufoo solo run <profile> [--agent <codex|claude|ucode|agy>] [--nickname <name>] [--scope <inplace|window>]");
     console.log("  ufoo online server [--port 8787] [--host 127.0.0.1] [--token-file <path>]");
     console.log("  ufoo online token <subscriber> [--nickname <name>] [--server <url>] [--file <path>]");
     console.log("  ufoo online room create [--name <room>] --type public|private [--password <pwd>] [--created-by <name>] [--server <url>]");

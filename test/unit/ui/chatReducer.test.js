@@ -9,6 +9,14 @@ describe("chatReducer", () => {
     expect(state.logLines[0].text).toBe("a");
   });
 
+  test("default provider options include agy alongside codex and claude", () => {
+    const state = createInitialState();
+    const values = state.providerOptions.map((opt) => opt.value);
+    expect(values).toEqual(expect.arrayContaining(["codex-cli", "claude-cli", "agy-cli"]));
+    const agyOption = state.providerOptions.find((opt) => opt.value === "agy-cli");
+    expect(agyOption.label).toBe("agy");
+  });
+
   test("log/append freezes any active merge before adding text", () => {
     let state = createInitialState();
     state = reducer(state, { type: "merge/append", entry: { tool: "read", detail: "a.md" } });

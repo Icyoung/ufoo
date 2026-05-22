@@ -216,6 +216,37 @@ describe("ReadyDetector", () => {
     });
   });
 
+  describe("agy detection", () => {
+    test("triggers ready when the '? for shortcuts' status footer appears", () => {
+      const detector = new ReadyDetector("agy");
+      let readyCalled = false;
+      detector.onReady(() => { readyCalled = true; });
+      // Sample captured from real agy boot output (PTY screen capture):
+      // a bordered input box, then the status line.
+      detector.processOutput("│ > │\n? for shortcuts        Gemini 3.5 Flash (High)\n");
+      expect(readyCalled).toBe(true);
+    });
+
+    test("does not fire ready while still on the OAuth signin spinner", () => {
+      const detector = new ReadyDetector("agy");
+      let readyCalled = false;
+      detector.onReady(() => { readyCalled = true; });
+      detector.processOutput("Welcome to the Antigravity CLI.\n");
+      detector.processOutput("⣷ Signing in...\n");
+      expect(readyCalled).toBe(false);
+    });
+
+    test("still fires ready when the account is ineligible (TUI still mounts)", () => {
+      const detector = new ReadyDetector("agy");
+      let readyCalled = false;
+      detector.onReady(() => { readyCalled = true; });
+      detector.processOutput("Eligibility Check\n");
+      detector.processOutput("Eligibility check failed: Your current account is not eligible for Antigravity.\n");
+      detector.processOutput("? for shortcuts        Gemini 3.5 Flash (High)\n");
+      expect(readyCalled).toBe(true);
+    });
+  });
+
   describe("edge cases", () => {
     test("should handle Buffer input", () => {
       const detector = new ReadyDetector("claude-code");

@@ -157,4 +157,55 @@ describe("default bootstrap", () => {
     expect(resolved.args[2]).toContain("Session bootstrap for Codex.");
     expect(resolved.args[2]).toContain("fix the flaky test");
   });
+
+  test("agy: prepends -i <bootstrap> when user supplied no initial prompt", () => {
+    const resolved = resolveDefaultManualBootstrap({
+      projectRoot: "/tmp/ufoo",
+      agentType: "agy",
+      args: ["--sandbox"],
+      env: {},
+    });
+    expect(resolved.mode).toBe("initial-prompt-arg");
+    expect(resolved.args[0]).toBe("-i");
+    expect(resolved.args[1]).toContain("Session bootstrap for Agy.");
+    expect(resolved.args[1]).toContain("ufoo coordination protocol");
+    expect(resolved.args[2]).toBe("--sandbox");
+  });
+
+  test("agy: merges bootstrap into existing -i <text>", () => {
+    const resolved = resolveDefaultManualBootstrap({
+      projectRoot: "/tmp/ufoo",
+      agentType: "agy",
+      args: ["-i", "fix the failing build"],
+      env: {},
+    });
+    expect(resolved.mode).toBe("initial-prompt-arg");
+    expect(resolved.args[0]).toBe("-i");
+    expect(resolved.args[1]).toContain("Session bootstrap for Agy.");
+    expect(resolved.args[1]).toContain("fix the failing build");
+  });
+
+  test("agy: merges bootstrap into --prompt-interactive=<text> equals form", () => {
+    const resolved = resolveDefaultManualBootstrap({
+      projectRoot: "/tmp/ufoo",
+      agentType: "agy",
+      args: ["--prompt-interactive=do the thing"],
+      env: {},
+    });
+    expect(resolved.mode).toBe("initial-prompt-arg");
+    expect(resolved.args[0]).toMatch(/^--prompt-interactive=/);
+    expect(resolved.args[0]).toContain("do the thing");
+    expect(resolved.args[0]).toContain("Session bootstrap for Agy.");
+  });
+
+  test("agy: skips bootstrap when meta command args are present", () => {
+    const resolved = resolveDefaultManualBootstrap({
+      projectRoot: "/tmp/ufoo",
+      agentType: "agy",
+      args: ["--help"],
+      env: {},
+    });
+    expect(resolved.mode).toBe("skip");
+    expect(resolved.args).toEqual(["--help"]);
+  });
 });

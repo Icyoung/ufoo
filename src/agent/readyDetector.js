@@ -88,6 +88,27 @@ class ReadyDetector {
   }
 
   /**
+   * Detect agy (Antigravity CLI) ready markers.
+   *
+   * agy renders an ink-style TUI with:
+   *   - A status footer "? for shortcuts" that appears once the prompt box
+   *     is mounted (most reliable signal — only present post-boot).
+   *   - A bordered input row with a lone blue ">" prefix. We can't grep
+   *     for just ">" without misfiring (codex/ucode use the same), so we
+   *     anchor on the statusline phrase instead.
+   *
+   * If the account is blocked ("Eligibility check failed"), the TUI still
+   * mounts and "? for shortcuts" still appears — we let ready fire so the
+   * user sees the error. activityDetector handles the BLOCKED state.
+   */
+  _detectAgyReady(text) {
+    if (text.includes("? for shortcuts")) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * 检测ufoo-code/ucode的ready标记
    */
   _detectUfooCodeReady(text) {
@@ -135,6 +156,8 @@ class ReadyDetector {
       isReady = this._detectClaudeCodeReady(this.buffer);
     } else if (this.agentType === "codex") {
       isReady = this._detectCodexReady(this.buffer);
+    } else if (this.agentType === "agy") {
+      isReady = this._detectAgyReady(this.buffer);
     } else if (this.agentType === "ufoo" || this.agentType === "ucode" || this.agentType === "ufoo-code") {
       isReady = this._detectUfooCodeReady(this.buffer);
     }

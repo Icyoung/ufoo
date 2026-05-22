@@ -16,7 +16,7 @@
 
 ## Skills (ufoo)
 
-- `uinit` - Initialize .ufoo directory (usually auto-done by uclaude/ucodex)
+- `uinit` - Initialize .ufoo directory (usually auto-done by uclaude/ucodex/uagy)
 - `uctx` - Quick context status and decisions check
 - `ubus` - Check event bus messages and **auto-execute** them
 - `ustatus` - Unified status view (banner, unread bus, open decisions)

@@ -42,6 +42,7 @@ const DASHBOARD_VIEWS = ["projects", "agents", "mode", "provider", "cron"];
 const DEFAULT_PROVIDER_OPTIONS = [
   { label: "codex", value: "codex-cli" },
   { label: "claude", value: "claude-cli" },
+  { label: "agy", value: "agy-cli" },
 ];
 function projectRootOf(row = {}) {
   return String((row && (row.root || row.project_root || row.projectRoot)) || "");

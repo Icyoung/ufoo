@@ -19,6 +19,9 @@ describe("chat dashboardView", () => {
   test("providerLabel maps provider ids", () => {
     expect(providerLabel("claude-cli")).toBe("claude");
     expect(providerLabel("codex-cli")).toBe("codex");
+    expect(providerLabel("agy-cli")).toBe("agy");
+    expect(providerLabel("agy")).toBe("agy");
+    expect(providerLabel("antigravity")).toBe("agy");
     expect(providerLabel("unknown")).toBe("codex");
   });
 

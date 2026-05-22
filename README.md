@@ -17,7 +17,7 @@ Package: [u-foo on npm](https://www.npmjs.com/package/u-foo)
 ufoo adds a coordination layer around coding agents:
 
 - `ufoo` / `ufoo chat` opens an interactive multi-agent dashboard.
-- `uclaude`, `ucodex`, and `ucode` launch agents with project bootstrap, bus identity, and ufoo protocol context.
+- `uclaude`, `ucodex`, `uagy`, and `ucode` launch agents with project bootstrap, bus identity, and ufoo protocol context.
 - `ufoo daemon` owns project runtime state, launch/resume operations, group orchestration, reports, and chat bridge requests.
 - `ufoo bus` provides project-local agent messaging, wake, listen, alert, and activation commands.
 - `ufoo ctx`, `ufoo memory`, and `ufoo history` keep decisions, durable facts, and input timeline context in `.ufoo/`.
@@ -28,7 +28,7 @@ ufoo adds a coordination layer around coding agents:
 
 - Node.js 18 or newer.
 - macOS for Terminal.app/iTerm2 launch and activation integrations.
-- Claude Code and/or Codex CLI installed if you use the `uclaude` or `ucodex` wrappers.
+- Claude Code, Codex CLI, and/or Antigravity CLI (`agy`) installed if you use the `uclaude`, `ucodex`, or `uagy` wrappers.
 
 ## Installation
 
@@ -52,6 +52,12 @@ Installed binaries:
 - `ufoo`: main CLI and chat dashboard.
 - `uclaude`: Claude Code wrapper.
 - `ucodex`: Codex wrapper.
+- `uagy`: Antigravity CLI (`agy`) wrapper. PTY-only — agy handles its own
+  Google OAuth via the OS keyring. Requires an account that is eligible for
+  Antigravity (18+, supported region); model selection is in-REPL via
+  `/model`. Conversation auto-resume is captured from agy's stdout
+  `Resume: agy --conversation=<UUID>` line on exit and replayed on the
+  next launch.
 - `ucode`: native ufoo coding-agent wrapper.
 - `ucode-core`: native queue/runtime helper.
 
@@ -79,6 +85,7 @@ Or launch wrappers directly from a project directory:
 ```bash
 uclaude
 ucodex
+uagy
 ucode
 ```
 

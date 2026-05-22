@@ -1,5 +1,8 @@
 "use strict";
 
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const { loadConfig } = require("../config");
 const {
   resolveCodexAuthPaths,
@@ -23,6 +26,7 @@ function normalizeErrorCode(err, fallback = "DIRECT_AUTH_STATUS_FAILED") {
 function normalizeDirectAuthProvider(value = "") {
   const text = String(value || "").trim().toLowerCase();
   if (text === "claude" || text === "claude-cli" || text === "claude-code" || text === "anthropic") return "claude";
+  if (text === "agy" || text === "agy-cli" || text === "antigravity") return "agy";
   return "codex";
 }
 
@@ -136,6 +140,138 @@ async function inspectClaudeDirectAuth({
   }
 }
 
+/**
+ * Default agy log directory: ~/.gemini/antigravity-cli/log
+ * Agy doesn't expose an API for auth status, so we tail its own structured
+ * server-side log and grep for the markers it prints during the OAuth
+ * handshake. This is best-effort observability, not a real credential
+ * check — agy owns the keyring, not us.
+ */
+function resolveAgyLogDir(env = process.env) {
+  const home = String(env.HOME || os.homedir() || "").trim();
+  if (!home) return "";
+  return path.join(home, ".gemini", "antigravity-cli", "log");
+}
+
+function findMostRecentAgyLog(logDir = "") {
+  try {
+    if (!logDir || !fs.existsSync(logDir)) return "";
+    const entries = fs.readdirSync(logDir)
+      .filter((name) => name.startsWith("cli-") && name.endsWith(".log"));
+    if (entries.length === 0) return "";
+    // Filenames are cli-YYYYMMDD_HHMMSS.log — lexicographic sort matches mtime.
+    entries.sort();
+    return path.join(logDir, entries[entries.length - 1]);
+  } catch {
+    return "";
+  }
+}
+
+function readAgyLogTail(file = "", maxBytes = 32 * 1024) {
+  try {
+    if (!file || !fs.existsSync(file)) return "";
+    const stat = fs.statSync(file);
+    const offset = Math.max(0, stat.size - maxBytes);
+    const fd = fs.openSync(file, "r");
+    try {
+      const length = stat.size - offset;
+      const buffer = Buffer.alloc(length);
+      fs.readSync(fd, buffer, 0, length, offset);
+      return buffer.toString("utf8");
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return "";
+  }
+}
+
+function classifyAgyLogTail(text = "") {
+  const str = String(text || "");
+  if (!str) {
+    return {
+      ok: false,
+      state: "unknown",
+      errorCode: "AGY_AUTH_NO_LOG",
+      message: "no agy log file found yet — launch agy at least once to produce one",
+    };
+  }
+  if (/Eligibility check failed/i.test(str) || /Account ineligible/i.test(str)) {
+    const emailMatch = str.match(/authenticated successfully as ([^\s]+)/);
+    return {
+      ok: false,
+      state: "ineligible",
+      errorCode: "AGY_ACCOUNT_INELIGIBLE",
+      message: "agy account is signed in but not eligible (18+ / supported region required)",
+      accountEmail: emailMatch ? emailMatch[1] : "",
+    };
+  }
+  if (/User location is not supported/i.test(str)) {
+    const emailMatch = str.match(/authenticated successfully as ([^\s]+)/);
+    return {
+      ok: false,
+      state: "region_blocked",
+      errorCode: "AGY_REGION_BLOCKED",
+      message: "agy backend rejected this region (FAILED_PRECONDITION)",
+      accountEmail: emailMatch ? emailMatch[1] : "",
+    };
+  }
+  const authMatch = str.match(/OAuth: authenticated successfully as ([^\s]+)/);
+  if (authMatch) {
+    return {
+      ok: true,
+      state: "fresh",
+      accountEmail: authMatch[1],
+    };
+  }
+  return {
+    ok: false,
+    state: "unknown",
+    errorCode: "AGY_AUTH_UNVERIFIED",
+    message: "no successful OAuth handshake found in recent agy log",
+  };
+}
+
+async function inspectAgyDirectAuth({
+  env = process.env,
+  readLogTailImpl = readAgyLogTail,
+  findLogImpl = findMostRecentAgyLog,
+  resolveLogDirImpl = resolveAgyLogDir,
+} = {}) {
+  const logDir = resolveLogDirImpl(env);
+  const file = findLogImpl(logDir);
+  const tail = file ? readLogTailImpl(file) : "";
+  const classification = classifyAgyLogTail(tail);
+  const base = {
+    provider: "agy",
+    transport: "antigravity-tui",  // No API mode — TUI is the only path.
+    credentialKind: "oauth",
+    source: "google-keyring",
+    credentialPath: file || logDir || "",
+  };
+  if (classification.ok) {
+    return {
+      ...base,
+      ok: true,
+      state: classification.state,
+      accountEmail: classification.accountEmail || "",
+      account: classification.accountEmail || "",
+    };
+  }
+  return {
+    ...base,
+    ok: false,
+    state: classification.state,
+    errorCode: classification.errorCode,
+    error: classification.message,
+    accountEmail: classification.accountEmail || "",
+    hint: classification.errorCode === "AGY_ACCOUNT_INELIGIBLE"
+      || classification.errorCode === "AGY_REGION_BLOCKED"
+      ? "Antigravity requires an 18+ Google account in a supported region. Try a different account or wait for broader rollout."
+      : "Run `agy` once to produce an authentication handshake log.",
+  };
+}
+
 async function inspectDirectAuthStatus(options = {}) {
   const { projectRoot, loadConfigImpl = loadConfig, provider = "" } = options;
   const config = loadConfigImpl(projectRoot) || {};
@@ -146,6 +282,9 @@ async function inspectDirectAuthStatus(options = {}) {
   };
   if (selected === "claude") {
     return inspectClaudeDirectAuth(nextOptions);
+  }
+  if (selected === "agy") {
+    return inspectAgyDirectAuth(nextOptions);
   }
   return inspectCodexDirectAuth(nextOptions);
 }
@@ -246,9 +385,50 @@ function formatClaudeDirectAuthStatus(status = {}, options = {}) {
   return lines;
 }
 
+function formatAgyDirectAuthStatus(status = {}, options = {}) {
+  if (options.compact === true) {
+    if (status.ok) {
+      const details = [
+        status.accountEmail ? status.accountEmail : "",
+        status.source || "google-keyring",
+      ].filter(Boolean);
+      const lines = [`Agy: OK · keyring · ${status.state || "fresh"}`];
+      if (details.length > 0) lines.push(`  ${details.join(" · ")}`);
+      return lines;
+    }
+    const hint = String(status.hint || "Run `agy` once to verify the OAuth handshake.").replace(/;.*$/, ".");
+    return [
+      `Agy: FAIL · ${status.errorCode || "AGY_AUTH_STATUS_FAILED"}`,
+      `  ${status.error || "agy authentication state unknown"} · ${hint}`,
+    ];
+  }
+
+  if (status.ok) {
+    const lines = [
+      `Agy CLI: OK (keyring, ${status.state || "fresh"})`,
+      `  - source: ${status.source || "google-keyring"}`,
+    ];
+    if (status.accountEmail) lines.push(`  - account: ${status.accountEmail}`);
+    if (status.credentialPath) lines.push(`  - log: ${status.credentialPath}`);
+    return lines;
+  }
+
+  const lines = [
+    `Agy CLI: FAIL (${status.errorCode || "AGY_AUTH_STATUS_FAILED"})`,
+    `  - ${status.error || "agy authentication state unknown"}`,
+  ];
+  if (status.accountEmail) lines.push(`  - account: ${status.accountEmail}`);
+  if (status.credentialPath) lines.push(`  - log: ${status.credentialPath}`);
+  if (status.hint) lines.push(`  - ${status.hint}`);
+  return lines;
+}
+
 function formatDirectAuthStatus(status = {}, options = {}) {
   if (status.provider === "claude") {
     return formatClaudeDirectAuthStatus(status, options);
+  }
+  if (status.provider === "agy") {
+    return formatAgyDirectAuthStatus(status, options);
   }
   return formatCodexDirectAuthStatus(status, options);
 }
@@ -257,8 +437,11 @@ module.exports = {
   inspectDirectAuthStatus,
   inspectCodexDirectAuth,
   inspectClaudeDirectAuth,
+  inspectAgyDirectAuth,
   formatDirectAuthStatus,
   formatCodexDirectAuthStatus,
   formatClaudeDirectAuthStatus,
+  formatAgyDirectAuthStatus,
   normalizeDirectAuthProvider,
+  classifyAgyLogTail,
 };

@@ -19,6 +19,7 @@
     "ufoo": "bin/ufoo.js",
     "uclaude": "bin/uclaude.js",
     "ucodex": "bin/ucodex.js",
+    "uagy": "bin/uagy.js",
     "ucode": "bin/ucode.js",
     "ucode-core": "bin/ucode-core.js"
   },

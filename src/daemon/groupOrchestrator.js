@@ -36,12 +36,15 @@ function resolveBootstrapInjectSettleMs(agentType = "", promptText = "", options
     delayMs = 800;
   } else if (normalizedAgent === "codex") {
     delayMs = 250;
+  } else if (normalizedAgent === "agy") {
+    // Agy uses an ink-style TUI like claude — same input handler latency.
+    delayMs = 800;
   }
 
   const text = typeof promptText === "string" ? promptText : "";
   if (!text) return delayMs;
   if (text.includes("\n")) {
-    delayMs += normalizedAgent === "claude" ? 200 : 100;
+    delayMs += (normalizedAgent === "claude" || normalizedAgent === "agy") ? 200 : 100;
   }
   if (text.length > 1024) {
     delayMs += Math.min(800, Math.ceil(text.length / 1024) * 120);
@@ -306,6 +309,7 @@ function resolveAutoAgentType(projectRoot, requestedType) {
   const provider = asTrimmedString(loadConfig(projectRoot).agentProvider);
   if (provider === "claude-cli") return "claude";
   if (provider === "ucode") return "ucode";
+  if (provider === "agy-cli") return "agy";
   return "codex";
 }
 
@@ -386,7 +390,14 @@ function buildExecutionPlan({
         ? "ucode-bootstrap-file"
         : (resolvedType === "claude"
           ? "system-prompt-file"
-          : (resolvedType === "codex" ? "initial-prompt-arg" : "post-launch-inject")));
+          : (resolvedType === "codex"
+            ? "initial-prompt-arg"
+            // Agy takes the bootstrap as `-i <text>`, same shape as codex's
+            // positional initial prompt — both pass the bootstrap as a flag,
+            // not via post-launch injection.
+            : (resolvedType === "agy"
+              ? "initial-prompt-arg"
+              : "post-launch-inject"))));
     const bootstrapPrompt = bootstrapRequired
       ? composeGroupBootstrapPrompt({
         profilePrompt: resolvedProfile.prompt,
@@ -908,12 +919,18 @@ function createGroupOrchestrator(options = {}) {
       // Codex: pass bootstrap prompt as the initial [PROMPT] CLI argument.
       // Codex doesn't support --append-system-prompt, but accepts an initial
       // prompt argument that becomes the first user message at startup.
+      //
+      // Agy uses the same "send bootstrap as a launch flag" model, but its
+      // flag is `-i <text>` (alias for --prompt-interactive). Same strategy
+      // key, different arg shape.
       if (item.bootstrap_strategy === "initial-prompt-arg") {
         member.bootstrap_attempted_at = nowIso();
         member.bootstrap_error = "";
         const promptText = (item.bootstrap_prompt || "").trim();
         if (promptText) {
-          extraArgs = [promptText];
+          extraArgs = item.type === "agy"
+            ? ["-i", promptText]
+            : [promptText];
           bootstrapInjected = true;
         }
       }

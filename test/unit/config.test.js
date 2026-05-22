@@ -99,12 +99,34 @@ describe("config save/load", () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  test("normalizeAgentProvider only allows codex and claude engines", () => {
+  test("normalizeAgentProvider only allows codex, claude and agy engines", () => {
     expect(normalizeAgentProvider("codex-cli")).toBe("codex-cli");
     expect(normalizeAgentProvider("claude-cli")).toBe("claude-cli");
+    expect(normalizeAgentProvider("agy-cli")).toBe("agy-cli");
+    expect(normalizeAgentProvider("agy")).toBe("agy-cli");
+    expect(normalizeAgentProvider("antigravity")).toBe("agy-cli");
     expect(normalizeAgentProvider("ucode")).toBe("codex-cli");
     expect(normalizeAgentProvider("ufoo")).toBe("codex-cli");
     expect(normalizeAgentProvider("unknown")).toBe("codex-cli");
+  });
+
+  test("providerKey maps agy aliases to the agy bucket", () => {
+    const { providerKey } = require("../../src/config");
+    expect(providerKey("agy")).toBe("agy");
+    expect(providerKey("agy-cli")).toBe("agy");
+    expect(providerKey("Antigravity")).toBe("agy");
+    expect(providerKey("ANTIGRAVITY")).toBe("agy");
+    // Sanity: existing providers still resolve correctly.
+    expect(providerKey("claude-code")).toBe("claude");
+    expect(providerKey("codex")).toBe("codex");
+  });
+
+  test("agy has no provider-specific default model, so lookups fall through to codex", () => {
+    // agy picks its model in-REPL via `/model`; ufoo never passes one on the
+    // command line. SETTINGS_MODEL_DEFAULTS reserves "" for agy and the
+    // lookup helpers degrade gracefully to the codex default.
+    expect(defaultAgentModelForProvider("agy-cli")).toBe(defaultAgentModelForProvider("codex"));
+    expect(defaultRouterModelForProvider("agy")).toBe(defaultRouterModelForProvider("codex"));
   });
 
   test("normalizeControllerMode supports all phase flags", () => {

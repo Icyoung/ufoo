@@ -16,6 +16,10 @@ const { createTerminalAdapterRouter } = require("../terminal/adapterRouter");
 const { probeHostCapabilities } = require("../terminal/adapters/hostAdapter");
 const PtyWrapper = require("./ptyWrapper");
 const ReadyDetector = require("./readyDetector");
+const {
+  extractResumeConversationId,
+  persistConversationId,
+} = require("./agyConversation");
 
 function connectSocket(sockPath) {
   return new Promise((resolve, reject) => {
@@ -204,9 +208,12 @@ function shouldShowLaunchBanner(agentType = "") {
 function computeInjectedSubmitDelayMs(agentType, text) {
   const normalizedAgent = String(agentType || "").trim().toLowerCase();
   const input = typeof text === "string" ? text : "";
-  let delayMs = normalizedAgent === "claude-code" ? 350 : 200;
+  // Agy uses an ink-style TUI like claude-code, so it needs a similar grace
+  // window before the input handler picks up injected text.
+  const isInkStyle = normalizedAgent === "claude-code" || normalizedAgent === "agy";
+  let delayMs = isInkStyle ? 350 : 200;
   if (input.includes("\n")) {
-    delayMs += normalizedAgent === "claude-code" ? 250 : 120;
+    delayMs += isInkStyle ? 250 : 120;
   }
   if (input.length > 512) {
     delayMs += Math.min(1200, Math.ceil(input.length / 512) * 90);
@@ -237,7 +244,11 @@ async function injectPtyCommand(wrapper, agentType, commandText, source = "injec
   const normalizedAgentType = String(agentType || "").trim().toLowerCase();
   const submitDelayMs = computeInjectedSubmitDelayMs(agentType, text);
   wrapper.write(text);
-  if (normalizedAgentType === "claude-code") {
+  // claude-code and agy both run ink-style TUIs that accept a bare CR to
+  // submit. codex needs the Esc-prefix trick to flush its multi-byte input
+  // handler before the CR.
+  const isInkStyle = normalizedAgentType === "claude-code" || normalizedAgentType === "agy";
+  if (isInkStyle) {
     await sleep(submitDelayMs);
     wrapper.write("\r");
   } else {
@@ -694,10 +705,20 @@ class AgentLauncher {
               detail: snap.detail,
             });
           });
+          // Tail buffer for agy: when the TUI exits, agy prints a single line
+          // `Resume: agy --conversation=<UUID> (or -c)` to stdout. We keep
+          // the trailing ~4KB of post-frame output around and grep it on exit
+          // to capture the conversation id, then persist it as the agent's
+          // provider_session_id so the next launch can pass `--conversation`.
+          const agyTailBuffer = { text: "" };
+          const AGY_TAIL_MAX = 4096;
           wrapper.enableMonitoring((data) => {
             readyDetector.processOutput(data);
             const text = typeof data === "string" ? data : Buffer.from(data).toString("utf8");
             launcherActivityDetector.processOutput(text);
+            if (this.agentType === "agy") {
+              agyTailBuffer.text = (agyTailBuffer.text + text).slice(-AGY_TAIL_MAX);
+            }
           });
           readyDetector.onReady(async () => {
             launcherActivityDetector.markReady();
@@ -708,17 +729,19 @@ class AgentLauncher {
             // Claude Code's Ink TUI renders ❯ prompt before the input handler
             // is fully mounted. Wait a short period for the TUI to be ready to
             // accept injected text, otherwise only the trailing CR is processed
-            // and the probe command is lost.
-            if (this.agentType === "claude-code") {
+            // and the probe command is lost. Agy uses the same ink-style TUI
+            // so it gets the same grace window.
+            if (this.agentType === "claude-code" || this.agentType === "agy") {
               await new Promise((r) => setTimeout(r, 800));
             }
 
-            // Claude Code: inject /rename 设置 session 标签（在 AGENT_READY/bootstrap 之前）
-            // /rename 是 slash 命令，瞬间完成，不调 LLM
-            // 仅在有显式 nickname 时注入（UFOO_NICKNAME 由 group launch 或用户指定）
-            // 使用启动前保存的原始值，避免复用 nickname 污染
+            // Inject /rename to set the session label (before AGENT_READY/bootstrap).
+            // /rename is a slash command, completes instantly, doesn't hit the LLM.
+            // Only when an explicit nickname was supplied (UFOO_NICKNAME from group
+            // launch or user). Both claude-code and agy support /rename.
             const explicitNickname = this._originalNickname || "";
-            if (this.agentType === "claude-code" && explicitNickname && wrapper.pty) {
+            const supportsRenameSlash = this.agentType === "claude-code" || this.agentType === "agy";
+            if (supportsRenameSlash && explicitNickname && wrapper.pty) {
               try {
                 const safeNick = AgentLauncher._sanitizeNickname(explicitNickname);
                 if (safeNick) {
@@ -749,6 +772,21 @@ class AgentLauncher {
             // 清理 timers
             clearTimeout(forceReadyTimer);
             launcherActivityDetector.destroy();
+
+            // Agy: harvest conversation id from the trailing `Resume: agy
+            // --conversation=<UUID>` line that agy prints right before exit,
+            // and persist it onto the agent meta so the next launch can
+            // pass `--conversation=<UUID>`.
+            if (this.agentType === "agy") {
+              const conversationId = extractResumeConversationId(agyTailBuffer.text);
+              if (conversationId) {
+                try {
+                  persistConversationId(this.cwd, subscriberId, conversationId);
+                } catch {
+                  // ignore — best-effort capture only
+                }
+              }
+            }
 
             // 清理 bus 状态
             try {
@@ -956,5 +994,10 @@ AgentLauncher._sanitizeNickname = (nick) => nick.replace(/[^a-zA-Z0-9_-]/g, "");
 AgentLauncher._findPreviousSession = findPreviousSession;
 AgentLauncher._notifyDaemonAgentReady = notifyDaemonAgentReady;
 AgentLauncher._injectPtyCommand = injectPtyCommand;
+// Exposed for bin/uagy.js so it can read the same tty value the launcher
+// will later record on the agent meta — keeps autoResume lookups in sync
+// with the launcher's own tty/tmux detection.
+AgentLauncher._detectTtyOnce = detectTtyOnce;
+AgentLauncher._getEnvTtyOverride = getEnvTtyOverride;
 
 module.exports = AgentLauncher;
