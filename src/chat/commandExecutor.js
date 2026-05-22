@@ -671,7 +671,7 @@ function createCommandExecutor(options = {}) {
 
     const profile = String(args[1] || "").trim();
     if (!profile) {
-      logMessage("error", "{white-fg}✗{/white-fg} Usage: /solo run <prompt-profile> [agent=codex|claude|ucode] [nickname=<name>] [scope=inplace|window]");
+      logMessage("error", "{white-fg}✗{/white-fg} Usage: /solo run <prompt-profile> [agent=codex|claude|agy|ucode] [nickname=<name>] [scope=inplace|window]");
       return;
     }
 

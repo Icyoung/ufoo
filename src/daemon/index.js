@@ -53,6 +53,7 @@ function normalizeBusAgentType(agentType = "") {
   if (!value) return "claude-code";
   if (value === "codex") return "codex";
   if (value === "claude" || value === "claude-code") return "claude-code";
+  if (value === "agy" || value === "antigravity") return "agy";
   if (value === "ufoo" || value === "ucode" || value === "ufoo-code") return "ufoo-code";
   return value;
 }
@@ -61,6 +62,7 @@ function normalizeLaunchAgent(agent = "") {
   const value = String(agent || "").trim().toLowerCase();
   if (value === "codex") return "codex";
   if (value === "claude" || value === "claude-code") return "claude";
+  if (value === "agy" || value === "antigravity") return "agy";
   if (value === "ufoo" || value === "ucode" || value === "ufoo-code") return "ufoo";
   return "";
 }
@@ -1583,7 +1585,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
         socket.write(
           `${JSON.stringify({
             type: IPC_RESPONSE_TYPES.ERROR,
-            error: "launch_agent requires agent=codex|claude|ucode",
+            error: "launch_agent requires agent=codex|claude|agy|ucode",
           })}
 `,
         );
@@ -1620,9 +1622,9 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
             : null,
       };
       let soloLaunchBootstrap = null;
-      if (requestedProfile && (normalizedAgent === "ufoo" || normalizedAgent === "claude" || normalizedAgent === "codex")) {
-        const agentTypeMap = { ufoo: "ufoo-code", claude: "claude-code", codex: "codex" };
-        const defaultNickMap = { ufoo: "ucode", claude: "claude", codex: "codex" };
+      if (requestedProfile && (normalizedAgent === "ufoo" || normalizedAgent === "claude" || normalizedAgent === "codex" || normalizedAgent === "agy")) {
+        const agentTypeMap = { ufoo: "ufoo-code", claude: "claude-code", codex: "codex", agy: "agy" };
+        const defaultNickMap = { ufoo: "ucode", claude: "claude", codex: "codex", agy: "agy" };
         const agentTypeForBootstrap = agentTypeMap[normalizedAgent];
         const soloNickname = explicitNickname || defaultNickMap[normalizedAgent];
         const profileResult = resolveSoloPromptProfile(projectRoot, requestedProfile);
@@ -1666,6 +1668,12 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
               op.extra_args = [
                 ...(Array.isArray(op.extra_args) ? op.extra_args : []),
                 built.promptText,
+              ];
+            } else if (normalizedAgent === "agy") {
+              // agy: bootstrap via -i (alias for --prompt-interactive)
+              op.extra_args = [
+                ...(Array.isArray(op.extra_args) ? op.extra_args : []),
+                "-i", built.promptText,
               ];
             }
             soloLaunchBootstrap = {
