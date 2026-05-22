@@ -52,10 +52,10 @@ const COMMAND_TREE = {
   "/launch": {
     desc: "Launch new agent",
     children: {
-      claude: { desc: "Launch Claude agent" },
-      codex: { desc: "Launch Codex agent" },
-      agy: { desc: "Launch Antigravity (agy) agent" },
-      ucode: { desc: "Launch ucode core agent" },
+      claude: { desc: "Launch Claude agent", order: 1 },
+      codex: { desc: "Launch Codex agent", order: 2 },
+      agy: { desc: "Launch Antigravity (agy) agent", order: 3 },
+      ucode: { desc: "Launch ucode core agent", order: 4 },
     },
   },
   "/project": {
