@@ -60,7 +60,7 @@ function createPaneManager(options = {}) {
               }
             }
           } catch {
-            // ignore malformed
+            // ignore malformed messages or render errors
           }
         }
       });

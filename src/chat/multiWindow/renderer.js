@@ -2,8 +2,12 @@ const BOX = { h: "─", v: "│", tl: "┌", tr: "┐", bl: "└", br: "┘", t:
 
 function createRenderer(options = {}) {
   const {
-    write = process.stdout.write.bind(process.stdout),
+    write: rawWrite = process.stdout.write.bind(process.stdout),
   } = options;
+
+  function write(data) {
+    try { rawWrite(data); } catch {}
+  }
 
   function moveTo(row, col) {
     return `\x1b[${row + 1};${col + 1}H`;

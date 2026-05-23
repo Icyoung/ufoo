@@ -732,6 +732,7 @@ async function runChatBlessed(projectRoot, options = {}) {
   let selectedAgentIndex = -1;  // -1 = not in dashboard selection mode
   let targetAgent = null;       // Selected agent for direct messaging
   let focusMode = "input";      // "input" or "dashboard"
+  let renderFrozen = false;
   let dashboardView = "agents"; // "projects" | "agents" | "mode" | "provider" | "cron"
   let selectedModeIndex = Math.max(0, MODE_OPTIONS.indexOf(launchMode));
   const providerOptions = [
@@ -2022,6 +2023,12 @@ async function runChatBlessed(projectRoot, options = {}) {
     void projectCloseController.requestCloseProject(index);
   }
 
+  const prevScreenRender = screen.render.bind(screen);
+  screen.render = function multiWindowGuardedRender() {
+    if (renderFrozen) return;
+    return prevScreenRender();
+  };
+
   const multiWindowController = createMultiWindowController({
     processStdout: process.stdout,
     getRows: () => screen.rows || process.stdout.rows || 24,
@@ -2029,10 +2036,22 @@ async function runChatBlessed(projectRoot, options = {}) {
     getInjectSockPath,
     getActiveAgents: () => activeAgents,
     getChatLogLines: () => {
-      try { return logBox.getLines(); } catch { return []; }
+      try {
+        if (logBox._clines) return [...logBox._clines];
+        const content = logBox.getContent();
+        return content ? content.split("\n") : [];
+      } catch { return []; }
+    },
+    freezeScreen: (frozen) => {
+      renderFrozen = frozen;
+    },
+    restoreTerminal: () => {
+      const rows = screen.rows || process.stdout.rows || 24;
+      process.stdout.write(`\x1b[1;${rows}r`);
+      process.stdout.write("\x1b[2J\x1b[H");
     },
     onExit: () => {
-      screen.render();
+      try { screen.render(); } catch {}
     },
   });
 

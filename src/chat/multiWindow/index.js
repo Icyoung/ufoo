@@ -10,19 +10,24 @@ function createMultiWindowController(options = {}) {
     getInjectSockPath = () => "",
     getActiveAgents = () => [],
     getChatLogLines = () => [],
+    freezeScreen = () => {},
+    restoreTerminal = () => {},
     onExit = () => {},
   } = options;
 
   let active = false;
-  const renderer = createRenderer({ write: (d) => processStdout.write(d) });
+  const renderer = createRenderer({ write: (d) => { try { processStdout.write(d); } catch {} } });
   const paneManager = createPaneManager({
     getInjectSockPath,
     onPaneOutput: (agentId) => { if (active) renderSinglePane(agentId); },
   });
 
   function enter() {
+    const agents = getActiveAgents();
+    if (agents.length === 0) return;
     if (active) return;
     active = true;
+    freezeScreen(true);
     renderer.hideCursor();
     renderer.clear();
     syncAgents();
@@ -34,7 +39,8 @@ function createMultiWindowController(options = {}) {
     active = false;
     paneManager.disconnectAll();
     renderer.showCursor();
-    renderer.clear();
+    restoreTerminal();
+    freezeScreen(false);
     onExit();
   }
 
@@ -64,33 +70,45 @@ function createMultiWindowController(options = {}) {
 
   function renderSinglePane(agentId) {
     if (!active) return;
-    const agents = paneManager.getAgentIds();
-    const layout = calculatePaneLayout(getCols(), getRows(), agents.length);
-    const idx = agents.indexOf(agentId);
-    if (idx < 0 || !layout.agentPanes[idx]) return;
-    const pane = paneManager.getPane(agentId);
-    if (!pane) return;
-    const focused = paneManager.getFocused() === agentId;
-    renderer.renderPane(pane.vt, layout.agentPanes[idx], focused, agentId);
+    try {
+      const agents = paneManager.getAgentIds();
+      const layout = calculatePaneLayout(getCols(), getRows(), agents.length);
+      const idx = agents.indexOf(agentId);
+      if (idx < 0 || !layout.agentPanes[idx]) return;
+      const pane = paneManager.getPane(agentId);
+      if (!pane) return;
+      const focused = paneManager.getFocused() === agentId;
+      renderer.renderPane(pane.vt, layout.agentPanes[idx], focused, agentId);
+    } catch {
+      // swallow render errors to prevent crash
+    }
   }
 
   function renderAll() {
     if (!active) return;
-    const agents = paneManager.getAgentIds();
-    const layout = calculatePaneLayout(getCols(), getRows(), agents.length);
+    try {
+      const agents = paneManager.getAgentIds();
+      const layout = calculatePaneLayout(getCols(), getRows(), agents.length);
 
-    renderer.renderChatLog(layout.chatPane, getChatLogLines());
+      renderer.renderChatLog(layout.chatPane, getChatLogLines());
 
-    for (let i = 0; i < agents.length; i++) {
-      const pane = paneManager.getPane(agents[i]);
-      if (!pane || !layout.agentPanes[i]) continue;
-      const focused = paneManager.getFocused() === agents[i];
-      renderer.renderPane(pane.vt, layout.agentPanes[i], focused, agents[i]);
+      for (let i = 0; i < agents.length; i++) {
+        const pane = paneManager.getPane(agents[i]);
+        if (!pane || !layout.agentPanes[i]) continue;
+        const focused = paneManager.getFocused() === agents[i];
+        renderer.renderPane(pane.vt, layout.agentPanes[i], focused, agents[i]);
+      }
+    } catch {
+      // swallow render errors to prevent crash
     }
   }
 
   function handleKey(key) {
     if (!active) return false;
+
+    if (key.name === "c" && key.ctrl) {
+      return false;
+    }
 
     if (key.name === "w" && key.ctrl) {
       paneManager.cycleFocus();
