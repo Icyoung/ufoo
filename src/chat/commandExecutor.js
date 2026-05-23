@@ -1459,10 +1459,8 @@ function createCommandExecutor(options = {}) {
   }
 
   async function handleUfooCommand(args = []) {
-    // Handle /ufoo command (session marker from daemon)
-    // When daemon sends /ufoo <marker>, we should just check for pending messages
+    // Legacy /ufoo <single-token> compatibility: check pending messages silently.
     if (args.length > 0) {
-      // This is a probe marker, check for pending messages
       const subscriberId = process.env.UFOO_SUBSCRIBER_ID;
       if (subscriberId) {
         try {
@@ -1476,7 +1474,7 @@ function createCommandExecutor(options = {}) {
           // Ignore errors when checking messages
         }
       }
-      // Don't log anything else for probe markers
+      // Do not log anything else for legacy single-token input.
       return;
     }
 
@@ -1583,6 +1581,13 @@ function createCommandExecutor(options = {}) {
           clearLog();
         } else {
           logMessage("error", "{white-fg}✗{/white-fg} /clear is not available in this view");
+        }
+        return true;
+      case "multi":
+        if (typeof options.toggleMultiWindow === "function") {
+          options.toggleMultiWindow();
+        } else {
+          logMessage("error", "{white-fg}✗{/white-fg} Multi-window mode is not available");
         }
         return true;
       case "doctor":

@@ -48,6 +48,7 @@ const COMMAND_TREE = {
     },
   },
   "/init": { desc: "Initialize modules" },
+  "/multi": { desc: "Toggle multi-window agent view" },
   "/open": { desc: "Open project path in global mode" },
   "/launch": {
     desc: "Launch new agent",
@@ -138,7 +139,7 @@ const COMMAND_TREE = {
     },
   },
   "/status": { desc: "Status display" },
-  "/ufoo": { desc: "ufoo protocol (session marker)" },
+  "/ufoo": { desc: "ufoo protocol" },
 };
 
 const COMMAND_ORDER = ["/launch", "/group", "/bus", "/ctx"];

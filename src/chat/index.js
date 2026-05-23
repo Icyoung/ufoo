@@ -35,6 +35,7 @@ const { createStatusLineController } = require("./statusLineController");
 const { createInputHistoryController } = require("./inputHistoryController");
 const { createInputListenerController } = require("./inputListenerController");
 const { createDaemonMessageRouter } = require("./daemonMessageRouter");
+const { createMultiWindowController } = require("./multiWindow");
 const { createChatLogController } = require("./chatLogController");
 const { createPasteController } = require("./pasteController");
 const { createAgentViewController } = require("./agentViewController");
@@ -2021,6 +2022,20 @@ async function runChatBlessed(projectRoot, options = {}) {
     void projectCloseController.requestCloseProject(index);
   }
 
+  const multiWindowController = createMultiWindowController({
+    processStdout: process.stdout,
+    getRows: () => screen.rows || process.stdout.rows || 24,
+    getCols: () => screen.cols || process.stdout.columns || 80,
+    getInjectSockPath,
+    getActiveAgents: () => activeAgents,
+    getChatLogLines: () => {
+      try { return logBox.getLines(); } catch { return []; }
+    },
+    onExit: () => {
+      screen.render();
+    },
+  });
+
   const commandExecutor = createCommandExecutor({
     projectRoot,
     getActiveProjectRoot: () => activeProjectRoot,
@@ -2057,6 +2072,13 @@ async function runChatBlessed(projectRoot, options = {}) {
     }),
     switchProject: async ({ target } = {}) => requestProjectSwitchByTarget(target),
     globalMode,
+    toggleMultiWindow: () => {
+      if (multiWindowController.isActive()) {
+        multiWindowController.exit();
+      } else {
+        multiWindowController.enter();
+      }
+    },
   });
 
   async function executeCommand(text) {
@@ -2119,6 +2141,12 @@ async function runChatBlessed(projectRoot, options = {}) {
 
   // Dashboard navigation - use screen.on to capture even when input is focused
   screen.on("keypress", (ch, key) => {
+    // Multi-window mode: route all keys to multiWindowController
+    if (multiWindowController.isActive()) {
+      multiWindowController.handleKey(key || {});
+      return;
+    }
+
     // Agent TTY view: handle keystrokes
     if (getCurrentView() === "agent") {
       if (focusMode === "dashboard") {
@@ -2227,6 +2255,10 @@ async function runChatBlessed(projectRoot, options = {}) {
     }
   }
   screen.on("resize", () => {
+    if (multiWindowController.isActive()) {
+      multiWindowController.handleResize();
+      return;
+    }
     if (handleResizeInAgentView()) {
       return;
     }
