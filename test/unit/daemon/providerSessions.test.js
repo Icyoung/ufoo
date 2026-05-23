@@ -3,80 +3,10 @@ const os = require("os");
 const path = require("path");
 const {
   __private,
-  scheduleProviderSessionProbe,
+  scheduleProviderSessionResolve,
   resolveSessionFromFile,
   loadProviderSessionCache,
 } = require("../../../src/daemon/providerSessions");
-
-describe("daemon providerSessions probe command", () => {
-  test("uses /ufoo marker for claude-code", () => {
-    expect(__private.buildProbeCommand("claude-code", "claude-1")).toBe("/ufoo claude-1");
-  });
-
-  test("uses $ufoo marker for codex", () => {
-    expect(__private.buildProbeCommand("codex", "codex-1")).toBe("$ufoo codex-1");
-  });
-
-  test("recordContainsMarker recognizes /ufoo, $ufoo and legacy ufoo", () => {
-    const marker = "codex-1";
-    expect(__private.recordContainsMarker(null, marker, "/ufoo codex-1")).toBe(true);
-    expect(__private.recordContainsMarker(null, marker, "$ufoo codex-1")).toBe(true);
-    expect(__private.recordContainsMarker(null, marker, "ufoo codex-1")).toBe(true);
-  });
-
-  test("recordContainsMarker checks parsed record fields", () => {
-    const marker = "codex-9";
-    expect(__private.recordContainsMarker({ display: "$ufoo codex-9" }, marker, "")).toBe(true);
-    expect(__private.recordContainsMarker({ text: "/ufoo codex-9" }, marker, "")).toBe(true);
-    expect(__private.recordContainsMarker({ prompt: "ufoo codex-9" }, marker, "")).toBe(true);
-  });
-
-  test("recordContainsMarker does not collide similar nicknames", () => {
-    const marker = "codex-1";
-    expect(__private.recordContainsMarker(null, marker, "$ufoo codex-10")).toBe(false);
-    expect(__private.recordContainsMarker(null, marker, "/ufoo codex-10")).toBe(false);
-    expect(__private.recordContainsMarker({ display: "ufoo codex-10" }, marker, "")).toBe(false);
-  });
-
-  test("containsProbeCommand enforces token boundary", () => {
-    expect(__private.containsProbeCommand("\"$ufoo codex-1\"", "codex-1")).toBe(true);
-    expect(__private.containsProbeCommand("... /ufoo codex-1,", "codex-1")).toBe(true);
-    expect(__private.containsProbeCommand("$ufoo codex-10", "codex-1")).toBe(false);
-  });
-
-  test("escapeRegExp handles special characters", () => {
-    expect(__private.escapeRegExp("a+b*c")).toBe("a\\+b\\*c");
-    expect(__private.escapeRegExp("")).toBe("");
-    expect(__private.escapeRegExp(null)).toBe("");
-  });
-
-  test("containsProbeCommand returns false for empty inputs", () => {
-    expect(__private.containsProbeCommand("", "marker")).toBe(false);
-    expect(__private.containsProbeCommand(null, "marker")).toBe(false);
-    expect(__private.containsProbeCommand("text", "")).toBe(false);
-  });
-
-  test("recordContainsMarker checks input/message/query/content fields", () => {
-    const marker = "test-1";
-    expect(__private.recordContainsMarker({ input: "/ufoo test-1" }, marker, "")).toBe(true);
-    expect(__private.recordContainsMarker({ message: "/ufoo test-1" }, marker, "")).toBe(true);
-    expect(__private.recordContainsMarker({ query: "/ufoo test-1" }, marker, "")).toBe(true);
-    expect(__private.recordContainsMarker({ content: "/ufoo test-1" }, marker, "")).toBe(true);
-  });
-
-  test("recordContainsMarker returns false for empty marker", () => {
-    expect(__private.recordContainsMarker({}, "", "text")).toBe(false);
-  });
-
-  test("recordContainsMarker returns false for non-object record without rawLine match", () => {
-    expect(__private.recordContainsMarker("string", "marker", "no match")).toBe(false);
-  });
-
-  test("buildProbeCommand handles empty/null nickname", () => {
-    expect(__private.buildProbeCommand("codex", "")).toBe("$ufoo ");
-    expect(__private.buildProbeCommand("codex", null)).toBe("$ufoo ");
-  });
-});
 
 describe("resolveClaudeSessionFromFile", () => {
   let fakeHome;
@@ -302,7 +232,7 @@ describe("resolveSessionFromFileWithRetries", () => {
       path.join(sessDir, "777.json"),
       JSON.stringify({ sessionId: "fast-sess" })
     );
-    // Use the private resolveSessionFromFileWithRetries via scheduleProviderSessionProbe's
+    // Use the private resolveSessionFromFileWithRetries via the scheduled resolver's
     // internal flow, but we can also test via the module's __private if exposed.
     // Since it's not directly exported, test through resolveSessionFromFile + timing:
     const { resolveSessionFromFile: rsff } = require("../../../src/daemon/providerSessions");
@@ -312,7 +242,7 @@ describe("resolveSessionFromFileWithRetries", () => {
 
   test("returns null after retries if file never appears", async () => {
     // resolveSessionFromFileWithRetries is not directly exported, but we can
-    // verify through scheduleProviderSessionProbe with triggerNow + no file
+    // verify through scheduleProviderSessionResolve with triggerNow + no file.
     // Use minimal retries to avoid timeout
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ps-retry-"));
     fs.mkdirSync(path.join(projectRoot, ".ufoo", "agent"), { recursive: true });
@@ -327,7 +257,6 @@ describe("resolveSessionFromFileWithRetries", () => {
       projectRoot,
       subscriberId: "claude-code:retry1",
       agentType: "claude-code",
-      nickname: "",
       agentPid: 88888,
       delayMs: 999999,
       fileAttempts: 2,
@@ -335,7 +264,7 @@ describe("resolveSessionFromFileWithRetries", () => {
     });
     expect(handle).not.toBeNull();
 
-    // triggerNow will try file retries (2×50ms) then fallback (no nickname = no probe)
+    // triggerNow will try file retries (2×50ms), then stop without terminal probing.
     await handle.triggerNow();
     // onResolved was not passed, so no callback — just verify it completes without error
 
@@ -362,7 +291,6 @@ describe("resolveSessionFromFileWithRetries", () => {
       projectRoot,
       subscriberId: "claude-code:cancel1",
       agentType: "claude-code",
-      nickname: "",
       agentPid: 77777,
       delayMs: 999999,
       fileAttempts: 3,
@@ -420,11 +348,11 @@ describe("loadProviderSessionCache", () => {
   });
 });
 
-describe("scheduleProviderSessionProbe", () => {
+describe("scheduleProviderSessionResolve", () => {
   let projectRoot;
 
   beforeEach(() => {
-    projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ps-probe-"));
+    projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ps-resolve-"));
     const ufooDir = path.join(projectRoot, ".ufoo");
     fs.mkdirSync(path.join(ufooDir, "agent"), { recursive: true });
     fs.writeFileSync(
@@ -439,43 +367,64 @@ describe("scheduleProviderSessionProbe", () => {
 
   test("returns null when subscriberId is missing", () => {
     expect(
-      scheduleProviderSessionProbe({ projectRoot, subscriberId: "", agentType: "codex", nickname: "b" })
+      scheduleProviderSessionResolve({ projectRoot, subscriberId: "", agentType: "codex" })
     ).toBeNull();
   });
 
   test("returns null when agentType is missing", () => {
     expect(
-      scheduleProviderSessionProbe({ projectRoot, subscriberId: "codex:a", agentType: "", nickname: "b" })
+      scheduleProviderSessionResolve({ projectRoot, subscriberId: "codex:a", agentType: "" })
     ).toBeNull();
   });
 
   test("returns null for unsupported agent type", () => {
     expect(
-      scheduleProviderSessionProbe({ projectRoot, subscriberId: "x:a", agentType: "custom", nickname: "b" })
+      scheduleProviderSessionResolve({ projectRoot, subscriberId: "x:a", agentType: "custom" })
     ).toBeNull();
   });
 
-  test("returns handle even without nickname (file-based resolution)", () => {
-    const result = scheduleProviderSessionProbe({ projectRoot, subscriberId: "codex:a", agentType: "codex", nickname: "" });
+  test("returns handle for file-based resolution", () => {
+    const result = scheduleProviderSessionResolve({ projectRoot, subscriberId: "codex:a", agentType: "codex" });
     expect(result).not.toBeNull();
     expect(result.subscriberId).toBe("codex:a");
-    // marker is empty when no nickname
-    expect(result.marker).toBe("");
+    expect(typeof result.triggerNow).toBe("function");
+    result.cancel();
   });
 
   test("returns handle with triggerNow for valid args", () => {
-    const result = scheduleProviderSessionProbe({
+    const result = scheduleProviderSessionResolve({
       projectRoot,
       subscriberId: "codex:abc",
       agentType: "codex",
-      nickname: "builder",
       delayMs: 999999,
     });
     expect(result).not.toBeNull();
     expect(result.subscriberId).toBe("codex:abc");
-    expect(result.marker).toBe("builder");
     expect(typeof result.triggerNow).toBe("function");
-    // Trigger to clean up timer (inject will fail, that's OK)
-    result.triggerNow().catch(() => {});
+    result.cancel();
+  });
+
+  test("does not persist provider session when session file is unavailable", async () => {
+    const onResolved = jest.fn();
+    const result = scheduleProviderSessionResolve({
+      projectRoot,
+      subscriberId: "codex:abc",
+      agentType: "codex",
+      agentCwd: "/missing/project",
+      delayMs: 999999,
+      fileAttempts: 1,
+      fileIntervalMs: 1,
+      onResolved,
+    });
+    expect(result).not.toBeNull();
+
+    await result.triggerNow();
+
+    const data = JSON.parse(fs.readFileSync(
+      path.join(projectRoot, ".ufoo", "agent", "all-agents.json"),
+      "utf8",
+    ));
+    expect(onResolved).not.toHaveBeenCalled();
+    expect(data.agents["codex:abc"]).toBeUndefined();
   });
 });

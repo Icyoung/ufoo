@@ -8,6 +8,8 @@
  * exercised by scripts/ucode-app-smoke.js plus real-TTY runs.
  */
 
+const path = require("path");
+
 const {
   createChatApp,
   bootstrapEnvironment,
@@ -15,10 +17,18 @@ const {
   buildDirectBusSendRequest,
   buildPromptIpcRequest,
   chatHistoryOptionsForScope,
+  classifyChatLogLine,
+  computeStatusText,
   computeInternalStatusText,
+  createInkMultiWindowToggle,
+  inferStatusType,
+  isAnimatedStatusType,
   isInternalViewingAgent,
   resolveActiveAgentId,
+  resolveInjectSockPathForAgent,
   resolveAgentEnterRequest,
+  resolveDashboardAgentEnterAction,
+  buildEmptyProjectsDownActions,
   resolveInternalKeyName,
   applyInternalAgentTermWrite,
   appendInternalErrorToView,
@@ -41,6 +51,39 @@ describe("createChatApp", () => {
     };
     const ChatApp = createChatApp({ React, ink, props, interactive: false });
     expect(typeof ChatApp).toBe("function");
+  });
+});
+
+describe("chat status line", () => {
+  test("done and error statuses render static indicators", () => {
+    expect(computeStatusText({ message: "Done", type: "done" }, 0)).toBe("✓ Done");
+    expect(computeStatusText({ message: "✓ Done", type: "done" }, 4)).toBe("✓ Done");
+    expect(computeStatusText({ message: "failed", type: "error" }, 2)).toBe("✗ failed");
+  });
+
+  test("status type inference keeps completed statuses non-animated", () => {
+    expect(inferStatusType("✓ Done", "typing")).toBe("done");
+    expect(inferStatusType("Bus message processed", "typing")).toBe("done");
+    expect(isAnimatedStatusType("done")).toBe(false);
+    expect(isAnimatedStatusType("typing")).toBe(true);
+  });
+});
+
+describe("chat log display classification", () => {
+  test("classifies speaker, success, error, and divider rows", () => {
+    expect(classifyChatLogLine("ufoo · 已交给 qa")).toMatchObject({
+      kind: "assistant",
+      speaker: "ufoo",
+      body: "已交给 qa",
+    });
+    expect(classifyChatLogLine("codex-1 · done")).toMatchObject({
+      kind: "agent",
+      speaker: "codex-1",
+      body: "done",
+    });
+    expect(classifyChatLogLine("Error: boom")).toMatchObject({ kind: "error", speaker: "error", body: "boom" });
+    expect(classifyChatLogLine("✓ Done")).toMatchObject({ kind: "success", body: "Done" });
+    expect(classifyChatLogLine("─── history ───")).toMatchObject({ kind: "divider" });
   });
 });
 
@@ -88,6 +131,47 @@ describe("direct bus send helpers", () => {
   });
 });
 
+describe("multi-window helpers", () => {
+  test("toggle enters and exits controller", () => {
+    let active = false;
+    const setActive = jest.fn((value) => { active = value; });
+    const controller = {
+      enter: jest.fn(() => { active = true; return true; }),
+      exit: jest.fn(() => { active = false; }),
+      isActive: jest.fn(() => active),
+    };
+    const toggle = createInkMultiWindowToggle({
+      getController: () => controller,
+      setActive,
+      logMessage: jest.fn(),
+    });
+
+    expect(toggle()).toBe(true);
+    expect(controller.enter).toHaveBeenCalledTimes(1);
+    expect(setActive).toHaveBeenCalledWith(true);
+
+    expect(toggle()).toBe(true);
+    expect(controller.exit).toHaveBeenCalledTimes(1);
+    expect(setActive).toHaveBeenCalledWith(false);
+  });
+
+  test("toggle logs unavailable when controller cannot be created", () => {
+    const logMessage = jest.fn();
+    const toggle = createInkMultiWindowToggle({
+      getController: () => null,
+      logMessage,
+    });
+
+    expect(toggle()).toBe(false);
+    expect(logMessage).toHaveBeenCalledWith("error", "✗ Multi-window mode is not available");
+  });
+
+  test("inject socket path uses agent queue safe name", () => {
+    const result = resolveInjectSockPathForAgent("/tmp/ufoo-project", "codex:abc");
+    expect(result).toContain(path.join(".ufoo", "bus", "queues", "codex_abc", "inject.sock"));
+  });
+});
+
 describe("agent enter request helpers", () => {
   test("internal queue agents enter through bus mode", () => {
     const request = resolveAgentEnterRequest({
@@ -122,6 +206,54 @@ describe("agent enter request helpers", () => {
       supportsInternalQueue: true,
       supportsSocket: false,
     });
+  });
+
+  test("terminal and tmux agents activate instead of entering mirror view", () => {
+    for (const launchMode of ["terminal", "tmux"]) {
+      const request = resolveAgentEnterRequest({
+        agentId: "codex:2",
+        activeAgentMeta: new Map([
+          ["codex:2", { launch_mode: launchMode }],
+        ]),
+      });
+
+      expect(request).toMatchObject({
+        launchMode,
+        useBus: false,
+        supportsActivate: true,
+      });
+      expect(resolveDashboardAgentEnterAction(request)).toBe("activate");
+    }
+  });
+
+  test("dashboard enter keeps internal agents in the chat window", () => {
+    const request = resolveAgentEnterRequest({
+      agentId: "codex:1",
+      activeAgentMeta: new Map([
+        ["codex:1", { launch_mode: "internal" }],
+      ]),
+    });
+
+    expect(resolveDashboardAgentEnterAction(request)).toBe("internal");
+  });
+});
+
+describe("dashboard navigation helpers", () => {
+  test("empty global Projects absorbs first Down and second Down enters Agents", () => {
+    expect(buildEmptyProjectsDownActions({
+      emptyProjectsDownArmed: false,
+      selectedAgentIndex: -1,
+    }, ["codex:1"])).toEqual([
+      { type: "projects/armEmptyDown" },
+    ]);
+
+    expect(buildEmptyProjectsDownActions({
+      emptyProjectsDownArmed: true,
+      selectedAgentIndex: -1,
+    }, ["codex:1"])).toEqual([
+      { type: "view/set", view: "agents" },
+      { type: "agents/select", index: 0 },
+    ]);
   });
 });
 

@@ -116,6 +116,41 @@ function projectRootToId(projectRoot) {
   }
 }
 
+function resolveInjectSockPathForAgent(projectRoot, agentId) {
+  const { getUfooPaths } = require("../../ufoo/paths");
+  const { subscriberToSafeName } = require("../../bus/utils");
+  const safeName = subscriberToSafeName(agentId);
+  return path.join(getUfooPaths(projectRoot || process.cwd()).busQueuesDir, safeName, "inject.sock");
+}
+
+function createInkMultiWindowToggle({
+  getController = () => null,
+  setActive = () => {},
+  logMessage = () => {},
+} = {}) {
+  return () => {
+    const controller = typeof getController === "function" ? getController() : null;
+    if (!controller || typeof controller.enter !== "function" || typeof controller.exit !== "function") {
+      logMessage("error", "✗ Multi-window mode is not available");
+      return false;
+    }
+
+    if (typeof controller.isActive === "function" && controller.isActive()) {
+      controller.exit();
+      setActive(false);
+      return true;
+    }
+
+    setActive(true);
+    if (!controller.enter()) {
+      setActive(false);
+      logMessage("info", "No active agents for multi-window mode");
+      return false;
+    }
+    return true;
+  };
+}
+
 function loadChatHistory(projectRoot, cap = 200, options = {}) {
   const file = chatHistoryFilePath(projectRoot, options);
   try {
@@ -304,6 +339,24 @@ function resolveAgentEnterRequest({
   };
 }
 
+function resolveDashboardAgentEnterAction(enterRequest = {}) {
+  if (!enterRequest || typeof enterRequest !== "object") return "none";
+  if (enterRequest.useBus) return "internal";
+  if (enterRequest.supportsActivate) return "activate";
+  return "agent-view";
+}
+
+function buildEmptyProjectsDownActions(state = {}, displayAgents = []) {
+  if (!state.emptyProjectsDownArmed) {
+    return [{ type: "projects/armEmptyDown" }];
+  }
+  const actions = [{ type: "view/set", view: "agents" }];
+  if (displayAgents.length > 0 && state.selectedAgentIndex < 0) {
+    actions.push({ type: "agents/select", index: 0 });
+  }
+  return actions;
+}
+
 function buildPromptIpcRequest(text) {
   const { IPC_REQUEST_TYPES } = require("../../shared/eventContract");
   return {
@@ -326,6 +379,46 @@ function stripBlessedTags(text = "") {
 function normalizeInkLogLines(text = "") {
   const clean = stripBlessedTags(text);
   return clean.split(/\r?\n/);
+}
+
+function stripMarkdownDecorators(text = "") {
+  return String(text || "")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/`([^`]+)`/g, "$1");
+}
+
+function classifyChatLogLine(text = "") {
+  const raw = stripBlessedTags(text).replace(/\r/g, "");
+  const clean = stripMarkdownDecorators(raw);
+  const trimmed = clean.trim();
+  if (!trimmed) return { kind: "spacer", marker: " ", speaker: "", body: " " };
+  if (/^[█▀▄ ]+$/.test(trimmed) || /^ufoo chat/i.test(trimmed)) {
+    return { kind: "banner", marker: " ", speaker: "", body: clean };
+  }
+  if (/^───.*───$/.test(trimmed)) {
+    return { kind: "divider", marker: "─", speaker: "", body: clean };
+  }
+  if (/^(error:|✗|failed\b)/i.test(trimmed)) {
+    return { kind: "error", marker: "!", speaker: "error", body: clean.replace(/^(error:\s*)/i, "") };
+  }
+  if (/^(✓|✔|done\b|closed\b)/i.test(trimmed)) {
+    return { kind: "success", marker: "✓", speaker: "", body: clean.replace(/^[✓✔]\s*/, "") };
+  }
+  const dotMatch = clean.match(/^([^·:\n]{1,42})\s+·\s+(.*)$/);
+  if (dotMatch) {
+    const speaker = dotMatch[1].trim();
+    const lower = speaker.toLowerCase();
+    const kind = lower === "ufoo" ? "assistant" : "agent";
+    return { kind, marker: kind === "assistant" ? "◆" : "●", speaker, body: dotMatch[2] || " " };
+  }
+  const colonMatch = clean.match(/^([A-Za-z0-9_.:@/-]{1,42}):\s+(.*)$/);
+  if (colonMatch) {
+    return { kind: "agent", marker: "●", speaker: colonMatch[1], body: colonMatch[2] || " " };
+  }
+  if (/^(CHAT|UCODE)\s+·/i.test(trimmed)) {
+    return { kind: "meta", marker: "·", speaker: "", body: clean };
+  }
+  return { kind: "plain", marker: "│", speaker: "", body: clean };
 }
 
 function createInkStreamState({
@@ -905,6 +998,49 @@ function readProjectAgentSnapshot(projectRoot = "") {
   }
 }
 
+function isCJK(ch) {
+  if (!ch) return false;
+  const code = ch.codePointAt(0);
+  return (code >= 0x2e80 && code <= 0x9fff) ||
+    (code >= 0xac00 && code <= 0xd7af) ||
+    (code >= 0xf900 && code <= 0xfaff) ||
+    (code >= 0xfe30 && code <= 0xfe4f) ||
+    (code >= 0x20000 && code <= 0x2fa1f);
+}
+
+function inferStatusType(text = "", requestedType = "") {
+  const type = String(requestedType || "").trim().toLowerCase();
+  if (type === "done" || type === "success" || type === "error" || type === "idle") return type;
+  const clean = stripBlessedTags(String(text || "")).trim();
+  if (/^[✓✔]/.test(clean) || /\bdone\b/i.test(clean) || /\bprocessed\b/i.test(clean)) return "done";
+  if (/^[✗!]/.test(clean) || /\berror\b/i.test(clean) || /\bfailed\b/i.test(clean)) return "error";
+  return type || "typing";
+}
+
+function isAnimatedStatusType(type = "") {
+  const value = String(type || "").trim().toLowerCase();
+  return value !== "done" && value !== "success" && value !== "error" && value !== "idle" && value !== "none";
+}
+
+function inkKeyToRaw(input, key) {
+  if (key.ctrl && input) {
+    const code = input.charCodeAt(0) - 96;
+    if (code >= 1 && code <= 26) return String.fromCharCode(code);
+    return "";
+  }
+  if (key.return) return "\r";
+  if (key.escape) return "\x1b";
+  if (key.backspace || key.delete) return "\x7f";
+  if (key.tab) return "\t";
+  if (key.upArrow) return "\x1b[A";
+  if (key.downArrow) return "\x1b[B";
+  if (key.rightArrow) return "\x1b[C";
+  if (key.leftArrow) return "\x1b[D";
+  if (input && !key.meta) return input;
+  if (key.meta && input) return `\x1b${input}`;
+  return "";
+}
+
 function createChatApp({ React, ink, props, interactive = true }) {
   const { useReducer, useEffect, useState, useCallback, useRef } = React;
   const { Box, Text, Static, useInput, useApp, useStdout } = ink;
@@ -938,9 +1074,18 @@ function createChatApp({ React, ink, props, interactive = true }) {
     const [spinnerTick, setSpinnerTick] = useState(0);
     const [currentProjectRoot, setCurrentProjectRoot] = useState(props.activeProjectRoot || props.projectRoot || "");
     const [internalAgentView, setInternalAgentView] = useState(() => createInternalAgentViewState());
+    const [multiWindowActive, setMultiWindowActive] = useState(false);
+    const [mwCursor, setMwCursor] = useState(0);
+    const [mwTerminalFocused, setMwTerminalFocused] = useState(false);
+    const mwTerminalFocusedRef = useRef(false);
+    const mwLastInputRef = useRef({ char: "", time: 0 });
     const stateRef = useRef(state);
+    const sizeRef = useRef(size);
     const currentProjectRootRef = useRef(currentProjectRoot);
     const internalAgentViewRef = useRef(internalAgentView);
+    const multiWindowControllerRef = useRef(null);
+    const multiWindowChromeRef = useRef({ statusText: "", promptPrefix: "› ", draft: "", dashboardLines: [] });
+    const multiWindowWatchedInternalAgentsRef = useRef(new Set());
     const pendingRef = useRef(null);
     const streamStateRef = useRef(null);
     const historyScopeRef = useRef(null);
@@ -956,6 +1101,10 @@ function createChatApp({ React, ink, props, interactive = true }) {
     useEffect(() => {
       stateRef.current = state;
     }, [state]);
+
+    useEffect(() => {
+      sizeRef.current = size;
+    }, [size]);
 
     useEffect(() => {
       currentProjectRootRef.current = currentProjectRoot;
@@ -980,7 +1129,7 @@ function createChatApp({ React, ink, props, interactive = true }) {
         type: "status/set",
         payload: {
           message: clean,
-          type: options.type || "typing",
+          type: inferStatusType(clean, options.type || "typing"),
           showTimer: options.showTimer === true,
           startedAt: options.startedAt || Date.now(),
         },
@@ -1013,6 +1162,151 @@ function createChatApp({ React, ink, props, interactive = true }) {
         },
       });
     }
+
+    const getMultiWindowController = useCallback(() => {
+      if (multiWindowControllerRef.current) return multiWindowControllerRef.current;
+      const processStdout = stdout || (typeof process !== "undefined" ? process.stdout : null);
+      if (!processStdout || typeof processStdout.write !== "function") return null;
+
+      const originalWrite = processStdout.write.bind(processStdout);
+      const { createMultiWindowController } = require("../../chat/multiWindow");
+      multiWindowControllerRef.current = createMultiWindowController({
+        processStdout: { write: originalWrite, rows: processStdout.rows, columns: processStdout.columns },
+        getRows: () => {
+          const currentSize = sizeRef.current || {};
+          return currentSize.rows || processStdout.rows || 24;
+        },
+        getCols: () => {
+          const currentSize = sizeRef.current || {};
+          return currentSize.cols || processStdout.columns || 80;
+        },
+        getInjectSockPath: (agentId) =>
+          resolveInjectSockPathForAgent(currentProjectRootRef.current || props.projectRoot, agentId),
+        getActiveAgents: () => {
+          const current = stateRef.current || {};
+          return Array.isArray(current.agents) ? current.agents : [];
+        },
+        getAgentPaneOptions: (agentId) => {
+          const current = stateRef.current || {};
+          const enterRequest = resolveAgentEnterRequest({
+            agentId,
+            projectRoot: currentProjectRootRef.current || props.projectRoot,
+            activeAgentMeta: current.activeAgentMeta,
+            settings: current.settings,
+          });
+          if (!enterRequest || !enterRequest.useBus) return { mode: "socket" };
+          const metaMap = current.activeAgentMeta instanceof Map ? current.activeAgentMeta : new Map();
+          const agentMeta = metaMap.get(agentId) || {};
+          let initialLines = [];
+          try {
+            const { loadInternalAgentLogHistory } = require("../../chat/internalAgentLogHistory");
+            initialLines = loadInternalAgentLogHistory(currentProjectRootRef.current || props.projectRoot, agentId, {
+              maxEvents: 200,
+              maxLines: 200,
+            });
+          } catch { initialLines = []; }
+          return {
+            mode: "internal",
+            initialLines: [
+              `ufoo internal agent · ${getAgentLabelFor(agentMeta, agentId)}`,
+              `agent: ${agentId}`,
+              "",
+              ...initialLines,
+            ],
+          };
+        },
+        getChatLogLines: () => {
+          const current = stateRef.current || {};
+          return Array.isArray(current.logLines)
+            ? current.logLines.map((item) => String((item && item.text) || ""))
+            : [];
+        },
+        getStatusText: () => {
+          const chrome = multiWindowChromeRef.current;
+          return chrome ? chrome.statusText : "";
+        },
+        getPromptPrefix: () => {
+          const chrome = multiWindowChromeRef.current;
+          return chrome ? chrome.promptPrefix : "› ";
+        },
+        getCurrentDraft: () => {
+          const chrome = multiWindowChromeRef.current;
+          return chrome ? chrome.draft : "";
+        },
+        getCursorPos: () => {
+          const chrome = multiWindowChromeRef.current;
+          return chrome ? chrome.cursor : 0;
+        },
+        getCompletions: () => {
+          const chrome = multiWindowChromeRef.current;
+          if (!chrome || !chrome.completions || chrome.completions.length === 0) {
+            return { items: [], index: -1, windowStart: 0, pageSize: 8 };
+          }
+          return {
+            items: chrome.completions,
+            index: chrome.completionIndex,
+            windowStart: chrome.completionWindowStart,
+            pageSize: chrome.completionPageSize || 8,
+          };
+        },
+        getAgentLabel: (id) => {
+          const current = stateRef.current || {};
+          const metaMap = current.activeAgentMeta || new Map();
+          return getAgentLabelFor(metaMap.get(id), id);
+        },
+        getInternalPaneInfo: (id) => {
+          const current = stateRef.current || {};
+          const metaMap = current.activeAgentMeta instanceof Map ? current.activeAgentMeta : new Map();
+          const meta = metaMap.get(id) || {};
+          const status = internalStatusLabel(meta.activity_state || meta.state || "");
+          const detail = String(meta.activity_detail || meta.detail || meta.status_text || "").trim();
+          return {
+            status,
+            detail,
+            input: "",
+            cursor: 0,
+          };
+        },
+        getDashboardLines: () => {
+          const chrome = multiWindowChromeRef.current;
+          return chrome ? chrome.dashboardLines : [];
+        },
+        getTerminalFocused: () => mwTerminalFocusedRef.current,
+        freezeScreen: (frozen) => {
+          if (frozen) {
+            processStdout.write = () => true;
+          } else {
+            processStdout.write = originalWrite;
+          }
+        },
+        restoreTerminal: () => {
+          const rows = processStdout.rows || 24;
+          originalWrite(`\x1b[1;${rows}r`);
+          originalWrite("\x1b[2J\x1b[H");
+        },
+        onInternalSubmit: (agentId, message) => {
+          sendInternalAgentMessage(agentId, message);
+        },
+        onExit: () => {
+          setMultiWindowActive(false);
+        },
+      });
+      return multiWindowControllerRef.current;
+    }, [props.projectRoot, stdout]);
+
+    const toggleMultiWindow = useCallback(() => createInkMultiWindowToggle({
+      getController: getMultiWindowController,
+      setActive: setMultiWindowActive,
+      logMessage: logInkMessage,
+    })(), [getMultiWindowController, logInkMessage]);
+
+    useEffect(() => () => {
+      const controller = multiWindowControllerRef.current;
+      if (controller && typeof controller.exit === "function") {
+        try { controller.exit(); } catch { /* ignore */ }
+      }
+      multiWindowControllerRef.current = null;
+    }, []);
 
     useEffect(() => {
       internalAgentViewRef.current = internalAgentView;
@@ -1048,6 +1342,45 @@ function createChatApp({ React, ink, props, interactive = true }) {
       } catch { /* ignore */ }
     };
 
+    const reconcileMultiWindowInternalWatches = useCallback(() => {
+      const current = stateRef.current || {};
+      const agents = Array.isArray(current.agents) ? current.agents : [];
+      const next = new Set();
+      if (multiWindowActive) {
+        for (const agentId of agents) {
+          const enterRequest = resolveAgentEnterRequest({
+            agentId,
+            projectRoot: currentProjectRootRef.current || props.projectRoot,
+            activeAgentMeta: current.activeAgentMeta,
+            settings: current.settings,
+          });
+          if (enterRequest && enterRequest.useBus) next.add(agentId);
+        }
+      }
+      const previous = multiWindowWatchedInternalAgentsRef.current;
+      for (const agentId of next) {
+        if (!previous.has(agentId)) sendInternalAgentWatch(agentId, true);
+      }
+      for (const agentId of previous) {
+        if (!next.has(agentId)) sendInternalAgentWatch(agentId, false);
+      }
+      multiWindowWatchedInternalAgentsRef.current = next;
+    }, [multiWindowActive, props.projectRoot, props.daemonConnection]);
+
+    useEffect(() => {
+      if (!multiWindowActive) return;
+      const controller = multiWindowControllerRef.current;
+      if (!controller) return;
+      reconcileMultiWindowInternalWatches();
+      if (typeof controller.syncAgents === "function") controller.syncAgents();
+      if (typeof controller.renderAll === "function") controller.renderAll();
+    }, [multiWindowActive, state.agents, state.logLines, state.draft, state.status, size.cols, size.rows, mwCursor, state.focusMode, state.dashboardView, state.selectedAgentIndex, state.selectedProjectIndex, state.selectedModeIndex, state.selectedProviderIndex, state.selectedCronIndex, mwTerminalFocused, reconcileMultiWindowInternalWatches]);
+
+    useEffect(() => {
+      if (multiWindowActive) return;
+      reconcileMultiWindowInternalWatches();
+    }, [multiWindowActive, reconcileMultiWindowInternalWatches]);
+
     const sendInternalAgentMessage = (agentId, message) => {
       if (!agentId || !message || !props.daemonConnection || typeof props.daemonConnection.send !== "function") return;
       try {
@@ -1074,6 +1407,74 @@ function createChatApp({ React, ink, props, interactive = true }) {
       const aliases = new Set((view.aliases || []).concat([view.agentId, view.label]).filter(Boolean).map(String));
       return aliases.has(text);
     };
+
+    const buildInternalAgentAliases = (agentId) => {
+      const current = stateRef.current || {};
+      const metaMap = current.activeAgentMeta instanceof Map ? current.activeAgentMeta : new Map();
+      const meta = metaMap.get(agentId) || {};
+      return new Set([
+        agentId,
+        meta.nickname,
+        meta.scoped_nickname,
+        meta.display_nickname,
+        meta.fullId,
+      ].filter(Boolean).map(String));
+    };
+
+    const writeMultiWindowInternalEvent = useCallback((data = {}) => {
+      const controller = multiWindowControllerRef.current;
+      if (!multiWindowActive || !controller || typeof controller.writeToPane !== "function") return false;
+      const watched = multiWindowWatchedInternalAgentsRef.current;
+      if (!watched || watched.size === 0) return false;
+
+      let handled = false;
+      for (const agentId of watched) {
+        const aliases = buildInternalAgentAliases(agentId);
+        const publisher = String(data.publisher || (data.event === "broadcast" ? "broadcast" : "bus"));
+        const target = String(data.target || data.subscriber || "");
+        const fromAgent = aliases.has(publisher);
+        const toAgent = aliases.has(target) || aliases.has(String(data.subscriber || ""));
+        if (!fromAgent && !toAgent) continue;
+        if (data.silent) {
+          handled = true;
+          continue;
+        }
+        if (data.source === "chat-internal-agent-view" && toAgent && !fromAgent) {
+          handled = true;
+          continue;
+        }
+        if (data.event === "activity_state_changed") {
+          const state = internalStatusLabel(data.state || data.activity_state || "");
+          const detail = String(data.detail || (data.data && data.data.detail) || data.message || "").trim();
+          controller.writeToPane(agentId, `\r\n[${state}${detail ? ` · ${detail}` : ""}]\r\n`);
+          handled = true;
+          continue;
+        }
+
+        const { displayMessage, streamPayload } = parseInternalBusPayload(data.message || "");
+        if (streamPayload) {
+          if (!fromAgent) {
+            handled = true;
+            continue;
+          }
+          const delta = typeof streamPayload.delta === "string"
+            ? streamPayload.delta.replace(/\\r\\n/g, "\n").replace(/\\n/g, "\n").replace(/\\r/g, "\n")
+            : "";
+          if (delta) controller.writeToPane(agentId, delta);
+          if (streamPayload.done) controller.writeToPane(agentId, "\r\n");
+          handled = true;
+          continue;
+        }
+        if (!displayMessage) {
+          handled = true;
+          continue;
+        }
+        const prefix = fromAgent ? "* " : "> ";
+        controller.writeToPane(agentId, `${prefix}${displayMessage.replace(/\n/g, `\r\n  `)}\r\n`);
+        handled = true;
+      }
+      return handled;
+    }, [multiWindowActive]);
 
     const handleInternalStatus = (data = {}) => {
       const view = internalAgentViewRef.current;
@@ -1232,7 +1633,7 @@ function createChatApp({ React, ink, props, interactive = true }) {
           });
         },
         enqueueBusStatus: (item = {}) => setStatusText(item.text || "Processing bus message", { type: "typing" }),
-        resolveBusStatus: (item = {}) => setStatusText(item.text || "Bus message processed", { type: "typing" }),
+        resolveBusStatus: (item = {}) => setStatusText(item.text || "Bus message processed", { type: "done" }),
         getPending: () => pendingRef.current,
         setPending: (value) => { pendingRef.current = value || null; },
         resolveAgentDisplayName: (value) => {
@@ -1311,13 +1712,16 @@ function createChatApp({ React, ink, props, interactive = true }) {
           requestDaemonStatus();
           return;
         }
+        if (msg.type === IPC_RESPONSE_TYPES.BUS) {
+          writeMultiWindowInternalEvent(msg.data || {});
+        }
         router.handleMessage(msg);
       });
       conn.connect();
       return () => {
         try { if (typeof conn.close === "function") conn.close(); } catch { /* ignore */ }
       };
-    }, [interactive, logInkMessage, requestDaemonStatus, setStatusText, updateDashboardFromStatus]);
+    }, [interactive, logInkMessage, requestDaemonStatus, setStatusText, updateDashboardFromStatus, writeMultiWindowInternalEvent]);
 
     // commandExecutor wiring. The blessed implementation reuses this
     // module to dispatch every slash command (~30 callbacks). We adapt
@@ -1429,12 +1833,13 @@ function createChatApp({ React, ink, props, interactive = true }) {
             }
             return switchProject(targetRoot, { focusInput: true });
           },
+          toggleMultiWindow,
         });
       } catch (err) {
         dispatch({ type: "log/append", text: `Error: command executor unavailable (${err && err.message ? err.message : err})` });
       }
       return undefined;
-    }, [interactive, logInkMessage, requestDaemonStatus, setStatusText]);
+    }, [interactive, logInkMessage, requestDaemonStatus, setStatusText, toggleMultiWindow]);
 
     // Periodic STATUS poll to keep the agents footer fresh, mirroring
     // blessed's requestStatus on a timer.
@@ -1478,7 +1883,8 @@ function createChatApp({ React, ink, props, interactive = true }) {
     useEffect(() => {
       const internalStatus = state.viewingAgentId ? internalStatusLabel(internalAgentView.status) : "ready";
       const internalActive = internalStatus !== "ready";
-      if ((!state.status.message || state.status.type === "none") && !internalActive) return undefined;
+      const statusAnimated = state.status.message && isAnimatedStatusType(state.status.type);
+      if ((!statusAnimated) && !internalActive) return undefined;
       const timer = setInterval(() => setSpinnerTick((t) => t + 1), 100);
       return () => clearInterval(timer);
     }, [state.status.message, state.status.type, state.viewingAgentId, internalAgentView.status]);
@@ -2025,6 +2431,9 @@ function createChatApp({ React, ink, props, interactive = true }) {
         setCompletionWindowStart(Math.max(0, completions.length - POPUP_PAGE_SIZE));
       }
     }, [completions.length, completionIndex, completionWindowStart]);
+    useEffect(() => {
+      if (multiWindowActive) setMwCursor(String(state.draft || "").length);
+    }, [draftVersion]);
     const completionsOpen = completions.length > 0 && state.draft !== completionSuppressedDraft;
     const acceptCompletion = useCallback(() => {
       if (!completionsOpen) return false;
@@ -2056,6 +2465,18 @@ function createChatApp({ React, ink, props, interactive = true }) {
           agentMeta && agentMeta.display_nickname,
         ].filter(Boolean).map(String),
       };
+    };
+
+    const activateExternalAgent = (agentId) => {
+      const id = String(agentId || "").trim();
+      if (!id) return;
+      try {
+        const AgentActivator = require("../../bus/activate");
+        const activator = new AgentActivator(currentProjectRoot || props.projectRoot);
+        void activator.activate(id);
+      } catch (err) {
+        logInkMessage("error", `✗ Failed to activate ${id}: ${err && err.message ? err.message : "unknown error"}`);
+      }
     };
 
     const enterInternalAgentView = (enterRequest = {}) => {
@@ -2150,8 +2571,17 @@ function createChatApp({ React, ink, props, interactive = true }) {
           return true;
         }
         const payload = buildAgentEnterPayload(agentId);
-        if (payload && payload.useBus) {
+        const action = resolveDashboardAgentEnterAction(payload);
+        if (action === "internal") {
           enterInternalAgentView(payload);
+          return true;
+        }
+        if (action === "activate") {
+          if (state.viewingAgentId) sendInternalAgentWatch(state.viewingAgentId, false);
+          dispatch({ type: "agentView/exit" });
+          dispatch({ type: "view/set", view: "agents" });
+          dispatch({ type: "focus/set", mode: "input" });
+          activateExternalAgent(agentId);
           return true;
         }
         if (payload && typeof props.requestEnterAgentView === "function") {
@@ -2278,6 +2708,58 @@ function createChatApp({ React, ink, props, interactive = true }) {
     };
 
     useInput((input, key) => {
+      if (multiWindowActive) {
+        const controller = multiWindowControllerRef.current;
+        const termFocused = mwTerminalFocusedRef.current;
+        if (key.ctrl && input === "q") {
+          if (controller && typeof controller.handleKey === "function") {
+            controller.handleKey({ name: "q", ctrl: true, sequence: "" });
+          }
+          mwTerminalFocusedRef.current = false;
+          setMwTerminalFocused(false);
+          return;
+        }
+        if (key.ctrl && input === "w") {
+          const agents = controller ? controller.getAgentIds() : [];
+          if (agents.length === 0) return;
+          if (!termFocused) {
+            if (controller) controller.focusAgent(agents[0]);
+            mwTerminalFocusedRef.current = true;
+            setMwTerminalFocused(true);
+          } else {
+            const current = controller ? controller.getFocused() : null;
+            const idx = current ? agents.indexOf(current) : -1;
+            if (idx >= 0 && idx < agents.length - 1) {
+              controller.focusAgent(agents[idx + 1]);
+            } else {
+              mwTerminalFocusedRef.current = false;
+              setMwTerminalFocused(false);
+              if (controller) controller.focusAgent(agents[0]);
+            }
+          }
+          if (controller) controller.renderAll();
+          return;
+        }
+        if (termFocused && controller && typeof controller.sendInput === "function") {
+          const now = Date.now();
+          const last = mwLastInputRef.current;
+          if (input === " " && !key.ctrl && !key.meta && isCJK(last.char) && now - last.time < 150) {
+            return;
+          }
+          const raw = inkKeyToRaw(input, key);
+          if (raw) {
+            const cleaned = raw.length > 1 && /[⺀-鿿가-힯豈-﫿︰-﹏]/.test(raw)
+              ? raw.replace(/ +$/, "")
+              : raw;
+            if (cleaned) {
+              controller.sendInput(cleaned);
+              const lastChar = cleaned[cleaned.length - 1];
+              mwLastInputRef.current = { char: lastChar, time: now };
+            }
+          }
+          return;
+        }
+      }
       if (key.ctrl && input === "c") { exit(); return; }
       if (key.ctrl && input === "o") { dispatch({ type: "merge/expand" }); return; }
       if (state.viewingAgentId) {
@@ -2353,14 +2835,33 @@ function createChatApp({ React, ink, props, interactive = true }) {
           && state.agentSelectionMode
           && state.selectedAgentIndex >= 0) {
         const agentId = displayAgents[state.selectedAgentIndex];
-        if (agentId && typeof props.requestEnterAgentView === "function") {
+        if (agentId && multiWindowActive) {
+          const controller = multiWindowControllerRef.current;
+          if (controller && typeof controller.focusAgent === "function") {
+            controller.focusAgent(agentId);
+          }
+          setMwTerminalFocused(true);
+          mwTerminalFocusedRef.current = true;
+          dispatch({ type: "focus/set", mode: "input" });
+          return;
+        }
+        if (agentId) {
           const enterPayload = buildAgentEnterPayload(agentId);
-          if (enterPayload.useBus) {
+          const action = resolveDashboardAgentEnterAction(enterPayload);
+          if (action === "internal") {
             enterInternalAgentView(enterPayload);
             return;
           }
-          props.requestEnterAgentView(agentId, enterPayload);
-          exit();
+          if (action === "activate") {
+            dispatch({ type: "agents/clearTarget" });
+            dispatch({ type: "focus/set", mode: "input" });
+            activateExternalAgent(agentId);
+            return;
+          }
+          if (typeof props.requestEnterAgentView === "function") {
+            props.requestEnterAgentView(agentId, enterPayload);
+            exit();
+          }
         }
         return;
       }
@@ -2369,10 +2870,7 @@ function createChatApp({ React, ink, props, interactive = true }) {
       // Ctrl+X stops it.
       if (state.focusMode === "dashboard" && state.dashboardView === "projects" && state.projects.length === 0) {
         if (key.downArrow) {
-          dispatch({ type: "view/set", view: "agents" });
-          if (displayAgents.length > 0 && state.selectedAgentIndex < 0) {
-            dispatch({ type: "agents/select", index: 0 });
-          }
+          for (const action of buildEmptyProjectsDownActions(state, displayAgents)) dispatch(action);
           return;
         }
         if (key.upArrow || key.return || key.escape) {
@@ -2603,6 +3101,76 @@ function createChatApp({ React, ink, props, interactive = true }) {
           if (key.return) { dispatch({ type: "focus/set", mode: "input" }); return; }
         }
       }
+
+      // Multi-window typing handler: replicates MultilineInput's key handling
+      // so both modes share the same input behavior.
+      if (multiWindowActive && state.focusMode !== "dashboard") {
+        const intercepted = completionsOpen && (key.upArrow || key.downArrow || key.leftArrow || key.rightArrow || key.return);
+        if (intercepted) return;
+        if (key.return) {
+          if (key.meta) {
+            const before = (state.draft || "").slice(0, mwCursor);
+            const after = (state.draft || "").slice(mwCursor);
+            dispatch({ type: "draft/set", value: `${before}\n${after}` });
+            setMwCursor(mwCursor + 1);
+            return;
+          }
+          const value = String(state.draft || "").trim();
+          if (value) { submit(value); setMwCursor(0); }
+          return;
+        }
+        if (key.escape) {
+          if (state.agentSelectionMode) { dispatch({ type: "agents/clearTarget" }); return; }
+          if (state.draft) { dispatch({ type: "draft/clear" }); setMwCursor(0); }
+          else if (state.status && state.status.message) { dispatch({ type: "status/idle" }); }
+          return;
+        }
+        if (key.ctrl) {
+          if (input === "a") { setMwCursor(fmt.moveCursorToVisualLineBoundary({ cursorPos: mwCursor, inputValue: state.draft || "", width: inputWidth, boundary: "start" })); return; }
+          if (input === "e") { setMwCursor(fmt.moveCursorToVisualLineBoundary({ cursorPos: mwCursor, inputValue: state.draft || "", width: inputWidth, boundary: "end" })); return; }
+          if (input === "b") { setMwCursor(fmt.moveCursorHorizontally(mwCursor, state.draft || "", "left")); return; }
+          if (input === "f") { setMwCursor(fmt.moveCursorHorizontally(mwCursor, state.draft || "", "right")); return; }
+          if (input === "d") { const d = state.draft || ""; if (mwCursor < d.length) { dispatch({ type: "draft/set", value: d.slice(0, mwCursor) + d.slice(mwCursor + 1) }); } return; }
+          if (input === "h") { const d = state.draft || ""; if (mwCursor > 0) { dispatch({ type: "draft/set", value: d.slice(0, mwCursor - 1) + d.slice(mwCursor) }); setMwCursor(mwCursor - 1); } return; }
+          if (input === "k") { dispatch({ type: "draft/set", value: (state.draft || "").slice(0, mwCursor) }); return; }
+          if (input === "u") { dispatch({ type: "draft/set", value: (state.draft || "").slice(mwCursor) }); setMwCursor(0); return; }
+          if (input === "w") { const r = fmt.deleteWordBeforeCursor(state.draft || "", mwCursor); dispatch({ type: "draft/set", value: r.value }); setMwCursor(r.cursorPos); return; }
+          return;
+        }
+        if (key.meta) {
+          if (input === "b") { setMwCursor(fmt.moveCursorByWord(state.draft || "", mwCursor, "backward")); return; }
+          if (input === "f") { setMwCursor(fmt.moveCursorByWord(state.draft || "", mwCursor, "forward")); return; }
+          if (input === "d") { const end = fmt.moveCursorByWord(state.draft || "", mwCursor, "forward"); const d = state.draft || ""; dispatch({ type: "draft/set", value: d.slice(0, mwCursor) + d.slice(end) }); return; }
+        }
+        if (key.backspace || key.delete) {
+          const d = state.draft || "";
+          if (key.meta || key.ctrl) { const r = fmt.deleteWordBeforeCursor(d, mwCursor); dispatch({ type: "draft/set", value: r.value }); setMwCursor(r.cursorPos); }
+          else if (mwCursor > 0) { dispatch({ type: "draft/set", value: d.slice(0, mwCursor - 1) + d.slice(mwCursor) }); setMwCursor(mwCursor - 1); }
+          return;
+        }
+        if (key.leftArrow) {
+          if (!state.draft && typeof onArrowSideAtEmpty === "function") { onArrowSideAtEmpty("left"); return; }
+          setMwCursor(fmt.moveCursorHorizontally(mwCursor, state.draft || "", "left"));
+          return;
+        }
+        if (key.rightArrow) {
+          if (!state.draft && typeof onArrowSideAtEmpty === "function") { onArrowSideAtEmpty("right"); return; }
+          setMwCursor(fmt.moveCursorHorizontally(mwCursor, state.draft || "", "right"));
+          return;
+        }
+        if (key.upArrow) { onArrowUpAtTop(); return; }
+        if (key.downArrow) { onArrowDownAtBottom(state.draft); return; }
+        if (input && !key.ctrl && !key.meta) {
+          const filtered = input.replace(/[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]/g, "");
+          if (filtered) {
+            const d = state.draft || "";
+            dispatch({ type: "draft/set", value: d.slice(0, mwCursor) + filtered + d.slice(mwCursor) });
+            setMwCursor(mwCursor + filtered.length);
+          }
+          return;
+        }
+        return;
+      }
     }, { isActive: interactive });
 
     const statusText = computeStatusText(state.status, spinnerTick);
@@ -2615,6 +3183,105 @@ function createChatApp({ React, ink, props, interactive = true }) {
       if (visibleTargetAgentLabel) return `${projectPrefix}›@${visibleTargetAgentLabel} `;
       return `${projectPrefix}› `;
     })();
+
+    if (multiWindowActive) {
+      const { renderDashboardLines } = require("./DashboardBar");
+      const clampedCursor = fmt.clampCursorPos(mwCursor, state.draft || "");
+      multiWindowChromeRef.current = {
+        statusText,
+        promptPrefix,
+        draft: state.draft || "",
+        cursor: clampedCursor,
+        completions: completionsOpen ? completions : [],
+        completionIndex: completionsOpen ? completionIndex : -1,
+        completionWindowStart: completionsOpen ? completionWindowStart : 0,
+        completionPageSize: POPUP_PAGE_SIZE,
+        dashboardLines: renderDashboardLines({
+          dashboardView: state.dashboardView,
+          focusMode: state.focusMode,
+          globalMode: state.globalMode,
+          globalScope: state.globalScope,
+          activeAgents: displayAgents,
+          activeAgentMeta: displayAgentMeta,
+          activeAgentId: targetAgentId || "",
+          selectedAgentIndex: state.selectedAgentIndex,
+          agentListWindowStart: state.agentListWindowStart,
+          projectListWindowStart: state.projectListWindowStart,
+          maxProjectWindow: 5,
+          maxWidth: Math.max(20, size.cols || 80),
+          getAgentLabel: (id) => getAgentLabelFor(displayAgentMeta.get(id), id),
+          getAgentState: (id) => {
+            const meta = displayAgentMeta.get(id);
+            return meta && typeof meta.activity_state === "string" ? meta.activity_state : "";
+          },
+          launchMode: state.settings.launchMode,
+          agentProvider: state.settings.agentProvider,
+          modeOptions: state.modeOptions,
+          selectedModeIndex: state.selectedModeIndex,
+          providerOptions: state.providerOptions,
+          selectedProviderIndex: state.selectedProviderIndex,
+          cronTasks: state.cronTasks,
+          selectedCronIndex: state.selectedCronIndex,
+          projects: state.projects,
+          selectedProjectIndex: state.selectedProjectIndex,
+          activeProjectRoot: currentProjectRoot,
+          dashHints: buildDashHints(state, targetAgentLabel),
+        }),
+      };
+    }
+
+    useEffect(() => {
+      if (!multiWindowActive) return;
+      const controller = multiWindowControllerRef.current;
+      if (controller && typeof controller.renderAll === "function") {
+        controller.renderAll();
+      }
+    }, [multiWindowActive, completionsOpen, completions.length, completionIndex, completionWindowStart]);
+
+    if (multiWindowActive) {
+      return null;
+    }
+
+    const renderChatLogLine = (item) => {
+      const row = classifyChatLogLine((item && item.text) || "");
+      const key = item && item.id ? item.id : `log-${row.body}`;
+      if (row.kind === "spacer") {
+        return h(Text, { key, color: "gray" }, " ");
+      }
+      const palette = {
+        assistant: { marker: "cyan", speaker: "white", body: undefined, bold: true },
+        agent: { marker: "cyan", speaker: "cyan", body: undefined, bold: false },
+        error: { marker: "red", speaker: "red", body: "red", bold: true },
+        success: { marker: "green", speaker: "green", body: "green", bold: false },
+        divider: { marker: "gray", speaker: "gray", body: "gray", bold: false },
+        banner: { marker: "cyan", speaker: "cyan", body: "cyan", bold: true },
+        meta: { marker: "gray", speaker: "gray", body: "gray", bold: false },
+        plain: { marker: "gray", speaker: "gray", body: undefined, bold: false },
+      };
+      const colors = palette[row.kind] || palette.plain;
+      if (row.kind === "divider") {
+        return h(Box, { key, marginBottom: 1 },
+          h(Text, { color: colors.body, wrap: "truncate" }, row.body),
+        );
+      }
+      if (row.kind === "banner") {
+        return h(Box, { key, marginBottom: 1 },
+          h(Text, { color: colors.body, bold: true, wrap: "truncate" }, row.body),
+        );
+      }
+      return h(Box, { key, width: "100%", marginBottom: 1 },
+        h(Box, { width: 2 },
+          h(Text, { color: colors.marker, bold: row.kind === "error" }, row.marker || " "),
+        ),
+        row.speaker
+          ? h(Text, { color: colors.speaker, bold: colors.bold }, row.speaker)
+          : null,
+        row.speaker
+          ? h(Text, { color: "gray" }, " · ")
+          : null,
+        h(Text, { color: colors.body, wrap: "wrap" }, row.body || " "),
+      );
+    };
 
     if (state.viewingAgentId) {
       const maxWidth = Math.max(20, size.cols || 80);
@@ -2692,7 +3359,7 @@ function createChatApp({ React, ink, props, interactive = true }) {
 
     return h(Box, { flexDirection: "column", width: "100%" },
       h(Box, { flexDirection: "column", width: "100%" },
-        ...state.logLines.map((item) => h(Text, { key: item.id }, item.text || " ")),
+        ...state.logLines.map(renderChatLogLine),
       ),
       state.activeMerge ? h(Box, null,
         h(Text, { color: state.activeMerge.entries.some((e) => e.isError) ? "red" : "cyan" },
@@ -2704,10 +3371,10 @@ function createChatApp({ React, ink, props, interactive = true }) {
           const prefix = state.activeStream.publisher
             ? `${state.activeStream.publisher}: `
             : "";
-          return lines.map((line, idx) => h(Text, {
-            key: `s-${idx}`,
-            color: "cyan",
-          }, idx === 0 ? `${prefix}${line}` : `  ${line}`));
+          return lines.map((line, idx) => renderChatLogLine({
+            id: `s-${idx}`,
+            text: idx === 0 ? `${prefix}${line}` : `  ${line}`,
+          }));
         })(),
       ) : null,
       h(Box, { marginTop: 1, width: "100%" },
@@ -2837,6 +3504,15 @@ function computeStatusText(status, spinnerTick) {
   const message = String((status && status.message) || "");
   if (!message) return "CHAT · Ready";
   const type = String((status && status.type) || "thinking");
+  if (type === "done" || type === "success") {
+    const clean = stripBlessedTags(message).trim();
+    return /^[✓✔]/.test(clean) ? clean : `✓ ${clean}`;
+  }
+  if (type === "error") {
+    const clean = stripBlessedTags(message).trim();
+    return /^[✗!]/.test(clean) ? clean : `✗ ${clean}`;
+  }
+  if (!isAnimatedStatusType(type)) return stripBlessedTags(message).trim() || "CHAT · Ready";
   const indicators = fmt.STATUS_INDICATORS[type] || fmt.STATUS_INDICATORS.thinking;
   const indicator = indicators[Math.max(0, Math.floor(Number(spinnerTick) || 0)) % indicators.length];
   const startedAt = Number.isFinite(status && status.startedAt) ? status.startedAt : 0;
@@ -2981,10 +3657,18 @@ module.exports = {
   buildDirectBusSendRequest,
   buildPromptIpcRequest,
   chatHistoryOptionsForScope,
+  classifyChatLogLine,
+  createInkMultiWindowToggle,
   resolveActiveAgentId,
+  resolveInjectSockPathForAgent,
   resolveAgentEnterRequest,
+  resolveDashboardAgentEnterAction,
+  buildEmptyProjectsDownActions,
   buildInternalLogRows,
+  computeStatusText,
   computeInternalStatusText,
+  inferStatusType,
+  isAnimatedStatusType,
   resolveInternalKeyName,
   isInternalViewingAgent,
   applyInternalAgentTermWrite,

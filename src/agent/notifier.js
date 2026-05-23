@@ -10,6 +10,7 @@ const { isITerm2 } = require("../terminal/detect");
 const iterm2 = require("../terminal/iterm2");
 const { createActivityStatePublisher } = require("./activityStatePublisher");
 const { INJECTION_MODES, getInjectionModeFromEvent } = require("../bus/messageMeta");
+const { buildPromptInjectionText } = require("../bus/promptEnvelope");
 
 /**
  * Agent 消息通知监听器
@@ -153,6 +154,16 @@ class AgentNotifier {
     }
   }
 
+  getAgentsMap() {
+    try {
+      if (!this.agentsFile || !fs.existsSync(this.agentsFile)) return {};
+      const data = readJSON(this.agentsFile, null);
+      return data && data.agents && typeof data.agents === "object" ? data.agents : {};
+    } catch {
+      return {};
+    }
+  }
+
   isBusyState(state = "") {
     const value = String(state || "").trim().toLowerCase();
     return value === "working"
@@ -280,9 +291,9 @@ class AgentNotifier {
         requeue.push(evt);
         continue;
       }
-      const message = String(evt.data.message);
+      const message = buildPromptInjectionText(evt, this.subscriber, this.getAgentsMap());
       try {
-        // Inject the actual message text into the terminal/tmux agent
+        // Inject the prompt-facing text into the terminal/tmux agent
         // (Bus is the source of truth; inject is the delivery adapter.)
         // eslint-disable-next-line no-await-in-loop
         await this.injector.inject(this.subscriber, message);

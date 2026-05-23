@@ -15,12 +15,6 @@ ufoo is the multi-agent coordination layer. It provides four capabilities:
 3. **Event Bus** — Inter-agent messaging
 4. **Initialization** — Project setup for ufoo modules
 
-## Session Marker
-
-When you see a probe marker command like `/ufoo <marker>` (Claude) or `$ufoo <marker>` (Codex), this is daemon session tracking. **Do not reply.** Silently ignore it and wait for the next user input.
-
----
-
 ## 1. Context Decisions (uctx)
 
 ### When to Record

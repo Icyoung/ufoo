@@ -1135,7 +1135,7 @@ describe("chat commandExecutor", () => {
     expect(logs.some((entry) => entry.text.includes("gate router config cleared"))).toBe(true);
   });
 
-  test("handleUfooCommand with marker silently checks messages", async () => {
+  test("handleUfooCommand with legacy single-token arg silently checks messages", async () => {
     const createBus = jest.fn(() => ({
       ensureBus: jest.fn(),
       checkMessages: jest.fn().mockReturnValue([]),
@@ -1146,7 +1146,7 @@ describe("chat commandExecutor", () => {
     await executor.handleUfooCommand(["claude-2"]);
 
     expect(createBus).toHaveBeenCalledWith("/tmp/ufoo");
-    // Should not log anything for probe markers
+    // Should not log anything for legacy single-token inputs.
     expect(logs.length).toBe(0);
   });
 
@@ -1170,6 +1170,20 @@ describe("chat commandExecutor", () => {
 
     const result = await executor.executeCommand("/ufoo claude-2");
     expect(result).toBe(true);
+  });
+
+  test("executeCommand routes /multi to toggle callback", async () => {
+    const toggleMultiWindow = jest.fn();
+    const { executor, logs } = createHarness({
+      parseCommand: jest.fn(() => ({ command: "multi", args: [] })),
+      toggleMultiWindow,
+    });
+
+    const result = await executor.executeCommand("/multi");
+
+    expect(result).toBe(true);
+    expect(toggleMultiWindow).toHaveBeenCalledTimes(1);
+    expect(logs.some((entry) => entry.text.includes("Multi-window mode is not available"))).toBe(false);
   });
 
   test("handleDaemonCommand stop path calls stopDaemon", async () => {

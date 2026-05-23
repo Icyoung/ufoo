@@ -1,7 +1,29 @@
-const DEFAULT_ATTR = { fg: 7, bg: 0, bold: false, dim: false, italic: false, underline: false, inverse: false };
+const DEFAULT_ATTR = { fg: 7, bg: 0, bold: false, dim: false, italic: false, underline: false, inverse: false, fgRgb: null, bgRgb: null };
 
-function createCell(char = " ", attr = DEFAULT_ATTR) {
-  return { char, attr: { ...attr } };
+function isWide(ch) {
+  if (!ch) return false;
+  const code = ch.codePointAt(0);
+  if (code < 0x1100) return false;
+  return (
+    (code >= 0x1100 && code <= 0x115f) ||
+    (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f) ||
+    (code >= 0xac00 && code <= 0xd7a3) ||
+    (code >= 0xf900 && code <= 0xfaff) ||
+    (code >= 0xfe10 && code <= 0xfe6f) ||
+    (code >= 0xff01 && code <= 0xff60) ||
+    (code >= 0xffe0 && code <= 0xffe6) ||
+    (code >= 0x20000 && code <= 0x2fffd) ||
+    (code >= 0x30000 && code <= 0x3fffd) ||
+    (code >= 0x1f300 && code <= 0x1f9ff)
+  );
+}
+
+function cellWidth(ch) {
+  return isWide(ch) ? 2 : 1;
+}
+
+function createCell(char = " ", attr = DEFAULT_ATTR, wideContinuation = false) {
+  return { char, attr: { ...attr }, wideContinuation };
 }
 
 function createVirtualTerminal(cols = 80, rows = 24) {
@@ -47,8 +69,22 @@ function createVirtualTerminal(cols = 80, rows = 24) {
     buffer.splice(top, 0, createRow(cols));
     dirty = true;
   }
+
+  function clearWideAt(row, col) {
+    const line = buffer[row];
+    if (!line || col < 0 || col >= cols) return;
+    if (line[col]?.wideContinuation && col > 0) {
+      line[col - 1] = createCell();
+      line[col] = createCell();
+    } else if (isWide(line[col]?.char) && col + 1 < cols && line[col + 1]?.wideContinuation) {
+      line[col] = createCell();
+      line[col + 1] = createCell();
+    }
+  }
+
   function putChar(ch) {
-    if (cursorCol >= cols) {
+    const width = cellWidth(ch);
+    if (cursorCol >= cols || (width === 2 && cursorCol >= cols - 1)) {
       cursorCol = 0;
       cursorRow++;
       if (cursorRow > scrollBottom) {
@@ -57,9 +93,14 @@ function createVirtualTerminal(cols = 80, rows = 24) {
       }
     }
     if (buffer[cursorRow]) {
+      clearWideAt(cursorRow, cursorCol);
+      if (width === 2) clearWideAt(cursorRow, cursorCol + 1);
       buffer[cursorRow][cursorCol] = createCell(ch, currentAttr);
+      if (width === 2 && cursorCol + 1 < cols) {
+        buffer[cursorRow][cursorCol + 1] = createCell("", currentAttr, true);
+      }
     }
-    cursorCol++;
+    cursorCol += width;
     dirty = true;
   }
 
@@ -103,14 +144,20 @@ function createVirtualTerminal(cols = 80, rows = 24) {
       else if (p === 23) { currentAttr.italic = false; }
       else if (p === 24) { currentAttr.underline = false; }
       else if (p === 27) { currentAttr.inverse = false; }
-      else if (p >= 30 && p <= 37) { currentAttr.fg = p - 30; }
-      else if (p === 38 && params[i + 1] === 5) { currentAttr.fg = params[i + 2] || 0; i += 2; }
-      else if (p === 39) { currentAttr.fg = 7; }
-      else if (p >= 40 && p <= 47) { currentAttr.bg = p - 40; }
-      else if (p === 48 && params[i + 1] === 5) { currentAttr.bg = params[i + 2] || 0; i += 2; }
-      else if (p === 49) { currentAttr.bg = 0; }
-      else if (p >= 90 && p <= 97) { currentAttr.fg = p - 90 + 8; }
-      else if (p >= 100 && p <= 107) { currentAttr.bg = p - 100 + 8; }
+      else if (p >= 30 && p <= 37) { currentAttr.fg = p - 30; currentAttr.fgRgb = null; }
+      else if (p === 38) {
+        if (params[i + 1] === 5) { currentAttr.fg = params[i + 2] || 0; currentAttr.fgRgb = null; i += 2; }
+        else if (params[i + 1] === 2) { currentAttr.fgRgb = [params[i + 2] || 0, params[i + 3] || 0, params[i + 4] || 0]; i += 4; }
+      }
+      else if (p === 39) { currentAttr.fg = 7; currentAttr.fgRgb = null; }
+      else if (p >= 40 && p <= 47) { currentAttr.bg = p - 40; currentAttr.bgRgb = null; }
+      else if (p === 48) {
+        if (params[i + 1] === 5) { currentAttr.bg = params[i + 2] || 0; currentAttr.bgRgb = null; i += 2; }
+        else if (params[i + 1] === 2) { currentAttr.bgRgb = [params[i + 2] || 0, params[i + 3] || 0, params[i + 4] || 0]; i += 4; }
+      }
+      else if (p === 49) { currentAttr.bg = 0; currentAttr.bgRgb = null; }
+      else if (p >= 90 && p <= 97) { currentAttr.fg = p - 90 + 8; currentAttr.fgRgb = null; }
+      else if (p >= 100 && p <= 107) { currentAttr.bg = p - 100 + 8; currentAttr.bgRgb = null; }
     }
     dirty = true;
   }
@@ -188,6 +235,13 @@ function createVirtualTerminal(cols = 80, rows = 24) {
             scrollUp();
           }
           i += 2;
+        } else if (str[i + 1] === "]" || str[i + 1] === "P" || str[i + 1] === "_") {
+          i += 2;
+          while (i < str.length) {
+            if (str[i] === "\x07") { i++; break; }
+            if (str[i] === "\x1b" && str[i + 1] === "\\") { i += 2; break; }
+            i++;
+          }
         } else {
           i += 2;
         }
@@ -210,8 +264,9 @@ function createVirtualTerminal(cols = 80, rows = 24) {
       } else if (ch.charCodeAt(0) < 32) {
         i++;
       } else {
-        putChar(ch);
-        i++;
+        const glyph = Array.from(str.slice(i))[0] || ch;
+        putChar(glyph);
+        i += glyph.length;
       }
     }
   }

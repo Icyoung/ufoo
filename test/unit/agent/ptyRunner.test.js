@@ -1,5 +1,6 @@
 const {
   appendStartupBootstrapArg,
+  buildPtyInputFromEvent,
   parseInputMessage,
   resolvePtyBootstrapArgs,
   resolveCommand,
@@ -26,6 +27,75 @@ describe("agent ptyRunner input parsing", () => {
     expect(parseInputMessage("plain task")).toEqual({
       raw: false,
       text: "plain task",
+    });
+  });
+
+  test("builds manual prompt envelope for chat-direct events", () => {
+    const input = buildPtyInputFromEvent(
+      {
+        event: "message",
+        publisher: "ufoo-agent",
+        target: "codex:abc",
+        data: { message: "do work", source: "chat-direct" },
+      },
+      "codex:abc",
+      {
+        "codex:abc": {
+          nickname: "worker",
+        },
+      }
+    );
+
+    expect(input).toEqual({
+      raw: false,
+      text: "[manual]<to:codex:abc(worker)>\ndo work",
+    });
+  });
+
+  test("builds bus prompt envelope for pty events with tags", () => {
+    const input = buildPtyInputFromEvent(
+      {
+        event: "message",
+        publisher: "codex:sender",
+        target: "codex:abc",
+        data: { message: "report body", tags: ["report"], task_id: "T-9" },
+      },
+      "codex:abc",
+      {
+        "codex:sender": {
+          nickname: "planner",
+        },
+      }
+    );
+
+    expect(input).toEqual({
+      raw: false,
+      text: "[ufoo]<from:codex:sender(planner)> [report] [task:T-9]\nreport body",
+    });
+  });
+
+  test("pty raw and stream events bypass prompt envelope", () => {
+    expect(buildPtyInputFromEvent(
+      {
+        event: "message",
+        publisher: "ufoo-agent",
+        data: { message: JSON.stringify({ stream: true, delta: "Working" }) },
+      },
+      "codex:abc",
+      {}
+    )).toBeNull();
+
+    expect(buildPtyInputFromEvent(
+      {
+        event: "message",
+        publisher: "ufoo-agent",
+        data: { message: JSON.stringify({ raw: true, data: "\u001b[A" }) },
+      },
+      "codex:abc",
+      {}
+    )).toEqual({
+      raw: true,
+      text: "\u001b[A",
     });
   });
 

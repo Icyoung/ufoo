@@ -1008,7 +1008,7 @@ function runUcodeBlessedTui({
         }, payload);
         return;
       }
-      if (result.kind === "probe") {
+      if (result.kind === "legacy_ufoo_marker") {
         return;
       }
       if (result.kind === "help" || result.kind === "error") {

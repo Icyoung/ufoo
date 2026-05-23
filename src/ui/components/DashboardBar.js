@@ -672,4 +672,14 @@ function createDashboardBar({ React, ink }) {
   };
 }
 
-module.exports = { createDashboardBar, buildDashboardRows, formatLoopSummary };
+function renderDashboardLines(params) {
+  const maxWidth = params.maxWidth || 80;
+  const rows = buildDashboardRows(params);
+  return rows.map((row) => {
+    if (row.kind === "summary") return renderSummaryRowText(row, maxWidth);
+    if (row.kind === "message") return chalk.gray(truncateToCells(String(row.text || ""), maxWidth));
+    return renderChipRowText(row, maxWidth);
+  });
+}
+
+module.exports = { createDashboardBar, buildDashboardRows, renderDashboardLines, formatLoopSummary };

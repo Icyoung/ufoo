@@ -13,7 +13,7 @@ const { createDaemonIpcServer } = require("./ipcServer");
 const { IPC_REQUEST_TYPES, IPC_RESPONSE_TYPES, BUS_STATUS_PHASES } = require("../shared/eventContract");
 const { getUfooPaths } = require("../ufoo/paths");
 const { upsertProjectRuntime, markProjectStopped } = require("../projects");
-const { scheduleProviderSessionProbe, resolveSessionFromFile, persistProviderSession, loadProviderSessionCache } = require("./providerSessions");
+const { scheduleProviderSessionResolve, resolveSessionFromFile, persistProviderSession, loadProviderSessionCache } = require("./providerSessions");
 const { createTerminalAdapterRouter } = require("../terminal/adapterRouter");
 const { createDaemonCronController } = require("./cronOps");
 const { createGroupOrchestrator } = require("./groupOrchestrator");
@@ -39,7 +39,7 @@ const {
 const { resolveNodeExecutable } = require("../utils/nodeExecutable");
 
 let providerSessions = null;
-let probeHandles = new Map();
+let sessionResolveHandles = new Map();
 let daemonCronController = null;
 let daemonGroupOrchestrator = null;
 const PROJECT_RUNTIME_HEARTBEAT_MS = 10 * 1000;
@@ -611,17 +611,15 @@ async function handleOps(projectRoot, ops = [], processManager = null) {
             op.require_activity_monitor === true || op.requireActivityMonitor === true,
         });
         if (launchResult.mode === "internal" && launchResult.subscriberIds && launchResult.subscriberIds.length > 0) {
-          const probeAgentType = agent === "codex"
+          const sessionResolveAgentType = agent === "codex"
             ? "codex"
             : (agent === "claude" ? "claude-code" : "");
           for (const subscriberId of launchResult.subscriberIds) {
-            if (!probeAgentType) continue;
-            const resolvedNickname = resolveSubscriberNickname(projectRoot, subscriberId) || nickname;
-            const probeHandle = scheduleProviderSessionProbe({
+            if (!sessionResolveAgentType) continue;
+            const sessionResolveHandle = scheduleProviderSessionResolve({
               projectRoot,
               subscriberId,
-              agentType: probeAgentType,
-              nickname: resolvedNickname,
+              agentType: sessionResolveAgentType,
               agentCwd: projectRoot,
               onResolved: (id, resolved) => {
                 if (providerSessions) {
@@ -631,11 +629,11 @@ async function handleOps(projectRoot, ops = [], processManager = null) {
                     updated_at: new Date().toISOString(),
                   });
                 }
-                probeHandles.delete(id);
+                sessionResolveHandles.delete(id);
               },
             });
-            if (probeHandle) {
-              probeHandles.set(subscriberId, probeHandle);
+            if (sessionResolveHandle) {
+              sessionResolveHandles.set(subscriberId, sessionResolveHandle);
             }
           }
         }
@@ -798,21 +796,61 @@ async function dispatchMessages(projectRoot, dispatch = []) {
   const eventBus = new EventBus(projectRoot);
   // Always use "ufoo-agent" as the publisher for daemon messages
   const defaultPublisher = "ufoo-agent";
+  const resolveDispatchTarget = (target) => {
+    const raw = String(target || "").trim();
+    if (!raw || raw === "broadcast") return raw;
+    try {
+      eventBus.ensureBus();
+      eventBus.loadBusData();
+      const agents = eventBus.busData && eventBus.busData.agents && typeof eventBus.busData.agents === "object"
+        ? eventBus.busData.agents
+        : {};
+      if (agents[raw]) return raw;
+
+      const candidates = [raw];
+      const scoped = applyProjectNicknamePrefix(projectRoot, raw);
+      if (scoped && scoped !== raw) candidates.push(scoped);
+
+      for (const candidate of candidates) {
+        for (const [id, meta] of Object.entries(agents)) {
+          if (!meta || meta.status !== "active") continue;
+          if (
+            meta.nickname === candidate
+            || meta.scoped_nickname === candidate
+            || meta.display_nickname === candidate
+          ) {
+            return id;
+          }
+        }
+      }
+
+      if (eventBus.messageManager && eventBus.messageManager.resolveTarget(raw).length > 0) {
+        return raw;
+      }
+    } catch {
+      // Fall through to the original target; send will surface/log the failure below.
+    }
+    return raw;
+  };
   for (const item of dispatch) {
     if (!item || !item.target || !item.message) continue;
     const pub = item.publisher || defaultPublisher;
+    const target = resolveDispatchTarget(item.target);
     const sendOptions = {
       injectionMode: item.injection_mode,
       source: item.source,
     };
     try {
-      if (item.target === "broadcast") {
+      if (target === "broadcast") {
         await eventBus.broadcast(item.message, pub, sendOptions);
       } else {
-        await eventBus.send(item.target, item.message, pub, sendOptions);
+        await eventBus.send(target, item.message, pub, sendOptions);
       }
-    } catch {
-      // ignore dispatch failures
+    } catch (err) {
+      appendControlLog(
+        projectRoot,
+        `dispatch failed target=${JSON.stringify(item.target)} resolved=${JSON.stringify(target)} error=${err && err.message ? err.message : String(err)}`
+      );
     }
   }
 }
@@ -1220,7 +1258,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
 
   // Provider session cache (in-memory)
   providerSessions = loadProviderSessionCache(projectRoot);
-  probeHandles = new Map();
+  sessionResolveHandles = new Map();
   daemonCronController = createDaemonCronController({
     projectRoot,
     dispatch: async ({ taskId, target, message }) => {
@@ -2254,7 +2292,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
         hostName,
         hostSessionId,
         hostCapabilities,
-        skipProbe,
+        skipSessionResolve,
       } = req;
       if (!agentType) {
         socket.write(
@@ -2313,7 +2351,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
           reuseSessionId,
           reuseProviderSessionId,
         };
-        if (skipProbe) joinOptions.skipProbe = true;
+        if (skipSessionResolve) joinOptions.skipSessionResolve = true;
 
         let finalNickname = nickname || "";
         let scopedNickname = applyProjectNicknamePrefix(projectRoot, finalNickname, {
@@ -2342,7 +2380,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
         eventBus.saveBusData();
         const resolvedNickname = resolveSubscriberNickname(projectRoot, subscriberId) || finalNickname || "";
 
-        if (!skipProbe && reuseProviderSessionId) {
+        if (!skipSessionResolve && reuseProviderSessionId) {
           if (providerSessions) {
             providerSessions.set(subscriberId, {
               sessionId: reuseProviderSessionId,
@@ -2352,12 +2390,11 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
           }
         }
 
-        if (!skipProbe) {
-          const probeHandle = scheduleProviderSessionProbe({
+        if (!skipSessionResolve) {
+          const sessionResolveHandle = scheduleProviderSessionResolve({
             projectRoot,
             subscriberId,
             agentType,
-            nickname: resolvedNickname,
             agentCwd: projectRoot,
             onResolved: (id, resolved) => {
               if (providerSessions) {
@@ -2367,11 +2404,11 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
                   updated_at: new Date().toISOString(),
                 });
               }
-              probeHandles.delete(id);
+              sessionResolveHandles.delete(id);
             },
           });
-          if (probeHandle) {
-            probeHandles.set(subscriberId, probeHandle);
+          if (sessionResolveHandle) {
+            sessionResolveHandles.set(subscriberId, sessionResolveHandle);
           }
         }
         socket.write(
@@ -2426,12 +2463,12 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
                 updated_at: new Date().toISOString(),
               });
             }
-            // Cancel the scheduled probe to prevent redundant /ufoo injection
-            const handle = probeHandles.get(subscriberId);
+            // Cancel the scheduled resolver; AGENT_READY already found the session file.
+            const handle = sessionResolveHandles.get(subscriberId);
             if (handle && typeof handle.cancel === "function") {
               handle.cancel();
             }
-            probeHandles.delete(subscriberId);
+            sessionResolveHandles.delete(subscriberId);
             return;
           }
 
@@ -2443,15 +2480,15 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
           }
         }
 
-        // Exhausted retries or no pid — fall back to scheduled probe
-        const probeHandle = probeHandles.get(subscriberId);
-        if (probeHandle && typeof probeHandle.triggerNow === "function") {
-          log(`agent_ready falling back to probe for ${subscriberId}`);
-          probeHandle.triggerNow().catch((err) => {
-            log(`agent_ready probe trigger failed for ${subscriberId}: ${err.message}`);
+        // Exhausted retries or no pid — trigger the scheduled file resolver.
+        const sessionResolveHandle = sessionResolveHandles.get(subscriberId);
+        if (sessionResolveHandle && typeof sessionResolveHandle.triggerNow === "function") {
+          log(`agent_ready triggering scheduled session resolver for ${subscriberId}`);
+          sessionResolveHandle.triggerNow().catch((err) => {
+            log(`agent_ready session resolver trigger failed for ${subscriberId}: ${err.message}`);
           });
         } else {
-          log(`agent_ready no probe handle found for ${subscriberId}`);
+          log(`agent_ready no session resolver handle found for ${subscriberId}`);
         }
       };
 
@@ -2720,4 +2757,11 @@ function stopDaemon(projectRoot, options = {}) {
   return stopped;
 }
 
-module.exports = { startDaemon, stopDaemon, isRunning, cleanupStaleState, socketPath };
+module.exports = {
+  startDaemon,
+  stopDaemon,
+  isRunning,
+  cleanupStaleState,
+  socketPath,
+  dispatchMessages,
+};

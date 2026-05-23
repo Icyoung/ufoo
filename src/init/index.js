@@ -27,7 +27,6 @@ class UfooInit {
     console.log();
 
     if (!controllerMode) {
-      // 确保 AGENTS.md 和 CLAUDE.md 存在
       this.ensureAgentsFiles(project);
     }
 
@@ -35,7 +34,6 @@ class UfooInit {
     this.initCore(project, { controllerMode });
 
     if (!controllerMode) {
-      // 初始化 AGENTS.md 模板
       this.injectAgentsTemplate(project);
     }
 
@@ -67,7 +65,6 @@ class UfooInit {
     const agentsFile = path.join(project, "AGENTS.md");
     const claudeFile = path.join(project, "CLAUDE.md");
 
-    // 创建 AGENTS.md（如果不存在）
     if (!fs.existsSync(agentsFile)) {
       const content = `# Project Instructions
 
@@ -77,7 +74,6 @@ class UfooInit {
       fs.writeFileSync(agentsFile, content, "utf8");
     }
 
-    // 仅在不存在时创建 CLAUDE.md；存在时保留用户文件类型（普通文件或 symlink）
     const claudeStat = this.safeLstat(claudeFile);
     if (!claudeStat) {
       fs.writeFileSync(claudeFile, "AGENTS.md\n", "utf8");
@@ -116,8 +112,16 @@ class UfooInit {
     console.log("[core] Done");
   }
 
+  safeLstat(filePath) {
+    try {
+      return fs.lstatSync(filePath);
+    } catch {
+      return null;
+    }
+  }
+
   /**
-   * 注入 ufoo 模板到 AGENTS.md
+   * 注入 ufoo 模板到 AGENTS.md / CLAUDE.md
    */
   injectAgentsTemplate(project) {
     if (!fs.existsSync(this.agentsTemplate)) {
@@ -142,14 +146,6 @@ class UfooInit {
     console.log("[template] Done");
   }
 
-  safeLstat(filePath) {
-    try {
-      return fs.lstatSync(filePath);
-    } catch {
-      return null;
-    }
-  }
-
   resolveTemplateTargets(project) {
     const agentsFile = path.resolve(path.join(project, "AGENTS.md"));
     const claudeFile = path.resolve(path.join(project, "CLAUDE.md"));
@@ -167,9 +163,7 @@ class UfooInit {
         const rawTarget = fs.readlinkSync(claudeFile);
         const sourceFile = path.resolve(path.dirname(claudeFile), rawTarget);
         const projectRoot = path.resolve(project);
-        const inProject =
-          sourceFile === projectRoot ||
-          sourceFile.startsWith(`${projectRoot}${path.sep}`);
+        const inProject = sourceFile === projectRoot || sourceFile.startsWith(`${projectRoot}${path.sep}`);
         if (inProject) {
           targets.add(sourceFile);
         } else {
@@ -181,7 +175,6 @@ class UfooInit {
       return Array.from(targets);
     }
 
-    // CLAUDE.md 为独立文件时，双文件都注入模板
     targets.add(claudeFile);
     return Array.from(targets);
   }
@@ -194,26 +187,17 @@ class UfooInit {
     const block = `${marker}\n${template}\n${marker}`;
 
     if (content.includes(marker)) {
-      // Replace existing marker block in-place
       const startIdx = content.indexOf(marker);
       const endIdx = content.indexOf(marker, startIdx + marker.length);
       if (endIdx !== -1) {
-        content =
-          content.slice(0, startIdx) +
-          block +
-          content.slice(endIdx + marker.length);
+        content = content.slice(0, startIdx) + block + content.slice(endIdx + marker.length);
       } else {
-        content =
-          content.slice(0, startIdx) + block + content.slice(startIdx + marker.length);
+        content = content.slice(0, startIdx) + block + content.slice(startIdx + marker.length);
       }
     } else {
-      // Insert after first heading line for visibility (not buried at end)
       const headingEnd = this.findFirstHeadingEnd(content);
       if (headingEnd !== -1) {
-        content =
-          content.slice(0, headingEnd) +
-          `\n${block}\n\n` +
-          content.slice(headingEnd);
+        content = content.slice(0, headingEnd) + `\n${block}\n\n` + content.slice(headingEnd);
       } else {
         content = `${block}\n\n${content}`;
       }
@@ -222,9 +206,7 @@ class UfooInit {
   }
 
   findFirstHeadingEnd(content) {
-    // ATX heading: # ... (allow leading indentation and EOF without trailing newline)
     const atxHeading = content.match(/^(?:[ \t]{0,3})#{1,6}[ \t]*[^\n]*(?:\n|$)/m);
-    // Setext heading: text line + underline (=== or ---)
     const setextHeading = content.match(/^[^\n]+\n(?:=+|-+)[ \t]*(?:\n|$)/m);
 
     let bestMatch = null;

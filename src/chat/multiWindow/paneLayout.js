@@ -1,43 +1,69 @@
 function calculatePaneLayout(termCols, termRows, agentCount) {
+  const bottomRows = 5;
+  const safeRows = termRows - 1;
+  const contentHeight = Math.max(1, safeRows - bottomRows);
+  const bottomTop = contentHeight;
+
+  const statusPane = { top: bottomTop, left: 0, width: termCols };
+  const separatorPane = { top: bottomTop + 1, left: 0, width: termCols };
+  const inputPane = { top: bottomTop + 2, left: 0, width: termCols };
+  const inputSepPane = { top: bottomTop + 3, left: 0, width: termCols };
+  const dashboardPane = { top: bottomTop + 4, left: 0, width: termCols };
+
   if (agentCount <= 0) {
-    return { chatPane: { top: 0, left: 0, width: termCols, height: termRows }, agentPanes: [] };
+    return {
+      separatorPane,
+      statusPane,
+      inputPane,
+      inputSepPane,
+      dashboardPane,
+      chatPane: { top: 0, left: 0, width: termCols, height: contentHeight },
+      agentPanes: [],
+    };
   }
 
   const chatWidth = Math.floor(termCols / 3);
   const rightLeft = chatWidth + 1;
   const rightWidth = termCols - chatWidth - 1;
 
-  const chatPane = { top: 0, left: 0, width: chatWidth, height: termRows };
+  const chatPane = { top: 0, left: 0, width: chatWidth, height: contentHeight };
 
-  if (rightWidth < 4 || termRows < 3) {
-    return { chatPane: { top: 0, left: 0, width: termCols, height: termRows }, agentPanes: [] };
+  if (rightWidth < 4 || contentHeight < 3) {
+    return {
+      separatorPane,
+      statusPane,
+      inputPane,
+      inputSepPane,
+      dashboardPane,
+      chatPane: { top: 0, left: 0, width: termCols, height: contentHeight },
+      agentPanes: [],
+    };
   }
 
-  const agentPanes = layoutAgentPanes(rightLeft, rightWidth, termRows, agentCount);
-  return { chatPane, agentPanes };
+  const agentPanes = layoutAgentPanes(rightLeft, rightWidth, contentHeight, agentCount, 0);
+  return { separatorPane, statusPane, inputPane, inputSepPane, dashboardPane, chatPane, agentPanes };
 }
 
-function layoutAgentPanes(left, width, height, count) {
+function layoutAgentPanes(left, width, height, count, topOffset = 0) {
   if (count === 1) {
-    return [{ top: 0, left, width, height }];
+    return [{ top: topOffset, left, width, height }];
   }
   if (count === 2) {
     const h1 = Math.floor(height / 2);
     return [
-      { top: 0, left, width, height: h1 },
-      { top: h1, left, width, height: height - h1 },
+      { top: topOffset, left, width, height: h1 },
+      { top: topOffset + h1, left, width, height: height - h1 },
     ];
   }
 
-  // count >= 3: fill rows of 2, first row gets 1 if odd
   const rowCount = Math.ceil(count / 2);
   const rowHeight = Math.floor(height / rowCount);
   const panes = [];
   let placed = 0;
 
   for (let row = 0; row < rowCount; row++) {
-    const rowTop = row * rowHeight;
-    const actualHeight = row === rowCount - 1 ? height - rowTop : rowHeight;
+    const rowTop = topOffset + row * rowHeight;
+    const actualHeight = row === rowCount - 1 ? height - row * rowHeight : rowHeight;
     const remaining = count - placed;
     const isOddRow = remaining % 2 === 1 && row === 0 && count % 2 === 1;
 

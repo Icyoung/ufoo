@@ -68,7 +68,7 @@ describe("AgentNotifier delivery strategy", () => {
     expect(fs.readFileSync(pendingFile, "utf8")).toContain("hello");
   });
 
-  test("non-ufoo-code drains pending and injects message text", async () => {
+  test("non-ufoo-code drains pending and injects bus prompt envelope", async () => {
     const subscriber = "codex:abc123";
     fs.writeFileSync(
       path.join(projectRoot, ".ufoo", "agent", "all-agents.json"),
@@ -104,13 +104,96 @@ describe("AgentNotifier delivery strategy", () => {
 
     expect(delivered).toBe(1);
     expect(notifier.injector.inject).toHaveBeenCalledTimes(1);
-    expect(notifier.injector.inject).toHaveBeenCalledWith(subscriber, "legacy payload");
+    expect(notifier.injector.inject).toHaveBeenCalledWith(
+      subscriber,
+      "[ufoo]<from:ufoo-agent>\nlegacy payload"
+    );
     // Verify activity_state written to disk via publisher
     const agentsData = JSON.parse(fs.readFileSync(
       path.join(projectRoot, ".ufoo", "agent", "all-agents.json"), "utf8"
     ));
     expect(agentsData.agents[subscriber].activity_state).toBe("working");
     expect(fs.existsSync(pendingFile)).toBe(false);
+  });
+
+  test("chat-direct delivery injects manual target envelope", async () => {
+    const subscriber = "codex:abc123";
+    fs.writeFileSync(
+      path.join(projectRoot, ".ufoo", "agent", "all-agents.json"),
+      JSON.stringify({
+        agents: {
+          [subscriber]: {
+            status: "active",
+            activity_state: "idle",
+            nickname: "worker",
+          },
+        },
+      }, null, 2)
+    );
+    writePending(projectRoot, subscriber, [
+      {
+        seq: 1,
+        event: "message",
+        publisher: "ufoo-agent",
+        target: subscriber,
+        data: { message: "manual payload", source: "chat-direct" },
+      },
+    ]);
+
+    const notifier = new AgentNotifier(projectRoot, subscriber);
+    notifier.injector = {
+      inject: jest.fn().mockResolvedValue(undefined),
+      readTty: jest.fn(() => ""),
+    };
+    notifier.eventBus = {
+      send: jest.fn().mockResolvedValue({ ok: true }),
+    };
+
+    const delivered = await notifier.deliverPending();
+
+    expect(delivered).toBe(1);
+    expect(notifier.injector.inject).toHaveBeenCalledWith(
+      subscriber,
+      "[manual]<to:codex:abc123(worker)>\nmanual payload"
+    );
+  });
+
+  test("raw inject delivery bypasses prompt envelope", async () => {
+    const subscriber = "codex:raw1";
+    fs.writeFileSync(
+      path.join(projectRoot, ".ufoo", "agent", "all-agents.json"),
+      JSON.stringify({
+        agents: {
+          [subscriber]: {
+            status: "active",
+            activity_state: "idle",
+          },
+        },
+      }, null, 2)
+    );
+    writePending(projectRoot, subscriber, [
+      {
+        seq: 1,
+        event: "message",
+        publisher: "ufoo-agent",
+        target: subscriber,
+        data: { message: "raw payload", raw_inject: true },
+      },
+    ]);
+
+    const notifier = new AgentNotifier(projectRoot, subscriber);
+    notifier.injector = {
+      inject: jest.fn().mockResolvedValue(undefined),
+      readTty: jest.fn(() => ""),
+    };
+    notifier.eventBus = {
+      send: jest.fn().mockResolvedValue({ ok: true }),
+    };
+
+    const delivered = await notifier.deliverPending();
+
+    expect(delivered).toBe(1);
+    expect(notifier.injector.inject).toHaveBeenCalledWith(subscriber, "raw payload");
   });
 
   test("busy activity state still delivers immediate messages", async () => {
@@ -148,7 +231,10 @@ describe("AgentNotifier delivery strategy", () => {
     const delivered = await notifier.deliverPending();
 
     expect(delivered).toBe(1);
-    expect(notifier.injector.inject).toHaveBeenCalledWith(subscriber, "task-a");
+    expect(notifier.injector.inject).toHaveBeenCalledWith(
+      subscriber,
+      "[ufoo]<from:ufoo-agent>\ntask-a"
+    );
     expect(fs.existsSync(pendingFile)).toBe(false);
   });
 
@@ -231,7 +317,10 @@ describe("AgentNotifier delivery strategy", () => {
 
     expect(delivered).toBe(1);
     expect(notifier.injector.inject).toHaveBeenCalledTimes(1);
-    expect(notifier.injector.inject).toHaveBeenCalledWith(subscriber, "task-a");
+    expect(notifier.injector.inject).toHaveBeenCalledWith(
+      subscriber,
+      "[ufoo]<from:ufoo-agent>\ntask-a"
+    );
     const pendingRaw = fs.readFileSync(pendingFile, "utf8");
     expect(pendingRaw).toContain("task-b");
     expect(pendingRaw).not.toContain("task-a");

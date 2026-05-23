@@ -476,7 +476,7 @@ class AgentLauncher {
       hostName,
       hostSessionId,
       hostCapabilities,
-      skipProbe: process.env.UFOO_SKIP_SESSION_PROBE === "1",
+      skipSessionResolve: process.env.UFOO_SKIP_SESSION_RESOLVE === "1",
       // 传递旧 session 信息用于复用（仅 terminal/tmux 模式）
       reuseSession: previousSession ? {
         sessionId: previousSession.sessionId,
@@ -729,7 +729,7 @@ class AgentLauncher {
             // Claude Code's Ink TUI renders ❯ prompt before the input handler
             // is fully mounted. Wait a short period for the TUI to be ready to
             // accept injected text, otherwise only the trailing CR is processed
-            // and the probe command is lost. Agy uses the same ink-style TUI
+            // and the injected slash command is lost. Agy uses the same ink-style TUI
             // so it gets the same grace window.
             if (this.agentType === "claude-code" || this.agentType === "agy") {
               await new Promise((r) => setTimeout(r, 800));

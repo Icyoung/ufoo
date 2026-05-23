@@ -14,7 +14,7 @@ const { buildUpstreamAuthFromCredential } = require("./credentials");
 const { listToolsForCallerTier, CALLER_TIERS } = require("../tools");
 const { redactToolCallPayload, redactSecrets } = require("../providerapi/redactor");
 const { buildCachedMemoryPrefix } = require("../memory");
-const { shouldForwardStreamToPublisher } = require("./publisherRouting");
+const { normalizePublisher, shouldForwardStreamToPublisher } = require("./publisherRouting");
 const { appendAgentRegistryDiagnostic } = require("../ufoo/agentRegistryDiagnostics");
 const {
   buildDefaultStartupBootstrapPrompt,
@@ -203,11 +203,20 @@ function createBusSender(projectRoot, subscriber) {
 
 function isChatUiSource(source = "") {
   const value = String(source || "").trim();
-  return value === "chat-direct" || value === "chat-internal-agent-view";
+  return value === "chat-direct"
+    || value === "chat-agent-view"
+    || value === "chat-internal-agent-view";
+}
+
+function isUfooAgentDispatchSource(source = "") {
+  const value = String(source || "").trim();
+  return value === "ufoo-agent" || value === "ufoo-agent-gate-router";
 }
 
 function shouldStreamReplyToPublisher(projectRoot, publisher, evt = {}) {
-  if (isChatUiSource(evt && evt.data ? evt.data.source : "")) return true;
+  const source = evt && evt.data ? evt.data.source : "";
+  if (isChatUiSource(source)) return true;
+  if (normalizePublisher(publisher) === "ufoo-agent" && isUfooAgentDispatchSource(source)) return true;
   return shouldForwardStreamToPublisher(projectRoot, publisher);
 }
 

@@ -174,15 +174,15 @@ describe("chat inputSubmitHandler", () => {
     expect(options.focusInput).toHaveBeenCalled();
   });
 
-  test("group run slash command executes without chat echo", async () => {
+  test("slash command echoes friendly summary instead of raw command", async () => {
     const { options, handler } = createHarness();
 
     await handler.handleSubmit("/group run build-lane");
 
     expect(options.executeCommand).toHaveBeenCalledWith("/group run build-lane");
-    expect(options.logMessage).not.toHaveBeenCalledWith(
+    expect(options.logMessage).toHaveBeenCalledWith(
       "user",
-      "{white-fg}→{/white-fg} ESC(/group run build-lane)"
+      "ESC(Launching group build-lane)"
     );
     expect(options.focusInput).toHaveBeenCalled();
   });

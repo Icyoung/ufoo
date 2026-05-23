@@ -223,7 +223,7 @@ function extractUserText(record) {
   return "";
 }
 
-function isProbeMarker(text) {
+function isLegacyUfooMarker(text) {
   return /^\/ufoo\s+\S+$/.test(text) || /^\$ufoo\s+\S+$/.test(text);
 }
 
@@ -321,7 +321,7 @@ function collectClaudeManualInputs(projectRoot, watermark = {}) {
         if (new Date(record.timestamp).getTime() <= cutoffMs) return;
       }
       const text = extractUserText(record);
-      if (!text || isProbeMarker(text)) return;
+      if (!text || isLegacyUfooMarker(text)) return;
       entries.push({
         ts: record.timestamp || "",
         source: "manual",

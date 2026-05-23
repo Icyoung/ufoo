@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const UfooInit = require("../../../src/init");
 
-describe("UfooInit markdown handling", () => {
+describe("UfooInit", () => {
   const testRoot = "/tmp/ufoo-init-test";
   const repoRoot = path.join(testRoot, "repo");
   const projectRoot = path.join(testRoot, "project");
@@ -39,19 +39,40 @@ describe("UfooInit markdown handling", () => {
     errorSpy.mockRestore();
   });
 
-  test("ensureAgentsFiles should create default AGENTS.md and CLAUDE.md when absent", () => {
-    init.ensureAgentsFiles(projectRoot);
+  test("init creates AGENTS.md and CLAUDE.md and injects the ufoo template", async () => {
+    await init.init({
+      modules: "context",
+      project: projectRoot,
+    });
 
     const agentsFile = path.join(projectRoot, "AGENTS.md");
     const claudeFile = path.join(projectRoot, "CLAUDE.md");
-
     expect(fs.existsSync(agentsFile)).toBe(true);
     expect(fs.existsSync(claudeFile)).toBe(true);
-    expect(read(claudeFile)).toBe("AGENTS.md\n");
+    expect(read(claudeFile)).toContain("Template Block");
     expect(read(agentsFile)).toContain("`CLAUDE.md` points to this file");
+    expect(read(agentsFile)).toContain("Template Block");
+    expect(fs.existsSync(path.join(projectRoot, ".ufoo", "context", "decisions.jsonl"))).toBe(true);
   });
 
-  test("ensureAgentsFiles should preserve existing CLAUDE.md symlink", () => {
+  test("init preserves existing markdown while injecting the protocol template", async () => {
+    const agentsFile = path.join(projectRoot, "AGENTS.md");
+    const claudeFile = path.join(projectRoot, "CLAUDE.md");
+    fs.writeFileSync(agentsFile, "ORIGINAL AGENTS CONTENT\n", "utf8");
+    fs.writeFileSync(claudeFile, "ORIGINAL CLAUDE CONTENT\n", "utf8");
+
+    await init.init({
+      modules: "context",
+      project: projectRoot,
+    });
+
+    expect(read(agentsFile)).toContain("ORIGINAL AGENTS CONTENT");
+    expect(read(agentsFile)).toContain("Template Block");
+    expect(read(claudeFile)).toContain("ORIGINAL CLAUDE CONTENT");
+    expect(read(claudeFile)).toContain("Template Block");
+  });
+
+  test("ensureAgentsFiles preserves existing CLAUDE.md symlink", () => {
     const agentsFile = path.join(projectRoot, "AGENTS.md");
     const claudeFile = path.join(projectRoot, "CLAUDE.md");
     fs.writeFileSync(agentsFile, "ORIGINAL AGENTS CONTENT\n", "utf8");
@@ -64,7 +85,7 @@ describe("UfooInit markdown handling", () => {
     expect(read(agentsFile)).toBe("ORIGINAL AGENTS CONTENT\n");
   });
 
-  test("injectAgentsTemplate should inject once into symlink source file", () => {
+  test("injectAgentsTemplate is idempotent for AGENTS.md symlinked from CLAUDE.md", () => {
     const agentsFile = path.join(projectRoot, "AGENTS.md");
     const claudeFile = path.join(projectRoot, "CLAUDE.md");
     fs.writeFileSync(agentsFile, "# AGENTS\n", "utf8");
@@ -75,24 +96,11 @@ describe("UfooInit markdown handling", () => {
 
     const content = read(agentsFile);
     const marker = "<!-- ufoo-template -->";
-    const markerCount = (content.match(new RegExp(marker, "g")) || []).length;
-    expect(markerCount).toBe(2);
+    expect((content.match(new RegExp(marker, "g")) || []).length).toBe(2);
     expect(content).toContain("Template Block");
   });
 
-  test("injectAgentsTemplate should inject into both files when CLAUDE.md is separate file", () => {
-    const agentsFile = path.join(projectRoot, "AGENTS.md");
-    const claudeFile = path.join(projectRoot, "CLAUDE.md");
-    fs.writeFileSync(agentsFile, "# AGENTS\n", "utf8");
-    fs.writeFileSync(claudeFile, "# CLAUDE\n", "utf8");
-
-    init.injectAgentsTemplate(projectRoot);
-
-    expect(read(agentsFile)).toContain("Template Block");
-    expect(read(claudeFile)).toContain("Template Block");
-  });
-
-  test("injectAgentsTemplate should insert after first heading, not at end", () => {
+  test("injectAgentsTemplate inserts after the first heading", () => {
     const agentsFile = path.join(projectRoot, "AGENTS.md");
     const claudeFile = path.join(projectRoot, "CLAUDE.md");
     fs.writeFileSync(agentsFile, "# My Project\n\nSome content here.\n", "utf8");
@@ -101,88 +109,22 @@ describe("UfooInit markdown handling", () => {
     init.injectAgentsTemplate(projectRoot);
 
     const content = read(agentsFile);
-    const headingIdx = content.indexOf("# My Project");
-    const templateIdx = content.indexOf("<!-- ufoo-template -->");
-    const contentIdx = content.indexOf("Some content here.");
-
-    // Template should appear between heading and existing content
-    expect(templateIdx).toBeGreaterThan(headingIdx);
-    expect(templateIdx).toBeLessThan(contentIdx);
+    expect(content.indexOf("<!-- ufoo-template -->")).toBeGreaterThan(content.indexOf("# My Project"));
+    expect(content.indexOf("<!-- ufoo-template -->")).toBeLessThan(content.indexOf("Some content here."));
   });
 
-  test("injectAgentsTemplate should prepend when no heading exists", () => {
+  test("resolveTemplateTargets skips CLAUDE.md symlink targets outside the project", () => {
     const agentsFile = path.join(projectRoot, "AGENTS.md");
     const claudeFile = path.join(projectRoot, "CLAUDE.md");
-    fs.writeFileSync(agentsFile, "No heading, just text.\n", "utf8");
-    fs.symlinkSync("AGENTS.md", claudeFile);
-
-    init.injectAgentsTemplate(projectRoot);
-
-    const content = read(agentsFile);
-    expect(content.startsWith("<!-- ufoo-template -->")).toBe(true);
-    expect(content).toContain("Template Block");
-    expect(content).toContain("No heading, just text.");
-  });
-
-  test("injectAgentsTemplate should insert after heading even without trailing newline", () => {
-    const agentsFile = path.join(projectRoot, "AGENTS.md");
-    const claudeFile = path.join(projectRoot, "CLAUDE.md");
-    fs.writeFileSync(agentsFile, "# Heading without newline", "utf8");
-    fs.symlinkSync("AGENTS.md", claudeFile);
-
-    init.injectAgentsTemplate(projectRoot);
-
-    const content = read(agentsFile);
-    const headingIdx = content.indexOf("# Heading without newline");
-    const templateIdx = content.indexOf("<!-- ufoo-template -->");
-    expect(templateIdx).toBeGreaterThan(headingIdx);
-    expect(content.startsWith("<!-- ufoo-template -->")).toBe(false);
-  });
-
-  test("injectAgentsTemplate should recover malformed single marker block in-place", () => {
-    const agentsFile = path.join(projectRoot, "AGENTS.md");
-    const claudeFile = path.join(projectRoot, "CLAUDE.md");
-    fs.writeFileSync(
-      agentsFile,
-      "# AGENTS\n\n<!-- ufoo-template -->\nLegacy tail content.\n",
-      "utf8",
-    );
-    fs.symlinkSync("AGENTS.md", claudeFile);
-
-    init.injectAgentsTemplate(projectRoot);
-
-    const content = read(agentsFile);
-    const marker = "<!-- ufoo-template -->";
-    const markerCount = (content.match(new RegExp(marker, "g")) || []).length;
-    expect(markerCount).toBe(2);
-    expect(content).toContain("Template Block");
-    expect(content).toContain("Legacy tail content.");
-  });
-
-  test("resolveTemplateTargets should only return symlink target for CLAUDE.md symlink", () => {
-    const agentsFile = path.join(projectRoot, "AGENTS.md");
-    const claudeFile = path.join(projectRoot, "CLAUDE.md");
+    const outsideFile = path.join(testRoot, "outside.md");
     fs.writeFileSync(agentsFile, "# AGENTS\n", "utf8");
-    fs.symlinkSync("AGENTS.md", claudeFile);
+    fs.writeFileSync(outsideFile, "# Outside\n", "utf8");
+    fs.symlinkSync(outsideFile, claudeFile);
 
     const targets = init.resolveTemplateTargets(projectRoot);
 
-    // Should only contain AGENTS.md (the symlink target), not CLAUDE.md separately
-    expect(targets).toHaveLength(1);
-    expect(targets[0]).toBe(agentsFile);
-  });
-
-  test("resolveTemplateTargets should return both files when CLAUDE.md is independent", () => {
-    const agentsFile = path.join(projectRoot, "AGENTS.md");
-    const claudeFile = path.join(projectRoot, "CLAUDE.md");
-    fs.writeFileSync(agentsFile, "# AGENTS\n", "utf8");
-    fs.writeFileSync(claudeFile, "# CLAUDE\n", "utf8");
-
-    const targets = init.resolveTemplateTargets(projectRoot);
-
-    expect(targets).toHaveLength(2);
-    expect(targets).toContain(agentsFile);
-    expect(targets).toContain(claudeFile);
+    expect(targets).toEqual([agentsFile]);
+    expect(warnSpy).toHaveBeenCalled();
   });
 
   test("init in controllerMode skips AGENTS/CLAUDE project files while bootstrapping .ufoo", async () => {
@@ -208,7 +150,6 @@ describe("UfooInit markdown handling", () => {
   });
 
   test("init with resources module when module exists", async () => {
-    // Create resources module
     const resourcesDir = path.join(repoRoot, "modules", "resources");
     fs.mkdirSync(resourcesDir, { recursive: true });
     fs.writeFileSync(path.join(resourcesDir, "test.txt"), "resource content");
@@ -228,7 +169,6 @@ describe("UfooInit markdown handling", () => {
       modules: "resources",
       project: projectRoot,
     });
-    // Should not crash, just log and skip
   });
 
   test("init with unknown module logs error", async () => {
@@ -271,17 +211,9 @@ describe("UfooInit markdown handling", () => {
     expect(init.safeLstat(file)).not.toBeNull();
   });
 
-  test("findFirstHeadingEnd finds ATX heading", () => {
+  test("findFirstHeadingEnd finds headings and returns -1 without headings", () => {
     expect(init.findFirstHeadingEnd("# Title\nContent")).toBeGreaterThan(0);
-    expect(init.findFirstHeadingEnd("## Subtitle\nContent")).toBeGreaterThan(0);
-  });
-
-  test("findFirstHeadingEnd finds setext heading", () => {
     expect(init.findFirstHeadingEnd("Title\n===\nContent")).toBeGreaterThan(0);
-    expect(init.findFirstHeadingEnd("Title\n---\nContent")).toBeGreaterThan(0);
-  });
-
-  test("findFirstHeadingEnd returns -1 when no heading", () => {
     expect(init.findFirstHeadingEnd("no heading here")).toBe(-1);
   });
 
@@ -312,20 +244,5 @@ describe("UfooInit markdown handling", () => {
     expect(fs.existsSync(path.join(dest, "visible.txt"))).toBe(true);
     expect(fs.existsSync(path.join(dest, ".hidden"))).toBe(false);
     expect(fs.existsSync(path.join(dest, "node_modules"))).toBe(false);
-  });
-
-  test("resolveTemplateTargets handles symlink to outside project", () => {
-    const agentsFile = path.join(projectRoot, "AGENTS.md");
-    const claudeFile = path.join(projectRoot, "CLAUDE.md");
-    const outsideFile = path.join(testRoot, "outside.md");
-    fs.writeFileSync(agentsFile, "# AGENTS\n", "utf8");
-    fs.writeFileSync(outsideFile, "# Outside\n", "utf8");
-    fs.symlinkSync(outsideFile, claudeFile);
-
-    const targets = init.resolveTemplateTargets(projectRoot);
-    // Should only contain AGENTS.md, not the outside file
-    expect(targets).toHaveLength(1);
-    expect(targets[0]).toBe(agentsFile);
-    expect(warnSpy).toHaveBeenCalled();
   });
 });

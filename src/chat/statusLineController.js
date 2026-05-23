@@ -123,6 +123,11 @@ function createStatusLineController(options = {}) {
     return item && typeof item.text === "string" ? item.text : "";
   }
 
+  function shouldClearPendingOnResolve(text, options = {}) {
+    if (options.clearPending === true) return true;
+    return !options.key && /[✓✗⚠]/.test(String(text || ""));
+  }
+
   function queueStatusLine(text, options = {}) {
     const item = normalizePendingItem(text, options);
     if (item.key) {
@@ -150,12 +155,22 @@ function createStatusLineController(options = {}) {
       : "";
     let removedHead = false;
 
+    if (shouldClearPendingOnResolve(text, options)) {
+      pendingStatusLines.length = 0;
+    }
+
     if (pendingStatusLines.length > 0) {
       if (key) {
         const index = pendingStatusLines.findIndex((entry) => entry.key === key);
         if (index >= 0) {
           pendingStatusLines.splice(index, 1);
           removedHead = index === 0;
+        } else if (
+          pendingStatusLines.length === 1
+          && !pendingStatusLines[0].key
+        ) {
+          pendingStatusLines.shift();
+          removedHead = true;
         }
       } else {
         pendingStatusLines.shift();

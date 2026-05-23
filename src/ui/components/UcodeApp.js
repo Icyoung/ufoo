@@ -22,7 +22,7 @@ const { createMultilineInput } = require("./MultilineInput");
 
 function createUcodeApp({ React, ink, props, interactive = true }) {
   const { useEffect, useState, useCallback, useRef } = React;
-  const { Box, Text, Static, useInput, useApp, useStdout } = ink;
+  const { Box, Text, useInput, useApp, useStdout } = ink;
   const h = React.createElement;
   const MultilineInput = createMultilineInput({ React, ink });
 
@@ -38,6 +38,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       banner.concat([""]).map((line, idx) => ({ id: `b-${idx}`, text: line }))
     );
     const [draft, setDraft] = useState("");
+    const [draftVersion, setDraftVersion] = useState(0);
     // status: idle when message === "". `type` picks a STATUS_INDICATORS
     // bucket; `showTimer` and `startedAt` reproduce the blessed spinner
     // controls. The BG suffix is computed from backgroundTasksRef and
@@ -181,6 +182,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
         if (transition.moved) {
           setHistoryIndex(transition.nextHistoryIndex);
           setDraft(transition.nextValue);
+          setDraftVersion((v) => v + 1);
           return;
         }
       }
@@ -204,6 +206,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
         if (nextIndex !== historyIndex || draft !== inputHistory[nextIndex]) {
           setHistoryIndex(nextIndex);
           setDraft(inputHistory[nextIndex] || "");
+          setDraftVersion((v) => v + 1);
           return;
         }
       }
@@ -628,6 +631,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       const trimmed = value.trim();
       if (!trimmed) return;
       setDraft("");
+      setDraftVersion((v) => v + 1);
       setInputHistory((prev) => {
         const next = prev.concat([trimmed]).slice(-200);
         setHistoryIndex(next.length);
@@ -668,8 +672,10 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
     }, { isActive: interactive });
 
     return h(Box, { flexDirection: "column", width: "100%" },
-      h(Static, { items: logLines }, (item) =>
-        h(Text, { key: item.id }, item.text || " ")
+      h(Box, { flexDirection: "column", width: "100%" },
+        ...logLines.map((item) =>
+          h(Text, { key: item.id }, item.text || " ")
+        )
       ),
       activeMerge ? h(Box, null,
         h(Text, { color: activeMerge.entries.some((e) => e.isError) ? "red" : "cyan" },
@@ -684,6 +690,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       h(Box, { width: "100%" },
         h(MultilineInput, {
           value: draft,
+          valueVersion: draftVersion,
           onChange: (next) => setDraft(next),
           onSubmit: (value) => submit(value),
           onCancel: () => {
@@ -715,6 +722,10 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
           interactive,
           placeholder: "",
           promptPrefix: targetAgent ? `›@${getAgentLabel(targetAgent)} ` : "› ",
+          // The agents footer is rendered below the input. Matching chat's
+          // IME parking contract keeps the hardware cursor aligned with the
+          // inverse caret instead of drifting to the bottom of the frame.
+          linesBelowInput: 1,
         }),
       ),
       h(Box, { width: "100%" },

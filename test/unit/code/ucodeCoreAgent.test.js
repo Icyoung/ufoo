@@ -119,10 +119,10 @@ describe("ucode core agent nl path", () => {
     });
   });
 
-  test("runSingleCommand recognizes strict ufoo probe marker commands", () => {
-    expect(runSingleCommand("$ufoo codex-4", process.cwd())).toEqual({ kind: "probe", marker: "codex-4" });
-    expect(runSingleCommand("/ufoo codex-4", process.cwd())).toEqual({ kind: "probe", marker: "codex-4" });
-    expect(runSingleCommand("ufoo codex-4", process.cwd())).toEqual({ kind: "probe", marker: "codex-4" });
+  test("runSingleCommand silently recognizes legacy strict ufoo marker commands", () => {
+    expect(runSingleCommand("$ufoo codex-4", process.cwd())).toEqual({ kind: "legacy_ufoo_marker", marker: "codex-4" });
+    expect(runSingleCommand("/ufoo codex-4", process.cwd())).toEqual({ kind: "legacy_ufoo_marker", marker: "codex-4" });
+    expect(runSingleCommand("ufoo codex-4", process.cwd())).toEqual({ kind: "legacy_ufoo_marker", marker: "codex-4" });
   });
 
   test("runSingleCommand does not intercept normal ufoo-prefixed natural language", () => {
@@ -131,7 +131,7 @@ describe("ucode core agent nl path", () => {
     expect(result.task).toBe("ufoo online connect room test");
   });
 
-  test("runSingleCommand does not treat multi-token ufoo text as probe marker", () => {
+  test("runSingleCommand does not treat multi-token ufoo text as a legacy marker", () => {
     const result = runSingleCommand("ufoo codex-4 please review this change", process.cwd());
     expect(result.kind).toBe("nl");
     expect(result.task).toBe("ufoo codex-4 please review this change");

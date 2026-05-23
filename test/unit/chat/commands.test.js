@@ -1,6 +1,7 @@
 const {
   COMMAND_REGISTRY,
   buildCommandRegistry,
+  describeCommandForChat,
   parseCommand,
   shouldEchoCommandInChat,
   parseAtTarget,
@@ -124,7 +125,7 @@ describe("chat command helpers", () => {
   test("ufoo command is exposed", () => {
     const ufoo = COMMAND_REGISTRY.find((item) => item.cmd === "/ufoo");
     expect(ufoo).toBeTruthy();
-    expect(ufoo.desc).toBe("ufoo protocol (session marker)");
+    expect(ufoo.desc).toBe("ufoo protocol");
   });
 
   test("parseCommand handles quoted args", () => {
@@ -141,9 +142,16 @@ describe("chat command helpers", () => {
     expect(parseAtTarget("@codex hi there")).toEqual({ target: "codex", message: "hi there" });
   });
 
-  test("shouldEchoCommandInChat suppresses group run echoes only", () => {
-    expect(shouldEchoCommandInChat("/group run build-lane")).toBe(false);
+  test("shouldEchoCommandInChat keeps slash commands visible as friendly summaries", () => {
+    expect(shouldEchoCommandInChat("/group run build-lane")).toBe(true);
     expect(shouldEchoCommandInChat("/group status build-lane")).toBe(true);
     expect(shouldEchoCommandInChat("/status")).toBe(true);
+  });
+
+  test("describeCommandForChat maps raw slash commands to friendly summaries", () => {
+    expect(describeCommandForChat("/launch codex nickname=qa")).toBe("Launching a codex named qa");
+    expect(describeCommandForChat("/launch claude count=2 window")).toBe("Launching 2 claude agents in a new window");
+    expect(describeCommandForChat("/group run build-lane")).toBe("Launching group build-lane");
+    expect(describeCommandForChat("/bus rename codex:1 qa")).toBe("Renaming codex:1 to qa");
   });
 });

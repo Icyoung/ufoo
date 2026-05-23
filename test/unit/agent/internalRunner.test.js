@@ -114,6 +114,84 @@ describe("agent internalRunner stream forwarding", () => {
     expect(threadRuntime.thread.runStreamed.mock.calls[0][0]).toContain("task body");
   });
 
+  test("wraps chat-direct thread prompts with manual envelope", async () => {
+    const projectRoot = makeProjectWithAgent("codex:target");
+    const busSender = { enqueue: jest.fn(), flush: jest.fn(async () => {}) };
+    const evt = {
+      publisher: "ufoo-agent",
+      target: "codex:target",
+      data: { message: "task body", source: "chat-direct" },
+    };
+    const threadRuntime = {
+      enabled: true,
+      thread: {
+        runStreamed: jest.fn(async function* () {
+          yield { type: "text_delta", delta: "done" };
+        }),
+      },
+    };
+
+    try {
+      await handleEvent(
+        projectRoot,
+        "codex",
+        "codex-cli",
+        "",
+        "codex:target",
+        "peer",
+        evt,
+        busSender,
+        [],
+        threadRuntime
+      );
+
+      expect(threadRuntime.thread.runStreamed.mock.calls[0][0]).toContain(
+        "[manual]<to:codex:target(peer)>\ntask body"
+      );
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps raw agent-view submissions unwrapped for thread prompts", async () => {
+    const projectRoot = makeProjectWithAgent("codex:target");
+    const busSender = { enqueue: jest.fn(), flush: jest.fn(async () => {}) };
+    const evt = {
+      __agentViewRaw: true,
+      publisher: "ufoo-agent",
+      target: "codex:target",
+      data: { message: "typed body", source: "chat-internal-agent-view" },
+    };
+    const threadRuntime = {
+      enabled: true,
+      thread: {
+        runStreamed: jest.fn(async function* () {
+          yield { type: "text_delta", delta: "done" };
+        }),
+      },
+    };
+
+    try {
+      await handleEvent(
+        projectRoot,
+        "codex",
+        "codex-cli",
+        "",
+        "codex:target",
+        "peer",
+        evt,
+        busSender,
+        [],
+        threadRuntime
+      );
+
+      expect(threadRuntime.thread.runStreamed.mock.calls[0][0]).toContain("typed body");
+      expect(threadRuntime.thread.runStreamed.mock.calls[0][0]).not.toContain("[manual]");
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
   test("uses codex thread runtime when enabled", async () => {
     const busSender = {
       enqueue: jest.fn(),
@@ -267,6 +345,59 @@ describe("agent internalRunner stream forwarding", () => {
       JSON.stringify({ stream: true, done: true, reason: "complete" })
     );
   });
+
+  test.each(["chat-agent-view", "ufoo-agent", "ufoo-agent-gate-router"])(
+    "thread runtime streams replies for %s source through managed ufoo-agent",
+    async (source) => {
+      const busSender = {
+        enqueue: jest.fn(),
+        flush: jest.fn(async () => {}),
+      };
+      const projectRoot = makeProjectWithAgent("ufoo-agent");
+      const evt = {
+        publisher: "ufoo-agent",
+        data: {
+          message: "task",
+          source,
+        },
+      };
+      const threadRuntime = {
+        enabled: true,
+        thread: {
+          runStreamed: jest.fn(async function* () {
+            yield { type: "text_delta", delta: "ok" };
+          }),
+        },
+        rebuildThread: jest.fn(async () => {}),
+      };
+
+      try {
+        await handleEvent(
+          projectRoot,
+          "codex",
+          "codex-cli",
+          "",
+          "codex:sdk",
+          "codex-sdk",
+          evt,
+          busSender,
+          [],
+          threadRuntime
+        );
+
+        expect(busSender.enqueue).toHaveBeenCalledWith(
+          "ufoo-agent",
+          JSON.stringify({ stream: true, delta: "ok" })
+        );
+        expect(busSender.enqueue).toHaveBeenCalledWith(
+          "ufoo-agent",
+          JSON.stringify({ stream: true, done: true, reason: "complete" })
+        );
+      } finally {
+        fs.rmSync(projectRoot, { recursive: true, force: true });
+      }
+    }
+  );
 
   test("rebuilds codex thread after threaded failure", async () => {
     const busSender = {
@@ -649,8 +780,8 @@ describe("internalRunner codex thread mode", () => {
     const EventBus = require("../../../src/bus");
     const eventBus = new EventBus(projectRoot);
     await eventBus.init();
-    const sender = await eventBus.join("sender", "codex", "sender");
-    const receiver = await eventBus.join("receiver", "claude-code", "receiver");
+    const sender = await eventBus.join("sender", "codex", "sender", { scopedNickname: "handler-sender" });
+    const receiver = await eventBus.join("receiver", "claude-code", "receiver", { scopedNickname: "handler-receiver" });
 
     const runtime = buildWorkerThreadToolRuntime({
       projectRoot,

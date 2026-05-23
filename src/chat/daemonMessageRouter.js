@@ -47,6 +47,45 @@ function createDaemonMessageRouter(options = {}) {
     return `{cyan-fg}${escapedLabel}{/cyan-fg} {gray-fg}·{/gray-fg} `;
   }
 
+  function launchTargetLabel(result = {}, renameResult = null) {
+    const nickname = (renameResult && renameResult.ok && renameResult.nickname)
+      || result.nickname
+      || "";
+    if (nickname) return nickname;
+    const ids = Array.isArray(result.subscriber_ids) ? result.subscriber_ids : [];
+    return ids[0] || result.agent_id || "";
+  }
+
+  function buildLifecycleSummary(payload = {}, msg = {}) {
+    const ops = Array.isArray(payload.ops) ? payload.ops : [];
+    const results = Array.isArray(msg.opsResults) ? msg.opsResults : [];
+    if (ops.length === 0) return "";
+    const launchOp = ops.find((op) => op && op.action === "launch");
+    if (launchOp) {
+      const launchResult = results.find((item) => item && item.action === "launch") || {};
+      const renameResult = results.find((item) => item && item.action === "rename" && item.ok);
+      if (launchResult.ok === false) {
+        return `Launch failed: ${launchResult.error || "unknown error"}`;
+      }
+      const agent = String(launchResult.agent || launchOp.agent || "agent").trim();
+      const count = Number(launchResult.count || launchOp.count || 1);
+      const ids = Array.isArray(launchResult.subscriber_ids) ? launchResult.subscriber_ids.filter(Boolean) : [];
+      const target = launchTargetLabel(launchResult, renameResult);
+      if (launchResult.skipped && target) return `Reused ${agent}:${target}`;
+      if (ids.length > 1) return `Launched ${ids.length} ${agent} agents: ${ids.join(", ")}`;
+      if (target) return `Launched ${agent}:${target}`;
+      if (count > 1) return `Launched ${count} ${agent} agents`;
+      return `Launched a ${agent} agent`;
+    }
+    const closeOp = ops.find((op) => op && op.action === "close");
+    if (closeOp) {
+      const closeResult = results.find((item) => item && item.action === "close") || {};
+      if (closeResult.ok === false) return `Close failed: ${closeResult.error || "unknown error"}`;
+      return `Closed ${closeResult.agent_id || closeOp.agent_id || closeOp.target || "agent"}`;
+    }
+    return "";
+  }
+
   function normalizeDisplayMessage(raw) {
     let displayMessage = raw || "";
     let streamPayload = null;
@@ -223,7 +262,10 @@ function createDaemonMessageRouter(options = {}) {
         /^Group started\b/i.test(replyText)
       );
       // Suppress lifecycle confirmations from chat history — status line plus structured payload is enough.
-      if (!isLifecycleStatusOnly && !isGroupStartedConfirmation) {
+      if (isLifecycleStatusOnly) {
+        const summary = buildLifecycleSummary(payload, msg);
+        if (summary) logMessage("reply", `${speakerPrefix("ufoo", "white")}${escapeBlessed(summary)}`);
+      } else if (!isGroupStartedConfirmation) {
         logMessage("reply", `${speakerPrefix("ufoo", "white")}${escapeBlessed(replyText)}`);
       }
     }

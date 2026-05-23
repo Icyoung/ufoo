@@ -14,6 +14,8 @@ describe("group bootstrap", () => {
     expect(SHARED_UFOO_PROTOCOL).toContain("ufoo bus send <target>");
     expect(SHARED_UFOO_PROTOCOL).toContain("ufoo bus ack \"$UFOO_SUBSCRIBER_ID\"");
     expect(SHARED_UFOO_PROTOCOL).toContain("ufoo report start|progress|done|error");
+    expect(SHARED_UFOO_PROTOCOL).not.toContain("SESSION MARKER");
+    expect(SHARED_UFOO_PROTOCOL).not.toContain("/ufoo <marker>");
   });
 
   test("shared prefix documents direct handoff vs private control-plane reporting", () => {

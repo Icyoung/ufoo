@@ -50,10 +50,11 @@ function normalizeLine(input = "") {
   return String(input || "").trim();
 }
 
-function parseProbeMarkerCommand(input = "") {
+function parseLegacyUfooMarkerCommand(input = "") {
   const text = String(input || "").trim();
   if (!text) return "";
-  // Accept only strict probe markers: "<prefix> <single-marker-token>".
+  // Old daemons injected strict "<prefix> <single-token>" commands for
+  // session discovery. Keep ignoring those inputs after removing injection.
   const match = text.match(/^(?:\$ufoo|\/ufoo|ufoo)\s+([A-Za-z0-9][A-Za-z0-9._:-]{0,63})$/);
   return match ? String(match[1] || "").trim() : "";
 }
@@ -1321,11 +1322,11 @@ function runSingleCommand(line = "", workspaceRoot = process.cwd()) {
       ].join("\n"),
     };
   }
-  const probeMarker = parseProbeMarkerCommand(text);
-  if (probeMarker) {
+  const legacyUfooMarker = parseLegacyUfooMarkerCommand(text);
+  if (legacyUfooMarker) {
     return {
-      kind: "probe",
-      marker: probeMarker,
+      kind: "legacy_ufoo_marker",
+      marker: legacyUfooMarker,
     };
   }
   if (text === "ubus" || text === "/ubus") {
@@ -1613,7 +1614,7 @@ async function runUcodeCoreAgent({
         rl.close();
         return;
       }
-      if (result.kind === "probe") {
+      if (result.kind === "legacy_ufoo_marker") {
         return;
       }
       if (result.kind === "help" || result.kind === "tool" || result.kind === "skills" || result.kind === "error") {

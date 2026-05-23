@@ -199,10 +199,120 @@ function parseCommand(text) {
   return { command, args };
 }
 
+function parseCommandOptions(args = []) {
+  const options = {};
+  const positional = [];
+  for (const arg of args) {
+    const raw = String(arg || "").trim();
+    if (!raw) continue;
+    if (raw.includes("=")) {
+      const [key, value] = raw.split("=", 2);
+      options[String(key || "").trim().toLowerCase()] = String(value || "").trim();
+    } else {
+      positional.push(raw);
+    }
+  }
+  return { options, positional };
+}
+
+function normalizeAgentLabel(value = "") {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "claude" || raw === "uclaude") return "claude";
+  if (raw === "codex" || raw === "ucodex") return "codex";
+  if (raw === "agy" || raw === "antigravity" || raw === "uagy") return "agy";
+  if (raw === "ucode" || raw === "ufoo") return "ufoo";
+  return raw || "agent";
+}
+
+function describeCommandForChat(text) {
+  const parsed = parseCommand(String(text || "").trim());
+  if (!parsed) return "";
+  const command = String(parsed.command || "").trim().toLowerCase();
+  const args = parsed.args || [];
+  const sub = String(args[0] || "").trim().toLowerCase();
+  const { options, positional } = parseCommandOptions(args);
+
+  if (command === "launch") {
+    const agent = normalizeAgentLabel(args[0]);
+    const nickname = options.nickname || options.nick || options.name || "";
+    const profile = options.profile || options.prompt_profile || "";
+    const count = parseInt(options.count || "1", 10);
+    const scope = options.scope || options.launch_scope || positional.slice(1).find((item) =>
+      /^(window|new-window|separate|inplace|same|current|tab|pane)$/i.test(item)
+    ) || "";
+    const base = nickname
+      ? `Launching a ${agent} named ${nickname}`
+      : (Number.isFinite(count) && count > 1 ? `Launching ${count} ${agent} agents` : `Launching a ${agent} agent`);
+    return `${base}${profile ? ` with profile ${profile}` : ""}${/^(window|new-window|separate)$/i.test(scope) ? " in a new window" : ""}`;
+  }
+
+  if (command === "group") {
+    if (sub === "run") return `Launching group ${args[1] || "template"}`;
+    if (sub === "status") return `Checking group ${args[1] || "status"}`;
+    if (sub === "stop") return `Stopping group ${args[1] || "run"}`;
+    if (sub === "diagram") return `Showing group diagram${args[1] ? ` for ${args[1]}` : ""}`;
+    if (sub === "template" || sub === "templates") return "Browsing group templates";
+    return "Managing agent groups";
+  }
+
+  if (command === "bus") {
+    if (sub === "send") return `Sending a message to ${args[1] || "an agent"}`;
+    if (sub === "rename") return `Renaming ${args[1] || "an agent"}${args[2] ? ` to ${args[2]}` : ""}`;
+    if (sub === "activate") return `Activating ${args[1] || "an agent"}`;
+    if (sub === "list") return "Listing active agents";
+    if (sub === "status") return "Checking bus status";
+    return "Using the event bus";
+  }
+
+  if (command === "daemon") {
+    if (sub === "start") return "Starting the ufoo daemon";
+    if (sub === "stop") return "Stopping the ufoo daemon";
+    if (sub === "restart") return "Restarting the ufoo daemon";
+    if (sub === "status") return "Checking daemon status";
+    return "Managing the ufoo daemon";
+  }
+
+  if (command === "project") {
+    if (sub === "switch") return `Switching to project ${args[1] || ""}`.trim();
+    if (sub === "current") return "Showing current project";
+    if (sub === "list") return "Listing running projects";
+    return "Managing projects";
+  }
+
+  if (command === "solo") {
+    if (sub === "run") return `Launching solo role ${args[1] || "agent"}`;
+    if (sub === "list") return "Listing solo roles";
+    return "Managing solo agents";
+  }
+
+  if (command === "role") {
+    if (sub === "assign") return `Assigning role ${args[2] || ""}${args[1] ? ` to ${args[1]}` : ""}`.trim();
+    if (sub === "list") return "Listing roles";
+    return "Managing roles";
+  }
+
+  if (command === "cron") {
+    if (sub === "start") return "Creating a cron task";
+    if (sub === "stop") return `Stopping cron task ${args[1] || ""}`.trim();
+    if (sub === "list") return "Listing cron tasks";
+    return "Managing cron tasks";
+  }
+
+  if (command === "settings") return !sub || sub === "show" ? "Showing settings" : "Updating settings";
+  if (command === "ctx") return `Checking context${sub ? ` ${sub}` : ""}`;
+  if (command === "doctor") return "Running ufoo diagnostics";
+  if (command === "clear") return "Clearing the chat log";
+  if (command === "multi") return "Toggling multi-pane view";
+  if (command === "open") return `Opening project ${args[0] || ""}`.trim();
+  if (command === "resume") return args[0] === "list" ? "Listing recoverable agents" : `Resuming ${args[0] || "agents"}`;
+  if (command === "init") return "Initializing ufoo modules";
+
+  return `Running /${command}`;
+}
+
 function shouldEchoCommandInChat(text) {
   const parsed = parseCommand(String(text || "").trim());
   if (!parsed) return true;
-  if (parsed.command === "group" && parsed.args[0] === "run") return false;
   return true;
 }
 
@@ -225,6 +335,7 @@ module.exports = {
   sortCommands,
   buildCommandRegistry,
   parseCommand,
+  describeCommandForChat,
   shouldEchoCommandInChat,
   parseAtTarget,
 };

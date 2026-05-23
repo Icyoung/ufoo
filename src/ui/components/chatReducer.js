@@ -69,6 +69,7 @@ function createInitialState({ banner = [], globalMode = false, globalScope = "co
     selectedProjectIndex: -1,
     selectedProjectRoot: "",
     projectListWindowStart: 0,
+    emptyProjectsDownArmed: false,
     activeProjectRoot: "",
     modeOptions: ["auto", "host", "terminal", "tmux", "internal"],
     selectedModeIndex: Math.max(0, ["auto", "host", "terminal", "tmux", "internal"].indexOf(initialLaunchMode)),
@@ -133,9 +134,17 @@ function reducer(state, action) {
     case "draft/clear":
       return { ...state, draft: "" };
     case "focus/toggle":
-      return { ...state, focusMode: state.focusMode === "input" ? "dashboard" : "input" };
+      return {
+        ...state,
+        focusMode: state.focusMode === "input" ? "dashboard" : "input",
+        emptyProjectsDownArmed: state.focusMode === "input" ? state.emptyProjectsDownArmed : false,
+      };
     case "focus/set":
-      return { ...state, focusMode: action.mode === "dashboard" ? "dashboard" : "input" };
+      return {
+        ...state,
+        focusMode: action.mode === "dashboard" ? "dashboard" : "input",
+        emptyProjectsDownArmed: action.mode === "dashboard" ? state.emptyProjectsDownArmed : false,
+      };
     case "view/set": {
       const view = action.view;
       const inAgentsView = view === "agents";
@@ -143,6 +152,7 @@ function reducer(state, action) {
         ...state,
         dashboardView: view,
         agentSelectionMode: inAgentsView && state.focusMode === "dashboard" && state.selectedAgentIndex >= 0,
+        emptyProjectsDownArmed: view === "projects" ? state.emptyProjectsDownArmed : false,
       };
     }
     case "view/cycle": {
@@ -212,6 +222,7 @@ function reducer(state, action) {
         selectedProjectRoot: selectedIndex >= 0 ? selectedRoot : "",
         selectedProjectIndex: selectedIndex,
         activeProjectRoot: action.activeProjectRoot || state.activeProjectRoot,
+        emptyProjectsDownArmed: list.length === 0 ? state.emptyProjectsDownArmed : false,
       };
     }
     case "projects/select":
@@ -219,9 +230,12 @@ function reducer(state, action) {
         ...state,
         selectedProjectIndex: action.index,
         selectedProjectRoot: String(action.projectRoot || projectRootOf(state.projects[action.index]) || ""),
+        emptyProjectsDownArmed: false,
       };
     case "projects/clearSelection":
-      return { ...state, selectedProjectIndex: -1, selectedProjectRoot: "" };
+      return { ...state, selectedProjectIndex: -1, selectedProjectRoot: "", emptyProjectsDownArmed: false };
+    case "projects/armEmptyDown":
+      return { ...state, emptyProjectsDownArmed: true };
     case "projects/window":
       return { ...state, projectListWindowStart: Math.max(0, action.windowStart | 0) };
     case "scope/set":

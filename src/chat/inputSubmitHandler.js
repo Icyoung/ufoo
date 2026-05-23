@@ -1,6 +1,6 @@
 const { IPC_REQUEST_TYPES } = require("../shared/eventContract");
 const { decodeEscapedNewlines } = require("./text");
-const { shouldEchoCommandInChat } = require("./commands");
+const { describeCommandForChat, shouldEchoCommandInChat } = require("./commands");
 const { parseShellCommand, runShellCommand: defaultRunShellCommand } = require("./shellCommand");
 
 function createInputSubmitHandler(options = {}) {
@@ -169,7 +169,8 @@ function createInputSubmitHandler(options = {}) {
 
     if (text.startsWith("/")) {
       if (shouldEchoCommandInChat(text)) {
-        logMessage("user", userEcho(text));
+        const commandSummary = describeCommandForChat(text);
+        logMessage("user", userEcho(commandSummary || text));
         renderScreen();  // Render slash command immediately
       }
       try {

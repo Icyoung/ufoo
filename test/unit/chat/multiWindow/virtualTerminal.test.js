@@ -92,4 +92,21 @@ describe("virtualTerminal", () => {
     expect(vt.getLine(1)).toBe("fgh  ");
     expect(vt.getCursor()).toEqual({ row: 1, col: 3 });
   });
+
+  test("wide CJK characters advance by display width", () => {
+    const vt = createVirtualTerminal(10, 3);
+    vt.write("你好");
+    expect(vt.getLine(0)).toBe("你好      ");
+    expect(vt.getCursor()).toEqual({ row: 0, col: 4 });
+    expect(vt.getScreen().buffer[0][1].wideContinuation).toBe(true);
+    expect(vt.getScreen().buffer[0][3].wideContinuation).toBe(true);
+  });
+
+  test("wide character wraps when it cannot fit at line end", () => {
+    const vt = createVirtualTerminal(4, 3);
+    vt.write("abc你");
+    expect(vt.getLine(0)).toBe("abc ");
+    expect(vt.getLine(1)).toBe("你  ");
+    expect(vt.getCursor()).toEqual({ row: 1, col: 2 });
+  });
 });

@@ -324,6 +324,27 @@ describe("chat daemonMessageRouter", () => {
     );
   });
 
+  test("launch lifecycle response logs resolved agent target from ops result", () => {
+    const { router, options } = createHarness();
+
+    router.handleMessage({
+      type: IPC_RESPONSE_TYPES.RESPONSE,
+      data: {
+        reply: "Launched 1 codex agent(s)",
+        ops: [{ action: "launch", agent: "codex", count: 1, nickname: "qa" }],
+      },
+      opsResults: [
+        { action: "launch", ok: true, agent: "codex", count: 1, subscriber_ids: ["codex:abc"], nickname: "qa" },
+        { action: "rename", ok: true, agent_id: "codex:abc", nickname: "qa" },
+      ],
+    });
+
+    expect(options.logMessage).toHaveBeenCalledWith(
+      "reply",
+      "{white-fg}ESC(ufoo){/white-fg} {gray-fg}·{/gray-fg} ESC(Launched codex:qa)"
+    );
+  });
+
   test("stream payload routes through stream tracker methods", () => {
     const { router, options } = createHarness();
 

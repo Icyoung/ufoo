@@ -60,6 +60,37 @@ describe("chatReducer", () => {
     expect(state.dashboardView).toBe("cron");
   });
 
+  test("leaving agents dashboard view clears temporary target mode", () => {
+    let state = createInitialState({ globalMode: false });
+    state = reducer(state, { type: "focus/set", mode: "dashboard" });
+    state = reducer(state, { type: "agents/set", list: [
+      { type: "codex", id: "1", fullId: "codex:1" },
+    ]});
+    state = reducer(state, { type: "agents/select", index: 0 });
+    expect(state.agentSelectionMode).toBe(true);
+
+    state = reducer(state, { type: "view/set", view: "mode" });
+
+    expect(state.dashboardView).toBe("mode");
+    expect(state.selectedAgentIndex).toBe(0);
+    expect(state.agentSelectionMode).toBe(false);
+  });
+
+  test("returning to agents dashboard view restores selected-agent mode", () => {
+    let state = createInitialState({ globalMode: false });
+    state = reducer(state, { type: "focus/set", mode: "dashboard" });
+    state = reducer(state, { type: "agents/set", list: [
+      { type: "codex", id: "1", fullId: "codex:1" },
+    ]});
+    state = reducer(state, { type: "agents/select", index: 0 });
+    state = reducer(state, { type: "view/set", view: "mode" });
+    state = reducer(state, { type: "view/set", view: "agents" });
+
+    expect(state.dashboardView).toBe("agents");
+    expect(state.selectedAgentIndex).toBe(0);
+    expect(state.agentSelectionMode).toBe(true);
+  });
+
   test("agents/set clears selection when the list shrinks past the cursor", () => {
     let state = createInitialState();
     state = reducer(state, { type: "agents/set", list: [
@@ -133,6 +164,31 @@ describe("chatReducer", () => {
     state = reducer(state, { type: "projects/clearSelection" });
     expect(state.selectedProjectRoot).toBe("");
     expect(state.selectedProjectIndex).toBe(-1);
+  });
+
+  test("empty global projects rail absorbs first Down and allows second Down to enter agents", () => {
+    let state = createInitialState({ globalMode: true });
+    state = reducer(state, { type: "focus/set", mode: "dashboard" });
+    expect(state.dashboardView).toBe("projects");
+    expect(state.projects).toHaveLength(0);
+
+    state = reducer(state, { type: "projects/armEmptyDown" });
+    expect(state.dashboardView).toBe("projects");
+    expect(state.emptyProjectsDownArmed).toBe(true);
+
+    state = reducer(state, { type: "view/set", view: "agents" });
+    expect(state.dashboardView).toBe("agents");
+    expect(state.emptyProjectsDownArmed).toBe(false);
+  });
+
+  test("empty projects Down latch resets when projects become available", () => {
+    let state = createInitialState({ globalMode: true });
+    state = reducer(state, { type: "projects/armEmptyDown" });
+    state = reducer(state, { type: "projects/set", list: [
+      { label: "alpha", root: "/tmp/alpha" },
+    ]});
+
+    expect(state.emptyProjectsDownArmed).toBe(false);
   });
 
   test("history/push trims to 200 and resets the cursor", () => {

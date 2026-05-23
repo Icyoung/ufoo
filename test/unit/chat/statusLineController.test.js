@@ -73,6 +73,39 @@ describe("chat statusLineController", () => {
     expect(statusLine.setContent).toHaveBeenLastCalledWith("done");
   });
 
+  test("keyed resolve clears a single unkeyed generic pending status", () => {
+    const { controller, statusLine, clearIntervalFn } = createHarness();
+
+    controller.queueStatusLine("ufoo-agent processing");
+    controller.resolveStatusLine("done", { key: "ufoo-agent" });
+
+    expect(clearIntervalFn).toHaveBeenCalledTimes(1);
+    expect(statusLine.setContent).toHaveBeenLastCalledWith("done");
+  });
+
+  test("keyed resolve does not clear unrelated keyed pending statuses", () => {
+    const { controller, statusLine, clearIntervalFn } = createHarness();
+
+    controller.queueStatusLine("first", { key: "one" });
+    controller.resolveStatusLine("done", { key: "missing" });
+
+    expect(clearIntervalFn).toHaveBeenCalledTimes(0);
+    const content = statusLine.setContent.mock.calls.at(-1)[0];
+    const plain = content.replace(/\{[^}]+\}/g, "");
+    expect(plain).toContain("first");
+  });
+
+  test("terminal status resolve clears stale pending animation", () => {
+    const { controller, statusLine, clearIntervalFn } = createHarness();
+
+    controller.queueStatusLine("first");
+    controller.queueStatusLine("second");
+    controller.resolveStatusLine("{gray-fg}✓{/gray-fg} Daemon restarted");
+
+    expect(clearIntervalFn).toHaveBeenCalledTimes(1);
+    expect(statusLine.setContent).toHaveBeenLastCalledWith("{gray-fg}✓{/gray-fg} Daemon restarted");
+  });
+
   test("bus queue appends and resolves status indicators", () => {
     const { controller, statusLine } = createHarness();
 
