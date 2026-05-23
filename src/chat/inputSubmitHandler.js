@@ -20,8 +20,6 @@ function createInputSubmitHandler(options = {}) {
     enterAgentView = () => {},
     getAgentAdapter = () => null,
     activateAgent = async () => {},
-    getInjectSockPath = () => "",
-    existsSync = () => false,
     commitInputHistory = () => {},
     focusInput = () => {},
     renderScreen = () => {},  // Add renderScreen callback
@@ -42,16 +40,8 @@ function createInputSubmitHandler(options = {}) {
   async function tryActivateTargetAgent(agentId) {
     const adapter = getAgentAdapter(agentId);
     const capabilities = adapter && adapter.capabilities ? adapter.capabilities : null;
-    const sockPath = getInjectSockPath(agentId);
-    const supportsSocket = Boolean(capabilities && capabilities.supportsSocketProtocol);
     const supportsActivate = Boolean(capabilities && capabilities.supportsActivate);
     const supportsInternalQueue = Boolean(capabilities && capabilities.supportsInternalQueueLoop);
-
-    if (existsSync(sockPath) && supportsSocket) {
-      clearTargetAgent();
-      enterAgentView(agentId);
-      return true;
-    }
 
     if (supportsActivate) {
       clearTargetAgent();
