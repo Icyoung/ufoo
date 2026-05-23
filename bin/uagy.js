@@ -46,7 +46,7 @@ const previousConversationId = readPreviousConversationId(cwd, {
 // doesn't stall waiting on a y/n the operator can't see. Terminal/tmux
 // modes leave permissions in the user's hands (agy's default).
 const launchMode = String(process.env.UFOO_LAUNCH_MODE || "").trim().toLowerCase();
-const skipPermissions = launchMode === "internal" || launchMode === "internal-pty";
+const skipPermissions = launchMode === "internal";
 
 const launchArgs = buildAgyLaunchArgs({
   userArgs: process.argv.slice(2),

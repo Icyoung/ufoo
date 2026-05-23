@@ -5,7 +5,6 @@ const {
 const { createTerminalAdapter } = require("./adapters/terminalAdapter");
 const { createTmuxAdapter } = require("./adapters/tmuxAdapter");
 const { createInternalQueueAdapter } = require("./adapters/internalQueueAdapter");
-const { createInternalPtyAdapter } = require("./adapters/internalPtyAdapter");
 const { createHostAdapter } = require("./adapters/hostAdapter");
 
 function createTerminalAdapterRouter(options = {}) {
@@ -62,15 +61,6 @@ function createTerminalAdapterRouter(options = {}) {
         hostName: meta?.host_name || meta?.hostName || "",
         sessionId: meta?.host_session_id || meta?.hostSessionId || "",
         hostCapabilities: meta?.host_capabilities || meta?.hostCapabilities || null,
-      });
-    }
-
-    if (launchMode === "internal-pty") {
-      return createInternalPtyAdapter({
-        sendRaw,
-        sendResize,
-        requestSnapshot,
-        createAdapter,
       });
     }
 

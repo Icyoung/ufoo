@@ -18,8 +18,8 @@
  * Host is detected by env var alone here; callers that want to override host
  * with native-terminal evidence (e.g. daemon ops auto-resolution) layer that
  * on top of the detector's output.
- * Internal / internal-pty modes are always set explicitly by the daemon when
- * spawning worker processes (see ptyRunner / daemon ops), so they fall through
+ * Internal modes are always set explicitly by the daemon when
+ * spawning worker processes (see daemon ops), so they fall through
  * the explicit short-circuit and never need to be auto-detected here.
  */
 
@@ -28,7 +28,6 @@ const CANONICAL_LAUNCH_MODES = Object.freeze([
   "tmux",
   "host",
   "internal",
-  "internal-pty",
 ]);
 
 const CANONICAL_LAUNCH_MODE_SET = new Set(CANONICAL_LAUNCH_MODES);

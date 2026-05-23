@@ -1,4 +1,4 @@
-const DEFAULT_MODE_OPTIONS = ["auto", "host", "terminal", "tmux", "internal-pty", "internal"];
+const DEFAULT_MODE_OPTIONS = ["auto", "host", "terminal", "tmux", "internal"];
 
 function createDashboardKeyController(options = {}) {
   const {

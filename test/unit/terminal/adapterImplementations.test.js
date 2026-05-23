@@ -1,6 +1,5 @@
 const { createTerminalAdapter } = require("../../../src/terminal/adapters/terminalAdapter");
 const { createTmuxAdapter } = require("../../../src/terminal/adapters/tmuxAdapter");
-const { createInternalPtyAdapter } = require("../../../src/terminal/adapters/internalPtyAdapter");
 const { createInternalQueueAdapter } = require("../../../src/terminal/adapters/internalQueueAdapter");
 
 function createAdapter({ capabilities, handlers = {} }) {
@@ -57,37 +56,6 @@ describe("terminal adapters", () => {
     expect(adapter.activate()).toBe(true);
     expect(activateAgent).toHaveBeenCalledWith("agent:2");
     expect(adapter.sendRaw("x")).toBe(false);
-  });
-
-  test("internalPtyAdapter supports send/resize/snapshot", () => {
-    const sendRaw = jest.fn();
-    const sendResize = jest.fn();
-    const requestSnapshot = jest.fn(() => true);
-    const adapter = createInternalPtyAdapter({
-      sendRaw,
-      sendResize,
-      requestSnapshot,
-      createAdapter,
-    });
-
-    expect(adapter.capabilities.supportsSocketProtocol).toBe(true);
-    expect(adapter.capabilities.supportsSnapshot).toBe(true);
-    expect(adapter.capabilities.supportsSubscribeFull).toBe(true);
-    expect(adapter.capabilities.supportsSubscribeScreen).toBe(true);
-
-    expect(adapter.send("ping")).toBe(true);
-    expect(adapter.sendRaw("pong")).toBe(true);
-    expect(sendRaw).toHaveBeenCalledWith("ping");
-    expect(sendRaw).toHaveBeenCalledWith("pong");
-
-    expect(adapter.resize(120, 40)).toBe(true);
-    expect(sendResize).toHaveBeenCalledWith(120, 40);
-
-    expect(adapter.snapshot()).toBe(true);
-    expect(adapter.subscribe()).toBe(true);
-    expect(requestSnapshot).toHaveBeenCalledTimes(2);
-    expect(requestSnapshot.mock.calls[0][0]).toBe("screen");
-    expect(requestSnapshot.mock.calls[1][0]).toBe("full");
   });
 
   test("internalQueueAdapter only supports send", () => {

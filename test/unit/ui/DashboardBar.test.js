@@ -368,7 +368,7 @@ describe("Ink DashboardBar view model", () => {
       focusMode: "dashboard",
       dashboardView: "mode",
       maxWidth: 22,
-      modeOptions: ["auto", "host", "terminal", "tmux", "internal-pty", "internal"],
+      modeOptions: ["auto", "host", "terminal", "tmux", "internal"],
       selectedModeIndex: 3,
       dashHints: { mode: "←/→ select · Enter · ↓ provider · ↑ back" },
     });

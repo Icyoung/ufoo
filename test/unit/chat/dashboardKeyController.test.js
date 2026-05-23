@@ -94,7 +94,7 @@ describe("chat dashboardKeyController", () => {
     });
 
     expect(controller.handleDashboardKey({ name: "left" })).toBe(true);
-    expect(state.selectedModeIndex).toBe(5);
+    expect(state.selectedModeIndex).toBe(4);
 
     expect(controller.handleDashboardKey({ name: "down" })).toBe(true);
     expect(state.dashboardView).toBe("provider");
@@ -126,6 +126,19 @@ describe("chat dashboardKeyController", () => {
     expect(deps.activateAgent).toHaveBeenCalledWith("claude:2");
     expect(deps.enterAgentView).not.toHaveBeenCalled();
     expect(state.focusMode).toBe("dashboard");
+  });
+
+  test("agents down enters mode and clears temporary target", () => {
+    const { state, deps, controller } = createController({
+      dashboardView: "agents",
+      selectedAgentIndex: 0,
+    });
+
+    expect(controller.handleDashboardKey({ name: "down" })).toBe(true);
+
+    expect(state.dashboardView).toBe("mode");
+    expect(deps.clearTargetAgent).toHaveBeenCalled();
+    expect(deps.renderDashboard).toHaveBeenCalled();
   });
 
   test("provider view applies selected provider", () => {
@@ -173,7 +186,7 @@ describe("chat dashboardKeyController", () => {
       {
         dashboardView: "agents",
         selectedAgentIndex: 0,
-        activeAgentMetaMap: new Map([["codex:1", { launch_mode: "internal-pty" }]]),
+        activeAgentMetaMap: new Map([["codex:1", { launch_mode: "internal" }]]),
       },
       { existsSync: jest.fn(() => true) }
     );
@@ -184,7 +197,7 @@ describe("chat dashboardKeyController", () => {
     expect(state.dashboardView).toBe("agents");
     expect(state.selectedAgentIndex).toBe(-1);
     expect(deps.setScreenGrabKeys).toHaveBeenCalledWith(false);
-    expect(deps.enterAgentView).toHaveBeenCalledWith("codex:1");
+    expect(deps.enterAgentView).toHaveBeenCalledWith("codex:1", { useBus: true });
     expect(deps.exitDashboardMode).not.toHaveBeenCalled();
   });
 

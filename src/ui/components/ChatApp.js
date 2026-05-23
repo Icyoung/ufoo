@@ -2609,7 +2609,10 @@ function createChatApp({ React, ink, props, interactive = true }) {
     const inputWidth = Math.max(20, (size.cols || 80) - 4);
     const promptPrefix = (() => {
       const projectPrefix = inCommittedProjectScope && currentProjectLabel ? `${currentProjectLabel} ` : "";
-      if (targetAgentLabel) return `${projectPrefix}›@${targetAgentLabel} `;
+      const visibleTargetAgentLabel = state.focusMode === "dashboard" && state.dashboardView !== "agents"
+        ? ""
+        : targetAgentLabel;
+      if (visibleTargetAgentLabel) return `${projectPrefix}›@${visibleTargetAgentLabel} `;
       return `${projectPrefix}› `;
     })();
 

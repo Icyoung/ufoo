@@ -20,6 +20,7 @@ const {
   buildDefaultStartupBootstrapPrompt,
   isValueForCodexOption,
 } = require("./defaultBootstrap");
+const { buildPromptInjectionText } = require("../bus/promptEnvelope");
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -159,6 +160,21 @@ function buildMemoryPrefix(projectRoot, limit = 50) {
   } catch {
     return "";
   }
+}
+
+function readAgentsMap(projectRoot) {
+  try {
+    const data = readJSON(getUfooPaths(projectRoot).agentsFile, null);
+    return data && data.agents && typeof data.agents === "object" ? data.agents : {};
+  } catch {
+    return {};
+  }
+}
+
+function buildInternalPromptMessage(projectRoot, subscriber, evt = {}) {
+  const message = String((evt.data && evt.data.message) || "");
+  if (evt.__agentViewRaw) return message;
+  return buildPromptInjectionText(evt, subscriber, readAgentsMap(projectRoot));
 }
 
 function createBusSender(projectRoot, subscriber) {
@@ -311,7 +327,8 @@ async function handleEvent(
 ) {
   if (!evt || !evt.data || !evt.data.message) return;
   const memoryPrefix = buildMemoryPrefix(projectRoot);
-  const prompt = [bootstrapText, memoryPrefix, evt.data.message]
+  const promptMessage = buildInternalPromptMessage(projectRoot, subscriber, evt);
+  const prompt = [bootstrapText, memoryPrefix, promptMessage]
     .map((item) => String(item || "").trim())
     .filter(Boolean)
     .join("\n\n");
@@ -732,9 +749,6 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
   const queueDir = path.join(getUfooPaths(projectRoot).busQueuesDir, safeSubscriber(subscriber));
   const queueFile = path.join(queueDir, "pending.jsonl");
   const normalizedAgentType = String(agentType || "").trim().toLowerCase();
-  if (normalizedAgentType === "ufoo" || normalizedAgentType === "ucode" || normalizedAgentType === "ufoo-code") {
-    throw new Error("ufoo core is not supported by headless internal runner; use internal-pty");
-  }
   const provider = normalizedAgentType === "codex" ? "codex-cli" : "claude-cli";
   const model = process.env.UFOO_AGENT_MODEL || "";
   const bootstrap = resolveInternalBootstrap({

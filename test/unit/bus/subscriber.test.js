@@ -436,7 +436,7 @@ describe('SubscriberManager', () => {
 
     it('should remove dead internal subscribers without provider sessions from the registry', async () => {
       await manager.join('abc1', 'claude-code', '', {
-        launchMode: 'internal-pty',
+        launchMode: 'internal',
         parentPid: 999999,
       });
 
@@ -449,7 +449,7 @@ describe('SubscriberManager', () => {
 
     it('should keep dead internal subscribers with provider sessions as recoverable', async () => {
       await manager.join('abc1', 'claude-code', '', {
-        launchMode: 'internal-pty',
+        launchMode: 'internal',
         parentPid: 999999,
         providerSessionId: 'sess-1',
       });
@@ -459,7 +459,7 @@ describe('SubscriberManager', () => {
       expect(busData.agents['claude-code:abc1']).toMatchObject({
         status: 'inactive',
         provider_session_id: 'sess-1',
-        launch_mode: 'internal-pty',
+        launch_mode: 'internal',
       });
       expect(mockQueueManager.getQueueDir).toHaveBeenCalledWith('claude-code:abc1');
       expect(mockQueueManager.getOffsetPath).toHaveBeenCalledWith('claude-code:abc1');
@@ -470,7 +470,7 @@ describe('SubscriberManager', () => {
         agent_type: 'codex',
         nickname: 'codex-1',
         status: 'inactive',
-        launch_mode: 'internal-pty',
+        launch_mode: 'internal',
         pid: 999999,
       };
 
@@ -484,7 +484,7 @@ describe('SubscriberManager', () => {
         agent_type: 'codex',
         nickname: 'codex-1',
         status: 'inactive',
-        launch_mode: 'internal-pty',
+        launch_mode: 'internal',
         provider_session_id: 'sess-1',
         pid: 999999,
       };

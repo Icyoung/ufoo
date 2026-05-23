@@ -92,7 +92,7 @@ function getJoinedPid() {
 
 function isInternalLaunchMode(meta) {
   const mode = String(meta?.launch_mode || "").trim();
-  return mode === "internal" || mode === "internal-pty";
+  return mode === "internal";
 }
 
 function hasProviderSession(meta) {

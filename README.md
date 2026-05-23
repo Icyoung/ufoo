@@ -285,7 +285,7 @@ Common project settings:
 }
 ```
 
-Supported `launchMode` values are `auto`, `internal`, `internal-pty`, `tmux`, `terminal`, and `host`. `controllerMode` accepts `main`, `shadow`, `loop`, and legacy compatibility values.
+Supported `launchMode` values are `auto`, `internal`, `tmux`, `terminal`, and `host`. `controllerMode` accepts `main`, `shadow`, `loop`, and legacy compatibility values.
 
 Global `ucode` settings:
 

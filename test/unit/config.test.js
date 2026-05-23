@@ -59,14 +59,14 @@ describe("config save/load", () => {
     expect(defaultRouterModelForProvider("anthropic")).toBe("sonnet-4.7");
   });
 
-  test("saveConfig preserves internal-pty launch mode", () => {
-    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-config-internal-pty-"));
+  test("saveConfig preserves internal launch mode", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-config-internal-"));
     fs.mkdirSync(path.join(projectRoot, ".ufoo"), { recursive: true });
 
-    saveConfig(projectRoot, { launchMode: "internal-pty" });
+    saveConfig(projectRoot, { launchMode: "internal" });
 
     const loaded = loadConfig(projectRoot);
-    expect(loaded.launchMode).toBe("internal-pty");
+    expect(loaded.launchMode).toBe("internal");
 
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });

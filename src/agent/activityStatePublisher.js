@@ -5,7 +5,7 @@ const { writeActivityState } = require("./activityStateWriter");
 /**
  * Unified activity state publisher.
  * Encapsulates the "write to disk + broadcast event" pattern used by
- * ptyRunner, launcher, notifier, and internalRunner.
+ * launcher, notifier, and internalRunner.
  *
  * Dedupe key is `state|detail` so that within the same canonical state
  * (e.g. `working`) callers can publish detail transitions like

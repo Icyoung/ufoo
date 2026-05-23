@@ -260,7 +260,7 @@ ucode-core skills show <name>
 }
 ```
 
-`launchMode` 支持 `auto`、`internal`、`internal-pty`、`tmux`、`terminal`、`host`。`controllerMode` 支持 `main`、`shadow`、`loop` 和 legacy 兼容值。
+`launchMode` 支持 `auto`、`internal`、`tmux`、`terminal`、`host`。`controllerMode` 支持 `main`、`shadow`、`loop` 和 legacy 兼容值。
 
 全局 `ucode` 配置：
 

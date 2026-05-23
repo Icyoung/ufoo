@@ -218,30 +218,6 @@ describe("daemon ops internal launch", () => {
     }
   });
 
-  test("internal-pty uses the installed ufoo PTY runner instead of a project-local bin path", async () => {
-    writeConfig({ launchMode: "internal-pty" });
-
-    const result = await launchAgent(projectRoot, "codex", 1, "");
-
-    expect(result.mode).toBe("internal-pty");
-    expect(spawn).toHaveBeenCalledWith(
-      process.execPath,
-      [
-        path.resolve(__dirname, "../../../bin/ufoo.js"),
-        "agent-pty-runner",
-        "codex",
-      ],
-      expect.objectContaining({
-        cwd: projectRoot,
-      }),
-    );
-    expect(spawn.mock.calls[0][2].env.UFOO_STARTUP_BOOTSTRAP_TEXT).toContain("ufoo ctx decisions -l");
-    expect(spawn.mock.calls[0][2].env.UFOO_SKIP_DEFAULT_BOOTSTRAP).toBe("1");
-    expect(spawn.mock.calls[0][2].env.UFOO_INTERNAL_PTY).toBe("1");
-    const projectLocalRunner = path.join(projectRoot, "bin", "ufoo.js");
-    expect(spawn.mock.calls.some(([, args]) => Array.isArray(args) && args[0] === projectLocalRunner)).toBe(false);
-  });
-
   test("internal uses the headless agent runner", async () => {
     writeConfig({ launchMode: "internal" });
 
@@ -255,7 +231,6 @@ describe("daemon ops internal launch", () => {
       "agent-runner",
       "codex",
     ]);
-    expect(spawn.mock.calls[0][2].env.UFOO_INTERNAL_PTY).toBe("0");
     expect(spawn.mock.calls[0][2].env.UFOO_LAUNCH_MODE).toBe("internal");
     expect(agents[subscriberId].launch_mode).toBe("internal");
   });

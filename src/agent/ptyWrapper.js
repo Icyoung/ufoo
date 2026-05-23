@@ -12,7 +12,7 @@ const { isITerm2 } = require("../terminal/detect");
  * - 完善的资源清理（防止泄漏）
  *
  * 参考：
- * - ptyRunner.js - PTY实现参考
+ * - launcher.js - PTY实现参考
  * - codex-44 review反馈 (2026-02-05)
  */
 class PtyWrapper {

@@ -8,16 +8,11 @@ const { createTerminalAdapterRouter } = require("../terminal/adapterRouter");
 const {
   INJECTION_MODES,
   getInjectionModeFromEvent,
-  getTagsFromEvent,
-  getTaskIdFromEvent,
 } = require("./messageMeta");
-const { renderEnvelope } = require("./envelope");
-
-const MANUAL_INJECTION_SOURCES = new Set([
-  "chat-direct",
-  "chat-manual",
-  "manual",
-]);
+const {
+  buildPromptInjectionText,
+  shouldRenderPromptEnvelope,
+} = require("./promptEnvelope");
 
 function isBusyActivityState(value = "") {
   const state = String(value || "").trim().toLowerCase();
@@ -25,50 +20,6 @@ function isBusyActivityState(value = "") {
     || state === "running"
     || state === "waiting_input"
     || state === "blocked";
-}
-
-function asTrimmedString(value) {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function shouldRenderPromptEnvelope(evt = {}) {
-  const data = evt && typeof evt.data === "object" && evt.data ? evt.data : {};
-  return data.raw_inject !== true
-    && data.rawInject !== true
-    && data.envelope !== false
-    && data.prompt_envelope !== false;
-}
-
-function getPublisherId(evt = {}) {
-  const publisher = evt.publisher;
-  if (typeof publisher === "string") return publisher;
-  if (publisher && typeof publisher === "object") {
-    return asTrimmedString(publisher.subscriber || publisher.id || publisher.nickname);
-  }
-  return "";
-}
-
-function buildPromptInjectionText(evt = {}, subscriber = "", agents = {}) {
-  const data = evt && typeof evt.data === "object" && evt.data ? evt.data : {};
-  const message = String(data.message || "");
-  if (!shouldRenderPromptEnvelope(evt)) return message;
-
-  const source = asTrimmedString(data.source).toLowerCase();
-  const kind = MANUAL_INJECTION_SOURCES.has(source) ? "manual" : "bus";
-  const publisherId = getPublisherId(evt);
-  const publisherMeta = publisherId && agents ? agents[publisherId] : null;
-  const targetMeta = subscriber && agents ? agents[subscriber] : null;
-
-  return renderEnvelope({
-    kind,
-    fromId: publisherId,
-    fromNickname: publisherMeta && publisherMeta.nickname ? publisherMeta.nickname : "",
-    toId: subscriber,
-    toNickname: targetMeta && targetMeta.nickname ? targetMeta.nickname : "",
-    tags: getTagsFromEvent(evt),
-    taskId: getTaskIdFromEvent(evt),
-    message,
-  });
 }
 
 /**
@@ -349,7 +300,7 @@ class BusDaemon {
       const launchMode = meta?.launch_mode || "";
       // Delivery ownership:
       // - notifier/injector: terminal/tmux
-      // - internal queue loop: internal/internal-pty
+      // - internal queue loop: internal
       // Bus daemon only handles legacy/unknown launch modes.
       const adapter = this.adapterRouter.getAdapter({ launchMode, agentId: subscriber, meta });
       const { supportsNotifierInjector, supportsInternalQueueLoop } = adapter.capabilities;

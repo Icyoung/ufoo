@@ -4,7 +4,6 @@ const { runCli } = require("../src/cli");
 const { runDaemonCli } = require("../src/daemon/run");
 const { runChat } = require("../src/chat");
 const { runInternalRunner } = require("../src/agent/internalRunner");
-const { runPtyRunner } = require("../src/agent/ptyRunner");
 const { resolveGlobalControllerProjectRoot } = require("../src/projects");
 
 const rawArgv = process.argv.slice(2);
@@ -31,23 +30,6 @@ async function main() {
     const agentType = argv[1] || "codex";
     const extraArgs = argv.slice(2);
     await runInternalRunner({ projectRoot: process.cwd(), agentType, extraArgs });
-    return;
-  }
-  if (cmd === "agent-pty-runner") {
-    const agentType = argv[1] || "codex";
-    const extraArgs = argv.slice(2);
-    try {
-      await runPtyRunner({ projectRoot: process.cwd(), agentType, extraArgs });
-    } catch (err) {
-      const normalized = String(agentType || "").trim().toLowerCase();
-      if (normalized === "ufoo" || normalized === "ucode" || normalized === "ufoo-code") {
-        throw err;
-      }
-      // Fallback to headless runner if PTY is unavailable
-      // eslint-disable-next-line no-console
-      console.error(`[pty-runner] ${err.message || err}. Falling back to headless internal runner.`);
-      await runInternalRunner({ projectRoot: process.cwd(), agentType, extraArgs });
-    }
     return;
   }
   if (cmd === "chat") {

@@ -7,7 +7,7 @@
  * canonical activity model (`starting`/`ready`/`working`/`idle`/`waiting_input`/`blocked`)
  * plus a short detail string (e.g. `thinking`, `tool bash`). Publishes through
  * an injected publisher so the same tracker can be reused by internal,
- * internal-pty, or future runner shapes.
+ * internal, or future runner shapes.
  *
  * Design contract:
  *  - The tracker never reads PTY text or guesses state from prose. All state

@@ -112,15 +112,15 @@ describe("agent enter request helpers", () => {
     const request = resolveAgentEnterRequest({
       agentId: "codex:2",
       activeAgentMeta: new Map([
-        ["codex:2", { launch_mode: "internal-pty" }],
+        ["codex:2", { launch_mode: "internal" }],
       ]),
     });
 
     expect(request).toMatchObject({
-      launchMode: "internal-pty",
-      useBus: false,
+      launchMode: "internal",
+      useBus: true,
       supportsInternalQueue: true,
-      supportsSocket: true,
+      supportsSocket: false,
     });
   });
 });

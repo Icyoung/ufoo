@@ -67,7 +67,7 @@ const {
   pruneTransientAgentStates,
 } = require("./transientAgentState");
 
-const MODE_OPTIONS = ["auto", "host", "terminal", "tmux", "internal-pty", "internal"];
+const MODE_OPTIONS = ["auto", "host", "terminal", "tmux", "internal"];
 
 async function runChatBlessed(projectRoot, options = {}) {
   const globalMode = options && options.globalMode === true;
@@ -1059,26 +1059,51 @@ async function runChatBlessed(projectRoot, options = {}) {
       prefix = truncateText(path.basename(activeProjectRoot), 10, "");
     }
 
+    const visibleTargetAgent = focusMode === "dashboard" && dashboardView !== "agents"
+      ? null
+      : targetAgent;
+
     // Build content: [prefix]>[>@agent]
-    const content = targetAgent
-      ? `${prefix}>@${getAgentLabel(targetAgent)}`
+    const content = visibleTargetAgent
+      ? `${prefix}>@${getAgentLabel(visibleTargetAgent)}`
       : `${prefix}>`;
+
+    const nextPromptWidth = content.length + 1;
+    const currentPromptWidth = typeof promptBox.width === "number" ? promptBox.width : nextPromptWidth;
+    if (currentPromptWidth > nextPromptWidth && typeof screen.clearRegion === "function") {
+      try {
+        const lpos = promptBox._getCoords ? promptBox._getCoords() : null;
+        if (lpos) {
+          screen.clearRegion(lpos.xi, screen.width || lpos.xl, lpos.yi, lpos.yl, true);
+        }
+      } catch {
+        // Best-effort visual cleanup; normal render still proceeds.
+      }
+    }
 
     promptBox.setContent(content);
     if (!input.parent || !promptBox.parent) return;
 
-    promptBox.width = content.length + 1;  // content + spacer
-    input.left = promptBox.width;
-    input.width = `100%-${promptBox.width}`;
+    promptBox.width = nextPromptWidth;  // content + spacer
+    input.left = nextPromptWidth;
+    input.width = `100%-${nextPromptWidth}`;
 
     resizeInput();
-    if (typeof input._updateCursor === "function") {
+    if (focusMode !== "dashboard" && typeof input._updateCursor === "function") {
       input._updateCursor();
     }
   }
 
   function syncTargetFromSelection() {
-    if (focusMode !== "dashboard" || dashboardView !== "agents") return;
+    if (focusMode !== "dashboard") return;
+    if (dashboardView !== "agents") {
+      if (targetAgent) {
+        targetAgent = null;
+        updatePromptBox();
+        screen.render();
+      }
+      return;
+    }
     if (selectedAgentIndex >= 0 && selectedAgentIndex < activeAgents.length) {
       const nextTarget = activeAgents[selectedAgentIndex];
       if (nextTarget !== targetAgent) {
@@ -1246,6 +1271,7 @@ async function runChatBlessed(projectRoot, options = {}) {
       dashboardContent = `${dashboardContent}\n `;
     }
     dashboard.setContent(dashboardContent);
+    updatePromptBox();
   }
 
   function readDiskMetaForActiveAgents(activeList = []) {
@@ -1493,7 +1519,9 @@ async function runChatBlessed(projectRoot, options = {}) {
   });
 
   function handleDashboardKey(key) {
-    return dashboardController.handleDashboardKey(key);
+    const handled = dashboardController.handleDashboardKey(key);
+    if (handled) syncTargetFromSelection();
+    return handled;
   }
 
   function exitDashboardMode(selectAgent = false) {

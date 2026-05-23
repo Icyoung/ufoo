@@ -70,8 +70,8 @@ function createInitialState({ banner = [], globalMode = false, globalScope = "co
     selectedProjectRoot: "",
     projectListWindowStart: 0,
     activeProjectRoot: "",
-    modeOptions: ["auto", "host", "terminal", "tmux", "internal-pty", "internal"],
-    selectedModeIndex: Math.max(0, ["auto", "host", "terminal", "tmux", "internal-pty", "internal"].indexOf(initialLaunchMode)),
+    modeOptions: ["auto", "host", "terminal", "tmux", "internal"],
+    selectedModeIndex: Math.max(0, ["auto", "host", "terminal", "tmux", "internal"].indexOf(initialLaunchMode)),
     providerOptions: DEFAULT_PROVIDER_OPTIONS,
     selectedProviderIndex,
     cronTasks: [],
@@ -136,8 +136,15 @@ function reducer(state, action) {
       return { ...state, focusMode: state.focusMode === "input" ? "dashboard" : "input" };
     case "focus/set":
       return { ...state, focusMode: action.mode === "dashboard" ? "dashboard" : "input" };
-    case "view/set":
-      return { ...state, dashboardView: action.view };
+    case "view/set": {
+      const view = action.view;
+      const inAgentsView = view === "agents";
+      return {
+        ...state,
+        dashboardView: view,
+        agentSelectionMode: inAgentsView && state.focusMode === "dashboard" && state.selectedAgentIndex >= 0,
+      };
+    }
     case "view/cycle": {
       const i = DASHBOARD_VIEWS.indexOf(state.dashboardView);
       const direction = action.direction === "left" ? -1 : 1;

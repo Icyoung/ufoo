@@ -49,7 +49,7 @@ function createHarness(overrides = {}) {
     setSelectedProviderIndex: (value) => {
       state.selectedProviderIndex = value;
     },
-    modeOptions: ["auto", "host", "terminal", "tmux", "internal-pty", "internal"],
+    modeOptions: ["auto", "host", "terminal", "tmux", "internal"],
     providerOptions: [
       { label: "codex", value: "codex-cli" },
       { label: "claude", value: "claude-cli" },

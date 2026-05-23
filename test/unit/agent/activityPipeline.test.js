@@ -147,7 +147,7 @@ describe("activity_state end-to-end pipeline", () => {
         id: "claude-code:abc123",
         nickname: "builder",
         display: "builder",
-        launch_mode: "internal-pty",
+        launch_mode: "internal",
         activity_state: "working",
         activity_since: "2026-03-08T00:05:00.000Z",
       },

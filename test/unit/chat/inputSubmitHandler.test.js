@@ -52,7 +52,7 @@ describe("chat inputSubmitHandler", () => {
     const { state, options, handler } = createHarness(
       {
         targetAgent: "codex:1",
-        activeAgentMetaMap: new Map([["codex:1", { launch_mode: "internal-pty" }]]),
+        activeAgentMetaMap: new Map([["codex:1", { launch_mode: "internal" }]]),
       },
       {
         existsSync: jest.fn(() => true),
@@ -62,7 +62,7 @@ describe("chat inputSubmitHandler", () => {
     await handler.handleSubmit("   ");
 
     expect(options.clearTargetAgent).toHaveBeenCalled();
-    expect(options.enterAgentView).toHaveBeenCalledWith("codex:1");
+    expect(options.enterAgentView).toHaveBeenCalledWith("codex:1", { useBus: true });
     expect(options.focusInput).not.toHaveBeenCalled();
     expect(state.targetAgent).toBeNull();
   });

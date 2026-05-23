@@ -169,7 +169,7 @@ function resolveNativeTerminalApp(options = {}) {
 
 function resolveConfiguredLaunchMode(configuredMode = "", options = {}) {
   const mode = normalizeOptionalString(configuredMode);
-  if (mode === "internal" || mode === "internal-pty" || mode === "tmux" || mode === "terminal" || mode === "host") {
+  if (mode === "internal" || mode === "tmux" || mode === "terminal" || mode === "host") {
     return mode;
   }
   // Auto mode: defer to the unified detector. Daemon ops differs from the
@@ -466,8 +466,8 @@ function buildResumeCommand(projectRoot, agent, sessionId) {
   }
   const args = buildResumeArgs(agent, sessionId);
   const argText = args.length > 0 ? ` ${args.map(shellEscape).join(" ")}` : "";
-  const skipProbeEnv = "UFOO_SKIP_SESSION_PROBE=1 ";
-  return `cd ${shellEscape(projectRoot)} && ${skipProbeEnv}${binary}${argText}`;
+  const skipSessionResolveEnv = "UFOO_SKIP_SESSION_RESOLVE=1 ";
+  return `cd ${shellEscape(projectRoot)} && ${skipSessionResolveEnv}${binary}${argText}`;
 }
 
 async function tryReuseTerminal(projectRoot, subscriberId, meta, agent, sessionId) {
@@ -545,7 +545,6 @@ async function spawnManagedHostAgent(
   }
 
   const hostContext = resolveHostLaunchContext(hostOptions);
-  const requireActivityMonitor = hostContext.requireActivityMonitor === true;
   if (!hostContext.hostDaemonSock) {
     throw new Error("host launch requires UFOO_HOST_DAEMON_SOCK");
   }
@@ -588,15 +587,11 @@ async function spawnManagedHostAgent(
   const argText = args.length > 0 ? ` ${args.map(shellEscape).join(" ")}` : "";
 
   const titleCmd = buildTitleCmd(nickname);
-  const hasPreRegisteredSubscriber = !!subscriberId;
 
   // Pass env vars to Horizon via the env parameter (Horizon will set them for the child process)
   const env = {
     UFOO_LAUNCH_MODE: "host",
   };
-  if (requireActivityMonitor) {
-    env.UFOO_FORCE_PTY = "1";
-  }
   if (subscriberId) {
     env.UFOO_SUBSCRIBER_ID = subscriberId;
   }
@@ -612,32 +607,18 @@ async function spawnManagedHostAgent(
     }
   }
 
-  let runCmd;
-  if (hasPreRegisteredSubscriber) {
-    // Group mode: use ufoo launcher for activity_state monitoring
-    // This enables ReadyDetector and bootstrap to work correctly
-    const ufooRunner = resolveUfooRunnerPath();
-    const launchCmd = `${shellEscape(process.execPath)} ${shellEscape(ufooRunner)} agent-pty-runner ${shellEscape(normalizedAgent)}${argText}`.trim();
-    runCmd = titleCmd
-      ? `cd ${shellEscape(projectRoot)} && ${titleCmd} && ${launchCmd}`
-      : `cd ${shellEscape(projectRoot)} && ${launchCmd}`;
-    // Force PTY wrapper so ReadyDetector + ActivityDetector work for activity_state monitoring.
-    // Horizon sets UFOO_DISABLE_PTY=1 unconditionally; UFOO_FORCE_PTY=1 takes priority over it.
-    env.UFOO_FORCE_PTY = "1";
-  } else {
-    if (preRegistrationError) {
-      console.error(
-        `[host-launch] pre-registration failed for ${nickname || agentType}: ${preRegistrationError.message || String(preRegistrationError)}`
-      );
-    }
-    // Fallback launch still goes through the regular agent launcher binary.
-    // For group/bootstrap-monitored flows we also force the PTY wrapper so
-    // activity_state can progress out of "starting" after self-registration.
-    const directCmd = `${binary}${argText}`;
-    runCmd = titleCmd
-      ? `cd ${shellEscape(projectRoot)} && ${titleCmd} && ${directCmd}`
-      : `cd ${shellEscape(projectRoot)} && ${directCmd}`;
+  // Launch agent binary directly; launcher.js creates inject.sock and
+  // handles activity_state monitoring internally via its own PTY wrapper.
+  if (preRegistrationError) {
+    console.error(
+      `[host-launch] pre-registration failed for ${nickname || agentType}: ${preRegistrationError.message || String(preRegistrationError)}`
+    );
   }
+  env.UFOO_FORCE_PTY = "1";
+  const directCmd = `${binary}${argText}`;
+  const runCmd = titleCmd
+    ? `cd ${shellEscape(projectRoot)} && ${titleCmd} && ${directCmd}`
+    : `cd ${shellEscape(projectRoot)} && ${directCmd}`;
   createOptions.command = runCmd;
   createOptions.env = env;
 
@@ -711,10 +692,7 @@ async function spawnInternalAgent(
       ? (count > 1 ? `${nickname}-${i + 1}` : nickname)
       : "";
     const providerSessionId = typeof options.providerSessionId === "string" ? options.providerSessionId.trim() : "";
-    const usePty = typeof options.usePty === "boolean"
-      ? options.usePty
-      : process.env.UFOO_INTERNAL_PTY !== "0";
-    const launchMode = usePty ? "internal-pty" : "internal";
+    const launchMode = "internal";
 
     // 传递 launch_mode 和 parent PID 到 join
     const joinResult = await bus.subscriberManager.join(sessionId, agentType, requestedNickname, {
@@ -726,10 +704,9 @@ async function spawnInternalAgent(
     bus.saveBusData();
 
     const managedBootstrap = applyDefaultManagedBootstrap(projectRoot, normalizedAgent, extraArgs, extraEnv);
-    const runnerCmd = usePty ? "agent-pty-runner" : "agent-runner";
+    const runnerCmd = "agent-runner";
     const args = managedBootstrap.args;
     const child = spawn(process.execPath, [runner, runnerCmd, agent, ...args], {
-      // 关键改动：不使用 detached，daemon 作为父进程
       detached: false,
       stdio: ["ignore", errLog, errLog],
       cwd: projectRoot,
@@ -737,17 +714,16 @@ async function spawnInternalAgent(
         ...process.env,
         ...(managedBootstrap.extraEnv && typeof managedBootstrap.extraEnv === "object" ? managedBootstrap.extraEnv : {}),
         UFOO_INTERNAL_AGENT: "1",
-        UFOO_INTERNAL_PTY: usePty ? "1" : "0",
-        UFOO_SUBSCRIBER_ID: subscriberId,  // 直接传递 subscriber ID
+        UFOO_SUBSCRIBER_ID: subscriberId,
         UFOO_NICKNAME: finalNickname,
-        UFOO_LAUNCH_MODE: usePty ? "internal-pty" : "internal",
+        UFOO_LAUNCH_MODE: "internal",
         UFOO_PARENT_PID: String(originalPid),
         ...(providerSessionId ? { UFOO_PROVIDER_SESSION_ID: providerSessionId } : {}),
       },
     });
 
     // Update bus data with the actual child PID so isMetaActive
-    // can detect when the ptyRunner process dies.
+    // can detect when the runner process dies.
     try {
       bus.loadBusData();
       if (bus.busData.agents && bus.busData.agents[subscriberId]) {
@@ -957,8 +933,7 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
     throw new Error(`unsupported agent type: ${agent}`);
   }
 
-  if (mode === "internal" || mode === "internal-pty") {
-    const usePty = mode === "internal-pty";
+  if (mode === "internal") {
     const result = await spawnInternalAgent(
       projectRoot,
       normalizedAgent,
@@ -967,7 +942,7 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
       processManager,
       launchEnvObject,
       extraArgs,
-      { usePty }
+      {}
     );
     return { mode, launchScope, subscriberIds: result.subscriberIds };
   }
@@ -1203,7 +1178,7 @@ async function resumeAgents(projectRoot, target = "", processManager = null) {
     const args = buildResumeArgs(item.agent, sessionId);
     let reused = false;
     let resumedId = item.id;
-    if (mode === "internal" || mode === "internal-pty") {
+    if (mode === "internal") {
       // Internal agents have no terminal/pane to reattach. Start a fresh
       // daemon-managed runner and replace the old recoverable registration.
       // The provider session is still reused via the normal provider args.
@@ -1214,9 +1189,9 @@ async function resumeAgents(projectRoot, target = "", processManager = null) {
         1,
         nickname,
         processManager,
-        { UFOO_SKIP_SESSION_PROBE: "1" },
+        { UFOO_SKIP_SESSION_RESOLVE: "1" },
         args,
-        { replaceAgentId: item.id, providerSessionId: sessionId, usePty: mode === "internal-pty" }
+        { replaceAgentId: item.id, providerSessionId: sessionId }
       );
       resumedId = launchResult.subscriberIds && launchResult.subscriberIds[0]
         ? launchResult.subscriberIds[0]
@@ -1224,7 +1199,7 @@ async function resumeAgents(projectRoot, target = "", processManager = null) {
     } else {
       reused = await tryReuseTerminal(projectRoot, item.id, item.meta, item.agent, sessionId);
       if (!reused) {
-        const envPrefix = "UFOO_SKIP_SESSION_PROBE=1";
+        const envPrefix = "UFOO_SKIP_SESSION_RESOLVE=1";
         if (mode === "tmux") {
           // eslint-disable-next-line no-await-in-loop
           await spawnTmuxWindow(projectRoot, item.agent, nickname, args, envPrefix);

@@ -3,23 +3,15 @@ const { TERMINAL_CAPABILITY_KEYS } = require("../../../src/terminal/adapterContr
 
 describe("terminal/adapterRouter", () => {
 
-  test("internal and internal-pty differ in socket and snapshot capabilities", () => {
+  test("internal adapter capabilities", () => {
     const router = createTerminalAdapterRouter();
     const internal = router.getAdapter({ launchMode: "internal", agentId: "agent:1" });
-    const internalPty = router.getAdapter({ launchMode: "internal-pty", agentId: "agent:2" });
 
     expect(internal.capabilities.supportsInternalQueueLoop).toBe(true);
-    expect(internalPty.capabilities.supportsInternalQueueLoop).toBe(true);
-
     expect(internal.capabilities.supportsSocketProtocol).toBe(false);
-    expect(internalPty.capabilities.supportsSocketProtocol).toBe(true);
-
     expect(internal.capabilities.supportsSnapshot).toBe(false);
-    expect(internalPty.capabilities.supportsSnapshot).toBe(true);
     expect(internal.capabilities.supportsSubscribeFull).toBe(false);
     expect(internal.capabilities.supportsSubscribeScreen).toBe(false);
-    expect(internalPty.capabilities.supportsSubscribeFull).toBe(true);
-    expect(internalPty.capabilities.supportsSubscribeScreen).toBe(true);
   });
 
   test("terminal and tmux differ only in replay and window-close capability", () => {
@@ -61,13 +53,6 @@ describe("terminal/adapterRouter", () => {
     expect(internal.capabilities.supportsSocketProtocol).toBe(false);
     expect(internal.capabilities.supportsSnapshot).toBe(false);
 
-    const internalPty = router.getAdapter({ launchMode: "internal-pty", agentId: "agent:4" });
-    expect(internalPty.capabilities.supportsInternalQueueLoop).toBe(true);
-    expect(internalPty.capabilities.supportsSocketProtocol).toBe(true);
-    expect(internalPty.capabilities.supportsSnapshot).toBe(true);
-    expect(internalPty.capabilities.supportsSubscribeFull).toBe(true);
-    expect(internalPty.capabilities.supportsSubscribeScreen).toBe(true);
-
     const unknown = router.getAdapter({ launchMode: "unknown", agentId: "agent:5" });
     for (const key of TERMINAL_CAPABILITY_KEYS) {
       expect(unknown.capabilities[key]).toBe(false);
@@ -102,24 +87,21 @@ describe("terminal/adapterRouter", () => {
     expect(adapter.sendRaw("x")).toBe(false);
   });
 
-  test("internal-pty adapter routes send/resize/snapshot", () => {
+  test("internal adapter routes send but not resize/snapshot", () => {
     const sendRaw = jest.fn();
     const sendResize = jest.fn();
     const requestSnapshot = jest.fn(() => true);
     const router = createTerminalAdapterRouter({ sendRaw, sendResize, requestSnapshot });
 
-    const adapter = router.getAdapter({ launchMode: "internal-pty", agentId: "agent:2" });
-    expect(adapter.capabilities.supportsSocketProtocol).toBe(true);
-    expect(adapter.capabilities.supportsSnapshot).toBe(true);
+    const adapter = router.getAdapter({ launchMode: "internal", agentId: "agent:2" });
+    expect(adapter.capabilities.supportsInternalQueueLoop).toBe(true);
+    expect(adapter.capabilities.supportsSocketProtocol).toBe(false);
 
     expect(adapter.sendRaw("ping")).toBe(true);
     expect(sendRaw).toHaveBeenCalledWith("ping");
 
-    expect(adapter.resize(80, 24)).toBe(true);
-    expect(sendResize).toHaveBeenCalledWith(80, 24);
-
-    expect(adapter.snapshot()).toBe(true);
-    expect(requestSnapshot).toHaveBeenCalledWith("screen");
+    expect(adapter.resize(80, 24)).toBe(false);
+    expect(sendResize).not.toHaveBeenCalled();
   });
 
   test("internal adapter does not support snapshot or resize", () => {
