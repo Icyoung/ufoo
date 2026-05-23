@@ -77,7 +77,7 @@ function buildBootstrapContent({
 
 function hasUfooProtocolPrompt(promptText = "") {
   const text = String(promptText || "");
-  return text.includes("ufoo protocol:") && text.includes("ufoo ctx decisions -l");
+  return text.includes("Session harness: ufoo") && text.includes("ufoo ctx decisions -l");
 }
 
 function mergeDefaultUfooProtocolPrompt(projectRoot = "", promptText = "") {

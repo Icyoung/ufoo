@@ -21,9 +21,9 @@ describe("default bootstrap", () => {
 
   test("builds shared startup bootstrap prompt", () => {
     const prompt = buildDefaultStartupBootstrapPrompt({ agentType: "codex" });
-    expect(prompt).toContain("Adopt the following ufoo coordination protocol silently.");
+    expect(prompt).toContain("Session bootstrap for Codex.");
     expect(prompt).toContain("ufoo ctx decisions -l");
-    expect(prompt).toContain("ufoo bus send <target-nickname>");
+    expect(prompt).toContain("ufoo bus send <target>");
   });
 
   test("writes default bootstrap file for claude", () => {
@@ -168,7 +168,7 @@ describe("default bootstrap", () => {
     expect(resolved.mode).toBe("initial-prompt-arg");
     expect(resolved.args[0]).toBe("-i");
     expect(resolved.args[1]).toContain("Session bootstrap for Agy.");
-    expect(resolved.args[1]).toContain("ufoo coordination protocol");
+    expect(resolved.args[1]).toContain("Session harness: ufoo");
     expect(resolved.args[2]).toBe("--sandbox");
   });
 

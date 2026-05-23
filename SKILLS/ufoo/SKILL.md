@@ -161,8 +161,14 @@ Notes:
 
 1. Check: `ufoo bus check $UFOO_SUBSCRIBER_ID`
 2. Execute each task
-3. Reply: `ufoo bus send "<publisher>" "<result>"`
-4. **Always ack**: `ufoo bus ack $UFOO_SUBSCRIBER_ID`
+3. **Always ack**: `ufoo bus ack $UFOO_SUBSCRIBER_ID`
+4. Reply only when substantive — send `ufoo bus send "<publisher>" "<result>"` only if:
+   - The sender asked a question → reply with the answer
+   - The sender delegated a task → reply with the result / artifact
+   - You found something the sender needs to proceed
+   Do NOT reply with greetings, acknowledgments, or emoji alone — those create infinite reply loops.
+5. **Report** if the work arrived from `[manual]<to:...>` or `[ufoo]<from:...>`:
+   `ufoo report progress|done|error "<short summary>"`
 
 ---
 

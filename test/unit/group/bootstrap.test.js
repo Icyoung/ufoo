@@ -11,8 +11,9 @@ describe("group bootstrap", () => {
   test("shared ufoo protocol includes decisions and bus handoff guidance", () => {
     expect(SHARED_UFOO_PROTOCOL).toContain("ufoo ctx decisions -l");
     expect(SHARED_UFOO_PROTOCOL).toContain("ufoo ctx decisions new");
-    expect(SHARED_UFOO_PROTOCOL).toContain("ufoo bus send <target-nickname>");
+    expect(SHARED_UFOO_PROTOCOL).toContain("ufoo bus send <target>");
     expect(SHARED_UFOO_PROTOCOL).toContain("ufoo bus ack \"$UFOO_SUBSCRIBER_ID\"");
+    expect(SHARED_UFOO_PROTOCOL).toContain("ufoo report start|progress|done|error");
   });
 
   test("shared prefix documents direct handoff vs private control-plane reporting", () => {
@@ -52,7 +53,7 @@ describe("group bootstrap", () => {
 
     expect(prompt).toContain("Use private `ufoo report` updates for ufoo-agent control-plane reporting.");
     expect(prompt).toContain("ufoo ctx decisions -l");
-    expect(prompt).toContain("ufoo bus send <target-nickname>");
+    expect(prompt).toContain("ufoo bus send <target>");
     expect(prompt).toContain("\"controller_id\": \"ufoo-agent\"");
   });
 });
