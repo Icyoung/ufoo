@@ -101,7 +101,131 @@ describe("BusDaemon delivery ownership", () => {
     await daemon.checkQueues();
 
     expect(daemon.injector.inject).toHaveBeenCalledTimes(1);
-    expect(daemon.injector.inject).toHaveBeenCalledWith(subscriber, "legacy message");
+    expect(daemon.injector.inject).toHaveBeenCalledWith(
+      subscriber,
+      "[ufoo]<from:sender:1>\nlegacy message"
+    );
+  });
+
+  test("renders manual chat-direct envelope for prompt injection", async () => {
+    const subscriber = "codex:def456";
+    fs.writeFileSync(
+      agentsFile,
+      JSON.stringify({
+        agents: {
+          "ufoo-agent": {
+            launch_mode: "",
+            nickname: "ufoo-agent",
+            status: "active",
+          },
+          [subscriber]: {
+            launch_mode: "",
+            nickname: "legacy",
+            status: "active",
+          },
+        },
+      }),
+      "utf8"
+    );
+
+    writePending(busDir, subscriber, [
+      {
+        seq: 1,
+        event: "message",
+        publisher: "ufoo-agent",
+        target: subscriber,
+        data: { message: "manual message", source: "chat-direct" },
+      },
+    ]);
+
+    const daemon = new BusDaemon(busDir, agentsFile, daemonDir, 2000);
+    daemon.injector.inject = jest.fn().mockResolvedValue(undefined);
+
+    await daemon.checkQueues();
+
+    expect(daemon.injector.inject).toHaveBeenCalledTimes(1);
+    expect(daemon.injector.inject).toHaveBeenCalledWith(
+      subscriber,
+      "[manual]<to:codex:def456(legacy)>\nmanual message"
+    );
+  });
+
+  test("renders bus envelope tags and task id for prompt injection", async () => {
+    const subscriber = "codex:def456";
+    fs.writeFileSync(
+      agentsFile,
+      JSON.stringify({
+        agents: {
+          "codex:sender": {
+            launch_mode: "",
+            nickname: "builder",
+            status: "active",
+          },
+          [subscriber]: {
+            launch_mode: "",
+            nickname: "legacy",
+            status: "active",
+          },
+        },
+      }),
+      "utf8"
+    );
+
+    writePending(busDir, subscriber, [
+      {
+        seq: 1,
+        event: "message",
+        publisher: "codex:sender",
+        target: subscriber,
+        data: { message: "report body", tags: ["report"], task_id: "T-1" },
+      },
+    ]);
+
+    const daemon = new BusDaemon(busDir, agentsFile, daemonDir, 2000);
+    daemon.injector.inject = jest.fn().mockResolvedValue(undefined);
+
+    await daemon.checkQueues();
+
+    expect(daemon.injector.inject).toHaveBeenCalledTimes(1);
+    expect(daemon.injector.inject).toHaveBeenCalledWith(
+      subscriber,
+      "[ufoo]<from:codex:sender(builder)> [report] [task:T-1]\nreport body"
+    );
+  });
+
+  test("raw_inject bypasses prompt envelope", async () => {
+    const subscriber = "codex:def456";
+    fs.writeFileSync(
+      agentsFile,
+      JSON.stringify({
+        agents: {
+          [subscriber]: {
+            launch_mode: "",
+            nickname: "legacy",
+            status: "active",
+          },
+        },
+      }),
+      "utf8"
+    );
+
+    writePending(busDir, subscriber, [
+      {
+        seq: 1,
+        event: "message",
+        publisher: "sender:1",
+        target: subscriber,
+        data: { message: "raw command", raw_inject: true },
+      },
+    ]);
+
+    const daemon = new BusDaemon(busDir, agentsFile, daemonDir, 2000);
+    daemon.injector.inject = jest.fn().mockResolvedValue(undefined);
+
+    await daemon.checkQueues();
+
+    expect(daemon.injector.inject).toHaveBeenCalledTimes(1);
+    expect(daemon.injector.inject).toHaveBeenCalledWith(subscriber, "raw command");
   });
 
   test("queued mode defers legacy delivery while agent is busy", async () => {
@@ -174,7 +298,10 @@ describe("BusDaemon delivery ownership", () => {
     await daemon.checkQueues();
 
     expect(daemon.injector.inject).toHaveBeenCalledTimes(1);
-    expect(daemon.injector.inject).toHaveBeenCalledWith(subscriber, "queued-first");
+    expect(daemon.injector.inject).toHaveBeenCalledWith(
+      subscriber,
+      "[ufoo]<from:sender:1>\nqueued-first"
+    );
     const after = JSON.parse(fs.readFileSync(agentsFile, "utf8"));
     expect(after.agents[subscriber].activity_state).toBe("working");
   });
@@ -219,7 +346,10 @@ describe("BusDaemon delivery ownership", () => {
     await daemon.checkQueues();
 
     expect(daemon.injector.inject).toHaveBeenCalledTimes(1);
-    expect(daemon.injector.inject).toHaveBeenCalledWith(subscriber, "immediate-first");
+    expect(daemon.injector.inject).toHaveBeenCalledWith(
+      subscriber,
+      "[ufoo]<from:sender:1>\nimmediate-first"
+    );
     const pendingFile = path.join(busDir, "queues", safeName(subscriber), "pending.jsonl");
     expect(fs.readFileSync(pendingFile, "utf8")).toContain("queued-second");
     expect(fs.readFileSync(pendingFile, "utf8")).not.toContain("immediate-first");

@@ -319,7 +319,11 @@ class EventBus {
 
     try {
       const eventName = options.event || "message";
-      const data = options.data || { message };
+      const data = options.data && typeof options.data === "object"
+        ? { ...options.data }
+        : { message };
+      if (options.rawInject === true) data.raw_inject = true;
+      if (options.envelope === false) data.envelope = false;
       const result = eventName === "message"
         ? await this.messageManager.send(target, message, publisher, {
           data,
