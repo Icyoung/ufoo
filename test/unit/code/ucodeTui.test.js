@@ -1,8 +1,6 @@
 const {
   shouldUseUcodeTui,
   buildUcodeBannerLines,
-  displayCellWidth,
-  formatHighlightedUserInput,
   parseActiveAgentsFromBusStatus,
   renderLogLinesWithMarkdown,
   shouldEnterAgentSelection,
@@ -256,23 +254,6 @@ describe("ucode tui switch", () => {
     const lines = renderLogLinesWithMarkdown("\nhello\n", state, escapeFn);
     expect(lines).toEqual(["", "<hello>", ""]);
     expect(escapeFn).toHaveBeenCalledTimes(1);
-  });
-
-  test("formats highlighted user input without overflowing terminal width", () => {
-    const { stripBlessedTags } = require("../../../src/chat/text");
-
-    const english = formatHighlightedUserInput("helli", {
-      width: 80,
-      escapeText: (value) => `{escape}${value}{/escape}`,
-    });
-    const chinese = formatHighlightedUserInput("创建一个金门大桥的 3D 网页。", {
-      width: 80,
-      escapeText: (value) => `{escape}${value}{/escape}`,
-    });
-
-    expect(displayCellWidth(stripBlessedTags(english))).toBe(79);
-    expect(displayCellWidth(stripBlessedTags(chinese))).toBe(79);
-    expect(displayCellWidth("创建一个金门大桥的 3D 网页。")).toBeGreaterThan("创建一个金门大桥的 3D 网页。".length);
   });
 
   test("renders Error lines in red for visibility", () => {

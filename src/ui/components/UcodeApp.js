@@ -1,11 +1,9 @@
 "use strict";
 
 /**
- * Ink-based ucode TUI. Behaviourally equivalent to runUcodeBlessedTui in
- * src/code/tui.js but rendered via React + ink.
+ * Ink-based ucode TUI rendered via React + ink.
  *
- * Activation: Ink is the default ucode TUI. Set UFOO_TUI=blessed to use
- * the legacy blessed renderer while it remains available as a fallback.
+ * Activation: this is the only ucode TUI.
  *
  * Coverage today: banner, scrolling log via <Static>, tool-call merge with
  * Ctrl+O expand, multiline editor (see MultilineInput.js), spinner+phase

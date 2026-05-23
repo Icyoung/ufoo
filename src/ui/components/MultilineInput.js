@@ -3,10 +3,8 @@
 /**
  * Multiline text input for the ink-based ucode TUI.
  *
- * Mirrors the behaviour of the blessed `_listener` in src/code/tui.js, but
- * built on ink's useInput. Cursor math is delegated to src/ui/format so the
- * legacy and ink editors stay in sync (and so the existing jest coverage of
- * those helpers protects this component too).
+ * Built on ink's useInput. Cursor math is delegated to src/ui/format so
+ * jest can cover the editor behaviour without mounting ink.
  *
  * Props:
  *   value (string)              text contents (controlled)

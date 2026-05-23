@@ -217,10 +217,8 @@ function startAgentMirror({
   const cols = stdout.columns || 80;
   const rows = stdout.rows || 24;
 
-  // Mirror the lookup that runChatBlessed uses:
-  // <bus-queues-dir>/<safeName>/inject.sock. We sanitise the agent id the
-  // same way so a daemon launched by either TUI is reachable from the
-  // other.
+  // Mirror the daemon socket lookup:
+  // <bus-queues-dir>/<safeName>/inject.sock.
   const safeName = String(agentId || "").replace(/[^A-Za-z0-9_-]/g, "_");
   const sockPath = path.join(
     getUfooPaths(projectRoot || process.cwd()).busQueuesDir,

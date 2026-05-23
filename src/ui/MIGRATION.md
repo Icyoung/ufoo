@@ -1,14 +1,14 @@
 # Ink TUI Migration Plan
 
-Status: Ink is the default TUI for chat and ucode. The legacy blessed
-renderer remains available with `UFOO_TUI=blessed` as a temporary fallback.
+Status: Ink is the only TUI for chat and ucode. The legacy blessed renderer
+has been removed after the parity close-out.
 
 ## Why
 
-The legacy chat, ucode and internal-agent TUIs all use blessed. Blessed is
-an unmaintained imperative widget tree with no modern equivalent of React's
-component model, and it's awkward to extend (manual layout math, manual
-redraws, no useful test harness).
+The removed legacy chat, ucode and internal-agent TUIs used blessed. Blessed
+is an unmaintained imperative widget tree with no modern equivalent of
+React's component model, and it was awkward to extend (manual layout math,
+manual redraws, no useful test harness).
 
 ink (the React-for-terminals library, what Claude Code, Codex CLI fronts
 and the Gemini CLI all use) gives us declarative components, flexbox
@@ -16,10 +16,9 @@ layout, hooks, and proper isolation of pure logic from rendering.
 
 ## Approach
 
-- Ink is the default renderer; `UFOO_TUI=blessed` keeps the legacy path
-  available while fallback removal is evaluated separately.
-- Pure helpers live in `src/ui/format/` and are shared by both, so behaviour
-  parity is enforced by test rather than copy/paste.
+- Ink is the renderer for both chat and ucode.
+- Pure helpers live in `src/ui/format/`, so behaviour parity is enforced by
+  test rather than copy/paste.
 - Components live in `src/ui/components/`, written in plain JS via
   `React.createElement` (no JSX, no build step) so jest stays vanilla.
 - ink is loaded through `src/ui/runInk.js`, a thin CJS→ESM bridge so the
@@ -61,7 +60,6 @@ layout, hooks, and proper isolation of pure logic from rendering.
 
 ```sh
 ./bin/ucode.js
-# fallback: UFOO_TUI=blessed ./bin/ucode.js
 ```
 
 ### Editor
@@ -129,25 +127,18 @@ layout, hooks, and proper isolation of pure logic from rendering.
 
 ## P2 dropped, folded into P3
 
-The internal-agent view in chat is not an independent program — it's a
-view mode owned by `src/chat/agentViewController.js`. Today it works by
-detaching `screen.children`, writing raw `\x1b[2J` to stdout, and
-flipping `screen.grabKeys`. There is no clean seam to mount an isolated
-ink subtree inside a still-blessed chat host, so attempting P2 in
-isolation would force us to build a stdout-arbitration layer we'd throw
-away once chat itself is on ink. P3.6 ports the agent view as a chat
-sub-mode instead.
+The internal-agent view in chat is not an independent program. It is now
+an Ink chat sub-mode, so the earlier plan to mount a separate subtree was
+folded into P3.6.
 
 ## P3 audit (chat TUI surface)
 
-Source: `src/chat/index.js` (2215 lines) + ~30 controllers in
-`src/chat/`. Highlights:
+Source: the current Ink host in `src/ui/components/ChatApp.js`, with
+shared daemon and command helpers under `src/chat/`. Highlights:
 
 ### Lifecycle
 - Public entrypoint `runChat(projectRoot, { globalMode })` from
-  `src/chat/index.js`. Wires `daemonCoordinator.connect()` then loops
-  forever; exit goes through `process.exit(0)` from a screen `destroy`
-  hook.
+  `src/chat/index.js`; it delegates directly to the Ink ChatApp.
 - Runners injected via closures: `daemonCoordinator.send`,
   `executeCommand`, `inputSubmitHandler.handleSubmit`,
   `daemonMessageRouter.handleMessage`.
@@ -187,19 +178,10 @@ Source: `src/chat/index.js` (2215 lines) + ~30 controllers in
 - `daemonReconnect.restartDaemonFlow()` provides a per-project lock for
   daemon restarts.
 
-### Side controllers
+### Shared helpers
 - `cronScheduler` — `/cron start|stop|list` + the cron dashboard view.
 - `settingsController` — launch mode / agent provider,
   with daemon restart on mode/provider change. `autoResume` stays config/command-driven.
-- `chatLogController` — log buffer + history file replay
-  (`loadHistory`, `appendHistory`, `markStreamStart`,
-  `setHistoryTarget`, `resetViewState`).
-- `statusLineController` — debounced status line with background-task
-  suffix (e.g. `(ufoo-agent processing)`); `queueStatusLine`,
-  `resolveStatusLine`, `enqueueBusStatus`, `resolveBusStatus`.
-- `streamTracker` — per-publisher stream state + markdown rendering
-  (`beginStream`, `appendStreamDelta`, `finalizeStream`,
-  `markPendingDelivery`, `consumePendingDelivery`).
 - `transientAgentState` — TTL-bounded `working / waiting_input /
   blocked` markers per agent.
 - `projectCloseController` — `requestCloseProject(index)` runs daemon
@@ -207,31 +189,20 @@ Source: `src/chat/index.js` (2215 lines) + ~30 controllers in
 - `agentDirectory` — agent label resolution + window clamping (pure).
 - `internalAgentLogHistory` — bus log replay for internal agents.
 
-### Internal-agent sub-view (`agentViewController`, 1072 lines)
-- Public API: `getCurrentView`, `getViewingAgent`,
-  `isAgentViewUsesBus`, `getAgentInputSuppressUntil`,
-  `get/setAgentOutputSuppressed`, `renderAgentDashboard`,
-  `setAgentBarVisible`, `enterAgentView(agentId, options)`,
-  `exitAgentView`, `sendRawToAgent`, `sendResizeToAgent`,
-  `requestAgentSnapshot`, `writeToAgentTerm`, `placeAgentCursor`,
-  `handleBusAgentKey`, `handleResizeInAgentView`, `refreshAgentView`.
-- Two render modes inside it: PTY mirror (raw ANSI passthrough +
-  cursor placement, `agentSockets.connectOutput/Input`,
-  `requestSnapshot`) and an embedded bus subview (own input value,
-  cursor, log, animated status indicator).
-- `agentBar.computeAgentBar` renders the agent strip across both
-  modes.
+### Internal-agent sub-view
+- Ink owns the agent sub-view inside ChatApp.
+- PTY mirror mode uses `agentSockets.connectOutput/Input` and
+  `requestSnapshot`.
+- Embedded bus mode keeps its own input value, cursor, log and status.
 - `agentSockets.createAgentSockets` owns the PTY/bus socket
   lifecycle.
-- Exit/restore reattaches `screen.children`, restores scroll region
-  and unfreezes `screen.render`.
 
-### Layout (`createChatLayout`)
-- 9 widgets: screen, logBox, statusLine, completionPanel, dashboard,
-  inputBottomLine, promptBox, input, inputTopLine.
-- Geometry rules: dashboard 1-2 lines, input 5-9 lines (autosizes by
-  content), log fills the rest. Many `height: "100%-N"` strings →
-  ink flex layout in the port.
+### Layout (Ink)
+- `ChatApp` owns the chat surface as a React tree under
+  `src/ui/components/`.
+- Dashboard, log, status, completion, internal-agent panes and input are
+  rendered from React state with ink flex layout. No blessed widget geometry
+  or controller layer remains.
 
 ### Commands
 `/bus`, `/ctx`, `/daemon`, `/doctor`, `/cron`, `/group`, `/init`,
@@ -243,45 +214,30 @@ and `shouldEchoCommandInChat(text)` are pure.
 
 ### Cross-cutting
 - `text.js`: `escapeBlessed`, `stripBlessedTags`, `stripAnsi`,
-  `truncateAnsi`, `decodeEscapedNewlines`. Pervasive — used by every
-  log message, status line and dashboard line. The blessed-tag
-  helpers (`escapeBlessed`/`stripBlessedTags`) become no-ops in ink;
-  the ANSI helpers stay relevant.
+  `truncateAnsi`, `decodeEscapedNewlines`. The blessed-tag helpers are now
+  compatibility shims for older daemon/router log strings; ink call sites
+  strip or normalize those tags before rendering. The ANSI helpers stay
+  relevant.
 - `rawKeyMap.keyToRaw(ch, key)`: converts ink-style key events to
   PTY bytes for the agent view. Stays as-is.
 - `transport.js`: `startDaemon`, `stopDaemon`, `connectWithRetry`.
   Framework-agnostic, no migration needed.
 
-### Migration concern shortlist (1 per section)
-1. **Entry**: 50+ `screen.render()` calls turn into React state
-   updates; build a `useReducer` so dispatchers are async-safe.
-2. **State machine**: `setGlobalScope` is async + debounced — model
-   it as an effect, not a setter.
-3. **Input**: cursor math already lives in `src/ui/format` (P0); we
-   reuse it.
-4. **Daemon**: keep `daemonConnection` / `daemonCoordinator` as-is;
-   wrap the message router in a `useEffect` subscription that pumps
-   into `dispatch`.
-5. **Side controllers**: keep the controllers as plain modules;
-   `useEffect` subscribes/unsubscribes instead of attaching to
-   blessed events.
-6. **Agent view**: ink can't render arbitrary ANSI inside a `<Box>`,
-   but it can yield stdout to a "raw mode" component that writes
-   straight through during PTY mirror; we'll model it with
-   `<Static>`-style raw write or by suspending ink's render and
-   passing stdout through, then re-mount on exit.
-7. **Layout**: replace `height: "100%-N"` with flexbox + `flexGrow`.
-8. **Commands**: long-running commands run on a serialised promise
-   chain like ucode's `runChainRef`.
-9. **Cross-cutting**: drop blessed-tag helpers from ink call sites;
-   ANSI/text helpers stay.
+### Removal notes
+1. **Entry**: `src/chat/index.js` delegates directly to `runChatInk()`.
+2. **ucode**: `src/code/tui.js` is a compatibility export wrapper around
+   `src/ui/format/` and `runUcodeInkTui()`.
+3. **Controllers**: the blessed widget controllers and their tests were
+   removed with the fallback path.
+4. **Markup**: old brace-tag helpers remain only where shared daemon/chat
+   helpers still emit or sanitize legacy log markup.
 
 ### P3 phase plan
 
 | Step | Goal | Status |
 |---|---|---|
 | P3.1 | This audit | ✅ |
-| P3.2 | `UFOO_TUI=ink` switch in `runChat()` | ✅ |
+| P3.2 | Ink-only `runChat()` entrypoint | ✅ |
 | P3.3 | ChatApp shell (banner + log + input + status) | ✅ |
 | P3.4 | Five dashboard views as React components | ✅ |
 | P3.5 | Daemon connection + PROMPT/BUS_SEND wiring | ✅ |
@@ -317,7 +273,6 @@ and `shouldEchoCommandInChat(text)` are pure.
 ```sh
 ./bin/ufoo.js chat                   # project mode
 ./bin/ufoo.js chat --global          # global controller mode
-# fallback: UFOO_TUI=blessed ./bin/ufoo.js chat
 ```
 
 ### Layout
@@ -366,8 +321,7 @@ and `shouldEchoCommandInChat(text)` are pure.
   with daemon stop/start/restart, cron IPC, project switching and agent
   activation callbacks.
 - **Input history persistence** — `<projectRoot>/.ufoo/chat/input-history.jsonl`
-  is loaded on mount and appended on every submit; format matches the
-  blessed inputHistoryController.
+  is loaded on mount and appended on every submit.
 - **Daemon message routing** — Ink routes daemon envelopes through
   `daemonMessageRouter`, including BUS phase status, transient states,
   pending delivery markers, streams, close/launch refreshes and loop

@@ -1,12 +1,8 @@
 "use strict";
 
 /**
- * Pure formatting + input-math helpers shared between the legacy blessed TUI
- * (src/code/tui.js, src/chat/index.js) and the new ink-based TUIs under
- * src/ui/components/. No blessed import allowed in this module.
- *
- * Anything that touches a blessed widget (escapeBlessedLiteral, the blessed
- * banner builder, resolveLogContentWidth) stays in src/code/tui.js.
+ * Pure formatting + input-math helpers for the ink-based TUIs under
+ * src/ui/components/. No terminal widget import is allowed in this module.
  */
 
 const chalk = require("chalk");
@@ -70,24 +66,6 @@ function displayCellWidth(text = "") {
     (sum, char) => sum + charDisplayWidth(char),
     0
   );
-}
-
-// NOTE: returns a blessed-flavoured tag string ("{cyan-bg}{white-fg}...").
-// Used by the legacy blessed TUI; ink callers should not render this directly
-// (the tags would show up as literal text). When P1 needs the same output for
-// ink, add a sibling helper that emits chalk/ANSI instead.
-function formatHighlightedUserInput(text = "", {
-  width = 80,
-  escapeText = (value) => String(value || ""),
-} = {}) {
-  const plain = String(text || "").trim();
-  if (!plain) return "";
-  const targetWidth = Math.max(1, Math.floor(Number(width) || 80) - 1);
-  const prefix = " → ";
-  const suffix = " ";
-  const contentWidth = displayCellWidth(`${prefix}${plain}${suffix}`);
-  const pad = " ".repeat(Math.max(0, targetWidth - contentWidth));
-  return `{cyan-bg}{white-fg}${prefix}${escapeText(plain)}${suffix}${pad}{/white-fg}{/cyan-bg}`;
 }
 
 class StreamBuffer {
@@ -974,7 +952,6 @@ module.exports = {
   findLogicalLineEnd,
   findLogicalLineStart,
   findTrailingEscapeTagPrefix,
-  formatHighlightedUserInput,
   formatPendingElapsed,
   loadActiveAgents,
   moveCursorByWord,

@@ -1,11 +1,9 @@
 "use strict";
 
 /**
- * Ink-based chat TUI. Behaviourally equivalent to runChatBlessed in
- * src/chat/index.js but rendered via React + ink.
+ * Ink-based chat TUI rendered via React + ink.
  *
- * Activation: Ink is the default chat TUI. Set UFOO_TUI=blessed to use the
- * legacy blessed renderer while it remains available as a fallback.
+ * Activation: this is the only chat TUI.
  *
  * Coverage today: layout shell + dashboard bar (5 modes: projects, agents,
  * mode, provider, cron) + multiline editor + status line +
@@ -27,8 +25,8 @@ const { createDashboardBar } = require("./DashboardBar");
 const { reducer, createInitialState } = require("./chatReducer");
 
 function bootstrapEnvironment(projectRoot, options = {}) {
-  // Mirror of the early section of runChatBlessed: ensure ufoo dirs exist
-  // and that we have a stable subscriber ID. We deliberately keep the
+  // Ensure ufoo dirs exist and that we have a stable subscriber ID.
+  // We deliberately keep the
   // non-UI side-effects in their own helper so unit tests can assert on
   // them without importing ink.
   const { canonicalProjectRoot } = require("../../projects");
@@ -2972,7 +2970,7 @@ function createChatApp({ React, ink, props, interactive = true }) {
 
       // Dashboard focus on agents/mode/provider/cron — ↑↓ flip between
       // sibling views, ←/→ pick within the active view, Esc returns to
-      // the input. Mirrors the blessed handlers in dashboardKeyController.
+      // the input.
       if (state.focusMode === "dashboard"
           && (state.dashboardView === "agents"
               || state.dashboardView === "mode"
