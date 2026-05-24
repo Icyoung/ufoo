@@ -9,6 +9,7 @@ describe("chat daemonReconnect", () => {
     const daemonConnection = {
       close: jest.fn(),
       connect: jest.fn().mockResolvedValue(true),
+      requestStatus: jest.fn(),
     };
 
     const restartDaemon = restartDaemonFlow({
@@ -29,6 +30,7 @@ describe("chat daemonReconnect", () => {
     expect(startDaemon).toHaveBeenCalledWith("/tmp/project");
     expect(daemonConnection.close).toHaveBeenCalledTimes(1);
     expect(daemonConnection.connect).toHaveBeenCalledTimes(1);
+    expect(daemonConnection.requestStatus).toHaveBeenCalledTimes(1);
     expect(resolveStatusLine).toHaveBeenCalledWith(
       "{gray-fg}✓{/gray-fg} Daemon reconnected"
     );
@@ -46,6 +48,7 @@ describe("chat daemonReconnect", () => {
     const daemonConnection = {
       close: jest.fn(),
       connect: jest.fn().mockResolvedValue(true),
+      requestStatus: jest.fn(),
     };
 
     const restartDaemon = restartDaemonFlow({

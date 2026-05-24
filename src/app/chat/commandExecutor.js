@@ -112,6 +112,7 @@ async function withCapturedConsole(capture, fn) {
 }
 
 function createCommandExecutor(options = {}) {
+  const hasRestartDaemon = typeof options.restartDaemon === "function";
   const {
     projectRoot,
     getActiveProjectRoot = () => projectRoot,
@@ -255,6 +256,18 @@ function createCommandExecutor(options = {}) {
     }
 
     if (subcommand === "restart") {
+      if (hasRestartDaemon) {
+        statusMsg("{gray-fg}⚙{/gray-fg} Restarting daemon...");
+        await restartDaemon(targetRoot);
+        await sleep(500);
+        if (isDaemonRunning(targetRoot)) {
+          statusMsg("{gray-fg}✓{/gray-fg} Daemon restarted");
+        } else {
+          statusMsg("{gray-fg}✗{/gray-fg} Failed to restart daemon");
+        }
+        return;
+      }
+
       statusMsg("{gray-fg}⚙{/gray-fg} Restarting daemon...");
       stopDaemon(targetRoot, { source: "chat-command:/daemon restart" });
       await sleep(500);

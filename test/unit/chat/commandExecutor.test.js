@@ -1195,9 +1195,23 @@ describe("chat commandExecutor", () => {
     expect(options.resolveStatusLine).toHaveBeenCalledWith("{gray-fg}⚙{/gray-fg} Stopping daemon...");
   });
 
-  test("handleDaemonCommand restart path calls stopDaemon then startDaemon", async () => {
+  test("handleDaemonCommand restart delegates to restartDaemon", async () => {
     const { executor, options } = createHarness({
       parseCommand: jest.fn(() => ({ command: "daemon", args: ["restart"] })),
+      isDaemonRunning: jest.fn(() => true),
+    });
+    await executor.executeCommand("/daemon restart");
+    expect(options.restartDaemon).toHaveBeenCalledWith("/tmp/ufoo");
+    expect(options.stopDaemon).not.toHaveBeenCalled();
+    expect(options.startDaemon).not.toHaveBeenCalled();
+    expect(options.resolveStatusLine).toHaveBeenCalledWith("{gray-fg}⚙{/gray-fg} Restarting daemon...");
+    expect(options.resolveStatusLine).toHaveBeenCalledWith("{gray-fg}✓{/gray-fg} Daemon restarted");
+  });
+
+  test("handleDaemonCommand restart keeps manual fallback when restartDaemon is unavailable", async () => {
+    const { executor, options } = createHarness({
+      parseCommand: jest.fn(() => ({ command: "daemon", args: ["restart"] })),
+      restartDaemon: undefined,
       isDaemonRunning: jest.fn()
         .mockReturnValueOnce(false)
         .mockReturnValueOnce(true),
@@ -1208,9 +1222,10 @@ describe("chat commandExecutor", () => {
     expect(options.resolveStatusLine).toHaveBeenCalledWith("{gray-fg}⚙{/gray-fg} Restarting daemon...");
   });
 
-  test("handleDaemonCommand restart does not start when stop fails", async () => {
+  test("handleDaemonCommand restart fallback does not start when stop fails", async () => {
     const { executor, options } = createHarness({
       parseCommand: jest.fn(() => ({ command: "daemon", args: ["restart"] })),
+      restartDaemon: undefined,
       isDaemonRunning: jest.fn(() => true),
     });
     await executor.executeCommand("/daemon restart");

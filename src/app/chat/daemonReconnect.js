@@ -30,6 +30,9 @@ function restartDaemonFlow(options = {}) {
       startDaemon(projectRoot);
       const connected = connection ? await connection.connect() : false;
       if (connected) {
+        if (typeof connection.requestStatus === "function") {
+          connection.requestStatus();
+        }
         statusMsg("{gray-fg}✓{/gray-fg} Daemon reconnected");
       } else {
         statusMsg("{gray-fg}✗{/gray-fg} Failed to reconnect to daemon");
