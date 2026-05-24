@@ -224,10 +224,14 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
   let Terminal = null;
   let SerializeAddon = null;
   try {
-    const xterm = await import("xterm-headless");
-    const serialize = await import("xterm-addon-serialize");
-    Terminal = xterm.Terminal || (xterm.default && xterm.default.Terminal);
-    SerializeAddon = serialize.SerializeAddon || (serialize.default && serialize.default.SerializeAddon);
+    const xterm = await import("@xterm/headless");
+    const serialize = await import("@xterm/addon-serialize");
+    Terminal = xterm.Terminal
+      || (xterm.default && xterm.default.Terminal)
+      || (xterm["module.exports"] && xterm["module.exports"].Terminal);
+    SerializeAddon = serialize.SerializeAddon
+      || (serialize.default && serialize.default.SerializeAddon)
+      || (serialize["module.exports"] && serialize["module.exports"].SerializeAddon);
   } catch {
     Terminal = null;
     SerializeAddon = null;
