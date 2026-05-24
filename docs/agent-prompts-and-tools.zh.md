@@ -809,6 +809,8 @@ You MUST report after handling work that arrived from chat
 dedup, so don't worry about report loops.
 
 `ufoo report start|progress|done|error "<short summary>"`
+Do not emulate report failures with `ufoo bus send ufoo-agent ...`.
+If `ufoo report` fails, continue without a fallback bus report.
 
 Then continue the active task.
 ```
@@ -854,6 +856,8 @@ REPORT
 必须 report。controller 会处理去重，所以不用担心 report loop。
 
 `ufoo report start|progress|done|error "<short summary>"`
+不要用 `ufoo bus send ufoo-agent ...` 模拟 report 失败的 fallback。
+如果 `ufoo report` 失败，继续执行，不要发送 fallback bus report。
 
 然后继续当前任务。
 ```
@@ -863,6 +867,12 @@ REPORT
 Original:
 
 ```text
+Bootstrap silence:
+- This message is setup only, not a task.
+- Apply these instructions silently, then wait for the next user, bus, or controller task.
+- Do not reply, summarize, acknowledge, report, hand off, or call tools in response to this bootstrap message.
+- Do not send `ufoo report` or `ufoo bus` until real work arrives after this bootstrap.
+
 You are part of a ufoo multi-agent group.
 
 Shared rules:
@@ -884,6 +894,12 @@ Coordination protocol:
 中文:
 
 ```text
+Bootstrap 静默规则：
+- 这条消息只用于初始化设置，不是任务。
+- 静默应用这些指令，然后等待下一条用户、bus 或 controller 任务。
+- 不要因为这条 bootstrap 消息而回复、总结、确认、report、handoff 或调用工具。
+- 在这条 bootstrap 之后真正的工作到来前，不要发送 `ufoo report` 或 `ufoo bus`。
+
 你是 ufoo 多 agent group 的一员。
 
 共享规则：

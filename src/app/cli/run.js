@@ -129,6 +129,41 @@ async function sendDaemonRequest(projectRoot, payload) {
   });
 }
 
+async function sendAgentReportRequest(projectRoot, report) {
+  const { normalizeReportInput } = require("../../coordination/report/store");
+  const { enqueueAgentReport } = require("../../runtime/daemon/reportControlBus");
+  const entry = normalizeReportInput(report);
+  const queued = await enqueueAgentReport(projectRoot, entry);
+  return {
+    type: "response",
+    data: {
+      reply: `Report queued (${entry.phase})`,
+      report: entry,
+      queued,
+    },
+  };
+}
+
+function getReportDetail(out = {}) {
+  if (out.phase === "error") {
+    return out.error || out.summary || out.message || out.task_id;
+  }
+  return out.summary || out.message || out.task_id;
+}
+
+function printReportOutput(out, json = false, queued = null) {
+  if (json) {
+    console.log(JSON.stringify({
+      status: "queued",
+      report: out,
+      queued,
+    }, null, 2));
+    return;
+  }
+  const detail = getReportDetail(out);
+  console.log(`[report] queued ${out.phase} ${out.agent_id} ${out.task_id} ${detail}`);
+}
+
 function requireOptional(name) {
   try {
     // eslint-disable-next-line global-require, import/no-dynamic-require
@@ -978,20 +1013,9 @@ async function runCli(argv) {
         };
 
         try {
-          await ensureDaemonRunning(projectRoot);
-          const resp = await sendDaemonRequest(projectRoot, {
-            type: "agent_report",
-            report,
-          });
+          const resp = await sendAgentReportRequest(projectRoot, report);
           const out = resp?.data?.report || report;
-          if (opts.json) {
-            console.log(JSON.stringify(out, null, 2));
-            return;
-          }
-          const detail = out.phase === "error"
-            ? (out.error || out.summary || out.message || out.task_id)
-            : (out.summary || out.message || out.task_id);
-          console.log(`[report] ${out.phase} ${out.agent_id} ${out.task_id} ${detail}`);
+          printReportOutput(out, opts.json, resp?.data?.queued || null);
         } catch (err) {
           console.error(err.message || String(err));
           process.exitCode = 1;
@@ -1926,20 +1950,9 @@ async function runCli(argv) {
 
     (async () => {
       try {
-        await ensureDaemonRunning(process.cwd());
-        const resp = await sendDaemonRequest(process.cwd(), {
-          type: "agent_report",
-          report,
-        });
+        const resp = await sendAgentReportRequest(process.cwd(), report);
         const out = resp?.data?.report || report;
-        if (rest.includes("--json")) {
-          console.log(JSON.stringify(out, null, 2));
-          return;
-        }
-        const detail = out.phase === "error"
-          ? (out.error || out.summary || out.message || out.task_id)
-          : (out.summary || out.message || out.task_id);
-        console.log(`[report] ${out.phase} ${out.agent_id} ${out.task_id} ${detail}`);
+        printReportOutput(out, rest.includes("--json"), resp?.data?.queued || null);
       } catch (err) {
         console.error(err.message || String(err));
         process.exitCode = 1;

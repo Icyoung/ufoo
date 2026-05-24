@@ -330,7 +330,7 @@ class EventBus {
           injectionMode: options.injectionMode,
           source: options.source,
         })
-        : await this.messageManager.emit(target, eventName, data, publisher);
+        : await this.messageManager.emit(target, eventName, data, publisher, options.type);
       const silent = options.silent === true;
       if (!silent && eventName === "message") {
         logOk(

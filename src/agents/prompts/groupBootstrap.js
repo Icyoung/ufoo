@@ -2,6 +2,14 @@
 
 const crypto = require("crypto");
 
+const SILENT_BOOTSTRAP_INSTRUCTION = [
+  "Bootstrap silence:",
+  "- This message is setup only, not a task.",
+  "- Apply these instructions silently, then wait for the next user, bus, or controller task.",
+  "- Do not reply, summarize, acknowledge, report, hand off, or call tools in response to this bootstrap message.",
+  "- Do not send `ufoo report` or `ufoo bus` until real work arrives after this bootstrap.",
+].join("\n");
+
 const SHARED_UFOO_PROTOCOL = [
   "Session harness: ufoo",
   "",
@@ -42,11 +50,15 @@ const SHARED_UFOO_PROTOCOL = [
   "dedup, so don't worry about report loops.",
   "",
   "`ufoo report start|progress|done|error \"<short summary>\"`",
+  "Do not emulate report failures with `ufoo bus send ufoo-agent ...`.",
+  "If `ufoo report` fails, continue without a fallback bus report.",
   "",
   "Then continue the active task.",
 ].join("\n");
 
 const SHARED_GROUP_PREFIX = [
+  SILENT_BOOTSTRAP_INSTRUCTION,
+  "",
   "You are part of a ufoo multi-agent group.",
   "",
   "Shared rules:",
@@ -193,6 +205,7 @@ function computeBootstrapFingerprint({
 }
 
 module.exports = {
+  SILENT_BOOTSTRAP_INSTRUCTION,
   SHARED_UFOO_PROTOCOL,
   SHARED_GROUP_PREFIX,
   SOLO_AGENT_PREFIX,

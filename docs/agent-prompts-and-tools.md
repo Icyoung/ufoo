@@ -73,6 +73,7 @@ Scope:
 | `ucode.tool.bash` | `src/agents/prompts/native/toolDescriptions/bash.js` | `src/code/nativeRunner.js` | Native `bash` tool description and schema. |
 | `bootstrap.defaultStartup` | `src/agents/prompts/defaultBootstrap.js` | external launchers, PTY runner, internal runner | Default startup protocol for Claude/Codex/Agy/ucode. |
 | `bootstrap.teamActivity` | `src/coordination/history/inputTimeline.js` | default startup bootstrap | Recent bus/manual prompts appended to startup bootstrap when available. |
+| `bootstrap.group.silentInstruction` | `src/agents/prompts/groupBootstrap.js` | group bootstrap | Startup-only instruction that tells group agents to apply bootstrap silently and wait. |
 | `bootstrap.group.sharedProtocol` | `src/agents/prompts/groupBootstrap.js` | default, group, solo bootstrap | `SHARED_UFOO_PROTOCOL`. |
 | `bootstrap.group.sharedPrefix` | `src/agents/prompts/groupBootstrap.js` | group orchestrator | `SHARED_GROUP_PREFIX`. |
 | `bootstrap.solo.sharedPrefix` | `src/agents/prompts/groupBootstrap.js` | solo assignment | `SOLO_AGENT_PREFIX`. |
@@ -185,7 +186,8 @@ Shared constants:
 
 | Constant | Used by | Purpose |
 |---|---|---|
-| `SHARED_UFOO_PROTOCOL` | default, group, solo bootstrap | Coordination protocol for decisions, bus, and reports. |
+| `SILENT_BOOTSTRAP_INSTRUCTION` | group bootstrap | Suppresses replies, reports, handoffs, and tool calls caused only by the bootstrap prompt. |
+| `SHARED_UFOO_PROTOCOL` | default, group, solo bootstrap | Coordination protocol for decisions, bus, and reports, including the rule that report failures must not be emulated with bus fallback messages. |
 | `SHARED_GROUP_PREFIX` | group bootstrap | Multi-agent group operating rules plus shared protocol. |
 | `SOLO_AGENT_PREFIX` | solo bootstrap | Role-specialized solo-agent operating rules plus shared protocol. |
 

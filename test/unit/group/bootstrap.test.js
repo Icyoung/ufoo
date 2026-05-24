@@ -1,6 +1,7 @@
 "use strict";
 
 const {
+  SILENT_BOOTSTRAP_INSTRUCTION,
   SHARED_UFOO_PROTOCOL,
   SHARED_GROUP_PREFIX,
   buildGroupPromptMetadata,
@@ -8,12 +9,20 @@ const {
 } = require("../../../src/orchestration/groups/bootstrap");
 
 describe("group bootstrap", () => {
+  test("group bootstrap explicitly suppresses startup replies", () => {
+    expect(SILENT_BOOTSTRAP_INSTRUCTION).toContain("setup only, not a task");
+    expect(SILENT_BOOTSTRAP_INSTRUCTION).toContain("Do not reply");
+    expect(SILENT_BOOTSTRAP_INSTRUCTION).toContain("Do not send `ufoo report` or `ufoo bus`");
+    expect(SHARED_GROUP_PREFIX.startsWith(SILENT_BOOTSTRAP_INSTRUCTION)).toBe(true);
+  });
+
   test("shared ufoo protocol includes decisions and bus handoff guidance", () => {
     expect(SHARED_UFOO_PROTOCOL).toContain("ufoo ctx decisions -l");
     expect(SHARED_UFOO_PROTOCOL).toContain("ufoo ctx decisions new");
     expect(SHARED_UFOO_PROTOCOL).toContain("ufoo bus send <target>");
     expect(SHARED_UFOO_PROTOCOL).toContain("ufoo bus ack \"$UFOO_SUBSCRIBER_ID\"");
     expect(SHARED_UFOO_PROTOCOL).toContain("ufoo report start|progress|done|error");
+    expect(SHARED_UFOO_PROTOCOL).toContain("Do not emulate report failures");
     expect(SHARED_UFOO_PROTOCOL).not.toContain("SESSION MARKER");
     expect(SHARED_UFOO_PROTOCOL).not.toContain("/ufoo <marker>");
   });
@@ -54,6 +63,8 @@ describe("group bootstrap", () => {
     });
 
     expect(prompt).toContain("Use private `ufoo report` updates for ufoo-agent control-plane reporting.");
+    expect(prompt).toContain("Bootstrap silence:");
+    expect(prompt).toContain("Apply these instructions silently");
     expect(prompt).toContain("ufoo ctx decisions -l");
     expect(prompt).toContain("ufoo bus send <target>");
     expect(prompt).toContain("\"controller_id\": \"ufoo-agent\"");

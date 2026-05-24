@@ -21,6 +21,11 @@ const { normalizeFormat, renderGroupDiagramFromTemplate, renderGroupDiagramFromR
 const { runPromptWithAssistant } = require("./promptLoop");
 const { handlePromptRequest } = require("./promptRequest");
 const { recordAgentReport } = require("./reporting");
+const {
+  isAgentReportControlEvent,
+  extractAgentReportControl,
+  takeReportControlEvents,
+} = require("./reportControlBus");
 const { isGlobalControllerProjectRoot } = require("../projects");
 const {
   assignSoloRoleToExistingAgent,
@@ -855,7 +860,7 @@ async function dispatchMessages(projectRoot, dispatch = []) {
   }
 }
 
-function startBusBridge(projectRoot, provider, onEvent, onStatus, shouldDrain) {
+function startBusBridge(projectRoot, provider, onEvent, onStatus, shouldDrain, onReport) {
   const state = {
     subscriber: null,
     queueFile: null,
@@ -867,6 +872,7 @@ function startBusBridge(projectRoot, provider, onEvent, onStatus, shouldDrain) {
   };
   const eventBus = new EventBus(projectRoot);
   let joinInProgress = false;
+  let polling = false;
 
   function getAgentNickname(agentId) {
     if (!agentId) return agentId;
@@ -1057,6 +1063,27 @@ function startBusBridge(projectRoot, provider, onEvent, onStatus, shouldDrain) {
     })();
   }
 
+  async function handleReportControlEvent(evt) {
+    if (!isAgentReportControlEvent(evt)) return false;
+    if (typeof onReport !== "function") return false;
+    const control = extractAgentReportControl(evt);
+    if (!control) return false;
+    await onReport(control.report, {
+      event: evt,
+      requestId: control.request_id,
+      queuedAt: control.queued_at,
+    });
+    return true;
+  }
+
+  async function pollReportControlQueue() {
+    const events = takeReportControlEvents(projectRoot);
+    if (!events.length) return;
+    for (const evt of events) {
+      if (await handleReportControlEvent(evt)) continue;
+    }
+  }
+
   function pollQueue() {
     if (!state.queueFile) return;
     if (!fs.existsSync(state.queueFile)) return;
@@ -1109,14 +1136,23 @@ function startBusBridge(projectRoot, provider, onEvent, onStatus, shouldDrain) {
     }
   }
 
-  function poll() {
-    ensureSubscriber();
-    if (typeof shouldDrain === "function" && !shouldDrain()) return;
-    pollQueue();
-    pollWatchedEvents();
+  async function poll() {
+    if (polling) return;
+    polling = true;
+    try {
+      ensureSubscriber();
+      await pollReportControlQueue();
+      if (typeof shouldDrain === "function" && !shouldDrain()) return;
+      pollQueue();
+      pollWatchedEvents();
+    } finally {
+      polling = false;
+    }
   }
 
-  const interval = setInterval(poll, 1000);
+  const interval = setInterval(() => {
+    poll().catch(() => {});
+  }, 1000);
   return {
     markPending(target) {
       if (!target) return;
@@ -1300,11 +1336,53 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
     log,
   });
 
+  const publishAgentReportResult = (entry) => {
+    ipcServer.sendToSockets({
+      type: IPC_RESPONSE_TYPES.BUS,
+      data: {
+        event: "controller_report",
+        publisher: entry.agent_id,
+        message: entry.summary || entry.message || entry.task_id,
+        report: entry,
+      },
+    });
+    ipcServer.sendToSockets({
+      type: IPC_RESPONSE_TYPES.STATUS,
+      data: buildRuntimeStatus(),
+    });
+  };
+
+  const handleAgentReport = async (report, options = {}) => {
+    const source = options.source || report.source || "cli";
+    const { entry } = await recordAgentReport({
+      projectRoot,
+      report: {
+        ...report,
+        source,
+      },
+      onStatus: (status) => {
+        ipcServer.sendToSockets({
+          type: IPC_RESPONSE_TYPES.STATUS,
+          data: status,
+        });
+      },
+      log,
+    });
+    publishAgentReportResult(entry);
+    return entry;
+  };
+
   const busBridge = startBusBridge(projectRoot, provider, (evt) => {
     ipcServer.sendToSockets({ type: IPC_RESPONSE_TYPES.BUS, data: evt });
   }, (status) => {
     ipcServer.sendToSockets({ type: IPC_RESPONSE_TYPES.STATUS, data: status });
-  }, () => ipcServer.hasClients());
+  }, () => ipcServer.hasClients(), async (report, meta = {}) => {
+    try {
+      await handleAgentReport(report || {}, { source: (report && report.source) || "bus" });
+    } catch (err) {
+      log(`report bus event failed request=${meta.requestId || ""} error=${err.message || String(err)}`);
+    }
+  });
 
   handleIpcRequest = async (req, socket) => {
     if (!req || typeof req !== "object") return;
@@ -1399,20 +1477,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
     if (req.type === IPC_REQUEST_TYPES.AGENT_REPORT) {
       try {
         const report = req.report && typeof req.report === "object" ? req.report : {};
-        const { entry } = await recordAgentReport({
-          projectRoot,
-          report: {
-            ...report,
-            source: report.source || "cli",
-          },
-          onStatus: (status) => {
-            ipcServer.sendToSockets({
-              type: IPC_RESPONSE_TYPES.STATUS,
-              data: status,
-            });
-          },
-          log,
-        });
+        const entry = await handleAgentReport(report, { source: report.source || "cli" });
         socket.write(
           `${JSON.stringify({
             type: IPC_RESPONSE_TYPES.RESPONSE,
@@ -1423,19 +1488,6 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
           })}
 `,
         );
-        ipcServer.sendToSockets({
-          type: IPC_RESPONSE_TYPES.BUS,
-          data: {
-            event: "controller_report",
-            publisher: entry.agent_id,
-            message: entry.summary || entry.message || entry.task_id,
-            report: entry,
-          },
-        });
-        ipcServer.sendToSockets({
-          type: IPC_RESPONSE_TYPES.STATUS,
-          data: buildRuntimeStatus(),
-        });
       } catch (err) {
         socket.write(
           `${JSON.stringify({
