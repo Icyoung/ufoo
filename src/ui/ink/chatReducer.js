@@ -48,6 +48,53 @@ function projectRootOf(row = {}) {
   return String((row && (row.root || row.project_root || row.projectRoot)) || "");
 }
 
+function stableJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  const keys = Object.keys(value).sort();
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+}
+
+function shallowArrayEqual(left = [], right = []) {
+  if (left === right) return true;
+  if (!Array.isArray(left) || !Array.isArray(right)) return false;
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i += 1) {
+    if (left[i] !== right[i]) return false;
+  }
+  return true;
+}
+
+function listPayloadEqual(left = [], right = []) {
+  if (left === right) return true;
+  if (!Array.isArray(left) || !Array.isArray(right)) return false;
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i += 1) {
+    if (stableJson(left[i]) !== stableJson(right[i])) return false;
+  }
+  return true;
+}
+
+function mapPayloadEqual(left, right) {
+  if (left === right) return true;
+  if (!(left instanceof Map) || !(right instanceof Map)) return false;
+  if (left.size !== right.size) return false;
+  for (const [key, value] of left.entries()) {
+    if (!right.has(key)) return false;
+    if (stableJson(value) !== stableJson(right.get(key))) return false;
+  }
+  return true;
+}
+
+function statusPayloadEqual(left, right) {
+  const normalize = (value = {}) => {
+    const normalized = { ...value };
+    if (normalized.showTimer !== true) normalized.startedAt = 0;
+    return normalized;
+  };
+  return stableJson(normalize(left)) === stableJson(normalize(right));
+}
+
 function createInitialState({ banner = [], globalMode = false, globalScope = "controller", settings = {} } = {}) {
   const initialLaunchMode = settings.launchMode || "auto";
   const initialAgentProvider = settings.agentProvider || "codex-cli";
@@ -174,6 +221,14 @@ function reducer(state, action) {
       } else if (nextIdx >= ids.length) {
         nextIdx = ids.length - 1;
       }
+      if (
+        shallowArrayEqual(state.agents, ids) &&
+        mapPayloadEqual(state.activeAgentMeta, meta) &&
+        state.selectedAgentIndex === nextIdx &&
+        state.agentSelectionMode === nextMode
+      ) {
+        return state;
+      }
       return {
         ...state,
         agents: ids,
@@ -216,12 +271,22 @@ function reducer(state, action) {
       const selectedIndex = selectedRoot
         ? list.findIndex((row) => projectRootOf(row) === selectedRoot)
         : -1;
+      const nextActiveRoot = action.activeProjectRoot || state.activeProjectRoot;
+      if (
+        listPayloadEqual(state.projects, list) &&
+        state.selectedProjectRoot === (selectedIndex >= 0 ? selectedRoot : "") &&
+        state.selectedProjectIndex === selectedIndex &&
+        state.activeProjectRoot === nextActiveRoot &&
+        state.emptyProjectsDownArmed === (list.length === 0 ? state.emptyProjectsDownArmed : false)
+      ) {
+        return state;
+      }
       return {
         ...state,
         projects: list,
         selectedProjectRoot: selectedIndex >= 0 ? selectedRoot : "",
         selectedProjectIndex: selectedIndex,
-        activeProjectRoot: action.activeProjectRoot || state.activeProjectRoot,
+        activeProjectRoot: nextActiveRoot,
         emptyProjectsDownArmed: list.length === 0 ? state.emptyProjectsDownArmed : false,
       };
     }
@@ -240,8 +305,11 @@ function reducer(state, action) {
       return { ...state, projectListWindowStart: Math.max(0, action.windowStart | 0) };
     case "scope/set":
       return { ...state, globalScope: action.scope === "project" ? "project" : "controller" };
-    case "status/set":
-      return { ...state, status: { ...state.status, ...action.payload } };
+    case "status/set": {
+      const nextStatus = { ...state.status, ...action.payload };
+      if (statusPayloadEqual(state.status, nextStatus)) return state;
+      return { ...state, status: nextStatus };
+    }
     case "status/idle":
       return { ...state, status: { message: "", type: "thinking", showTimer: false, startedAt: 0 } };
     case "history/push": {
@@ -311,10 +379,16 @@ function reducer(state, action) {
       return { ...state, selectedProviderIndex: Math.max(0, action.index | 0) };
     case "cronIndex/set":
       return { ...state, selectedCronIndex: Math.max(-1, action.index | 0) };
-    case "cron/set":
-      return { ...state, cronTasks: Array.isArray(action.list) ? action.list : [] };
-    case "loop/set":
-      return { ...state, loopSummary: action.summary && typeof action.summary === "object" ? action.summary : null };
+    case "cron/set": {
+      const list = Array.isArray(action.list) ? action.list : [];
+      if (listPayloadEqual(state.cronTasks, list)) return state;
+      return { ...state, cronTasks: list };
+    }
+    case "loop/set": {
+      const summary = action.summary && typeof action.summary === "object" ? action.summary : null;
+      if (stableJson(state.loopSummary) === stableJson(summary)) return state;
+      return { ...state, loopSummary: summary };
+    }
     case "stream/begin":
       return {
         ...state,

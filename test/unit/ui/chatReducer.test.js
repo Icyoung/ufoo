@@ -104,6 +104,16 @@ describe("chatReducer", () => {
     expect(state.agentSelectionMode).toBe(false);
   });
 
+  test("agents/set returns the same state for identical dashboard payloads", () => {
+    let state = createInitialState();
+    const list = [
+      { type: "codex", id: "1", fullId: "codex:1", nickname: "worker", activity_state: "idle" },
+    ];
+    state = reducer(state, { type: "agents/set", list });
+    const same = reducer(state, { type: "agents/set", list: [{ ...list[0] }] });
+    expect(same).toBe(state);
+  });
+
   test("agents/patchMeta overlays transient dashboard state", () => {
     let state = createInitialState();
     state = reducer(state, { type: "agents/set", list: [
@@ -153,6 +163,21 @@ describe("chatReducer", () => {
     ]});
     expect(state.selectedProjectRoot).toBe("");
     expect(state.selectedProjectIndex).toBe(-1);
+  });
+
+  test("projects/set returns the same state for identical project payloads", () => {
+    let state = createInitialState({ globalMode: true });
+    const list = [
+      { label: "alpha", root: "/tmp/alpha", status: "active" },
+      { label: "beta", root: "/tmp/beta", status: "active" },
+    ];
+    state = reducer(state, { type: "projects/set", list, activeProjectRoot: "/tmp/alpha" });
+    const same = reducer(state, {
+      type: "projects/set",
+      list: list.map((row) => ({ ...row })),
+      activeProjectRoot: "/tmp/alpha",
+    });
+    expect(same).toBe(state);
   });
 
   test("projects/clearSelection clears preview project context", () => {
@@ -220,12 +245,50 @@ describe("chatReducer", () => {
     expect(state.status.showTimer).toBe(false);
   });
 
+  test("status/set ignores repeated non-timer status updates", () => {
+    let state = createInitialState();
+    state = reducer(state, {
+      type: "status/set",
+      payload: { message: "Ready", type: "done", showTimer: false, startedAt: 1 },
+    });
+    const same = reducer(state, {
+      type: "status/set",
+      payload: { message: "Ready", type: "done", showTimer: false, startedAt: 2 },
+    });
+    expect(same).toBe(state);
+  });
+
+  test("status/set keeps non-timer updates when another status field changes", () => {
+    let state = createInitialState();
+    state = reducer(state, {
+      type: "status/set",
+      payload: { message: "Ready", type: "done", showTimer: false, detail: "a", startedAt: 1 },
+    });
+    const changed = reducer(state, {
+      type: "status/set",
+      payload: { message: "Ready", type: "done", showTimer: false, detail: "b", startedAt: 2 },
+    });
+    expect(changed).not.toBe(state);
+    expect(changed.status.detail).toBe("b");
+  });
+
   test("loop/set stores and clears controller loop summary", () => {
     let state = createInitialState();
     state = reducer(state, { type: "loop/set", summary: { rounds: 1 } });
     expect(state.loopSummary).toEqual({ rounds: 1 });
     state = reducer(state, { type: "loop/set", summary: null });
     expect(state.loopSummary).toBeNull();
+  });
+
+  test("cron/set and loop/set ignore identical payloads", () => {
+    let state = createInitialState();
+    state = reducer(state, { type: "cron/set", list: [{ id: "a", intervalMs: 1000 }] });
+    const sameCron = reducer(state, { type: "cron/set", list: [{ intervalMs: 1000, id: "a" }] });
+    expect(sameCron).toBe(state);
+
+    state = reducer(state, { type: "loop/set", summary: { rounds: 1, tool_calls: 2 } });
+    const sameLoop = reducer(state, { type: "loop/set", summary: { tool_calls: 2, rounds: 1 } });
+    expect(sameLoop).toBe(state);
   });
 
   test("initial settings seed dashboard indices and settings", () => {

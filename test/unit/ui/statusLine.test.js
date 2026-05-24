@@ -26,6 +26,12 @@ describe("computeStatusText", () => {
     expect(text.startsWith(fmt.STATUS_INDICATORS.typing[0])).toBe(true);
   });
 
+  test("completed and failed messages use static indicators even when typed as thinking", () => {
+    expect(computeStatusText({ message: "Done", type: "thinking" }, 2)).toBe("✓ Done");
+    expect(computeStatusText({ message: "✓ Done", type: "thinking" }, 2)).toBe("✓ Done");
+    expect(computeStatusText({ message: "failed", type: "thinking" }, 2)).toBe("✗ failed");
+  });
+
   test("showTimer appends elapsed seconds and the cancel hint", () => {
     const startedAt = Date.now() - 3500;
     const text = computeStatusText({

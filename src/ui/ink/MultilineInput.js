@@ -482,11 +482,19 @@ function createMultilineInput({ React, ink }) {
         return undefined;
       }
       patchStdoutForIME(out);
+      const targetRowsUp = __imeCursor.lastFrameHadNewline
+        ? rowsBelowCursor
+        : Math.max(0, rowsBelowCursor - 1);
+      const alreadyParked = __imeCursor.active === true
+        && __imeCursor.parkRowsUp === rowsBelowCursor
+        && __imeCursor.parkCol === cursorTermCol
+        && __imeCursor.movedUpRows === targetRowsUp;
       // Publish the desired park target so the stdout monkey-patch can
       // re-park after every throttled ink frame write.
       __imeCursor.active = true;
       __imeCursor.parkRowsUp = rowsBelowCursor;
       __imeCursor.parkCol = cursorTermCol;
+      if (alreadyParked) return undefined;
       // Park immediately — covers cases where ink has nothing to render
       // (output unchanged) and won't fire a frame write at all, and keeps
       // the caret visible between frames. Combine hide + restore + park +
@@ -496,7 +504,7 @@ function createMultilineInput({ React, ink }) {
       // CRITICAL: the move-up amount must match the anchor that movedUpRows
       // was measured against. If the last frame ended without '\n' (the
       // full-screen path), the anchor is one row higher than the log-update
-      // case, so we use rowsUpFromAnchor() rather than parkRowsUp directly.
+      // case, so we use targetRowsUp rather than parkRowsUp directly.
       // Otherwise restoring down by movedUpRows then moving up parkRowsUp
       // overshoots by one and leaves the hardware cursor one row above the
       // inverse caret — the residual "ghost cursor" symptom.
@@ -505,7 +513,7 @@ function createMultilineInput({ React, ink }) {
         combined += `\x1b[${__imeCursor.movedUpRows}B`;
         __imeCursor.movedUpRows = 0;
       }
-      combined += applyParkSequence(rowsUpFromAnchor());
+      combined += applyParkSequence(targetRowsUp);
       out.write(combined);
       return undefined;
     });

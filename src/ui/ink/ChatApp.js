@@ -1010,8 +1010,14 @@ function inferStatusType(text = "", requestedType = "") {
   const type = String(requestedType || "").trim().toLowerCase();
   if (type === "done" || type === "success" || type === "error" || type === "idle") return type;
   const clean = stripBlessedTags(String(text || "")).trim();
-  if (/^[✓✔]/.test(clean) || /\bdone\b/i.test(clean) || /\bprocessed\b/i.test(clean)) return "done";
-  if (/^[✗!]/.test(clean) || /\berror\b/i.test(clean) || /\bfailed\b/i.test(clean)) return "error";
+  if (/^[✗!]/.test(clean) || /\b(error|failed|failure|offline)\b/i.test(clean) || /失败|错误/.test(clean)) return "error";
+  if (
+    /^[✓✔]/.test(clean) ||
+    /^(done|closed|complete|completed|finished|success|succeeded|ready)\b/i.test(clean) ||
+    /\b(processed|reconnected|switched|saved)\b/i.test(clean) ||
+    /\bdone\s*$/i.test(clean) ||
+    /完成|成功|已处理|已保存|已切换|已连接/.test(clean)
+  ) return "done";
   return type || "typing";
 }
 
@@ -1123,12 +1129,13 @@ function createChatApp({ React, ink, props, interactive = true }) {
         dispatch({ type: "status/idle" });
         return;
       }
+      const type = inferStatusType(clean, options.type || "typing");
       dispatch({
         type: "status/set",
         payload: {
           message: clean,
-          type: inferStatusType(clean, options.type || "typing"),
-          showTimer: options.showTimer === true,
+          type,
+          showTimer: options.showTimer === true && isAnimatedStatusType(type),
           startedAt: options.startedAt || Date.now(),
         },
       });
@@ -1312,8 +1319,10 @@ function createChatApp({ React, ink, props, interactive = true }) {
 
     useEffect(() => {
       if (!stdout) return undefined;
-      const update = () =>
-        setSize({ cols: stdout.columns || 0, rows: stdout.rows || 0 });
+      const update = () => {
+        const next = { cols: stdout.columns || 0, rows: stdout.rows || 0 };
+        setSize((prev) => (prev.cols === next.cols && prev.rows === next.rows ? prev : next));
+      };
       update();
       stdout.on("resize", update);
       return () => stdout.off("resize", update);
@@ -1881,7 +1890,8 @@ function createChatApp({ React, ink, props, interactive = true }) {
     useEffect(() => {
       const internalStatus = state.viewingAgentId ? internalStatusLabel(internalAgentView.status) : "ready";
       const internalActive = internalStatus !== "ready";
-      const statusAnimated = state.status.message && isAnimatedStatusType(state.status.type);
+      const statusType = inferStatusType(state.status.message, state.status.type);
+      const statusAnimated = state.status.message && isAnimatedStatusType(statusType);
       if ((!statusAnimated) && !internalActive) return undefined;
       const timer = setInterval(() => setSpinnerTick((t) => t + 1), 100);
       return () => clearInterval(timer);
@@ -1922,13 +1932,10 @@ function createChatApp({ React, ink, props, interactive = true }) {
         dispatch({ type: "log/append", text: `Error: ${err && err.message ? err.message : err}` });
       }
       if (statusText) {
-        dispatch({
-          type: "status/set",
-          payload: { message: statusText, type: "typing", showTimer: false, startedAt: Date.now() },
-        });
+        setStatusText(statusText, { type: "typing", showTimer: false });
       }
       if (restart) restartDaemonBestEffort();
-    }, [restartDaemonBestEffort]);
+    }, [restartDaemonBestEffort, setStatusText]);
 
     const clearUfooAgentIdentity = useCallback(() => {
       try {
@@ -3501,7 +3508,7 @@ function buildDashHints(state, targetAgentLabel) {
 function computeStatusText(status, spinnerTick) {
   const message = String((status && status.message) || "");
   if (!message) return "CHAT · Ready";
-  const type = String((status && status.type) || "thinking");
+  const type = inferStatusType(message, status && status.type);
   if (type === "done" || type === "success") {
     const clean = stripBlessedTags(message).trim();
     return /^[✓✔]/.test(clean) ? clean : `✓ ${clean}`;

@@ -643,8 +643,10 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
 
     useEffect(() => {
       if (!stdout) return undefined;
-      const update = () =>
-        setSize({ cols: stdout.columns || 0, rows: stdout.rows || 0 });
+      const update = () => {
+        const next = { cols: stdout.columns || 0, rows: stdout.rows || 0 };
+        setSize((prev) => (prev.cols === next.cols && prev.rows === next.rows ? prev : next));
+      };
       update();
       stdout.on("resize", update);
       return () => stdout.off("resize", update);
@@ -652,7 +654,11 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
 
     // Drive the spinner + elapsed-timer redraws while a task is in flight.
     useEffect(() => {
-      if (!status.message || status.type === "none") return undefined;
+      const statusType = inferStatusType(status.message, status.type);
+      if (!status.message || statusType === "none" || statusType === "idle" ||
+        statusType === "done" || statusType === "success" || statusType === "error") {
+        return undefined;
+      }
       const timer = setInterval(() => {
         setSpinnerTick((t) => t + 1);
         if (status.showTimer) setNowTick((t) => t + 1);
@@ -792,6 +798,22 @@ function runUcodeInkTui(props = {}) {
 
 module.exports = { runUcodeInkTui, createUcodeApp, computeStatusText };
 
+function inferStatusType(text = "", requestedType = "") {
+  const type = String(requestedType || "").trim().toLowerCase();
+  if (type === "done" || type === "success" || type === "error" || type === "idle" || type === "none") {
+    return type;
+  }
+  const clean = String(text || "").trim();
+  if (/^[✗!]/.test(clean) || /\b(error|failed|failure)\b/i.test(clean) || /失败|错误/.test(clean)) return "error";
+  if (
+    /^[✓✔]/.test(clean) ||
+    /^(done|complete|completed|finished|success|succeeded|ready)\b/i.test(clean) ||
+    /\bdone\s*$/i.test(clean) ||
+    /完成|成功/.test(clean)
+  ) return "done";
+  return type || "thinking";
+}
+
 /**
  * Pure status-line text builder used by the React component (and unit
  * tests). Returns "UCODE · Ready" while idle and a spinner+message+timer
@@ -802,7 +824,16 @@ function computeStatusText(status, spinnerTick, backgroundSuffix = "") {
   const message = String((status && status.message) || "");
   const suffix = String(backgroundSuffix || "");
   if (!message) return `UCODE · Ready${suffix}`;
-  const type = String((status && status.type) || "thinking");
+  const type = inferStatusType(message, status && status.type);
+  if (type === "done" || type === "success") {
+    const clean = message.trim();
+    return `${/^[✓✔]/.test(clean) ? clean : `✓ ${clean}`}${suffix}`;
+  }
+  if (type === "error") {
+    const clean = message.trim();
+    return `${/^[✗!]/.test(clean) ? clean : `✗ ${clean}`}${suffix}`;
+  }
+  if (type === "idle" || type === "none") return `${message.trim() || "UCODE · Ready"}${suffix}`;
   const indicators = fmt.STATUS_INDICATORS[type] || fmt.STATUS_INDICATORS.thinking;
   const indicator = indicators[Math.max(0, Math.floor(Number(spinnerTick) || 0)) % indicators.length];
   const startedAt = Number.isFinite(status && status.startedAt) ? status.startedAt : 0;

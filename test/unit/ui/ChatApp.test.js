@@ -58,12 +58,16 @@ describe("chat status line", () => {
   test("done and error statuses render static indicators", () => {
     expect(computeStatusText({ message: "Done", type: "done" }, 0)).toBe("✓ Done");
     expect(computeStatusText({ message: "✓ Done", type: "done" }, 4)).toBe("✓ Done");
+    expect(computeStatusText({ message: "✓ Done", type: "typing" }, 4)).toBe("✓ Done");
+    expect(computeStatusText({ message: "r2 tc3 tok1200 done", type: "typing" }, 4))
+      .toBe("✓ r2 tc3 tok1200 done");
     expect(computeStatusText({ message: "failed", type: "error" }, 2)).toBe("✗ failed");
   });
 
   test("status type inference keeps completed statuses non-animated", () => {
     expect(inferStatusType("✓ Done", "typing")).toBe("done");
     expect(inferStatusType("Bus message processed", "typing")).toBe("done");
+    expect(inferStatusType("r2 tc3 tok1200 done", "typing")).toBe("done");
     expect(isAnimatedStatusType("done")).toBe(false);
     expect(isAnimatedStatusType("typing")).toBe(true);
   });
