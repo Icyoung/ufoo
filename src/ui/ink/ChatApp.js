@@ -407,16 +407,26 @@ function classifyChatLogLine(text = "") {
     const speaker = dotMatch[1].trim();
     const lower = speaker.toLowerCase();
     const kind = lower === "ufoo" ? "assistant" : "agent";
-    return { kind, marker: kind === "assistant" ? "◆" : "●", speaker, body: dotMatch[2] || " " };
+    return { kind, marker: kind === "assistant" ? "◆" : "•", speaker, body: dotMatch[2] || " " };
   }
   const colonMatch = clean.match(/^([A-Za-z0-9_.:@/-]{1,42}):\s+(.*)$/);
   if (colonMatch) {
-    return { kind: "agent", marker: "●", speaker: colonMatch[1], body: colonMatch[2] || " " };
+    return { kind: "agent", marker: "•", speaker: colonMatch[1], body: colonMatch[2] || " " };
   }
   if (/^(CHAT|UCODE)\s+·/i.test(trimmed)) {
     return { kind: "meta", marker: "·", speaker: "", body: clean };
   }
   return { kind: "plain", marker: "│", speaker: "", body: clean };
+}
+
+function buildChatLogLineModel(text = "") {
+  const row = classifyChatLogLine(text);
+  const hasSpeaker = Boolean(row.speaker);
+  return {
+    ...row,
+    markerText: hasSpeaker ? `${row.marker || " "}  ` : `${row.marker || " "} `,
+    bodyText: row.body || " ",
+  };
 }
 
 function createInkStreamState({
@@ -3248,7 +3258,7 @@ function createChatApp({ React, ink, props, interactive = true }) {
     }
 
     const renderChatLogLine = (item) => {
-      const row = classifyChatLogLine((item && item.text) || "");
+      const row = buildChatLogLineModel((item && item.text) || "");
       const key = item && item.id ? item.id : `log-${row.body}`;
       if (row.kind === "spacer") {
         return h(Text, { key, color: "gray" }, " ");
@@ -3275,16 +3285,16 @@ function createChatApp({ React, ink, props, interactive = true }) {
         );
       }
       return h(Box, { key, width: "100%", marginBottom: 1 },
-        h(Box, { width: 2 },
-          h(Text, { color: colors.marker, bold: row.kind === "error" }, row.marker || " "),
+        h(Text, { color: colors.marker, bold: row.kind === "error" }, row.markerText),
+        h(Text, { color: colors.body, wrap: "wrap" },
+          row.speaker
+            ? h(Text, { color: colors.speaker, bold: colors.bold }, row.speaker)
+            : null,
+          row.speaker
+            ? h(Text, { color: "gray" }, " · ")
+            : null,
+          row.bodyText,
         ),
-        row.speaker
-          ? h(Text, { color: colors.speaker, bold: colors.bold }, row.speaker)
-          : null,
-        row.speaker
-          ? h(Text, { color: "gray" }, " · ")
-          : null,
-        h(Text, { color: colors.body, wrap: "wrap" }, row.body || " "),
       );
     };
 
@@ -3663,6 +3673,7 @@ module.exports = {
   buildPromptIpcRequest,
   chatHistoryOptionsForScope,
   classifyChatLogLine,
+  buildChatLogLineModel,
   createInkMultiWindowToggle,
   resolveActiveAgentId,
   resolveInjectSockPathForAgent,

@@ -18,6 +18,7 @@ const {
   buildPromptIpcRequest,
   chatHistoryOptionsForScope,
   classifyChatLogLine,
+  buildChatLogLineModel,
   computeStatusText,
   computeInternalStatusText,
   createInkMultiWindowToggle,
@@ -88,6 +89,14 @@ describe("chat log display classification", () => {
     expect(classifyChatLogLine("Error: boom")).toMatchObject({ kind: "error", speaker: "error", body: "boom" });
     expect(classifyChatLogLine("✓ Done")).toMatchObject({ kind: "success", body: "Done" });
     expect(classifyChatLogLine("─── history ───")).toMatchObject({ kind: "divider" });
+  });
+
+  test("speaker rows reserve a visible gap after marker and wrap from speaker edge", () => {
+    expect(buildChatLogLineModel("builder- · hello")).toMatchObject({
+      markerText: "•  ",
+      speaker: "builder-",
+      bodyText: "hello",
+    });
   });
 });
 
