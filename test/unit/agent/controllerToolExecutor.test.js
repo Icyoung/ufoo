@@ -3,7 +3,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { executeControllerTool } = require("../../../src/agent/controllerToolExecutor");
+const { executeControllerTool } = require("../../../src/agents/controller/controllerToolExecutor");
 
 describe("controllerToolExecutor", () => {
   test("dispatch_message uses shared handler semantics with controller hooks", async () => {

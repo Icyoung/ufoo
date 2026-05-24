@@ -6,7 +6,7 @@ const {
   parseCodexAuthFile,
   decodeJwtPayload,
   resolveCodexUpstreamCredentials,
-} = require("../../../src/agent/credentials/codex");
+} = require("../../../src/agents/providers/credentials/codex");
 
 function encodeBase64Url(value) {
   return Buffer.from(value, "utf8")

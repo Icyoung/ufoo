@@ -2,8 +2,8 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const SyncManager = require("../../../src/context/sync");
-const { runCtxCommand } = require("../../../src/cli/ctxCoreCommands");
+const SyncManager = require("../../../src/coordination/context/sync");
+const { runCtxCommand } = require("../../../src/app/cli/ctxCoreCommands");
 
 describe("context sync", () => {
   let projectRoot;
@@ -26,7 +26,7 @@ describe("context sync", () => {
       for: "codex-3",
       message: "Implemented assistant-call prompt loop",
       decision: "0071",
-      file: "src/daemon/promptLoop.js",
+      file: "src/runtime/daemon/promptLoop.js",
       tests: "test/unit/daemon/promptLoop.test.js",
       verification: "npm test -- test/unit/daemon/promptLoop.test.js",
       risk: "low",
@@ -43,7 +43,7 @@ describe("context sync", () => {
     expect(saved.for).toBe("codex-3");
     expect(saved.message).toBe("Implemented assistant-call prompt loop");
     expect(saved.decision).toBe("0071");
-    expect(saved.file).toBe("src/daemon/promptLoop.js");
+    expect(saved.file).toBe("src/runtime/daemon/promptLoop.js");
     expect(saved.tests).toBe("test/unit/daemon/promptLoop.test.js");
     expect(saved.verification).toBe("npm test -- test/unit/daemon/promptLoop.test.js");
     expect(saved.risk).toBe("low");

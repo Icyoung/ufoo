@@ -1,7 +1,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const PtyWrapper = require('../../../src/agent/ptyWrapper');
+const PtyWrapper = require('../../../src/agents/launch/ptyWrapper');
 
 describe('PtyWrapper', () => {
   let testDir;

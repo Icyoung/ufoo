@@ -1,6 +1,6 @@
 const fs = require("fs");
-const { createMultiWindowController } = require("../../../../src/chat/multiWindow");
-const { calculatePaneLayout } = require("../../../../src/chat/multiWindow/paneLayout");
+const { createMultiWindowController } = require("../../../../src/app/chat/multiWindow");
+const { calculatePaneLayout } = require("../../../../src/app/chat/multiWindow/paneLayout");
 
 describe("multiWindow controller", () => {
   let existsSpy;

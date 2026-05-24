@@ -68,7 +68,7 @@ describe("taskDecomposer", () => {
           name: "Identifying the issue",
           result: {
             ok: true,
-            output: "Found the issue: screen.render() not called after logging\nThe problem is in src/chat/index.js\nThis causes messages to appear together",
+            output: "Found the issue: screen.render() not called after logging\nThe problem is in src/app/chat/index.js\nThis causes messages to appear together",
           },
         },
         {
@@ -76,7 +76,7 @@ describe("taskDecomposer", () => {
           name: "Applying the fix",
           result: {
             ok: true,
-            output: "Fixed by adding screen.render() call\nEdited src/chat/index.js line 1281",
+            output: "Fixed by adding screen.render() call\nEdited src/app/chat/index.js line 1281",
           },
         },
       ];
@@ -84,7 +84,7 @@ describe("taskDecomposer", () => {
       const summary = compileSummary(results);
 
       expect(summary).toContain("Found the issue");
-      expect(summary).toContain("src/chat/index.js");
+      expect(summary).toContain("src/app/chat/index.js");
       expect(summary).toContain("Fixed");
       expect(summary).not.toContain("Let me think");
       expect(summary).not.toContain("Hmm");

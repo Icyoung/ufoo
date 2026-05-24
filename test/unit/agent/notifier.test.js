@@ -1,7 +1,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const AgentNotifier = require("../../../src/agent/notifier");
+const AgentNotifier = require("../../../src/agents/launch/notifier");
 
 function safeName(subscriber) {
   return subscriber.replace(/:/g, "_");

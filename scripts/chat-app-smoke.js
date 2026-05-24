@@ -7,7 +7,7 @@
  */
 
 const { runInk } = require("../src/ui/runInk");
-const { createChatApp } = require("../src/ui/components/ChatApp");
+const { createChatApp } = require("../src/ui/ink/ChatApp");
 
 (async () => {
   const props = {

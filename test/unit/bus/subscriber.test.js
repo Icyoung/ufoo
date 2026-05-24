@@ -1,4 +1,4 @@
-const SubscriberManager = require('../../../src/bus/subscriber');
+const SubscriberManager = require('../../../src/coordination/bus/subscriber');
 
 describe('SubscriberManager', () => {
   let busData;

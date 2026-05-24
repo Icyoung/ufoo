@@ -1,0 +1,199 @@
+const fs = require("fs");
+const path = require("path");
+const { getUfooPaths } = require("../../coordination/state/paths");
+const { isMetaActive } = require("../../coordination/bus/utils");
+const { resolveDisplayNickname, resolveScopedNickname } = require("./nicknameScope");
+const { readReportSummary, countControllerInboxEntries } = require("../../coordination/report/store");
+const { readRecentLoopSummary } = require("../../agents/controller/loopObservability");
+
+function readBus(projectRoot) {
+  const busPath = getUfooPaths(projectRoot).agentsFile;
+  try {
+    return JSON.parse(fs.readFileSync(busPath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function readDecisions(projectRoot) {
+  const DecisionsManager = require("../../coordination/context/decisions");
+  const manager = new DecisionsManager(projectRoot);
+  const dir = manager.decisionsDir;
+  let open = 0;
+  try {
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith(".md"));
+    for (const f of files) {
+      const content = fs.readFileSync(path.join(dir, f), "utf8");
+      const match = content.match(/---[\s\S]*?status:\s*([^\n]+)[\s\S]*?---/);
+      const status = match ? match[1].trim() : "open";
+      if (status === "open") open += 1;
+    }
+  } catch {
+    open = 0;
+  }
+  return { open };
+}
+
+function readUnread(projectRoot) {
+  const queuesDir = getUfooPaths(projectRoot).busQueuesDir;
+  let total = 0;
+  const perSubscriber = {};
+  try {
+    const dirs = fs.readdirSync(queuesDir);
+    for (const d of dirs) {
+      const file = path.join(queuesDir, d, "pending.jsonl");
+      if (!fs.existsSync(file)) continue;
+      const lines = fs.readFileSync(file, "utf8").trim().split(/\r?\n/).filter(Boolean);
+      if (lines.length > 0) {
+        total += lines.length;
+        perSubscriber[d] = lines.length;
+      }
+    }
+  } catch {
+    return { total: 0, perSubscriber: {} };
+  }
+  return { total, perSubscriber };
+}
+
+function isHiddenSubscriber(id, meta) {
+  if (!id) return false;
+  if (id === "ufoo-agent") return true;
+  if (meta && meta.nickname === "ufoo-agent") return true;
+  if (meta && meta.agent_type === "ufoo-agent") return true;
+  return false;
+}
+
+function normalizeCronTasks(raw = []) {
+  const items = Array.isArray(raw) ? raw : [];
+  return items.map((task) => ({
+    id: String(task && task.id ? task.id : ""),
+    mode: String(task && task.mode ? task.mode : ((task && task.onceAtMs) ? "once" : "interval")),
+    intervalMs: Number(task && task.intervalMs ? task.intervalMs : 0) || 0,
+    interval: String(task && task.interval ? task.interval : ""),
+    onceAtMs: Number(task && task.onceAtMs ? task.onceAtMs : 0) || 0,
+    onceAt: String(task && task.onceAt ? task.onceAt : ""),
+    targets: Array.isArray(task && task.targets) ? task.targets.slice() : [],
+    prompt: String(task && task.prompt ? task.prompt : ""),
+    title: String(task && task.title ? task.title : ""),
+    label: String(task && task.label ? task.label : ""),
+    summary: String(task && task.summary ? task.summary : ""),
+    createdAt: Number(task && task.createdAt ? task.createdAt : 0) || 0,
+    lastRunAt: Number(task && task.lastRunAt ? task.lastRunAt : 0) || 0,
+    tickCount: Number(task && task.tickCount ? task.tickCount : 0) || 0,
+  }));
+}
+
+function readGroups(projectRoot) {
+  const groupsDir = getUfooPaths(projectRoot).groupsDir;
+  if (!groupsDir || !fs.existsSync(groupsDir)) {
+    return { count: 0, active: 0, failed: 0, stopped: 0, items: [] };
+  }
+
+  const items = [];
+  try {
+    const files = fs.readdirSync(groupsDir)
+      .filter((name) => name.endsWith(".json"))
+      .sort((a, b) => a.localeCompare(b, "en", { sensitivity: "base" }));
+    for (const file of files) {
+      const filePath = path.join(groupsDir, file);
+      try {
+        const raw = JSON.parse(fs.readFileSync(filePath, "utf8"));
+        const members = Array.isArray(raw.members) ? raw.members : [];
+        const membersActive = members.filter((item) => item && (item.status === "active" || item.status === "reused")).length;
+        items.push({
+          group_id: String(raw.group_id || path.basename(file, ".json")),
+          status: String(raw.status || "unknown"),
+          template_alias: String(raw.template_alias || ""),
+          updated_at: String(raw.updated_at || ""),
+          members_total: members.length,
+          members_active: membersActive,
+        });
+      } catch {
+        // ignore malformed group state
+      }
+    }
+  } catch {
+    return { count: 0, active: 0, failed: 0, stopped: 0, items: [] };
+  }
+
+  items.sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
+  const active = items.filter((item) => item.status === "active").length;
+  const failed = items.filter((item) => item.status === "failed").length;
+  const stopped = items.filter((item) => item.status === "stopped").length;
+  return {
+    count: items.length,
+    active,
+    failed,
+    stopped,
+    items,
+  };
+}
+
+function buildStatus(projectRoot, options = {}) {
+  const bus = readBus(projectRoot);
+  const decisions = readDecisions(projectRoot);
+  const unread = readUnread(projectRoot);
+  const reports = readReportSummary(projectRoot);
+  const controllerPendingTotal = countControllerInboxEntries(projectRoot, "ufoo-agent");
+  const groups = readGroups(projectRoot);
+  const subscribers = bus ? Object.keys(bus.agents || {}) : [];
+  const cronTasks = normalizeCronTasks(options.cronTasks || []);
+
+  const activeEntries = bus
+    ? Object.entries(bus.agents || {})
+        .filter(([, meta]) => isMetaActive(meta))
+        .filter(([id, meta]) => !isHiddenSubscriber(id, meta))
+        .map(([id, meta]) => ({ id, meta }))
+    : [];
+  const active = activeEntries.map(({ id }) => id);
+  const activeMeta = activeEntries.map(({ id, meta }) => {
+    const nickname = resolveDisplayNickname(projectRoot, meta);
+    const scoped_nickname = resolveScopedNickname(projectRoot, meta);
+    const display = nickname ? nickname : id;
+    const launch_mode = meta?.launch_mode || "unknown";
+    const tmux_pane = meta?.tmux_pane || "";
+    const tty = meta?.tty || "";
+    const activity_state = meta?.activity_state || "";
+    const activity_since = meta?.activity_since || "";
+    const activity_detail = meta?.activity_detail || "";
+    return {
+      id,
+      nickname,
+      scoped_nickname,
+      display_nickname: nickname,
+      display,
+      launch_mode,
+      tmux_pane,
+      tty,
+      activity_state,
+      activity_since,
+      activity_detail,
+      host_inject_sock: meta?.host_inject_sock || "",
+      host_daemon_sock: meta?.host_daemon_sock || "",
+      host_name: meta?.host_name || "",
+      host_session_id: meta?.host_session_id || "",
+      host_capabilities: meta?.host_capabilities || null,
+    };
+  });
+
+  return {
+    projectRoot,
+    subscribers,
+    active,
+    active_meta: activeMeta,
+    unread,
+    decisions,
+    reports,
+    controller: {
+      pending_total: controllerPendingTotal,
+    },
+    loop: readRecentLoopSummary(projectRoot),
+    cron: {
+      count: cronTasks.length,
+      tasks: cronTasks,
+    },
+    groups,
+  };
+}
+
+module.exports = { buildStatus };

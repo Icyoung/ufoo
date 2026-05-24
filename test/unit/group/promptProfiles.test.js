@@ -5,7 +5,7 @@ const {
   BUILTIN_PROFILES,
   loadPromptProfileRegistry,
   resolvePromptProfileReference,
-} = require("../../../src/group/promptProfiles");
+} = require("../../../src/orchestration/groups/promptProfiles");
 
 const TEST_ROOT = path.join(os.tmpdir(), "ufoo-prompt-profiles-test");
 

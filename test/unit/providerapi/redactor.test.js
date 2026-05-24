@@ -1,4 +1,4 @@
-const { REDACTED, redactSecrets, redactString, isSensitiveKey } = require("../../../src/providerapi/redactor");
+const { REDACTED, redactSecrets, redactString, isSensitiveKey } = require("../../../src/runtime/privacy/redactor");
 
 describe("providerapi redactor", () => {
   test("redacts sensitive keys recursively while preserving structure", () => {

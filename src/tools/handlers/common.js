@@ -1,4 +1,4 @@
-const EventBus = require("../../bus");
+const EventBus = require("../../coordination/bus");
 const { CALLER_TIERS, normalizeCallerTier } = require("../types");
 
 function extractAuditFields(ctx = {}) {

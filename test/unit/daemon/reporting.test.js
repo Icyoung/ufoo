@@ -2,23 +2,23 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-jest.mock("../../../src/bus", () => {
+jest.mock("../../../src/coordination/bus", () => {
   return jest.fn().mockImplementation(() => ({
     wake: jest.fn().mockResolvedValue({ ok: true, targets: ["ufoo-agent"] }),
   }));
 });
 
-const EventBus = require("../../../src/bus");
-const { getUfooPaths } = require("../../../src/ufoo/paths");
+const EventBus = require("../../../src/coordination/bus");
+const { getUfooPaths } = require("../../../src/coordination/state/paths");
 const {
   recordAgentReport,
   resolveAgentDisplayName,
   toStatusPhase,
   formatStatusText,
   buildReportStatus,
-} = require("../../../src/daemon/reporting");
-const { REPORT_PHASES } = require("../../../src/report/store");
-const { listControllerInboxEntries } = require("../../../src/report/store");
+} = require("../../../src/runtime/daemon/reporting");
+const { REPORT_PHASES } = require("../../../src/coordination/report/store");
+const { listControllerInboxEntries } = require("../../../src/coordination/report/store");
 
 describe("daemon reporting", () => {
   let projectRoot;

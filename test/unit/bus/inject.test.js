@@ -3,7 +3,7 @@ const os = require("os");
 const path = require("path");
 const net = require("net");
 
-const Injector = require("../../../src/bus/inject");
+const Injector = require("../../../src/coordination/bus/inject");
 
 describe("Injector", () => {
   let busDir;

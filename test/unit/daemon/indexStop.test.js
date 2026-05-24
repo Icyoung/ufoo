@@ -61,7 +61,7 @@ describe("daemon stopDaemon", () => {
       throw err;
     });
 
-    const { stopDaemon } = require("../../../src/daemon");
+    const { stopDaemon } = require("../../../src/runtime/daemon");
     expect(stopDaemon(projectRoot)).toBe(false);
     expect(fs.readFileSync(path.join(projectRoot, ".ufoo", "run", "ufoo-daemon.pid"), "utf8")).toBe(String(pid));
   });
@@ -84,7 +84,7 @@ describe("daemon stopDaemon", () => {
       return true;
     });
 
-    const { stopDaemon } = require("../../../src/daemon");
+    const { stopDaemon } = require("../../../src/runtime/daemon");
     expect(stopDaemon(projectRoot)).toBe(true);
     expect(fs.existsSync(path.join(projectRoot, ".ufoo", "run", "ufoo-daemon.pid"))).toBe(false);
   });

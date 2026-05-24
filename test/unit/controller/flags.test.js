@@ -12,7 +12,7 @@ const {
   resetAppliedControllerModesForTests,
   resolveControllerMode,
   rollbackControllerModeForMessage,
-} = require("../../../src/controller/flags");
+} = require("../../../src/orchestration/controller/flags");
 
 describe("controller flags", () => {
   let projectRoot;

@@ -1,7 +1,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { runCtxCommand, createUnknownCtxError } = require("../../../src/cli/ctxCoreCommands");
+const { runCtxCommand, createUnknownCtxError } = require("../../../src/app/cli/ctxCoreCommands");
 
 describe("ctxCoreCommands", () => {
   let cwd;

@@ -2,7 +2,7 @@ const {
   CodexSdkThread,
   CodexThreadProvider,
   defaultCodexStreamFactory,
-} = require("../../../src/agent/codexThreadProvider");
+} = require("../../../src/agents/providers/codexThreadProvider");
 
 describe("agent codexThreadProvider", () => {
   function makeEvents(events) {

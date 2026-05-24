@@ -16,7 +16,7 @@ const {
   createEscapeTagStripper,
   stripLeakedEscapeTags,
 } = require("./tui");
-const { stripBlessedTags } = require("../chat/text");
+const { stripBlessedTags } = require("../app/chat/text");
 const { loadConfig, defaultAgentModelForProvider, sameModelProvider } = require("../config");
 const {
   resolveSessionId,
@@ -24,7 +24,7 @@ const {
   saveSessionSnapshot,
   loadSessionSnapshot,
 } = require("./sessionStore");
-const { buildPromptContext } = require("./prompts");
+const { buildPromptContext } = require("../agents/prompts/native");
 const {
   buildSkillInjections,
   formatSkillsList,

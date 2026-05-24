@@ -2,7 +2,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { shakeTerminalByTty } = require("../../../src/bus/shake");
+const { shakeTerminalByTty } = require("../../../src/coordination/bus/shake");
 
 describe("shakeTerminalByTty", () => {
   test("returns false when ttyPath is falsy", () => {

@@ -1,5 +1,5 @@
 const { EventEmitter } = require("events");
-const { createDaemonConnection } = require("../../../src/chat/daemonConnection");
+const { createDaemonConnection } = require("../../../src/app/chat/daemonConnection");
 
 class FakeClient extends EventEmitter {
   constructor() {

@@ -13,14 +13,14 @@ function withIsolatedBinMocks({
   const prepareUcodeRuntimeConfigMock = jest.fn(() => runtimePrepared);
   const prepareUcodeBootstrapMock = jest.fn(bootstrapImpl);
 
-  jest.doMock("../../../src/agent/launcher", () => launcherCtor);
-  jest.doMock("../../../src/agent/ucode", () => ({
+  jest.doMock("../../../src/agents/launch/launcher", () => launcherCtor);
+  jest.doMock("../../../src/code/launcher/ucode", () => ({
     resolveUcodeLaunch: resolveUcodeLaunchMock,
   }));
-  jest.doMock("../../../src/agent/ucodeRuntimeConfig", () => ({
+  jest.doMock("../../../src/code/launcher/ucodeRuntimeConfig", () => ({
     prepareUcodeRuntimeConfig: prepareUcodeRuntimeConfigMock,
   }));
-  jest.doMock("../../../src/agent/ucodeBootstrap", () => ({
+  jest.doMock("../../../src/code/launcher/ucodeBootstrap", () => ({
     prepareUcodeBootstrap: prepareUcodeBootstrapMock,
   }));
 

@@ -2,7 +2,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const DecisionsManager = require("../../../src/context/decisions");
+const DecisionsManager = require("../../../src/coordination/context/decisions");
 
 describe("DecisionsManager", () => {
   let projectRoot;

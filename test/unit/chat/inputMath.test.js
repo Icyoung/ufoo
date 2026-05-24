@@ -5,7 +5,7 @@ const {
   getCursorRowCol,
   getCursorPosForRowCol,
   normalizePaste,
-} = require("../../../src/chat/inputMath");
+} = require("../../../src/app/chat/inputMath");
 
 describe("chat inputMath helpers", () => {
   const strWidth = (s) => Array.from(String(s || "")).length;

@@ -1,4 +1,4 @@
-const { restartDaemonFlow } = require("../../../src/chat/daemonReconnect");
+const { restartDaemonFlow } = require("../../../src/app/chat/daemonReconnect");
 
 describe("chat daemonReconnect", () => {
   test("restart flow uses resolveStatusLine for success", async () => {

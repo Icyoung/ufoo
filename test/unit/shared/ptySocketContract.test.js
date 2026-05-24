@@ -1,7 +1,7 @@
 const {
   PTY_SOCKET_MESSAGE_TYPES,
   PTY_SOCKET_SUBSCRIBE_MODES,
-} = require("../../../src/shared/ptySocketContract");
+} = require("../../../src/runtime/contracts/ptySocketContract");
 
 describe("shared ptySocketContract", () => {
   test("defines expected PTY socket message types", () => {

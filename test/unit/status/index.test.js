@@ -1,4 +1,4 @@
-const StatusDisplay = require('../../../src/status');
+const StatusDisplay = require('../../../src/coordination/status');
 const fs = require('fs');
 const path = require('path');
 const childProcess = require('child_process');

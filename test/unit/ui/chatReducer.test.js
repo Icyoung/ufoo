@@ -1,6 +1,6 @@
 "use strict";
 
-const { reducer, createInitialState, DASHBOARD_VIEWS } = require("../../../src/ui/components/chatReducer");
+const { reducer, createInitialState, DASHBOARD_VIEWS } = require("../../../src/ui/ink/chatReducer");
 
 describe("chatReducer", () => {
   test("createInitialState seeds the log with the banner", () => {

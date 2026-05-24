@@ -1,4 +1,4 @@
-const { createProjectCloseController } = require("../../../src/chat/projectCloseController");
+const { createProjectCloseController } = require("../../../src/app/chat/projectCloseController");
 
 describe("chat projectCloseController", () => {
   function setup(overrides = {}) {

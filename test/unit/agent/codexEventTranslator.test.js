@@ -1,4 +1,4 @@
-const { normalizeCodexEvent } = require("../../../src/agent/codexEventTranslator");
+const { normalizeCodexEvent } = require("../../../src/agents/providers/codexEventTranslator");
 
 describe("agent codexEventTranslator", () => {
   test("normalizes thread and turn lifecycle events", () => {

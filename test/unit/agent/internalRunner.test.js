@@ -2,21 +2,21 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-jest.mock("../../../src/agent/codexThreadProvider", () => ({
+jest.mock("../../../src/agents/providers/codexThreadProvider", () => ({
   createCodexThreadProvider: jest.fn(),
 }));
 
-jest.mock("../../../src/agent/claudeThreadProvider", () => ({
+jest.mock("../../../src/agents/providers/claudeThreadProvider", () => ({
   createClaudeThreadProvider: jest.fn(),
 }));
 
-jest.mock("../../../src/agent/credentials/claude", () => ({
+jest.mock("../../../src/agents/providers/credentials/claude", () => ({
   resolveClaudeUpstreamCredentials: jest.fn(),
 }));
 
-const { createCodexThreadProvider } = require("../../../src/agent/codexThreadProvider");
-const { createClaudeThreadProvider } = require("../../../src/agent/claudeThreadProvider");
-const { resolveClaudeUpstreamCredentials } = require("../../../src/agent/credentials/claude");
+const { createCodexThreadProvider } = require("../../../src/agents/providers/codexThreadProvider");
+const { createClaudeThreadProvider } = require("../../../src/agents/providers/claudeThreadProvider");
+const { resolveClaudeUpstreamCredentials } = require("../../../src/agents/providers/credentials/claude");
 const {
   handleEvent,
   createBusSender,
@@ -31,7 +31,7 @@ const {
   createInteractiveInputSession,
   resolveInternalBootstrap,
   persistProviderSessionId,
-} = require("../../../src/agent/internalRunner");
+} = require("../../../src/agents/internal/internalRunner");
 
 describe("agent internalRunner stream forwarding", () => {
   beforeEach(() => {
@@ -777,7 +777,7 @@ describe("internalRunner codex thread mode", () => {
   test("worker thread tool runtime executes shared handlers with caller-owned context", async () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-handler-"));
     process.env.UFOO_CODEX_INTERNAL_THREAD_TOOLS = "worker-tier01";
-    const EventBus = require("../../../src/bus");
+    const EventBus = require("../../../src/coordination/bus");
     const eventBus = new EventBus(projectRoot);
     await eventBus.init();
     const sender = await eventBus.join("sender", "codex", "sender", { scopedNickname: "handler-sender" });

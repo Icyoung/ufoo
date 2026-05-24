@@ -1,8 +1,8 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { appendBusEntry, getTimelineFile, readTimeline } = require("../../../src/history/inputTimeline");
-const { getUfooPaths } = require("../../../src/ufoo/paths");
+const { appendBusEntry, getTimelineFile, readTimeline } = require("../../../src/coordination/history/inputTimeline");
+const { getUfooPaths } = require("../../../src/coordination/state/paths");
 
 describe("history inputTimeline redaction", () => {
   let projectRoot;

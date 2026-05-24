@@ -1,17 +1,17 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { IPC_RESPONSE_TYPES } = require("../../../src/shared/eventContract");
-const { handlePromptRequest } = require("../../../src/daemon/promptRequest");
-jest.mock("../../../src/projects", () => ({
+const { IPC_RESPONSE_TYPES } = require("../../../src/runtime/contracts/eventContract");
+const { handlePromptRequest } = require("../../../src/runtime/daemon/promptRequest");
+jest.mock("../../../src/runtime/projects", () => ({
   isGlobalControllerProjectRoot: jest.fn(() => false),
 }));
 const {
   normalizeReportInput,
   appendControllerInboxEntry,
   listControllerInboxEntries,
-} = require("../../../src/report/store");
-const { isGlobalControllerProjectRoot } = require("../../../src/projects");
+} = require("../../../src/coordination/report/store");
+const { isGlobalControllerProjectRoot } = require("../../../src/runtime/projects");
 
 function parseWritePayload(writeCallArg) {
   const line = String(writeCallArg || "").trim();

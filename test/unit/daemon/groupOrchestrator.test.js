@@ -2,15 +2,15 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-jest.mock("../../../src/bus", () => jest.fn());
-jest.mock("../../../src/agent/ucodeBootstrap", () => ({
+jest.mock("../../../src/coordination/bus", () => jest.fn());
+jest.mock("../../../src/code/launcher/ucodeBootstrap", () => ({
   prepareUcodeBootstrap: jest.fn(),
 }));
 
-const EventBus = require("../../../src/bus");
-const { prepareUcodeBootstrap } = require("../../../src/agent/ucodeBootstrap");
-const { createGroupOrchestrator } = require("../../../src/daemon/groupOrchestrator");
-const { getUfooPaths } = require("../../../src/ufoo/paths");
+const EventBus = require("../../../src/coordination/bus");
+const { prepareUcodeBootstrap } = require("../../../src/code/launcher/ucodeBootstrap");
+const { createGroupOrchestrator } = require("../../../src/runtime/daemon/groupOrchestrator");
+const { getUfooPaths } = require("../../../src/coordination/state/paths");
 
 const TEST_ROOT = path.join(os.tmpdir(), "ufoo-group-orchestrator-test");
 

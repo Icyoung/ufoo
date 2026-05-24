@@ -6,7 +6,7 @@ const {
   normalizeClaudeEvent,
   normalizeClaudeMessage,
   normalizeClaudeUsage,
-} = require("../../../src/agent/claudeEventTranslator");
+} = require("../../../src/agents/providers/claudeEventTranslator");
 
 describe("agent claudeEventTranslator", () => {
   test("normalizes Claude SSE lifecycle, text, tool use, and usage events", () => {

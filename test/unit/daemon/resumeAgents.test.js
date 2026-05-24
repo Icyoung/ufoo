@@ -11,8 +11,8 @@ jest.mock("child_process", () => ({
 }));
 
 const { spawn } = require("child_process");
-const { resumeAgents } = require("../../../src/daemon/ops");
-const { getUfooPaths } = require("../../../src/ufoo/paths");
+const { resumeAgents } = require("../../../src/runtime/daemon/ops");
+const { getUfooPaths } = require("../../../src/coordination/state/paths");
 
 describe("daemon resumeAgents", () => {
   const projectRoot = "/tmp/ufoo-daemon-resume-test";

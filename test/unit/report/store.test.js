@@ -13,7 +13,7 @@ const {
   listControllerInboxEntries,
   clearControllerInbox,
   consumeControllerInboxEntries,
-} = require("../../../src/report/store");
+} = require("../../../src/coordination/report/store");
 
 describe("report store", () => {
   let projectRoot;

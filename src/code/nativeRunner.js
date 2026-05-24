@@ -1,10 +1,10 @@
 const { randomUUID } = require("crypto");
 const { loadConfig, defaultAgentModelForProvider, sameModelProvider } = require("../config");
 const { runToolCall } = require("./dispatch");
-const { getReadToolDescription } = require("./prompts/toolDescriptions/read");
-const { getWriteToolDescription } = require("./prompts/toolDescriptions/write");
-const { getEditToolDescription } = require("./prompts/toolDescriptions/edit");
-const { getBashToolDescription } = require("./prompts/toolDescriptions/bash");
+const { getReadToolDescription } = require("../agents/prompts/native/toolDescriptions/read");
+const { getWriteToolDescription } = require("../agents/prompts/native/toolDescriptions/write");
+const { getEditToolDescription } = require("../agents/prompts/native/toolDescriptions/edit");
+const { getBashToolDescription } = require("../agents/prompts/native/toolDescriptions/bash");
 
 const CORE_TOOL_NAMES = new Set(["read", "write", "edit", "bash"]);
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";

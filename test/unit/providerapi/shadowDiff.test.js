@@ -8,7 +8,7 @@ const {
   extractToolCallNames,
   buildPhase1ShadowDiffSample,
   summarizePhase1ShadowDiff,
-} = require("../../../src/providerapi/shadowDiff");
+} = require("../../../src/runtime/privacy/shadowDiff");
 
 describe("providerapi shadowDiff (Phase 1 metrics)", () => {
   test("computeBleu returns 1 for identical text", () => {

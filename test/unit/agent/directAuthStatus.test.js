@@ -1,11 +1,11 @@
-jest.mock("../../../src/agent/credentials/codex", () => ({
+jest.mock("../../../src/agents/providers/credentials/codex", () => ({
   resolveCodexAuthPaths: jest.fn(({ authPath } = {}) => ({
     configDir: "/tmp/codex",
     authPath: authPath || "/tmp/codex/auth.json",
   })),
   resolveCodexUpstreamCredentials: jest.fn(),
 }));
-jest.mock("../../../src/agent/credentials/claude", () => ({
+jest.mock("../../../src/agents/providers/credentials/claude", () => ({
   resolveClaudeOauthPaths: jest.fn(({ profile = "", tokenPath = "" } = {}) => ({
     configDir: "/tmp/claude",
     profile,
@@ -19,10 +19,10 @@ jest.mock("../../../src/agent/credentials/claude", () => ({
 const {
   resolveCodexAuthPaths,
   resolveCodexUpstreamCredentials,
-} = require("../../../src/agent/credentials/codex");
+} = require("../../../src/agents/providers/credentials/codex");
 const {
   resolveClaudeUpstreamCredentials,
-} = require("../../../src/agent/credentials/claude");
+} = require("../../../src/agents/providers/credentials/claude");
 const {
   inspectDirectAuthStatus,
   inspectCodexDirectAuth,
@@ -30,7 +30,7 @@ const {
   formatDirectAuthStatus,
   formatCodexDirectAuthStatus,
   formatClaudeDirectAuthStatus,
-} = require("../../../src/agent/directAuthStatus");
+} = require("../../../src/agents/providers/directAuthStatus");
 
 describe("agent directAuthStatus", () => {
   beforeEach(() => {
@@ -157,7 +157,7 @@ describe("agent directAuthStatus", () => {
   });
 
   test("agy: classifies successful OAuth handshake from log tail", () => {
-    const { classifyAgyLogTail } = require("../../../src/agent/directAuthStatus");
+    const { classifyAgyLogTail } = require("../../../src/agents/providers/directAuthStatus");
     const tail = [
       "I0521 23:48:51 server_oauth.go:217] OAuth: authenticated successfully as alice@example.com",
       "I0521 23:48:52 server.go:766] Starting conversation update stream",
@@ -171,7 +171,7 @@ describe("agent directAuthStatus", () => {
   });
 
   test("agy: classifies eligibility failure as ineligible (preserves email)", () => {
-    const { classifyAgyLogTail } = require("../../../src/agent/directAuthStatus");
+    const { classifyAgyLogTail } = require("../../../src/agents/providers/directAuthStatus");
     const tail = [
       "I0522 17:46:24 server_oauth.go:217] OAuth: authenticated successfully as bob@example.com",
       "W0522 17:46:26 server_oauth.go:99] Account ineligible: Your current account is not eligible for Antigravity.",
@@ -187,7 +187,7 @@ describe("agent directAuthStatus", () => {
   });
 
   test("agy: classifies region rejection from FAILED_PRECONDITION log lines", () => {
-    const { classifyAgyLogTail } = require("../../../src/agent/directAuthStatus");
+    const { classifyAgyLogTail } = require("../../../src/agents/providers/directAuthStatus");
     const tail = "E log.go FAILED_PRECONDITION: User location is not supported for the API use.";
     const out = classifyAgyLogTail(tail);
     expect(out).toEqual(expect.objectContaining({
@@ -198,7 +198,7 @@ describe("agent directAuthStatus", () => {
   });
 
   test("agy: returns AGY_AUTH_NO_LOG when log file is missing or empty", () => {
-    const { classifyAgyLogTail } = require("../../../src/agent/directAuthStatus");
+    const { classifyAgyLogTail } = require("../../../src/agents/providers/directAuthStatus");
     expect(classifyAgyLogTail("")).toEqual(expect.objectContaining({
       ok: false,
       state: "unknown",

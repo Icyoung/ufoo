@@ -1,7 +1,7 @@
 "use strict";
 
 const { runInk } = require("./runInk");
-const { createInkDemo } = require("./components/InkDemo");
+const { createInkDemo } = require("./ink/InkDemo");
 
 module.exports = {
   runInk,

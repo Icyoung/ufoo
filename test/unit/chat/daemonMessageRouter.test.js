@@ -1,5 +1,5 @@
-const { createDaemonMessageRouter } = require("../../../src/chat/daemonMessageRouter");
-const { IPC_RESPONSE_TYPES, BUS_STATUS_PHASES } = require("../../../src/shared/eventContract");
+const { createDaemonMessageRouter } = require("../../../src/app/chat/daemonMessageRouter");
+const { IPC_RESPONSE_TYPES, BUS_STATUS_PHASES } = require("../../../src/runtime/contracts/eventContract");
 
 function createHarness(overrides = {}) {
   let pending = null;

@@ -3,7 +3,7 @@ const os = require("os");
 const path = require("path");
 const EventEmitter = require("events");
 
-const AgentLauncher = require("../../../src/agent/launcher");
+const AgentLauncher = require("../../../src/agents/launch/launcher");
 
 // --- _sanitizeNickname ---
 
@@ -258,7 +258,7 @@ describe("_spawnDirect host notification", () => {
       jest.doMock("net", () => ({
         createConnection: createConnectionMock,
       }));
-      TestAgentLauncher = require("../../../src/agent/launcher");
+      TestAgentLauncher = require("../../../src/agents/launch/launcher");
     });
 
     process.env.UFOO_HOST_SESSION_ID = "HS-1";

@@ -1,5 +1,5 @@
-const { validateTemplate } = require("../../../src/group/validateTemplate");
-const { loadPromptProfileRegistry } = require("../../../src/group/promptProfiles");
+const { validateTemplate } = require("../../../src/orchestration/groups/validateTemplate");
+const { loadPromptProfileRegistry } = require("../../../src/orchestration/groups/promptProfiles");
 
 function buildValidTemplate() {
   return {

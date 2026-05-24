@@ -1,5 +1,5 @@
-const { createDaemonTransport } = require("../../../src/chat/daemonTransport");
-const { DAEMON_TRANSPORT_DEFAULTS } = require("../../../src/chat/daemonTransportDefaults");
+const { createDaemonTransport } = require("../../../src/app/chat/daemonTransport");
+const { DAEMON_TRANSPORT_DEFAULTS } = require("../../../src/app/chat/daemonTransportDefaults");
 
 describe("chat daemonTransport", () => {
   test("exports complete default contract", () => {

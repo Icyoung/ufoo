@@ -2,9 +2,9 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { buildStatus } = require("../../../src/daemon/status");
-const { getUfooPaths } = require("../../../src/ufoo/paths");
-const { appendControllerInboxEntry, normalizeReportInput } = require("../../../src/report/store");
+const { buildStatus } = require("../../../src/runtime/daemon/status");
+const { getUfooPaths } = require("../../../src/coordination/state/paths");
+const { appendControllerInboxEntry, normalizeReportInput } = require("../../../src/coordination/report/store");
 
 describe("daemon status", () => {
   test("includes controller private inbox pending count", () => {

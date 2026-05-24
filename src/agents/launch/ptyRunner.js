@@ -1,0 +1,1080 @@
+const fs = require("fs");
+const path = require("path");
+const net = require("net");
+const { spawnSync } = require("child_process");
+const EventBus = require("../../coordination/bus");
+const { PTY_SOCKET_MESSAGE_TYPES, PTY_SOCKET_SUBSCRIBE_MODES } = require("../../runtime/contracts/ptySocketContract");
+const { getUfooPaths } = require("../../coordination/state/paths");
+const { ActivityDetector } = require("../activity/activityDetector");
+const { createActivityStatePublisher } = require("../activity/activityStatePublisher");
+const {
+  parseStreamEnvelope,
+  shouldAutoReplyFromPtyToPublisher,
+  shouldForwardStreamToPublisher,
+} = require("./publisherRouting");
+const {
+  isValueForCodexOption,
+  resolveDefaultManualBootstrap,
+} = require("../prompts/defaultBootstrap");
+const { buildPromptInjectionText } = require("../../coordination/bus/promptEnvelope");
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function parseSubscriberId() {
+  if (process.env.UFOO_SUBSCRIBER_ID) {
+    const parts = process.env.UFOO_SUBSCRIBER_ID.split(":");
+    if (parts.length === 2) {
+      return {
+        subscriber: process.env.UFOO_SUBSCRIBER_ID,
+        agentType: parts[0],
+        sessionId: parts[1],
+      };
+    }
+  }
+  throw new Error("PTY runner requires UFOO_SUBSCRIBER_ID set by daemon");
+}
+
+function safeSubscriber(subscriber) {
+  return subscriber.replace(/:/g, "_");
+}
+
+function drainQueue(queueFile) {
+  if (!fs.existsSync(queueFile)) return [];
+  const processingFile = `${queueFile}.processing.${process.pid}.${Date.now()}`;
+  let content = "";
+  let readOk = false;
+  try {
+    fs.renameSync(queueFile, processingFile);
+    content = fs.readFileSync(processingFile, "utf8");
+    readOk = true;
+  } catch {
+    try {
+      if (fs.existsSync(processingFile)) {
+        fs.renameSync(processingFile, queueFile);
+      }
+    } catch {
+      // ignore rollback errors
+    }
+    return [];
+  } finally {
+    if (readOk) {
+      try {
+        if (fs.existsSync(processingFile)) {
+          fs.rmSync(processingFile, { force: true });
+        }
+      } catch {
+        // ignore cleanup errors
+      }
+    }
+  }
+  if (!content.trim()) return [];
+  return content.split(/\r?\n/).filter(Boolean);
+}
+
+function stripAnsi(text) {
+  return text
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
+}
+
+function parseInputMessage(message) {
+  if (!message) return { raw: false, text: "" };
+  if (parseStreamEnvelope(message)) return null;
+  try {
+    const parsed = JSON.parse(message);
+    if (parsed && typeof parsed === "object") {
+      if (parsed.raw && typeof parsed.data === "string") {
+        return { raw: true, text: parsed.data };
+      }
+      if (typeof parsed.text === "string") {
+        return { raw: false, text: parsed.text };
+      }
+    }
+  } catch {
+    // ignore json parse errors
+  }
+  return { raw: false, text: message };
+}
+
+function readAgentsMap(agentsFilePath) {
+  try {
+    if (!agentsFilePath || !fs.existsSync(agentsFilePath)) return {};
+    const data = JSON.parse(fs.readFileSync(agentsFilePath, "utf8"));
+    return data && data.agents && typeof data.agents === "object" ? data.agents : {};
+  } catch {
+    return {};
+  }
+}
+
+function buildPtyInputFromEvent(evt = {}, subscriber = "", agents = {}) {
+  if (!evt || !evt.data || typeof evt.data.message !== "string") return null;
+  const input = parseInputMessage(evt.data.message);
+  if (!input) return null;
+  if (input.raw) return input;
+
+  return {
+    raw: false,
+    text: buildPromptInjectionText(
+      { ...evt, data: { ...evt.data, message: input.text } },
+      subscriber,
+      agents
+    ),
+  };
+}
+
+function getOuterTerminalSize() {
+  const cols = Number.isInteger(process.stdout && process.stdout.columns) && process.stdout.columns > 0
+    ? process.stdout.columns
+    : 80;
+  const rows = Number.isInteger(process.stdout && process.stdout.rows) && process.stdout.rows > 0
+    ? process.stdout.rows
+    : 24;
+  return { cols, rows };
+}
+
+function computeInjectedSubmitDelayMs(agentType, text) {
+  const normalizedAgent = String(agentType || "").trim().toLowerCase();
+  const input = typeof text === "string" ? text : "";
+  let delayMs = normalizedAgent === "claude-code" ? 350 : 200;
+  if (input.includes("\n")) {
+    delayMs += normalizedAgent === "claude-code" ? 250 : 120;
+  }
+  if (input.length > 512) {
+    delayMs += Math.min(1200, Math.ceil(input.length / 512) * 90);
+  }
+  return delayMs;
+}
+
+function hasPromptArg(args = []) {
+  if (!Array.isArray(args) || args.length === 0) return false;
+  const lastIndex = args.length - 1;
+  const lastItem = String(args[lastIndex] || "").trim();
+  if (!lastItem || lastItem.startsWith("-")) return false;
+  return !isValueForCodexOption(args, lastIndex);
+}
+
+function appendStartupBootstrapArg(agentType, extraArgs = [], env = process.env) {
+  const normalizedAgent = String(agentType || "").trim().toLowerCase();
+  const args = Array.isArray(extraArgs) ? extraArgs.slice() : [];
+  if (normalizedAgent !== "codex") return args;
+  if (hasPromptArg(args)) return args;
+  const startupBootstrapText = String(env.UFOO_STARTUP_BOOTSTRAP_TEXT || "").trim();
+  if (!startupBootstrapText) return args;
+  return [...args, startupBootstrapText];
+}
+
+function resolvePtyBootstrapArgs(agentType, extraArgs = [], {
+  projectRoot = process.cwd(),
+  env = process.env,
+} = {}) {
+  const normalizedAgent = String(agentType || "").trim().toLowerCase();
+  const args = Array.isArray(extraArgs) ? extraArgs.slice() : [];
+  if (normalizedAgent !== "codex" && normalizedAgent !== "claude" && normalizedAgent !== "claude-code") {
+    return { args, env: {} };
+  }
+
+  const bootstrapAgentType = normalizedAgent === "codex" ? "codex" : "claude-code";
+  const resolved = resolveDefaultManualBootstrap({
+    projectRoot,
+    agentType: bootstrapAgentType,
+    args,
+    env,
+  });
+  const resolvedArgs = resolved && resolved.mode !== "skip" && Array.isArray(resolved.args)
+    ? resolved.args
+    : args;
+  const resolvedEnv = resolved && resolved.mode !== "skip" && resolved.env && typeof resolved.env === "object"
+    ? resolved.env
+    : {};
+  return {
+    args: appendStartupBootstrapArg(normalizedAgent, resolvedArgs, { ...env, ...resolvedEnv }),
+    env: resolvedEnv,
+  };
+}
+
+function resolveCommand(agentType, extraArgs = [], options = {}) {
+  const normalizedAgent = String(agentType || "").trim().toLowerCase();
+  const bootstrap = resolvePtyBootstrapArgs(normalizedAgent, extraArgs, options);
+  const extra = bootstrap.args;
+  const rawCmd = String(process.env.UFOO_PTY_CMD || "").trim();
+  if (rawCmd) {
+    const rawArgs = String(process.env.UFOO_PTY_ARGS || "").trim();
+    const args = rawArgs ? rawArgs.split(/\s+/).filter(Boolean) : [];
+    return { command: rawCmd, args: [...args, ...extra], env: bootstrap.env };
+  }
+  if (normalizedAgent === "claude" || normalizedAgent === "claude-code") {
+    return { command: "claude", args: [...extra], env: bootstrap.env };
+  }
+  if (normalizedAgent === "ufoo" || normalizedAgent === "ucode" || normalizedAgent === "ufoo-code") {
+    return { command: "ucode", args: [...extra], env: bootstrap.env };
+  }
+  return { command: "codex", args: ["--no-alt-screen", "--sandbox", "workspace-write", ...extra], env: bootstrap.env };
+}
+
+async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }) {
+  let pty;
+  try {
+    // eslint-disable-next-line global-require
+    pty = require("node-pty");
+  } catch {
+    throw new Error("node-pty not installed");
+  }
+  let Terminal = null;
+  let SerializeAddon = null;
+  try {
+    const xterm = await import("xterm-headless");
+    const serialize = await import("xterm-addon-serialize");
+    Terminal = xterm.Terminal || (xterm.default && xterm.default.Terminal);
+    SerializeAddon = serialize.SerializeAddon || (serialize.default && serialize.default.SerializeAddon);
+  } catch {
+    Terminal = null;
+    SerializeAddon = null;
+  }
+  const { subscriber } = parseSubscriberId();
+  const queueDir = path.join(getUfooPaths(projectRoot).busQueuesDir, safeSubscriber(subscriber));
+  const queueFile = path.join(queueDir, "pending.jsonl");
+  const runDir = getUfooPaths(projectRoot).runDir;
+  const logFile = path.join(runDir, "pty-runner.log");
+  const injectSockPath = path.join(queueDir, "inject.sock");
+
+  const { command, args, env: commandEnv } = resolveCommand(agentType, extraArgs, {
+    projectRoot,
+    env: process.env,
+  });
+  const env = {
+    ...process.env,
+    ...(commandEnv && typeof commandEnv === "object" ? commandEnv : {}),
+    UFOO_LAUNCH_MODE: "internal-pty",
+    UFOO_INTERNAL_PTY: "1",
+  };
+
+  const idleMs = Number.parseInt(process.env.UFOO_INTERNAL_PTY_IDLE_MS || "", 10) || 30000;
+  const eventBus = new EventBus(projectRoot);
+  const activityDetector = new ActivityDetector(agentType, {
+    mode: "internal-pty",
+    quietWindowMs: idleMs,
+  });
+  const agentsFilePath = getUfooPaths(projectRoot).agentsFile;
+
+  let running = true;
+  let busy = false;
+  let ptyAlive = false;
+  let ptyReady = false;
+  let readyTimer = null;
+  let currentPublisher = "";
+  let pendingOutput = [];
+  let outputBuffer = "";
+  let flushTimer = null;
+  let idleTimer = null;
+  let watchdogTimer = null;
+  let ptyProcess = null;
+  let restartCount = 0;
+  let lastSpawnTime = 0;
+  const MAX_RESTARTS = 10;
+  const RESTART_STABLE_MS = 30000; // reset counter if process ran > 30s
+  const RESTART_DELAY_MS = 2000;
+  const RESTART_BACKOFF_CAP_MS = 30000;
+  const READY_QUIET_MS = 3000; // TUI is "ready" after 3s of no output
+  const messageQueue = [];
+  const injectServer = setupInjectServer();
+  initScreenBuffer(80, 24);
+  const maxChunk = 2000;
+  const watchdogMs = 120000;
+  const maxQueue = 200;
+  let sendQueue = Promise.resolve();
+  const streamPublisherCache = new Map();
+  const DROP_LINE_PATTERNS = [
+    /context left/i,
+    /esc to interrupt/i,
+    /for shortcuts/i,
+    /Preparing to run session start commands/i,
+    /^[•\s]*(working|thinking|loading|reading|editing|running|checking)[•\s]*$/i,
+  ];
+
+  function shouldDropLine(line) {
+    if (!line) return true;
+    const trimmed = line.trim();
+    if (!trimmed) return true;
+    if (/^[›❯>]$/.test(trimmed)) return true;
+    return DROP_LINE_PATTERNS.some((re) => re.test(trimmed));
+  }
+
+  function sanitizeChunk(chunk) {
+    if (!chunk) return "";
+    let text = String(chunk);
+    if (text.includes("\r")) {
+      const parts = text.split("\r");
+      text = parts[parts.length - 1];
+    }
+    const lines = text.split("\n").filter((line) => !shouldDropLine(line));
+    return lines.join("\n");
+  }
+
+  function enqueueSend(target, message) {
+    if (!target || !message) return;
+    sendQueue = sendQueue.then(() => eventBus.send(target, message, subscriber)).catch((err) => {
+      logNote(`[send-error] target=${target} err=${err.message || err}`);
+    });
+  }
+
+  function canStreamToPublisher(target) {
+    if (!target) return false;
+    if (streamPublisherCache.has(target)) return streamPublisherCache.get(target);
+    const result = shouldForwardStreamToPublisher(projectRoot, target);
+    streamPublisherCache.set(target, result);
+    return result;
+  }
+
+  function completePublisherResponse(reason, fallbackNote = "") {
+    if (!currentPublisher) return;
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    if (!shouldAutoReplyFromPtyToPublisher(projectRoot, currentPublisher)) {
+      outputBuffer = "";
+      return;
+    }
+    if (outputBuffer) {
+      const remaining = outputBuffer;
+      outputBuffer = "";
+      deliverChunk(remaining);
+    }
+    if (fallbackNote) enqueueSend(currentPublisher, fallbackNote);
+    enqueueSend(currentPublisher, JSON.stringify({ stream: true, done: true, reason }));
+  }
+
+  // TTY view subscribers (same protocol as launcher inject.sock)
+  const outputSubscribers = new Set();
+  let term = null;
+  let serializeAddon = null;
+  let termWriteQueue = Promise.resolve();
+  const OUTPUT_RING_MAX = (() => {
+    const env = Number.parseInt(process.env.UFOO_INTERNAL_RING_MAX || "", 10);
+    if (Number.isFinite(env) && env > 0) return env;
+    return 512 * 1024;
+  })();
+  let outputRingBuffer = "";
+  let outerInputHandler = null;
+  let outerResizeHandler = null;
+  let outerRawModeEnabled = false;
+
+  function initScreenBuffer(cols = 80, rows = 24) {
+    if (!Terminal || !SerializeAddon) return null;
+    try {
+      const scrollbackEnv = Number.parseInt(process.env.UFOO_INTERNAL_SCROLLBACK || "", 10);
+      const scrollback = Number.isFinite(scrollbackEnv) && scrollbackEnv >= 0
+        ? scrollbackEnv
+        : 20000;
+      term = new Terminal({
+        cols,
+        rows,
+        scrollback,
+        allowProposedApi: true,
+        convertEol: true,
+      });
+      serializeAddon = new SerializeAddon();
+      term.loadAddon(serializeAddon);
+    } catch {
+      term = null;
+      serializeAddon = null;
+    }
+    return term;
+  }
+
+  function enqueueTermWrite(data) {
+    if (!term || !data) return;
+    termWriteQueue = termWriteQueue.then(() => new Promise((resolve) => {
+      term.write(data, resolve);
+    })).catch(() => {});
+  }
+
+  function serializeBuffer(buffer, scrollback) {
+    if (!term || !serializeAddon || !buffer) return "";
+    try {
+      if (typeof serializeAddon._serializeBuffer === "function") {
+        return serializeAddon._serializeBuffer(term, buffer, scrollback);
+      }
+      if (buffer === term.buffer.normal && typeof serializeAddon.serialize === "function") {
+        return serializeAddon.serialize({
+          scrollback,
+          excludeAltBuffer: true,
+          excludeModes: true,
+        });
+      }
+      return "";
+    } catch {
+      return "";
+    }
+  }
+
+  async function serializeSnapshot(mode = "full") {
+    if (!term || !serializeAddon) return null;
+    try {
+      await termWriteQueue;
+      const active = term.buffer.active;
+      const normal = term.buffer.normal;
+      const scrollback = term.options && Number.isFinite(term.options.scrollback)
+        ? term.options.scrollback
+        : undefined;
+
+      if (mode === "screen") {
+        const screen = serializeBuffer(active, 0);
+        return screen ? { data: screen } : null;
+      }
+
+      let data = serializeBuffer(normal, scrollback);
+      if (active && active !== normal) {
+        const alt = serializeBuffer(active, 0);
+        if (alt) data += `\x1b[H${alt}`;
+      }
+      return data ? { data } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function broadcastOutput(data) {
+    const text = Buffer.from(data || "").toString("utf8");
+    if (!text) return;
+    if (process.stdout && process.stdout.isTTY && typeof process.stdout.write === "function") {
+      try {
+        process.stdout.write(text);
+      } catch {
+        // ignore outer terminal write failures
+      }
+    }
+    enqueueTermWrite(text);
+    outputRingBuffer += text;
+    if (outputRingBuffer.length > OUTPUT_RING_MAX) {
+      outputRingBuffer = outputRingBuffer.slice(-OUTPUT_RING_MAX);
+    }
+    if (outputSubscribers.size === 0) return;
+    const msg = JSON.stringify({ type: PTY_SOCKET_MESSAGE_TYPES.OUTPUT, data: text, encoding: "utf8" }) + "\n";
+    for (const sub of outputSubscribers) {
+      try {
+        sub.write(msg);
+      } catch {
+        outputSubscribers.delete(sub);
+      }
+    }
+  }
+
+  function setupInjectServer() {
+    const dir = path.dirname(injectSockPath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    if (fs.existsSync(injectSockPath)) {
+      try { fs.unlinkSync(injectSockPath); } catch { /* ignore */ }
+    }
+    const server = net.createServer((client) => {
+      let buffer = "";
+      client.on("data", (data) => {
+        buffer += data.toString("utf8");
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const req = JSON.parse(line);
+            if (req.type === "inject" && req.command) {
+              if (ptyProcess && ptyAlive) {
+                const isClaude = agentType === "claude-code";
+                const commandText = String(req.command);
+                const submitDelayMs = computeInjectedSubmitDelayMs(agentType, commandText);
+                ptyProcess.write(commandText);
+                if (isClaude) {
+                  // Claude Code: send CR directly without ESC.
+                  // ESC before CR is interpreted as Alt+Enter (newline).
+                  setTimeout(() => {
+                    if (ptyProcess && ptyAlive) {
+                      ptyProcess.write("\r");
+                    }
+                  }, submitDelayMs);
+                } else {
+                  // Codex/others: ESC dismisses autocomplete, then CR submits.
+                  setTimeout(() => {
+                    if (!ptyProcess || !ptyAlive) return;
+                    ptyProcess.write("\x1b");
+                    setTimeout(() => {
+                      if (ptyProcess && ptyAlive) {
+                        ptyProcess.write("\r");
+                      }
+                    }, 100);
+                  }, submitDelayMs);
+                }
+                client.write(JSON.stringify({ ok: true }) + "\n");
+              } else {
+                client.write(JSON.stringify({ ok: false, error: "pty not ready" }) + "\n");
+              }
+            } else if (req.type === PTY_SOCKET_MESSAGE_TYPES.RAW && typeof req.data === "string") {
+              if (ptyProcess && ptyAlive) {
+                ptyProcess.write(req.data);
+                client.write(JSON.stringify({ ok: true }) + "\n");
+              } else {
+                client.write(JSON.stringify({ ok: false, error: "pty not ready" }) + "\n");
+              }
+            } else if (req.type === PTY_SOCKET_MESSAGE_TYPES.RESIZE && req.cols && req.rows) {
+              if (ptyProcess && ptyAlive && typeof ptyProcess.resize === "function") {
+                ptyProcess.resize(req.cols, req.rows);
+              }
+              if (term && typeof term.resize === "function") {
+                try { term.resize(req.cols, req.rows); } catch { /* ignore */ }
+              }
+              client.write(JSON.stringify({ ok: true }) + "\n");
+            } else if (req.type === PTY_SOCKET_MESSAGE_TYPES.SUBSCRIBE) {
+              outputSubscribers.add(client);
+              client.write(JSON.stringify({ type: PTY_SOCKET_MESSAGE_TYPES.SUBSCRIBED, ok: true }) + "\n");
+              const mode = req.mode === PTY_SOCKET_SUBSCRIBE_MODES.SCREEN
+                ? PTY_SOCKET_SUBSCRIBE_MODES.SCREEN
+                : PTY_SOCKET_SUBSCRIBE_MODES.FULL;
+              if (mode === PTY_SOCKET_SUBSCRIBE_MODES.FULL) {
+                if (outputRingBuffer.length > 0) {
+                  try {
+                    client.write(JSON.stringify({
+                      type: PTY_SOCKET_MESSAGE_TYPES.REPLAY,
+                      data: outputRingBuffer,
+                      encoding: "utf8",
+                    }) + "\n");
+                  } catch {
+                    // ignore replay send errors
+                  }
+                } else {
+                  serializeSnapshot(PTY_SOCKET_SUBSCRIBE_MODES.FULL).then((snapshot) => {
+                    if (snapshot && snapshot.data) {
+                      try {
+                        client.write(JSON.stringify({
+                          type: PTY_SOCKET_MESSAGE_TYPES.SNAPSHOT,
+                          data: snapshot.data,
+                          encoding: "utf8",
+                        }) + "\n");
+                      } catch {
+                        // ignore snapshot send errors
+                      }
+                    }
+                  }).catch(() => {});
+                }
+              } else {
+                serializeSnapshot(PTY_SOCKET_SUBSCRIBE_MODES.SCREEN).then((snapshot) => {
+                  if (snapshot && snapshot.data) {
+                    try {
+                      client.write(JSON.stringify({
+                        type: PTY_SOCKET_MESSAGE_TYPES.SNAPSHOT,
+                        data: snapshot.data,
+                        encoding: "utf8",
+                      }) + "\n");
+                    } catch {
+                      // ignore snapshot send errors
+                    }
+                  }
+                }).catch(() => {});
+              }
+            } else {
+              client.write(JSON.stringify({ ok: false, error: "invalid request" }) + "\n");
+            }
+          } catch (err) {
+            client.write(JSON.stringify({ ok: false, error: err.message }) + "\n");
+          }
+        }
+      });
+      client.on("error", () => {
+        outputSubscribers.delete(client);
+      });
+      client.on("close", () => {
+        outputSubscribers.delete(client);
+      });
+    });
+    server.listen(injectSockPath);
+    return server;
+  }
+
+  function syncOuterTerminalSize() {
+    const { cols, rows } = getOuterTerminalSize();
+    if (ptyProcess && ptyAlive && typeof ptyProcess.resize === "function") {
+      try {
+        ptyProcess.resize(cols, rows);
+      } catch {
+        // ignore outer resize failures
+      }
+    }
+    if (term && typeof term.resize === "function") {
+      try {
+        term.resize(cols, rows);
+      } catch {
+        // ignore local screen buffer resize failures
+      }
+    }
+  }
+
+  function attachOuterTerminalBridge() {
+    if (process.stdin && typeof process.stdin.on === "function" && !outerInputHandler) {
+      outerInputHandler = (chunk) => {
+        if (!ptyProcess || !ptyAlive) return;
+        const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+        if (!text) return;
+        try {
+          ptyProcess.write(text);
+        } catch {
+          // ignore transient PTY bridge failures
+        }
+      };
+      process.stdin.on("data", outerInputHandler);
+      if (typeof process.stdin.resume === "function") {
+        process.stdin.resume();
+      }
+    }
+
+    if (process.stdin && process.stdin.isTTY && typeof process.stdin.setRawMode === "function" && !outerRawModeEnabled) {
+      try {
+        process.stdin.setRawMode(true);
+        outerRawModeEnabled = true;
+      } catch {
+        // ignore raw mode failures on unsupported hosts
+      }
+    }
+
+    if (process.stdout && process.stdout.isTTY && typeof process.stdout.on === "function" && !outerResizeHandler) {
+      outerResizeHandler = () => {
+        syncOuterTerminalSize();
+      };
+      process.stdout.on("resize", outerResizeHandler);
+      syncOuterTerminalSize();
+    }
+  }
+
+  function cleanupInjectServer(server) {
+    for (const sub of outputSubscribers) {
+      try { sub.destroy(); } catch { /* ignore */ }
+    }
+    outputSubscribers.clear();
+    try {
+      if (server) server.close();
+      if (fs.existsSync(injectSockPath)) fs.unlinkSync(injectSockPath);
+    } catch {
+      // ignore
+    }
+  }
+
+  function flushPending() {
+    if (!currentPublisher || pendingOutput.length === 0) return;
+    const chunks = pendingOutput;
+    pendingOutput = [];
+    if (!canStreamToPublisher(currentPublisher)) return;
+    for (const chunk of chunks) {
+      enqueueSend(currentPublisher, chunk);
+    }
+  }
+
+  function deliverChunk(chunk) {
+    if (!chunk) return;
+    const cleaned = sanitizeChunk(chunk);
+    if (!cleaned) return;
+    const payload = JSON.stringify({ stream: true, delta: cleaned });
+    if (currentPublisher) {
+      if (canStreamToPublisher(currentPublisher)) {
+        enqueueSend(currentPublisher, payload);
+      }
+    } else {
+      pendingOutput.push(payload);
+      if (pendingOutput.length > 50) pendingOutput.shift();
+    }
+  }
+
+  function flushOutput() {
+    if (!outputBuffer) return;
+    const chunk = outputBuffer.slice(0, maxChunk);
+    outputBuffer = outputBuffer.slice(chunk.length);
+    if (chunk) {
+      deliverChunk(chunk);
+    }
+    if (outputBuffer) {
+      scheduleFlush();
+    }
+  }
+
+  function scheduleFlush() {
+    if (flushTimer) return;
+    flushTimer = setTimeout(() => {
+      flushTimer = null;
+      flushOutput();
+    }, 120);
+  }
+
+  function logNote(note) {
+    try {
+      fs.mkdirSync(runDir, { recursive: true });
+      fs.appendFileSync(logFile, `[${new Date().toISOString()}] ${note}\n`);
+    } catch {
+      // ignore
+    }
+  }
+
+  // Unified activity state publisher (write + broadcast)
+  const activityPublisher = createActivityStatePublisher({
+    agentsFile: agentsFilePath,
+    subscriber,
+    projectRoot,
+  });
+
+  function writeActivityState() {
+    const snap = activityDetector.getState();
+    activityPublisher.publish(snap.state, {
+      since: snap.since,
+      detail: snap.detail,
+    });
+  }
+
+  activityDetector.onChange((newState, oldState) => {
+    const snap = activityDetector.getState();
+    activityPublisher.publish(newState, {
+      since: snap.since,
+      previous: oldState,
+      detail: snap.detail,
+    });
+    // Quiet-window detector may classify IDLE sooner than stream fallback timer.
+    if (newState === "idle" && busy) {
+      if (idleTimer) {
+        clearTimeout(idleTimer);
+        idleTimer = null;
+      }
+      if (watchdogTimer) {
+        clearTimeout(watchdogTimer);
+        watchdogTimer = null;
+      }
+      if (currentPublisher) {
+        completePublisherResponse("idle");
+      }
+      busy = false;
+      currentPublisher = "";
+      processQueue();
+    }
+  });
+  // Ensure daemon/dashboard can read initial state immediately after runner boots,
+  // instead of waiting for the next 30s heartbeat tick.
+  writeActivityState();
+
+  function attachPty(proc) {
+    proc.onData((data) => {
+      const raw = String(data || "");
+      broadcastOutput(raw);
+      // Auto-respond to DSR (Device Status Report) cursor position query.
+      // Ink/codex sends \x1b[6n at startup; node-pty doesn't reply automatically,
+      // causing codex to crash with "cursor position could not be read".
+      if (raw.includes("\x1b[6n") || raw.includes("\x1b[?6n")) {
+        proc.write("\x1b[1;1R");
+      }
+      const clean = stripAnsi(raw).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+      if (!clean) return;
+      outputBuffer += clean;
+      activityDetector.processOutput(clean);
+      scheduleFlush();
+      // Ready detection: during TUI startup, reset the quiet timer on each output.
+      // Once output stops for READY_QUIET_MS, the TUI is considered initialized.
+      if (!ptyReady && !busy) {
+        if (readyTimer) clearTimeout(readyTimer);
+        readyTimer = setTimeout(() => {
+          readyTimer = null;
+          if (!ptyReady) {
+            ptyReady = true;
+            activityDetector.markReady();
+            // Discard TUI startup noise accumulated before ready
+            outputBuffer = "";
+            pendingOutput = [];
+            logNote("[internal-pty] TUI ready (output quiet for " + READY_QUIET_MS + "ms)");
+            processQueue();
+          }
+        }, READY_QUIET_MS);
+      }
+      if (busy) {
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => {
+          idleTimer = null;
+          if (currentPublisher) {
+            completePublisherResponse("idle");
+          }
+          busy = false;
+          activityDetector.markIdle();
+          currentPublisher = "";
+          processQueue();
+        }, idleMs);
+      }
+    });
+
+    proc.onExit(({ exitCode, signal }) => {
+      // Skip if this process has been replaced (e.g., by restartPty)
+      if (proc !== ptyProcess) return;
+
+      ptyAlive = false;
+      ptyReady = false;
+      if (readyTimer) {
+        clearTimeout(readyTimer);
+        readyTimer = null;
+      }
+      if (outputBuffer) {
+        flushOutput();
+      }
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      if (idleTimer) {
+        clearTimeout(idleTimer);
+        idleTimer = null;
+      }
+      if (watchdogTimer) {
+        clearTimeout(watchdogTimer);
+        watchdogTimer = null;
+      }
+      const note = `[internal-pty] process exited code=${exitCode} signal=${signal || ""}`.trim();
+      if (currentPublisher) completePublisherResponse("exit", note);
+      logNote(note);
+
+      // Reset busy state
+      busy = false;
+      activityDetector.markIdle();
+      currentPublisher = "";
+
+      // If stop() was called, let the runner exit
+      if (!running) return;
+
+      // Auto-restart with backoff
+      const elapsed = Date.now() - lastSpawnTime;
+      if (elapsed > RESTART_STABLE_MS) {
+        restartCount = 0; // Process was stable long enough, reset counter
+      }
+      restartCount++;
+
+      if (restartCount <= MAX_RESTARTS) {
+        const delay = Math.min(restartCount * RESTART_DELAY_MS, RESTART_BACKOFF_CAP_MS);
+        logNote(`Auto-restarting PTY in ${delay}ms (attempt ${restartCount}/${MAX_RESTARTS})`);
+        setTimeout(() => {
+          if (!running) return;
+          try {
+            ptyProcess = spawnPtyProcess();
+            processQueue();
+          } catch (err) {
+            logNote(`Restart failed: ${err.message || err}`);
+            // Keep retrying instead of falling back
+            restartCount++;
+            if (restartCount <= MAX_RESTARTS) {
+              const retryDelay = Math.min(restartCount * RESTART_DELAY_MS, RESTART_BACKOFF_CAP_MS);
+              setTimeout(() => {
+                if (!running) return;
+                try {
+                  ptyProcess = spawnPtyProcess();
+                  processQueue();
+                } catch {
+                  logNote(`PTY spawn keeps failing after ${restartCount} attempts. Agent is offline.`);
+                }
+              }, retryDelay);
+            } else {
+              logNote(`PTY spawn failed after ${MAX_RESTARTS} attempts. Agent is offline. Fix the issue and re-launch.`);
+            }
+          }
+        }, delay);
+      } else {
+        logNote(`PTY crashed ${MAX_RESTARTS} times within ${RESTART_STABLE_MS}ms. Agent is offline. Fix the issue and re-launch.`);
+      }
+    });
+  }
+
+  function spawnPtyProcess() {
+    lastSpawnTime = Date.now();
+    ptyReady = false;
+    if (readyTimer) {
+      clearTimeout(readyTimer);
+      readyTimer = null;
+    }
+    const { cols, rows } = getOuterTerminalSize();
+    const proc = pty.spawn(command, args, {
+      name: "xterm-256color",
+      cols,
+      rows,
+      cwd: projectRoot,
+      env,
+    });
+    ptyAlive = true;
+    attachPty(proc);
+    return proc;
+  }
+
+  function restartPty(reason) {
+    if (!running) return;
+    logNote(`Restarting PTY: ${reason}`);
+    ptyAlive = false;
+    ptyReady = false;
+    if (outputBuffer) {
+      flushOutput();
+    }
+    // Clear reference first so the old onExit handler skips (proc !== ptyProcess)
+    const oldPty = ptyProcess;
+    ptyProcess = null;
+    try {
+      if (oldPty) oldPty.kill();
+    } catch {
+      // ignore
+    }
+    ptyProcess = spawnPtyProcess();
+  }
+
+  const stop = () => {
+    running = false;
+    cleanupInjectServer(injectServer);
+    if (process.stdin && outerInputHandler) {
+      if (typeof process.stdin.off === "function") {
+        process.stdin.off("data", outerInputHandler);
+      } else if (typeof process.stdin.removeListener === "function") {
+        process.stdin.removeListener("data", outerInputHandler);
+      }
+      outerInputHandler = null;
+    }
+    if (process.stdout && outerResizeHandler) {
+      if (typeof process.stdout.off === "function") {
+        process.stdout.off("resize", outerResizeHandler);
+      } else if (typeof process.stdout.removeListener === "function") {
+        process.stdout.removeListener("resize", outerResizeHandler);
+      }
+      outerResizeHandler = null;
+    }
+    if (process.stdin && outerRawModeEnabled && typeof process.stdin.setRawMode === "function") {
+      try {
+        process.stdin.setRawMode(false);
+      } catch {
+        // ignore raw mode cleanup failures
+      }
+      outerRawModeEnabled = false;
+    }
+    try {
+      if (ptyProcess) ptyProcess.kill();
+    } catch {
+      // ignore
+    }
+  };
+
+  process.on("SIGTERM", stop);
+  process.on("SIGINT", stop);
+  // Ignore SIGHUP so terminal closure doesn't kill the ptyRunner
+  // while the daemon is still alive.
+  process.on("SIGHUP", () => {});
+
+  ptyProcess = spawnPtyProcess();
+  attachOuterTerminalBridge();
+
+  function processQueue() {
+    if (busy || messageQueue.length === 0 || !running || !ptyAlive || !ptyReady) return;
+    const next = messageQueue.shift();
+    if (!next) return;
+    busy = true;
+    activityDetector.markWorking();
+    currentPublisher = next.publisher;
+    flushPending();
+    if (next.text) {
+      if (next.raw) {
+        ptyProcess.write(next.text);
+      } else {
+        // Write text first, then send Enter separately.
+        // Codex Ink TUI requires text and submit key as separate writes.
+        ptyProcess.write(next.text);
+        setTimeout(() => {
+          if (ptyProcess && ptyAlive) {
+            // Drop the local TUI input echo from any forwarded stream output.
+            outputBuffer = "";
+            const isClaude = agentType === "claude-code";
+            if (isClaude) {
+              // Claude Code: send CR directly without ESC.
+              // ESC before CR is interpreted as Alt+Enter (newline).
+              ptyProcess.write("\r");
+            } else {
+              // Codex/others: ESC dismisses autocomplete, then CR submits.
+              ptyProcess.write("\x1b");
+              setTimeout(() => {
+                if (ptyProcess && ptyAlive) {
+                  ptyProcess.write("\r");
+                }
+              }, 100);
+            }
+          }
+        }, 200);
+      }
+    }
+    if (watchdogTimer) clearTimeout(watchdogTimer);
+    watchdogTimer = setTimeout(() => {
+      watchdogTimer = null;
+      if (!busy) return;
+      const timeoutNote = `[internal-pty] task timeout; restarting PTY`;
+      if (currentPublisher) {
+        completePublisherResponse("timeout", timeoutNote);
+      }
+      logNote(timeoutNote);
+      restartPty("task timeout");
+      busy = false;
+      activityDetector.markIdle();
+      currentPublisher = "";
+      processQueue();
+    }, watchdogMs);
+  }
+
+  // Heartbeat to keep agent "online" in bus status
+  let lastHeartbeat = 0;
+  const HEARTBEAT_INTERVAL = 30000;
+  const updateHeartbeat = () => {
+    try {
+      spawnSync("ufoo", ["bus", "check", subscriber], {
+        cwd: projectRoot,
+        env: { ...process.env, UFOO_SUBSCRIBER_ID: subscriber },
+        stdio: "ignore",
+        timeout: 5000,
+      });
+    } catch {
+      // ignore heartbeat errors
+    }
+    writeActivityState();
+  };
+
+  while (running) {
+    // Periodic heartbeat
+    const now = Date.now();
+    if (now - lastHeartbeat > HEARTBEAT_INTERVAL) {
+      updateHeartbeat();
+      lastHeartbeat = now;
+    }
+
+    const lines = drainQueue(queueFile);
+    if (lines.length > 0) {
+      const agents = readAgentsMap(agentsFilePath);
+      const events = [];
+      for (const line of lines) {
+        try {
+          events.push(JSON.parse(line));
+        } catch {
+          // ignore malformed line
+        }
+      }
+      for (const evt of events) {
+        const input = buildPtyInputFromEvent(evt, subscriber, agents);
+        if (!input) continue;
+        const { raw, text } = input;
+        if (messageQueue.length >= maxQueue) {
+          messageQueue.shift();
+        }
+        const publisher = typeof evt.publisher === "object" && evt.publisher
+          ? (evt.publisher.subscriber || evt.publisher.nickname || "unknown")
+          : (evt.publisher || "unknown");
+        messageQueue.push({ publisher, raw, text });
+      }
+    }
+    processQueue();
+    // eslint-disable-next-line no-await-in-loop
+    await sleep(200);
+  }
+}
+
+module.exports = {
+  appendStartupBootstrapArg,
+  buildPtyInputFromEvent,
+  parseInputMessage,
+  resolvePtyBootstrapArgs,
+  resolveCommand,
+  runPtyRunner,
+};

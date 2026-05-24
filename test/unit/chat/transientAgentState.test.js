@@ -4,7 +4,7 @@ const {
   getTransientAgentStateEntry,
   getTransientAgentState,
   pruneTransientAgentStates,
-} = require("../../../src/chat/transientAgentState");
+} = require("../../../src/app/chat/transientAgentState");
 
 describe("chat transientAgentState", () => {
   test("returns stored transient state before ttl expiry", () => {

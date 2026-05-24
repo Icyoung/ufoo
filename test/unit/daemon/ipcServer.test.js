@@ -11,7 +11,7 @@ jest.mock("net", () => {
 });
 
 const EventEmitter = require("events");
-const { createDaemonIpcServer } = require("../../../src/daemon/ipcServer");
+const { createDaemonIpcServer } = require("../../../src/runtime/daemon/ipcServer");
 const net = require("net");
 
 describe("daemon ipcServer", () => {

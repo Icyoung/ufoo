@@ -12,7 +12,7 @@ const {
   readShadowBudgetState,
   shouldSampleShadow,
   snapshotDirectory,
-} = require("../../../src/controller/shadowGuard");
+} = require("../../../src/orchestration/controller/shadowGuard");
 
 function mkTempProjectRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-shadow-guard-"));

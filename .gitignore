@@ -10,4 +10,8 @@ node_modules
 coverage/
 
 landing.claude/commands/
-docs/
+docs/**
+!docs/
+!docs/**/
+!docs/*.md
+!docs/**/*.md

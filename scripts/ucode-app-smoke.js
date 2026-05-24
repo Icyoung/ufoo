@@ -7,7 +7,7 @@
  */
 
 const { runInk } = require("../src/ui/runInk");
-const { createUcodeApp } = require("../src/ui/components/UcodeApp");
+const { createUcodeApp } = require("../src/ui/ink/UcodeApp");
 
 (async () => {
   const props = {

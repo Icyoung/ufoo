@@ -2,8 +2,8 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-jest.mock("../../../src/bus/utils", () => {
-  const actual = jest.requireActual("../../../src/bus/utils");
+jest.mock("../../../src/coordination/bus/utils", () => {
+  const actual = jest.requireActual("../../../src/coordination/bus/utils");
   return {
     ...actual,
     getTtyProcessInfo: jest.fn((ttyPath) => {
@@ -27,8 +27,8 @@ jest.mock("../../../src/bus/utils", () => {
   };
 });
 
-const { BusStore } = require("../../../src/bus/store");
-const { getUfooPaths } = require("../../../src/ufoo/paths");
+const { BusStore } = require("../../../src/coordination/bus/store");
+const { getUfooPaths } = require("../../../src/coordination/state/paths");
 
 describe("BusStore load recovery", () => {
   let projectRoot;

@@ -1,7 +1,7 @@
 const {
   runPromptWithAssistant,
   stripAssistantCall,
-} = require("../../../src/daemon/promptLoop");
+} = require("../../../src/runtime/daemon/promptLoop");
 
 describe("daemon promptLoop", () => {
   test("finalizes single-pass agent payloads without helper execution", async () => {

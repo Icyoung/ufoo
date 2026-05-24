@@ -11,7 +11,7 @@
  * component.
  */
 
-const { createUcodeApp } = require("../../../src/ui/components/UcodeApp");
+const { createUcodeApp } = require("../../../src/ui/ink/UcodeApp");
 
 describe("createUcodeApp", () => {
   test("returns a render function when given a React + stub ink namespace", () => {

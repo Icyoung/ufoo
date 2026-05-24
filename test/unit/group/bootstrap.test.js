@@ -5,7 +5,7 @@ const {
   SHARED_GROUP_PREFIX,
   buildGroupPromptMetadata,
   composeGroupBootstrapPrompt,
-} = require("../../../src/group/bootstrap");
+} = require("../../../src/orchestration/groups/bootstrap");
 
 describe("group bootstrap", () => {
   test("shared ufoo protocol includes decisions and bus handoff guidance", () => {

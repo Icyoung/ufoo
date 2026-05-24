@@ -3,7 +3,7 @@
 const {
   detectLaunchEnvironment,
   CANONICAL_LAUNCH_MODES,
-} = require("../../../src/agent/launchEnvironment");
+} = require("../../../src/agents/launch/launchEnvironment");
 
 describe("detectLaunchEnvironment", () => {
   test("short-circuits on explicit canonical UFOO_LAUNCH_MODE", () => {

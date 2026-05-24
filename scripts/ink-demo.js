@@ -9,7 +9,7 @@
  */
 
 const { runInk } = require("../src/ui/runInk");
-const { createInkDemo } = require("../src/ui/components/InkDemo");
+const { createInkDemo } = require("../src/ui/ink/InkDemo");
 
 (async () => {
   const handle = await runInk((React, ink) => {

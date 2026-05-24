@@ -10,24 +10,24 @@ jest.mock("../../../src/code/nativeRunner", () => ({
   resolveAnthropicMessagesUrl: jest.fn((baseUrl = "") => `${String(baseUrl || "").replace(/\/+$/, "")}/messages`),
 }));
 
-jest.mock("../../../src/agent/credentials/codex", () => ({
+jest.mock("../../../src/agents/providers/credentials/codex", () => ({
   resolveCodexUpstreamCredentials: jest.fn(),
 }));
 
-jest.mock("../../../src/agent/credentials/claude", () => ({
+jest.mock("../../../src/agents/providers/credentials/claude", () => ({
   resolveClaudeUpstreamCredentials: jest.fn(),
 }));
 
 const { resolveRuntimeConfig } = require("../../../src/code/nativeRunner");
-const { resolveCodexUpstreamCredentials } = require("../../../src/agent/credentials/codex");
-const { resolveClaudeUpstreamCredentials } = require("../../../src/agent/credentials/claude");
+const { resolveCodexUpstreamCredentials } = require("../../../src/agents/providers/credentials/codex");
+const { resolveClaudeUpstreamCredentials } = require("../../../src/agents/providers/credentials/claude");
 const {
   buildCodexResponsesRequest,
   normalizeProvider,
   parseCodexSsePayload,
   resolveUpstreamRuntime,
   sendUpstreamPrompt,
-} = require("../../../src/agent/upstreamTransport");
+} = require("../../../src/agents/providers/upstreamTransport");
 
 describe("agent upstreamTransport", () => {
   beforeEach(() => {

@@ -1,4 +1,4 @@
-const { createVirtualTerminal } = require("../../../../src/chat/multiWindow/virtualTerminal");
+const { createVirtualTerminal } = require("../../../../src/app/chat/multiWindow/virtualTerminal");
 
 describe("virtualTerminal", () => {
   test("basic text output", () => {

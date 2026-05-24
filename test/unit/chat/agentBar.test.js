@@ -1,5 +1,5 @@
-const { computeAgentBar } = require("../../../src/chat/agentBar");
-const { stripAnsi } = require("../../../src/chat/text");
+const { computeAgentBar } = require("../../../src/app/chat/agentBar");
+const { stripAnsi } = require("../../../src/app/chat/text");
 
 describe("chat agentBar", () => {
   test("renders ufoo + none when there are no agents", () => {

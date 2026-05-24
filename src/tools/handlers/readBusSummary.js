@@ -1,4 +1,4 @@
-const { buildStatus } = require("../../daemon/status");
+const { buildStatus } = require("../../runtime/daemon/status");
 
 function readBusSummaryHandler(ctx = {}) {
   const status = buildStatus(ctx.projectRoot);

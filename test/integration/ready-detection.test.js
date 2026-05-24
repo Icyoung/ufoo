@@ -7,8 +7,8 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const net = require("net");
-const EventBus = require("../../src/bus");
-const { getUfooPaths } = require("../../src/ufoo/paths");
+const EventBus = require("../../src/coordination/bus");
+const { getUfooPaths } = require("../../src/coordination/state/paths");
 
 // Test project directory
 const TEST_PROJECT = path.join(os.tmpdir(), `ufoo-ready-test-${Date.now()}`);
@@ -135,7 +135,7 @@ describe("Ready Detection Integration Tests", () => {
 
     test("should detect ready from PTY output in launcher integration", () => {
       // This tests the integration between ReadyDetector and the expected output format
-      const ReadyDetector = require("../../src/agent/readyDetector");
+      const ReadyDetector = require("../../src/agents/launch/readyDetector");
       const detector = new ReadyDetector("claude-code");
 
       let readyCalled = false;
@@ -163,7 +163,7 @@ describe("Ready Detection Integration Tests", () => {
 
     test("should handle 10 second fallback timeout", () => {
       // Verify the fallback mechanism exists and works
-      const ReadyDetector = require("../../src/agent/readyDetector");
+      const ReadyDetector = require("../../src/agents/launch/readyDetector");
       const detector = new ReadyDetector("claude-code");
 
       let readyCalled = false;
@@ -180,7 +180,7 @@ describe("Ready Detection Integration Tests", () => {
 
     test("should integrate with launcher onReady callback mechanism", () => {
       // Verify that the launcher integration pattern works
-      const ReadyDetector = require("../../src/agent/readyDetector");
+      const ReadyDetector = require("../../src/agents/launch/readyDetector");
       const detector = new ReadyDetector("claude-code");
 
       const notifications = [];
@@ -202,7 +202,7 @@ describe("Ready Detection Integration Tests", () => {
 
   describe("1.3 Edge Cases", () => {
     test("should handle slow initialization (>10 seconds)", async () => {
-      const ReadyDetector = require("../../src/agent/readyDetector");
+      const ReadyDetector = require("../../src/agents/launch/readyDetector");
       const detector = new ReadyDetector("claude-code");
 
       let readyTime = null;
@@ -226,7 +226,7 @@ describe("Ready Detection Integration Tests", () => {
     });
 
     test("should handle abnormal output with errors", () => {
-      const ReadyDetector = require("../../src/agent/readyDetector");
+      const ReadyDetector = require("../../src/agents/launch/readyDetector");
       const detector = new ReadyDetector("claude-code");
 
       let readyCalled = false;
@@ -249,7 +249,7 @@ describe("Ready Detection Integration Tests", () => {
 
     test("should handle rapid restart scenario with detector cleanup", () => {
       // Test that multiple detector instances don't interfere
-      const ReadyDetector = require("../../src/agent/readyDetector");
+      const ReadyDetector = require("../../src/agents/launch/readyDetector");
 
       const detector1 = new ReadyDetector("claude-code");
       let ready1Called = false;
@@ -283,7 +283,7 @@ describe("Ready Detection Integration Tests", () => {
     test("should handle daemon communication failure gracefully", () => {
       // Test that ready detection works even if daemon notification fails
       // This verifies the try-catch error handling in launcher.js
-      const ReadyDetector = require("../../src/agent/readyDetector");
+      const ReadyDetector = require("../../src/agents/launch/readyDetector");
       const detector = new ReadyDetector("claude-code");
 
       let readyCalled = false;
@@ -301,7 +301,7 @@ describe("Ready Detection Integration Tests", () => {
     });
 
     test("should handle socket communication failure gracefully", async () => {
-      const ReadyDetector = require("../../src/agent/readyDetector");
+      const ReadyDetector = require("../../src/agents/launch/readyDetector");
       const detector = new ReadyDetector("claude-code");
 
       // Simulate ready detection
@@ -316,7 +316,7 @@ describe("Ready Detection Integration Tests", () => {
 
   describe("Error handling and resilience", () => {
     test("should handle multiple rapid ready detections", () => {
-      const ReadyDetector = require("../../src/agent/readyDetector");
+      const ReadyDetector = require("../../src/agents/launch/readyDetector");
       const detector = new ReadyDetector("claude-code");
 
       let callCount = 0;
@@ -334,7 +334,7 @@ describe("Ready Detection Integration Tests", () => {
     });
 
     test("should handle buffer overflow with large output", () => {
-      const ReadyDetector = require("../../src/agent/readyDetector");
+      const ReadyDetector = require("../../src/agents/launch/readyDetector");
       const detector = new ReadyDetector("claude-code");
       detector.maxBufferSize = 1000; // Smaller for testing
 
@@ -355,7 +355,7 @@ describe("Ready Detection Integration Tests", () => {
     });
 
     test("should handle callback errors without breaking", () => {
-      const ReadyDetector = require("../../src/agent/readyDetector");
+      const ReadyDetector = require("../../src/agents/launch/readyDetector");
       const detector = new ReadyDetector("claude-code");
 
       let errorThrown = false;
@@ -379,7 +379,7 @@ describe("Ready Detection Integration Tests", () => {
 
   describe("Performance", () => {
     test("should detect ready quickly with typical output", () => {
-      const ReadyDetector = require("../../src/agent/readyDetector");
+      const ReadyDetector = require("../../src/agents/launch/readyDetector");
       const detector = new ReadyDetector("claude-code");
 
       let readyTime = null;
@@ -402,7 +402,7 @@ describe("Ready Detection Integration Tests", () => {
     });
 
     test("should handle high-frequency output without performance degradation", () => {
-      const ReadyDetector = require("../../src/agent/readyDetector");
+      const ReadyDetector = require("../../src/agents/launch/readyDetector");
       const detector = new ReadyDetector("claude-code");
 
       const startTime = Date.now();

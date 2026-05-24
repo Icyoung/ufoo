@@ -6,11 +6,11 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { saveAgentsData, loadAgentsData } = require("../../../src/ufoo/agentsStore");
-const { writeActivityState } = require("../../../src/agent/activityStateWriter");
-const { buildStatus } = require("../../../src/daemon/status");
-const { computeDashboardContent } = require("../../../src/chat/dashboardView");
-const { buildAgentMaps } = require("../../../src/chat/agentDirectory");
+const { saveAgentsData, loadAgentsData } = require("../../../src/coordination/state/agentsStore");
+const { writeActivityState } = require("../../../src/agents/activity/activityStateWriter");
+const { buildStatus } = require("../../../src/runtime/daemon/status");
+const { computeDashboardContent } = require("../../../src/app/chat/dashboardView");
+const { buildAgentMaps } = require("../../../src/app/chat/agentDirectory");
 
 function makeTmpProject() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-e2e-activity-"));

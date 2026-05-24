@@ -4,15 +4,15 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-jest.mock("../../../src/bus", () => jest.fn());
-jest.mock("../../../src/agent/ucodeBootstrap", () => ({
+jest.mock("../../../src/coordination/bus", () => jest.fn());
+jest.mock("../../../src/code/launcher/ucodeBootstrap", () => ({
   prepareUcodeBootstrap: jest.fn(() => ({ ok: true, file: "/tmp/bootstrap.md" })),
 }));
 
-const EventBus = require("../../../src/bus");
-const { prepareUcodeBootstrap } = require("../../../src/agent/ucodeBootstrap");
-const { getUfooPaths } = require("../../../src/ufoo/paths");
-const { buildProjectNicknamePrefix } = require("../../../src/daemon/nicknameScope");
+const EventBus = require("../../../src/coordination/bus");
+const { prepareUcodeBootstrap } = require("../../../src/code/launcher/ucodeBootstrap");
+const { getUfooPaths } = require("../../../src/coordination/state/paths");
+const { buildProjectNicknamePrefix } = require("../../../src/runtime/daemon/nicknameScope");
 const {
   resolveSoloPromptProfile,
   buildSoloBootstrap,
@@ -23,7 +23,7 @@ const {
   findOwningGroup,
   rollbackLaunchAfterRoleAssignmentFailure,
   assignSoloRoleToExistingAgent,
-} = require("../../../src/daemon/soloBootstrap");
+} = require("../../../src/runtime/daemon/soloBootstrap");
 
 describe("daemon soloBootstrap", () => {
   let projectRoot;

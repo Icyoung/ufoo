@@ -1,10 +1,10 @@
 const fs = require("fs");
-const { runUfooAgent, runUfooRouteAgent } = require("../../../src/agent/ufooAgent");
+const { runUfooAgent, runUfooRouteAgent } = require("../../../src/agents/controller/ufooAgent");
 
-jest.mock("../../../src/daemon/status", () => ({
+jest.mock("../../../src/runtime/daemon/status", () => ({
   buildStatus: jest.fn(),
 }));
-jest.mock("../../../src/agent/credentials/codex", () => ({
+jest.mock("../../../src/agents/providers/credentials/codex", () => ({
   resolveCodexUpstreamCredentials: jest.fn(),
 }));
 jest.mock("../../../src/code/nativeRunner", () => ({
@@ -18,13 +18,13 @@ jest.mock("../../../src/code/nativeRunner", () => ({
   resolveCompletionUrl: jest.fn(() => "https://api.openai.com/v1/chat/completions"),
   resolveAnthropicMessagesUrl: jest.fn(() => "https://api.anthropic.com/v1/messages"),
 }));
-jest.mock("../../../src/projects/registry", () => ({
+jest.mock("../../../src/runtime/projects/registry", () => ({
   listProjectRuntimes: jest.fn(() => []),
 }));
 
-const { resolveCodexUpstreamCredentials } = require("../../../src/agent/credentials/codex");
-const { buildStatus } = require("../../../src/daemon/status");
-const { listProjectRuntimes } = require("../../../src/projects/registry");
+const { resolveCodexUpstreamCredentials } = require("../../../src/agents/providers/credentials/codex");
+const { buildStatus } = require("../../../src/runtime/daemon/status");
+const { listProjectRuntimes } = require("../../../src/runtime/projects/registry");
 
 describe("ufooAgent prompt schema", () => {
   const projectRoot = "/tmp/ufoo-agent-schema-test";

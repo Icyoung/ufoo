@@ -1,7 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { runGroupCoreCommand } = require("../../../src/cli/groupCoreCommands");
+const { runGroupCoreCommand } = require("../../../src/app/cli/groupCoreCommands");
 
 const TEST_ROOT = path.join(os.tmpdir(), "ufoo-group-core-commands-test");
 

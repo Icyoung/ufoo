@@ -3,7 +3,7 @@
 const {
   resolveSoloAgentType,
   buildPromptProfileCandidates,
-} = require("../../../src/solo/commands");
+} = require("../../../src/orchestration/solo/commands");
 
 describe("solo commands helpers", () => {
   test("resolveSoloAgentType respects explicit aliases", () => {

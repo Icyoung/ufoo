@@ -4,8 +4,8 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { getUfooPaths } = require("../../../src/ufoo/paths");
-const { readRecentLoopSummary } = require("../../../src/agent/loopObservability");
+const { getUfooPaths } = require("../../../src/coordination/state/paths");
+const { readRecentLoopSummary } = require("../../../src/agents/controller/loopObservability");
 
 describe("agent loopObservability", () => {
   test("summarizes the most recent completed loop segment", () => {

@@ -1,4 +1,4 @@
-const ReadyDetector = require("../../../src/agent/readyDetector");
+const ReadyDetector = require("../../../src/agents/launch/readyDetector");
 
 describe("ReadyDetector", () => {
   describe("claude-code prompt detection", () => {

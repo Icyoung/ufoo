@@ -3,7 +3,7 @@ const {
   formatIntervalMs,
   summarizeTask,
   createCronScheduler,
-} = require("../../../src/chat/cronScheduler");
+} = require("../../../src/app/chat/cronScheduler");
 
 describe("chat cronScheduler", () => {
   test("parses interval strings", () => {

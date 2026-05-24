@@ -1,7 +1,7 @@
 "use strict";
 
-const { buildDashboardRows } = require("../../../src/ui/components/DashboardBar");
-const { createDashboardBar } = require("../../../src/ui/components/DashboardBar");
+const { buildDashboardRows } = require("../../../src/ui/ink/DashboardBar");
+const { createDashboardBar } = require("../../../src/ui/ink/DashboardBar");
 
 describe("Ink DashboardBar view model", () => {
   const getAgentLabel = (id) => ({ "codex:a": "builder", "claude:b": "reviewer" }[id] || id);

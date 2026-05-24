@@ -233,7 +233,7 @@ class OnlineConnect {
 
     // Init local bus only when sync is enabled
     if (this.syncEnabled) {
-      const EventBus = require("../bus");
+      const EventBus = require("../coordination/bus");
       this.eventBus = new EventBus(this.projectRoot);
       await this.eventBus.ensureJoined();
     }
@@ -666,7 +666,7 @@ class OnlineConnect {
     }
 
     try {
-      const DecisionsManager = require("../context/decisions");
+      const DecisionsManager = require("../coordination/context/decisions");
       const manager = new DecisionsManager(this.projectRoot);
       manager.writeIndex();
     } catch {

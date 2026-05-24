@@ -1,6 +1,6 @@
 const fs = require("fs");
-const EventBus = require("../../../src/bus");
-const { getUfooPaths } = require("../../../src/ufoo/paths");
+const EventBus = require("../../../src/coordination/bus");
+const { getUfooPaths } = require("../../../src/coordination/state/paths");
 
 describe("EventBus identity behavior", () => {
   const testProjectRoot = "/tmp/ufoo-eventbus-identity-test";

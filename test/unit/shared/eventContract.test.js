@@ -2,7 +2,7 @@ const {
   IPC_REQUEST_TYPES,
   IPC_RESPONSE_TYPES,
   BUS_STATUS_PHASES,
-} = require("../../../src/shared/eventContract");
+} = require("../../../src/runtime/contracts/eventContract");
 
 describe("shared eventContract", () => {
   test("defines expected IPC request types", () => {

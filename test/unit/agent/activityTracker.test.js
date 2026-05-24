@@ -1,6 +1,6 @@
 "use strict";
 
-const { createActivityTracker } = require("../../../src/agent/activityTracker");
+const { createActivityTracker } = require("../../../src/agents/activity/activityTracker");
 
 function createFakePublisher() {
   const calls = [];

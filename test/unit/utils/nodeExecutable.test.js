@@ -1,6 +1,6 @@
 "use strict";
 
-const { resolveNodeExecutable } = require("../../../src/utils/nodeExecutable");
+const { resolveNodeExecutable } = require("../../../src/runtime/process/nodeExecutable");
 
 describe("resolveNodeExecutable", () => {
   test("uses current execPath when it still exists", () => {

@@ -2,14 +2,14 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const net = require("net");
-const { canonicalProjectRoot, buildProjectId } = require("../../../src/projects/projectId");
+const { canonicalProjectRoot, buildProjectId } = require("../../../src/runtime/projects/projectId");
 const {
   upsertProjectRuntime,
   markProjectStopped,
   listProjectRuntimes,
   getCurrentProjectRuntime,
   validateProjectRuntime,
-} = require("../../../src/projects/registry");
+} = require("../../../src/runtime/projects/registry");
 
 describe("projects registry", () => {
   let sandboxRoot = "";

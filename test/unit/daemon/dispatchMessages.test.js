@@ -1,8 +1,8 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { dispatchMessages } = require("../../../src/daemon");
-const { getUfooPaths } = require("../../../src/ufoo/paths");
+const { dispatchMessages } = require("../../../src/runtime/daemon");
+const { getUfooPaths } = require("../../../src/coordination/state/paths");
 
 function readJsonl(file) {
   return fs.readFileSync(file, "utf8")

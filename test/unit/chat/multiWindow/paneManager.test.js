@@ -1,5 +1,5 @@
 const fs = require("fs");
-const { createPaneManager } = require("../../../../src/chat/multiWindow/paneManager");
+const { createPaneManager } = require("../../../../src/app/chat/multiWindow/paneManager");
 
 describe("paneManager", () => {
   let existsSpy;

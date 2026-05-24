@@ -25,7 +25,7 @@ describe("agent registry diagnostics", () => {
     const {
       appendAgentRegistryDiagnostic,
       getRegistryLogPath,
-    } = require("../../../src/ufoo/agentRegistryDiagnostics");
+    } = require("../../../src/coordination/state/agentRegistryDiagnostics");
 
     const payload = {
       subscriber: "ufoo-agent:abc",

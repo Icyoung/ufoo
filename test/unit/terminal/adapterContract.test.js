@@ -6,7 +6,7 @@ const {
   createUnsupportedCapabilityError,
   requireCapability,
   assertTerminalAdapterContract,
-} = require('../../../src/terminal/adapterContract');
+} = require('../../../src/runtime/terminal/adapterContract');
 
 describe('terminal/adapterContract', () => {
   test('createTerminalCapabilities returns full contract with overrides', () => {

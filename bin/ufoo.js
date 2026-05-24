@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /* eslint-disable no-console */
-const { runCli } = require("../src/cli");
-const { runDaemonCli } = require("../src/daemon/run");
-const { runChat } = require("../src/chat");
-const { runInternalRunner } = require("../src/agent/internalRunner");
-const { resolveGlobalControllerProjectRoot } = require("../src/projects");
+const { runCli } = require("../src/app/cli/run");
+const { runDaemonCli } = require("../src/runtime/daemon/run");
+const { runChat } = require("../src/app/chat");
+const { runInternalRunner } = require("../src/agents/internal/internalRunner");
+const { resolveGlobalControllerProjectRoot } = require("../src/runtime/projects");
 
 const rawArgv = process.argv.slice(2);
 

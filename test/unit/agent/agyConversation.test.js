@@ -10,7 +10,7 @@ const {
   readPreviousConversationId,
   persistConversationId,
   buildAgyLaunchArgs,
-} = require("../../../src/agent/agyConversation");
+} = require("../../../src/agents/launch/agyConversation");
 
 function mkProject() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-agy-conv-"));

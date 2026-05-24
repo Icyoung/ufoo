@@ -13,7 +13,7 @@ describe("daemon CLI runner", () => {
       spawn,
       spawnSync: jest.fn(),
     }));
-    jest.doMock("../../../src/daemon/index", () => ({
+    jest.doMock("../../../src/runtime/daemon/index", () => ({
       startDaemon: jest.fn(),
       stopDaemon: jest.fn(),
       isRunning: jest.fn(() => false),
@@ -32,7 +32,7 @@ describe("daemon CLI runner", () => {
     delete process.env.UFOO_DAEMON_CHILD;
 
     try {
-      const { runDaemonCli } = require("../../../src/daemon/run");
+      const { runDaemonCli } = require("../../../src/runtime/daemon/run");
       runDaemonCli(["daemon", "start"]);
 
       expect(spawn.mock.calls[0][0]).toBe("node");

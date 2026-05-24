@@ -1,4 +1,4 @@
-const { calculatePaneLayout } = require("../../../../src/chat/multiWindow/paneLayout");
+const { calculatePaneLayout } = require("../../../../src/app/chat/multiWindow/paneLayout");
 
 describe("paneLayout", () => {
   test("0 agents returns full-width chat pane", () => {

@@ -30,7 +30,7 @@ describe("chat transport", () => {
       configurable: true,
     });
     try {
-      const { startDaemon } = require("../../../src/chat/transport");
+      const { startDaemon } = require("../../../src/app/chat/transport");
       const onError = jest.fn();
       startDaemon("/tmp/project", { onError });
       expect(spawn.mock.calls[0][0]).toBe("node");

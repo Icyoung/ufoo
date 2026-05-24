@@ -15,15 +15,15 @@ jest.mock("child_process", () => {
   return { spawn, spawnSync };
 });
 
-jest.mock("../../../src/terminal/adapters/hostAdapter", () => ({
+jest.mock("../../../src/runtime/terminal/adapters/hostAdapter", () => ({
   createSession: jest.fn(),
   closeSession: jest.fn(),
   sendToSocket: jest.fn(),
 }));
 
-const { launchAgent, getRecoverableAgents, closeAgent, __private } = require("../../../src/daemon/ops");
-const { getUfooPaths } = require("../../../src/ufoo/paths");
-const hostAdapter = require("../../../src/terminal/adapters/hostAdapter");
+const { launchAgent, getRecoverableAgents, closeAgent, __private } = require("../../../src/runtime/daemon/ops");
+const { getUfooPaths } = require("../../../src/coordination/state/paths");
+const hostAdapter = require("../../../src/runtime/terminal/adapters/hostAdapter");
 
 describe("daemon ops auto launch mode resolution", () => {
   const originalEnv = { ...process.env };

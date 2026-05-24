@@ -14,16 +14,16 @@
  *     session is found for the current tty/tmux pane, we pass
  *     `--conversation=<UUID>`. The id is captured on the previous exit by
  *     grepping the `Resume: agy --conversation=<UUID>` line agy prints to
- *     stdout right before quitting (see src/agent/launcher.js +
- *     src/agent/agyConversation.js).
+ *     stdout right before quitting (see src/agents/launch/launcher.js +
+ *     src/agents/launch/agyConversation.js).
  */
 
-const AgentLauncher = require("../src/agent/launcher");
-const { resolveDefaultManualBootstrap } = require("../src/agent/defaultBootstrap");
+const AgentLauncher = require("../src/agents/launch/launcher");
+const { resolveDefaultManualBootstrap } = require("../src/agents/prompts/defaultBootstrap");
 const {
   readPreviousConversationId,
   buildAgyLaunchArgs,
-} = require("../src/agent/agyConversation");
+} = require("../src/agents/launch/agyConversation");
 
 const cwd = process.cwd();
 

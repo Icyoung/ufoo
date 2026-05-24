@@ -1,8 +1,8 @@
 const fs = require("fs");
 const path = require("path");
 
-const { buildStatus } = require("../../daemon/status");
-const { getUfooPaths } = require("../../ufoo/paths");
+const { buildStatus } = require("../../runtime/daemon/status");
+const { getUfooPaths } = require("../../coordination/state/paths");
 
 function clipPromptText(value = "", maxChars = 240) {
   const text = String(value || "").replace(/\s+/g, " ").trim();

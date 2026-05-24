@@ -14,7 +14,7 @@ const {
   resolveCandidateCoreRoot,
   resolveNativeFallbackCommand,
   resolveUcodeLaunch,
-} = require("../../../src/agent/ucode");
+} = require("../../../src/code/launcher/ucode");
 
 describe("ucode launcher resolver", () => {
   test("default launch uses native core and injects append-system-prompt in auto mode", () => {

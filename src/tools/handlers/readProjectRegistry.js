@@ -1,4 +1,4 @@
-const { listProjectRuntimes } = require("../../projects/registry");
+const { listProjectRuntimes } = require("../../runtime/projects/registry");
 
 function readProjectRegistryHandler(_ctx = {}, args = {}) {
   const validate = args.validate !== false;

@@ -6,11 +6,11 @@ function withIsolatedAgyBin({ args = [], env = {} } = {}) {
   const launchMock = jest.fn();
   const launcherCtor = jest.fn(() => ({ launch: launchMock }));
 
-  jest.doMock("../../../src/agent/launcher", () => launcherCtor);
+  jest.doMock("../../../src/agents/launch/launcher", () => launcherCtor);
   // Stub the previous-conversation reader so the bin doesn't try to touch
   // a real .ufoo/agent/all-agents.json on disk.
-  jest.doMock("../../../src/agent/agyConversation", () => {
-    const actual = jest.requireActual("../../../src/agent/agyConversation");
+  jest.doMock("../../../src/agents/launch/agyConversation", () => {
+    const actual = jest.requireActual("../../../src/agents/launch/agyConversation");
     return {
       ...actual,
       readPreviousConversationId: jest.fn(() => ""),

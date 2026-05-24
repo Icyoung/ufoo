@@ -2,7 +2,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
-const { upsertProjectRuntime } = require("../../../src/projects/registry");
+const { upsertProjectRuntime } = require("../../../src/runtime/projects/registry");
 
 const REPO_ROOT = path.resolve(__dirname, "..", "..", "..");
 const UFOO_BIN = path.join(REPO_ROOT, "bin", "ufoo.js");

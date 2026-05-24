@@ -1,4 +1,4 @@
-const { resetCache } = require('../../../src/terminal/detect');
+const { resetCache } = require('../../../src/runtime/terminal/detect');
 
 describe('terminal/iterm2', () => {
   const originalEnv = { ...process.env };
@@ -45,7 +45,7 @@ describe('terminal/iterm2', () => {
 
   // Re-require after env setup to get fresh detection
   function loadIterm2() {
-    return require('../../../src/terminal/iterm2');
+    return require('../../../src/runtime/terminal/iterm2');
   }
 
   describe('setCwd()', () => {
@@ -161,7 +161,7 @@ describe('terminal/iterm2', () => {
       delete process.env.TERM_PROGRAM;
       delete process.env.ITERM_SESSION_ID;
       jest.resetModules();
-      const iterm2 = require('../../../src/terminal/iterm2');
+      const iterm2 = require('../../../src/runtime/terminal/iterm2');
 
       iterm2.setCwd('/test');
       iterm2.setBadge('test');
@@ -194,7 +194,7 @@ describe('terminal/iterm2', () => {
       resetCache();
       delete process.env.TERM_PROGRAM;
       jest.resetModules();
-      const iterm2 = require('../../../src/terminal/iterm2');
+      const iterm2 = require('../../../src/runtime/terminal/iterm2');
 
       iterm2.reportCwd('/Users/test');
       expect(written).toHaveLength(1);

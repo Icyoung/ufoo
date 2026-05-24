@@ -1,6 +1,6 @@
-const MemoryManager = require("../../memory");
-const { estimateTokens } = require("../../memory");
-const { searchHistory } = require("../../memory/historySearch");
+const MemoryManager = require("../../coordination/memory");
+const { estimateTokens } = require("../../coordination/memory");
+const { searchHistory } = require("../../coordination/memory/historySearch");
 const { buildToolError, extractAuditFields, requireSubscriber } = require("./common");
 
 const BANNED_TIME_PATTERNS = [

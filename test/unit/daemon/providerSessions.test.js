@@ -6,7 +6,7 @@ const {
   scheduleProviderSessionResolve,
   resolveSessionFromFile,
   loadProviderSessionCache,
-} = require("../../../src/daemon/providerSessions");
+} = require("../../../src/runtime/daemon/providerSessions");
 
 describe("resolveClaudeSessionFromFile", () => {
   let fakeHome;
@@ -235,7 +235,7 @@ describe("resolveSessionFromFileWithRetries", () => {
     // Use the private resolveSessionFromFileWithRetries via the scheduled resolver's
     // internal flow, but we can also test via the module's __private if exposed.
     // Since it's not directly exported, test through resolveSessionFromFile + timing:
-    const { resolveSessionFromFile: rsff } = require("../../../src/daemon/providerSessions");
+    const { resolveSessionFromFile: rsff } = require("../../../src/runtime/daemon/providerSessions");
     const result = rsff("claude-code", { pid: 777 });
     expect(result.sessionId).toBe("fast-sess");
   });
@@ -251,7 +251,7 @@ describe("resolveSessionFromFileWithRetries", () => {
       JSON.stringify({ agents: {} })
     );
 
-    const { scheduleProviderSessionResolve } = require("../../../src/daemon/providerSessions");
+    const { scheduleProviderSessionResolve } = require("../../../src/runtime/daemon/providerSessions");
     const onResolved = jest.fn();
     const handle = scheduleProviderSessionResolve({
       projectRoot,
@@ -285,7 +285,7 @@ describe("resolveSessionFromFileWithRetries", () => {
     const sessFile = path.join(sessDir, "77777.json");
     fs.writeFileSync(sessFile, JSON.stringify({ sessionId: "should-not-fire" }));
 
-    const { scheduleProviderSessionResolve } = require("../../../src/daemon/providerSessions");
+    const { scheduleProviderSessionResolve } = require("../../../src/runtime/daemon/providerSessions");
     const onResolved = jest.fn();
     const handle = scheduleProviderSessionResolve({
       projectRoot,

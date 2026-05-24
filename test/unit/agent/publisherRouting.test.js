@@ -7,8 +7,8 @@ const {
   parseStreamEnvelope,
   shouldAutoReplyFromPtyToPublisher,
   shouldForwardStreamToPublisher,
-} = require("../../../src/agent/publisherRouting");
-const { getUfooPaths } = require("../../../src/ufoo/paths");
+} = require("../../../src/agents/launch/publisherRouting");
+const { getUfooPaths } = require("../../../src/coordination/state/paths");
 
 function makeProject() {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-publisher-routing-"));

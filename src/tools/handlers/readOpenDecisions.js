@@ -1,4 +1,4 @@
-const DecisionsManager = require("../../context/decisions");
+const DecisionsManager = require("../../coordination/context/decisions");
 
 function readOpenDecisionsHandler(ctx = {}, args = {}) {
   const limit = Number.isFinite(Number(args.limit)) && Number(args.limit) > 0

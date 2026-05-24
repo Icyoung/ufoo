@@ -1,7 +1,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { writeActivityState } = require("../../../src/agent/activityStateWriter");
+const { writeActivityState } = require("../../../src/agents/activity/activityStateWriter");
 
 describe("activityStateWriter", () => {
   let root;

@@ -1,5 +1,5 @@
-const { createTerminalAdapterRouter } = require("../../../src/terminal/adapterRouter");
-const { TERMINAL_CAPABILITY_KEYS } = require("../../../src/terminal/adapterContract");
+const { createTerminalAdapterRouter } = require("../../../src/runtime/terminal/adapterRouter");
+const { TERMINAL_CAPABILITY_KEYS } = require("../../../src/runtime/terminal/adapterContract");
 
 describe("terminal/adapterRouter", () => {
 

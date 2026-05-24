@@ -1,4 +1,4 @@
-const { runBusCoreCommand } = require("../../../src/cli/busCoreCommands");
+const { runBusCoreCommand } = require("../../../src/app/cli/busCoreCommands");
 
 describe("busCoreCommands", () => {
   test("send joins multi-word message and defaults to immediate", async () => {

@@ -6,7 +6,7 @@ const {
   resolveClaudeOauthPaths,
   parseClaudeOauthFile,
   classifyTokenState,
-} = require("../../../src/agent/claudeOauthTokenReader");
+} = require("../../../src/agents/providers/claudeOauthTokenReader");
 
 function writeV1Token(filePath, overrides = {}) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });

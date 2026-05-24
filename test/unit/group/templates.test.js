@@ -11,7 +11,7 @@ const {
   loadTemplateRegistry,
   resolveTemplateReference,
   normalizeTemplateAlias,
-} = require("../../../src/group/templates");
+} = require("../../../src/orchestration/groups/templates");
 
 const TEST_ROOT = path.join(os.tmpdir(), "ufoo-group-templates-test");
 

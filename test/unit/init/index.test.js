@@ -1,6 +1,6 @@
 const fs = require("fs");
 const path = require("path");
-const UfooInit = require("../../../src/init");
+const UfooInit = require("../../../src/app/cli/features/init");
 
 describe("UfooInit", () => {
   const testRoot = "/tmp/ufoo-init-test";

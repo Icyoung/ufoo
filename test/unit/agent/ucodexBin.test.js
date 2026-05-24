@@ -6,7 +6,7 @@ function withIsolatedCodexBin({ args = [], env = {} } = {}) {
   const launchMock = jest.fn();
   const launcherCtor = jest.fn(() => ({ launch: launchMock }));
 
-  jest.doMock("../../../src/agent/launcher", () => launcherCtor);
+  jest.doMock("../../../src/agents/launch/launcher", () => launcherCtor);
 
   const originalEnv = { ...process.env };
   const originalArgv = process.argv.slice();

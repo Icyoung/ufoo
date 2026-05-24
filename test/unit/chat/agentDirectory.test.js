@@ -4,7 +4,7 @@ const {
   resolveAgentId,
   resolveAgentDisplayName,
   clampAgentWindowWithSelection,
-} = require("../../../src/chat/agentDirectory");
+} = require("../../../src/app/chat/agentDirectory");
 
 describe("chat agentDirectory helpers", () => {
   test("buildAgentMaps prefers meta nickname, then fallback, then id", () => {

@@ -2,7 +2,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const EventBus = require("../../../src/bus");
+const EventBus = require("../../../src/coordination/bus");
 const { dispatchMessageHandler } = require("../../../src/tools/handlers/dispatchMessage");
 const { ackBusHandler } = require("../../../src/tools/handlers/ackBus");
 

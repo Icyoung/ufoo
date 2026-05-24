@@ -32,7 +32,7 @@ const {
   resolveInternalKeyName,
   applyInternalAgentTermWrite,
   appendInternalErrorToView,
-} = require("../../../src/ui/components/ChatApp");
+} = require("../../../src/ui/ink/ChatApp");
 
 describe("createChatApp", () => {
   test("returns a render function for stub React + ink", () => {

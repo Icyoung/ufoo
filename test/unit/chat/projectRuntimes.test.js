@@ -2,7 +2,7 @@ const {
   sortProjectRuntimes,
   parseTimestampMs,
   filterVisibleProjectRuntimes,
-} = require("../../../src/projects");
+} = require("../../../src/runtime/projects");
 
 describe("chat projectRuntimes", () => {
   test("parseTimestampMs returns 0 for invalid input", () => {

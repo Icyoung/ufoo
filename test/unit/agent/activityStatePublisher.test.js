@@ -1,7 +1,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { createActivityStatePublisher } = require("../../../src/agent/activityStatePublisher");
+const { createActivityStatePublisher } = require("../../../src/agents/activity/activityStatePublisher");
 
 function makeTmpProject() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-pub-"));

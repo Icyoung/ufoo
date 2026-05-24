@@ -3,11 +3,11 @@
 const fs = require("fs");
 const path = require("path");
 const { spawn, spawnSync } = require("child_process");
-const UfooInit = require("../src/init");
-const { socketPath, isRunning } = require("../src/daemon");
-const { connectWithRetry } = require("../src/chat/transport");
-const { createDaemonTransport } = require("../src/chat/daemonTransport");
-const { createDaemonCoordinator } = require("../src/chat/daemonCoordinator");
+const UfooInit = require("../src/app/cli/features/init");
+const { socketPath, isRunning } = require("../src/runtime/daemon");
+const { connectWithRetry } = require("../src/app/chat/transport");
+const { createDaemonTransport } = require("../src/app/chat/daemonTransport");
+const { createDaemonCoordinator } = require("../src/app/chat/daemonCoordinator");
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));

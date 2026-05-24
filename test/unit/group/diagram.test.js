@@ -2,7 +2,7 @@ const {
   normalizeFormat,
   renderGroupDiagramFromTemplate,
   renderGroupDiagramFromRuntime,
-} = require("../../../src/group/diagram");
+} = require("../../../src/orchestration/groups/diagram");
 
 describe("group diagram renderer", () => {
   test("normalizeFormat supports ascii and mermaid", () => {

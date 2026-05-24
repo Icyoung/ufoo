@@ -1,7 +1,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const BusDaemon = require("../../../src/bus/daemon");
+const BusDaemon = require("../../../src/coordination/bus/daemon");
 
 function safeName(subscriber) {
   return subscriber.replace(/:/g, "_");

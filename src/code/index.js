@@ -32,6 +32,7 @@ const {
   saveSessionSnapshot,
   loadSessionSnapshot,
 } = require("./sessionStore");
+const launcher = require("./launcher");
 
 module.exports = {
   TOOL_NAMES,
@@ -67,4 +68,5 @@ module.exports = {
   getSessionFilePath,
   saveSessionSnapshot,
   loadSessionSnapshot,
+  ...launcher,
 };

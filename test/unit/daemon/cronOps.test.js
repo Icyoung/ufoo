@@ -6,7 +6,7 @@ const {
   resolveCronOnceAtMs,
   resolveCronTitle,
   parseCronAtMs,
-} = require("../../../src/daemon/cronOps");
+} = require("../../../src/runtime/daemon/cronOps");
 const os = require("os");
 const fs = require("fs");
 const path = require("path");

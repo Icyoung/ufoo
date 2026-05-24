@@ -6,7 +6,7 @@ const {
   mergeDefaultUfooProtocolPrompt,
   prepareUcodeBootstrap,
   resolveProjectRules,
-} = require("../../../src/agent/ucodeBootstrap");
+} = require("../../../src/code/launcher/ucodeBootstrap");
 
 describe("ucode bootstrap preparation", () => {
   test("resolves AGENTS.md as project rules", () => {

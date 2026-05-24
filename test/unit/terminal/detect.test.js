@@ -1,4 +1,4 @@
-const { detect, isITerm2, isAppleTerminal, resetCache, TERMINAL_TYPES } = require('../../../src/terminal/detect');
+const { detect, isITerm2, isAppleTerminal, resetCache, TERMINAL_TYPES } = require('../../../src/runtime/terminal/detect');
 
 describe('terminal/detect', () => {
   const originalEnv = { ...process.env };

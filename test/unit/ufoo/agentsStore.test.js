@@ -5,8 +5,8 @@ const {
   normalizeAgentsData,
   saveAgentsData,
   loadAgentsData,
-} = require("../../../src/ufoo/agentsStore");
-const { getRegistryLogPath } = require("../../../src/ufoo/agentRegistryDiagnostics");
+} = require("../../../src/coordination/state/agentsStore");
+const { getRegistryLogPath } = require("../../../src/coordination/state/agentRegistryDiagnostics");
 
 describe("agentsStore normalizeAgentsData", () => {
   test("heals double-prefixed subscriber id and leaked nickname object", () => {

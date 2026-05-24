@@ -11,10 +11,10 @@
  */
 
 const fs = require("fs");
-const AgentLauncher = require("../src/agent/launcher");
-const { resolveUcodeLaunch } = require("../src/agent/ucode");
-const { prepareUcodeBootstrap } = require("../src/agent/ucodeBootstrap");
-const { prepareUcodeRuntimeConfig } = require("../src/agent/ucodeRuntimeConfig");
+const AgentLauncher = require("../src/agents/launch/launcher");
+const { resolveUcodeLaunch } = require("../src/code/launcher/ucode");
+const { prepareUcodeBootstrap } = require("../src/code/launcher/ucodeBootstrap");
+const { prepareUcodeRuntimeConfig } = require("../src/code/launcher/ucodeRuntimeConfig");
 
 function stripAppendSystemPromptArgs(args = [], targetFile = "") {
   const normalizedTarget = String(targetFile || "").trim();

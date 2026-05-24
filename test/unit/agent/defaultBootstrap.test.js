@@ -9,7 +9,7 @@ const {
   buildDefaultStartupBootstrapPrompt,
   prepareDefaultBootstrapFile,
   resolveDefaultManualBootstrap,
-} = require("../../../src/agent/defaultBootstrap");
+} = require("../../../src/agents/prompts/defaultBootstrap");
 
 describe("default bootstrap", () => {
   test("detects help and version meta args", () => {

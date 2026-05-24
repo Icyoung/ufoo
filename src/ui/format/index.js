@@ -2,7 +2,7 @@
 
 /**
  * Pure formatting + input-math helpers for the ink-based TUIs under
- * src/ui/components/. No terminal widget import is allowed in this module.
+ * src/ui/ink/. No terminal widget import is allowed in this module.
  */
 
 const chalk = require("chalk");
@@ -232,7 +232,7 @@ function loadActiveAgents(workspaceRoot) {
 }
 
 function renderLogLinesWithMarkdown(text = "", state = {}, escapeFn = (value) => String(value || "")) {
-  const { renderMarkdownLines } = require("../../shared/markdownRenderer");
+  const { renderMarkdownLines } = require("./markdownRenderer");
   return renderMarkdownLines(text, state, escapeFn);
 }
 
@@ -309,7 +309,7 @@ function moveCursorToVisualLineBoundary({
   boundary = "start",
   strWidth,
 } = {}) {
-  const inputMath = require("../../chat/inputMath");
+  const inputMath = require("../../app/chat/inputMath");
   const text = String(inputValue || "");
   const normalizedWidth = Number.isFinite(width) ? Math.max(1, Math.floor(width)) : 1;
   const pos = clampCursorPos(cursorPos, text);
@@ -328,7 +328,7 @@ function moveCursorVertically({
   preferredCol = null,
   strWidth,
 } = {}) {
-  const inputMath = require("../../chat/inputMath");
+  const inputMath = require("../../app/chat/inputMath");
   const text = String(inputValue || "");
   const normalizedWidth = Number.isFinite(width) ? Math.max(1, Math.floor(width)) : 1;
   const pos = clampCursorPos(cursorPos, text);

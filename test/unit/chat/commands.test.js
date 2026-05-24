@@ -5,7 +5,7 @@ const {
   parseCommand,
   shouldEchoCommandInChat,
   parseAtTarget,
-} = require("../../../src/chat/commands");
+} = require("../../../src/app/chat/commands");
 
 describe("chat command helpers", () => {
   test("COMMAND_REGISTRY keeps priority order for launch/bus/ctx", () => {

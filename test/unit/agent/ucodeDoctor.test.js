@@ -5,7 +5,7 @@ const {
   inspectUcodeSetup,
   formatUcodeDoctor,
   prepareAndInspectUcode,
-} = require("../../../src/agent/ucodeDoctor");
+} = require("../../../src/code/launcher/ucodeDoctor");
 
 describe("ucode doctor", () => {
   test("inspect reports native core ready only when executable is available", () => {

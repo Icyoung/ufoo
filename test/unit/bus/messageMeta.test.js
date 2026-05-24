@@ -5,7 +5,7 @@ const {
   getTagsFromEvent,
   getTaskIdFromEvent,
   getReportToFromEvent,
-} = require("../../../src/bus/messageMeta");
+} = require("../../../src/coordination/bus/messageMeta");
 
 describe("bus/messageMeta tags schema", () => {
   test("plain message has no tag fields", () => {

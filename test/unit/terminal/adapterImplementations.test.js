@@ -1,6 +1,6 @@
-const { createTerminalAdapter } = require("../../../src/terminal/adapters/terminalAdapter");
-const { createTmuxAdapter } = require("../../../src/terminal/adapters/tmuxAdapter");
-const { createInternalQueueAdapter } = require("../../../src/terminal/adapters/internalQueueAdapter");
+const { createTerminalAdapter } = require("../../../src/runtime/terminal/adapters/terminalAdapter");
+const { createTmuxAdapter } = require("../../../src/runtime/terminal/adapters/tmuxAdapter");
+const { createInternalQueueAdapter } = require("../../../src/runtime/terminal/adapters/internalQueueAdapter");
 
 function createAdapter({ capabilities, handlers = {} }) {
   return {

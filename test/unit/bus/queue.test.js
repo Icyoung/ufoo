@@ -1,4 +1,4 @@
-const QueueManager = require('../../../src/bus/queue');
+const QueueManager = require('../../../src/coordination/bus/queue');
 const fs = require('fs');
 const path = require('path');
 

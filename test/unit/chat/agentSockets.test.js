@@ -1,8 +1,8 @@
 const EventEmitter = require("events");
 const fs = require("fs");
 const net = require("net");
-const { PTY_SOCKET_MESSAGE_TYPES, PTY_SOCKET_SUBSCRIBE_MODES } = require("../../../src/shared/ptySocketContract");
-const { createAgentSockets } = require("../../../src/chat/agentSockets");
+const { PTY_SOCKET_MESSAGE_TYPES, PTY_SOCKET_SUBSCRIBE_MODES } = require("../../../src/runtime/contracts/ptySocketContract");
+const { createAgentSockets } = require("../../../src/app/chat/agentSockets");
 
 function createFakeSocket() {
   const socket = new EventEmitter();

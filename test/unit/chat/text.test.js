@@ -6,7 +6,7 @@ const {
   stripAnsi,
   truncateAnsi,
   truncateText,
-} = require("../../../src/chat/text");
+} = require("../../../src/app/chat/text");
 
 describe("chat text helpers", () => {
   test("neutralizeBlessedCommaTags avoids comma/semicolon blessed tags", () => {

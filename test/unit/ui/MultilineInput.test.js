@@ -1,6 +1,6 @@
 "use strict";
 
-const { layoutRows, createMultilineInput } = require("../../../src/ui/components/MultilineInput");
+const { layoutRows, createMultilineInput } = require("../../../src/ui/ink/MultilineInput");
 
 describe("layoutRows", () => {
   test("empty value renders one row with cursor at offset 0", () => {

@@ -4,7 +4,7 @@
  * 测试真实的PTY进程启动和IO处理
  */
 
-const PtyWrapper = require("../../src/agent/ptyWrapper");
+const PtyWrapper = require("../../src/agents/launch/ptyWrapper");
 const path = require("path");
 const fs = require("fs");
 

@@ -1,8 +1,8 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { loadInternalAgentLogHistory } = require("../../../src/chat/internalAgentLogHistory");
-const { getUfooPaths } = require("../../../src/ufoo/paths");
+const { loadInternalAgentLogHistory } = require("../../../src/app/chat/internalAgentLogHistory");
+const { getUfooPaths } = require("../../../src/coordination/state/paths");
 
 function writeJsonl(filePath, events) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });

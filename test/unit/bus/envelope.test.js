@@ -11,7 +11,7 @@ const {
   sortTagsForRender,
   ACTION_TAGS,
   TASK_ID_MAX_LENGTH,
-} = require("../../../src/bus/envelope");
+} = require("../../../src/coordination/bus/envelope");
 
 describe("bus/envelope", () => {
   describe("normalizeTagList", () => {

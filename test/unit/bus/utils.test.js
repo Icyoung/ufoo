@@ -16,7 +16,7 @@ const {
   sleep,
   isMetaActive,
   normalizeAgentTypeAlias,
-} = require('../../../src/bus/utils');
+} = require('../../../src/coordination/bus/utils');
 const fs = require('fs');
 const path = require('path');
 

@@ -1,4 +1,4 @@
-const NicknameManager = require('../../../src/bus/nickname');
+const NicknameManager = require('../../../src/coordination/bus/nickname');
 
 describe('NicknameManager', () => {
   let busData;

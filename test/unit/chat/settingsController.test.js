@@ -1,4 +1,4 @@
-const { createSettingsController } = require("../../../src/chat/settingsController");
+const { createSettingsController } = require("../../../src/app/chat/settingsController");
 
 function createHarness(overrides = {}) {
   const state = {

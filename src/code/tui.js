@@ -35,7 +35,7 @@ const {
 } = fmt;
 
 function runUcodeTui(props = {}) {
-  const { runUcodeInkTui } = require("../ui/components/UcodeApp");
+  const { runUcodeInkTui } = require("../ui/ink/UcodeApp");
   return runUcodeInkTui(props);
 }
 

@@ -1,4 +1,4 @@
-const { keyToRaw } = require("../../../src/chat/rawKeyMap");
+const { keyToRaw } = require("../../../src/app/chat/rawKeyMap");
 
 describe("chat rawKeyMap", () => {
   test("returns single character input directly", () => {

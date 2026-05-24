@@ -5,8 +5,8 @@
  * Usage: uclaude [claude args...]
  */
 
-const AgentLauncher = require("../src/agent/launcher");
-const { resolveDefaultManualBootstrap } = require("../src/agent/defaultBootstrap");
+const AgentLauncher = require("../src/agents/launch/launcher");
+const { resolveDefaultManualBootstrap } = require("../src/agents/prompts/defaultBootstrap");
 
 const launcher = new AgentLauncher("claude-code", "claude");
 const resolved = resolveDefaultManualBootstrap({

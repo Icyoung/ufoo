@@ -11,7 +11,7 @@ const {
   normalizeMessageInput,
   normalizeToolDefinition,
   withCacheControlOnLastBlock,
-} = require("../../../src/agent/claudeThreadProvider");
+} = require("../../../src/agents/providers/claudeThreadProvider");
 
 describe("agent claudeThreadProvider", () => {
   function makeMessages(messages) {

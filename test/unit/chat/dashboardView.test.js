@@ -1,7 +1,7 @@
 const {
   computeDashboardContent,
   providerLabel,
-} = require("../../../src/chat/dashboardView");
+} = require("../../../src/app/chat/dashboardView");
 
 describe("chat dashboardView", () => {
   const dashHints = {

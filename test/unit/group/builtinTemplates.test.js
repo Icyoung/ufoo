@@ -1,6 +1,6 @@
 const path = require("path");
-const { loadTemplateRegistry } = require("../../../src/group/templates");
-const { validateTemplateEntry } = require("../../../src/group/templateValidation");
+const { loadTemplateRegistry } = require("../../../src/orchestration/groups/templates");
+const { validateTemplateEntry } = require("../../../src/orchestration/groups/templateValidation");
 
 describe("builtin group templates", () => {
   test("repo builtin templates validate with the prompt profile registry", () => {

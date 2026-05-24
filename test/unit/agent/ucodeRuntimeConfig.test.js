@@ -4,7 +4,7 @@ const path = require("path");
 const {
   inspectUcodeRuntimeConfig,
   prepareUcodeRuntimeConfig,
-} = require("../../../src/agent/ucodeRuntimeConfig");
+} = require("../../../src/code/launcher/ucodeRuntimeConfig");
 
 describe("ucode runtime config", () => {
   test("inspect resolves runtime paths and configured values", () => {

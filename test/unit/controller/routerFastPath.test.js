@@ -6,7 +6,7 @@ const {
   resolveExecutionPath,
   resolveGateRouterConfig,
   shouldUseGateRouter,
-} = require("../../../src/controller/routerFastPath");
+} = require("../../../src/orchestration/controller/routerFastPath");
 
 describe("controller gateRouter", () => {
   test("classifies pure routing prompts", () => {

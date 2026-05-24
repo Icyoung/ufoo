@@ -1,5 +1,5 @@
 const os = require("os");
-const { createCommandExecutor } = require("../../../src/chat/commandExecutor");
+const { createCommandExecutor } = require("../../../src/app/chat/commandExecutor");
 
 function createHarness(overrides = {}) {
   const logs = [];
@@ -1308,7 +1308,7 @@ describe("chat commandExecutor", () => {
   });
 
   test("collectHostLaunchRequestContext collects env vars", () => {
-    const { collectHostLaunchRequestContext } = require("../../../src/chat/commandExecutor");
+    const { collectHostLaunchRequestContext } = require("../../../src/app/chat/commandExecutor");
     const ctx = collectHostLaunchRequestContext({
       UFOO_HOST_INJECT_SOCK: "/tmp/inject.sock",
       UFOO_HOST_DAEMON_SOCK: "/tmp/daemon.sock",
@@ -1322,13 +1322,13 @@ describe("chat commandExecutor", () => {
   });
 
   test("collectHostLaunchRequestContext returns empty for missing vars", () => {
-    const { collectHostLaunchRequestContext } = require("../../../src/chat/commandExecutor");
+    const { collectHostLaunchRequestContext } = require("../../../src/app/chat/commandExecutor");
     const ctx = collectHostLaunchRequestContext({});
     expect(Object.keys(ctx)).toHaveLength(0);
   });
 
   test("collectHostLaunchRequestContext uses HORIZON fallbacks", () => {
-    const { collectHostLaunchRequestContext } = require("../../../src/chat/commandExecutor");
+    const { collectHostLaunchRequestContext } = require("../../../src/app/chat/commandExecutor");
     const ctx = collectHostLaunchRequestContext({
       HORIZON_INJECT_SOCK: "/tmp/h-inject.sock",
       HORIZON_SESSION_ID: "h-sess",

@@ -2,9 +2,9 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const EventBus = require("../../../src/bus");
-const DecisionsManager = require("../../../src/context/decisions");
-const { upsertProjectRuntime } = require("../../../src/projects/registry");
+const EventBus = require("../../../src/coordination/bus");
+const DecisionsManager = require("../../../src/coordination/context/decisions");
+const { upsertProjectRuntime } = require("../../../src/runtime/projects/registry");
 const { readBusSummaryHandler } = require("../../../src/tools/handlers/readBusSummary");
 const { readPromptHistoryHandler } = require("../../../src/tools/handlers/readPromptHistory");
 const { readOpenDecisionsHandler } = require("../../../src/tools/handlers/readOpenDecisions");

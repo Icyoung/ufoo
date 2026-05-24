@@ -2,7 +2,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const ContextDoctor = require("../../../src/context/doctor");
+const ContextDoctor = require("../../../src/coordination/context/doctor");
 
 describe("ContextDoctor", () => {
   let projectRoot;

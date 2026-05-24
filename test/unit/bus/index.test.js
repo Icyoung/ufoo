@@ -3,8 +3,8 @@ const os = require("os");
 const path = require("path");
 
 // Mock utils to avoid real TTY/PID checks
-jest.mock("../../../src/bus/utils", () => {
-  const actual = jest.requireActual("../../../src/bus/utils");
+jest.mock("../../../src/coordination/bus/utils", () => {
+  const actual = jest.requireActual("../../../src/coordination/bus/utils");
   return {
     ...actual,
     getCurrentTty: jest.fn(() => ""),
@@ -20,7 +20,7 @@ jest.mock("../../../src/bus/utils", () => {
   };
 });
 
-const EventBus = require("../../../src/bus/index");
+const EventBus = require("../../../src/coordination/bus/index");
 
 describe("EventBus", () => {
   let projectRoot;

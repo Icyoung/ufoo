@@ -1,8 +1,8 @@
-const MessageManager = require('../../../src/bus/message');
+const MessageManager = require('../../../src/coordination/bus/message');
 const fs = require('fs');
 const path = require('path');
-const { appendJSONL } = require('../../../src/bus/utils');
-const { getUfooPaths } = require('../../../src/ufoo/paths');
+const { appendJSONL } = require('../../../src/coordination/bus/utils');
+const { getUfooPaths } = require('../../../src/coordination/state/paths');
 
 describe('MessageManager', () => {
   const testBusDir = '/tmp/ufoo-message-test';

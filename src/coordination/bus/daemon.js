@@ -1,0 +1,535 @@
+const fs = require("fs");
+const path = require("path");
+const { readJSON, writeJSON, isPidAlive, isAgentPidAlive, isMetaActive, ensureDir, safeNameToSubscriber, subscriberToSafeName } = require("./utils");
+const Injector = require("./inject");
+const QueueManager = require("./queue");
+const MessageManager = require("./message");
+const { createTerminalAdapterRouter } = require("../../runtime/terminal/adapterRouter");
+const {
+  INJECTION_MODES,
+  getInjectionModeFromEvent,
+} = require("./messageMeta");
+const {
+  buildPromptInjectionText,
+  shouldRenderPromptEnvelope,
+} = require("./promptEnvelope");
+
+function isBusyActivityState(value = "") {
+  const state = String(value || "").trim().toLowerCase();
+  return state === "working"
+    || state === "running"
+    || state === "waiting_input"
+    || state === "blocked";
+}
+
+/**
+ * Bus Daemon - 监控消息并自动注入命令
+ */
+class BusDaemon {
+  constructor(busDir, agentsFile, daemonDir, interval = 2000, projectRoot = "") {
+    this.busDir = busDir;
+    this.agentsFile = agentsFile;
+    this.interval = interval;
+    this.daemonDir = daemonDir;
+    this.projectRoot = projectRoot || path.resolve(busDir, "..", "..");
+    this.pidFile = path.join(this.daemonDir, "daemon.pid");
+    this.logFile = path.join(this.daemonDir, "daemon.log");
+    this.countsDir = path.join(this.daemonDir, "counts", `${process.pid}`);
+    this.running = false;
+    this.cleanupCounter = 0;
+    this.cleanupInterval = 5; // 每 5 个周期清理一次
+    this.timelineSyncCounter = 0;
+    // 每 15 个周期同步一次 manual inputs (~15 × interval, default ~30s)
+    this.timelineSyncInterval = 15;
+
+    this.queueManager = new QueueManager(busDir);
+    this.injector = new Injector(busDir, agentsFile);
+    this.adapterRouter = createTerminalAdapterRouter();
+    this.workingHoldMs = Number.parseInt(process.env.UFOO_ACTIVITY_WORKING_HOLD_MS || "", 10) || 5000;
+    this.lastWorkingAt = new Map();
+  }
+
+  setLegacyActivityState(subscriber, state) {
+    const busData = readJSON(this.agentsFile) || { agents: {} };
+    if (!busData.agents || !busData.agents[subscriber]) return;
+    busData.agents[subscriber].activity_state = state;
+    busData.agents[subscriber].activity_since = new Date().toISOString();
+    writeJSON(this.agentsFile, busData);
+  }
+
+  refreshLegacyActivityState(subscriber, meta, hasPending) {
+    const now = Date.now();
+    const current = String(meta?.activity_state || "").trim().toLowerCase();
+    const lastWorkingAt = this.lastWorkingAt.get(subscriber) || 0;
+    const holdActive = lastWorkingAt > 0 && (now - lastWorkingAt) < this.workingHoldMs;
+    const daemonManagedWorking = lastWorkingAt > 0;
+
+    if (holdActive) {
+      if (current !== "working") {
+        this.setLegacyActivityState(subscriber, "working");
+      }
+      return "working";
+    }
+
+    if (lastWorkingAt > 0) {
+      this.lastWorkingAt.delete(subscriber);
+    }
+
+    if (current === "starting") {
+      const next = hasPending ? "ready" : "idle";
+      this.setLegacyActivityState(subscriber, next);
+      return next;
+    }
+
+    if (current === "working" && daemonManagedWorking) {
+      const next = hasPending ? "ready" : "idle";
+      this.setLegacyActivityState(subscriber, next);
+      return next;
+    }
+
+    return current;
+  }
+
+  /**
+   * 检查 daemon 是否正在运行
+   */
+  isRunning() {
+    if (!fs.existsSync(this.pidFile)) {
+      return false;
+    }
+
+    const pid = parseInt(fs.readFileSync(this.pidFile, "utf8").trim(), 10);
+    return isPidAlive(pid);
+  }
+
+  /**
+   * 获取运行中的 daemon PID
+   */
+  getRunningPid() {
+    if (!fs.existsSync(this.pidFile)) {
+      return null;
+    }
+
+    const pid = parseInt(fs.readFileSync(this.pidFile, "utf8").trim(), 10);
+    return isPidAlive(pid) ? pid : null;
+  }
+
+  /**
+   * 启动 daemon
+   */
+  async start(background = false) {
+    // 检查是否已经在运行
+    if (this.isRunning()) {
+      const pid = this.getRunningPid();
+      console.log(`[daemon] Already running (pid=${pid})`);
+      return;
+    }
+    ensureDir(this.daemonDir);
+    ensureDir(path.join(this.daemonDir, "counts"));
+
+    if (background) {
+      // 后台模式：spawn 独立进程
+      const { spawn } = require("child_process");
+      const logStream = fs.openSync(this.logFile, "a");
+
+      const child = spawn(
+        process.execPath,
+        [
+          path.join(__dirname, "..", "..", "..", "bin", "ufoo.js"),
+          "bus",
+          "daemon",
+          "--interval",
+          String(this.interval / 1000),
+        ],
+        {
+          detached: true,
+          stdio: ["ignore", logStream, logStream],
+          cwd: process.cwd(),
+        }
+      );
+
+      child.unref();
+
+      // 等待 PID 文件创建
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      const pid = this.getRunningPid();
+      console.log(`[daemon] Started in background (pid=${pid}, log: ${this.logFile})`);
+    } else {
+      // 前台模式
+      this.run();
+    }
+  }
+
+  /**
+   * 停止 daemon
+   */
+  stop() {
+    const pid = this.getRunningPid();
+    if (!pid) {
+      console.log("[daemon] Not running");
+      return;
+    }
+
+    try {
+      process.kill(pid, "SIGTERM");
+      console.log(`[daemon] Stopped (pid=${pid})`);
+      if (fs.existsSync(this.pidFile)) {
+        fs.unlinkSync(this.pidFile);
+      }
+    } catch (err) {
+      console.error(`[daemon] Failed to stop: ${err.message}`);
+    }
+  }
+
+  /**
+   * 显示 daemon 状态
+   */
+  status() {
+    const pid = this.getRunningPid();
+    if (pid) {
+      console.log(`[daemon] Running (pid=${pid})`);
+    } else {
+      console.log("[daemon] Not running");
+      // 清理过时的 PID 文件
+      if (fs.existsSync(this.pidFile)) {
+        fs.unlinkSync(this.pidFile);
+      }
+    }
+  }
+
+  /**
+   * 运行 daemon（前台）
+   */
+  run() {
+    // 记录 PID
+    ensureDir(path.dirname(this.pidFile));
+    fs.writeFileSync(this.pidFile, `${process.pid}\n`, "utf8");
+
+    // 设置清理钩子
+    const cleanup = () => {
+      this.running = false;
+      if (fs.existsSync(this.pidFile)) {
+        fs.unlinkSync(this.pidFile);
+      }
+      if (fs.existsSync(this.countsDir)) {
+        fs.rmSync(this.countsDir, { recursive: true, force: true });
+      }
+    };
+
+    process.on("SIGTERM", cleanup);
+    process.on("SIGINT", cleanup);
+    process.on("exit", cleanup);
+
+    // 创建计数目录
+    ensureDir(this.countsDir);
+
+    console.log(`[daemon] Started (pid=${process.pid}, interval=${this.interval / 1000}s)`);
+    console.log(`[daemon] Watching: ${this.busDir}/queues/*/pending.jsonl`);
+
+    this.running = true;
+    this.watchLoop();
+  }
+
+  /**
+   * 主监控循环
+   */
+  async watchLoop() {
+    while (this.running) {
+      try {
+        // 定期清理死掉的 agent
+        this.cleanupCounter++;
+        if (this.cleanupCounter >= this.cleanupInterval) {
+          await this.cleanupDeadAgents();
+          this.cleanupCounter = 0;
+        }
+
+        // 定期同步 timeline（manual inputs from session files, ~15 × interval）
+        this.timelineSyncCounter++;
+        if (this.timelineSyncCounter >= this.timelineSyncInterval) {
+          this.syncTimeline();
+          this.timelineSyncCounter = 0;
+        }
+
+        // 检查所有订阅者的队列
+        await this.checkQueues();
+      } catch (err) {
+        console.error(`[daemon] Error: ${err.message}`);
+      }
+
+      // 等待下一个周期
+      await new Promise((resolve) => setTimeout(resolve, this.interval));
+    }
+  }
+
+  /**
+   * 增量同步 timeline — 捕获 manual inputs（bus 消息已在 send() 时实时追加）
+   */
+  syncTimeline() {
+    try {
+      const { buildTimeline } = require("../history/inputTimeline");
+      buildTimeline(this.projectRoot);
+    } catch (err) {
+      if (process.env.UFOO_HISTORY_DEBUG === "1") {
+        console.error("[daemon][history] syncTimeline failed:", err.message);
+      }
+    }
+  }
+
+  /**
+   * 检查所有队列
+   */
+  async checkQueues() {
+    const queuesDir = path.join(this.busDir, "queues");
+    if (!fs.existsSync(queuesDir)) {
+      return;
+    }
+
+    const busData = readJSON(this.agentsFile) || { agents: {} };
+    const messageManager = new MessageManager(this.busDir, busData, this.queueManager);
+    const subscribers = fs.readdirSync(queuesDir);
+
+    for (const safeName of subscribers) {
+      const pendingFile = path.join(queuesDir, safeName, "pending.jsonl");
+      if (!fs.existsSync(pendingFile)) {
+        continue;
+      }
+
+      const subscriber = safeNameToSubscriber(safeName);
+      const meta = busData.agents?.[subscriber];
+      const launchMode = meta?.launch_mode || "";
+      // Delivery ownership:
+      // - notifier/injector: terminal/tmux
+      // - internal queue loop: internal
+      // Bus daemon only handles legacy/unknown launch modes.
+      const adapter = this.adapterRouter.getAdapter({ launchMode, agentId: subscriber, meta });
+      const { supportsNotifierInjector, supportsInternalQueueLoop } = adapter.capabilities;
+      if (launchMode && (supportsNotifierInjector || supportsInternalQueueLoop)) {
+        continue;
+      }
+
+      // 获取当前消息数
+      let count = 0;
+      if (fs.statSync(pendingFile).size > 0) {
+        const content = fs.readFileSync(pendingFile, "utf8").trim();
+        count = content ? content.split("\n").length : 0;
+      }
+
+      // 获取上次的消息数
+      const lastCount = this.getLastCount(safeName);
+
+      // 如果有新消息，注入命令
+      const wakePath = path.join(queuesDir, safeName, "wake");
+      const wakeActive = fs.existsSync(wakePath);
+
+      if (count > 0 || wakeActive) {
+        const now = new Date().toISOString().split("T")[1].slice(0, 8);
+        const note = wakeActive && count <= lastCount ? " (wake)" : "";
+        console.log(`[daemon] ${now} New message for ${subscriber} (${lastCount} -> ${count})${note}`);
+
+        try {
+          const agentType = String((meta && meta.agent_type) || "").trim().toLowerCase();
+          const isUfooCode = subscriber.startsWith("ufoo-code:")
+            || agentType === "ufoo-code"
+            || agentType === "ucode"
+            || agentType === "ufoo";
+          if (isUfooCode) {
+            // ufoo-code queue is consumed internally by ucode itself.
+            // Bus daemon should not inject any command/text into terminal.
+            if (wakeActive) fs.rmSync(wakePath, { force: true });
+            this.setLastCount(safeName, count);
+            continue;
+          }
+
+          let currentActivityState = this.refreshLegacyActivityState(subscriber, meta, count > 0);
+          const events = this.drainPending(pendingFile);
+          const failed = [];
+          let deliveredCount = 0;
+          for (const evt of events) {
+            if (!evt || evt.event !== "message" || !evt.data || typeof evt.data.message !== "string") {
+              continue;
+            }
+            const injectionMode = getInjectionModeFromEvent(evt, INJECTION_MODES.IMMEDIATE);
+            if (injectionMode === INJECTION_MODES.QUEUED && isBusyActivityState(currentActivityState)) {
+              failed.push(evt);
+              continue;
+            }
+            try {
+              const injectionText = buildPromptInjectionText(evt, subscriber, busData.agents || {});
+              // eslint-disable-next-line no-await-in-loop
+              await this.injector.inject(subscriber, injectionText);
+              deliveredCount += 1;
+              currentActivityState = "working";
+              this.lastWorkingAt.set(subscriber, Date.now());
+              this.setLegacyActivityState(subscriber, "working");
+            } catch (err) {
+              failed.push(evt);
+              try {
+                const pub = typeof evt.publisher === "object" && evt.publisher
+                  ? (evt.publisher.subscriber || evt.publisher.nickname || "")
+                  : (evt.publisher || "");
+                if (pub) {
+                  // eslint-disable-next-line no-await-in-loop
+                  await messageManager.emit(pub, "delivery", {
+                    target: subscriber,
+                    seq: evt.seq,
+                    status: "error",
+                    message: `delivery failed to ${meta?.nickname || subscriber}: ${err.message || "inject failed"}`,
+                  }, subscriber, "status/delivery");
+                }
+              } catch {
+                // ignore delivery emit errors
+              }
+              continue;
+            }
+            try {
+              // Emit delivery status back to publisher (best-effort)
+              const pub = typeof evt.publisher === "object" && evt.publisher
+                ? (evt.publisher.subscriber || evt.publisher.nickname || "")
+                : (evt.publisher || "");
+              if (pub) {
+                // eslint-disable-next-line no-await-in-loop
+                await messageManager.emit(pub, "delivery", {
+                  target: subscriber,
+                  seq: evt.seq,
+                  status: "ok",
+                  message: `delivered to ${meta?.nickname || subscriber}`,
+                }, subscriber, "status/delivery");
+              }
+            } catch {
+              // ignore delivery emit errors
+            }
+          }
+          if (failed.length > 0) {
+            try {
+              const content = failed.map((e) => JSON.stringify(e)).join("\n") + "\n";
+              fs.appendFileSync(pendingFile, content, "utf8");
+            } catch {
+              // ignore requeue failures
+            }
+          }
+          console.log(`[daemon] Delivered ${deliveredCount} message(s) to ${subscriber}`);
+          if (wakeActive) fs.rmSync(wakePath, { force: true });
+        } catch (err) {
+          console.error(`[daemon] Failed to inject: ${err.message}`);
+        }
+      }
+
+      // 更新计数
+      this.setLastCount(safeName, count);
+    }
+  }
+
+  drainPending(pendingFile) {
+    if (!fs.existsSync(pendingFile)) return [];
+    const processingFile = `${pendingFile}.processing.${process.pid}.${Date.now()}`;
+    let content = "";
+    let readOk = false;
+    try {
+      fs.renameSync(pendingFile, processingFile);
+      content = fs.readFileSync(processingFile, "utf8");
+      readOk = true;
+    } catch {
+      try {
+        if (fs.existsSync(processingFile)) {
+          fs.renameSync(processingFile, pendingFile);
+        }
+      } catch {
+        // ignore rollback errors
+      }
+      return [];
+    } finally {
+      if (readOk) {
+        try {
+          if (fs.existsSync(processingFile)) {
+            fs.rmSync(processingFile, { force: true });
+          }
+        } catch {
+          // ignore cleanup errors
+        }
+      }
+    }
+    if (!content.trim()) return [];
+    return content.split(/\r?\n/).filter(Boolean).map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    }).filter(Boolean);
+  }
+
+  /**
+   * 获取上次的消息计数
+   */
+  getLastCount(safeName) {
+    const countFile = path.join(this.countsDir, safeName);
+    if (!fs.existsSync(countFile)) {
+      return 0;
+    }
+    const content = fs.readFileSync(countFile, "utf8").trim();
+    return parseInt(content, 10) || 0;
+  }
+
+  /**
+   * 设置消息计数
+   */
+  setLastCount(safeName, count) {
+    const countFile = path.join(this.countsDir, safeName);
+    ensureDir(path.dirname(countFile));
+    fs.writeFileSync(countFile, `${count}\n`, "utf8");
+  }
+
+  /**
+   * 清理死掉的 agent
+   */
+  async cleanupDeadAgents() {
+    const agentsFile = this.agentsFile;
+    if (!fs.existsSync(agentsFile)) {
+      return;
+    }
+
+    const busData = readJSON(agentsFile);
+    if (!busData || !busData.agents) {
+      return;
+    }
+
+    let changed = false;
+
+    for (const [subscriber, meta] of Object.entries(busData.agents)) {
+      if (meta.status !== "active") {
+        continue;
+      }
+
+      // 检查 agent 是否仍然存活（PID + TTY 交叉检查）
+      if (!isMetaActive(meta)) {
+        const now = new Date().toISOString().split("T")[1].slice(0, 8);
+        console.log(`[daemon] ${now} Agent ${subscriber} (pid=${meta.pid || 0}) is dead, marking inactive`);
+
+        meta.status = "inactive";
+        meta.activity_state = "";
+        changed = true;
+
+        // 清理队列目录和 offset
+        const safeName = subscriberToSafeName(subscriber);
+        const queueDir = path.join(this.busDir, "queues", safeName);
+        const offsetFile = path.join(this.busDir, "offsets", `${safeName}.offset`);
+
+        if (fs.existsSync(queueDir)) {
+          fs.rmSync(queueDir, { recursive: true, force: true });
+        }
+        if (fs.existsSync(offsetFile)) {
+          fs.unlinkSync(offsetFile);
+        }
+      }
+    }
+
+    if (changed) {
+      writeJSON(agentsFile, busData);
+    }
+  }
+}
+
+module.exports = BusDaemon;
+module.exports.buildPromptInjectionText = buildPromptInjectionText;
+module.exports.shouldRenderPromptEnvelope = shouldRenderPromptEnvelope;

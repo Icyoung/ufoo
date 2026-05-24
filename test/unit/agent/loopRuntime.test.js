@@ -3,8 +3,8 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { runPromptWithControllerLoop } = require("../../../src/agent/loopRuntime");
-const { getLoopObservabilityPaths } = require("../../../src/agent/loopObservability");
+const { runPromptWithControllerLoop } = require("../../../src/agents/controller/loopRuntime");
+const { getLoopObservabilityPaths } = require("../../../src/agents/controller/loopObservability");
 
 describe("agent loopRuntime", () => {
   let projectRoot;

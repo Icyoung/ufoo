@@ -1,4 +1,4 @@
-const { ACTIVITY_STATES, ActivityDetector } = require("../../../src/agent/activityDetector");
+const { ACTIVITY_STATES, ActivityDetector } = require("../../../src/agents/activity/activityDetector");
 
 function createDetector(agentType = "claude-code", options = {}) {
   return new ActivityDetector(agentType, {

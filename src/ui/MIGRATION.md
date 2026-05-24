@@ -19,7 +19,7 @@ layout, hooks, and proper isolation of pure logic from rendering.
 - Ink is the renderer for both chat and ucode.
 - Pure helpers live in `src/ui/format/`, so behaviour parity is enforced by
   test rather than copy/paste.
-- Components live in `src/ui/components/`, written in plain JS via
+- Components live in `src/ui/ink/`, written in plain JS via
   `React.createElement` (no JSX, no build step) so jest stays vanilla.
 - ink is loaded through `src/ui/runInk.js`, a thin CJS→ESM bridge so the
   rest of the codebase stays CommonJS.
@@ -133,12 +133,12 @@ folded into P3.6.
 
 ## P3 audit (chat TUI surface)
 
-Source: the current Ink host in `src/ui/components/ChatApp.js`, with
-shared daemon and command helpers under `src/chat/`. Highlights:
+Source: the current Ink host in `src/ui/ink/ChatApp.js`, with
+shared daemon and command helpers under `src/app/chat/`. Highlights:
 
 ### Lifecycle
 - Public entrypoint `runChat(projectRoot, { globalMode })` from
-  `src/chat/index.js`; it delegates directly to the Ink ChatApp.
+  `src/app/chat/index.js`; it delegates directly to the Ink ChatApp.
 - Runners injected via closures: `daemonCoordinator.send`,
   `executeCommand`, `inputSubmitHandler.handleSubmit`,
   `daemonMessageRouter.handleMessage`.
@@ -199,7 +199,7 @@ shared daemon and command helpers under `src/chat/`. Highlights:
 
 ### Layout (Ink)
 - `ChatApp` owns the chat surface as a React tree under
-  `src/ui/components/`.
+  `src/ui/ink/`.
 - Dashboard, log, status, completion, internal-agent panes and input are
   rendered from React state with ink flex layout. No blessed widget geometry
   or controller layer remains.
@@ -224,7 +224,7 @@ and `shouldEchoCommandInChat(text)` are pure.
   Framework-agnostic, no migration needed.
 
 ### Removal notes
-1. **Entry**: `src/chat/index.js` delegates directly to `runChatInk()`.
+1. **Entry**: `src/app/chat/index.js` delegates directly to `runChatInk()`.
 2. **ucode**: `src/code/tui.js` is a compatibility export wrapper around
    `src/ui/format/` and `runUcodeInkTui()`.
 3. **Controllers**: the blessed widget controllers and their tests were

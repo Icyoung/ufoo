@@ -1,4 +1,4 @@
-const SkillsManager = require('../../../src/skills');
+const SkillsManager = require('../../../src/app/cli/features/skills');
 const fs = require('fs');
 const path = require('path');
 

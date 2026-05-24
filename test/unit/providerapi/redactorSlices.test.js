@@ -9,7 +9,7 @@ const {
   redactUfooEvent,
   redactToolCallPayload,
   REDACTED,
-} = require("../../../src/providerapi/redactor");
+} = require("../../../src/runtime/privacy/redactor");
 
 describe("§10.7 redactor three-slice enforcement", () => {
   describe("slice 1 — tool pre-call envelope", () => {
@@ -84,7 +84,7 @@ describe("§10.7 redactor three-slice enforcement", () => {
 
   describe("slice 3 — persistence pre-write (bus / history / report / observability)", () => {
     test("bus writers redact token payloads before disk write", () => {
-      const { writeJSON, appendJSONL } = require("../../../src/bus/utils");
+      const { writeJSON, appendJSONL } = require("../../../src/coordination/bus/utils");
       const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-bus-redact-"));
       const jsonFile = path.join(tmp, "state.json");
       const jsonlFile = path.join(tmp, "events.jsonl");
@@ -116,7 +116,7 @@ describe("§10.7 redactor three-slice enforcement", () => {
       const {
         createLoopObserver,
         appendShadowDiff,
-      } = require("../../../src/agent/loopObservability");
+      } = require("../../../src/agents/controller/loopObservability");
       const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-obs-redact-"));
       try {
         const observer = createLoopObserver({ projectRoot });
@@ -146,8 +146,8 @@ describe("§10.7 redactor three-slice enforcement", () => {
     });
 
     test("report store redacts token payloads in both report file and state file", () => {
-      const store = require("../../../src/report/store");
-      const { getUfooPaths } = require("../../../src/ufoo/paths");
+      const store = require("../../../src/coordination/report/store");
+      const { getUfooPaths } = require("../../../src/coordination/state/paths");
       const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-report-redact-"));
       try {
         fs.mkdirSync(getUfooPaths(projectRoot).agentDir, { recursive: true });

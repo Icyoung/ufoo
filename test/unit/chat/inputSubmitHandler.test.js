@@ -1,5 +1,5 @@
-const { createInputSubmitHandler } = require("../../../src/chat/inputSubmitHandler");
-const { createTerminalAdapterRouter } = require("../../../src/terminal/adapterRouter");
+const { createInputSubmitHandler } = require("../../../src/app/chat/inputSubmitHandler");
+const { createTerminalAdapterRouter } = require("../../../src/runtime/terminal/adapterRouter");
 
 function createHarness(stateOverrides = {}, optionOverrides = {}) {
   const state = {

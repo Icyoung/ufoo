@@ -4,7 +4,7 @@ const {
   parseInputMessage,
   resolvePtyBootstrapArgs,
   resolveCommand,
-} = require("../../../src/agent/ptyRunner");
+} = require("../../../src/agents/launch/ptyRunner");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");

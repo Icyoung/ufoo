@@ -2,8 +2,8 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const MemoryManager = require("../../../src/memory");
-const { buildCachedMemoryPrefix } = require("../../../src/memory");
+const MemoryManager = require("../../../src/coordination/memory");
+const { buildCachedMemoryPrefix } = require("../../../src/coordination/memory");
 
 describe("MemoryManager", () => {
   let projectRoot;

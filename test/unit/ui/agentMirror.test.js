@@ -5,8 +5,8 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { IPC_REQUEST_TYPES, IPC_RESPONSE_TYPES } = require("../../../src/shared/eventContract");
-const { startInternalAgentMirror } = require("../../../src/ui/components/agentMirror");
+const { IPC_REQUEST_TYPES, IPC_RESPONSE_TYPES } = require("../../../src/runtime/contracts/eventContract");
+const { startInternalAgentMirror } = require("../../../src/ui/ink/agentMirror");
 
 function createFakeStdio() {
   const stdin = new EventEmitter();

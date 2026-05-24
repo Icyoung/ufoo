@@ -8,12 +8,12 @@ const {
   COMMAND_TO_CAPABILITY,
   applyHostCapabilities,
   normalizeHostCapabilities,
-} = require("../../../src/terminal/adapters/hostAdapter");
-const { createTerminalAdapterRouter } = require("../../../src/terminal/adapterRouter");
+} = require("../../../src/runtime/terminal/adapters/hostAdapter");
+const { createTerminalAdapterRouter } = require("../../../src/runtime/terminal/adapterRouter");
 const {
   TERMINAL_CAPABILITY_KEYS,
   createTerminalCapabilities,
-} = require("../../../src/terminal/adapterContract");
+} = require("../../../src/runtime/terminal/adapterContract");
 
 function createAdapter({ capabilities, handlers = {} }) {
   return {
