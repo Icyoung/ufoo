@@ -1,9 +1,7 @@
 # ufoo Project Guide
 
 This file is the maintainer-facing map for the ufoo repository. The public
-user guide lives in [README.md](README.md). Detailed inventories live in
-[docs/source-structure.md](docs/source-structure.md) and
-[docs/agent-prompts-and-tools.md](docs/agent-prompts-and-tools.md).
+user guide lives in [README.md](README.md).
 
 ## Purpose
 
@@ -26,7 +24,6 @@ Published binaries are defined in `package.json`.
 | `ucodex` | `bin/ucodex.js` | Codex wrapper with bootstrap, identity, bus registration, and resume metadata. |
 | `uagy` | `bin/uagy.js` | Antigravity wrapper with bootstrap, identity, and conversation resume capture. |
 | `ucode` | `bin/ucode.js` | Native ufoo coding-agent CLI/TUI. |
-| `ucode-core` | `bin/ucode-core.js` | Low-level native queue/runtime helper. |
 
 ## Runtime Shape
 
@@ -144,7 +141,6 @@ npm install
 npm test
 npm run test:watch
 npm run test:coverage
-npm run bench:global-switch
 ```
 
 Useful smoke checks after source moves:
@@ -168,16 +164,10 @@ There is no build step. The package is CommonJS and targets Node.js 18+.
 | Agent launch/provider code | `npm test -- --runTestsByPath test/unit/agent/launcher.test.js test/unit/agent/internalRunner.test.js test/unit/agent/ufooAgent.test.js` |
 | Tool registry/handlers | `npm test -- --runTestsByPath test/unit/tools/registry.test.js test/unit/tools/handlers.test.js` |
 | Native `ucode` | `npm test -- --runTestsByPath test/unit/code/ucodeTui.test.js test/unit/code/nativeRunner.test.js` |
-| Docs only | `git diff --check` |
+| Documentation text | `git diff --check` |
 
 ## Documentation Rules
 
-- Keep active docs in `docs/` and completed plan docs in `docs/archive/`.
-- Update [docs/source-structure.md](docs/source-structure.md) when moving source
-  packages.
-- Update [docs/agent-prompts-and-tools.md](docs/agent-prompts-and-tools.md)
-  when changing agent prompts, tool schemas, tool descriptions, or system
-  prompt assembly.
 - Keep README user-facing. Keep PROJECT maintainer-facing.
 - `CLAUDE.md` is a symlink to `AGENTS.md`; prefer edits in `AGENTS.md`.
 

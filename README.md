@@ -322,8 +322,7 @@ src/
   online/         relay client/server/runner/token helpers
 ```
 
-See [PROJECT.md](PROJECT.md) for the maintainer-facing map and
-[docs/source-structure.md](docs/source-structure.md) for detailed package
+See [PROJECT.md](PROJECT.md) for the maintainer-facing map and detailed package
 ownership.
 
 ## Development
@@ -340,7 +339,6 @@ Useful checks:
 ```bash
 npm run test:watch
 npm run test:coverage
-npm run bench:global-switch
 ```
 
 The repository is CommonJS, targets Node.js 18+, and has no build step.

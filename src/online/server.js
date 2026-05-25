@@ -10,7 +10,7 @@ const WebSocket = require("ws");
  * ufoo-online (Phase 1)
  *
  * Minimal WebSocket relay implementing hello/auth + join/leave + event routing.
- * Intended WebSocket path: /ufoo/online (see docs/ufoo-online/PROTOCOL.md)
+ * Intended WebSocket path: /ufoo/online.
  */
 class OnlineServer extends EventEmitter {
   constructor(options = {}) {

@@ -44,12 +44,12 @@ describe("ucode doctor", () => {
       env: {},
       loadConfigImpl: () => ({}),
       resolveNativeImpl: () => ({
-        command: "ucode-core",
-        args: ["agent"],
+        command: process.execPath,
+        args: ["/tmp/missing-agent.js"],
         root: "",
         kind: "native",
         available: false,
-        missingReason: "ucode-core not found on PATH",
+        missingReason: "src/code/agent.js not found",
       }),
     });
     const output = formatUcodeDoctor(result);
@@ -57,8 +57,8 @@ describe("ucode doctor", () => {
     expect(result.core.found).toBe(false);
     expect(result.core.available).toBe(false);
     expect(output).toContain("core: missing");
-    expect(output).toContain("attempted launch: ucode-core agent");
-    expect(output).toContain("missing reason: ucode-core not found on PATH");
+    expect(output).toContain(`attempted launch: ${process.execPath} /tmp/missing-agent.js`);
+    expect(output).toContain("missing reason: src/code/agent.js not found");
 
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });

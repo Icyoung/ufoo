@@ -30,11 +30,9 @@ for (const platform of platforms) {
   }
 }
 
-// Collect all skill sources from package
+// Collect all skill sources from the package-level SKILLS directory.
 function collectSkillSources(pkgRoot) {
   const sources = [];
-
-  // Top-level SKILLS/
   const topSkills = path.join(pkgRoot, "SKILLS");
   if (fs.existsSync(topSkills)) {
     for (const entry of fs.readdirSync(topSkills, { withFileTypes: true })) {
@@ -46,24 +44,6 @@ function collectSkillSources(pkgRoot) {
       }
     }
   }
-
-  // modules/*/SKILLS/
-  const modulesDir = path.join(pkgRoot, "modules");
-  if (fs.existsSync(modulesDir)) {
-    for (const mod of fs.readdirSync(modulesDir, { withFileTypes: true })) {
-      if (!mod.isDirectory()) continue;
-      const modSkills = path.join(modulesDir, mod.name, "SKILLS");
-      if (!fs.existsSync(modSkills)) continue;
-      for (const entry of fs.readdirSync(modSkills, { withFileTypes: true })) {
-        if (!entry.isDirectory()) continue;
-        const skillMd = path.join(modSkills, entry.name, "SKILL.md");
-        if (fs.existsSync(skillMd)) {
-          sources.push({ name: entry.name, dir: path.join(modSkills, entry.name), md: skillMd });
-        }
-      }
-    }
-  }
-
   return sources;
 }
 

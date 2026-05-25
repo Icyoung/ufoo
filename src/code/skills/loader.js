@@ -63,19 +63,6 @@ function defaultSkillRoots({
 
   const root = path.resolve(String(repoRoot || repoRootFromHere()));
   roots.push({ path: path.join(root, "SKILLS"), scope: "builtin", source: "ufoo" });
-  const modulesDir = path.join(root, "modules");
-  try {
-    for (const entry of fs.readdirSync(modulesDir, { withFileTypes: true })) {
-      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
-      roots.push({
-        path: path.join(modulesDir, entry.name, "SKILLS"),
-        scope: "builtin",
-        source: `ufoo-module:${entry.name}`,
-      });
-    }
-  } catch {
-    // Modules are optional in tests and local installs.
-  }
 
   const seen = new Set();
   return roots

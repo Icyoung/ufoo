@@ -38,7 +38,7 @@ Versioning is optional but recommended for auditability.
 ```
 context/                 # This repo
 ├── README.md               # This file
-├── SKILLS/uctx/SKILL.md    # Canonical decision format + workflow
+├── ../../SKILLS/uctx/SKILL.md # Canonical decision format + workflow
 └── .ufoo/context/          # Local project context for this repo (ignored; not part of protocol distribution)
 ```
 
@@ -47,7 +47,7 @@ context/                 # This repo
 1. Read installed module from `~/.ufoo/modules/context/`
 2. Read/write decisions in `<project>/.ufoo/context/decisions/`
 3. **Never write to global** — only to project
-4. Follow the decision format in `SKILLS/uctx/SKILL.md`
+4. Follow the decision format in the package-level `SKILLS/uctx/SKILL.md`
 
 ## Validate
 

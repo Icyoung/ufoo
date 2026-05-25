@@ -15,25 +15,10 @@ class SkillsManager {
    */
   findSkillRoots() {
     const roots = [];
-
-    // 检查 SKILLS 目录
     const mainSkills = path.join(this.repoRoot, "SKILLS");
     if (fs.existsSync(mainSkills)) {
       roots.push(mainSkills);
     }
-
-    // 检查 modules 中的 SKILLS
-    const modulesDir = path.join(this.repoRoot, "modules");
-    if (fs.existsSync(modulesDir)) {
-      const modules = fs.readdirSync(modulesDir);
-      for (const module of modules) {
-        const moduleSkills = path.join(modulesDir, module, "SKILLS");
-        if (fs.existsSync(moduleSkills)) {
-          roots.push(moduleSkills);
-        }
-      }
-    }
-
     return roots;
   }
 

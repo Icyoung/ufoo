@@ -4,8 +4,8 @@
  * Lightweight, framework-free coverage for ChatApp. Mirrors the UcodeApp
  * test approach: we don't render with ink-testing-library because jest
  * runs in CJS mode and ink is ESM-only — that path would force
- * --experimental-vm-modules on the whole suite. The full render path is
- * exercised by scripts/ucode-app-smoke.js plus real-TTY runs.
+ * --experimental-vm-modules on the whole suite. Real TTY render coverage is
+ * handled manually; component behaviour is pinned with focused unit tests.
  */
 
 const path = require("path");

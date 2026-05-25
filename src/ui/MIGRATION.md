@@ -105,9 +105,8 @@ layout, hooks, and proper isolation of pure logic from rendering.
 
 ### Smoke
 
-- [ ] `node scripts/ucode-app-smoke.js` exits 0.
-- [ ] `npx jest --silent` shows the pre-existing 5 OAuth failures only;
-  every ink suite passes.
+- [ ] `npx jest --runTestsByPath test/unit/ui/UcodeApp.test.js test/unit/code/ucodeTui.test.js --runInBand` passes.
+- [ ] `npx jest --silent` passes; every ink suite stays green.
 
 ## Decision log
 
@@ -118,9 +117,9 @@ layout, hooks, and proper isolation of pure logic from rendering.
   avoids a build step. We can revisit if any single component grows
   past ~600 lines and readability suffers.
 - **Don't enable `--experimental-vm-modules` for jest.** The risk of
-  surprise ESM behaviour across the existing 1800-test suite is too
-  high. Render coverage stays in `scripts/*-smoke.js`; component logic
-  is exercised by pure-function tests.
+  surprise ESM behaviour across the existing test suite is too high.
+  Component logic is exercised by pure-function tests; real TTY render
+  coverage remains a manual smoke step.
 - **Codex isn't a useful reference.** Its TUI is a Rust ratatui app
   (`codex-rs/tui`), not React-based. The architectural principle worth
   borrowing is its hard split between TUI and core protocol.
@@ -307,10 +306,9 @@ and `shouldEchoCommandInChat(text)` are pure.
   the same as ucode.
 
 ### Smoke
-- [ ] `node scripts/chat-app-smoke.js` exits 0.
-- [ ] `node scripts/ucode-app-smoke.js` exits 0.
-- [ ] `npx jest --silent` shows the pre-existing 5 OAuth failures
-  only; every ink suite passes.
+- [ ] `npx jest --runTestsByPath test/unit/ui/ChatApp.test.js test/unit/ui/chatReducer.test.js --runInBand` passes.
+- [ ] `npx jest --runTestsByPath test/unit/ui/UcodeApp.test.js test/unit/code/ucodeTui.test.js --runInBand` passes.
+- [ ] `npx jest --silent` passes; every ink suite stays green.
 
 ## P4 close-out
 

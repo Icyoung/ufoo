@@ -6,16 +6,9 @@
 
 Start with `PROJECT.md` for the short project guide.
 
-Architecture references:
-
-- `docs/README.md` - active documentation index and archive policy.
-- `docs/source-structure.md` - current `src/` map, target package structure,
-  dependency direction, and migration plan.
-- `docs/agent-prompts-and-tools.md` - source-of-truth inventory for agent
-  bodies, system prompts, bootstrap prompts, prompt profiles, group templates,
-  and tool-call definitions.
-- `docs/agent-prompts-and-tools.zh.md` - bilingual prompt reference with
-  original prompt text and Chinese translations.
+Architecture references live in `README.md`, `PROJECT.md`, and the source
+packages listed below. The local `docs/` directory is ignored and should not be
+treated as a repository source of truth.
 
 ## Source Boundaries
 
@@ -37,12 +30,13 @@ Architecture references:
 - Group templates, prompt profiles, and solo role helpers live in
   `src/orchestration/groups/`, `src/orchestration/solo/`, and
   `templates/groups/`.
-When moving packages, update `docs/source-structure.md` in the same change.
+When moving packages, update `PROJECT.md` or `README.md` if the public source
+map changes.
 
 ## Prompt And Tool Changes
 
 Before changing agent prompts, bootstrap text, prompt profiles, router schemas,
-or tool-call definitions, read `docs/agent-prompts-and-tools.md`.
+or tool-call definitions, read the relevant source packages below.
 
 Keep these sources in sync:
 

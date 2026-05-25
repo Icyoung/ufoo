@@ -1,6 +1,6 @@
 {
   "name": "u-foo",
-  "version": "2.4.5",
+  "version": "2.4.6",
   "description": "Multi-Agent Workspace Protocol. Just add u. claude → uclaude, codex → ucodex.",
   "license": "SEE LICENSE IN LICENSE",
   "homepage": "https://ufoo.dev",
@@ -20,8 +20,7 @@
     "uclaude": "bin/uclaude.js",
     "ucodex": "bin/ucodex.js",
     "uagy": "bin/uagy.js",
-    "ucode": "bin/ucode.js",
-    "ucode-core": "bin/ucode-core.js"
+    "ucode": "bin/ucode.js"
   },
   "files": [
     "bin/",
@@ -42,10 +41,7 @@
     "postinstall": "node scripts/postinstall.js",
     "test": "jest",
     "test:watch": "jest --watch",
-    "test:coverage": "jest --coverage",
-    "ink:demo": "node scripts/ink-demo.js",
-    "ink:smoke": "node scripts/ink-smoke.js",
-    "bench:global-switch": "node scripts/global-chat-switch-benchmark.js"
+    "test:coverage": "jest --coverage"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.138",

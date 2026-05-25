@@ -149,8 +149,9 @@ describe("ContextDoctor", () => {
 
     test("succeeds with valid protocol structure", () => {
       const moduleRoot = path.join(projectRoot, "modules", "context");
-      const skillDir = path.join(moduleRoot, "SKILLS", "uctx");
+      const skillDir = path.join(projectRoot, "SKILLS", "uctx");
       fs.mkdirSync(skillDir, { recursive: true });
+      fs.mkdirSync(moduleRoot, { recursive: true });
       fs.writeFileSync(path.join(moduleRoot, "README.md"), "# Context");
       fs.writeFileSync(path.join(skillDir, "SKILL.md"), "# Skill");
 

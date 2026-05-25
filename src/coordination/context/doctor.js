@@ -87,6 +87,7 @@ class ContextDoctor {
    */
   lintProtocol() {
     const moduleRoot = path.join(this.projectRoot, "modules", "context");
+    const repoSkill = path.join(this.projectRoot, "SKILLS", "uctx", "SKILL.md");
 
     if (!fs.existsSync(moduleRoot)) {
       console.log("No protocol module found (skipping protocol lint)");
@@ -97,10 +98,7 @@ class ContextDoctor {
 
     // Check minimal module files
     this.checkFile(path.join(moduleRoot, "README.md"), "README.md");
-    this.checkFile(
-      path.join(moduleRoot, "SKILLS", "uctx", "SKILL.md"),
-      "SKILLS/uctx/SKILL.md"
-    );
+    this.checkFile(repoSkill, "SKILLS/uctx/SKILL.md");
 
     return !this.failed;
   }

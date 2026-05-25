@@ -27,7 +27,7 @@ describe("ucode launcher resolver", () => {
 
     expect(resolved.agentType).toBe("ufoo-code");
     expect(resolved.command).toBe(process.execPath);
-    expect(resolved.args[0]).toMatch(/(src\/code\/agent\.js|bin\/ucode-core\.js)$/);
+    expect(resolved.args[0]).toMatch(/src\/code\/agent\.js$/);
     expect(resolved.args).toEqual(expect.arrayContaining(["--help"]));
     expect(resolved.args).toEqual(
       expect.arrayContaining([
@@ -93,9 +93,10 @@ describe("ucode launcher resolver", () => {
     });
     try {
       const resolved = resolveNativeFallbackCommand({ env: { PATH: "", PATHEXT: "" } });
-      expect(resolved.command).toBe("ucode-core");
+      expect(resolved.command).toBe(process.execPath);
+      expect(resolved.args[0]).toMatch(/src\/code\/agent\.js$/);
       expect(resolved.available).toBe(false);
-      expect(String(resolved.missingReason || "")).toContain("not available on PATH");
+      expect(String(resolved.missingReason || "")).toContain("src/code/agent.js not found");
     } finally {
       statSpy.mockRestore();
     }
@@ -175,8 +176,8 @@ describe("ucode launcher resolver", () => {
 
   test("isLikelyPiCoreCommand detects ucode variants", () => {
     expect(isLikelyPiCoreCommand("ucode")).toBe(true);
-    expect(isLikelyPiCoreCommand("ucode-core")).toBe(true);
-    expect(isLikelyPiCoreCommand("node", ["ucode-core"])).toBe(true);
+    expect(isLikelyPiCoreCommand("ucode-core")).toBe(false);
+    expect(isLikelyPiCoreCommand("node", ["ucode-core"])).toBe(false);
     expect(isLikelyPiCoreCommand("node", ["\\src\\code\\agent.js"])).toBe(true);
     expect(isLikelyPiCoreCommand("random")).toBe(false);
     expect(isLikelyPiCoreCommand("")).toBe(false);

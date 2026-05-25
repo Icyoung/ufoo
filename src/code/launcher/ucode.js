@@ -206,13 +206,11 @@ function isLikelyPiCoreCommand(command = "", args = []) {
   const cmdText = String(command || "").trim();
   const cmdBase = path.basename(cmdText).toLowerCase();
   if (cmdBase === "ucode" || cmdBase === "ucode.exe") return true;
-  if (cmdBase === "ucode-core" || cmdBase === "ucode-core.exe") return true;
 
   const joined = [cmdText, ...(Array.isArray(args) ? args : [])]
     .map((part) => String(part || "").toLowerCase())
     .join(" ");
   if (!joined) return false;
-  if (joined.includes("ucode-core")) return true;
   if (joined.includes("/src/code/agent.js")) return true;
   if (joined.includes("\\src\\code\\agent.js")) return true;
   return false;
@@ -287,55 +285,30 @@ function resolveCandidateCoreRoot({
 }
 
 function resolveNativeFallbackCommand({ env = process.env } = {}) {
-  const candidates = [
-    path.resolve(__dirname, "..", "agent.js"),
-    path.resolve(__dirname, "..", "..", "..", "bin", "ucode-core.js"),
-  ];
-  for (const entry of candidates) {
-    try {
-      if (isReadableFile(entry)) {
-        if (entry.endsWith("agent.js")) {
-          return {
-            command: process.execPath,
-            args: [entry],
-            root: path.resolve(__dirname, ".."),
-            kind: "native",
-            available: true,
-            resolvedPath: entry,
-          };
-        }
-        return {
-          command: process.execPath,
-          args: [entry, "agent"],
-          root: path.resolve(__dirname, ".."),
-          kind: "native",
-          available: true,
-          resolvedPath: entry,
-        };
-      }
-    } catch {
-      // ignore
+  void env;
+  const entry = path.resolve(__dirname, "..", "agent.js");
+  try {
+    if (isReadableFile(entry)) {
+      return {
+        command: process.execPath,
+        args: [entry],
+        root: path.resolve(__dirname, ".."),
+        kind: "native",
+        available: true,
+        resolvedPath: entry,
+      };
     }
-  }
-  const resolvedCommand = resolveExecutableFromPath("ucode-core", env);
-  if (resolvedCommand) {
-    return {
-      command: "ucode-core",
-      args: ["agent"],
-      root: "",
-      kind: "native",
-      available: true,
-      resolvedPath: resolvedCommand,
-    };
+  } catch {
+    // ignore
   }
   return {
-    command: "ucode-core",
-    args: ["agent"],
-    root: "",
+    command: process.execPath,
+    args: [entry],
+    root: path.resolve(__dirname, ".."),
     kind: "native",
     available: false,
     resolvedPath: "",
-    missingReason: "src/code/agent.js not found and ucode-core is not available on PATH",
+    missingReason: "src/code/agent.js not found",
   };
 }
 

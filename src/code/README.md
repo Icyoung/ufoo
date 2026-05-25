@@ -15,7 +15,7 @@
   - `ucode> ...` free-form task input routes to model-backed planner path
   - `tool/run` commands stay available as deterministic fallback
 - Dispatcher: `runToolCall({ tool, args }, { workspaceRoot })`
-- Queue runtime:
-  - `ucode-core submit`
-  - `ucode-core run-once`
-  - `ucode-core list`
+- Queue runtime internals:
+  - `submitTask`
+  - `runOnce`
+  - `listResults`

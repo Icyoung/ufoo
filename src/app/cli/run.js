@@ -1675,7 +1675,7 @@ async function runCli(argv) {
     program.addHelpText(
       "after",
       `\nNotes:\n  - If 'ufoo' isn't in PATH, run it via ${chalk.cyan(
-        "./bin/ufoo"
+        "./bin/ufoo.js"
       )} (repo) or install globally via npm.\n  - For bus notifications inside Codex, prefer ${chalk.cyan(
         "ufoo bus alert"
       )} / ${chalk.cyan("ufoo bus listen")} (no IME issues).\n`

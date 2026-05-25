@@ -12,14 +12,5 @@ coverage/
 
 landing.claude/commands/
 scripts/*
-!scripts/chat-app-smoke.js
-!scripts/global-chat-switch-benchmark.js
-!scripts/ink-demo.js
-!scripts/ink-smoke.js
 !scripts/postinstall.js
-!scripts/ucode-app-smoke.js
-docs/**
-!docs/
-!docs/**/
-!docs/*.md
-!docs/**/*.md
+docs/

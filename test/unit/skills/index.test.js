@@ -33,41 +33,13 @@ describe('SkillsManager', () => {
       expect(manager.skillRoots).toContain(skillsDir);
     });
 
-    it('should find SKILLS in modules directories', () => {
-      const modulesDir = path.join(testRepoRoot, 'modules');
-      const module1Skills = path.join(modulesDir, 'module1', 'SKILLS');
-      const module2Skills = path.join(modulesDir, 'module2', 'SKILLS');
-
-      fs.mkdirSync(module1Skills, { recursive: true });
-      fs.mkdirSync(module2Skills, { recursive: true });
-
-      manager = new SkillsManager(testRepoRoot);
-
-      expect(manager.skillRoots).toContain(module1Skills);
-      expect(manager.skillRoots).toContain(module2Skills);
-    });
-
     it('should return empty array if no SKILLS directories exist', () => {
       manager = new SkillsManager(testRepoRoot);
 
       expect(manager.skillRoots).toEqual([]);
     });
 
-    it('should skip modules without SKILLS directory', () => {
-      const modulesDir = path.join(testRepoRoot, 'modules');
-      const module1 = path.join(modulesDir, 'module1');
-      const module2Skills = path.join(modulesDir, 'module2', 'SKILLS');
-
-      fs.mkdirSync(module1, { recursive: true });
-      fs.mkdirSync(module2Skills, { recursive: true });
-
-      manager = new SkillsManager(testRepoRoot);
-
-      expect(manager.skillRoots).not.toContain(path.join(module1, 'SKILLS'));
-      expect(manager.skillRoots).toContain(module2Skills);
-    });
-
-    it('should find both root and module SKILLS directories', () => {
+    it('should not scan module SKILLS directories', () => {
       const rootSkills = path.join(testRepoRoot, 'SKILLS');
       const moduleSkills = path.join(testRepoRoot, 'modules', 'test', 'SKILLS');
 
@@ -76,9 +48,9 @@ describe('SkillsManager', () => {
 
       manager = new SkillsManager(testRepoRoot);
 
-      expect(manager.skillRoots).toHaveLength(2);
+      expect(manager.skillRoots).toHaveLength(1);
       expect(manager.skillRoots).toContain(rootSkills);
-      expect(manager.skillRoots).toContain(moduleSkills);
+      expect(manager.skillRoots).not.toContain(moduleSkills);
     });
   });
 
@@ -130,7 +102,7 @@ describe('SkillsManager', () => {
       expect(skills).toEqual(['alpha', 'beta', 'zebra']);
     });
 
-    it('should deduplicate skills from multiple roots', () => {
+    it('should ignore skills left under module directories', () => {
       const rootSkills = path.join(testRepoRoot, 'SKILLS');
       const moduleSkills = path.join(testRepoRoot, 'modules', 'test', 'SKILLS');
 
@@ -141,7 +113,7 @@ describe('SkillsManager', () => {
       manager = new SkillsManager(testRepoRoot);
       const skills = manager.list();
 
-      expect(skills).toEqual(['skill1', 'skill2']);
+      expect(skills).toEqual(['skill1']);
     });
 
     it('should handle non-existent skill root gracefully', () => {
@@ -166,7 +138,7 @@ describe('SkillsManager', () => {
       expect(found).toBe(skillPath);
     });
 
-    it('should find skill in module SKILLS directory', () => {
+    it('should not find skill in module SKILLS directory', () => {
       const moduleSkills = path.join(testRepoRoot, 'modules', 'test', 'SKILLS');
       const skillPath = path.join(moduleSkills, 'myskill');
       fs.mkdirSync(skillPath, { recursive: true });
@@ -174,7 +146,7 @@ describe('SkillsManager', () => {
       manager = new SkillsManager(testRepoRoot);
       const found = manager.findSkill('myskill');
 
-      expect(found).toBe(skillPath);
+      expect(found).toBeNull();
     });
 
     it('should return null for non-existent skill', () => {
@@ -187,7 +159,7 @@ describe('SkillsManager', () => {
       expect(found).toBeNull();
     });
 
-    it('should return first found skill from multiple roots', () => {
+    it('should prefer package-level SKILLS over ignored module copies', () => {
       const rootSkills = path.join(testRepoRoot, 'SKILLS');
       const rootSkillPath = path.join(rootSkills, 'myskill');
       const moduleSkills = path.join(testRepoRoot, 'modules', 'test', 'SKILLS');
@@ -199,9 +171,8 @@ describe('SkillsManager', () => {
       manager = new SkillsManager(testRepoRoot);
       const found = manager.findSkill('myskill');
 
-      // Should find the first one in skillRoots order
-      expect(found).toBeTruthy();
-      expect([rootSkillPath, moduleSkillPath]).toContain(found);
+      expect(found).toBe(rootSkillPath);
+      expect(found).not.toBe(moduleSkillPath);
     });
   });
 
@@ -414,7 +385,7 @@ describe('SkillsManager', () => {
       expect(skills).toContain('my-skill_v2');
     });
 
-    it('should handle deeply nested module structure', () => {
+    it('should ignore deeply nested module skill structure', () => {
       const deepModuleSkills = path.join(testRepoRoot, 'modules', 'level1', 'SKILLS');
       fs.mkdirSync(deepModuleSkills, { recursive: true });
       fs.mkdirSync(path.join(deepModuleSkills, 'skill1'));
@@ -422,7 +393,7 @@ describe('SkillsManager', () => {
       manager = new SkillsManager(testRepoRoot);
       const skills = manager.list();
 
-      expect(skills).toContain('skill1');
+      expect(skills).not.toContain('skill1');
     });
 
     it('should handle skill with complex directory structure', async () => {

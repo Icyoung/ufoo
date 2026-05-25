@@ -78,7 +78,7 @@ function parseArgs(argv = []) {
 
 function usage() {
   return [
-    "ucode-core native runtime CLI",
+    "ucode native runtime internals",
     "",
     "Commands:",
     "  submit --tool <read|write|edit|bash> --args-json <json> [--workspace <path>] [--task-id <id>]",
