@@ -2,6 +2,7 @@
 /* eslint-disable no-console */
 const { runCli } = require("../src/app/cli/run");
 const { runDaemonCli } = require("../src/runtime/daemon/run");
+const { runMcpServer } = require("../src/runtime/daemon/mcpServer");
 const { runChat } = require("../src/app/chat");
 const { runInternalRunner } = require("../src/agents/internal/internalRunner");
 const { resolveGlobalControllerProjectRoot } = require("../src/runtime/projects");
@@ -24,6 +25,12 @@ async function main() {
   }
   if (cmd === "daemon") {
     runDaemonCli(["daemon", ...argv.slice(1)]);
+    return;
+  }
+  if (cmd === "mcp") {
+    await runMcpServer({
+      autoStart: !argv.includes("--no-auto-start"),
+    });
     return;
   }
   if (cmd === "agent-runner") {

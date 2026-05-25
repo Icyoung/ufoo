@@ -27,6 +27,7 @@ Package: [u-foo on npm](https://www.npmjs.com/package/u-foo)
 - Launch modes for internal, tmux, host, Terminal.app, and iTerm2 workflows.
 - Built-in group templates for launching and orchestrating multi-agent workflows.
 - `ucode`, a native ufoo coding-agent runtime.
+- `ufoo mcp`, a local global MCP bridge for external MCP-capable agents.
 
 ## Requirements
 
@@ -56,7 +57,7 @@ Installed binaries:
 
 | Binary | Purpose |
 |---|---|
-| `ufoo` | Main CLI, chat dashboard, daemon, groups, bus, context, memory, reports, and online helpers. |
+| `ufoo` | Main CLI, chat dashboard, daemon, local global MCP bridge, groups, bus, context, memory, reports, and online helpers. |
 | `uclaude` | Claude Code wrapper with ufoo bootstrap and bus identity. |
 | `ucodex` | Codex wrapper with ufoo bootstrap and bus identity. |
 | `uagy` | Antigravity wrapper with ufoo bootstrap and bus identity. |
@@ -96,6 +97,16 @@ Use global chat mode to switch between registered projects:
 ufoo -g
 ```
 
+For MCP-capable clients, configure the global stdio bridge once:
+
+```bash
+ufoo mcp
+```
+
+The MCP bridge connects to the home-scoped global controller daemon and routes
+project-scoped tools through the global project registry. It is not a separate
+per-project MCP server mode.
+
 ## Runtime Model
 
 ```text
@@ -107,6 +118,11 @@ ufoo / ufoo chat
   -> agents launch/providers/internal/controller/activity
   -> coordination bus/context/memory/history/report/state/status
   -> shared controller/worker tools and native ucode tools
+
+ufoo mcp
+  -> home-scoped global controller daemon
+  -> ~/.ufoo/projects/runtime
+  -> selected project daemon for bus/report/activity state
 ```
 
 Chat is a UI client. The daemon owns project runtime state. Agents communicate

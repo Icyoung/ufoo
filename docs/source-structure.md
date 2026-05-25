@@ -12,12 +12,12 @@ source-of-truth packages directly.
 | `src/app/cli/` | Main CLI runner, command groups, and CLI features such as init, doctor, and skills. |
 | `src/ui/ink/` | Ink components for chat and `ucode` TUI. |
 | `src/ui/format/` | Pure formatting, banners, width, markdown, status, and input helper functions. |
-| `src/runtime/daemon/` | Project daemon, IPC server, prompt routing, launch/resume/close, cron, group orchestration, reports, and status. |
+| `src/runtime/daemon/` | Project daemon, global MCP bridge, IPC server, prompt routing, launch/resume/close, cron, group orchestration, reports, and status. |
 | `src/runtime/projects/` | Project identity and runtime registry. |
 | `src/runtime/process/` | Runtime process helpers such as Node executable resolution. |
 | `src/runtime/privacy/` | Secret redaction and shadow-diff privacy/safety helpers. |
 | `src/runtime/terminal/` | Host, tmux, internal, and external terminal adapters. |
-| `src/runtime/contracts/` | IPC event and PTY socket contracts. |
+| `src/runtime/contracts/` | IPC event, PTY socket, and MCP/JSON-RPC contracts. |
 | `src/agents/prompts/` | Agent bootstrap prompts, group prompts, profile prompts, and native `ucode` system prompt sections. |
 | `src/agents/providers/` | Claude/Codex provider seams, event translators, credentials, direct auth, and upstream transports. |
 | `src/agents/launch/` | External CLI launchers, PTY runner/wrapper, notifier, launch environment, and Agy session helpers. |
@@ -115,6 +115,7 @@ Rules:
 |---|---|
 | Prompt move | `npm test -- --runTestsByPath test/unit/code/ucodeTui.test.js test/unit/group/templates.test.js test/unit/group/promptProfiles.test.js` |
 | Tool registry move | `npm test -- --runTestsByPath test/unit/tools/registry.test.js test/unit/tools/handlers.test.js test/unit/agent/controllerToolExecutor.test.js` |
+| MCP bridge change | `npm test -- --runTestsByPath test/unit/daemon/mcpServer.test.js test/unit/tools/registry.test.js test/unit/shared/eventContract.test.js` |
 | Agent runner move | `npm test -- --runTestsByPath test/unit/agent/internalRunner.test.js test/unit/agent/ptyRunner.test.js test/unit/agent/launcher.test.js` |
 | Runtime/app move | `npm test -- --runTestsByPath test/unit/ui/ChatApp.test.js test/unit/daemon/run.test.js test/unit/chat/daemonConnection.test.js` |
 | Large package move | Full `npm test`. |

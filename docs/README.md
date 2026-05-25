@@ -10,7 +10,7 @@ planning material in `docs/archive/`.
 | `source-structure.md` | current | Source package map and proposed clearer `src/` structure. |
 | `agent-prompts-and-tools.md` | current | Agent bodies, prompts, bootstrap text, prompt profiles, and tool definitions. |
 | `agent-prompts-and-tools.zh.md` | current | Chinese prompt reference with original prompt text and Chinese translations. |
-| `daemon-mcp-integration-plan.md` | active draft | Daemon/MCP integration design still under active planning. |
+| `daemon-mcp-integration-plan.md` | initial implementation + backlog | Local global MCP bridge shape, current `ufoo mcp` surface, and remaining convergence work. |
 | `ufoo-agent-api-loop-plan.md` | backlog | API-loop follow-up plan after the initial implementation. |
 | `ufoo-group-role-presets-plan.md` | implemented with gaps | Role preset work that still has documented gaps to close. |
 | `ufoo-prompt-envelope-and-tags-plan.md` | needs audit | Prompt envelope/tag core exists, but timeline/history details need a final implementation check. |

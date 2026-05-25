@@ -25,6 +25,7 @@ npm 包：[u-foo](https://www.npmjs.com/package/u-foo)
 - 支持 internal、tmux、host、Terminal.app、iTerm2 等启动模式。
 - 内置 group 模板，用于启动和编排多 Agent 工作流。
 - 提供原生 ufoo coding-agent 运行时 `ucode`。
+- 提供 `ufoo mcp` 本机 global MCP bridge，供支持 MCP 的外部 Agent 接入。
 
 ## 环境要求
 
@@ -54,7 +55,7 @@ npm link
 
 | 命令 | 用途 |
 |---|---|
-| `ufoo` | 主 CLI、chat 仪表盘、daemon、group、bus、context、memory、report 和 online helper。 |
+| `ufoo` | 主 CLI、chat 仪表盘、daemon、本机 global MCP bridge、group、bus、context、memory、report 和 online helper。 |
 | `uclaude` | Claude Code 包装器，注入 ufoo bootstrap 和 bus 身份。 |
 | `ucodex` | Codex 包装器，注入 ufoo bootstrap 和 bus 身份。 |
 | `uagy` | Antigravity 包装器，注入 ufoo bootstrap 和 bus 身份。 |
@@ -94,6 +95,15 @@ ucode
 ufoo -g
 ```
 
+给支持 MCP 的客户端使用时，只需要配置一次全局 stdio bridge：
+
+```bash
+ufoo mcp
+```
+
+MCP bridge 会连接 home 级 global controller daemon，并通过全局项目 registry
+把项目级工具路由到对应项目 daemon。它不是每个项目单独部署一个 MCP server 的模式。
+
 ## 运行模型
 
 ```text
@@ -105,6 +115,11 @@ ufoo / ufoo chat
   -> agents launch/providers/internal/controller/activity
   -> coordination bus/context/memory/history/report/state/status
   -> shared controller/worker tools and native ucode tools
+
+ufoo mcp
+  -> home-scoped global controller daemon
+  -> ~/.ufoo/projects/runtime
+  -> selected project daemon for bus/report/activity state
 ```
 
 Chat 是 UI client。daemon 拥有项目运行态。Agent 通过 bus queue、prompt

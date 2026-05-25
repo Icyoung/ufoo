@@ -21,7 +21,7 @@ Published binaries are defined in `package.json`.
 
 | Binary | Main file | Responsibility |
 |---|---|---|
-| `ufoo` | `bin/ufoo.js` | Main CLI, chat dashboard, daemon, project commands, bus/context/memory/report/group/online commands. |
+| `ufoo` | `bin/ufoo.js` | Main CLI, chat dashboard, daemon, local global MCP bridge, project commands, bus/context/memory/report/group/online commands. |
 | `uclaude` | `bin/uclaude.js` | Claude Code wrapper with bootstrap, identity, bus registration, and resume metadata. |
 | `ucodex` | `bin/ucodex.js` | Codex wrapper with bootstrap, identity, bus registration, and resume metadata. |
 | `uagy` | `bin/uagy.js` | Antigravity wrapper with bootstrap, identity, and conversation resume capture. |
@@ -40,6 +40,12 @@ ufoo / ufoo chat
   -> src/code runs native ucode
   -> src/coordination stores bus/context/memory/history/report/state/status
   -> src/tools exposes shared controller/worker tools
+
+ufoo mcp
+  -> stdio MCP bridge in src/runtime/daemon/mcpServer.js
+  -> home-scoped global controller daemon
+  -> ~/.ufoo/projects/runtime registry
+  -> selected project daemon and project-local bus/report/activity state
 ```
 
 Important boundaries:
@@ -61,10 +67,10 @@ Important boundaries:
 | `src/app/cli/features/` | CLI feature modules | Init, doctor, and skill installation logic used by CLI/chat/daemon entry paths. |
 | `src/ui/ink/` | Terminal UI components | Ink components for chat and `ucode`. |
 | `src/ui/format/` | Pure display helpers | Width, markdown, status, input, and banner formatting. |
-| `src/runtime/daemon/` | Project daemon | IPC server, prompt routing, launch/resume/close, cron, reports, status, group orchestration. |
+| `src/runtime/daemon/` | Project daemon and MCP bridge | Global MCP bridge, IPC server, prompt routing, launch/resume/close, cron, reports, status, group orchestration. |
 | `src/runtime/projects/` | Project registry | Project identity and runtime registry. |
 | `src/runtime/terminal/` | Terminal adapters | Host, tmux, internal, external, Terminal.app, iTerm2. |
-| `src/runtime/contracts/` | Runtime contracts | IPC event and PTY socket contracts. |
+| `src/runtime/contracts/` | Runtime contracts | IPC event, PTY socket, and MCP/JSON-RPC contracts. |
 | `src/runtime/privacy/` | Privacy helpers | Secret redaction and shadow-diff helpers. |
 | `src/runtime/process/` | Process helpers | Node executable resolution and similar runtime process utilities. |
 | `src/coordination/bus/` | Event bus | Queues, envelopes, injection, nicknames, subscribers, bus daemon. |
@@ -127,8 +133,9 @@ Do not recreate compatibility directories for old paths.
   run/
 ```
 
-Global state lives under `~/.ufoo/`, including `~/.ufoo/config.json` and global
-project registry records.
+Global state lives under `~/.ufoo/`, including `~/.ufoo/config.json`, the
+home-scoped global controller daemon state, and global project registry records
+under `~/.ufoo/projects/runtime`.
 
 ## Development Commands
 
@@ -144,7 +151,7 @@ Useful smoke checks after source moves:
 
 ```bash
 node -e "require('./src/app/chat'); require('./src/ui/ink/ChatApp'); require('./src/code/tui'); console.log('ok')"
-node -e "require('./src/app/cli/run'); require('./src/runtime/daemon'); require('./src/tools'); console.log('ok')"
+node -e "require('./src/app/cli/run'); require('./src/runtime/daemon'); require('./src/runtime/daemon/mcpServer'); require('./src/tools'); console.log('ok')"
 git diff --check
 ```
 
@@ -157,6 +164,7 @@ There is no build step. The package is CommonJS and targets Node.js 18+.
 | Source package move | `npm test` |
 | Chat/UI behavior | `npm test -- --runTestsByPath test/unit/ui/ChatApp.test.js test/unit/chat/commandExecutor.test.js` |
 | Runtime daemon behavior | `npm test -- --runTestsByPath test/unit/daemon/run.test.js test/unit/daemon/promptRequest.test.js` |
+| MCP bridge behavior | `npm test -- --runTestsByPath test/unit/daemon/mcpServer.test.js test/unit/tools/registry.test.js test/unit/shared/eventContract.test.js` |
 | Agent launch/provider code | `npm test -- --runTestsByPath test/unit/agent/launcher.test.js test/unit/agent/internalRunner.test.js test/unit/agent/ufooAgent.test.js` |
 | Tool registry/handlers | `npm test -- --runTestsByPath test/unit/tools/registry.test.js test/unit/tools/handlers.test.js` |
 | Native `ucode` | `npm test -- --runTestsByPath test/unit/code/ucodeTui.test.js test/unit/code/nativeRunner.test.js` |

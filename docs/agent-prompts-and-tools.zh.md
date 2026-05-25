@@ -2293,6 +2293,48 @@ These descriptions are model-visible tool metadata for controller/worker tools.
 | `close_agent` | Close an existing agent session. | 关闭已有 agent session。 |
 | `manage_cron` | Create, list, or stop controller cron tasks. | 创建、列出或停止 controller cron tasks。 |
 
+## 9. Global MCP Bridge Tool Definitions
+
+Source: `src/runtime/daemon/mcpServer.js`,
+`src/runtime/contracts/mcpContract.js`
+
+`ufoo mcp` exposes a local global MCP bridge over stdio. Project-scoped tools
+must pass `project_root` from `read_project_registry`. V1 does not provide a
+project-local MCP server mode.
+
+中文:
+
+`ufoo mcp` 通过 stdio 暴露本机 global MCP bridge。项目级工具必须传入来自
+`read_project_registry` 的 `project_root`。V1 不提供 project-local MCP server
+模式。
+
+| Tool | Original description | 中文描述 |
+|---|---|---|
+| `ufoo_mcp_status` | Read local global ufoo MCP bridge status and registered project summary. | 读取本机 global ufoo MCP bridge 状态和已注册项目摘要。 |
+| `register_agent` | Register an externally launched agent into a registered project bus. | 将外部启动的 agent 注册到已注册项目的 bus。 |
+| `heartbeat_agent` | Refresh a registered agent heartbeat in its project bus. | 刷新已注册 agent 在项目 bus 中的心跳。 |
+| `publish_activity_state` | Publish the caller agent activity state in its project bus metadata. | 将调用方 agent 的活动状态发布到项目 bus 元数据。 |
+| `update_agent_metadata` | Update the caller agent nickname or MCP metadata in its project bus. | 更新调用方 agent 在项目 bus 中的昵称或 MCP 元数据。 |
+| `poll_inbox` | Read pending bus messages for the caller-owned subscriber queue without acknowledging them. | 读取调用方自有 subscriber queue 的 pending bus messages，但不确认。 |
+| `report_agent_status` | Queue an agent task status report through the project daemon report-control queue. | 通过项目 daemon 的 report-control queue 排队上报 agent 任务状态。 |
+| `unregister_agent` | Mark an MCP-registered agent inactive in its project bus. | 将 MCP 注册的 agent 在项目 bus 中标记为 inactive。 |
+
+The MCP bridge also exposes this shared-tool subset:
+
+中文:
+
+MCP bridge 同时暴露以下 shared-tool 子集：
+
+```text
+read_project_registry
+read_bus_summary
+read_prompt_history
+read_open_decisions
+list_agents
+dispatch_message
+ack_bus
+```
+
 Controller-loop prompt only advertises these three direct tool-call names:
 
 ```text

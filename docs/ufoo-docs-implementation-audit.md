@@ -29,20 +29,49 @@ documentation artifacts can remain ignored.
 
 ### `daemon-mcp-integration-plan.md`
 
-Status: active-draft.
+Status: initial implementation + active backlog.
 
 Reason:
 
-- The plan describes a daemon-backed MCP control-plane surface.
-- Code search did not find an MCP server/tool surface implementation in `src/`,
-  `bin/`, or tests.
-- Existing wrapper and daemon control-plane code still covers the current
-  launcher-centric integration path.
+- The plan describes a local global MCP bridge backed by the ufoo daemon
+  control plane.
+- 2026-04-26 code search did not find an MCP server/tool surface
+  implementation in `src/`, `bin/`, or tests.
+- 2026-05-25 update: Mode A now has an initial local global MCP bridge via
+  `ufoo mcp`, with runtime code under `src/runtime/daemon/mcpServer.js`,
+  protocol helpers under `src/runtime/contracts/mcpContract.js`, and unit
+  coverage in `test/unit/daemon/mcpServer.test.js`.
+- Existing wrapper and daemon control-plane code still covers the launcher
+  path; MCP is now the new external control-plane entrypoint, not a launcher
+  replacement.
+- 2026-05-24 review: keep the plan active, but align implementation with the
+  current source map. MCP server/service code should live under
+  `src/runtime/daemon/` and optional contracts under `src/runtime/contracts/`,
+  not an untracked new top-level `src/mcp/` package.
+- 2026-05-24 global-controller review: `ufoo -g` already runs a home-scoped
+  global controller daemon and project daemons publish runtime rows into
+  `~/.ufoo/projects/runtime`. The MCP design should therefore default to a
+  globally configured MCP bridge that connects to the global controller daemon
+  and routes project-scoped operations to project daemons, rather than requiring
+  a separate MCP server configuration in every repository.
+- The plan now also needs to preserve current report-control semantics:
+  file-backed daemon control requests should use a dedicated control queue like
+  `src/runtime/daemon/reportControlBus.js`, not ordinary subscriber
+  `pending.jsonl` queues.
+- Shared tool exposure should follow the tiering in `src/tools/registry.js`:
+  Tier 0 reads are broadly safe, Tier 1 coordination requires authenticated
+  caller identity, and Tier 2 orchestration should stay out of worker-facing V1.
 
 Recommended action:
 
-- Keep as active backlog.
-- Add explicit phase gates before implementation starts.
+- Keep as active backlog for the remaining convergence work.
+- Add explicit phase gates before expanding the MCP tool surface.
+- Before coding, extract a small daemon control-plane service that both IPC and
+  MCP can call, so wrapper registration, report control, and future MCP clients
+  do not grow separate semantics.
+- Keep the global/project boundary explicit: global MCP is a routing entrypoint;
+  project daemons remain the source of truth for project-local bus queues,
+  reports, activity state, and agent metadata.
 
 ### `ufoo-agent-api-loop-plan.md`
 

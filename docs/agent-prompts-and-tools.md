@@ -370,6 +370,37 @@ Worker-tier tools are exposed to internal runner descriptors by
 `src/agents/internal/internalRunner.js`. The current Codex SDK seam injects descriptors;
 live SDK-stream tool execution is still constrained by the provider seam.
 
+## Global MCP Bridge Tools
+
+Sources: `src/runtime/daemon/mcpServer.js`,
+`src/runtime/contracts/mcpContract.js`.
+
+`ufoo mcp` exposes a local global MCP bridge over stdio. The bridge
+auto-starts the home-scoped global controller daemon by default and requires
+project-scoped tools to pass `project_root` from `read_project_registry`.
+There is no V1 project-local MCP server mode.
+
+| Tool | Purpose |
+|---|---|
+| `ufoo_mcp_status` | Read global MCP bridge status and registered project summary. |
+| `register_agent` | Register an externally launched MCP-capable agent into a project bus. |
+| `heartbeat_agent` | Refresh an MCP agent heartbeat. |
+| `publish_activity_state` | Publish MCP agent activity state and detail. |
+| `update_agent_metadata` | Update MCP agent nickname or MCP metadata. |
+| `poll_inbox` | Read pending messages for the caller-owned subscriber queue without acking. |
+| `report_agent_status` | Queue a normalized agent report through the dedicated report-control queue. |
+| `unregister_agent` | Mark an MCP-registered agent inactive. |
+
+The MCP bridge also exposes this shared-tool subset:
+
+- `read_project_registry`
+- `read_bus_summary`
+- `read_prompt_history`
+- `read_open_decisions`
+- `list_agents`
+- `dispatch_message`
+- `ack_bus`
+
 ## Provider Request Shapes
 
 | Provider path | Source | Prompt placement | Tool placement |

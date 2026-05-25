@@ -585,6 +585,16 @@ async function runCli(argv) {
         if (opts.global === true) args.push("-g");
         run(process.execPath, [path.join(repoRoot, "bin", "ufoo.js"), ...args]);
       });
+    program
+      .command("mcp")
+      .description("Run the local global ufoo MCP bridge over stdio")
+      .option("--no-auto-start", "Do not auto-start the home-scoped global controller daemon")
+      .action((opts) => {
+        const repoRoot = getPackageRoot();
+        const args = ["mcp"];
+        if (opts.autoStart === false) args.push("--no-auto-start");
+        run(process.execPath, [path.join(repoRoot, "bin", "ufoo.js"), ...args]);
+      });
     const project = program.command("project").description("Project runtime commands");
     project
       .command("list")
@@ -1769,6 +1779,12 @@ async function runCli(argv) {
       chatArgs.push("-g");
     }
     run(resolveNodeExecutable(), [path.join(repoRoot, "bin", "ufoo.js"), ...chatArgs]);
+    return;
+  }
+  if (cmd === "mcp") {
+    const mcpArgs = ["mcp"];
+    if (rest.includes("--no-auto-start")) mcpArgs.push("--no-auto-start");
+    run(resolveNodeExecutable(), [path.join(repoRoot, "bin", "ufoo.js"), ...mcpArgs]);
     return;
   }
   if (cmd === "project") {
