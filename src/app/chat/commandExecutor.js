@@ -19,6 +19,7 @@ const { parseIntervalMs, formatIntervalMs } = require("./cronScheduler");
 const { isGlobalControllerProjectRoot, resolveGlobalControllerUfooDir } = require("../../runtime/projects");
 const { loadPromptProfileRegistry } = require("../../orchestration/groups/promptProfiles");
 const { resolveSoloAgentType } = require("../../orchestration/solo/commands");
+const { restartDaemonLifecycle } = require("../../runtime/daemon/restart");
 const {
   inspectDirectAuthStatus,
   formatDirectAuthStatus,
@@ -269,15 +270,19 @@ function createCommandExecutor(options = {}) {
       }
 
       statusMsg("{gray-fg}⚙{/gray-fg} Restarting daemon...");
-      stopDaemon(targetRoot, { source: "chat-command:/daemon restart" });
-      await sleep(500);
-      if (isDaemonRunning(targetRoot)) {
+      const result = await restartDaemonLifecycle({
+        projectRoot: targetRoot,
+        isRunning: isDaemonRunning,
+        stopDaemon,
+        startDaemon,
+        stopOptions: { source: "chat-command:/daemon restart" },
+        sleep,
+      });
+      if (result.error === "failed_to_stop") {
         statusMsg("{gray-fg}✗{/gray-fg} Failed to stop daemon");
         return;
       }
-      startDaemon(targetRoot);
-      await sleep(1000);
-      if (isDaemonRunning(targetRoot)) {
+      if (result.ok) {
         statusMsg("{gray-fg}✓{/gray-fg} Daemon restarted");
       } else {
         statusMsg("{gray-fg}✗{/gray-fg} Failed to restart daemon");

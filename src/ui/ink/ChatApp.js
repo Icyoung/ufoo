@@ -23,6 +23,7 @@ const fmt = require("../format");
 const { createMultilineInput } = require("./MultilineInput");
 const { createDashboardBar } = require("./DashboardBar");
 const { reducer, createInitialState } = require("./chatReducer");
+const { restartDaemonLifecycle } = require("../../runtime/daemon/restart");
 
 function bootstrapEnvironment(projectRoot, options = {}) {
   // Ensure ufoo dirs exist and that we have a stable subscriber ID.
@@ -1813,11 +1814,15 @@ function createChatApp({ React, ink, props, interactive = true }) {
               return;
             }
             try { if (conn && typeof conn.close === "function") conn.close(); } catch { /* ignore */ }
-            transportStopDaemon(targetRoot, { source: "ink-command:/daemon restart" });
-            transportStartDaemon(targetRoot);
-            if (targetRoot === (currentProjectRootRef.current || props.projectRoot) && conn && typeof conn.connect === "function") {
-              await conn.connect();
-            }
+            await restartDaemonLifecycle({
+              projectRoot: targetRoot,
+              isRunning: props.env && typeof props.env.isRunning === "function" ? props.env.isRunning : null,
+              stopDaemon: (daemonRoot) => transportStopDaemon(daemonRoot, { source: "ink-command:/daemon restart" }),
+              startDaemon: (daemonRoot) => transportStartDaemon(daemonRoot),
+              connect: targetRoot === (currentProjectRootRef.current || props.projectRoot) && conn && typeof conn.connect === "function"
+                ? () => conn.connect()
+                : null,
+            });
           },
           send: (req) => { try { if (conn && typeof conn.send === "function") conn.send(req); } catch { /* ignore */ } },
           requestStatus: requestDaemonStatus,
@@ -3591,6 +3596,7 @@ async function runChatInk(projectRoot, options = {}) {
     daemonConnection,
     stopDaemon,
     startDaemon,
+    isDaemonRunning: env.isRunning,
     logMessage: () => {},
     queueStatusLine: () => {},
     resolveStatusLine: () => {},

@@ -1,4 +1,5 @@
 const { restartLocks } = require("./daemonTransport");
+const { restartDaemonLifecycle } = require("../../runtime/daemon/restart");
 
 function resolveDaemonConnection(daemonConnection) {
   return typeof daemonConnection === "function" ? daemonConnection() : daemonConnection;
@@ -9,9 +10,11 @@ function restartDaemonFlow(options = {}) {
     projectRoot,
     stopDaemon,
     startDaemon,
+    isDaemonRunning,
     daemonConnection,
     logMessage,
     resolveStatusLine = null,
+    sleep,
   } = options;
 
   const statusMsg = resolveStatusLine || ((text) => logMessage("status", text));
@@ -26,14 +29,21 @@ function restartDaemonFlow(options = {}) {
       if (connection) {
         connection.close();
       }
-      stopDaemon(projectRoot);
-      startDaemon(projectRoot);
-      const connected = connection ? await connection.connect() : false;
-      if (connected) {
-        if (typeof connection.requestStatus === "function") {
-          connection.requestStatus();
-        }
+      const result = await restartDaemonLifecycle({
+        projectRoot,
+        isRunning: isDaemonRunning,
+        stopDaemon,
+        startDaemon,
+        connect: connection ? () => connection.connect() : null,
+        requestStatus: connection && typeof connection.requestStatus === "function"
+          ? () => connection.requestStatus()
+          : null,
+        sleep,
+      });
+      if (result.ok) {
         statusMsg("{gray-fg}✓{/gray-fg} Daemon reconnected");
+      } else if (result.error === "failed_to_stop") {
+        statusMsg("{gray-fg}✗{/gray-fg} Failed to stop daemon");
       } else {
         statusMsg("{gray-fg}✗{/gray-fg} Failed to reconnect to daemon");
       }

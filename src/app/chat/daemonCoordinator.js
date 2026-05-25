@@ -12,8 +12,10 @@ function createDaemonCoordinator(options = {}) {
     logMessage,
     stopDaemon,
     startDaemon,
+    isDaemonRunning,
     daemonConnection,
     restartDaemon,
+    sleep,
   } = options;
 
   const connectClientFn = connectClient
@@ -37,9 +39,11 @@ function createDaemonCoordinator(options = {}) {
     projectRoot,
     stopDaemon,
     startDaemon,
+    isDaemonRunning,
     daemonConnection: connection,
     logMessage,
     resolveStatusLine,
+    sleep,
   });
   let switchProjectChain = Promise.resolve();
 

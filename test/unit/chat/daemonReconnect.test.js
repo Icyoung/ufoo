@@ -100,6 +100,40 @@ describe("chat daemonReconnect", () => {
     );
   });
 
+  test("restart flow cleans stale state before starting when daemon is already down", async () => {
+    const logMessage = jest.fn();
+    const resolveStatusLine = jest.fn();
+    const stopDaemon = jest.fn(() => true);
+    const startDaemon = jest.fn(() => true);
+    const states = [false, true];
+    const isDaemonRunning = jest.fn(() => states.shift() ?? true);
+    const daemonConnection = {
+      close: jest.fn(),
+      connect: jest.fn().mockResolvedValue(true),
+      requestStatus: jest.fn(),
+    };
+
+    const restartDaemon = restartDaemonFlow({
+      projectRoot: "/tmp/project",
+      stopDaemon,
+      startDaemon,
+      isDaemonRunning,
+      daemonConnection,
+      logMessage,
+      resolveStatusLine,
+      sleep: jest.fn(() => Promise.resolve()),
+    });
+
+    await restartDaemon();
+
+    expect(stopDaemon).toHaveBeenCalledWith("/tmp/project");
+    expect(startDaemon).toHaveBeenCalledWith("/tmp/project");
+    expect(daemonConnection.connect).toHaveBeenCalledTimes(1);
+    expect(resolveStatusLine).toHaveBeenCalledWith(
+      "{gray-fg}✓{/gray-fg} Daemon reconnected"
+    );
+  });
+
   test("restart flow guards reentry", async () => {
     const logMessage = jest.fn();
     const stopDaemon = jest.fn();
@@ -123,6 +157,10 @@ describe("chat daemonReconnect", () => {
 
     const first = restartDaemon();
     const second = restartDaemon();
+    for (let i = 0; i < 5; i += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await Promise.resolve();
+    }
 
     expect(stopDaemon).toHaveBeenCalledTimes(1);
     expect(startDaemon).toHaveBeenCalledTimes(1);
