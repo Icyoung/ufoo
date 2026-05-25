@@ -535,7 +535,7 @@ async function runCli(argv) {
   const chalk = requireOptional("chalk") || { cyan: (s) => s, red: (s) => s };
 
   if (commander && commander.Command) {
-    const { Command } = commander;
+    const { Command, Option } = commander;
     const program = new Command();
 
     program
@@ -1074,10 +1074,10 @@ async function runCli(argv) {
         }
       });
 
-    program
+    const initCommand = program
       .command("init")
-      .description("Initialize modules in a project")
-      .option("--modules <list>", "Comma-separated modules (context,bus,resources)", "context")
+      .description("Initialize ufoo workspace state in a project")
+      .option("--targets <list>", "Comma-separated init targets (context,bus)")
       .option("--project <dir>", "Target project directory", process.cwd())
       .action(async (opts) => {
         const UfooInit = require("./features/init");
@@ -1090,6 +1090,11 @@ async function runCli(argv) {
           process.exitCode = 1;
         }
       });
+    if (Option && typeof Option === "function") {
+      initCommand.addOption(new Option("--modules <list>", "Deprecated alias for --targets").hideHelp());
+    } else {
+      initCommand.option("--modules <list>", "Deprecated alias for --targets");
+    }
 
     const skills = program.command("skills").description("Manage skills templates");
     skills
@@ -1713,7 +1718,7 @@ async function runCli(argv) {
     console.log("  ufoo recover [list [target] | run <target>] [--json]");
     console.log("  ufoo report <start|progress|done|error|list> [message] [--task <id>] [--agent <id>]");
     console.log("  ufoo ucode [doctor|prepare|build] [--skip-install]");
-    console.log("  ufoo init [--modules <list>] [--project <dir>]");
+    console.log("  ufoo init [--targets <list>] [--project <dir>]");
     console.log("  ufoo skills list");
     console.log("  ufoo skills install <name|all> [--target <dir> | --codex | --agents]");
     console.log("  ufoo group templates [list|ls] [--json]");
@@ -2058,7 +2063,7 @@ async function runCli(argv) {
     };
 
     const opts = {
-      modules: getOpt("--modules", "context"),
+      targets: getOpt("--targets", getOpt("--modules", "context")),
       project: getOpt("--project", process.cwd()),
     };
 

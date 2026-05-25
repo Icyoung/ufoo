@@ -1,5 +1,5 @@
 /**
- * Terminal detection and feature modules.
+ * Terminal detection and feature helpers.
  */
 
 const detect = require("./detect");

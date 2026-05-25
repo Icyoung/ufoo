@@ -13,7 +13,7 @@ ufoo is the multi-agent coordination layer. It provides four capabilities:
 1. **Context Decisions** — Sparse log of major plan-level choices shared across agents
 2. **Shared Memory** — Durable, low-noise project facts shared across agents
 3. **Event Bus** — Inter-agent messaging
-4. **Initialization** — Project setup for ufoo modules
+4. **Initialization** — Project setup for ufoo workspace state
 
 ## 1. Context Decisions (uctx)
 
@@ -199,7 +199,7 @@ ufoo history prompt [limit]     # Render as injectable prompt block
 Trigger: `/uinit` or `/ufoo init`
 
 ```bash
-ufoo init --modules context,bus --project $(pwd)
+ufoo init --targets context,bus --project $(pwd)
 ```
 
 After init, auto-join bus if enabled.

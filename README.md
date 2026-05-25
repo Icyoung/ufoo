@@ -69,7 +69,7 @@ Initialize a project and open the chat dashboard:
 
 ```bash
 cd your-project
-ufoo init --modules context,bus
+ufoo init --targets context,bus
 ufoo
 ```
 
@@ -167,7 +167,7 @@ still available, but the normal ufoo workflow is to work from chat.
 These are setup or troubleshooting commands. In chat, use slash commands:
 
 ```text
-/init context bus resources
+/init context bus
 /doctor
 /status
 /daemon status
@@ -177,11 +177,11 @@ These are setup or troubleshooting commands. In chat, use slash commands:
 ```
 
 `ufoo init` creates `.ufoo/`, ensures `AGENTS.md` and `CLAUDE.md`, initializes
-selected modules, and prepares shared storage. `CLAUDE.md` may be a symlink;
-edit project instructions in `AGENTS.md`.
+selected workspace state, and prepares shared storage. `CLAUDE.md` may be a
+symlink; edit project instructions in `AGENTS.md`.
 
 Before a project has been initialized, the equivalent CLI form is also useful:
-`ufoo init --modules context,bus`.
+`ufoo init --targets context,bus`.
 
 ### Event Bus
 

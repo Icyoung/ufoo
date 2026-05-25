@@ -14,29 +14,22 @@ class RepoDoctor {
   }
 
   run() {
-    const contextMod = path.join(this.repoRoot, "modules", "context");
+    const skillsDir = path.join(this.repoRoot, "SKILLS");
+    const contextSkill = path.join(skillsDir, "uctx", "SKILL.md");
+    const busSkill = path.join(skillsDir, "ubus", "SKILL.md");
 
-    const contextExists = fs.existsSync(contextMod);
-    if (!contextExists) {
-      this.fail(`missing ${contextMod}`);
-    }
+    if (!fs.existsSync(contextSkill)) this.fail(`missing ${contextSkill}`);
+    if (!fs.existsSync(busSkill)) this.fail(`missing ${busSkill}`);
 
-    if (contextExists) {
-      const contextDoctor = new ContextDoctor(this.repoRoot);
-      const ok = contextDoctor.lintProtocol();
-      if (!ok) this.failed = true;
-    }
+    const contextDoctor = new ContextDoctor(this.repoRoot);
+    const ok = contextDoctor.lintProtocol();
+    if (!ok) this.failed = true;
 
     console.log("=== ufoo doctor ===");
     console.log(`Monorepo: ${this.repoRoot}`);
-    console.log("Modules:");
-    if (contextExists) {
-      console.log(`- context: ${contextMod}`);
-    }
-    const resources = path.join(this.repoRoot, "modules", "resources");
-    if (fs.existsSync(resources)) {
-      console.log(`- resources: ${resources}`);
-    }
+    console.log("Skills:");
+    if (fs.existsSync(contextSkill)) console.log(`- uctx: ${contextSkill}`);
+    if (fs.existsSync(busSkill)) console.log(`- ubus: ${busSkill}`);
 
     if (this.failed) {
       console.log("Status: FAILED");

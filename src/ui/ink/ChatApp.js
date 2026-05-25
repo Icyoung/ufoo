@@ -3549,7 +3549,7 @@ async function runChatInk(projectRoot, options = {}) {
     const repoRoot = path.join(__dirname, "..", "..", "..");
     const init = new env.UfooInit(repoRoot);
     await init.init({
-      modules: "context,bus",
+      targets: "context,bus",
       project: projectRoot,
       controllerMode: env.globalMode,
     });

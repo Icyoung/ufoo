@@ -142,29 +142,18 @@ describe("ContextDoctor", () => {
   });
 
   describe("lintProtocol", () => {
-    test("returns true when no protocol module exists", () => {
+    test("returns true when no bundled context skill exists", () => {
       const doctor = new ContextDoctor(projectRoot);
       expect(doctor.lintProtocol()).toBe(true);
     });
 
-    test("succeeds with valid protocol structure", () => {
-      const moduleRoot = path.join(projectRoot, "modules", "context");
+    test("succeeds with bundled context skill", () => {
       const skillDir = path.join(projectRoot, "SKILLS", "uctx");
       fs.mkdirSync(skillDir, { recursive: true });
-      fs.mkdirSync(moduleRoot, { recursive: true });
-      fs.writeFileSync(path.join(moduleRoot, "README.md"), "# Context");
       fs.writeFileSync(path.join(skillDir, "SKILL.md"), "# Skill");
 
       const doctor = new ContextDoctor(projectRoot);
       expect(doctor.lintProtocol()).toBe(true);
-    });
-
-    test("fails when protocol files are missing", () => {
-      const moduleRoot = path.join(projectRoot, "modules", "context");
-      fs.mkdirSync(moduleRoot, { recursive: true });
-
-      const doctor = new ContextDoctor(projectRoot);
-      expect(doctor.lintProtocol()).toBe(false);
     });
   });
 

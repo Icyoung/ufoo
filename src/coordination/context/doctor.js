@@ -83,21 +83,17 @@ class ContextDoctor {
   }
 
   /**
-   * Lint 协议 repo（modules/context）
+   * Lint bundled context skill.
    */
   lintProtocol() {
-    const moduleRoot = path.join(this.projectRoot, "modules", "context");
     const repoSkill = path.join(this.projectRoot, "SKILLS", "uctx", "SKILL.md");
 
-    if (!fs.existsSync(moduleRoot)) {
-      console.log("No protocol module found (skipping protocol lint)");
+    if (!fs.existsSync(repoSkill)) {
+      console.log("No bundled context skill found (skipping protocol lint)");
       return true;
     }
 
-    console.log(`Linting protocol repo: ${moduleRoot}`);
-
-    // Check minimal module files
-    this.checkFile(path.join(moduleRoot, "README.md"), "README.md");
+    console.log(`Linting bundled context skill: ${repoSkill}`);
     this.checkFile(repoSkill, "SKILLS/uctx/SKILL.md");
 
     return !this.failed;
@@ -151,20 +147,6 @@ class ContextDoctor {
       } catch {
         // Silent
       }
-    }
-
-    // Check global modules
-    const globalContext = path.join(
-      process.env.HOME,
-      ".ufoo",
-      "modules",
-      "context"
-    );
-    if (!fs.existsSync(globalContext)) {
-      console.log("");
-      console.log(
-        `WARN: ${globalContext} not found (install via ufoo for best UX)`
-      );
     }
 
     console.log("");

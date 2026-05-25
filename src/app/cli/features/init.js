@@ -7,23 +7,22 @@ const path = require("path");
 class UfooInit {
   constructor(repoRoot) {
     this.repoRoot = repoRoot;
-    this.contextMod = path.join(repoRoot, "modules", "context");
-    this.busMod = path.join(repoRoot, "modules", "bus");
-    this.resourcesMod = path.join(repoRoot, "modules", "resources");
-    this.agentsTemplate = path.join(repoRoot, "modules", "AGENTS.template.md");
   }
 
   /**
    * 初始化项目
    */
   async init(options = {}) {
-    const modules = (options.modules || "context").split(",");
+    const targets = (options.targets || options.modules || "context")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
     const project = options.project || process.cwd();
     const controllerMode = options.controllerMode === true;
 
     console.log("=== ufoo init ===");
     console.log(`Project directory: ${project}`);
-    console.log(`Modules: ${modules.join(", ")}`);
+    console.log(`Targets: ${targets.join(", ")}`);
     console.log();
 
     if (!controllerMode) {
@@ -33,24 +32,17 @@ class UfooInit {
     // 初始化核心
     this.initCore(project, { controllerMode });
 
-    if (!controllerMode) {
-      this.injectAgentsTemplate(project);
-    }
-
-    // 初始化各模块
-    for (const module of modules) {
-      switch (module.trim()) {
+    // Initialize selected workspace features.
+    for (const target of targets) {
+      switch (target) {
         case "context":
           this.initContext(project);
           break;
         case "bus":
           await this.initBus(project);
           break;
-        case "resources":
-          this.initResources(project);
-          break;
         default:
-          console.error(`Unknown module: ${module}`);
+          console.error(`Unknown init target: ${target}`);
       }
     }
 
@@ -121,106 +113,7 @@ class UfooInit {
   }
 
   /**
-   * 注入 ufoo 模板到 AGENTS.md / CLAUDE.md
-   */
-  injectAgentsTemplate(project) {
-    if (!fs.existsSync(this.agentsTemplate)) {
-      console.log("[template] AGENTS.template.md not found, skipping");
-      return;
-    }
-
-    const template = fs.readFileSync(this.agentsTemplate, "utf8");
-    const targets = this.resolveTemplateTargets(project);
-    if (targets.length === 0) {
-      console.log("[template] No target markdown files found, skipping");
-      return;
-    }
-
-    const labels = targets.map((file) => path.relative(project, file) || path.basename(file));
-    console.log(`[template] Injecting ufoo template into: ${labels.join(", ")}`);
-
-    for (const file of targets) {
-      this.injectTemplateIntoFile(file, template);
-    }
-
-    console.log("[template] Done");
-  }
-
-  resolveTemplateTargets(project) {
-    const agentsFile = path.resolve(path.join(project, "AGENTS.md"));
-    const claudeFile = path.resolve(path.join(project, "CLAUDE.md"));
-    const targets = new Set();
-
-    if (fs.existsSync(agentsFile)) {
-      targets.add(agentsFile);
-    }
-
-    const claudeStat = this.safeLstat(claudeFile);
-    if (!claudeStat) return Array.from(targets);
-
-    if (claudeStat.isSymbolicLink()) {
-      try {
-        const rawTarget = fs.readlinkSync(claudeFile);
-        const sourceFile = path.resolve(path.dirname(claudeFile), rawTarget);
-        const projectRoot = path.resolve(project);
-        const inProject = sourceFile === projectRoot || sourceFile.startsWith(`${projectRoot}${path.sep}`);
-        if (inProject) {
-          targets.add(sourceFile);
-        } else {
-          console.warn(`[template] CLAUDE.md symlink target outside project, skipped: ${sourceFile}`);
-        }
-      } catch {
-        // ignore broken symlink
-      }
-      return Array.from(targets);
-    }
-
-    targets.add(claudeFile);
-    return Array.from(targets);
-  }
-
-  injectTemplateIntoFile(filePath, template) {
-    if (!fs.existsSync(filePath)) return;
-
-    let content = fs.readFileSync(filePath, "utf8");
-    const marker = "<!-- ufoo-template -->";
-    const block = `${marker}\n${template}\n${marker}`;
-
-    if (content.includes(marker)) {
-      const startIdx = content.indexOf(marker);
-      const endIdx = content.indexOf(marker, startIdx + marker.length);
-      if (endIdx !== -1) {
-        content = content.slice(0, startIdx) + block + content.slice(endIdx + marker.length);
-      } else {
-        content = content.slice(0, startIdx) + block + content.slice(startIdx + marker.length);
-      }
-    } else {
-      const headingEnd = this.findFirstHeadingEnd(content);
-      if (headingEnd !== -1) {
-        content = content.slice(0, headingEnd) + `\n${block}\n\n` + content.slice(headingEnd);
-      } else {
-        content = `${block}\n\n${content}`;
-      }
-    }
-    fs.writeFileSync(filePath, content, "utf8");
-  }
-
-  findFirstHeadingEnd(content) {
-    const atxHeading = content.match(/^(?:[ \t]{0,3})#{1,6}[ \t]*[^\n]*(?:\n|$)/m);
-    const setextHeading = content.match(/^[^\n]+\n(?:=+|-+)[ \t]*(?:\n|$)/m);
-
-    let bestMatch = null;
-    if (atxHeading && setextHeading) {
-      bestMatch = atxHeading.index <= setextHeading.index ? atxHeading : setextHeading;
-    } else {
-      bestMatch = atxHeading || setextHeading;
-    }
-    if (!bestMatch) return -1;
-    return bestMatch.index + bestMatch[0].length;
-  }
-
-  /**
-   * 初始化 context 模块
+   * 初始化 context
    */
   initContext(project) {
     console.log("[context] Initializing decision-only context...");
@@ -247,10 +140,10 @@ class UfooInit {
   }
 
   /**
-   * 初始化 bus 模块
+   * 初始化 bus
    */
   async initBus(project) {
-    console.log("[bus] Initializing bus module...");
+    console.log("[bus] Initializing bus...");
 
     const EventBus = require("../../../coordination/bus");
     const bus = new EventBus(project);
@@ -263,78 +156,6 @@ class UfooInit {
     }
   }
 
-  /**
-   * 初始化 resources 模块
-   */
-  initResources(project) {
-    if (!fs.existsSync(this.resourcesMod)) {
-      console.log("[resources] Module not found, skipping");
-      return;
-    }
-
-    console.log("[resources] Initializing resources module...");
-
-    const targetDir = path.join(project, ".ufoo", "resources");
-
-    // 复制模块内容
-    this.copyModuleContent(this.resourcesMod, targetDir);
-
-    console.log("[resources] Done");
-  }
-
-  /**
-   * 复制模块内容
-   */
-  copyModuleContent(src, dest) {
-    if (!fs.existsSync(dest)) {
-      fs.mkdirSync(dest, { recursive: true });
-    }
-
-    // 复制所有文件和目录（排除 .git、node_modules 等）
-    const entries = fs.readdirSync(src, { withFileTypes: true });
-
-    for (const entry of entries) {
-      // 跳过特殊目录
-      if (entry.name.startsWith(".") || entry.name === "node_modules") {
-        continue;
-      }
-
-      const srcPath = path.join(src, entry.name);
-      const destPath = path.join(dest, entry.name);
-
-      if (entry.isDirectory()) {
-        this.copyRecursive(srcPath, destPath);
-      } else {
-        fs.copyFileSync(srcPath, destPath);
-      }
-    }
-  }
-
-  /**
-   * 递归复制目录
-   */
-  copyRecursive(src, dest) {
-    if (!fs.existsSync(dest)) {
-      fs.mkdirSync(dest, { recursive: true });
-    }
-
-    const entries = fs.readdirSync(src, { withFileTypes: true });
-
-    for (const entry of entries) {
-      if (entry.name.startsWith(".") || entry.name === "node_modules") {
-        continue;
-      }
-
-      const srcPath = path.join(src, entry.name);
-      const destPath = path.join(dest, entry.name);
-
-      if (entry.isDirectory()) {
-        this.copyRecursive(srcPath, destPath);
-      } else {
-        fs.copyFileSync(srcPath, destPath);
-      }
-    }
-  }
 }
 
 module.exports = UfooInit;

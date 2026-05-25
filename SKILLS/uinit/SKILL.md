@@ -1,14 +1,14 @@
 ---
 name: uinit
 description: |
-  Initialize ufoo modules in current project.
+  Initialize ufoo workspace state in current project.
   Use when: (1) new project needs context/bus enabled, (2) user inputs /uinit or /ufoo init.
-  Provides interactive module selection, defaults to all selected.
+  Provides interactive target selection, defaults to all selected.
 ---
 
 # uinit
 
-Initialize ufoo modules in current project.
+Initialize ufoo workspace state in current project.
 
 ## Trigger
 
@@ -16,22 +16,20 @@ User inputs `/uinit` or `/ufoo init`
 
 ## Execution Flow
 
-### 1. Ask user to select modules
+### 1. Ask user to select init targets
 
 Use AskUserQuestion tool, provide multi-select, default all selected:
 
 ```
-Please select modules to enable:
+Please select ufoo state to enable:
 
 ☑ context - Shared context protocol (.ufoo/context/)
 ☑ bus - Agent event bus (.ufoo/bus/ + .ufoo/agent/)
-☐ resources - UI/Icons resources (optional)
 ```
 
 Options:
 - `context` (recommended) - Shared context, sparse decision log for major plan-level choices
 - `bus` (recommended) - Multi-agent communication, task delegation, message passing
-- `resources` (optional) - UI tone guide, icon library
 
 Default selected: context, bus
 
@@ -40,10 +38,10 @@ Default selected: context, bus
 Based on user selection, execute:
 
 ```bash
-ufoo init --modules <selected_modules> --project $(pwd)
+ufoo init --targets <selected_targets> --project $(pwd)
 ```
 
-### 3. If bus module selected, auto-join bus
+### 3. If bus target selected, auto-join bus
 
 ```bash
 SUBSCRIBER="${UFOO_SUBSCRIBER_ID:-$(ufoo bus whoami 2>/dev/null || true)}"
@@ -60,7 +58,7 @@ fi
 ```
 === ufoo initialization complete ===
 
-Enabled modules:
+Enabled ufoo state:
   ✓ core memory → .ufoo/memory/
   ✓ context → .ufoo/context/
   ✓ bus → .ufoo/bus/ + .ufoo/agent/
@@ -76,4 +74,3 @@ Next steps:
 
 - If .ufoo/memory, .ufoo/context, .ufoo/bus, or .ufoo/agent already exists, skip creation
 - After initialization, reuse existing subscriber ID first, join only as fallback (if bus enabled)
-- AGENTS.md will have protocol description block injected

@@ -67,7 +67,7 @@ npm link
 
 ```bash
 cd your-project
-ufoo init --modules context,bus
+ufoo init --targets context,bus
 ufoo
 ```
 
@@ -163,7 +163,7 @@ ufoo -g
 这些是初始化或排障命令。进入 chat 后优先使用 slash command：
 
 ```text
-/init context bus resources
+/init context bus
 /doctor
 /status
 /daemon status
@@ -173,10 +173,10 @@ ufoo -g
 ```
 
 `ufoo init` 会创建 `.ufoo/`，确保 `AGENTS.md` 和 `CLAUDE.md` 存在，
-初始化选中的模块，并准备共享存储。`CLAUDE.md` 可以是 symlink；项目指令
-优先编辑 `AGENTS.md`。
+初始化选中的工作区状态，并准备共享存储。`CLAUDE.md` 可以是 symlink；
+项目指令优先编辑 `AGENTS.md`。
 
-项目尚未初始化时，也可以先在外部执行等价 CLI：`ufoo init --modules context,bus`。
+项目尚未初始化时，也可以先在外部执行等价 CLI：`ufoo init --targets context,bus`。
 
 ### 事件总线
 

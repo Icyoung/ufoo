@@ -47,7 +47,7 @@ const COMMAND_TREE = {
       templates: { desc: "List available templates" },
     },
   },
-  "/init": { desc: "Initialize modules" },
+  "/init": { desc: "Initialize workspace" },
   "/multi": { desc: "Toggle multi-window agent view" },
   "/open": { desc: "Open project path in global mode" },
   "/launch": {
@@ -305,7 +305,7 @@ function describeCommandForChat(text) {
   if (command === "multi") return "Toggling multi-pane view";
   if (command === "open") return `Opening project ${args[0] || ""}`.trim();
   if (command === "resume") return args[0] === "list" ? "Listing recoverable agents" : `Resuming ${args[0] || "agents"}`;
-  if (command === "init") return "Initializing ufoo modules";
+  if (command === "init") return "Initializing ufoo workspace";
 
   return `Running /${command}`;
 }

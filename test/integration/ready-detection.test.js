@@ -106,7 +106,7 @@ describe("Ready Detection Integration Tests", () => {
     fs.mkdirSync(TEST_PROJECT, { recursive: true });
 
     // Initialize ufoo
-    spawnSync("node", [UFOO_BIN, "init", "--modules", "context,bus"], {
+    spawnSync("node", [UFOO_BIN, "init", "--targets", "context,bus"], {
       cwd: TEST_PROJECT,
       stdio: "ignore",
     });

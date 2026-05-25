@@ -53,7 +53,7 @@ Important boundaries:
   should not import Ink components.
 - Prompt builders should not import UI or daemon implementations.
 - Provider adapters should not know about chat commands.
-- Runtime contracts should not import feature modules.
+- Runtime contracts should not import CLI features.
 
 ## Source Ownership
 
@@ -61,7 +61,7 @@ Important boundaries:
 |---|---|---|
 | `src/app/chat/` | Chat client | Slash commands, daemon connection, multi-window panes, agent selection, chat state. |
 | `src/app/cli/` | CLI entry | Main command runner and command groups. |
-| `src/app/cli/features/` | CLI feature modules | Init, doctor, and skill installation logic used by CLI/chat/daemon entry paths. |
+| `src/app/cli/features/` | CLI features | Init, doctor, and skill installation logic used by CLI/chat/daemon entry paths. |
 | `src/ui/ink/` | Terminal UI components | Ink components for chat and `ucode`. |
 | `src/ui/format/` | Pure display helpers | Width, markdown, status, input, and banner formatting. |
 | `src/runtime/daemon/` | Project daemon and MCP bridge | Global MCP bridge, IPC server, prompt routing, launch/resume/close, cron, reports, status, group orchestration. |
@@ -111,7 +111,7 @@ Do not recreate compatibility directories for old paths.
 
 ## Local State
 
-`ufoo init --modules context,bus` creates the project-local runtime root:
+`ufoo init --targets context,bus` creates the project-local runtime root:
 
 ```text
 .ufoo/

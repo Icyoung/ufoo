@@ -323,22 +323,10 @@ class AgentLauncher {
 
     if (!fs.existsSync(busDir)) {
       // 调用 ufoo init
-      spawnSync("ufoo", ["init", "--modules", "context,bus"], {
+      spawnSync("ufoo", ["init", "--targets", "context,bus"], {
         cwd: this.cwd,
         stdio: "ignore",
       });
-    }
-
-    // 检查 AGENTS.md 是否有 ufoo template
-    const agentsFile = path.join(this.cwd, "AGENTS.md");
-    if (fs.existsSync(agentsFile)) {
-      const content = fs.readFileSync(agentsFile, "utf8");
-      if (!content.includes("<!-- ufoo -->")) {
-        spawnSync("ufoo", ["init", "--modules", "context,bus"], {
-          cwd: this.cwd,
-          stdio: "ignore",
-        });
-      }
     }
   }
 

@@ -1300,14 +1300,14 @@ describe("chat commandExecutor", () => {
     expect(logs.some((e) => e.text.includes("Initializing") || e.text.includes("complete"))).toBe(true);
   });
 
-  test("handleInitCommand with specific modules", async () => {
+  test("handleInitCommand with specific targets", async () => {
     const { executor, options } = createHarness({
       parseCommand: jest.fn(() => ({ command: "init", args: ["context", "bus"] })),
     });
     await executor.executeCommand("/init context bus");
     const initMock = options.createInit.mock.results[0].value;
     expect(initMock.init).toHaveBeenCalledWith(
-      expect.objectContaining({ modules: "context,bus" })
+      expect.objectContaining({ targets: "context,bus" })
     );
   });
 

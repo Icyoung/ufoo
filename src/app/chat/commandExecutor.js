@@ -303,7 +303,7 @@ function createCommandExecutor(options = {}) {
   }
 
   async function handleInitCommand(args = []) {
-    logMessage("system", "{white-fg}⚙{/white-fg} Initializing ufoo modules...");
+    logMessage("system", "{white-fg}⚙{/white-fg} Initializing ufoo workspace...");
 
     await withCapturedConsole(
       {
@@ -319,8 +319,8 @@ function createCommandExecutor(options = {}) {
         try {
           const repoRoot = path.join(__dirname, "..", "..");
           const init = createInit(repoRoot);
-          const modules = args.length > 0 ? args.join(",") : "context,bus";
-          await init.init({ modules, project: projectRoot });
+          const targets = args.length > 0 ? args.join(",") : "context,bus";
+          await init.init({ targets, project: projectRoot });
 
           logMessage("system", "{white-fg}✓{/white-fg} Initialization complete");
           renderScreen();

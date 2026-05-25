@@ -400,7 +400,7 @@ async function ensureGlobalControllerDaemon(options = {}) {
     const UfooInit = require("../../app/cli/features/init");
     const init = new UfooInit(PACKAGE_ROOT);
     await suppressConsoleToStderr(() => init.init({
-      modules: "context,bus",
+      targets: "context,bus",
       project: root,
       controllerMode: true,
     }));

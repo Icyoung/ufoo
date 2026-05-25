@@ -1438,7 +1438,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
           if (!fs.existsSync(targetPaths.ufooDir)) {
             const repoRoot = path.join(__dirname, "..", "..", "..");
             const init = new (require("../../app/cli/features/init"))(repoRoot);
-            await init.init({ modules: "context,bus", project: root });
+            await init.init({ targets: "context,bus", project: root });
           }
           if (!isRunning(root)) {
             cleanupStaleState(root);

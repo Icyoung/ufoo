@@ -108,7 +108,7 @@ describe("bootstrapEnvironment", () => {
     expect(env.runtimePaths).toBeTruthy();
     // We don't assert needsBootstrap (depends on filesystem state) — the
     // important contract is that the helper is pure-of-side-effects and
-    // hands back the modules it found.
+    // hands back the runtime helpers it found.
     expect(typeof env.UfooInit).toBe("function");
     expect(typeof env.isRunning).toBe("function");
     expect(typeof env.startDaemon).toBe("function");
