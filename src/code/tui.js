@@ -5,6 +5,7 @@ const {
   StreamBuffer,
   UCODE_BANNER_LINES,
   UCODE_VERSION,
+  appendToolMergeEntry,
   buildMergedToolExpandedLines,
   buildMergedToolSummaryText,
   buildUcodeBannerLines,
@@ -31,6 +32,7 @@ const {
   shouldClearAgentSelectionOnUp,
   shouldEnterAgentSelection,
   shouldUseUcodeTui,
+  splitStreamingLogChunk,
   stripLeakedEscapeTags,
 } = fmt;
 
@@ -64,8 +66,10 @@ module.exports = {
   resolveHistoryDownTransition,
   filterSelectableAgents,
   stripLeakedEscapeTags,
+  splitStreamingLogChunk,
   createEscapeTagStripper,
   formatPendingElapsed,
+  appendToolMergeEntry,
   normalizeBashToolCommand,
   normalizeToolMergeEntry,
   buildMergedToolSummaryText,

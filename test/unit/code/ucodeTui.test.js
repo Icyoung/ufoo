@@ -22,8 +22,10 @@ const {
   formatPendingElapsed,
   normalizeBashToolCommand,
   normalizeToolMergeEntry,
+  appendToolMergeEntry,
   buildMergedToolSummaryText,
   buildMergedToolExpandedLines,
+  splitStreamingLogChunk,
   UCODE_BANNER_LINES,
   UCODE_VERSION,
 } = require("../../../src/code/tui");
@@ -492,6 +494,17 @@ describe("ucode tui switch", () => {
     });
   });
 
+  test("appendToolMergeEntry starts a fresh group when scope changes", () => {
+    const first = appendToolMergeEntry(null, { tool: "read" }, 1, 1);
+    const sameScope = appendToolMergeEntry(first, { tool: "bash" }, 1, 2);
+    const nextScope = appendToolMergeEntry(sameScope, { tool: "edit" }, 2, 3);
+
+    expect(sameScope.entries.map((entry) => entry.tool)).toEqual(["read", "bash"]);
+    expect(nextScope.id).toBe(3);
+    expect(nextScope.scope).toBe(2);
+    expect(nextScope.entries.map((entry) => entry.tool)).toEqual(["edit"]);
+  });
+
   test("buildMergedToolSummaryText summarizes consecutive tool calls", () => {
     expect(buildMergedToolSummaryText([])).toBe("Ran tool");
     expect(buildMergedToolSummaryText([{ tool: "bash", detail: "ls -la" }])).toBe("Ran bash · ls -la");
@@ -511,5 +524,23 @@ describe("ucode tui switch", () => {
       "read · AGENTS.md",
       "bash · ls -la · error: exit 1",
     ]);
+  });
+
+  test("splitStreamingLogChunk drops tool-call leading blank line only", () => {
+    expect(splitStreamingLogChunk("", "\nanalysis done", {
+      dropLeadingBlank: true,
+    })).toEqual({
+      lines: [],
+      buffer: "analysis done",
+      sawVisible: true,
+    });
+
+    expect(splitStreamingLogChunk("", "first\n\nsecond", {
+      dropLeadingBlank: true,
+    })).toEqual({
+      lines: ["first", ""],
+      buffer: "second",
+      sawVisible: true,
+    });
   });
 });

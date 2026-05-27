@@ -518,6 +518,24 @@ function normalizeToolMergeEntry(entry = {}) {
   };
 }
 
+function appendToolMergeEntry(currentMerge = null, entry = {}, scope = 0, nextId = 1) {
+  const toolEntry = normalizeToolMergeEntry(entry);
+  const current = currentMerge && typeof currentMerge === "object" ? currentMerge : null;
+  const normalizedScope = Number.isFinite(Number(scope)) ? Number(scope) : 0;
+  if (current && current.scope === normalizedScope && Array.isArray(current.entries)) {
+    return {
+      ...current,
+      entries: current.entries.concat([toolEntry]),
+    };
+  }
+  return {
+    id: Number.isFinite(Number(nextId)) ? Number(nextId) : 1,
+    scope: normalizedScope,
+    entries: [toolEntry],
+    expanded: false,
+  };
+}
+
 function buildMergedToolSummaryText(entries = []) {
   const list = Array.isArray(entries)
     ? entries.map((item) => normalizeToolMergeEntry(item))
@@ -549,6 +567,27 @@ function buildMergedToolExpandedLines(entries = []) {
     }
     return line;
   });
+}
+
+function splitStreamingLogChunk(buffer = "", chunk = "", options = {}) {
+  const previous = String(buffer || "");
+  const text = String(chunk || "");
+  const combined = `${previous}${text}`;
+  const parts = combined.split(/\r?\n/);
+  const lines = parts.slice(0, -1);
+  const dropLeadingBlank = Boolean(options.dropLeadingBlank) && previous === "";
+
+  if (dropLeadingBlank) {
+    while (lines.length > 0 && lines[0] === "") {
+      lines.shift();
+    }
+  }
+
+  return {
+    lines,
+    buffer: parts[parts.length - 1] || "",
+    sawVisible: /[^\s]/.test(text),
+  };
 }
 
 // Composed live-row text for an in-flight tool group: shows the merged
@@ -937,6 +976,7 @@ module.exports = {
   TOOL_LABELS,
   UCODE_BANNER_LINES,
   UCODE_VERSION,
+  appendToolMergeEntry,
   buildMergedToolExpandedLines,
   buildMergedToolSummaryText,
   buildToolMergeRowText,
@@ -970,5 +1010,6 @@ module.exports = {
   shouldClearAgentSelectionOnUp,
   shouldEnterAgentSelection,
   shouldUseUcodeTui,
+  splitStreamingLogChunk,
   stripLeakedEscapeTags,
 };

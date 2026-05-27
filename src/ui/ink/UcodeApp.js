@@ -78,6 +78,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
     const { stdout } = useStdout();
     const lineSeqRef = useRef(banner.length + 1);
     const mergeIdRef = useRef(0);
+    const toolMergeScopeRef = useRef(0);
 
     const targetAgent = agentSelectionMode && selectedAgentIndex >= 0
       ? agents[selectedAgentIndex]
@@ -261,13 +262,12 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       const toolEntry = fmt.normalizeToolMergeEntry({ tool, detail, isError, errorText });
 
       setActiveMerge((current) => {
-        let next;
-        if (current) {
-          next = { ...current, entries: current.entries.concat([toolEntry]) };
-        } else {
+        const scope = toolMergeScopeRef.current;
+        const isNewScope = !(current && current.scope === scope);
+        if (isNewScope) {
           mergeIdRef.current += 1;
-          next = { id: mergeIdRef.current, entries: [toolEntry], expanded: false };
         }
+        const next = fmt.appendToolMergeEntry(current, toolEntry, scope, mergeIdRef.current);
         if (next.entries.length >= 2) lastMergeRef.current = next;
         return next;
       });
@@ -313,6 +313,8 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
     const executeLine = useCallback(async (rawValue) => {
       const normalized = String(rawValue || "").replace(/\r?\n/g, " ").trim();
       if (!normalized) return;
+      toolMergeScopeRef.current += 1;
+      flushActiveMerge();
       appendLogLine(`› ${normalized}`);
 
       const runtimeWorkspace = String(
@@ -459,6 +461,8 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
           setNlStatus("Waiting for model...");
           let streamBuf = "";
           let sawStreamText = false;
+          let streamStarted = false;
+          let dropLeadingStreamBlank = false;
           let nlResult = null;
           try {
             nlResult = await props.runNaturalLanguageTask(result.task, props.state, {
@@ -477,13 +481,21 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
               onDelta: (delta) => {
                 const text = String(delta || "");
                 if (!text) return;
-                if (/[^\s]/.test(text)) sawStreamText = true;
-                streamBuf += text;
-                const parts = streamBuf.split(/\r?\n/);
-                while (parts.length > 1) {
-                  appendLogLine(parts.shift());
+                if (!streamStarted) {
+                  flushActiveMerge();
+                  streamStarted = true;
                 }
-                streamBuf = parts[0];
+                const split = fmt.splitStreamingLogChunk(streamBuf, text, {
+                  dropLeadingBlank: dropLeadingStreamBlank,
+                });
+                if (split.sawVisible) {
+                  sawStreamText = true;
+                  dropLeadingStreamBlank = false;
+                }
+                for (const line of split.lines) {
+                  appendLogLine(line);
+                }
+                streamBuf = split.buffer;
               },
               onToolLog: (entry) => {
                 if (!entry || typeof entry !== "object") return;
@@ -491,6 +503,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
                   const label = fmt.TOOL_LABELS[String(entry.tool || "").toLowerCase()] ||
                     `Calling ${entry.tool}`;
                   setNlStatus(`${label}...`);
+                  dropLeadingStreamBlank = true;
                 }
                 logToolHint(entry, entry.result);
               },
@@ -516,6 +529,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
             const summary = props.formatNlResult(nlResult, false);
             if (summary) appendLogText(summary);
           }
+          flushActiveMerge();
           try {
             const persisted = props.persistSessionState(props.state);
             if (persisted && persisted.ok === false) {
@@ -531,7 +545,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
         default:
           if (result.output) appendLogText(result.output);
       }
-    }, [appendLogLine, appendLogText, exit, props, logToolHint]);
+    }, [appendLogLine, appendLogText, exit, props, logToolHint, flushActiveMerge]);
     // ^ `props` is captured by the createUcodeApp closure on a single mount,
     // so its reference is stable across renders even though it looks like a
     // changing dep to React's exhaustive-deps lint.
