@@ -91,6 +91,18 @@ describe("chat log display classification", () => {
     expect(classifyChatLogLine("─── history ───")).toMatchObject({ kind: "divider" });
   });
 
+  test("classifies chat banner rows with metadata as banner lines", () => {
+    const line = "  █ █ █▀▀ █▀█ █▀▄   █▀▀ █ █ ▄▀█ ▀█▀  Version: 2.4.7";
+    expect(classifyChatLogLine(line)).toMatchObject({
+      kind: "banner",
+      body: line,
+    });
+    expect(buildChatLogLineModel(line)).toMatchObject({
+      markerText: "  ",
+      bodyText: line,
+    });
+  });
+
   test("speaker rows reserve a visible gap after marker and wrap from speaker edge", () => {
     expect(buildChatLogLineModel("builder- · hello")).toMatchObject({
       markerText: "•  ",

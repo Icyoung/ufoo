@@ -110,20 +110,32 @@ describe("builtin group templates", () => {
     const buildLane = registry.byAlias.get("build-lane");
     const agents = new Map(buildLane.data.agents.map((agent) => [agent.nickname, agent]));
 
-    expect(agents.get("qa")).toEqual(
+    expect(agents.has("qa")).toBe(false);
+    expect(agents.get("architect")).toEqual(
       expect.objectContaining({
-        prompt_profile: "qa-driver",
-        startup_order: 4,
+        prompt_profile: "system-architect",
+        startup_order: 1,
       })
     );
-    expect(agents.get("qa").depends_on).toEqual(["architect", "builder", "reviewer"]);
-    expect(agents.get("reviewer").report_to).toContain("qa");
-    expect(agents.get("qa").report_to).toEqual(expect.arrayContaining(["builder", "reviewer"]));
+    expect(agents.get("architect").role).toContain("PMO");
+    expect(agents.get("architect").role).toContain("multi-agent");
+    expect(agents.get("architect").role).toContain("phased");
+    expect(agents.get("architect").role).toContain("test handoff");
+    expect(agents.get("reviewer")).toEqual(
+      expect.objectContaining({
+        prompt_profile: "review-critic",
+        startup_order: 3,
+      })
+    );
+    expect(agents.get("reviewer").role).toContain("QA");
+    expect(agents.get("reviewer").report_to).toEqual(expect.arrayContaining(["builder", "architect"]));
     expect(buildLane.data.edges).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ from: "reviewer", to: "qa" }),
-        expect.objectContaining({ from: "qa", to: "builder" }),
+        expect.objectContaining({ from: "builder", to: "reviewer" }),
+        expect.objectContaining({ from: "reviewer", to: "builder" }),
+        expect.objectContaining({ from: "reviewer", to: "architect" }),
       ])
     );
+    expect(buildLane.data.edges.some((edge) => edge.from === "qa" || edge.to === "qa")).toBe(false);
   });
 });

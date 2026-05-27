@@ -61,6 +61,7 @@ const fmt = require("../format");
 const __imeStdoutState = new WeakSet();
 const __imeCursor = {
   active: false,
+  showHardwareCursor: true,
   // Where to park the cursor: rowsUp above ink's "row after last frame line"
   // anchor, and 0-based terminal column.
   parkRowsUp: 0,
@@ -100,7 +101,8 @@ function applyParkSequence(parkRowsUp) {
   const up = parkRowsUp > 0 ? `\x1b[${parkRowsUp}A` : "";
   const col = `\x1b[${__imeCursor.parkCol + 1}G`; // CHA is 1-based
   __imeCursor.movedUpRows = parkRowsUp;
-  return `\x1b[?25h${up}${col}`;
+  const visibility = __imeCursor.showHardwareCursor ? "\x1b[?25h" : "\x1b[?25l";
+  return `${up}${col}${visibility}`;
 }
 
 function patchStdoutForIME(out) {
@@ -158,6 +160,7 @@ function createMultilineInput({ React, ink }) {
     promptPrefix = "› ",
     promptColor = "magenta",
     borderColor = "gray",
+    showHardwareCursor = true,
     // How many terminal rows of UI sit *below* the bottom of this input box
     // (status line, dashboard rows, etc.). The component uses this to compute
     // how far up the hardware cursor needs to be moved after each render so
@@ -485,13 +488,16 @@ function createMultilineInput({ React, ink }) {
       const targetRowsUp = __imeCursor.lastFrameHadNewline
         ? rowsBelowCursor
         : Math.max(0, rowsBelowCursor - 1);
+      const desiredShowHardwareCursor = showHardwareCursor !== false;
       const alreadyParked = __imeCursor.active === true
         && __imeCursor.parkRowsUp === rowsBelowCursor
         && __imeCursor.parkCol === cursorTermCol
-        && __imeCursor.movedUpRows === targetRowsUp;
+        && __imeCursor.movedUpRows === targetRowsUp
+        && __imeCursor.showHardwareCursor === desiredShowHardwareCursor;
       // Publish the desired park target so the stdout monkey-patch can
       // re-park after every throttled ink frame write.
       __imeCursor.active = true;
+      __imeCursor.showHardwareCursor = desiredShowHardwareCursor;
       __imeCursor.parkRowsUp = rowsBelowCursor;
       __imeCursor.parkCol = cursorTermCol;
       if (alreadyParked) return undefined;

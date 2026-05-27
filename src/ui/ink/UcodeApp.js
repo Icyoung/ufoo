@@ -48,7 +48,6 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       startedAt: 0,
     });
     const [spinnerTick, setSpinnerTick] = useState(0);
-    const [, setNowTick] = useState(0);
     const [size, setSize] = useState({ cols: 0, rows: 0 });
     const [agents, setAgents] = useState([]);
     const [selectedAgentIndex, setSelectedAgentIndex] = useState(-1);
@@ -661,7 +660,6 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       }
       const timer = setInterval(() => {
         setSpinnerTick((t) => t + 1);
-        if (status.showTimer) setNowTick((t) => t + 1);
       }, 100);
       return () => clearInterval(timer);
     }, [status.message, status.type, status.showTimer]);
@@ -730,6 +728,11 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
           // IME parking contract keeps the hardware cursor aligned with the
           // inverse caret instead of drifting to the bottom of the frame.
           linesBelowInput: 1,
+          // During model/tool activity ucode redraws the status line every
+          // spinner frame. Keeping the hardware cursor hidden avoids a
+          // visible hide/show flash; the inverse caret remains rendered and
+          // the cursor position is still parked for IME composition.
+          showHardwareCursor: !status.message,
         }),
       ),
       h(Box, { width: "100%" },

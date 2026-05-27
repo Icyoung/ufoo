@@ -4,7 +4,7 @@
     "id": "build-lane",
     "alias": "build-lane",
     "name": "Build Lane",
-    "description": "Default engineering lane: plan, implement, review, and QA one scoped change."
+    "description": "Default engineering lane: architect/PMO plans phased work, builder implements, reviewer validates review and QA gates."
   },
   "defaults": {
     "launch_mode": "auto",
@@ -15,7 +15,7 @@
       "id": "architect",
       "nickname": "architect",
       "type": "auto",
-      "role": "define slices and architecture constraints",
+      "role": "act as build-lane architect/PMO: design the solution as phased multi-agent work, assign ownership/dependencies/handoffs, and define when each phase is ready for review/QA test handoff",
       "prompt_profile": "system-architect",
       "accept_from": [
         "builder",
@@ -36,8 +36,7 @@
       "prompt_profile": "implementation-lead",
       "accept_from": [
         "architect",
-        "reviewer",
-        "qa"
+        "reviewer"
       ],
       "report_to": [
         "reviewer"
@@ -51,42 +50,20 @@
       "id": "reviewer",
       "nickname": "reviewer",
       "type": "auto",
-      "role": "review code correctness and release risk before QA",
+      "role": "review code correctness, release risk, regression coverage, and user-flow QA",
       "prompt_profile": "review-critic",
       "accept_from": [
         "architect",
-        "builder",
-        "qa"
+        "builder"
       ],
       "report_to": [
         "builder",
-        "qa"
+        "architect"
       ],
       "startup_order": 3,
       "depends_on": [
         "architect",
         "builder"
-      ]
-    },
-    {
-      "id": "qa",
-      "nickname": "qa",
-      "type": "auto",
-      "role": "validate the implemented change from user-flow and regression perspectives",
-      "prompt_profile": "qa-driver",
-      "accept_from": [
-        "builder",
-        "reviewer"
-      ],
-      "report_to": [
-        "builder",
-        "reviewer"
-      ],
-      "startup_order": 4,
-      "depends_on": [
-        "architect",
-        "builder",
-        "reviewer"
       ]
     }
   ],
@@ -108,12 +85,7 @@
     },
     {
       "from": "reviewer",
-      "to": "qa",
-      "kind": "review"
-    },
-    {
-      "from": "qa",
-      "to": "builder",
+      "to": "architect",
       "kind": "task"
     }
   ]

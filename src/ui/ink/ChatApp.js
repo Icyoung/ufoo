@@ -391,7 +391,7 @@ function classifyChatLogLine(text = "") {
   const clean = stripMarkdownDecorators(raw);
   const trimmed = clean.trim();
   if (!trimmed) return { kind: "spacer", marker: " ", speaker: "", body: " " };
-  if (/^[█▀▄ ]+$/.test(trimmed) || /^ufoo chat/i.test(trimmed)) {
+  if (/^[█▀▄ ]+(?:\s{2,}(?:Version|Mode|Dictionary):.*)?$/.test(trimmed) || /^ufoo chat/i.test(trimmed)) {
     return { kind: "banner", marker: " ", speaker: "", body: clean };
   }
   if (/^───.*───$/.test(trimmed)) {
@@ -3285,7 +3285,7 @@ function createChatApp({ React, ink, props, interactive = true }) {
         );
       }
       if (row.kind === "banner") {
-        return h(Box, { key, marginBottom: 1 },
+        return h(Box, { key },
           h(Text, { color: colors.body, bold: true, wrap: "truncate" }, row.body),
         );
       }
