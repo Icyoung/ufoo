@@ -167,4 +167,50 @@ describe("controllerToolExecutor", () => {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
   });
+
+  test("passes controller ops hooks to shared registry control tools", async () => {
+    const cases = [
+      {
+        name: "close_agent",
+        args: { agent_id: "codex:a1" },
+        expectedOp: { action: "close", agent_id: "codex:a1" },
+      },
+      {
+        name: "rename_agent",
+        args: { agent_id: "codex:a1", nickname: "builder" },
+        expectedOp: { action: "rename", agent_id: "codex:a1", nickname: "builder" },
+      },
+      {
+        name: "manage_cron",
+        args: { operation: "list" },
+        expectedOp: { action: "cron", operation: "list" },
+      },
+    ];
+
+    for (const item of cases) {
+      const handleOps = jest.fn().mockResolvedValue([{ ok: true, action: item.expectedOp.action }]);
+      const processManager = { marker: item.name };
+
+      const result = await executeControllerTool({
+        projectRoot: "/tmp/project",
+        subscriber: "ufoo-agent",
+        handleOps,
+        processManager,
+        observer: { emit: jest.fn(), audit: jest.fn() },
+      }, {
+        id: `tool-${item.name}`,
+        name: item.name,
+        arguments: item.args,
+      });
+
+      expect(result).toEqual(expect.objectContaining({
+        ok: true,
+        result: expect.objectContaining({
+          ok: true,
+          operation: item.expectedOp,
+        }),
+      }));
+      expect(handleOps).toHaveBeenCalledWith("/tmp/project", [item.expectedOp], processManager);
+    }
+  });
 });

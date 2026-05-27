@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { getUfooPaths } = require("../../coordination/state/paths");
 const { buildDefaultStartupBootstrapPrompt } = require("../../agents/prompts/defaultBootstrap");
+const { hasSharedUfooProtocolPrompt } = require("../../agents/prompts/groupBootstrap");
 
 function readFileSafe(filePath = "") {
   if (!filePath) return "";
@@ -75,14 +76,9 @@ function buildBootstrapContent({
   return `${lines.join("\n")}\n`;
 }
 
-function hasUfooProtocolPrompt(promptText = "") {
-  const text = String(promptText || "");
-  return text.includes("Session harness: ufoo") && text.includes("ufoo ctx decisions -l");
-}
-
 function mergeDefaultUfooProtocolPrompt(projectRoot = "", promptText = "") {
   const currentPrompt = String(promptText || "").trim();
-  if (hasUfooProtocolPrompt(currentPrompt)) return currentPrompt;
+  if (hasSharedUfooProtocolPrompt(currentPrompt)) return currentPrompt;
   const defaultPrompt = buildDefaultStartupBootstrapPrompt({
     agentType: "ufoo-code",
     projectRoot,
@@ -127,7 +123,7 @@ function prepareUcodeBootstrap({
 }
 
 module.exports = {
-  hasUfooProtocolPrompt,
+  hasUfooProtocolPrompt: hasSharedUfooProtocolPrompt,
   mergeDefaultUfooProtocolPrompt,
   readFileSafe,
   resolveProjectRules,

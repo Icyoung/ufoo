@@ -32,6 +32,7 @@ const {
   resolveInternalBootstrap,
   persistProviderSessionId,
 } = require("../../../src/agents/internal/internalRunner");
+const { SHARED_UFOO_PROTOCOL } = require("../../../src/agents/prompts/groupBootstrap");
 
 describe("agent internalRunner stream forwarding", () => {
   beforeEach(() => {
@@ -525,6 +526,19 @@ describe("internalRunner bootstrap resolution", () => {
     });
 
     expect(resolved.promptText).toContain("role prompt");
+    expect(resolved.extraArgs).toEqual(["--json"]);
+  });
+
+  test("does not duplicate default bootstrap when role prompt already contains shared protocol", () => {
+    const resolved = resolveInternalBootstrap({
+      projectRoot: process.cwd(),
+      agentType: "codex",
+      extraArgs: ["--json", SHARED_UFOO_PROTOCOL],
+      env: {},
+    });
+
+    expect(resolved.promptText.match(/Session harness: ufoo/g)).toHaveLength(1);
+    expect(resolved.promptText.match(/ufoo ctx decisions -l/g)).toHaveLength(1);
     expect(resolved.extraArgs).toEqual(["--json"]);
   });
 

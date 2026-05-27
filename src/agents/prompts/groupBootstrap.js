@@ -56,6 +56,12 @@ const SHARED_UFOO_PROTOCOL = [
   "Then continue the active task.",
 ].join("\n");
 
+function hasSharedUfooProtocolPrompt(promptText = "") {
+  const text = String(promptText || "");
+  if (!text.includes("ufoo ctx decisions -l")) return false;
+  return text.includes("Session harness: ufoo") || text.includes("ufoo protocol:");
+}
+
 const SHARED_GROUP_PREFIX = [
   SILENT_BOOTSTRAP_INSTRUCTION,
   "",
@@ -207,6 +213,7 @@ function computeBootstrapFingerprint({
 module.exports = {
   SILENT_BOOTSTRAP_INSTRUCTION,
   SHARED_UFOO_PROTOCOL,
+  hasSharedUfooProtocolPrompt,
   SHARED_GROUP_PREFIX,
   SOLO_AGENT_PREFIX,
   buildGroupPromptMetadata,

@@ -13,9 +13,9 @@ Execution protocol:
 - On session start, check context quickly:
   \`ufoo ctx decisions -l\`
   \`ufoo ctx decisions -n 1\`
-- If work has coordination value, report lifecycle:
-  \`ufoo report start "<task>" --task <id> --agent "\${UFOO_SUBSCRIBER_ID:-ucode}" --scope public\`
-  \`ufoo report done "<summary>" --task <id> --agent "\${UFOO_SUBSCRIBER_ID:-ucode}" --scope public\`
+- After handling work that arrived from chat (\`[manual]<to:...>\`) or bus (\`[ufoo]<from:...>\`), report lifecycle:
+  \`ufoo report start|progress|done|error "<short summary>"\`
+  Do not emulate report failures with \`ufoo bus send ufoo-agent ...\`; if \`ufoo report\` fails, continue without a fallback bus report.
 - If \`ubus\` is requested, execute pending messages immediately, reply to sender, then ack.`;
 }
 

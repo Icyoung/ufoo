@@ -20,6 +20,7 @@ const {
   buildDefaultStartupBootstrapPrompt,
   isValueForCodexOption,
 } = require("../prompts/defaultBootstrap");
+const { hasSharedUfooProtocolPrompt } = require("../prompts/groupBootstrap");
 const { buildPromptInjectionText } = require("../../coordination/bus/promptEnvelope");
 
 function sleep(ms) {
@@ -70,11 +71,6 @@ function readFileSafe(filePath = "") {
   } catch {
     return "";
   }
-}
-
-function hasUfooProtocolPrompt(promptText = "") {
-  const text = String(promptText || "");
-  return text.includes("ufoo protocol:") && text.includes("ufoo ctx decisions -l");
 }
 
 function hasPromptArg(args = []) {
@@ -140,7 +136,7 @@ function resolveInternalBootstrap({
     promptText = String(env.UFOO_STARTUP_BOOTSTRAP_TEXT || "").trim();
   }
 
-  if (!hasUfooProtocolPrompt(promptText)) {
+  if (!hasSharedUfooProtocolPrompt(promptText)) {
     const defaultPrompt = buildDefaultStartupBootstrapPrompt({
       agentType: bootstrapAgentType,
       projectRoot,

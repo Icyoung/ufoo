@@ -160,6 +160,8 @@ async function handleSharedRegistryTool(ctx, name, args, audit = {}) {
     subscriber: ctx.subscriber || "ufoo-agent",
     caller_tier: CALLER_TIERS.CONTROLLER,
     eventBus,
+    handleOps: ctx.handleOps,
+    processManager: ctx.processManager || null,
     turn_id: audit.turn_id || "",
     tool_call_id: audit.tool_call_id || "",
   }, args);
