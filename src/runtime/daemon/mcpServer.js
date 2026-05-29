@@ -470,6 +470,7 @@ class UfooMcpServer {
     };
     this.initialized = false;
     this.startup = null;
+    this.registeredSubscribers = [];
   }
 
   async ensureStarted() {
@@ -544,6 +545,12 @@ class UfooMcpServer {
           ...this.options,
           toolCallId: id,
         }));
+        if (name === "register_agent" && result && result.subscriber && result.project_root) {
+          this.registeredSubscribers.push({
+            subscriber: result.subscriber,
+            projectRoot: result.project_root,
+          });
+        }
         return createJsonRpcResult(id, createMcpContent(result));
       }
 
@@ -555,6 +562,17 @@ class UfooMcpServer {
       if (err && err.stack && process.env.UFOO_MCP_DEBUG === "1") data.stack = err.stack;
       return createJsonRpcError(id, MCP_ERROR_CODES.INTERNAL_ERROR, err.message || String(err), data);
     }
+  }
+
+  cleanup() {
+    for (const { subscriber, projectRoot } of this.registeredSubscribers) {
+      try {
+        controlPlane.unregisterAgent(projectRoot, { subscriber });
+      } catch {
+        // best-effort cleanup
+      }
+    }
+    this.registeredSubscribers = [];
   }
 }
 
@@ -598,6 +616,9 @@ async function runMcpServer(options = {}) {
         });
     }
   });
+
+  input.on("end", () => server.cleanup());
+  input.on("close", () => server.cleanup());
 
   return server;
 }
