@@ -2547,6 +2547,12 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
       tryResolveSession(1);
       return;
     }
+    if (req.type === IPC_REQUEST_TYPES.REFRESH_STATUS) {
+      cleanupInactiveSubscribers();
+      const status = buildRuntimeStatus();
+      ipcServer.sendToSockets({ type: IPC_RESPONSE_TYPES.STATUS, data: status });
+      return;
+    }
   };
 
   ipcServer.listen(socketPath(projectRoot));
