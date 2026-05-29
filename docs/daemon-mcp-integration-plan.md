@@ -41,6 +41,40 @@ Remaining work:
   **Done (2026-05-29)**: `docs/mcp-client-examples.md` covers Claude Desktop,
   Claude Code CLI, and Codex configuration plus a register→poll→ack walkthrough.
 
+## Phase 5 Implementation (2026-05-29)
+
+Wrapper registration converged onto the shared service layer:
+
+- `checkAndCleanupNickname` moved from `daemon/index.js` to `nicknameScope.js`.
+- `controlPlaneService.registerAgentFull(projectRoot, args, options)` handles
+  the superset of registration logic: session reuse, parentPid validation,
+  nickname scope/conflict checks, and bus join.
+- `registerAgent()` (MCP path) is now a thin wrapper calling `registerAgentFull`
+  with `{validateParentPid: false, checkNicknameConflicts: false}`.
+- The daemon's `REGISTER_AGENT` IPC handler calls `registerAgentFull` with
+  `{validateParentPid: true, checkNicknameConflicts: true}`, keeping only
+  provider session resolution and socket response inline.
+
+Exit criteria met:
+- `uclaude` / `ucodex` and external MCP clients share one registration path.
+- Daemon registration semantics are unified through `controlPlaneService`.
+
+## Phase 6 Validation (2026-05-29)
+
+Integration test added at `test/unit/daemon/mcpIntegration.test.js`:
+
+- Two external agents (claude + codex) register without wrappers.
+- Both appear in `read_bus_summary`.
+- Agent A publishes activity, sends a message to Agent B.
+- Agent B polls inbox, sees the message, acks.
+- Agent B submits a report.
+- Agent A updates metadata (nickname + custom metadata).
+- Both unregister cleanly.
+
+All acceptance criteria from Section 10 are met in the test environment.
+Live validation against real `claude` / `codex` sessions requires the MCP
+client configuration from `docs/mcp-client-examples.md`.
+
 ## Design Adjustment (2026-05-24)
 
 The high-level direction still looks correct: the global MCP bridge should
