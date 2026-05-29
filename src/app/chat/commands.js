@@ -49,6 +49,14 @@ const COMMAND_TREE = {
   },
   "/init": { desc: "Initialize workspace" },
   "/multi": { desc: "Toggle multi-window agent view" },
+  "/mcp": {
+    desc: "MCP bridge diagnostics",
+    children: {
+      status: { desc: "Show global MCP bridge status", order: 1 },
+      tools: { desc: "List exposed MCP tools", order: 2 },
+      help: { desc: "Show MCP setup hints", order: 3 },
+    },
+  },
   "/open": { desc: "Open project path in global mode" },
   "/launch": {
     desc: "Launch new agent",
@@ -296,6 +304,13 @@ function describeCommandForChat(text) {
     if (sub === "stop") return `Stopping cron task ${args[1] || ""}`.trim();
     if (sub === "list") return "Listing cron tasks";
     return "Managing cron tasks";
+  }
+
+  if (command === "mcp") {
+    if (!sub || sub === "status") return "Checking MCP bridge status";
+    if (sub === "tools") return "Listing MCP tools";
+    if (sub === "help") return "Showing MCP setup help";
+    return `Running /mcp ${sub}`;
   }
 
   if (command === "settings") return !sub || sub === "show" ? "Showing settings" : "Updating settings";

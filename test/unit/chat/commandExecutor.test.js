@@ -1186,6 +1186,68 @@ describe("chat commandExecutor", () => {
     expect(logs.some((entry) => entry.text.includes("Multi-window mode is not available"))).toBe(false);
   });
 
+  test("executeCommand routes /mcp status to MCP status diagnostics", async () => {
+    const handleRequest = jest.fn().mockResolvedValue({
+      result: {
+        structuredContent: {
+          global_controller_root: "/Users/test",
+          global_controller_running: true,
+          auto_start: false,
+          projects: [
+            { project_name: "ufoo", project_root: "/tmp/ufoo" },
+          ],
+        },
+      },
+    });
+    const createMcpServer = jest.fn(() => ({ handleRequest }));
+    const { executor, logs, options } = createHarness({
+      parseCommand: jest.fn(() => ({ command: "mcp", args: ["status"] })),
+      createMcpServer,
+    });
+
+    await executor.executeCommand("/mcp status");
+
+    expect(createMcpServer).toHaveBeenCalledWith({
+      autoStart: false,
+      validateProjectRoot: true,
+    });
+    expect(handleRequest).toHaveBeenCalledWith(expect.objectContaining({
+      method: "tools/call",
+      params: expect.objectContaining({ name: "ufoo_mcp_status" }),
+    }));
+    expect(logs.some((entry) => entry.text.includes("MCP bridge"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("ufoo mcp"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("registered projects: 1"))).toBe(true);
+    expect(options.renderScreen).toHaveBeenCalled();
+  });
+
+  test("executeCommand routes /mcp tools to exposed tool listing", async () => {
+    const buildMcpToolList = jest.fn(() => [
+      { name: "ufoo_mcp_status", description: "Read status" },
+      { name: "register_agent", description: "Register agent" },
+    ]);
+    const { executor, logs } = createHarness({
+      parseCommand: jest.fn(() => ({ command: "mcp", args: ["tools"] })),
+      buildMcpToolList,
+    });
+
+    await executor.executeCommand("/mcp tools");
+
+    expect(buildMcpToolList).toHaveBeenCalled();
+    expect(logs.some((entry) => entry.text.includes("2 exposed tool"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("register_agent"))).toBe(true);
+  });
+
+  test("executeCommand routes /mcp help to setup hints", async () => {
+    const { executor, logs } = createHarness({
+      parseCommand: jest.fn(() => ({ command: "mcp", args: ["help"] })),
+    });
+
+    await executor.executeCommand("/mcp help");
+
+    expect(logs.some((entry) => entry.text.includes("Configure client command: ufoo mcp"))).toBe(true);
+  });
+
   test("handleDaemonCommand stop path calls stopDaemon", async () => {
     const { executor, options } = createHarness({
       parseCommand: jest.fn(() => ({ command: "daemon", args: ["stop"] })),

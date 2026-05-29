@@ -13,6 +13,21 @@ function hasGlobalModeFlag(args = []) {
   return args.includes("-g") || args.includes("--global");
 }
 
+function printMcpHelp() {
+  console.log("Usage: ufoo mcp [options]");
+  console.log("");
+  console.log("Run the local global ufoo MCP bridge over stdio.");
+  console.log("");
+  console.log("Options:");
+  console.log("  --no-auto-start  Do not auto-start the home-scoped global controller daemon");
+  console.log("  -h, --help       Display help for the MCP bridge command");
+  console.log("");
+  console.log("Notes:");
+  console.log("  Configure MCP-capable clients with command: ufoo mcp");
+  console.log("  Example without daemon auto-start: ufoo mcp --no-auto-start");
+  console.log("  Human diagnostics are available in chat: /mcp status, /mcp tools, /mcp help");
+}
+
 async function main() {
   const globalMode = hasGlobalModeFlag(rawArgv);
   const argv = rawArgv.filter((arg) => arg !== "-g" && arg !== "--global");
@@ -28,6 +43,10 @@ async function main() {
     return;
   }
   if (cmd === "mcp") {
+    if (argv.includes("--help") || argv.includes("-h")) {
+      printMcpHelp();
+      return;
+    }
     await runMcpServer({
       autoStart: !argv.includes("--no-auto-start"),
     });

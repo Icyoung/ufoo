@@ -14,6 +14,14 @@ function runCli(args = []) {
 }
 
 describe("bin group command contracts", () => {
+  test("ufoo mcp --help prints command help instead of starting stdio server", () => {
+    const result = runCli(["mcp", "--help"]);
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("Usage: ufoo mcp [options]");
+    expect(result.stdout).toContain("ufoo mcp --no-auto-start");
+  });
+
   test("supports commander syntax: ufoo group templates list", () => {
     const result = runCli(["group", "templates", "list"]);
     expect(result.status).toBe(0);

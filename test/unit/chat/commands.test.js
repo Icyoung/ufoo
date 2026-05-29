@@ -117,6 +117,16 @@ describe("chat command helpers", () => {
     expect(open.desc).toBe("Open project path in global mode");
   });
 
+  test("mcp command is exposed with diagnostic subcommands", () => {
+    const mcp = COMMAND_REGISTRY.find((item) => item.cmd === "/mcp");
+    expect(mcp).toBeTruthy();
+    expect((mcp.subcommands || []).map((sub) => sub.cmd)).toEqual([
+      "status",
+      "tools",
+      "help",
+    ]);
+  });
+
   test("ucodeconfig command is not exposed", () => {
     const ucodeconfig = COMMAND_REGISTRY.find((item) => item.cmd === "/ucodeconfig");
     expect(ucodeconfig).toBeFalsy();
@@ -153,5 +163,6 @@ describe("chat command helpers", () => {
     expect(describeCommandForChat("/launch claude count=2 window")).toBe("Launching 2 claude agents in a new window");
     expect(describeCommandForChat("/group run build-lane")).toBe("Launching group build-lane");
     expect(describeCommandForChat("/bus rename codex:1 qa")).toBe("Renaming codex:1 to qa");
+    expect(describeCommandForChat("/mcp tools")).toBe("Listing MCP tools");
   });
 });

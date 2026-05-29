@@ -24,6 +24,10 @@ const {
   inspectDirectAuthStatus,
   formatDirectAuthStatus,
 } = require("../../agents/providers/directAuthStatus");
+const {
+  buildToolList: defaultBuildMcpToolList,
+  createUfooMcpServer: defaultCreateMcpServer,
+} = require("../../runtime/daemon/mcpServer");
 
 function defaultCreateDoctor(projectRoot) {
   const UfooDoctor = require("../cli/features/doctor");
@@ -147,6 +151,8 @@ function createCommandExecutor(options = {}) {
     runGroupCore = runGroupCoreCommand,
     inspectDirectAuth = inspectDirectAuthStatus,
     formatDirectAuth = formatDirectAuthStatus,
+    buildMcpToolList = defaultBuildMcpToolList,
+    createMcpServer = defaultCreateMcpServer,
     requestCron = null,
     globalMode = false,
     listProjects = () => [],
@@ -333,6 +339,93 @@ function createCommandExecutor(options = {}) {
         }
       }
     );
+  }
+
+  function logMcpHelp() {
+    logMessage("system", "{cyan-fg}MCP bridge:{/cyan-fg} local stdio bridge for external MCP-capable agents");
+    logMessage("system", "  • Configure client command: ufoo mcp");
+    logMessage("system", "  • Disable daemon auto-start: ufoo mcp --no-auto-start");
+    logMessage("system", "  • Topology: one global bridge, project tools route through registered project daemons");
+    logMessage("system", "  • Chat diagnostics: /mcp status, /mcp tools, /mcp help");
+  }
+
+  async function readMcpStatus() {
+    const server = createMcpServer({
+      autoStart: false,
+      validateProjectRoot: true,
+    });
+    const response = await server.handleRequest({
+      jsonrpc: "2.0",
+      id: "chat-mcp-status",
+      method: "tools/call",
+      params: {
+        name: "ufoo_mcp_status",
+        arguments: {},
+      },
+    });
+    if (response && response.error) {
+      const message = response.error.message || "MCP status request failed";
+      throw new Error(message);
+    }
+    return response && response.result ? response.result.structuredContent : null;
+  }
+
+  async function handleMcpCommand(args = []) {
+    const subcommand = String(args[0] || "status").trim().toLowerCase();
+
+    if (subcommand === "help") {
+      logMcpHelp();
+      renderScreen();
+      return;
+    }
+
+    if (subcommand === "tools") {
+      try {
+        const tools = buildMcpToolList();
+        logMessage("system", `{cyan-fg}MCP tools:{/cyan-fg} ${tools.length} exposed tool(s)`);
+        for (const tool of tools) {
+          const name = escapeBlessed(tool.name || "");
+          const desc = escapeBlessed(tool.description || "");
+          logMessage("system", `  • {cyan-fg}${name}{/cyan-fg}${desc ? ` - ${desc}` : ""}`);
+        }
+      } catch (err) {
+        logMessage("error", `{white-fg}✗{/white-fg} MCP tools failed: ${escapeBlessed(err.message)}`);
+      }
+      renderScreen();
+      return;
+    }
+
+    if (subcommand === "status") {
+      try {
+        const status = await readMcpStatus();
+        if (!status) {
+          throw new Error("empty MCP status response");
+        }
+        const projects = Array.isArray(status.projects) ? status.projects : [];
+        logMessage("system", "{cyan-fg}MCP bridge:{/cyan-fg} local stdio server");
+        logMessage("system", "  • command: {cyan-fg}ufoo mcp{/cyan-fg}");
+        logMessage("system", `  • global controller: ${escapeBlessed(status.global_controller_root || "")}`);
+        logMessage("system", `  • daemon: ${status.global_controller_running ? "{green-fg}running{/green-fg}" : "{yellow-fg}not running{/yellow-fg}"}`);
+        logMessage("system", "  • client auto-start: enabled by default");
+        logMessage("system", `  • status probe auto-start: ${status.auto_start ? "enabled" : "disabled"}`);
+        logMessage("system", `  • registered projects: ${projects.length}`);
+        for (const project of projects.slice(0, 5)) {
+          const label = project.project_name || project.name || project.project_root || "";
+          const root = project.project_root || "";
+          logMessage("system", `    - ${escapeBlessed(label)}${root && root !== label ? ` (${escapeBlessed(root)})` : ""}`);
+        }
+        if (projects.length > 5) {
+          logMessage("system", `    - ... ${projects.length - 5} more`);
+        }
+      } catch (err) {
+        logMessage("error", `{white-fg}✗{/white-fg} MCP status failed: ${escapeBlessed(err.message)}`);
+      }
+      renderScreen();
+      return;
+    }
+
+    logMessage("error", "{white-fg}✗{/white-fg} Unknown MCP command. Use: status, tools, help");
+    renderScreen();
   }
 
   async function handleBusCommand(args = []) {
@@ -1608,6 +1701,9 @@ function createCommandExecutor(options = {}) {
           logMessage("error", "{white-fg}✗{/white-fg} Multi-window mode is not available");
         }
         return true;
+      case "mcp":
+        await handleMcpCommand(args);
+        return true;
       case "doctor":
         await handleDoctorCommand();
         return true;
@@ -1670,6 +1766,7 @@ function createCommandExecutor(options = {}) {
     handleDoctorCommand,
     handleStatusCommand,
     handleDaemonCommand,
+    handleMcpCommand,
     handleInitCommand,
     handleBusCommand,
     handleCtxCommand,
