@@ -92,7 +92,7 @@ describe("chat log display classification", () => {
   });
 
   test("classifies chat banner rows with metadata as banner lines", () => {
-    const line = "  █ █ █▀▀ █▀█ █▀▄   █▀▀ █ █ ▄▀█ ▀█▀  Version: 2.4.7";
+    const line = "  █ █ █▀▀ █▀█ █▀█  Version: 2.4.7";
     expect(classifyChatLogLine(line)).toMatchObject({
       kind: "banner",
       body: line,
