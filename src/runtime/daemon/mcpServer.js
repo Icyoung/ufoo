@@ -551,6 +551,11 @@ class UfooMcpServer {
             projectRoot: result.project_root,
           });
         }
+        if (name === "unregister_agent" && result && result.subscriber) {
+          this.registeredSubscribers = this.registeredSubscribers.filter(
+            (entry) => entry.subscriber !== result.subscriber
+          );
+        }
         return createJsonRpcResult(id, createMcpContent(result));
       }
 
