@@ -1,11 +1,16 @@
 "use strict";
 
+const crypto = require("crypto");
 const net = require("net");
 const EventBus = require("../../coordination/bus");
 const { normalizeReportInput } = require("../../coordination/report/store");
 const { enqueueAgentReport } = require("./reportControlBus");
 const { isRunning, socketPath } = require("./index");
 const { IPC_REQUEST_TYPES } = require("../contracts/eventContract");
+const {
+  applyProjectNicknamePrefix,
+  checkAndCleanupNickname,
+} = require("./nicknameScope");
 
 function nowIso() {
   return new Date().toISOString();
@@ -50,6 +55,10 @@ function createSessionId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function createCryptoSessionId() {
+  return crypto.randomBytes(4).toString("hex");
+}
+
 function notifyDaemonRefresh(projectRoot) {
   if (!isRunning(projectRoot)) return;
   const sock = socketPath(projectRoot);
@@ -64,29 +73,98 @@ function notifyDaemonRefresh(projectRoot) {
   }
 }
 
-async function registerAgent(projectRoot, args = {}) {
+async function registerAgentFull(projectRoot, args = {}, options = {}) {
+  const {
+    validateParentPid = false,
+    checkNicknameConflicts = false,
+  } = options;
+
   const agentType = normalizeBusAgentType(args.agent_type || args.agentType || "mcp-agent");
-  const sessionId = String(args.session_id || args.sessionId || createSessionId()).trim();
   const nickname = String(args.nickname || "").trim();
   const launchMode = String(args.launch_mode || args.launchMode || "mcp").trim();
   const capabilities = args.capabilities && typeof args.capabilities === "object"
     ? args.capabilities
     : null;
-  const bus = ensureBusLoaded(projectRoot);
-  const result = await bus.subscriberManager.join(sessionId, agentType, nickname, {
-    parentPid: process.pid,
+  const hostCapabilities = args.hostCapabilities && typeof args.hostCapabilities === "object"
+    ? args.hostCapabilities
+    : capabilities;
+
+  // Session ID: explicit > reuse > generate
+  let sessionId;
+  const explicitSessionId = String(args.session_id || args.sessionId || "").trim();
+  const reuseSession = args.reuseSession && typeof args.reuseSession === "object"
+    ? args.reuseSession
+    : null;
+  const reuseSessionId = typeof reuseSession?.sessionId === "string"
+    ? reuseSession.sessionId.trim() : "";
+  const reuseSubscriberId = typeof reuseSession?.subscriberId === "string"
+    ? reuseSession.subscriberId.trim() : "";
+  const reuseProviderSessionId = typeof reuseSession?.providerSessionId === "string"
+    ? reuseSession.providerSessionId.trim() : "";
+
+  if (explicitSessionId) {
+    sessionId = explicitSessionId;
+  } else if (reuseSessionId && reuseSubscriberId === `${agentType}:${reuseSessionId}`) {
+    sessionId = reuseSessionId;
+  } else {
+    sessionId = validateParentPid ? createCryptoSessionId() : createSessionId();
+  }
+
+  // parentPid validation
+  const parentPid = Number.parseInt(args.parentPid, 10);
+  if (validateParentPid) {
+    if (!Number.isFinite(parentPid) || parentPid <= 0) {
+      const err = new Error("register_agent requires valid parentPid");
+      err.code = "invalid_parent_pid";
+      throw err;
+    }
+  }
+
+  // Nickname scope and conflict check
+  let finalNickname = nickname;
+  let scopedNickname = nickname
+    ? applyProjectNicknamePrefix(projectRoot, nickname, { agentType })
+    : "";
+  if (checkNicknameConflicts && finalNickname) {
+    const nickCheck = checkAndCleanupNickname(projectRoot, finalNickname, {
+      tty: String(args.tty || ""),
+      agentType,
+      scopedNickname,
+    });
+    if (nickCheck.existing) {
+      finalNickname = "";
+      scopedNickname = "";
+    }
+  }
+
+  // Bus join
+  const joinOptions = {
+    parentPid: Number.isFinite(parentPid) && parentPid > 0 ? parentPid : process.pid,
     launchMode,
-    scopedNickname: String(args.scoped_nickname || args.scopedNickname || nickname || "").trim(),
-    hostName: "ufoo-mcp",
-    hostSessionId: `mcp-${process.pid}`,
-    hostCapabilities: capabilities,
-  });
+    tmuxPane: String(args.tmuxPane || ""),
+    tty: String(args.tty || ""),
+    hostInjectSock: String(args.hostInjectSock || ""),
+    hostDaemonSock: String(args.hostDaemonSock || ""),
+    hostName: String(args.hostName || args.hostName || "ufoo-mcp"),
+    hostSessionId: String(args.hostSessionId || `mcp-${process.pid}`),
+    hostCapabilities: hostCapabilities,
+    scopedNickname: scopedNickname || String(args.scoped_nickname || args.scopedNickname || finalNickname || "").trim(),
+  };
+  if (args.skipSessionResolve) joinOptions.skipSessionResolve = true;
+  if (reuseSessionId) joinOptions.reuseSessionId = reuseSessionId;
+  if (reuseProviderSessionId) joinOptions.reuseProviderSessionId = reuseProviderSessionId;
+
+  const bus = ensureBusLoaded(projectRoot);
+  const result = await bus.subscriberManager.join(sessionId, agentType, finalNickname, joinOptions);
   const subscriber = result.subscriber;
+  if (finalNickname) {
+    bus.subscriberManager.rename(subscriber, finalNickname, "ufoo-agent", { scopedNickname });
+  }
   const meta = bus.subscriberManager.getSubscriber(subscriber) || {};
   meta.activity_state = String(args.activity_state || "ready");
   meta.activity_since = nowIso();
-  meta.mcp_bridge = true;
-  if (capabilities) meta.mcp_capabilities = capabilities;
+  meta.mcp_bridge = !validateParentPid;
+  if (hostCapabilities) meta.mcp_capabilities = hostCapabilities;
   bus.saveBusData();
   notifyDaemonRefresh(projectRoot);
   return {
@@ -96,10 +174,19 @@ async function registerAgent(projectRoot, args = {}) {
     subscriber,
     session_id: sessionId,
     agent_type: agentType,
-    nickname: meta.nickname || result.nickname || "",
-    scoped_nickname: meta.scoped_nickname || result.scopedNickname || "",
+    nickname: meta.nickname || result.nickname || finalNickname || "",
+    scoped_nickname: meta.scoped_nickname || result.scopedNickname || scopedNickname || "",
     launch_mode: launchMode,
+    reuseProviderSessionId,
+    skipSessionResolve: !!args.skipSessionResolve,
   };
+}
+
+async function registerAgent(projectRoot, args = {}) {
+  return registerAgentFull(projectRoot, args, {
+    validateParentPid: false,
+    checkNicknameConflicts: false,
+  });
 }
 
 async function heartbeatAgent(projectRoot, args = {}) {

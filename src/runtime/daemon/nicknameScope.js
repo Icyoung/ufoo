@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { getUfooPaths } = require("../../coordination/state/paths");
 
 function asTrimmedString(value) {
   if (typeof value !== "string") return "";
@@ -109,6 +110,49 @@ function resolveScopedNickname(projectRoot, meta = {}, fallback = "") {
   return applyProjectNicknamePrefix(projectRoot, fallbackValue, { force: true });
 }
 
+function checkAndCleanupNickname(projectRoot, nickname, { tty = "", agentType = "", scopedNickname = "" } = {}) {
+  const conflictNickname = scopedNickname || applyProjectNicknamePrefix(projectRoot, nickname, {
+    agentType,
+    force: true,
+  });
+  if (!conflictNickname) return { existing: null, cleaned: false };
+  const busPath = getUfooPaths(projectRoot).agentsFile;
+  try {
+    const bus = JSON.parse(fs.readFileSync(busPath, "utf8"));
+    const entries = Object.entries(bus.agents || {})
+      .filter(([, meta]) => {
+        const candidate = resolveScopedNickname(projectRoot, meta);
+        return meta && candidate === conflictNickname;
+      });
+
+    if (entries.length === 0) {
+      return { existing: null, cleaned: false };
+    }
+
+    const activeAgent = entries.find(([, meta]) => meta.status === "active");
+    if (activeAgent) {
+      const [existingId, existingMeta] = activeAgent;
+      const sameType = agentType && existingMeta.agent_type === agentType;
+      const isStub = sameType && !existingMeta.tty && !existingMeta.activity_state;
+      const sameTty = tty && existingMeta.tty === tty;
+      if (isStub || sameTty) {
+        delete bus.agents[existingId];
+        fs.writeFileSync(busPath, JSON.stringify(bus, null, 2));
+        return { existing: null, cleaned: true };
+      }
+      return { existing: existingId, cleaned: false };
+    }
+
+    for (const [agentId] of entries) {
+      delete bus.agents[agentId];
+    }
+    fs.writeFileSync(busPath, JSON.stringify(bus, null, 2));
+    return { existing: null, cleaned: true };
+  } catch {
+    return { existing: null, cleaned: false };
+  }
+}
+
 module.exports = {
   normalizeNicknameSegment,
   buildProjectNicknamePrefix,
@@ -117,4 +161,5 @@ module.exports = {
   stripProjectNicknamePrefix,
   resolveDisplayNickname,
   resolveScopedNickname,
+  checkAndCleanupNickname,
 };

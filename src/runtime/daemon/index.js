@@ -40,6 +40,7 @@ const {
   applyProjectNicknamePrefix,
   resolveDisplayNickname,
   resolveScopedNickname,
+  checkAndCleanupNickname,
 } = require("./nicknameScope");
 const { resolveNodeExecutable } = require("../process/nodeExecutable");
 
@@ -472,57 +473,6 @@ async function waitForNewSubscriber(projectRoot, agentType, existing, timeoutMs 
     await new Promise((r) => setTimeout(r, 200));
   }
   return null;
-}
-
-function checkAndCleanupNickname(projectRoot, nickname, { tty = "", agentType = "", scopedNickname = "" } = {}) {
-  const conflictNickname = scopedNickname || applyProjectNicknamePrefix(projectRoot, nickname, {
-    agentType,
-    force: true,
-  });
-  if (!conflictNickname) return { existing: null, cleaned: false };
-  const busPath = getUfooPaths(projectRoot).agentsFile;
-  try {
-    const bus = JSON.parse(fs.readFileSync(busPath, "utf8"));
-    const entries = Object.entries(bus.agents || {})
-      .filter(([, meta]) => {
-        const candidate = resolveScopedNickname(projectRoot, meta);
-        return meta && candidate === conflictNickname;
-      });
-
-    if (entries.length === 0) {
-      return { existing: null, cleaned: false };
-    }
-
-    // Check for active agent with same nickname
-    const activeAgent = entries.find(([, meta]) => meta.status === "active");
-    if (activeAgent) {
-      const [existingId, existingMeta] = activeAgent;
-      // Allow takeover when the existing holder is a pre-registered stub
-      // (same agent type, no TTY) or occupies the same TTY — the new
-      // registration is the real agent replacing the placeholder.
-      const sameType = agentType && existingMeta.agent_type === agentType;
-      // A stub is a pre-registered entry with no TTY AND no meaningful activity
-      // state. Internal-mode agents also lack a TTY but will have activity_state
-      // set once they start working — don't evict those.
-      const isStub = sameType && !existingMeta.tty && !existingMeta.activity_state;
-      const sameTty = tty && existingMeta.tty === tty;
-      if (isStub || sameTty) {
-        delete bus.agents[existingId];
-        fs.writeFileSync(busPath, JSON.stringify(bus, null, 2));
-        return { existing: null, cleaned: true };
-      }
-      return { existing: existingId, cleaned: false };
-    }
-
-    // Clean up offline agents with same nickname
-    for (const [agentId] of entries) {
-      delete bus.agents[agentId];
-    }
-    fs.writeFileSync(busPath, JSON.stringify(bus, null, 2));
-    return { existing: null, cleaned: true };
-  } catch {
-    return { existing: null, cleaned: false };
-  }
 }
 
 function resolveSubscriberNickname(projectRoot, subscriberId) {
@@ -2331,19 +2281,10 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
       return;
     }
     if (req.type === IPC_REQUEST_TYPES.REGISTER_AGENT) {
-      // Manual agent launch requests daemon to register it
       const {
         agentType,
         nickname,
         parentPid,
-        launchMode,
-        tmuxPane,
-        tty,
-        hostInjectSock,
-        hostDaemonSock,
-        hostName,
-        hostSessionId,
-        hostCapabilities,
         skipSessionResolve,
       } = req;
       if (!agentType) {
@@ -2357,85 +2298,22 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
         return;
       }
       try {
-        const crypto = require("crypto");
-        const requestedReuse = req.reuseSession && typeof req.reuseSession === "object"
-          ? req.reuseSession
-          : null;
-        const reuseSessionId = typeof requestedReuse?.sessionId === "string"
-          ? requestedReuse.sessionId.trim()
-          : "";
-        const reuseSubscriberId = typeof requestedReuse?.subscriberId === "string"
-          ? requestedReuse.subscriberId.trim()
-          : "";
-        const reuseProviderSessionId = typeof requestedReuse?.providerSessionId === "string"
-          ? requestedReuse.providerSessionId.trim()
-          : "";
-
-        let sessionId = crypto.randomBytes(4).toString("hex");
-        let subscriberId = `${agentType}:${sessionId}`;
-        if (reuseSessionId && reuseSubscriberId === `${agentType}:${reuseSessionId}`) {
-          sessionId = reuseSessionId;
-          subscriberId = reuseSubscriberId;
-        } else if (reuseSessionId || reuseSubscriberId) {
-          log(`register_agent ignored invalid reuseSession for ${agentType}`);
-        }
-
-        // Daemon registers the agent in bus
-        const eventBus = new EventBus(projectRoot);
-        await eventBus.init();
-        eventBus.loadBusData();
-        const parsedParentPid = Number.parseInt(parentPid, 10);
-        if (!Number.isFinite(parsedParentPid) || parsedParentPid <= 0) {
-          throw new Error("register_agent requires valid parentPid");
-        }
-        const joinOptions = {
-          parentPid: Number.isFinite(parsedParentPid) ? parsedParentPid : undefined,
-          launchMode: launchMode || "",
-          tmuxPane: tmuxPane || "",
-          tty: tty || "",
-          hostInjectSock: hostInjectSock || "",
-          hostDaemonSock: hostDaemonSock || "",
-          hostName: hostName || "",
-          hostSessionId: hostSessionId || "",
-          hostCapabilities: hostCapabilities && typeof hostCapabilities === "object"
-            ? hostCapabilities
-            : null,
-          reuseSessionId,
-          reuseProviderSessionId,
-        };
-        if (skipSessionResolve) joinOptions.skipSessionResolve = true;
-
-        let finalNickname = nickname || "";
-        let scopedNickname = applyProjectNicknamePrefix(projectRoot, finalNickname, {
-          agentType: normalizeBusAgentType(agentType),
+        const controlPlane = require("./controlPlaneService");
+        const result = await controlPlane.registerAgentFull(projectRoot, {
+          ...req,
+          agent_type: agentType,
+          parentPid,
+        }, {
+          validateParentPid: true,
+          checkNicknameConflicts: true,
         });
-        if (finalNickname) {
-          const nickCheck = checkAndCleanupNickname(projectRoot, finalNickname, {
-            tty: tty || "",
-            agentType: normalizeBusAgentType(agentType),
-            scopedNickname,
-          });
-          if (nickCheck.existing) {
-            finalNickname = "";
-            scopedNickname = "";
-          }
-        }
-        await eventBus.join(
-          sessionId,
-          normalizeBusAgentType(agentType),
-          finalNickname,
-          { ...joinOptions, scopedNickname },
-        );
-        if (finalNickname) {
-          eventBus.rename(subscriberId, finalNickname, "ufoo-agent", { scopedNickname });
-        }
-        eventBus.saveBusData();
-        const resolvedNickname = resolveSubscriberNickname(projectRoot, subscriberId) || finalNickname || "";
+        const subscriberId = result.subscriber;
+        const resolvedNickname = resolveSubscriberNickname(projectRoot, subscriberId) || result.nickname || "";
 
-        if (!skipSessionResolve && reuseProviderSessionId) {
+        if (!skipSessionResolve && result.reuseProviderSessionId) {
           if (providerSessions) {
             providerSessions.set(subscriberId, {
-              sessionId: reuseProviderSessionId,
+              sessionId: result.reuseProviderSessionId,
               source: "reuse",
               updated_at: new Date().toISOString(),
             });
