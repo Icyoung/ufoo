@@ -649,6 +649,19 @@ also controller-only orchestration tools. MCP session identity must map to the
 same caller-tier checks used by the controller loop; otherwise external worker
 sessions could gain launch/close/cron powers accidentally.
 
+### 11.5.1 Caller identity and transport authentication
+
+Network-facing authentication tokens are deferred while the MCP bridge remains a
+local stdio bridge. If the bridge is exposed over SSE, WebSocket, TCP, or another
+network transport, authenticated client identity is required before enabling
+project-scoped tools.
+
+Local mode still needs caller binding at the MCP session layer: a client should
+only poll, ack, update metadata, report for, or unregister subscriber ids it
+registered or otherwise owns. The daemon socket path also must remain protected
+by private filesystem permissions, such as a user-only `.ufoo/run` directory or
+equivalent socket permission hardening.
+
 ### 11.6 Global/project split-brain risk
 
 If global MCP and daemon IPC grow separate routing or registration
