@@ -219,15 +219,18 @@ function sameProjectRoot(a, b) {
   }
 }
 
+function matchesDaemonArgs(text) {
+  const lower = typeof text === "string" ? text.toLowerCase() : "";
+  if (/\bufoo\s+daemon\s+(--start|start)\b/.test(lower)) return true;
+  if (/\bufoo\.js\s+daemon\s+(--start|start)\b/.test(lower)) return true;
+  if (lower.includes("/src/runtime/daemon/run.js")) return true;
+  return false;
+}
+
 function isLikelyDaemonProcess(pid) {
   const args = readProcessArgs(pid);
   if (!args || args === "__EPERM__") return null;
-  const text = args.toLowerCase();
-  const hasCliPattern = /\bufoo\s+daemon\s+(--start|start)\b/.test(text);
-  const hasNodePattern = /\bufoo\.js\s+daemon\s+(--start|start)\b/.test(text);
-  if (hasCliPattern || hasNodePattern) return true;
-  if (text.includes("/src/runtime/daemon/run.js")) return true;
-  return false;
+  return matchesDaemonArgs(args);
 }
 
 function isPidFileDaemonForProject(projectRoot, pid, socketOwnerPids = new Set()) {
@@ -257,6 +260,31 @@ function socketOwnerDaemonPids(projectRoot) {
     }
   } catch {
     // ignore lsof failures; pid file fallback still applies
+  }
+  return Array.from(out);
+}
+
+function findAllProjectDaemonPids(projectRoot) {
+  const out = new Set();
+  try {
+    const res = spawnSync("ps", ["-eo", "pid,args"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    if (!res || res.status !== 0 || !res.stdout) return [];
+    for (const line of String(res.stdout || "").split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      if (!matchesDaemonArgs(trimmed)) continue;
+      const pid = parseInt(trimmed.split(/\s+/)[0], 10);
+      if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) continue;
+      const cwd = readProcessCwd(pid);
+      if (cwd && sameProjectRoot(cwd, projectRoot)) {
+        out.add(pid);
+      }
+    }
+  } catch {
+    // ignore ps failures
   }
   return Array.from(out);
 }
@@ -2616,6 +2644,9 @@ function stopDaemon(projectRoot, options = {}) {
   const pids = new Set(socketOwnerDaemonPids(projectRoot));
   if (pid && isPidFileDaemonForProject(projectRoot, pid, pids)) {
     pids.add(pid);
+  }
+  for (const p of findAllProjectDaemonPids(projectRoot)) {
+    pids.add(p);
   }
   const source = String(
     options.source
