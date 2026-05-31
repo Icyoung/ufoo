@@ -42,14 +42,52 @@ const previousConversationId = readPreviousConversationId(cwd, {
   tmuxPane: process.env.TMUX_PANE || "",
 });
 
-// In internal / unattended modes, auto-approve tool prompts so the agent
-// doesn't stall waiting on a y/n the operator can't see. Terminal/tmux
-// modes leave permissions in the user's hands (agy's default).
+function extractUfooParamsFromArgs(args = []) {
+  const nextArgs = [];
+  let nickname = "";
+  let role = "";
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = String(args[i] || "");
+    if (arg === "--nickname") {
+      if (i + 1 < args.length) {
+        nickname = String(args[i + 1]).trim();
+        i += 1;
+      }
+      continue;
+    }
+    if (arg.startsWith("--nickname=")) {
+      nickname = arg.slice("--nickname=".length).trim();
+      continue;
+    }
+    if (arg === "--role") {
+      if (i + 1 < args.length) {
+        role = String(args[i + 1]).trim();
+        i += 1;
+      }
+      continue;
+    }
+    if (arg.startsWith("--role=")) {
+      role = arg.slice("--role=".length).trim();
+      continue;
+    }
+    nextArgs.push(args[i]);
+  }
+  return { args: nextArgs, nickname, role };
+}
+
+const { args: cleanArgs, nickname, role } = extractUfooParamsFromArgs(process.argv.slice(2));
+if (nickname) {
+  process.env.UFOO_NICKNAME = nickname;
+}
+if (role) {
+  process.env.UFOO_PROMPT_PROFILE = role;
+}
+
 const launchMode = String(process.env.UFOO_LAUNCH_MODE || "").trim().toLowerCase();
 const skipPermissions = launchMode === "internal";
 
 const launchArgs = buildAgyLaunchArgs({
-  userArgs: process.argv.slice(2),
+  userArgs: cleanArgs,
   previousConversationId,
   skipPermissions,
 });

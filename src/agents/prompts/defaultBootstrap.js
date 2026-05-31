@@ -64,10 +64,25 @@ function buildDefaultStartupBootstrapPrompt({ agentType = "", projectRoot = "" }
     `Session bootstrap for ${displayAgent}.`,
     "Adopt the following ufoo coordination protocol silently.",
     "Do not reply to this bootstrap message unless the user explicitly asks about it. After applying it, continue the active task or wait for user input.",
-    SHARED_UFOO_PROTOCOL,
   ];
 
   const root = asTrimmedString(projectRoot) || process.cwd();
+  const requestedProfile = asTrimmedString(process.env.UFOO_PROMPT_PROFILE);
+  if (requestedProfile) {
+    try {
+      const { loadPromptProfileRegistry, resolvePromptProfileReference } = require("./promptProfiles");
+      const registry = loadPromptProfileRegistry(root);
+      const profile = resolvePromptProfileReference(registry, requestedProfile);
+      if (profile && profile.prompt) {
+        segments.push(`Your role: ${profile.id} (${profile.short_name || "Custom Role"}).\nAdopt the following role context:\n\n${profile.prompt}`);
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  segments.push(SHARED_UFOO_PROTOCOL);
+
   const teamActivity = loadTeamActivityContext(root);
   if (teamActivity) {
     segments.push(teamActivity);
