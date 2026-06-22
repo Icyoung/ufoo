@@ -70,7 +70,7 @@ Important boundaries:
 | `src/runtime/contracts/` | Runtime contracts | IPC event, PTY socket, and MCP/JSON-RPC contracts. |
 | `src/runtime/privacy/` | Privacy helpers | Secret redaction and shadow-diff helpers. |
 | `src/runtime/process/` | Process helpers | Node executable resolution and similar runtime process utilities. |
-| `src/coordination/bus/` | Event bus | Queues, envelopes, injection, nicknames, subscribers, bus daemon. |
+| `src/coordination/bus/` | Event bus | Queues, envelopes, injection helpers, nicknames, and subscribers. |
 | `src/coordination/context/` | Decisions | Decision files, sync, and context doctor. |
 | `src/coordination/memory/` | Memory | Durable memory and history search. |
 | `src/coordination/history/` | Prompt timeline | Input/prompt history. |

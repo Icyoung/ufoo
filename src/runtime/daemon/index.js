@@ -8,6 +8,7 @@ const { buildStatus } = require("./status");
 const EventBus = require("../../coordination/bus");
 const { AgentProcessManager } = require("./agentProcessManager");
 const NicknameManager = require("../../coordination/bus/nickname");
+const { DeliveryQueue } = require("../../coordination/bus/deliveryQueue");
 const { generateInstanceId, subscriberToSafeName } = require("../../coordination/bus/utils");
 const { createDaemonIpcServer } = require("./ipcServer");
 const { IPC_REQUEST_TYPES, IPC_RESPONSE_TYPES, BUS_STATUS_PHASES } = require("../contracts/eventContract");
@@ -17,6 +18,7 @@ const { scheduleProviderSessionResolve, resolveSessionFromFile, persistProviderS
 const { createTerminalAdapterRouter } = require("../terminal/adapterRouter");
 const { createDaemonCronController } = require("./cronOps");
 const { createGroupOrchestrator } = require("./groupOrchestrator");
+const { DeliveryScheduler } = require("./deliveryScheduler");
 const { normalizeFormat, renderGroupDiagramFromTemplate, renderGroupDiagramFromRuntime } = require("../../orchestration/groups/diagram");
 const { runPromptWithAssistant } = require("./promptLoop");
 const { handlePromptRequest } = require("./promptRequest");
@@ -1064,46 +1066,23 @@ function startBusBridge(projectRoot, provider, onEvent, onStatus, shouldDrain, o
 
   function pollQueue() {
     if (!state.queueFile) return;
-    if (!fs.existsSync(state.queueFile)) return;
-    let content = "";
-    let readOk = false;
-    const processingFile = `${state.queueFile}.processing.${process.pid}.${Date.now()}`;
-    try {
-      fs.renameSync(state.queueFile, processingFile);
-      content = fs.readFileSync(processingFile, "utf8");
-      readOk = true;
-    } catch {
-      try {
-        if (fs.existsSync(processingFile)) {
-          fs.renameSync(processingFile, state.queueFile);
-        }
-      } catch {
-        // ignore rollback errors
-      }
-      return;
-    } finally {
-      if (readOk) {
-        try {
-          if (fs.existsSync(processingFile)) {
-            fs.rmSync(processingFile, { force: true });
-          }
-        } catch {
-          // ignore cleanup errors
-        }
-      }
-    }
-
-    const lines = content.split(/\r?\n/).filter(Boolean);
-    if (!lines.length) return;
-    for (const line of lines) {
-      let evt;
-      try {
-        evt = JSON.parse(line);
-      } catch {
+    const queue = new DeliveryQueue(state.queueFile);
+    queue.recover();
+    while (true) {
+      const claim = queue.claimNext();
+      if (!claim) break;
+      const evt = claim.event;
+      if (!evt) {
+        queue.completeClaim(claim);
         continue;
       }
-      if (!evt) continue;
-      emitBusEvent(evt);
+      try {
+        emitBusEvent(evt);
+        queue.completeClaim(claim);
+      } catch {
+        queue.restoreClaim(claim);
+        continue;
+      }
       if (evt.publisher && state.pending.has(evt.publisher)) {
         state.pending.delete(evt.publisher);
         if (onStatus) {
@@ -1361,6 +1340,8 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
       log(`report bus event failed request=${meta.requestId || ""} error=${err.message || String(err)}`);
     }
   });
+  const deliveryScheduler = new DeliveryScheduler(projectRoot, { log });
+  deliveryScheduler.start();
 
   handleIpcRequest = async (req, socket) => {
     if (!req || typeof req !== "object") return;
@@ -1493,12 +1474,19 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
       try {
         const publisher = busBridge.getSubscriber() || "ufoo-agent";
         const eventBus = new EventBus(projectRoot);
-        await eventBus.send(target, message, publisher, {
+        const result = await eventBus.send(target, message, publisher, {
           injectionMode: injection_mode,
           source,
         });
-        busBridge.markPending(target);
-        log(`bus_send target=${target} publisher=${publisher}`);
+        const resolvedTargets = Array.isArray(result && result.targets) ? result.targets : [];
+        for (const resolvedTarget of resolvedTargets) {
+          busBridge.markPending(resolvedTarget);
+        }
+        if (resolvedTargets.length === 0) busBridge.markPending(target);
+        deliveryScheduler.deliverTargets(resolvedTargets).catch((err) => {
+          log(`delivery scheduler send trigger failed target=${target} error=${err.message || String(err)}`);
+        });
+        log(`bus_send target=${target} resolved=${resolvedTargets.join(",")} publisher=${publisher}`);
         socket.write(
           `${JSON.stringify({
             type: IPC_RESPONSE_TYPES.BUS_SEND_OK,
@@ -2595,6 +2583,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
     processManager.cleanup();
 
     ipcServer.stop();
+    deliveryScheduler.stop();
     busBridge.stop();
     removeSocket(projectRoot);
     removePidIfOwned(projectRoot);

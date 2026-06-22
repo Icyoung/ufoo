@@ -199,6 +199,36 @@ describe('QueueManager', () => {
       });
     });
 
+    describe('ackPending', () => {
+      it('should acknowledge pending messages through delivery claims', async () => {
+        await manager.appendPending('claude-code:test', { seq: 1, message: 'msg1' });
+        await manager.appendPending('claude-code:test', { seq: 2, message: 'msg2' });
+
+        const count = await manager.ackPending('claude-code:test');
+
+        expect(count).toBe(2);
+        const pending = await manager.readPending('claude-code:test');
+        expect(pending).toEqual([]);
+      });
+
+      it('should recover processing files before acknowledging', async () => {
+        const pendingFile = manager.getPendingPath('claude-code:test');
+        const deadPid = 99999999;
+        const oldTs = Date.now() - 60000;
+        fs.mkdirSync(path.dirname(pendingFile), { recursive: true });
+        fs.writeFileSync(
+          `${pendingFile}.processing.${deadPid}.${oldTs}.stale`,
+          `${JSON.stringify({ seq: 1, message: 'msg1' })}\n`,
+          'utf8'
+        );
+
+        const count = await manager.ackPending('claude-code:test');
+
+        expect(count).toBe(1);
+        expect(manager.getDeliveryQueue('claude-code:test').readPending()).toEqual([]);
+      });
+    });
+
     describe('hasPending', () => {
       it('should return false for empty queue', async () => {
         const hasPending = await manager.hasPending('claude-code:test');

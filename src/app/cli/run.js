@@ -1525,32 +1525,6 @@ async function runCli(argv) {
           });
       });
     bus
-      .command("daemon")
-      .description("Start/stop daemon that auto-injects /bus into terminals")
-      .option("--interval <n>", "Poll interval in seconds", "2")
-      .option("--daemon", "Run in background")
-      .option("--stop", "Stop running daemon")
-      .option("--status", "Check daemon status")
-      .action((opts) => {
-        const EventBus = require("../../coordination/bus");
-        const eventBus = new EventBus(process.cwd());
-        (async () => {
-          try {
-            const interval = parseInt(opts.interval, 10) * 1000 || 2000;
-            if (opts.stop) {
-              await eventBus.daemon("stop");
-            } else if (opts.status) {
-              await eventBus.daemon("status");
-            } else {
-              await eventBus.daemon("start", { background: opts.daemon, interval });
-            }
-          } catch (err) {
-            console.error(err.message);
-            process.exitCode = 1;
-          }
-        })();
-      });
-    bus
       .command("inject")
       .description("Inject /bus into a Terminal.app tab by subscriber ID")
       .argument("<subscriber>", "Subscriber ID to inject into")
@@ -1739,6 +1713,7 @@ async function runCli(argv) {
     console.log("  ufoo online send --nickname <name> --text <msg> [--channel <ch>] [--room <id>]");
     console.log("  ufoo online inbox <nickname> [--clear] [--unread]");
     console.log("  ufoo bus wake <target> [--reason <reason>] [--no-shake]");
+    console.log("  ufoo bus poll [subscriber] [--ack]");
     console.log("  ufoo bus <args...>    (JS bus implementation)");
     console.log("  ufoo ctx <subcmd> ... (doctor|lint|decisions|sync)");
     console.log("  ufoo history <build|show|prompt> [limit]");
@@ -2375,33 +2350,6 @@ async function runCli(argv) {
           console.error(err.message);
           process.exitCode = 1;
         });
-      return;
-    }
-    if (sub === "daemon") {
-      // 使用 JavaScript daemon
-      const EventBus = require("../../coordination/bus");
-      const eventBus = new EventBus(process.cwd());
-
-      (async () => {
-        try {
-          const hasStop = rest.includes("--stop");
-          const hasStatus = rest.includes("--status");
-          const hasDaemon = rest.includes("--daemon");
-          const intervalIdx = rest.indexOf("--interval");
-          const interval = intervalIdx !== -1 ? parseInt(rest[intervalIdx + 1], 10) * 1000 : 2000;
-
-          if (hasStop) {
-            await eventBus.daemon("stop");
-          } else if (hasStatus) {
-            await eventBus.daemon("status");
-          } else {
-            await eventBus.daemon("start", { background: hasDaemon, interval });
-          }
-        } catch (err) {
-          console.error(err.message);
-          process.exitCode = 1;
-        }
-      })();
       return;
     }
     if (sub === "inject") {

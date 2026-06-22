@@ -9,8 +9,8 @@ const { shakeTerminalByTty } = require("../../coordination/bus/shake");
 const { isITerm2 } = require("../../runtime/terminal/detect");
 const iterm2 = require("../../runtime/terminal/iterm2");
 const { createActivityStatePublisher } = require("../activity/activityStatePublisher");
-const { INJECTION_MODES, getInjectionModeFromEvent } = require("../../coordination/bus/messageMeta");
 const { buildPromptInjectionText } = require("../../coordination/bus/promptEnvelope");
+const { DeliveryQueue } = require("../../coordination/bus/deliveryQueue");
 
 /**
  * Agent 消息通知监听器
@@ -41,6 +41,7 @@ class AgentNotifier {
       safeSub,
       "pending.jsonl"
     );
+    this.deliveryQueue = new DeliveryQueue(this.queueFile);
     this.agentsFile = paths.agentsFile;
 
     // 初始化 injector
@@ -187,45 +188,6 @@ class AgentNotifier {
     }
   }
 
-  drainPending() {
-    if (!fs.existsSync(this.queueFile)) return [];
-    const processingFile = `${this.queueFile}.processing.${process.pid}.${Date.now()}`;
-    let content = "";
-    let readOk = false;
-    try {
-      fs.renameSync(this.queueFile, processingFile);
-      content = fs.readFileSync(processingFile, "utf8");
-      readOk = true;
-    } catch {
-      try {
-        if (fs.existsSync(processingFile)) {
-          fs.renameSync(processingFile, this.queueFile);
-        }
-      } catch {
-        // ignore rollback errors
-      }
-      return [];
-    } finally {
-      if (readOk) {
-        try {
-          if (fs.existsSync(processingFile)) {
-            fs.rmSync(processingFile, { force: true });
-          }
-        } catch {
-          // ignore cleanup errors
-        }
-      }
-    }
-    if (!content.trim()) return [];
-    return content.split(/\r?\n/).filter(Boolean).map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return null;
-      }
-    }).filter(Boolean);
-  }
-
   normalizePublisher(publisher) {
     if (!publisher) return "";
     if (typeof publisher === "string") return publisher;
@@ -272,57 +234,41 @@ class AgentNotifier {
       return 0;
     }
 
-    const events = this.drainPending();
-    if (events.length === 0) return 0;
-    const requeue = [];
-    let delivered = 0;
-    let consumedOne = false;
-    for (const evt of events) {
-      if (!evt || evt.event !== "message" || !evt.data || typeof evt.data.message !== "string") {
-        continue;
-      }
-      const injectionMode = getInjectionModeFromEvent(evt, INJECTION_MODES.IMMEDIATE);
-      const activityState = this.getCurrentActivityState();
-      if (injectionMode === INJECTION_MODES.QUEUED && this.isBusyState(activityState)) {
-        requeue.push(evt);
-        continue;
-      }
-      if (consumedOne) {
-        requeue.push(evt);
-        continue;
-      }
-      const message = buildPromptInjectionText(evt, this.subscriber, this.getAgentsMap());
-      try {
-        // Inject the prompt-facing text into the terminal/tmux agent
-        // (Bus is the source of truth; inject is the delivery adapter.)
-        // eslint-disable-next-line no-await-in-loop
-        await this.injector.inject(this.subscriber, message);
-        delivered += 1;
-        consumedOne = true;
-        this.injectFailCount = 0;
-        this.updateActivityState("working");
-        // eslint-disable-next-line no-await-in-loop
-        await this.emitDelivery(evt, "ok");
-      } catch (err) {
-        consumedOne = true;
-        this.injectFailCount += 1;
-        requeue.push(evt);
-        // eslint-disable-next-line no-await-in-loop
-        await this.emitDelivery(evt, "error", err.message || "inject failed");
-      }
+    if (this.isBusyState(this.getCurrentActivityState())) {
+      return 0;
     }
-    if (requeue.length > 0) {
-      try {
-        const content = requeue.map((e) => JSON.stringify(e)).join("\n") + "\n";
-        fs.appendFileSync(this.queueFile, content, "utf8");
-      } catch {
-        // ignore requeue failures
-      }
+
+    const claim = this.deliveryQueue.claimNext();
+    if (!claim) return 0;
+
+    const evt = claim.event;
+    if (!evt || evt.event !== "message" || !evt.data || typeof evt.data.message !== "string") {
+      this.deliveryQueue.completeClaim(claim);
+      return 0;
     }
-    if (delivered > 0) {
+
+    const activityState = this.getCurrentActivityState();
+    if (this.isBusyState(activityState)) {
+      this.deliveryQueue.restoreClaim(claim);
+      return 0;
+    }
+
+    const message = buildPromptInjectionText(evt, this.subscriber, this.getAgentsMap());
+    try {
+      // Inject the prompt-facing text into the terminal/tmux agent.
+      await this.injector.inject(this.subscriber, message);
+      this.deliveryQueue.completeClaim(claim);
+      this.injectFailCount = 0;
+      this.updateActivityState("working");
+      await this.emitDelivery(evt, "ok");
       this.lastWorkingAt = Date.now();
+      return 1;
+    } catch (err) {
+      this.injectFailCount += 1;
+      this.deliveryQueue.restoreClaim(claim);
+      await this.emitDelivery(evt, "error", err.message || "inject failed");
+      return 0;
     }
-    return delivered;
   }
 
   /**
@@ -367,32 +313,10 @@ class AgentNotifier {
     if (currentCount > this.lastCount) {
       const newCount = currentCount - this.lastCount;
       this.notify(newCount);
-
-      // 自动触发终端输入（非阻塞）
-      this.autoTriggerInput().catch(() => {
-        // 忽略触发失败
-      });
     }
 
-    // Ensure pending delivery happens even if count doesn't change
-    if (this.autoTrigger && currentCount > 0) {
-      if (this.isUfooCodeSubscriber()) {
-        if (this.lastUbusWakeCount !== currentCount) {
-          try {
-            await this.autoTriggerInput();
-            this.lastUbusWakeCount = currentCount;
-          } catch {
-            // ignore delivery errors
-          }
-        }
-      } else {
-        try {
-          await this.deliverPending();
-        } catch {
-          // ignore delivery errors
-        }
-      }
-    }
+    // Delivery is owned by the project daemon scheduler. The notifier keeps
+    // terminal notifications, title badges, heartbeat, and activity fallback.
     if (currentCount <= 0) {
       this.lastUbusWakeCount = -1;
     }

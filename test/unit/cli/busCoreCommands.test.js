@@ -95,6 +95,42 @@ describe("busCoreCommands", () => {
     expect(eventBus.check).toHaveBeenCalledWith("codex:test");
   });
 
+  test("poll command uses explicit subscriber", async () => {
+    const eventBus = { check: jest.fn().mockResolvedValue([]) };
+    await runBusCoreCommand(eventBus, "poll", ["codex:test"]);
+    expect(eventBus.check).toHaveBeenCalledWith("codex:test", false);
+  });
+
+  test("poll command defaults to UFOO_SUBSCRIBER_ID", async () => {
+    const previous = process.env.UFOO_SUBSCRIBER_ID;
+    process.env.UFOO_SUBSCRIBER_ID = "codex:env";
+    const eventBus = { check: jest.fn().mockResolvedValue([]) };
+    try {
+      await runBusCoreCommand(eventBus, "poll", []);
+    } finally {
+      if (previous === undefined) delete process.env.UFOO_SUBSCRIBER_ID;
+      else process.env.UFOO_SUBSCRIBER_ID = previous;
+    }
+    expect(eventBus.check).toHaveBeenCalledWith("codex:env", false);
+  });
+
+  test("poll command supports auto ack", async () => {
+    const eventBus = { check: jest.fn().mockResolvedValue([]) };
+    await runBusCoreCommand(eventBus, "poll", ["--ack", "codex:test"]);
+    expect(eventBus.check).toHaveBeenCalledWith("codex:test", true);
+  });
+
+  test("poll command requires subscriber context", async () => {
+    const previous = process.env.UFOO_SUBSCRIBER_ID;
+    delete process.env.UFOO_SUBSCRIBER_ID;
+    const eventBus = { check: jest.fn().mockResolvedValue([]) };
+    try {
+      await expect(runBusCoreCommand(eventBus, "poll", [])).rejects.toThrow("poll requires");
+    } finally {
+      if (previous !== undefined) process.env.UFOO_SUBSCRIBER_ID = previous;
+    }
+  });
+
   test("ack command", async () => {
     const eventBus = { ack: jest.fn().mockResolvedValue(0) };
     await runBusCoreCommand(eventBus, "ack", ["codex:test"]);

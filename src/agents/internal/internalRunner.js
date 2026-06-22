@@ -16,6 +16,7 @@ const { redactToolCallPayload, redactSecrets } = require("../../runtime/privacy/
 const { buildCachedMemoryPrefix } = require("../../coordination/memory");
 const { normalizePublisher, shouldForwardStreamToPublisher } = require("../launch/publisherRouting");
 const { appendAgentRegistryDiagnostic } = require("../../coordination/state/agentRegistryDiagnostics");
+const { DeliveryQueue } = require("../../coordination/bus/deliveryQueue");
 const {
   buildDefaultStartupBootstrapPrompt,
   isValueForCodexOption,
@@ -216,37 +217,15 @@ function shouldStreamReplyToPublisher(projectRoot, publisher, evt = {}) {
   return shouldForwardStreamToPublisher(projectRoot, publisher);
 }
 
-function drainQueue(queueFile) {
-  if (!fs.existsSync(queueFile)) return [];
-  const processingFile = `${queueFile}.processing.${process.pid}.${Date.now()}`;
-  let content = "";
-  let readOk = false;
-  try {
-    fs.renameSync(queueFile, processingFile);
-    content = fs.readFileSync(processingFile, "utf8");
-    readOk = true;
-  } catch {
-    try {
-      if (fs.existsSync(processingFile)) {
-        fs.renameSync(processingFile, queueFile);
-      }
-    } catch {
-      // ignore rollback errors
-    }
-    return [];
-  } finally {
-    if (readOk) {
-      try {
-        if (fs.existsSync(processingFile)) {
-          fs.rmSync(processingFile, { force: true });
-        }
-      } catch {
-        // ignore cleanup errors
-      }
-    }
+function claimQueuedEvents(queueFile) {
+  const queue = new DeliveryQueue(queueFile);
+  const claims = [];
+  while (true) {
+    const claim = queue.claimNext();
+    if (!claim) break;
+    claims.push({ ...claim, queue });
   }
-  if (!content.trim()) return [];
-  return content.split(/\r?\n/).filter(Boolean);
+  return claims;
 }
 
 function parseAgentViewRawInput(message) {
@@ -835,67 +814,67 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
     if (!processing) {
       processing = true;
       try {
-        const lines = drainQueue(queueFile);
-        if (lines.length > 0) {
-          const events = [];
-          for (const line of lines) {
-            try {
-              events.push(JSON.parse(line));
-            } catch {
-              // ignore malformed line
-            }
-          }
+        const claims = claimQueuedEvents(queueFile);
+        if (claims.length > 0) {
+          let handledAny = false;
 
-          const runnableEvents = [];
-          for (const evt of events) {
+          for (const claim of claims) {
+            const evt = claim.event;
+            const runnableEvents = [];
             const rawInput = parseAgentViewRawInput(evt && evt.data ? evt.data.message : "");
             if (rawInput === null) {
               runnableEvents.push(evt);
-              continue;
+            } else {
+              const session = getInteractiveSession(evt.publisher || "unknown");
+              const submissions = session.handleRaw(rawInput);
+              for (const message of submissions) {
+                runnableEvents.push({
+                  ...evt,
+                  __agentViewRaw: true,
+                  data: {
+                    ...(evt.data || {}),
+                    message,
+                  },
+                });
+              }
             }
 
-            const session = getInteractiveSession(evt.publisher || "unknown");
-            const submissions = session.handleRaw(rawInput);
-            for (const message of submissions) {
-              runnableEvents.push({
-                ...evt,
-                __agentViewRaw: true,
-                data: {
-                  ...(evt.data || {}),
-                  message,
-                },
-              });
+            if (runnableEvents.length > 0) {
+              activityTracker.notifyTurnStart("thinking");
             }
-          }
 
-          if (runnableEvents.length > 0) {
-            activityTracker.notifyTurnStart("thinking");
-          }
-
-          for (const evt of runnableEvents) {
-            // eslint-disable-next-line no-await-in-loop
-            await handleEvent(
-              projectRoot,
-              parsedAgentType,
-              provider,
-              model,
-              subscriber,
-              nickname,
-              evt,
-              busSender,
-              bootstrap.extraArgs,
-              threadRuntime,
-              bootstrap.promptText,
-              activityTracker
-            );
-            if (evt.__agentViewRaw) {
-              getInteractiveSession(evt.publisher || "unknown").writeResponsePrompt();
+            try {
+              for (const runnableEvent of runnableEvents) {
+                // eslint-disable-next-line no-await-in-loop
+                await handleEvent(
+                  projectRoot,
+                  parsedAgentType,
+                  provider,
+                  model,
+                  subscriber,
+                  nickname,
+                  runnableEvent,
+                  busSender,
+                  bootstrap.extraArgs,
+                  threadRuntime,
+                  bootstrap.promptText,
+                  activityTracker
+                );
+                if (runnableEvent.__agentViewRaw) {
+                  getInteractiveSession(runnableEvent.publisher || "unknown").writeResponsePrompt();
+                }
+              }
+              claim.queue.completeClaim(claim);
+              if (runnableEvents.length > 0) handledAny = true;
+            } catch (err) {
+              claim.queue.restoreClaim(claim);
+              throw err;
             }
           }
           // 处理消息后更新心跳
           updateHeartbeat();
           lastHeartbeat = now;
-          if (runnableEvents.length > 0) {
+          if (handledAny) {
             activityTracker.markIdle();
           }
           await busSender.flush();

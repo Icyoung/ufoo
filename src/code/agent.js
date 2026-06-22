@@ -31,6 +31,7 @@ const {
   listUcodeSkills,
   showSkill,
 } = require("./skills");
+const { DeliveryQueue } = require("../coordination/bus/deliveryQueue");
 
 function printPrompt() {
   process.stdout.write("> ");
@@ -883,110 +884,31 @@ function getPendingBusCount(workspaceRoot = process.cwd(), subscriberId = "") {
 function drainJsonlFile(filePath = "") {
   const target = String(filePath || "").trim();
   if (!target) return { drained: [], rawLines: [], error: "" };
-  if (!fs.existsSync(target)) return { drained: [], rawLines: [], error: "" };
-
-  const processingFile = `${target}.processing.${process.pid}.${Date.now()}`;
-  let content = "";
-  let renamed = false;
+  const queue = new DeliveryQueue(target);
+  const drained = [];
+  const rawLines = [];
+  const claims = [];
   try {
-    fs.renameSync(target, processingFile);
-    renamed = true;
-    content = String(fs.readFileSync(processingFile, "utf8") || "");
-  } catch (err) {
-    // Restore on failure.
-    try {
-      if (renamed && fs.existsSync(processingFile)) {
-        fs.renameSync(processingFile, target);
-      }
-    } catch {
-      // ignore
+    queue.recover();
+    while (true) {
+      const claim = queue.claimNext();
+      if (!claim) break;
+      claims.push(claim);
+      drained.push(claim.event);
+      rawLines.push(JSON.stringify(claim.event));
+      queue.completeClaim(claim);
     }
+  } catch (err) {
+    for (const claim of claims) queue.restoreClaim(claim);
     return { drained: [], rawLines: [], error: err && err.message ? err.message : "drain failed" };
   }
-
-  const rawLines = content.split(/\r?\n/).filter((line) => line.trim());
-  const drained = rawLines.map((line) => {
-    try {
-      return JSON.parse(line);
-    } catch {
-      return null;
-    }
-  }).filter(Boolean);
-
-  // Keep processing file around for potential requeue decisions by caller.
-  return { drained, rawLines, error: "", processingFile };
-}
-
-function requeueJsonlLines(filePath = "", lines = []) {
-  const target = String(filePath || "").trim();
-  const list = Array.isArray(lines) ? lines.filter((l) => String(l || "").trim()) : [];
-  if (!target || list.length === 0) return;
-  try {
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.appendFileSync(target, `${list.join("\n")}\n`, "utf8");
-  } catch {
-    // ignore requeue errors
-  }
-}
-
-function cleanupProcessingFile(filePath = "") {
-  const target = String(filePath || "").trim();
-  if (!target) return;
-  try {
-    if (fs.existsSync(target)) fs.rmSync(target, { force: true });
-  } catch {
-    // ignore
-  }
-}
-
-function recoverStaleProcessingFiles(pendingFilePath = "", options = {}) {
-  const pendingFile = String(pendingFilePath || "").trim();
-  if (!pendingFile) return 0;
-  const maxAgeMs = Number.isFinite(options.maxAgeMs) ? options.maxAgeMs : 30000;
-  const dir = path.dirname(pendingFile);
-  const base = path.basename(pendingFile);
-  const prefix = `${base}.processing.`;
-  const now = Date.now();
-  let recovered = 0;
-
-  try {
-    if (!fs.existsSync(dir)) return 0;
-    const names = fs.readdirSync(dir);
-    for (const name of names) {
-      if (!name || !name.startsWith(prefix)) continue;
-      const fullPath = path.join(dir, name);
-      let stat = null;
-      try {
-        stat = fs.statSync(fullPath);
-      } catch {
-        continue;
-      }
-      if (!stat || !stat.isFile()) continue;
-      const pidMatch = name.match(/\.processing\.(\d+)\./);
-      const pid = pidMatch ? parseInt(pidMatch[1], 10) : NaN;
-      const pidDead = Number.isFinite(pid) && pid > 0 && !isPidAlive(pid);
-      const tooOld = Number.isFinite(maxAgeMs) && maxAgeMs > 0 && (now - stat.mtimeMs >= maxAgeMs);
-      if (!pidDead && !tooOld) continue;
-
-      let content = "";
-      try {
-        content = String(fs.readFileSync(fullPath, "utf8") || "");
-      } catch {
-        content = "";
-      }
-
-      const lines = content.split(/\r?\n/).filter((line) => String(line || "").trim());
-      if (lines.length > 0) {
-        requeueJsonlLines(pendingFile, lines);
-      }
-      cleanupProcessingFile(fullPath);
-      recovered += 1;
-    }
-  } catch {
-    return recovered;
-  }
-
-  return recovered;
+  return {
+    drained,
+    rawLines,
+    error: "",
+    claims,
+    processingFile: claims[0] ? claims[0].processingFile : "",
+  };
 }
 
 function extractTaskFromBusEvent(evt) {
@@ -1144,39 +1066,22 @@ async function runUbusCommand(state = {}, options = {}) {
 
   // Prefer consuming pending.jsonl directly (stable, ANSI/wrapping-proof).
   const pendingFile = resolvePendingQueueFile(runtimeWorkspace, subscriberId);
-  // Recover any stale processing files from prior crashes so they don't "black hole" messages.
-  recoverStaleProcessingFiles(pendingFile, { maxAgeMs: 30000 });
+  const queue = pendingFile ? new DeliveryQueue(pendingFile) : null;
+  if (queue) queue.recover();
   const hasPendingFile = Boolean(pendingFile && fs.existsSync(pendingFile));
-  const drainedRes = hasPendingFile ? drainJsonlFile(pendingFile) : { drained: [], rawLines: [], error: "", processingFile: "" };
-  if (drainedRes && drainedRes.error) {
-    return {
-      ok: false,
-      summary: "",
-      error: drainedRes.error,
-      handled: 0,
-      subscriberId,
-    };
-  }
-  const rawLines = Array.isArray(drainedRes.rawLines) ? drainedRes.rawLines : [];
-  const messages = rawLines
-    .map((rawLine) => {
-      try {
-        const evt = JSON.parse(rawLine);
-        const msg = extractTaskFromBusEvent(evt);
-        if (!msg) return null;
-        return { ...msg, rawLine };
-      } catch {
-        return null;
-      }
-    })
-    .filter(Boolean);
   let handled = 0;
   const sendErrors = [];
-  const failedRawLines = [];
   const messageExchanges = [];
 
-  try {
-    for (const message of messages) {
+  if (queue && hasPendingFile) {
+    while (fs.existsSync(pendingFile)) {
+      const claim = queue.claimNext();
+      if (!claim) break;
+      const message = extractTaskFromBusEvent(claim.event);
+      if (!message) {
+        queue.completeClaim(claim);
+        continue;
+      }
       let nlResult;
 
       // Notify that we received the message (for immediate display)
@@ -1200,32 +1105,28 @@ async function runUbusCommand(state = {}, options = {}) {
           signal: options.signal,
         });
       } catch (err) {
-        sendErrors.push(`task from ${message.publisher} failed: ${err && err.message ? err.message : "task failed"}`);
-        failedRawLines.push(message.rawLine);
+        const errorMessage = err && err.message ? err.message : "task failed";
+        sendErrors.push(`task from ${message.publisher} failed: ${errorMessage}`);
+        queue.restoreClaim(claim);
         // Send error notification
-        shell(`ufoo bus send ${shellQuote(message.publisher)} ${shellQuote(`❌ Error: ${err.message}`)}`);
-        continue;
+        shell(`ufoo bus send ${shellQuote(message.publisher)} ${shellQuote(`❌ Error: ${errorMessage}`)}`);
+        break;
       }
       const reply = String(formatNl(nlResult, false) || "").replace(/\s+/g, " ").trim() || "Done.";
       const sendRes = shell(`ufoo bus send ${shellQuote(message.publisher)} ${shellQuote(reply.slice(0, 2000))}`);
       if (!sendRes.ok) {
         sendErrors.push(`reply to ${message.publisher} failed: ${sendRes.error || "send failed"}`);
-        failedRawLines.push(message.rawLine);
-        continue;
+        queue.restoreClaim(claim);
+        break;
       }
       handled += 1;
+      queue.completeClaim(claim);
       messageExchanges.push({
         from: message.publisher,
         task: message.task,
         reply,
       });
     }
-  } finally {
-    // If we drained the pending file but had failures, requeue only failed lines.
-    if (failedRawLines.length > 0) {
-      requeueJsonlLines(pendingFile, failedRawLines);
-    }
-    cleanupProcessingFile(drainedRes.processingFile);
   }
 
   // Fallback: if there is no pending file, fall back to CLI `bus check` parsing.

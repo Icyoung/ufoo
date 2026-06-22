@@ -3,10 +3,9 @@ const path = require("path");
 const {
   subscriberToSafeName,
   ensureDir,
-  readJSONL,
-  appendJSONL,
   truncateFile,
 } = require("./utils");
+const { DeliveryQueue, stripQueueEnvelope } = require("./deliveryQueue");
 
 /**
  * 队列管理器
@@ -49,6 +48,10 @@ class QueueManager {
     return path.join(this.getQueueDir(subscriber), "pending.jsonl");
   }
 
+  getDeliveryQueue(subscriber) {
+    return new DeliveryQueue(this.getPendingPath(subscriber));
+  }
+
   /**
    * 获取 tty 文件路径
    */
@@ -81,17 +84,15 @@ class QueueManager {
    * 读取待处理消息
    */
   async readPending(subscriber) {
-    const pendingPath = this.getPendingPath(subscriber);
-    return readJSONL(pendingPath);
+    return this.getDeliveryQueue(subscriber).readPending().map(stripQueueEnvelope);
   }
 
   /**
    * 追加待处理消息
    */
   async appendPending(subscriber, event) {
-    this.ensureQueueDir(subscriber);
-    const pendingPath = this.getPendingPath(subscriber);
-    appendJSONL(pendingPath, event);
+    const deliveryQueue = this.getDeliveryQueue(subscriber);
+    deliveryQueue.append(event);
     if (event && event.event === "wake") {
       const wakePath = path.join(this.getQueueDir(subscriber), "wake");
       fs.writeFileSync(wakePath, String(event.seq || Date.now()), "utf8");
@@ -104,6 +105,21 @@ class QueueManager {
   async clearPending(subscriber) {
     const pendingPath = this.getPendingPath(subscriber);
     truncateFile(pendingPath);
+  }
+
+  /**
+   * 确认待处理消息
+   */
+  async ackPending(subscriber) {
+    const deliveryQueue = this.getDeliveryQueue(subscriber);
+    let count = 0;
+    while (true) {
+      const claim = deliveryQueue.claimNext();
+      if (!claim) break;
+      deliveryQueue.completeClaim(claim);
+      count += 1;
+    }
+    return count;
   }
 
   /**

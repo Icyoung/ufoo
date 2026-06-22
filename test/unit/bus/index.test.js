@@ -269,15 +269,6 @@ describe("EventBus", () => {
     });
   });
 
-  describe("daemon", () => {
-    test("throws on unknown action", async () => {
-      const bus = initBus();
-      await expect(bus.daemon("unknown")).rejects.toThrow(
-        "Unknown daemon action"
-      );
-    });
-  });
-
   describe("check with autoAck", () => {
     test("auto-acknowledges when autoAck=true", async () => {
       const bus = initBus();

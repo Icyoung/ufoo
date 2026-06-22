@@ -39,6 +39,18 @@ function parseSendArgs(cmdArgs = []) {
   };
 }
 
+function resolvePollSubscriber(cmdArgs = [], env = process.env) {
+  const positionals = cmdArgs.filter((arg) => typeof arg === "string" && !arg.startsWith("--"));
+  const subscriber = String(positionals[0] || env.UFOO_SUBSCRIBER_ID || "").trim();
+  if (!subscriber) {
+    throw new Error("poll requires [subscriber] or UFOO_SUBSCRIBER_ID");
+  }
+  return {
+    subscriber,
+    autoAck: cmdArgs.includes("--ack") || cmdArgs.includes("--auto-ack"),
+  };
+}
+
 async function runBusCoreCommand(eventBus, cmd, cmdArgs = []) {
   switch (cmd) {
     case "init":
@@ -76,6 +88,12 @@ async function runBusCoreCommand(eventBus, cmd, cmdArgs = []) {
     case "check":
       await eventBus.check(cmdArgs[0]);
       return {};
+    case "poll":
+      {
+        const parsed = resolvePollSubscriber(cmdArgs);
+        await eventBus.check(parsed.subscriber, parsed.autoAck);
+      }
+      return {};
     case "ack":
       await eventBus.ack(cmdArgs[0]);
       return {};
@@ -99,4 +117,4 @@ async function runBusCoreCommand(eventBus, cmd, cmdArgs = []) {
   }
 }
 
-module.exports = { runBusCoreCommand };
+module.exports = { runBusCoreCommand, resolvePollSubscriber };

@@ -58,6 +58,7 @@ describe('MessageManager', () => {
       appendPending: jest.fn().mockResolvedValue(undefined),
       readPending: jest.fn().mockResolvedValue([]),
       clearPending: jest.fn().mockResolvedValue(undefined),
+      ackPending: jest.fn().mockResolvedValue(0),
     };
 
     manager = new MessageManager(testBusDir, busData, mockQueueManager);
@@ -149,6 +150,20 @@ describe('MessageManager', () => {
       expect(targets).toEqual(['claude-code:abc123']);
     });
 
+    it('should resolve short nickname to project-scoped subscriber metadata', () => {
+      busData.agents['codex:review123'] = {
+        agent_type: 'codex',
+        scoped_nickname: 'ufoo-message-test-reviewer',
+        status: 'active',
+      };
+      manager = new MessageManager(testBusDir, busData, mockQueueManager, {
+        projectRoot: testBusDir,
+      });
+
+      const targets = manager.resolveTarget('reviewer');
+      expect(targets).toEqual(['codex:review123']);
+    });
+
     it('should resolve agent type to all active subscribers', () => {
       const targets = manager.resolveTarget('codex');
       expect(targets).toEqual(['codex:xyz789']);
@@ -226,6 +241,19 @@ describe('MessageManager', () => {
       expect(manager.targetMatches('architect', 'claude-code:abc123')).toBe(true);
     });
 
+    it('should match short nickname against project-scoped subscriber metadata', () => {
+      busData.agents['codex:review123'] = {
+        agent_type: 'codex',
+        scoped_nickname: 'ufoo-message-test-reviewer',
+        status: 'active',
+      };
+      manager = new MessageManager(testBusDir, busData, mockQueueManager, {
+        projectRoot: testBusDir,
+      });
+
+      expect(manager.targetMatches('reviewer', 'codex:review123')).toBe(true);
+    });
+
     it('should match wildcard', () => {
       expect(manager.targetMatches('*', 'claude-code:abc123')).toBe(true);
       expect(manager.targetMatches('*', 'codex:xyz789')).toBe(true);
@@ -282,6 +310,28 @@ describe('MessageManager', () => {
 
       expect(result.targets).toHaveLength(2);
       expect(mockQueueManager.appendPending).toHaveBeenCalledTimes(2);
+    });
+
+    it('should send short nickname to project-scoped group member metadata', async () => {
+      busData.agents['codex:review123'] = {
+        agent_type: 'codex',
+        scoped_nickname: 'ufoo-message-test-reviewer',
+        status: 'active',
+      };
+      manager = new MessageManager(testBusDir, busData, mockQueueManager, {
+        projectRoot: testBusDir,
+      });
+
+      const result = await manager.send('reviewer', 'Please review', 'codex:xyz789');
+
+      expect(result.targets).toEqual(['codex:review123']);
+      expect(mockQueueManager.appendPending).toHaveBeenCalledWith(
+        'codex:review123',
+        expect.objectContaining({
+          target: 'reviewer',
+          data: { message: 'Please review', injection_mode: 'immediate' },
+        })
+      );
     });
 
     it('should throw error for unknown target', async () => {
@@ -434,26 +484,23 @@ describe('MessageManager', () => {
   });
 
   describe('ack', () => {
-    it('should clear pending messages and return count', async () => {
-      const mockPending = [
-        { seq: 1, message: 'msg1' },
-        { seq: 2, message: 'msg2' },
-      ];
-      mockQueueManager.readPending.mockResolvedValue(mockPending);
+    it('should acknowledge pending messages through delivery queue claims', async () => {
+      mockQueueManager.ackPending.mockResolvedValue(2);
 
       const count = await manager.ack('claude-code:abc123');
 
       expect(count).toBe(2);
-      expect(mockQueueManager.clearPending).toHaveBeenCalledWith('claude-code:abc123');
+      expect(mockQueueManager.ackPending).toHaveBeenCalledWith('claude-code:abc123');
+      expect(mockQueueManager.clearPending).not.toHaveBeenCalled();
     });
 
     it('should return 0 when no pending messages', async () => {
-      mockQueueManager.readPending.mockResolvedValue([]);
+      mockQueueManager.ackPending.mockResolvedValue(0);
 
       const count = await manager.ack('codex:xyz789');
 
       expect(count).toBe(0);
-      expect(mockQueueManager.clearPending).not.toHaveBeenCalled();
+      expect(mockQueueManager.ackPending).toHaveBeenCalledWith('codex:xyz789');
     });
   });
 

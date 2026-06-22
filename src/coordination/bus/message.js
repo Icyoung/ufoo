@@ -13,6 +13,8 @@ const {
 const NicknameManager = require("./nickname");
 const { buildMessageData } = require("./messageMeta");
 const { getUfooPaths } = require("../state/paths");
+const { applyProjectNicknamePrefix } = require("../../runtime/daemon/nicknameScope");
+const { QUEUE_TYPES, normalizeQueueEnvelope } = require("./deliveryQueue");
 
 const SEQ_LOCK_TIMEOUT_MS = 5000;
 const SEQ_LOCK_POLL_MS = 25;
@@ -222,7 +224,19 @@ class MessageManager {
       return [byNickname];
     }
 
-    // 3. 尝试作为代理类型（匹配所有该类型的订阅者）
+    // 3. Try the project-scoped nickname form. Group prompts intentionally show
+    // short names, while older/runtime metadata may only contain scoped names.
+    if (this.projectRoot) {
+      const scopedTarget = applyProjectNicknamePrefix(this.projectRoot, target);
+      if (scopedTarget && scopedTarget !== target) {
+        const byScopedNickname = nicknameManager.resolveNickname(scopedTarget);
+        if (byScopedNickname) {
+          return [byScopedNickname];
+        }
+      }
+    }
+
+    // 4. 尝试作为代理类型（匹配所有该类型的订阅者）
     const isActive = (meta) => !meta || meta.status === "active";
 
     const byType = Object.entries(subscribers)
@@ -233,7 +247,7 @@ class MessageManager {
       return byType;
     }
 
-    // 4. 通配符（所有活跃订阅者）
+    // 5. 通配符（所有活跃订阅者）
     if (target === "*") {
       return Object.entries(subscribers)
         .filter(([, meta]) => isActive(meta))
@@ -257,7 +271,14 @@ class MessageManager {
     if (meta && normalizedTarget === normalizeAgentTypeAlias(meta.agent_type)) return true;
 
     // 昵称匹配
-    if (meta && (target === meta.nickname || target === meta.scoped_nickname)) return true;
+    if (meta) {
+      const candidates = [target];
+      if (this.projectRoot) {
+        const scopedTarget = applyProjectNicknamePrefix(this.projectRoot, target);
+        if (scopedTarget && scopedTarget !== target) candidates.push(scopedTarget);
+      }
+      if (candidates.includes(meta.nickname) || candidates.includes(meta.scoped_nickname)) return true;
+    }
 
     // 通配符
     if (target === "*") return true;
@@ -426,17 +447,22 @@ class MessageManager {
       target,
       data,
     };
+    const queueEvent = normalizeQueueEnvelope(event, {
+      queueType: QUEUE_TYPES.AGENT_MESSAGE,
+      delivery: { mode: "inject", gate: "idle", max_inflight: 1 },
+      ack: { policy: "on_delivery" },
+    });
 
     // 写入事件日志
     const eventFile = path.join(this.eventsDir, `${date}.jsonl`);
-    appendJSONL(eventFile, event);
+    appendJSONL(eventFile, queueEvent);
 
     // 为每个目标订阅者添加到待处理队列
     for (const targetSubscriber of targets) {
       // 检查订阅者的 offset，如果已经消费过这个 seq，不再添加
       const offset = await this.queueManager.getOffset(targetSubscriber);
       if (seq > offset) {
-        await this.queueManager.appendPending(targetSubscriber, event);
+        await this.queueManager.appendPending(targetSubscriber, queueEvent);
       }
     }
 
@@ -473,14 +499,15 @@ class MessageManager {
       target,
       data,
     };
+    const queueEvent = normalizeQueueEnvelope(event);
 
     const eventFile = path.join(this.eventsDir, `${date}.jsonl`);
-    appendJSONL(eventFile, event);
+    appendJSONL(eventFile, queueEvent);
 
     for (const targetSubscriber of targets) {
       const offset = await this.queueManager.getOffset(targetSubscriber);
       if (seq > offset) {
-        await this.queueManager.appendPending(targetSubscriber, event);
+        await this.queueManager.appendPending(targetSubscriber, queueEvent);
       }
     }
 
@@ -499,14 +526,7 @@ class MessageManager {
    * 确认消息（清空待处理队列）
    */
   async ack(subscriber) {
-    const pending = await this.queueManager.readPending(subscriber);
-    const count = pending.length;
-
-    if (count > 0) {
-      await this.queueManager.clearPending(subscriber);
-    }
-
-    return count;
+    return this.queueManager.ackPending(subscriber);
   }
 
   /**

@@ -116,6 +116,45 @@ describe("AgentNotifier delivery strategy", () => {
     expect(fs.existsSync(pendingFile)).toBe(false);
   });
 
+  test("busy agent leaves immediate message pending instead of injecting", async () => {
+    const subscriber = "codex:busy123";
+    fs.writeFileSync(
+      path.join(projectRoot, ".ufoo", "agent", "all-agents.json"),
+      JSON.stringify({
+        agents: {
+          [subscriber]: {
+            status: "active",
+            activity_state: "working",
+          },
+        },
+      }, null, 2)
+    );
+    const pendingFile = writePending(projectRoot, subscriber, [
+      {
+        seq: 1,
+        event: "message",
+        publisher: "ufoo-agent",
+        target: subscriber,
+        data: { message: "do not interrupt", injection_mode: "immediate" },
+      },
+    ]);
+
+    const notifier = new AgentNotifier(projectRoot, subscriber);
+    notifier.injector = {
+      inject: jest.fn().mockResolvedValue(undefined),
+      readTty: jest.fn(() => ""),
+    };
+    notifier.eventBus = {
+      send: jest.fn().mockResolvedValue({ ok: true }),
+    };
+
+    const delivered = await notifier.deliverPending();
+
+    expect(delivered).toBe(0);
+    expect(notifier.injector.inject).not.toHaveBeenCalled();
+    expect(fs.readFileSync(pendingFile, "utf8")).toContain("do not interrupt");
+  });
+
   test("chat-direct delivery injects manual target envelope", async () => {
     const subscriber = "codex:abc123";
     fs.writeFileSync(
@@ -196,7 +235,7 @@ describe("AgentNotifier delivery strategy", () => {
     expect(notifier.injector.inject).toHaveBeenCalledWith(subscriber, "raw payload");
   });
 
-  test("busy activity state still delivers immediate messages", async () => {
+  test("busy activity state defers immediate delivery and keeps queue intact", async () => {
     const subscriber = "codex:busy1";
     fs.writeFileSync(
       path.join(projectRoot, ".ufoo", "agent", "all-agents.json"),
@@ -230,12 +269,9 @@ describe("AgentNotifier delivery strategy", () => {
 
     const delivered = await notifier.deliverPending();
 
-    expect(delivered).toBe(1);
-    expect(notifier.injector.inject).toHaveBeenCalledWith(
-      subscriber,
-      "[ufoo]<from:ufoo-agent>\ntask-a"
-    );
-    expect(fs.existsSync(pendingFile)).toBe(false);
+    expect(delivered).toBe(0);
+    expect(notifier.injector.inject).not.toHaveBeenCalled();
+    expect(fs.readFileSync(pendingFile, "utf8")).toContain("task-a");
   });
 
   test("busy activity state defers queued delivery and keeps queue intact", async () => {

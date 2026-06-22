@@ -21,7 +21,6 @@ const QueueManager = require("./queue");
 const SubscriberManager = require("./subscriber");
 const MessageManager = require("./message");
 const NicknameManager = require("./nickname");
-const BusDaemon = require("./daemon");
 const Injector = require("./inject");
 const { BusStore } = require("./store");
 
@@ -263,7 +262,7 @@ class EventBus {
       }
     }
 
-    logError("Not joined to bus. Please run: ufoo bus join");
+    logError("Not joined to bus. Launch through ufoo wrappers or register through MCP.");
     return null;
   }
 
@@ -764,10 +763,9 @@ class EventBus {
 
       if (countAfter > countBefore) {
         await sleep(50);
-        const daemon = new BusDaemon(this.busDir, this.agentsFile, this.paths.busDaemonDir, 2000, this.projectRoot);
-        await daemon.injector.inject(target, options.command || "");
+        await this.injector.inject(target, options.command || "");
         if (options.shake !== false) {
-          const tty = daemon.injector.readTty(target);
+          const tty = this.injector.readTty(target);
           if (tty) shakeTerminalByTty(tty, { skipFrontmost: true });
         }
       }
@@ -854,28 +852,6 @@ class EventBus {
         lastLines = lines.length;
       }
       await sleep(1000);
-    }
-  }
-
-  /**
-   * Daemon 管理
-   */
-  async daemon(action, options = {}) {
-    const interval = options.interval || 2000;
-    const daemon = new BusDaemon(this.busDir, this.agentsFile, this.paths.busDaemonDir, interval, this.projectRoot);
-
-    switch (action) {
-      case "start":
-        await daemon.start(options.background || false);
-        break;
-      case "stop":
-        daemon.stop();
-        break;
-      case "status":
-        daemon.status();
-        break;
-      default:
-        throw new Error(`Unknown daemon action: ${action}`);
     }
   }
 

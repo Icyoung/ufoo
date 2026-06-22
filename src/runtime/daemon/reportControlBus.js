@@ -1,13 +1,16 @@
 "use strict";
 
-const fs = require("fs");
 const path = require("path");
 const { getUfooPaths } = require("../../coordination/state/paths");
 const {
-  appendJSONL,
   ensureDir,
   generateInstanceId,
 } = require("../../coordination/bus/utils");
+const {
+  DeliveryQueue,
+  QUEUE_TYPES,
+  normalizeQueueEnvelope,
+} = require("../../coordination/bus/deliveryQueue");
 
 const REPORT_CONTROL_TARGET = "ufoo-agent";
 const REPORT_CONTROL_EVENT = "agent_report";
@@ -58,8 +61,12 @@ function buildReportControlEvent(report = {}, options = {}) {
 async function enqueueAgentReport(projectRoot, report, options = {}) {
   ensureReportControlQueue(projectRoot);
 
-  const event = buildReportControlEvent(report, options);
-  appendJSONL(getReportControlQueueFile(projectRoot), event);
+  const event = normalizeQueueEnvelope(buildReportControlEvent(report, options), {
+    queueType: QUEUE_TYPES.REPORT,
+    delivery: { mode: "daemon_consume", gate: "none", max_inflight: 1 },
+    ack: { policy: "on_consume" },
+  });
+  new DeliveryQueue(getReportControlQueueFile(projectRoot)).append(event);
 
   return {
     queued: true,
@@ -72,46 +79,16 @@ async function enqueueAgentReport(projectRoot, report, options = {}) {
 
 function takeReportControlEvents(projectRoot) {
   const queueFile = getReportControlQueueFile(projectRoot);
-  if (!fs.existsSync(queueFile)) return [];
-
-  const processingFile = `${queueFile}.processing.${process.pid}.${Date.now()}.${generateInstanceId()}`;
-  let content = "";
-  let readOk = false;
-  try {
-    fs.renameSync(queueFile, processingFile);
-    content = fs.readFileSync(processingFile, "utf8");
-    readOk = true;
-  } catch {
-    try {
-      if (fs.existsSync(processingFile)) {
-        fs.renameSync(processingFile, queueFile);
-      }
-    } catch {
-      // ignore rollback errors
-    }
-    return [];
-  } finally {
-    if (readOk) {
-      try {
-        if (fs.existsSync(processingFile)) {
-          fs.rmSync(processingFile, { force: true });
-        }
-      } catch {
-        // ignore cleanup errors
-      }
-    }
+  const queue = new DeliveryQueue(queueFile);
+  const events = [];
+  queue.recover();
+  while (true) {
+    const claim = queue.claimNext();
+    if (!claim) break;
+    events.push(claim.event);
+    queue.completeClaim(claim);
   }
-
-  return content.split(/\r?\n/)
-    .filter(Boolean)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return null;
-      }
-    })
-    .filter(Boolean);
+  return events;
 }
 
 function isAgentReportControlEvent(evt) {

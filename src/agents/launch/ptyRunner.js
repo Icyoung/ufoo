@@ -17,6 +17,7 @@ const {
   resolveDefaultManualBootstrap,
 } = require("../prompts/defaultBootstrap");
 const { buildPromptInjectionText } = require("../../coordination/bus/promptEnvelope");
+const { DeliveryQueue } = require("../../coordination/bus/deliveryQueue");
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -40,37 +41,15 @@ function safeSubscriber(subscriber) {
   return subscriber.replace(/:/g, "_");
 }
 
-function drainQueue(queueFile) {
-  if (!fs.existsSync(queueFile)) return [];
-  const processingFile = `${queueFile}.processing.${process.pid}.${Date.now()}`;
-  let content = "";
-  let readOk = false;
-  try {
-    fs.renameSync(queueFile, processingFile);
-    content = fs.readFileSync(processingFile, "utf8");
-    readOk = true;
-  } catch {
-    try {
-      if (fs.existsSync(processingFile)) {
-        fs.renameSync(processingFile, queueFile);
-      }
-    } catch {
-      // ignore rollback errors
-    }
-    return [];
-  } finally {
-    if (readOk) {
-      try {
-        if (fs.existsSync(processingFile)) {
-          fs.rmSync(processingFile, { force: true });
-        }
-      } catch {
-        // ignore cleanup errors
-      }
-    }
+function claimQueuedEvents(queueFile) {
+  const queue = new DeliveryQueue(queueFile);
+  const claims = [];
+  while (true) {
+    const claim = queue.claimNext();
+    if (!claim) break;
+    claims.push({ ...claim, queue });
   }
-  if (!content.trim()) return [];
-  return content.split(/\r?\n/).filter(Boolean);
+  return claims;
 }
 
 function stripAnsi(text) {
@@ -1044,28 +1023,29 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
       lastHeartbeat = now;
     }
 
-    const lines = drainQueue(queueFile);
-    if (lines.length > 0) {
+    const claims = claimQueuedEvents(queueFile);
+    if (claims.length > 0) {
       const agents = readAgentsMap(agentsFilePath);
-      const events = [];
-      for (const line of lines) {
+      for (const claim of claims) {
+        const evt = claim.event;
         try {
-          events.push(JSON.parse(line));
+          const input = buildPtyInputFromEvent(evt, subscriber, agents);
+          if (!input) {
+            claim.queue.completeClaim(claim);
+            continue;
+          }
+          const { raw, text } = input;
+          if (messageQueue.length >= maxQueue) {
+            messageQueue.shift();
+          }
+          const publisher = typeof evt.publisher === "object" && evt.publisher
+            ? (evt.publisher.subscriber || evt.publisher.nickname || "unknown")
+            : (evt.publisher || "unknown");
+          messageQueue.push({ publisher, raw, text });
+          claim.queue.completeClaim(claim);
         } catch {
-          // ignore malformed line
+          claim.queue.restoreClaim(claim);
         }
-      }
-      for (const evt of events) {
-        const input = buildPtyInputFromEvent(evt, subscriber, agents);
-        if (!input) continue;
-        const { raw, text } = input;
-        if (messageQueue.length >= maxQueue) {
-          messageQueue.shift();
-        }
-        const publisher = typeof evt.publisher === "object" && evt.publisher
-          ? (evt.publisher.subscriber || evt.publisher.nickname || "unknown")
-          : (evt.publisher || "unknown");
-        messageQueue.push({ publisher, raw, text });
       }
     }
     processQueue();
