@@ -58,6 +58,14 @@ function stripAnsi(text) {
     .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
 }
 
+function rewriteTitleOscPrefix(text, prefix) {
+  if (!prefix || !text) return text;
+  return String(text).replace(/\x1b\]([012]);([^\x07\x1b]*)(\x07|\x1b\\)/g, (match, code, title, terminator) => {
+    if (!title || title.startsWith(`${prefix}:`)) return match;
+    return `\x1b]${code};${prefix}:${title}${terminator}`;
+  });
+}
+
 function parseInputMessage(message) {
   if (!message) return { raw: false, text: "" };
   if (parseStreamEnvelope(message)) return null;
@@ -419,8 +427,29 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
     }
   }
 
-  function broadcastOutput(data) {
+  const titlePrefix = process.env.UFOO_LAUNCH_MODE === "host"
+    ? String(process.env.UFOO_NICKNAME || "").trim()
+    : "";
+  let titleOscBuffer = "";
+
+  function prependTitlePrefix(data) {
+    if (!titlePrefix) return Buffer.from(data || "").toString("utf8");
     const text = Buffer.from(data || "").toString("utf8");
+    const combined = titleOscBuffer + text;
+    titleOscBuffer = "";
+    const trailingOscStart = combined.lastIndexOf("\x1b]");
+    if (trailingOscStart >= 0) {
+      const trailing = combined.slice(trailingOscStart);
+      if (!/(?:\x07|\x1b\\)/.test(trailing)) {
+        titleOscBuffer = trailing;
+        return rewriteTitleOscPrefix(combined.slice(0, trailingOscStart), titlePrefix);
+      }
+    }
+    return rewriteTitleOscPrefix(combined, titlePrefix);
+  }
+
+  function broadcastOutput(data) {
+    const text = prependTitlePrefix(data);
     if (!text) return;
     if (process.stdout && process.stdout.isTTY && typeof process.stdout.write === "function") {
       try {
@@ -1058,6 +1087,7 @@ module.exports = {
   appendStartupBootstrapArg,
   buildPtyInputFromEvent,
   parseInputMessage,
+  rewriteTitleOscPrefix,
   resolvePtyBootstrapArgs,
   resolveCommand,
   runPtyRunner,

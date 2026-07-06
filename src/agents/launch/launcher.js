@@ -662,6 +662,9 @@ class AgentLauncher {
               // Enable Claude Code SDK session state events for precise idle/busy detection
               ...(this.agentType === "claude-code" ? { CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1" } : {}),
             },
+            titlePrefix: process.env.UFOO_LAUNCH_MODE === "host"
+              ? (this._originalNickname || process.env.UFOO_NICKNAME || "")
+              : "",
             // 未来扩展：ioAdapter: new TerminalIOAdapter()
           });
 

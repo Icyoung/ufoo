@@ -91,7 +91,9 @@ class AgentNotifier {
   setTitle(nickname) {
     if (!nickname) return;
     if (!process.stdout || !process.stdout.isTTY) return;
-    process.stdout.write(`\x1b]0;${nickname}\x07`);
+    if (process.env.UFOO_LAUNCH_MODE !== "host") {
+      process.stdout.write(`\x1b]0;${nickname}\x07`);
+    }
     if (isITerm2()) {
       iterm2.setBadge(nickname);
       iterm2.setCwd(this.projectRoot);

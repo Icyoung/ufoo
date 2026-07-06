@@ -41,6 +41,8 @@ class PtyWrapper {
 
     // 可插拔的IO适配器（未来扩展）
     this.ioAdapter = options.ioAdapter || null;
+    this.titlePrefix = String(options.titlePrefix || "").trim();
+    this._titleOscBuffer = "";
 
     // 事件处理器引用（用于cleanup）
     this._stdinHandler = null;
@@ -111,8 +113,10 @@ class PtyWrapper {
   _attachDirectStreams(stdin, stdout) {
     // PTY输出 -> stdout
     this._ptyDataHandler = (data) => {
+      const output = this._prependTitlePrefix(data);
+
       // 1. 输出到terminal
-      stdout.write(data);
+      stdout.write(output);
 
       // 2. 可选：日志记录（JSONL格式）
       if (this.logger) {
@@ -183,6 +187,33 @@ class PtyWrapper {
       }
     };
     this.pty.onExit(this._ptyExitHandler);
+  }
+
+  _prependTitlePrefix(data) {
+    if (!this.titlePrefix) return data;
+    const text = typeof data === "string" ? data : Buffer.from(data).toString("utf8");
+    const combined = this._titleOscBuffer + text;
+    this._titleOscBuffer = "";
+
+    const trailingOscStart = combined.lastIndexOf("\x1b]");
+    if (trailingOscStart >= 0) {
+      const trailing = combined.slice(trailingOscStart);
+      if (!/(?:\x07|\x1b\\)/.test(trailing)) {
+        this._titleOscBuffer = trailing;
+        return this._rewriteTitleOsc(combined.slice(0, trailingOscStart));
+      }
+    }
+
+    return this._rewriteTitleOsc(combined);
+  }
+
+  _rewriteTitleOsc(text) {
+    if (!this.titlePrefix || !text) return text;
+    const prefix = this.titlePrefix;
+    return text.replace(/\x1b\]([012]);([^\x07\x1b]*)(\x07|\x1b\\)/g, (match, code, title, terminator) => {
+      if (!title || title.startsWith(`${prefix}:`)) return match;
+      return `\x1b]${code};${prefix}:${title}${terminator}`;
+    });
   }
 
   /**

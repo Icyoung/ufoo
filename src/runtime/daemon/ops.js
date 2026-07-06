@@ -586,8 +586,6 @@ async function spawnManagedHostAgent(
   const hostExtraEnv = hostBootstrap.extraEnv;
   const argText = args.length > 0 ? ` ${args.map(shellEscape).join(" ")}` : "";
 
-  const titleCmd = buildTitleCmd(nickname);
-
   // Pass env vars to Horizon via the env parameter (Horizon will set them for the child process)
   const env = {
     UFOO_LAUNCH_MODE: "host",
@@ -616,9 +614,7 @@ async function spawnManagedHostAgent(
   }
   env.UFOO_FORCE_PTY = "1";
   const directCmd = `${binary}${argText}`;
-  const runCmd = titleCmd
-    ? `cd ${shellEscape(projectRoot)} && ${titleCmd} && ${directCmd}`
-    : `cd ${shellEscape(projectRoot)} && ${directCmd}`;
+  const runCmd = `cd ${shellEscape(projectRoot)} && ${directCmd}`;
   createOptions.command = runCmd;
   createOptions.env = env;
 

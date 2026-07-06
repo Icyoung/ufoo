@@ -2,6 +2,7 @@ const {
   appendStartupBootstrapArg,
   buildPtyInputFromEvent,
   parseInputMessage,
+  rewriteTitleOscPrefix,
   resolvePtyBootstrapArgs,
   resolveCommand,
 } = require("../../../src/agents/launch/ptyRunner");
@@ -28,6 +29,11 @@ describe("agent ptyRunner input parsing", () => {
       raw: false,
       text: "plain task",
     });
+  });
+
+  test("prepends nickname prefix to OSC title updates", () => {
+    expect(rewriteTitleOscPrefix("\x1b]0;Claude Code\x07", "builder")).toBe("\x1b]0;builder:Claude Code\x07");
+    expect(rewriteTitleOscPrefix("\x1b]2;builder:Code X\x07", "builder")).toBe("\x1b]2;builder:Code X\x07");
   });
 
   test("builds manual prompt envelope for chat-direct events", () => {
