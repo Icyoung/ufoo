@@ -1,4 +1,9 @@
 const BOX = { h: "─", v: "│", tl: "┌", tr: "┐", bl: "└", br: "┘", t: "┬", b: "┴", l: "├", r: "┤", x: "┼" };
+const {
+  classifyChatLogLine,
+  compactContinuationIndent,
+  compactDividerLabel,
+} = require("../../../ui/ink/chatLogModel");
 
 function createRenderer(options = {}) {
   const {
@@ -239,49 +244,31 @@ function createRenderer(options = {}) {
     return str.slice(0, i);
   }
 
-  function classifyLogLine(raw = "") {
-    const clean = stripControl(raw)
-      .replace(/\{\/?[^{}\n]+\}/g, "")
-      .replace(/\*\*([^*]+)\*\*/g, "$1")
-      .replace(/`([^`]+)`/g, "$1");
-    const trimmed = clean.trim();
-    if (!trimmed) return { kind: "spacer", text: " " };
-    if (/^[█▀▄ ]+$/.test(trimmed) || /^ufoo chat/i.test(trimmed)) return { kind: "banner", text: clean };
-    if (/^───.*───$/.test(trimmed)) return { kind: "divider", text: clean };
-    if (/^(error:|✗|failed\b)/i.test(trimmed)) return { kind: "error", marker: "!", speaker: "error", body: clean.replace(/^(error:\s*)/i, "") };
-    if (/^(✓|✔|done\b|closed\b)/i.test(trimmed)) return { kind: "success", marker: "✓", body: clean.replace(/^[✓✔]\s*/, "") };
-    const dot = clean.match(/^([^·:\n]{1,34})\s+·\s+(.*)$/);
-    if (dot) {
-      const speaker = dot[1].trim();
-      return {
-        kind: speaker.toLowerCase() === "ufoo" ? "assistant" : "agent",
-        marker: speaker.toLowerCase() === "ufoo" ? "◆" : "●",
-        speaker,
-        body: dot[2] || " ",
-      };
-    }
-    const colon = clean.match(/^([A-Za-z0-9_.:@/-]{1,34}):\s+(.*)$/);
-    if (colon) return { kind: "agent", marker: "●", speaker: colon[1], body: colon[2] || " " };
-    return { kind: "plain", marker: "│", body: clean };
-  }
-
   function formatChatLogLine(raw = "", width = 80) {
-    const row = classifyLogLine(raw);
+    const row = classifyChatLogLine(stripControl(raw));
     const reset = "\x1b[0m";
     if (row.kind === "spacer") return " ".repeat(width);
-    if (row.kind === "banner") return `\x1b[36;1m${truncateVisible(row.text, width)}${reset}`;
-    if (row.kind === "divider") return `\x1b[90m${truncateVisible(row.text, width)}${reset}`;
+    if (row.kind === "banner") return `\x1b[36;1m${truncateVisible(row.body, width)}${reset}`;
+    if (row.kind === "divider") return `\x1b[90m${truncateVisible(`  ${compactDividerLabel(row.body)}`, width)}${reset}`;
 
     const palette = {
       assistant: { marker: "\x1b[36m", speaker: "\x1b[37;1m", body: "" },
       agent: { marker: "\x1b[36m", speaker: "\x1b[36m", body: "" },
       error: { marker: "\x1b[31;1m", speaker: "\x1b[31m", body: "\x1b[31m" },
       success: { marker: "\x1b[32m", speaker: "\x1b[32m", body: "\x1b[32m" },
+      meta: { marker: "\x1b[90m", speaker: "\x1b[90m", body: "\x1b[90m" },
       plain: { marker: "\x1b[90m", speaker: "\x1b[90m", body: "" },
     };
     const colors = palette[row.kind] || palette.plain;
     const speaker = row.speaker ? `${colors.speaker}${row.speaker}${reset}\x1b[90m · ${reset}` : "";
-    const line = `${colors.marker}${row.marker || "│"}${reset} ${speaker}${colors.body || ""}${row.body || row.text || " "}${reset}`;
+    const markerGlyph = row.kind === "agent" ? "●" : row.marker;
+    const marker = markerGlyph
+      ? `${colors.marker}${markerGlyph}${reset} `
+      : "  ";
+    const body = row.kind === "plain"
+      ? compactContinuationIndent(row.body || row.text || " ")
+      : (row.body || row.text || " ");
+    const line = `${marker}${speaker}${colors.body || ""}${body}${reset}`;
     return truncateVisible(line, width);
   }
 

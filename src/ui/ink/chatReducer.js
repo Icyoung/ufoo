@@ -35,6 +35,7 @@
  */
 
 const fmt = require("../format");
+const { createChatLogEntry } = require("./chatLogModel");
 
 const LOG_CAP = 1000;
 const HISTORY_CAP = 200;
@@ -100,7 +101,10 @@ function createInitialState({ banner = [], globalMode = false, globalScope = "co
   const initialAgentProvider = settings.agentProvider || "codex-cli";
   const selectedProviderIndex = Math.max(0, DEFAULT_PROVIDER_OPTIONS.findIndex((opt) => opt.value === initialAgentProvider));
   return {
-    logLines: banner.concat([""]).map((line, idx) => ({ id: `b-${idx}`, text: line })),
+    logLines: banner.concat([""]).map((line, idx) => createChatLogEntry({
+      text: line,
+      sourceType: "banner",
+    }, `b-${idx}`)),
     lineSeq: banner.length + 1,
     draft: "",
     focusMode: "input",
@@ -144,10 +148,10 @@ function createInitialState({ banner = [], globalMode = false, globalScope = "co
 function appendLog(state, lines) {
   const incoming = Array.isArray(lines) ? lines : [lines];
   let seq = state.lineSeq;
-  const out = state.logLines.concat(incoming.map((text) => {
+  const out = state.logLines.concat(incoming.map((line) => {
     const id = `l-${seq}`;
     seq += 1;
-    return { id, text: String(text == null ? "" : text) };
+    return createChatLogEntry(line, id);
   }));
   return {
     ...state,

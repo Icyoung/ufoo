@@ -9,6 +9,38 @@ describe("chatReducer", () => {
     expect(state.logLines[0].text).toBe("a");
   });
 
+  test("log entries keep structured display fields in reducer state", () => {
+    let state = createInitialState({ banner: [] });
+    state = reducer(state, {
+      type: "log/appendMany",
+      lines: [
+        {
+          type: "bus",
+          text: "claude-code:221e94 · Handoff from Codex",
+          meta: { publisher: "claude-code:221e94" },
+        },
+        "                    Current state:",
+      ],
+    });
+
+    const entries = state.logLines.filter((entry) => entry.text);
+
+    expect(entries[0]).toMatchObject({
+      text: "claude-code:221e94 · Handoff from Codex",
+      kind: "agent",
+      speaker: "claude-code:221e94",
+      bodyText: "Handoff from Codex",
+      sourceType: "bus",
+      meta: { publisher: "claude-code:221e94" },
+    });
+    expect(entries[1]).toMatchObject({
+      text: "                    Current state:",
+      kind: "plain",
+      speaker: "",
+      bodyText: "Current state:",
+    });
+  });
+
   test("default provider options include agy alongside codex and claude", () => {
     const state = createInitialState();
     const values = state.providerOptions.map((opt) => opt.value);

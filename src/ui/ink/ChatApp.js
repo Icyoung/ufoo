@@ -23,6 +23,14 @@ const fmt = require("../format");
 const { createMultilineInput } = require("./MultilineInput");
 const { createDashboardBar } = require("./DashboardBar");
 const { reducer, createInitialState } = require("./chatReducer");
+const {
+  stripBlessedTags,
+  compactDividerLabel,
+  classifyChatLogLine,
+  buildChatLogLineModel,
+  buildChatLogGroups,
+  chatLogEntryText,
+} = require("./chatLogModel");
 const { restartDaemonLifecycle } = require("../../runtime/daemon/restart");
 
 function bootstrapEnvironment(projectRoot, options = {}) {
@@ -157,12 +165,20 @@ function loadChatHistory(projectRoot, cap = 200, options = {}) {
     const raw = fs.readFileSync(file, "utf8");
     const lines = raw.split(/\r?\n/).filter(Boolean);
     const out = [];
+    const pushLine = (line = "") => {
+      const value = String(line || "");
+      if (!value.trim()) {
+        if (out.length > 0 && out[out.length - 1] !== "") out.push("");
+        return;
+      }
+      out.push(value);
+    };
     for (const line of lines) {
       try {
         const entry = JSON.parse(line);
         if (!entry) continue;
         if (entry.type === "spacer") {
-          out.push("");
+          pushLine("");
           continue;
         }
         const text = String(entry.text || "");
@@ -170,12 +186,18 @@ function loadChatHistory(projectRoot, cap = 200, options = {}) {
         // Strip blessed-tag markup that the legacy log writer used; ink
         // can't render those tags and we don't want them shown literally.
         const stripped = text.replace(/\{[^{}]+\}/g, "");
-        out.push(stripped);
+        for (const renderedLine of normalizeInkLogLines(stripped)) {
+          pushLine(renderedLine);
+        }
       } catch {
         // ignore malformed lines
       }
     }
-    return out.slice(-cap);
+    while (out.length > 0 && out[0] === "") out.shift();
+    while (out.length > 0 && out[out.length - 1] === "") out.pop();
+    const capped = out.slice(-cap);
+    while (capped.length > 0 && capped[0] === "") capped.shift();
+    return capped;
   } catch {
     return [];
   }
@@ -369,65 +391,9 @@ function buildPromptIpcRequest(text) {
   };
 }
 
-function stripBlessedTags(text = "") {
-  return String(text || "")
-    .replace(/\{\/?[^{}\n]+\}/g, "")
-    .replace(/\r/g, "");
-}
-
 function normalizeInkLogLines(text = "") {
   const clean = stripBlessedTags(text);
   return clean.split(/\r?\n/);
-}
-
-function stripMarkdownDecorators(text = "") {
-  return String(text || "")
-    .replace(/\*\*([^*]+)\*\*/g, "$1")
-    .replace(/`([^`]+)`/g, "$1");
-}
-
-function classifyChatLogLine(text = "") {
-  const raw = stripBlessedTags(text).replace(/\r/g, "");
-  const clean = stripMarkdownDecorators(raw);
-  const trimmed = clean.trim();
-  if (!trimmed) return { kind: "spacer", marker: " ", speaker: "", body: " " };
-  if (/^[█▀▄ ]+(?:\s{2,}(?:Version|Mode|Dictionary):.*)?$/.test(trimmed) || /^ufoo chat/i.test(trimmed)) {
-    return { kind: "banner", marker: " ", speaker: "", body: clean };
-  }
-  if (/^───.*───$/.test(trimmed)) {
-    return { kind: "divider", marker: "─", speaker: "", body: clean };
-  }
-  if (/^(error:|✗|failed\b)/i.test(trimmed)) {
-    return { kind: "error", marker: "!", speaker: "error", body: clean.replace(/^(error:\s*)/i, "") };
-  }
-  if (/^(✓|✔|done\b|closed\b)/i.test(trimmed)) {
-    return { kind: "success", marker: "✓", speaker: "", body: clean.replace(/^[✓✔]\s*/, "") };
-  }
-  const dotMatch = clean.match(/^([^·:\n]{1,42})\s+·\s+(.*)$/);
-  if (dotMatch) {
-    const speaker = dotMatch[1].trim();
-    const lower = speaker.toLowerCase();
-    const kind = lower === "ufoo" ? "assistant" : "agent";
-    return { kind, marker: kind === "assistant" ? "◆" : "•", speaker, body: dotMatch[2] || " " };
-  }
-  const colonMatch = clean.match(/^([A-Za-z0-9_.:@/-]{1,42}):\s+(.*)$/);
-  if (colonMatch) {
-    return { kind: "agent", marker: "•", speaker: colonMatch[1], body: colonMatch[2] || " " };
-  }
-  if (/^(CHAT|UCODE)\s+·/i.test(trimmed)) {
-    return { kind: "meta", marker: "·", speaker: "", body: clean };
-  }
-  return { kind: "plain", marker: "│", speaker: "", body: clean };
-}
-
-function buildChatLogLineModel(text = "") {
-  const row = classifyChatLogLine(text);
-  const hasSpeaker = Boolean(row.speaker);
-  return {
-    ...row,
-    markerText: hasSpeaker ? `${row.marker || " "}  ` : `${row.marker || " "} `,
-    bodyText: row.body || " ",
-  };
 }
 
 function createInkStreamState({
@@ -1234,7 +1200,7 @@ function createChatApp({ React, ink, props, interactive = true }) {
         getChatLogLines: () => {
           const current = stateRef.current || {};
           return Array.isArray(current.logLines)
-            ? current.logLines.map((item) => String((item && item.text) || ""))
+            ? current.logLines.map((item) => chatLogEntryText(item))
             : [];
         },
         getStatusText: () => {
@@ -3262,9 +3228,9 @@ function createChatApp({ React, ink, props, interactive = true }) {
       return null;
     }
 
-    const renderChatLogLine = (item) => {
-      const row = buildChatLogLineModel((item && item.text) || "");
-      const key = item && item.id ? item.id : `log-${row.body}`;
+    const renderChatLogEntry = (entry, group) => {
+      const row = entry && entry.row ? entry.row : buildChatLogLineModel("");
+      const key = entry && entry.id ? entry.id : `log-${row.body}`;
       if (row.kind === "spacer") {
         return h(Text, { key, color: "gray" }, " ");
       }
@@ -3281,7 +3247,7 @@ function createChatApp({ React, ink, props, interactive = true }) {
       const colors = palette[row.kind] || palette.plain;
       if (row.kind === "divider") {
         return h(Box, { key, marginBottom: 1 },
-          h(Text, { color: colors.body, wrap: "truncate" }, row.body),
+          h(Text, { color: colors.body, wrap: "truncate" }, `  ${compactDividerLabel(row.body)}`),
         );
       }
       if (row.kind === "banner") {
@@ -3289,19 +3255,43 @@ function createChatApp({ React, ink, props, interactive = true }) {
           h(Text, { color: colors.body, bold: true, wrap: "truncate" }, row.body),
         );
       }
-      return h(Box, { key, width: "100%", marginBottom: 1 },
-        h(Text, { color: colors.marker, bold: row.kind === "error" }, row.markerText),
+      const markerText = entry && entry.continuation
+        ? (group && (group.kind === "assistant" || group.kind === "agent") ? "   " : "  ")
+        : row.markerText;
+      return h(Box, { key, width: "100%" },
+        h(Text, { color: colors.marker, bold: row.kind === "error" }, markerText),
         h(Text, { color: colors.body, wrap: "wrap" },
-          row.speaker
+          row.speaker && !(entry && entry.continuation)
             ? h(Text, { color: colors.speaker, bold: colors.bold }, row.speaker)
             : null,
-          row.speaker
+          row.speaker && !(entry && entry.continuation)
             ? h(Text, { color: "gray" }, " · ")
             : null,
           row.bodyText,
         ),
       );
     };
+
+    const renderChatLogGroup = (group) => {
+      const entries = Array.isArray(group && group.entries) ? group.entries : [];
+      if (entries.length === 0) return null;
+      const first = entries[0] || {};
+      const row = first.row || buildChatLogLineModel("");
+      if (row.kind === "spacer" || row.kind === "banner" || row.kind === "divider") {
+        return renderChatLogEntry(first, group);
+      }
+      return h(Box, {
+        key: `group-${group.id}`,
+        flexDirection: "column",
+        width: "100%",
+        marginBottom: 1,
+      },
+      ...entries.map((entry) => renderChatLogEntry(entry, group)));
+    };
+
+    const renderChatLogGroups = (items) => buildChatLogGroups(items)
+      .map(renderChatLogGroup)
+      .filter(Boolean);
 
     if (state.viewingAgentId) {
       const maxWidth = Math.max(20, size.cols || 80);
@@ -3379,7 +3369,7 @@ function createChatApp({ React, ink, props, interactive = true }) {
 
     return h(Box, { flexDirection: "column", width: "100%" },
       h(Box, { flexDirection: "column", width: "100%" },
-        ...state.logLines.map(renderChatLogLine),
+        ...renderChatLogGroups(state.logLines),
       ),
       state.activeMerge ? h(Box, null,
         h(Text, { color: state.activeMerge.entries.some((e) => e.isError) ? "red" : "cyan" },
@@ -3391,10 +3381,10 @@ function createChatApp({ React, ink, props, interactive = true }) {
           const prefix = state.activeStream.publisher
             ? `${state.activeStream.publisher}: `
             : "";
-          return lines.map((line, idx) => renderChatLogLine({
+          return renderChatLogGroups(lines.map((line, idx) => ({
             id: `s-${idx}`,
             text: idx === 0 ? `${prefix}${line}` : `  ${line}`,
-          }));
+          })));
         })(),
       ) : null,
       h(Box, { marginTop: 1, width: "100%" },
@@ -3680,6 +3670,7 @@ module.exports = {
   chatHistoryOptionsForScope,
   classifyChatLogLine,
   buildChatLogLineModel,
+  buildChatLogGroups,
   createInkMultiWindowToggle,
   resolveActiveAgentId,
   resolveInjectSockPathForAgent,

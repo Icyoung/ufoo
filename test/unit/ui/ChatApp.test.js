@@ -19,6 +19,7 @@ const {
   chatHistoryOptionsForScope,
   classifyChatLogLine,
   buildChatLogLineModel,
+  buildChatLogGroups,
   computeStatusText,
   computeInternalStatusText,
   createInkMultiWindowToggle,
@@ -108,6 +109,47 @@ describe("chat log display classification", () => {
       markerText: "•  ",
       speaker: "builder-",
       bodyText: "hello",
+    });
+  });
+
+  test("subscriber-id speaker rows and continuations avoid the plain gutter", () => {
+    expect(buildChatLogLineModel("claude-code:221e94 · Handoff")).toMatchObject({
+      kind: "agent",
+      markerText: "•  ",
+      speaker: "claude-code:221e94",
+      bodyText: "Handoff",
+    });
+
+    expect(buildChatLogLineModel("                    Current state:")).toMatchObject({
+      kind: "plain",
+      marker: "",
+      markerText: "  ",
+      bodyText: "Current state:",
+    });
+  });
+
+  test("groups speaker messages with continuation lines into transcript cells", () => {
+    const groups = buildChatLogGroups([
+      { id: "a", text: "claude-code:221e94 · Handoff" },
+      { id: "b", text: "" },
+      { id: "c", text: "                    Current state:" },
+      { id: "d", text: "                    • Reviewed docs" },
+      { id: "e", text: "✓ Message delivered" },
+    ]);
+
+    expect(groups).toHaveLength(2);
+    expect(groups[0]).toMatchObject({
+      kind: "agent",
+      entries: [
+        { continuation: false, row: { speaker: "claude-code:221e94", bodyText: "Handoff" } },
+        { continuation: true, row: { kind: "spacer" } },
+        { continuation: true, row: { kind: "plain", bodyText: "Current state:" } },
+        { continuation: true, row: { kind: "plain", bodyText: "• Reviewed docs" } },
+      ],
+    });
+    expect(groups[1]).toMatchObject({
+      kind: "success",
+      entries: [{ continuation: false, row: { bodyText: "Message delivered" } }],
     });
   });
 });
