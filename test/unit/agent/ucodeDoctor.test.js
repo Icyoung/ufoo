@@ -63,6 +63,23 @@ describe("ucode doctor", () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
+  test("inspect build section reports native dist entry without node_modules probe", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-doctor-build-"));
+
+    const result = inspectUcodeSetup({
+      projectRoot,
+      env: {},
+      loadConfigImpl: () => ({}),
+    });
+
+    expect(result.build.distCliPath).toMatch(/src\/code\/agent\.js$/);
+    expect(result.build.distCliExists).toBe(true);
+    expect(result.build).not.toHaveProperty("nodeModulesPath");
+    expect(result.build).not.toHaveProperty("nodeModulesExists");
+
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
   test("prepareAndInspectUcode writes bootstrap file", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-doctor-prepare-"));
     const promptFile = path.join(projectRoot, "prompt.md");
@@ -115,5 +132,69 @@ describe("ucode doctor", () => {
     expect(content).toContain("custom prompt body");
 
     fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  test("prepareAndInspectUcode degrades to a warning when the bootstrap write fails", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-doctor-unwritable-"));
+    // A regular file sitting where a directory is needed makes mkdir fail.
+    const blocker = path.join(projectRoot, "blocker");
+    fs.writeFileSync(blocker, "not a directory");
+
+    let result;
+    try {
+      expect(() => {
+        result = prepareAndInspectUcode({
+          projectRoot,
+          env: { UFOO_UCODE_BOOTSTRAP_FILE: path.join(blocker, "bootstrap.md") },
+          loadConfigImpl: () => ({}),
+        });
+      }).not.toThrow();
+
+      expect(result.bootstrapPrepared.ok).toBe(false);
+      expect(result.bootstrapPrepared.error).toBeTruthy();
+      const output = formatUcodeDoctor(result);
+      expect(output).toContain("warning: bootstrap preparation failed");
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("prepareAndInspectUcode rejects a config-provided bootstrap path outside the project root", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-doctor-outside-"));
+    const outsideTarget = path.join(os.tmpdir(), `ufoo-ucode-doctor-evil-${Date.now()}.md`);
+
+    try {
+      const result = prepareAndInspectUcode({
+        projectRoot,
+        env: {},
+        loadConfigImpl: () => ({ ucodeBootstrapFile: outsideTarget }),
+      });
+
+      expect(result.bootstrapPrepared.ok).toBe(false);
+      expect(result.bootstrapPrepared.error).toContain("inside the project root");
+      expect(fs.existsSync(outsideTarget)).toBe(false);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      fs.rmSync(outsideTarget, { force: true });
+    }
+  });
+
+  test("prepareAndInspectUcode honors a user env bootstrap path outside the project root", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-doctor-user-env-"));
+    const outsideTarget = path.join(os.tmpdir(), `ufoo-ucode-doctor-user-${Date.now()}.md`);
+
+    try {
+      const result = prepareAndInspectUcode({
+        projectRoot,
+        env: { UFOO_UCODE_BOOTSTRAP_FILE: outsideTarget },
+        loadConfigImpl: () => ({}),
+      });
+
+      expect(result.bootstrapPrepared.ok).toBe(true);
+      expect(fs.existsSync(outsideTarget)).toBe(true);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      fs.rmSync(outsideTarget, { force: true });
+    }
   });
 });

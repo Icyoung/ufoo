@@ -131,6 +131,9 @@ function formatUcodeDoctor(result = {}) {
   }
   lines.push(`prompt: ${result.promptFile || "(none)"}${result.promptFile && !result.promptExists ? " (missing)" : ""}`);
   lines.push(`bootstrap: ${result.bootstrapFile || "(none)"}`);
+  if (result.bootstrapPrepared && result.bootstrapPrepared.ok === false) {
+    lines.push(`  warning: bootstrap preparation failed: ${result.bootstrapPrepared.error || "unknown error"}`);
+  }
   if (result.build && result.build.coreRoot) {
     lines.push(`build: ${result.build.distCliExists ? "ready" : "missing dist"}`);
     lines.push(`  core root: ${result.build.coreRoot}`);
@@ -165,15 +168,27 @@ function prepareAndInspectUcode({
   loadConfigImpl = loadConfig,
 } = {}) {
   const inspection = inspectUcodeSetup({ projectRoot, env, loadConfigImpl });
-  const prepared = prepareUcodeBootstrap({
-    projectRoot: inspection.projectRoot,
-    promptFile: inspection.promptFile,
-    targetFile: inspection.bootstrapFile,
-    // The native core already injects the ufoo protocol via the modular
-    // prompt (src/agents/prompts/native/ufoo.js); inlining it into the
-    // bootstrap file would append the same protocol text a second time.
-    includeDefaultProtocol: false,
-  });
+  let prepared;
+  try {
+    prepared = prepareUcodeBootstrap({
+      projectRoot: inspection.projectRoot,
+      promptFile: inspection.promptFile,
+      targetFile: inspection.bootstrapFile,
+      // The user's own env var is trusted; a bootstrap path coming from the
+      // project config must stay inside the project root.
+      allowOutsideProjectRoot: Boolean(String(env.UFOO_UCODE_BOOTSTRAP_FILE || "").trim()),
+      // The native core already injects the ufoo protocol via the modular
+      // prompt (src/agents/prompts/native/ufoo.js); inlining it into the
+      // bootstrap file would append the same protocol text a second time.
+      includeDefaultProtocol: false,
+    });
+  } catch (err) {
+    prepared = {
+      ok: false,
+      file: inspection.bootstrapFile,
+      error: err && err.message ? err.message : "failed to prepare bootstrap",
+    };
+  }
   return {
     ...inspection,
     bootstrapPrepared: prepared,

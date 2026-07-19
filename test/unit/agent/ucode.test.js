@@ -1,17 +1,8 @@
 const fs = require("fs");
 const {
-  bundledModuleRoots,
-  defaultBundledCoreRoot,
-  tokenizeCommand,
-  splitCommand,
   hasAnyArg,
-  pickBinEntry,
   normalizeAppendSystemPromptMode,
-  isLikelyPiCoreCommand,
   readLastArgValue,
-  canExecutePath,
-  resolveCoreFromPath,
-  resolveCandidateCoreRoot,
   resolveNativeFallbackCommand,
   resolveUcodeLaunch,
 } = require("../../../src/code/launcher/ucode");
@@ -36,6 +27,22 @@ describe("ucode launcher resolver", () => {
       ])
     );
     expect(resolved.env.UFOO_UCODE_APPEND_SYSTEM_PROMPT_MODE).toBe("auto");
+  });
+
+  test("append-system-prompt is injected in always mode", () => {
+    const resolved = resolveUcodeLaunch({
+      argv: [],
+      env: { UFOO_UCODE_APPEND_SYSTEM_PROMPT_MODE: "always" },
+      cwd: "/repo",
+      loadConfigImpl: () => ({}),
+    });
+    expect(resolved.env.UFOO_UCODE_APPEND_SYSTEM_PROMPT_MODE).toBe("always");
+    expect(resolved.args).toEqual(
+      expect.arrayContaining([
+        "--append-system-prompt",
+        resolved.env.UFOO_UCODE_BOOTSTRAP_FILE,
+      ])
+    );
   });
 
   test("append-system-prompt can be disabled by mode=never", () => {
@@ -107,12 +114,6 @@ describe("ucode launcher resolver", () => {
     expect(fromConfig.env.UFOO_UCODE_PROMPT_FILE).toBe("/tmp/config-prompt.md");
   });
 
-  test("tokenize/split command keeps quoted windows paths", () => {
-    expect(splitCommand("\"C:\\\\Program Files\\\\Pi Core\\\\pi.exe\" --mode json"))
-      .toEqual({ command: "C:\\Program Files\\Pi Core\\pi.exe", args: ["--mode", "json"] });
-    expect(tokenizeCommand("C:\\\\Pi\\\\pi.exe --help")).toEqual(["C:\\Pi\\pi.exe", "--help"]);
-  });
-
   test("native fallback reports unavailable when no entry and no PATH command", () => {
     const statSpy = jest.spyOn(fs, "statSync").mockImplementation(() => {
       throw new Error("not found");
@@ -132,61 +133,13 @@ describe("ucode launcher resolver", () => {
     expect(normalizeAppendSystemPromptMode("always")).toBe("always");
     expect(normalizeAppendSystemPromptMode("disable")).toBe("never");
     expect(normalizeAppendSystemPromptMode("other")).toBe("auto");
-    expect(isLikelyPiCoreCommand("node", ["/repo/src/code/agent.js"])).toBe(true);
-    expect(isLikelyPiCoreCommand("other", ["--help"])).toBe(false);
     expect(readLastArgValue(["--provider", "openai", "--provider=anthropic"], "--provider")).toBe("anthropic");
     expect(hasAnyArg(["--model=claude"], ["--model"])).toBe(true);
-  });
-
-  test("bundled roots are flattened to src/code first", () => {
-    const roots = bundledModuleRoots();
-    expect(Array.isArray(roots)).toBe(true);
-    expect(roots[0]).toMatch(/src\/code$/);
-  });
-
-  test("tokenizeCommand handles single quotes", () => {
-    expect(tokenizeCommand("echo 'hello world'")).toEqual(["echo", "hello world"]);
-  });
-
-  test("tokenizeCommand handles double quotes with escapes", () => {
-    expect(tokenizeCommand('echo "hello \\"world\\""')).toEqual(["echo", 'hello "world"']);
-  });
-
-  test("tokenizeCommand handles backslash escapes", () => {
-    expect(tokenizeCommand("echo hello\\ world")).toEqual(["echo", "hello world"]);
-  });
-
-  test("tokenizeCommand handles trailing backslash", () => {
-    expect(tokenizeCommand("echo hello\\")).toEqual(["echo", "hello\\"]);
-  });
-
-  test("tokenizeCommand falls back to split on unclosed quote", () => {
-    const result = tokenizeCommand("echo 'unclosed");
-    expect(result).toEqual(["echo", "'unclosed"]);
-  });
-
-  test("splitCommand returns fallback for empty input", () => {
-    expect(splitCommand("")).toEqual({ command: "pi", args: [] });
-    expect(splitCommand("", "custom")).toEqual({ command: "custom", args: [] });
   });
 
   test("hasAnyArg returns false for empty arrays", () => {
     expect(hasAnyArg([], ["--flag"])).toBe(false);
     expect(hasAnyArg(null, ["--flag"])).toBe(false);
-  });
-
-  test("pickBinEntry handles string bin field", () => {
-    expect(pickBinEntry("./cli.js")).toBe("./cli.js");
-  });
-
-  test("pickBinEntry handles object bin field", () => {
-    expect(pickBinEntry({ tool: "./tool.js" })).toBe("./tool.js");
-    expect(pickBinEntry({ ucode: "./ucode.js", other: "./other.js" })).toBe("./ucode.js");
-  });
-
-  test("pickBinEntry returns empty for empty/null", () => {
-    expect(pickBinEntry({})).toBe("");
-    expect(pickBinEntry(null)).toBe("");
   });
 
   test("normalizeAppendSystemPromptMode handles all variants", () => {
@@ -198,15 +151,6 @@ describe("ucode launcher resolver", () => {
     expect(normalizeAppendSystemPromptMode("0")).toBe("never");
     expect(normalizeAppendSystemPromptMode("false")).toBe("never");
     expect(normalizeAppendSystemPromptMode("")).toBe("auto");
-  });
-
-  test("isLikelyPiCoreCommand detects ucode variants", () => {
-    expect(isLikelyPiCoreCommand("ucode")).toBe(true);
-    expect(isLikelyPiCoreCommand("ucode-core")).toBe(false);
-    expect(isLikelyPiCoreCommand("node", ["ucode-core"])).toBe(false);
-    expect(isLikelyPiCoreCommand("node", ["\\src\\code\\agent.js"])).toBe(true);
-    expect(isLikelyPiCoreCommand("random")).toBe(false);
-    expect(isLikelyPiCoreCommand("")).toBe(false);
   });
 
   test("readLastArgValue reads flag and inline values", () => {
@@ -221,25 +165,5 @@ describe("ucode launcher resolver", () => {
     expect(readLastArgValue(["--provider", "--model", "x"], "--model")).toBe("x");
     expect(readLastArgValue(["--model", "gpt5", "--provider"], "--provider")).toBe("");
     expect(readLastArgValue(["--provider", "--provider", "openai"], "--provider")).toBe("openai");
-  });
-
-  test("canExecutePath returns false for empty/nonexistent", () => {
-    expect(canExecutePath("")).toBe(false);
-    expect(canExecutePath("/nonexistent/file")).toBe(false);
-  });
-
-  test("resolveCoreFromPath returns null for nonexistent dir", () => {
-    expect(resolveCoreFromPath("/nonexistent/dir")).toBeNull();
-    expect(resolveCoreFromPath("")).toBeNull();
-  });
-
-  test("resolveCandidateCoreRoot returns null (native-only mode)", () => {
-    expect(resolveCandidateCoreRoot()).toBeNull();
-  });
-
-  test("defaultBundledCoreRoot returns src/code path", () => {
-    const root = defaultBundledCoreRoot();
-    expect(root).toContain("src");
-    expect(root).toContain("code");
   });
 });

@@ -27,15 +27,12 @@ function inspectUcodeBuildSetup({
   const workspaceRoot = root;
   const distCliPath = Array.isArray(native.args) && native.args[0] ? path.resolve(native.args[0]) : "";
   const distCliExists = Boolean(distCliPath && fs.existsSync(distCliPath));
-  const nodeModulesPath = "";
   return {
     projectRoot: root,
     coreRoot,
     workspaceRoot,
     distCliPath,
     distCliExists,
-    nodeModulesPath,
-    nodeModulesExists: Boolean(nodeModulesPath && fs.existsSync(nodeModulesPath)),
   };
 }
 

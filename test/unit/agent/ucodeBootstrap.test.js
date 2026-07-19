@@ -70,4 +70,64 @@ describe("ucode bootstrap preparation", () => {
     expect(once).toContain("ufoo ctx decisions -l");
     expect(twice.match(/ufoo ctx decisions -l/g)).toHaveLength(1);
   });
+
+  test("prepareUcodeBootstrap refuses to write outside the project root", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-bootstrap-guard-"));
+    const outsideTarget = path.join(os.tmpdir(), `ufoo-ucode-evil-${Date.now()}.md`);
+
+    try {
+      expect(() => prepareUcodeBootstrap({
+        projectRoot,
+        promptText: "x",
+        targetFile: outsideTarget,
+      })).toThrow(/inside the project root/);
+      expect(fs.existsSync(outsideTarget)).toBe(false);
+
+      // Relative traversal out of the project root is rejected as well.
+      expect(() => prepareUcodeBootstrap({
+        projectRoot,
+        promptText: "x",
+        targetFile: path.join("..", "evil.md"),
+      })).toThrow(/inside the project root/);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      fs.rmSync(outsideTarget, { force: true });
+    }
+  });
+
+  test("prepareUcodeBootstrap allows outside-root target only when explicitly trusted", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-bootstrap-trusted-"));
+    const outsideTarget = path.join(os.tmpdir(), `ufoo-ucode-trusted-${Date.now()}.md`);
+
+    try {
+      const result = prepareUcodeBootstrap({
+        projectRoot,
+        promptText: "trusted",
+        targetFile: outsideTarget,
+        allowOutsideProjectRoot: true,
+      });
+      expect(result.ok).toBe(true);
+      expect(fs.existsSync(outsideTarget)).toBe(true);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      fs.rmSync(outsideTarget, { force: true });
+    }
+  });
+
+  test("prepareUcodeBootstrap resolves relative targets against the project root", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-bootstrap-relative-"));
+
+    try {
+      const result = prepareUcodeBootstrap({
+        projectRoot,
+        promptText: "relative",
+        targetFile: path.join("nested", "bootstrap.md"),
+      });
+      expect(result.ok).toBe(true);
+      expect(result.file).toBe(path.join(projectRoot, "nested", "bootstrap.md"));
+      expect(fs.existsSync(result.file)).toBe(true);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
 });

@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const { randomUUID } = require("crypto");
 const { loadGlobalUcodeConfig } = require("../../config");
 
 function readJson(filePath = "", fallback = {}) {
@@ -14,10 +15,17 @@ function readJson(filePath = "", fallback = {}) {
   }
 }
 
-function writeJson(filePath = "", data = {}) {
+function writeJson(filePath = "", data = {}, { mode = 0 } = {}) {
   if (!filePath) return;
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+  // Write to a temp file and rename so a crash mid-write cannot leave a
+  // truncated JSON file behind.
+  const tmpFile = `${filePath}.${process.pid}-${randomUUID()}.tmp`;
+  fs.writeFileSync(tmpFile, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+  fs.renameSync(tmpFile, filePath);
+  if (mode) {
+    fs.chmodSync(filePath, mode);
+  }
 }
 
 function resolveRuntimeValues({
@@ -103,7 +111,8 @@ function prepareUcodeRuntimeConfig({
       type: "api_key",
       key: inspection.apiKey,
     };
-    writeJson(inspection.authFile, auth);
+    // auth.json carries API keys: keep it readable only by the owner.
+    writeJson(inspection.authFile, auth, { mode: 0o600 });
   }
 
   if (inspection.provider && inspection.baseUrl) {

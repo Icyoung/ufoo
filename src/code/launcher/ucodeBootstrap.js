@@ -86,16 +86,32 @@ function mergeDefaultUfooProtocolPrompt(projectRoot = "", promptText = "") {
   return [defaultPrompt, currentPrompt].filter(Boolean).join("\n\n");
 }
 
+function isPathInsideRoot(root = "", target = "") {
+  const relative = path.relative(path.resolve(root), path.resolve(target));
+  return Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
 function prepareUcodeBootstrap({
   projectRoot = process.cwd(),
   promptFile = "",
   promptText = "",
   targetFile = "",
   includeDefaultProtocol = true,
+  allowOutsideProjectRoot = false,
 } = {}) {
   const resolvedProjectRoot = path.resolve(projectRoot);
   const resolvedPrompt = String(promptFile || "").trim();
-  const resolvedTarget = String(targetFile || "").trim() || defaultBootstrapPath(resolvedProjectRoot);
+  const resolvedTarget = path.resolve(
+    resolvedProjectRoot,
+    String(targetFile || "").trim() || defaultBootstrapPath(resolvedProjectRoot)
+  );
+  // The target may come from the project config (.ufoo/config.json), which is
+  // attacker-controlled in a cloned repository. Refuse to write outside the
+  // project root unless the caller marked the target as user-trusted (e.g.
+  // the user's own UFOO_UCODE_BOOTSTRAP_FILE env var).
+  if (!allowOutsideProjectRoot && !isPathInsideRoot(resolvedProjectRoot, resolvedTarget)) {
+    throw new Error(`ucode bootstrap target must stay inside the project root: ${resolvedTarget}`);
+  }
 
   const inlinePromptText = String(promptText || "").trim();
   const resolvedPromptText = inlinePromptText || readFileSafe(resolvedPrompt);
@@ -129,5 +145,6 @@ module.exports = {
   resolveProjectRules,
   defaultBootstrapPath,
   buildBootstrapContent,
+  isPathInsideRoot,
   prepareUcodeBootstrap,
 };

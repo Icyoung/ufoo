@@ -114,6 +114,12 @@ class AgentNotifier {
    * 更新心跳时间戳（last_seen）
    */
   updateHeartbeat() {
+    // TODO(race, needs evidence): this read-modify-write of all-agents.json
+    // has no file lock and races with the daemon, the launcher, and other
+    // agents' notifiers writing the same file — a lost update could roll
+    // back activity_state/last_seen (suspected amplifier of delivery
+    // stalls, not yet confirmed). If evidence shows lost updates, serialize
+    // writes (lockfile or single-writer daemon IPC) instead of JSON RMW.
     try {
       if (!this.agentsFile || !fs.existsSync(this.agentsFile)) return;
       const data = readJSON(this.agentsFile, null);

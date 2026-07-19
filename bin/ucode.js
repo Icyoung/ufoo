@@ -106,6 +106,11 @@ const resolved = resolveUcodeLaunch({
   cwd: process.cwd(),
 });
 
+// Capture before resolved.env (which may carry project-config values) is
+// merged into process.env — the user's own env var is trusted, a path from
+// the project config must stay inside the project root.
+const userBootstrapFile = String(process.env.UFOO_UCODE_BOOTSTRAP_FILE || "").trim();
+
 if (resolved && resolved.env && typeof resolved.env === "object") {
   for (const [key, value] of Object.entries(resolved.env)) {
     if (!key) continue;
@@ -133,6 +138,10 @@ try {
     projectRoot: process.cwd(),
     promptFile: process.env.UFOO_UCODE_PROMPT_FILE || "",
     targetFile: process.env.UFOO_UCODE_BOOTSTRAP_FILE || "",
+    allowOutsideProjectRoot: Boolean(userBootstrapFile),
+    // The native core already injects the ufoo protocol via its modular
+    // prompt; inlining it here would append the same text a second time.
+    includeDefaultProtocol: false,
   });
 } catch (err) {
   const mode = String(process.env.UFOO_UCODE_APPEND_SYSTEM_PROMPT_MODE || "auto").trim().toLowerCase();

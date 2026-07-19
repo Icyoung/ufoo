@@ -64,5 +64,34 @@ describe("ucode runtime config", () => {
 
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
+
+  test("prepare writes auth.json with owner-only permissions and no temp leftovers", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-runtime-auth-mode-"));
+    const agentDir = path.join(projectRoot, ".ufoo", "agent", "ucode", "custom-pi");
+
+    try {
+      prepareUcodeRuntimeConfig({
+        projectRoot,
+        env: {},
+        loadConfigImpl: () => ({
+          ucodeProvider: "openai",
+          ucodeApiKey: "sk-secret",
+          ucodeAgentDir: agentDir,
+        }),
+      });
+
+      const authFile = path.join(agentDir, "auth.json");
+      const stat = fs.statSync(authFile);
+      // eslint-disable-next-line no-bitwise
+      expect(stat.mode & 0o777).toBe(0o600);
+      expect(JSON.parse(fs.readFileSync(authFile, "utf8")).openai.key).toBe("sk-secret");
+
+      // Atomic writes must not leave temp files behind.
+      const leftovers = fs.readdirSync(agentDir).filter((name) => name.includes(".tmp"));
+      expect(leftovers).toEqual([]);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
 });
 
