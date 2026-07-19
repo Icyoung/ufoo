@@ -60,6 +60,7 @@ describe("ucode native runner", () => {
   const originalUcodeModel = process.env.UFOO_UCODE_MODEL;
   const originalMaxToolCalls = process.env.UFOO_UCODE_MAX_TOOL_CALLS;
   const originalMaxToolErrors = process.env.UFOO_UCODE_MAX_TOOL_ERRORS;
+  const originalMaxTokens = process.env.UFOO_UCODE_MAX_TOKENS;
   let workspaceRoot = "";
 
   beforeEach(() => {
@@ -71,6 +72,7 @@ describe("ucode native runner", () => {
     delete process.env.UFOO_UCODE_MODEL;
     delete process.env.UFOO_UCODE_MAX_TOOL_CALLS;
     delete process.env.UFOO_UCODE_MAX_TOOL_ERRORS;
+    delete process.env.UFOO_UCODE_MAX_TOKENS;
     workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-native-runner-"));
     fs.mkdirSync(path.join(workspaceRoot, ".ufoo"), { recursive: true });
     fs.writeFileSync(path.join(workspaceRoot, ".ufoo", "config.json"), JSON.stringify({
@@ -105,6 +107,8 @@ describe("ucode native runner", () => {
     else delete process.env.UFOO_UCODE_MAX_TOOL_CALLS;
     if (typeof originalMaxToolErrors === "string") process.env.UFOO_UCODE_MAX_TOOL_ERRORS = originalMaxToolErrors;
     else delete process.env.UFOO_UCODE_MAX_TOOL_ERRORS;
+    if (typeof originalMaxTokens === "string") process.env.UFOO_UCODE_MAX_TOKENS = originalMaxTokens;
+    else delete process.env.UFOO_UCODE_MAX_TOKENS;
   });
 
   test("streams model output through openai-compatible provider", async () => {
@@ -577,5 +581,231 @@ describe("ucode native runner", () => {
     const config = resolveRuntimeConfig(workspaceRoot);
     expect(config.provider).toBe("anthropic");
     expect(config.model).toBe("claude-sonnet");
+  });
+
+  test("sends transport-specific default max_tokens", async () => {
+    global.fetch.mockResolvedValueOnce(makeSseResponse([
+      { choices: [{ delta: { content: "ok" } }] },
+    ]));
+    const openAiResult = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "hi",
+      provider: "openai",
+      model: "gpt-test",
+    });
+    expect(openAiResult.ok).toBe(true);
+    expect(JSON.parse(global.fetch.mock.calls[0][1].body).max_tokens).toBe(131072);
+
+    const anthropicSse = [
+      "event: content_block_start",
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}',
+      "",
+      "event: content_block_delta",
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}',
+      "",
+      "event: message_stop",
+      'data: {"type":"message_stop"}',
+      "",
+    ].join("\n");
+    global.fetch.mockResolvedValueOnce(new Response(anthropicSse, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    }));
+    const anthropicResult = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "hi",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+    });
+    expect(anthropicResult.ok).toBe(true);
+    expect(JSON.parse(global.fetch.mock.calls[1][1].body).max_tokens).toBe(64000);
+  });
+
+  test("UFOO_UCODE_MAX_TOKENS overrides max_tokens for both transports", async () => {
+    process.env.UFOO_UCODE_MAX_TOKENS = "32000";
+    global.fetch.mockResolvedValueOnce(makeSseResponse([
+      { choices: [{ delta: { content: "ok" } }] },
+    ]));
+    const openAiResult = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "hi",
+      provider: "openai",
+      model: "gpt-test",
+    });
+    expect(openAiResult.ok).toBe(true);
+    expect(JSON.parse(global.fetch.mock.calls[0][1].body).max_tokens).toBe(32000);
+
+    global.fetch.mockResolvedValueOnce(new Response(
+      "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+      { status: 200, headers: { "content-type": "text/event-stream" } }
+    ));
+    const anthropicResult = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "hi",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+    });
+    expect(anthropicResult.ok).toBe(true);
+    expect(JSON.parse(global.fetch.mock.calls[1][1].body).max_tokens).toBe(32000);
+  });
+
+  test("invalid UFOO_UCODE_MAX_TOKENS falls back to transport defaults", async () => {
+    process.env.UFOO_UCODE_MAX_TOKENS = "not-a-number";
+    global.fetch.mockResolvedValueOnce(makeSseResponse([
+      { choices: [{ delta: { content: "ok" } }] },
+    ]));
+    const openAiResult = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "hi",
+      provider: "openai",
+      model: "gpt-test",
+    });
+    expect(openAiResult.ok).toBe(true);
+    expect(JSON.parse(global.fetch.mock.calls[0][1].body).max_tokens).toBe(131072);
+
+    process.env.UFOO_UCODE_MAX_TOKENS = "-5";
+    global.fetch.mockResolvedValueOnce(new Response(
+      "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+      { status: 200, headers: { "content-type": "text/event-stream" } }
+    ));
+    const anthropicResult = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "hi",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+    });
+    expect(anthropicResult.ok).toBe(true);
+    expect(JSON.parse(global.fetch.mock.calls[1][1].body).max_tokens).toBe(64000);
+  });
+
+  test("does not collapse parallel tool calls when stream omits index", async () => {
+    global.fetch
+      .mockResolvedValueOnce(makeSseResponse([
+        {
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  { id: "call_1", type: "function", function: { name: "read", arguments: '{"path":"a.txt"}' } },
+                ],
+              },
+            },
+          ],
+        },
+        {
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  { id: "call_2", type: "function", function: { name: "bash", arguments: '{"command":"ls"}' } },
+                ],
+              },
+            },
+          ],
+        },
+      ]))
+      .mockResolvedValueOnce(makeSseResponse([
+        { choices: [{ delta: { content: "done" } }] },
+      ]));
+    runToolCall.mockReturnValue({ ok: true, content: "ok" });
+
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "go",
+      provider: "openai",
+      model: "gpt-test",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(runToolCall).toHaveBeenCalledTimes(2);
+    expect(runToolCall).toHaveBeenNthCalledWith(1,
+      { tool: "read", args: { path: "a.txt" } },
+      { workspaceRoot, cwd: workspaceRoot }
+    );
+    expect(runToolCall).toHaveBeenNthCalledWith(2,
+      { tool: "bash", args: { command: "ls" } },
+      { workspaceRoot, cwd: workspaceRoot }
+    );
+  });
+
+  test("appends argument fragments without id to the latest synthetic tool call", async () => {
+    global.fetch
+      .mockResolvedValueOnce(makeSseResponse([
+        {
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  { id: "call_1", type: "function", function: { name: "read", arguments: '{"path":"a' } },
+                ],
+              },
+            },
+          ],
+        },
+        {
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  { function: { arguments: '.txt"}' } },
+                ],
+              },
+            },
+          ],
+        },
+      ]))
+      .mockResolvedValueOnce(makeSseResponse([
+        { choices: [{ delta: { content: "done" } }] },
+      ]));
+    runToolCall.mockReturnValue({ ok: true, content: "ok" });
+
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "go",
+      provider: "openai",
+      model: "gpt-test",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(runToolCall).toHaveBeenCalledTimes(1);
+    expect(runToolCall).toHaveBeenCalledWith(
+      { tool: "read", args: { path: "a.txt" } },
+      { workspaceRoot, cwd: workspaceRoot }
+    );
+  });
+
+  test("stops tool loop after exactly max tool calls", async () => {
+    process.env.UFOO_UCODE_MAX_TOOL_CALLS = "2";
+    global.fetch.mockImplementation(() => Promise.resolve(makeSseResponse([
+      {
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call_loop",
+                  type: "function",
+                  function: { name: "read", arguments: '{"path":"a.txt"}' },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ])));
+    runToolCall.mockReturnValue({ ok: true, content: "ok" });
+
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "loop",
+      provider: "openai",
+      model: "gpt-test",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("tool call budget exceeded (2)");
+    expect(runToolCall).toHaveBeenCalledTimes(2);
+    expect(global.fetch).toHaveBeenCalledTimes(2);
   });
 });

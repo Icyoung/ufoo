@@ -14,6 +14,11 @@ const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1";
 // for non-trivial tasks while still catching runaway loops. Override via env.
 const DEFAULT_MAX_NATIVE_TOOL_CALLS = 100;
 const DEFAULT_MAX_NATIVE_TOOL_ERRORS = 5;
+// Anthropic Messages rejects max_tokens above the model's real cap (64K on
+// current models), so the transports use different defaults. Override either
+// via UFOO_UCODE_MAX_TOKENS (positive integer).
+const DEFAULT_OPENAI_MAX_TOKENS = 131072;
+const DEFAULT_ANTHROPIC_MAX_TOKENS = 64000;
 
 function nowMs() {
   return Date.now();
@@ -38,6 +43,10 @@ function resolveNativeToolBudget(env = process.env) {
   };
 }
 
+function resolveMaxTokens(fallback) {
+  return normalizePositiveInt(process.env.UFOO_UCODE_MAX_TOKENS, fallback);
+}
+
 function enforceNativeToolBudget({
   toolCallsExecuted = 0,
   toolErrors = 0,
@@ -46,7 +55,7 @@ function enforceNativeToolBudget({
   lastTool = "",
   lastError = "",
 } = {}) {
-  if (toolCallsExecuted > maxToolCalls) {
+  if (toolCallsExecuted >= maxToolCalls) {
     throw new Error(`tool call budget exceeded (${maxToolCalls})`);
   }
   if (toolErrors >= maxToolErrors) {
@@ -534,7 +543,7 @@ async function runOpenAiLikeTurn({
 } = {}) {
   const payload = {
     model,
-    max_tokens: 131072,
+    max_tokens: resolveMaxTokens(DEFAULT_OPENAI_MAX_TOKENS),
     messages,
     tools: buildCoreToolSpecs(),
     tool_choice: "auto",
@@ -588,6 +597,8 @@ async function runOpenAiLikeTurn({
     let rawBuffer = "";
     let responseText = "";
     const announcedToolNames = new Set();
+    let nextSyntheticIndex = 0;
+    let lastSyntheticIndex = -1;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -633,7 +644,23 @@ async function runOpenAiLikeTurn({
 
         if (Array.isArray(delta.tool_calls)) {
           for (const callPart of delta.tool_calls) {
-            const index = Number.isFinite(callPart.index) ? callPart.index : 0;
+            let index;
+            if (Number.isFinite(callPart.index)) {
+              index = callPart.index;
+            } else if (typeof callPart.id === "string" && callPart.id) {
+              // Provider omitted index: a chunk carrying an id starts a new
+              // call, so give it its own synthetic index instead of
+              // collapsing every call into slot 0.
+              while (toolCallMap.has(nextSyntheticIndex)) nextSyntheticIndex += 1;
+              index = nextSyntheticIndex;
+              nextSyntheticIndex += 1;
+              lastSyntheticIndex = index;
+            } else if (lastSyntheticIndex >= 0) {
+              // No index and no id: continuation of the latest synthetic call.
+              index = lastSyntheticIndex;
+            } else {
+              index = 0;
+            }
             const previous = toolCallMap.get(index) || {
               id: "",
               type: "function",
@@ -755,7 +782,7 @@ async function runAnthropicTurn({
 } = {}) {
   const payload = {
     model,
-    max_tokens: 131072,
+    max_tokens: resolveMaxTokens(DEFAULT_ANTHROPIC_MAX_TOKENS),
     messages,
     tools: buildAnthropicToolSpecs(),
     stream: true,

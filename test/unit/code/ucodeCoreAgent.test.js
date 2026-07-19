@@ -29,6 +29,7 @@ jest.mock("../../../src/code/nativeRunner", () => ({
 
 const { runNativeAgentTask } = require("../../../src/code/nativeRunner");
 const {
+  runUcodeCoreAgent,
   runSingleCommand,
   runNaturalLanguageTask,
   formatNlResult,
@@ -77,6 +78,27 @@ describe("ucode core agent nl path", () => {
     expect(result.args).toEqual({ path: "src/code/tui.js" });
     expect(result.result).toEqual(expect.objectContaining({
       ok: true,
+    }));
+  });
+
+  test("runSingleCommand treats 'run <non-tool-word>' as natural language", () => {
+    const result = runSingleCommand("run the tests", process.cwd());
+    expect(result.kind).toBe("nl");
+    expect(result.task).toBe("run the tests");
+  });
+
+  test("runSingleCommand still routes 'run <tool>' to the tool path", () => {
+    const result = runSingleCommand("run read {\"path\":\"src/code/tui.js\"}", process.cwd());
+    expect(result.kind).toBe("tool");
+    expect(result.tool).toBe("read");
+  });
+
+  test("runSingleCommand keeps unknown 'tool <name>' on the tool path", () => {
+    const result = runSingleCommand("tool frobnicate {}", process.cwd());
+    expect(result.kind).toBe("tool");
+    expect(result.result).toEqual(expect.objectContaining({
+      ok: false,
+      error: "unknown tool",
     }));
   });
 
@@ -645,6 +667,52 @@ describe("ucode core agent nl path", () => {
     }
   });
 
+  test("runUcodeCoreAgent resumes sessions stored under the resolved project root", async () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-resume-root-"));
+    const unresolvedRoot = path.join(base, "nested");
+    const resolvedRoot = path.join(base, "project");
+    fs.mkdirSync(unresolvedRoot, { recursive: true });
+    fs.mkdirSync(path.join(resolvedRoot, ".ufoo", "bus"), { recursive: true });
+    // Sessions are persisted under the resolved root (state.workspaceRoot).
+    persistSessionState({
+      workspaceRoot: resolvedRoot,
+      provider: "openai",
+      model: "gpt-5.2-codex",
+      context: "",
+      sessionId: "sess-resolved-root",
+      nlMessages: [{ role: "user", content: "hello" }],
+    });
+    const previousEnv = process.env.UFOO_UCODE_PROJECT_ROOT;
+    process.env.UFOO_UCODE_PROJECT_ROOT = resolvedRoot;
+    const { PassThrough } = require("stream");
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    let output = "";
+    stdout.on("data", (chunk) => {
+      output += String(chunk);
+    });
+    try {
+      const runPromise = runUcodeCoreAgent({
+        stdin,
+        stdout,
+        workspaceRoot: unresolvedRoot,
+        provider: "openai",
+        model: "gpt-5.2-codex",
+        disableTui: true,
+      });
+      stdin.write("resume sess-resolved-root\n");
+      stdin.write("exit\n");
+      stdin.end();
+      await runPromise;
+      expect(output).toContain("Resumed session sess-resolved-root");
+      expect(output).not.toContain("session not found");
+    } finally {
+      if (previousEnv === undefined) delete process.env.UFOO_UCODE_PROJECT_ROOT;
+      else process.env.UFOO_UCODE_PROJECT_ROOT = previousEnv;
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
   test("parseBusCheckOutput extracts publisher and task from bus check output", () => {
     const rows = parseBusCheckOutput([
       "@you from claude-code:abc123",
@@ -865,6 +933,39 @@ describe("ucode core agent nl path", () => {
     expect(result.ok).toBe(true);
     expect(result.summary).toBe("done after retry");
     expect(state.sessionId).toBe("sess-timeout-2");
+  });
+
+  test("runNaturalLanguageTask does not replay a timed-out attempt that already ran tools", async () => {
+    runNativeAgentTask.mockImplementationOnce(async (params) => {
+      if (params && typeof params.onToolEvent === "function") {
+        params.onToolEvent({
+          tool: "write",
+          phase: "start",
+          args: { path: "src/out.js" },
+        });
+      }
+      return {
+        ok: false,
+        error: "CLI timeout (300000ms)",
+        sessionId: "sess-timeout-tools",
+      };
+    });
+
+    const state = {
+      workspaceRoot: process.cwd(),
+      provider: "openai",
+      model: "gpt-5.2-codex",
+      context: "",
+      sessionId: "",
+      timeoutMs: 300000,
+    };
+
+    const result = await runNaturalLanguageTask("long task", state);
+
+    // No retry: replaying would re-run the write side effect from attempt one.
+    expect(runNativeAgentTask).toHaveBeenCalledTimes(1);
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("CLI timeout");
   });
 
   test("runNaturalLanguageTask marks cancelled when CLI is cancelled", async () => {

@@ -70,7 +70,7 @@ function getSystemPrompt({
   // --- Dynamic sections (may change per session/turn) ---
   const dynamicSectionDefs = [
     systemPromptSection("ufoo", () => getUfooIntegrationSection()),
-    systemPromptSection("environment", () =>
+    uncachedSection("environment", () =>
       getEnvironmentSection({ workspaceRoot, model, provider }),
     ),
     uncachedSection("skills", () => {

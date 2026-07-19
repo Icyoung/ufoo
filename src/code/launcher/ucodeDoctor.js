@@ -3,7 +3,6 @@ const path = require("path");
 const { loadConfig } = require("../../config");
 const {
   resolveNativeFallbackCommand,
-  defaultBundledPromptFile,
 } = require("./ucode");
 const { inspectUcodeBuildSetup } = require("./ucodeBuild");
 const { inspectUcodeRuntimeConfig } = require("./ucodeRuntimeConfig");
@@ -30,7 +29,7 @@ function inspectUcodeSetup({
   const promptFile = String(
     env.UFOO_UCODE_PROMPT_FILE
       || config.ucodePromptFile
-      || defaultBundledPromptFile()
+      || ""
   ).trim();
   const bootstrapFile = String(
     env.UFOO_UCODE_BOOTSTRAP_FILE
@@ -130,7 +129,7 @@ function formatUcodeDoctor(result = {}) {
   if (result.configuredCommand) {
     lines.push(`configured command override (ignored in native-only mode): ${result.configuredCommand}`);
   }
-  lines.push(`prompt: ${result.promptFile || "(none)"}${result.promptExists ? "" : " (missing)"}`);
+  lines.push(`prompt: ${result.promptFile || "(none)"}${result.promptFile && !result.promptExists ? " (missing)" : ""}`);
   lines.push(`bootstrap: ${result.bootstrapFile || "(none)"}`);
   if (result.build && result.build.coreRoot) {
     lines.push(`build: ${result.build.distCliExists ? "ready" : "missing dist"}`);
@@ -170,6 +169,10 @@ function prepareAndInspectUcode({
     projectRoot: inspection.projectRoot,
     promptFile: inspection.promptFile,
     targetFile: inspection.bootstrapFile,
+    // The native core already injects the ufoo protocol via the modular
+    // prompt (src/agents/prompts/native/ufoo.js); inlining it into the
+    // bootstrap file would append the same protocol text a second time.
+    includeDefaultProtocol: false,
   });
   return {
     ...inspection,

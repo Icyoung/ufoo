@@ -183,6 +183,31 @@ Let me verify this`,
       expect(shell).toHaveBeenCalledTimes(1);
       jest.useRealTimers();
     });
+
+    it("shell-quotes publisher and message to prevent shell expansion", () => {
+      jest.useFakeTimers();
+      const shell = jest.fn();
+      const reporter = createBusProgressReporter(shell, "codex:abc $(touch /tmp/pwned)");
+      jest.advanceTimersByTime(6000);
+      reporter({ type: "step_start", name: "Run `whoami`", current: 1, total: 2 });
+      expect(shell).toHaveBeenCalledTimes(1);
+      const command = shell.mock.calls[0][0];
+      const expectedMessage = JSON.stringify("⏳ Run `whoami` (1/2)");
+      expect(command).toBe(`ufoo bus send 'codex:abc $(touch /tmp/pwned)' '${expectedMessage}'`);
+      jest.useRealTimers();
+    });
+
+    it("escapes embedded single quotes in bus send arguments", () => {
+      jest.useFakeTimers();
+      const shell = jest.fn();
+      const reporter = createBusProgressReporter(shell, "codex:abc");
+      jest.advanceTimersByTime(6000);
+      reporter({ type: "step_complete", name: "It's fixed", success: true });
+      expect(shell).toHaveBeenCalledTimes(1);
+      const command = shell.mock.calls[0][0];
+      expect(command).toBe(`ufoo bus send 'codex:abc' '"✅ It'"'"'s fixed completed"'`);
+      jest.useRealTimers();
+    });
   });
 
   describe("runDecomposedTask", () => {

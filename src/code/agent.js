@@ -2,7 +2,7 @@ const readline = require("readline");
 const fs = require("fs");
 const path = require("path");
 const { execSync } = require("child_process");
-const { runToolCall } = require("./dispatch");
+const { runToolCall, TOOL_NAMES } = require("./dispatch");
 const { runNativeAgentTask } = require("./nativeRunner");
 const {
   runDecomposedTask,
@@ -440,6 +440,7 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
   const timeoutMs = Number.isFinite(state.timeoutMs) ? state.timeoutMs : 600000;
   let streamed = false;
   let streamLastChar = "";
+  let toolEventsThisAttempt = 0;
   const onDelta = typeof options.onDelta === "function"
     ? options.onDelta
     : null;
@@ -495,23 +496,27 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
     : runNativeAgentTask;
   const onPhase = typeof options.onPhase === "function" ? options.onPhase : null;
   const onThinkingDelta = typeof options.onThinkingDelta === "function" ? options.onThinkingDelta : null;
-  const invokeNative = (sessionIdValue = "", timeoutOverrideMs = timeoutMs) => runNativeAgentImpl({
-    workspaceRoot,
-    provider,
-    model,
-    prompt: effectiveTaskPrompt,
-    systemPrompt: systemContext,
-    messages: Array.isArray(state.nlMessages) ? state.nlMessages : [],
-    sessionId: String(sessionIdValue || ""),
-    timeoutMs: timeoutOverrideMs,
-    onStreamDelta: onStream,
-    onThinkingDelta,
-    onPhase,
-    onToolEvent: (event) => {
-      pushToolLog(event);
-    },
-    signal: options.signal,
-  });
+  const invokeNative = (sessionIdValue = "", timeoutOverrideMs = timeoutMs) => {
+    toolEventsThisAttempt = 0;
+    return runNativeAgentImpl({
+      workspaceRoot,
+      provider,
+      model,
+      prompt: effectiveTaskPrompt,
+      systemPrompt: systemContext,
+      messages: Array.isArray(state.nlMessages) ? state.nlMessages : [],
+      sessionId: String(sessionIdValue || ""),
+      timeoutMs: timeoutOverrideMs,
+      onStreamDelta: onStream,
+      onThinkingDelta,
+      onPhase,
+      onToolEvent: (event) => {
+        toolEventsThisAttempt += 1;
+        pushToolLog(event);
+      },
+      signal: options.signal,
+    });
+  };
 
   try {
     let cliRes;
@@ -551,7 +556,9 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
 
       if (!cliRes || cliRes.ok === false) {
         const errMsg = String((cliRes && cliRes.error) || "");
-        if (isCliTimeoutError(errMsg)) {
+        // Only replay the whole task when this attempt ran no tool calls;
+        // retrying after executed write/edit/bash steps would replay side effects.
+        if (isCliTimeoutError(errMsg) && toolEventsThisAttempt === 0) {
           const extendedTimeoutMs = computeExtendedTimeout(timeoutMs);
           cliRes = await invokeNative(String(state.sessionId || ""), extendedTimeoutMs);
         }
@@ -1317,6 +1324,13 @@ function runSingleCommand(line = "", workspaceRoot = process.cwd()) {
     };
   }
   const tool = String(match[2] || "").trim().toLowerCase();
+  if (String(match[1]).toLowerCase() === "run" && !TOOL_NAMES.includes(tool)) {
+    // Natural language like "run the tests" is not a tool invocation.
+    return {
+      kind: "nl",
+      task: text,
+    };
+  }
   const payload = String(match[3] || "").trim();
   let args = {};
   try {
@@ -1546,7 +1560,7 @@ async function runUcodeCoreAgent({
         }
       }
       if (result.kind === "resume") {
-        const resumed = resumeSessionState(state, result.sessionId, workspaceRoot);
+        const resumed = resumeSessionState(state, result.sessionId, state.workspaceRoot || resolvedWorkspaceRoot);
         if (!resumed.ok) {
           stdout.write(`Error: ${resumed.error}\n`);
         } else {

@@ -6,7 +6,7 @@ function getBashToolDescription() {
   return `Run a single shell command in the workspace directory.
 
 Usage notes:
-- Default timeout is 60 seconds. Use timeoutMs to adjust for longer operations.
+- Default timeout is 60 seconds. Use timeoutMs to adjust for longer operations (maximum 600 seconds; larger values are clamped).
 - Do NOT use bash for file operations when a dedicated tool exists:
   - Use read instead of cat/head/tail.
   - Use write instead of echo/cat heredoc.

@@ -81,6 +81,32 @@ describe("ucode launcher resolver", () => {
     expect(onlyModel.env.UFOO_UCODE_MODEL).toBe("claude-opus-4-6");
   });
 
+  test("does not inject bundled prompt file by default but passes through explicit settings", () => {
+    const resolved = resolveUcodeLaunch({
+      argv: [],
+      env: {},
+      cwd: "/repo",
+      loadConfigImpl: () => ({}),
+    });
+    expect(resolved.env.UFOO_UCODE_PROMPT_FILE).toBe("");
+
+    const fromEnv = resolveUcodeLaunch({
+      argv: [],
+      env: { UFOO_UCODE_PROMPT_FILE: "/tmp/custom-prompt.md" },
+      cwd: "/repo",
+      loadConfigImpl: () => ({}),
+    });
+    expect(fromEnv.env.UFOO_UCODE_PROMPT_FILE).toBe("/tmp/custom-prompt.md");
+
+    const fromConfig = resolveUcodeLaunch({
+      argv: [],
+      env: {},
+      cwd: "/repo",
+      loadConfigImpl: () => ({ ucodePromptFile: "/tmp/config-prompt.md" }),
+    });
+    expect(fromConfig.env.UFOO_UCODE_PROMPT_FILE).toBe("/tmp/config-prompt.md");
+  });
+
   test("tokenize/split command keeps quoted windows paths", () => {
     expect(splitCommand("\"C:\\\\Program Files\\\\Pi Core\\\\pi.exe\" --mode json"))
       .toEqual({ command: "C:\\Program Files\\Pi Core\\pi.exe", args: ["--mode", "json"] });
@@ -188,6 +214,13 @@ describe("ucode launcher resolver", () => {
     expect(readLastArgValue(["--model=inline"], "--model")).toBe("inline");
     expect(readLastArgValue([], "--model")).toBe("");
     expect(readLastArgValue(null, "--model")).toBe("");
+  });
+
+  test("readLastArgValue treats a following flag as missing value", () => {
+    expect(readLastArgValue(["--provider", "--model", "x"], "--provider")).toBe("");
+    expect(readLastArgValue(["--provider", "--model", "x"], "--model")).toBe("x");
+    expect(readLastArgValue(["--model", "gpt5", "--provider"], "--provider")).toBe("");
+    expect(readLastArgValue(["--provider", "--provider", "openai"], "--provider")).toBe("openai");
   });
 
   test("canExecutePath returns false for empty/nonexistent", () => {

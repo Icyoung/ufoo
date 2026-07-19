@@ -80,4 +80,40 @@ describe("ucode doctor", () => {
 
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
+
+  test("prepareAndInspectUcode does not inline the bundled prompt by default", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-doctor-noprompt-"));
+
+    const result = prepareAndInspectUcode({
+      projectRoot,
+      env: {},
+      loadConfigImpl: () => ({}),
+    });
+
+    // The native core's modular prompt already carries the ufoo protocol;
+    // the bootstrap file must not duplicate it.
+    expect(result.promptFile).toBe("");
+    const content = fs.readFileSync(result.bootstrapPrepared.file, "utf8");
+    expect(content).not.toContain("## Core Prompt");
+
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  test("prepareAndInspectUcode still inlines an explicitly configured prompt file", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-doctor-explicit-"));
+    const promptFile = path.join(projectRoot, "prompt.md");
+    fs.writeFileSync(promptFile, "custom prompt body");
+
+    const result = prepareAndInspectUcode({
+      projectRoot,
+      env: { UFOO_UCODE_PROMPT_FILE: promptFile },
+      loadConfigImpl: () => ({}),
+    });
+
+    const content = fs.readFileSync(result.bootstrapPrepared.file, "utf8");
+    expect(content).toContain("## Core Prompt");
+    expect(content).toContain("custom prompt body");
+
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
 });

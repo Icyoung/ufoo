@@ -281,6 +281,15 @@ function compileSummary(results) {
 }
 
 /**
+ * Quote a value for safe inclusion in a shell command (single-quote style).
+ * Kept local to avoid a circular dependency with agent.js.
+ */
+function shellQuote(value = "") {
+  const text = String(value == null ? "" : value);
+  return `'${text.replace(/'/g, `'\"'\"'`)}'`;
+}
+
+/**
  * Create a progress reporter that sends updates via bus
  */
 function createBusProgressReporter(shell, publisher) {
@@ -297,10 +306,10 @@ function createBusProgressReporter(shell, publisher) {
 
     if (progress.type === "step_start") {
       const message = `⏳ ${progress.name} (${progress.current}/${progress.total})`;
-      shell(`ufoo bus send ${publisher} ${JSON.stringify(message)}`);
+      shell(`ufoo bus send ${shellQuote(publisher)} ${shellQuote(JSON.stringify(message))}`);
     } else if (progress.type === "step_complete" && progress.success) {
       const message = `✅ ${progress.name} completed`;
-      shell(`ufoo bus send ${publisher} ${JSON.stringify(message)}`);
+      shell(`ufoo bus send ${shellQuote(publisher)} ${shellQuote(JSON.stringify(message))}`);
     }
   };
 }

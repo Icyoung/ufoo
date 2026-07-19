@@ -8,6 +8,9 @@ const {
   runBashTool,
   runToolCall,
 } = require("../../../src/code");
+const { MAX_FULL_READ_BYTES } = require("../../../src/code/tools/read");
+const { getReadToolDescription } = require("../../../src/agents/prompts/native/toolDescriptions/read");
+const { getBashToolDescription } = require("../../../src/agents/prompts/native/toolDescriptions/bash");
 
 describe("ucode-core tool kernel", () => {
   test("read returns selected line range", () => {
@@ -125,5 +128,70 @@ describe("ucode-core tool kernel", () => {
     expect(result.ok).toBe(false);
     expect(result.error).toContain("escapes workspace root");
     fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test("bash clamps timeoutMs to the 600s maximum and keeps the 60s default", () => {
+    const spawnSync = jest.fn(() => ({ status: 0, stdout: "", stderr: "" }));
+    jest.doMock("child_process", () => ({ ...jest.requireActual("child_process"), spawnSync }));
+    try {
+      let runBashToolIsolated;
+      jest.isolateModules(() => {
+        ({ runBashTool: runBashToolIsolated } = require("../../../src/code/tools/bash"));
+      });
+      const over = runBashToolIsolated({ command: "true", timeoutMs: 99999999 }, { workspaceRoot: "/tmp" });
+      expect(over.ok).toBe(true);
+      expect(spawnSync).toHaveBeenLastCalledWith("true", expect.objectContaining({ timeout: 600000 }));
+      runBashToolIsolated({ command: "true" }, { workspaceRoot: "/tmp" });
+      expect(spawnSync).toHaveBeenLastCalledWith("true", expect.objectContaining({ timeout: 60000 }));
+    } finally {
+      jest.dontMock("child_process");
+    }
+  });
+
+  test("bash reports signal-killed commands as failures", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-core-signal-"));
+    const result = runBashTool({ command: "kill -9 $$" }, { workspaceRoot: root });
+    expect(result.ok).toBe(false);
+    expect(result.signal).toBe("SIGKILL");
+    expect(result.error).toContain("SIGKILL");
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test("bash enforces timeoutMs and fails timed-out commands", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-core-timeout-"));
+    const result = runBashTool({ command: "sleep 5", timeoutMs: 200 }, { workspaceRoot: root });
+    expect(result.ok).toBe(false);
+    expect(result.signal).toBe("SIGTERM");
+    expect(result.error).toBeTruthy();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test("read loads only a bounded prefix for files over the full-read limit", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-core-bigread-"));
+    const file = path.join(root, "big.txt");
+    fs.writeFileSync(file, `${"x".repeat(MAX_FULL_READ_BYTES)}TAIL-MARKER`, "utf8");
+    const spy = jest.spyOn(fs, "readFileSync");
+    try {
+      const result = runReadTool({ path: "big.txt" }, { workspaceRoot: root });
+      expect(result.ok).toBe(true);
+      expect(result.truncated).toBe(true);
+      expect(spy).not.toHaveBeenCalled();
+      expect(result.content).not.toContain("TAIL-MARKER");
+      expect(Buffer.byteLength(result.content, "utf8")).toBeLessThanOrEqual(200000);
+    } finally {
+      spy.mockRestore();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("read tool description matches implementation (no line numbers claimed)", () => {
+    const desc = getReadToolDescription();
+    expect(desc).not.toContain("returned with line numbers");
+    expect(desc).toContain("totalLines");
+    expect(desc).toContain("truncated");
+  });
+
+  test("bash tool description documents the timeout ceiling", () => {
+    expect(getBashToolDescription()).toContain("600 seconds");
   });
 });

@@ -224,8 +224,10 @@ function readLastArgValue(args = [], flag = "") {
     if (!item) continue;
     if (item === flag) {
       const next = String(args[i + 1] || "").trim();
-      if (next) value = next;
-      i += 1;
+      if (next && !next.startsWith("--")) {
+        value = next;
+        i += 1;
+      }
       continue;
     }
     if (item.startsWith(`${flag}=`)) {
@@ -342,7 +344,7 @@ function resolveUcodeLaunch({
   const promptFile = String(
     env.UFOO_UCODE_PROMPT_FILE
       || config.ucodePromptFile
-      || defaultBundledPromptFile()
+      || ""
   ).trim();
   const bootstrapFile = String(
     env.UFOO_UCODE_BOOTSTRAP_FILE
