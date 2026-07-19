@@ -15,3 +15,4 @@ landing/
 scripts/*
 !scripts/postinstall.js
 docs/
+skills-lock.json
