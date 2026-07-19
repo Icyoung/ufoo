@@ -437,6 +437,97 @@ function emitPhase(callback, event = {}) {
   }
 }
 
+// Shared SSE transport skeleton: POST the payload, then read the stream as
+// SSE blocks, dispatch each non-[DONE] block to onEvent, and stop after the
+// batch that carried [DONE]. Timeout/cancel translation and request cleanup
+// live here so each protocol turn only declares its event handling.
+async function runSseRequest({
+  url = "",
+  headers = {},
+  payload = {},
+  signal = null,
+  timeoutMs = 300000,
+  onPhase = null,
+  onNonStream,
+  onEvent,
+  onTail = null,
+  buildResult,
+} = {}) {
+  const request = createRequestController({ signal, timeoutMs });
+
+  emitPhase(onPhase, { type: "request_start" });
+
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+      signal: request.signal,
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new Error(`provider request failed (${response.status}): ${clipText(body, 500)}`);
+    }
+
+    if (!response.body || typeof response.body.getReader !== "function") {
+      const data = await response.json();
+      return onNonStream(data);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let rawBuffer = "";
+    let sawDone = false;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      rawBuffer += decoder.decode(value, { stream: true });
+      const parsed = parseSseBlocks(rawBuffer);
+      rawBuffer = parsed.rest;
+
+      for (const block of parsed.blocks) {
+        const { event, data } = parseSseEventBlock(block);
+        if (!data) continue;
+        if (data === "[DONE]") {
+          // Stop reading after this batch instead of waiting for the server
+          // to close the connection, but keep the buffered tail and finish
+          // the blocks already parsed alongside [DONE] instead of silently
+          // dropping them.
+          sawDone = true;
+          continue;
+        }
+
+        onEvent({ event, data });
+      }
+
+      if (sawDone) break;
+    }
+
+    if (typeof onTail === "function") {
+      onTail(rawBuffer);
+    }
+
+    return buildResult();
+  } catch (err) {
+    if (request.timedOut()) {
+      const timeoutError = new Error(`CLI timeout (${normalizeTimeoutMs(timeoutMs)}ms)`);
+      timeoutError.code = "timeout";
+      throw timeoutError;
+    }
+    if (signal && typeof signal === "object" && signal.aborted) {
+      const cancelError = new Error("CLI cancelled");
+      cancelError.code = "cancelled";
+      throw cancelError;
+    }
+    throw err;
+  } finally {
+    request.cleanup();
+  }
+}
+
 async function runOpenAiLikeTurn({
   url = "",
   apiKey = "",
@@ -465,25 +556,20 @@ async function runOpenAiLikeTurn({
     headers.authorization = `Bearer ${apiKey}`;
   }
 
-  const request = createRequestController({ signal, timeoutMs });
+  const toolCallMap = new Map();
+  const announcedToolNames = new Set();
+  let responseText = "";
+  let nextSyntheticIndex = 0;
+  let lastSyntheticIndex = -1;
 
-  emitPhase(onPhase, { type: "request_start" });
-
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload),
-      signal: request.signal,
-    });
-
-    if (!response.ok) {
-      const body = await response.text().catch(() => "");
-      throw new Error(`provider request failed (${response.status}): ${clipText(body, 500)}`);
-    }
-
-    if (!response.body || typeof response.body.getReader !== "function") {
-      const data = await response.json();
+  return runSseRequest({
+    url,
+    headers,
+    payload,
+    signal,
+    timeoutMs,
+    onPhase,
+    onNonStream: (data) => {
       const message = data && data.choices && data.choices[0] && data.choices[0].message
         ? data.choices[0].message
         : {};
@@ -496,117 +582,85 @@ async function runOpenAiLikeTurn({
         text,
         toolCalls,
       };
-    }
+    },
+    onEvent: ({ data }) => {
+      const chunk = parseJsonSafe(data, null);
+      if (!chunk || typeof chunk !== "object") return;
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    const toolCallMap = new Map();
-    let rawBuffer = "";
-    let responseText = "";
-    const announcedToolNames = new Set();
-    let nextSyntheticIndex = 0;
-    let lastSyntheticIndex = -1;
-    let sawDone = false;
+      const choice = chunk.choices && chunk.choices[0] ? chunk.choices[0] : null;
+      if (!choice || typeof choice !== "object") return;
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+      const delta = choice.delta && typeof choice.delta === "object" ? choice.delta : {};
 
-      rawBuffer += decoder.decode(value, { stream: true });
-      const parsed = parseSseBlocks(rawBuffer);
-      rawBuffer = parsed.rest;
-
-      for (const block of parsed.blocks) {
-        const payloadText = parseSseDataBlock(block);
-        if (!payloadText) continue;
-        if (payloadText === "[DONE]") {
-          // Stop reading after this batch, but keep the buffered tail and
-          // finish the blocks already parsed alongside [DONE] instead of
-          // silently dropping them.
-          sawDone = true;
-          continue;
-        }
-
-        const chunk = parseJsonSafe(payloadText, null);
-        if (!chunk || typeof chunk !== "object") continue;
-
-        const choice = chunk.choices && chunk.choices[0] ? chunk.choices[0] : null;
-        if (!choice || typeof choice !== "object") continue;
-
-        const delta = choice.delta && typeof choice.delta === "object" ? choice.delta : {};
-
-        const reasoningChunk = typeof delta.reasoning_content === "string"
-          ? delta.reasoning_content
-          : (typeof delta.reasoning === "string" ? delta.reasoning : "");
-        if (reasoningChunk) {
-          emitPhase(onPhase, { type: "thinking_delta", text: reasoningChunk });
-          if (typeof onThinkingDelta === "function") {
-            onThinkingDelta(reasoningChunk);
-          }
-        }
-
-        if (typeof delta.content === "string" && delta.content) {
-          responseText += delta.content;
-          emitPhase(onPhase, { type: "text_delta", text: delta.content });
-          if (typeof onTextDelta === "function") {
-            onTextDelta(delta.content);
-          }
-        }
-
-        if (Array.isArray(delta.tool_calls)) {
-          for (const callPart of delta.tool_calls) {
-            let index;
-            if (Number.isFinite(callPart.index)) {
-              index = callPart.index;
-            } else if (typeof callPart.id === "string" && callPart.id) {
-              // Provider omitted index: a chunk carrying an id starts a new
-              // call, so give it its own synthetic index instead of
-              // collapsing every call into slot 0.
-              while (toolCallMap.has(nextSyntheticIndex)) nextSyntheticIndex += 1;
-              index = nextSyntheticIndex;
-              nextSyntheticIndex += 1;
-              lastSyntheticIndex = index;
-            } else if (lastSyntheticIndex >= 0) {
-              // No index and no id: continuation of the latest synthetic call.
-              index = lastSyntheticIndex;
-            } else {
-              index = 0;
-            }
-            const previous = toolCallMap.get(index) || {
-              id: "",
-              type: "function",
-              function: {
-                name: "",
-                arguments: "",
-              },
-            };
-
-            if (typeof callPart.id === "string" && callPart.id) previous.id = callPart.id;
-            if (callPart.function && typeof callPart.function === "object") {
-              if (typeof callPart.function.name === "string" && callPart.function.name) {
-                previous.function.name = callPart.function.name;
-              }
-              if (typeof callPart.function.arguments === "string" && callPart.function.arguments) {
-                previous.function.arguments += callPart.function.arguments;
-              }
-            }
-
-            toolCallMap.set(index, previous);
-
-            const toolName = previous.function.name;
-            const announceKey = `${index}:${toolName}`;
-            if (toolName && !announcedToolNames.has(announceKey)) {
-              announcedToolNames.add(announceKey);
-              emitPhase(onPhase, { type: "tool_request", name: toolName });
-            }
-          }
+      const reasoningChunk = typeof delta.reasoning_content === "string"
+        ? delta.reasoning_content
+        : (typeof delta.reasoning === "string" ? delta.reasoning : "");
+      if (reasoningChunk) {
+        emitPhase(onPhase, { type: "thinking_delta", text: reasoningChunk });
+        if (typeof onThinkingDelta === "function") {
+          onThinkingDelta(reasoningChunk);
         }
       }
 
-      if (sawDone) break;
-    }
+      if (typeof delta.content === "string" && delta.content) {
+        responseText += delta.content;
+        emitPhase(onPhase, { type: "text_delta", text: delta.content });
+        if (typeof onTextDelta === "function") {
+          onTextDelta(delta.content);
+        }
+      }
 
-    if (rawBuffer.trim()) {
+      if (Array.isArray(delta.tool_calls)) {
+        for (const callPart of delta.tool_calls) {
+          let index;
+          if (Number.isFinite(callPart.index)) {
+            index = callPart.index;
+          } else if (typeof callPart.id === "string" && callPart.id) {
+            // Provider omitted index: a chunk carrying an id starts a new
+            // call, so give it its own synthetic index instead of
+            // collapsing every call into slot 0.
+            while (toolCallMap.has(nextSyntheticIndex)) nextSyntheticIndex += 1;
+            index = nextSyntheticIndex;
+            nextSyntheticIndex += 1;
+            lastSyntheticIndex = index;
+          } else if (lastSyntheticIndex >= 0) {
+            // No index and no id: continuation of the latest synthetic call.
+            index = lastSyntheticIndex;
+          } else {
+            index = 0;
+          }
+          const previous = toolCallMap.get(index) || {
+            id: "",
+            type: "function",
+            function: {
+              name: "",
+              arguments: "",
+            },
+          };
+
+          if (typeof callPart.id === "string" && callPart.id) previous.id = callPart.id;
+          if (callPart.function && typeof callPart.function === "object") {
+            if (typeof callPart.function.name === "string" && callPart.function.name) {
+              previous.function.name = callPart.function.name;
+            }
+            if (typeof callPart.function.arguments === "string" && callPart.function.arguments) {
+              previous.function.arguments += callPart.function.arguments;
+            }
+          }
+
+          toolCallMap.set(index, previous);
+
+          const toolName = previous.function.name;
+          const announceKey = `${index}:${toolName}`;
+          if (toolName && !announcedToolNames.has(announceKey)) {
+            announcedToolNames.add(announceKey);
+            emitPhase(onPhase, { type: "tool_request", name: toolName });
+          }
+        }
+      }
+    },
+    onTail: (rawBuffer) => {
+      if (!rawBuffer.trim()) return;
       const fallbackBlock = parseSseDataBlock(rawBuffer);
       if (fallbackBlock && fallbackBlock !== "[DONE]") {
         const chunk = parseJsonSafe(fallbackBlock, null);
@@ -618,29 +672,14 @@ async function runOpenAiLikeTurn({
           }
         }
       }
-    }
-
-    return {
+    },
+    buildResult: () => ({
       text: responseText,
       toolCalls: Array.from(toolCallMap.entries())
         .sort((a, b) => a[0] - b[0])
         .map((entry) => entry[1]),
-    };
-  } catch (err) {
-    if (request.timedOut()) {
-      const timeoutError = new Error(`CLI timeout (${normalizeTimeoutMs(timeoutMs)}ms)`);
-      timeoutError.code = "timeout";
-      throw timeoutError;
-    }
-    if (signal && typeof signal === "object" && signal.aborted) {
-      const cancelError = new Error("CLI cancelled");
-      cancelError.code = "cancelled";
-      throw cancelError;
-    }
-    throw err;
-  } finally {
-    request.cleanup();
-  }
+    }),
+  });
 }
 
 function normalizeAnthropicMessageContent(raw = []) {
@@ -713,25 +752,19 @@ async function runAnthropicTurn({
     headers["x-api-key"] = apiKey;
   }
 
-  const request = createRequestController({ signal, timeoutMs });
+  const blockMap = new Map();
+  let responseText = "";
+  let nextSyntheticBlockIndex = 0;
+  let lastBlockIndex = -1;
 
-  emitPhase(onPhase, { type: "request_start" });
-
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload),
-      signal: request.signal,
-    });
-
-    if (!response.ok) {
-      const body = await response.text().catch(() => "");
-      throw new Error(`provider request failed (${response.status}): ${clipText(body, 500)}`);
-    }
-
-    if (!response.body || typeof response.body.getReader !== "function") {
-      const data = await response.json();
+  return runSseRequest({
+    url,
+    headers,
+    payload,
+    signal,
+    timeoutMs,
+    onPhase,
+    onNonStream: (data) => {
       const content = normalizeAnthropicMessageContent(data && data.content);
       const text = content
         .filter((item) => item.type === "text")
@@ -745,270 +778,181 @@ async function runAnthropicTurn({
         assistantContent: content,
         toolCalls: extractAnthropicToolCalls(content),
       };
-    }
+    },
+    onEvent: ({ event, data }) => {
+      const payloadChunk = parseJsonSafe(data, null);
+      if (!payloadChunk || typeof payloadChunk !== "object") return;
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    const blockMap = new Map();
-    let rawBuffer = "";
-    let responseText = "";
-    let nextSyntheticBlockIndex = 0;
-    let lastBlockIndex = -1;
-    let sawDone = false;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      rawBuffer += decoder.decode(value, { stream: true });
-      const parsed = parseSseBlocks(rawBuffer);
-      rawBuffer = parsed.rest;
-
-      for (const rawBlock of parsed.blocks) {
-        const { event, data } = parseSseEventBlock(rawBlock);
-        if (!data) continue;
-        if (data === "[DONE]") {
-          // Stop reading after this batch instead of waiting for the server
-          // to close the connection, mirroring the OpenAI transport.
-          sawDone = true;
-          continue;
-        }
-
-        const payloadChunk = parseJsonSafe(data, null);
-        if (!payloadChunk || typeof payloadChunk !== "object") continue;
-
-        if (event === "error") {
-          const errMsg = payloadChunk.error && payloadChunk.error.message
-            ? String(payloadChunk.error.message)
-            : "anthropic stream error";
-          throw new Error(errMsg);
-        }
-
-        if (event === "content_block_start") {
-          let index;
-          if (Number.isFinite(payloadChunk.index)) {
-            index = payloadChunk.index;
-          } else {
-            // Provider omitted index: each start opens a new block, so give
-            // it its own synthetic index instead of collapsing every block
-            // into slot 0.
-            while (blockMap.has(nextSyntheticBlockIndex)) nextSyntheticBlockIndex += 1;
-            index = nextSyntheticBlockIndex;
-            nextSyntheticBlockIndex += 1;
-          }
-          lastBlockIndex = index;
-          const contentBlock = payloadChunk.content_block && typeof payloadChunk.content_block === "object"
-            ? payloadChunk.content_block
-            : {};
-
-          if (contentBlock.type === "text") {
-            blockMap.set(index, {
-              order: index,
-              type: "text",
-              text: String(contentBlock.text || ""),
-            });
-          } else if (contentBlock.type === "thinking") {
-            blockMap.set(index, {
-              order: index,
-              type: "thinking",
-              text: String(contentBlock.thinking || ""),
-            });
-          } else if (contentBlock.type === "tool_use") {
-            blockMap.set(index, {
-              order: index,
-              type: "tool_use",
-              id: String(contentBlock.id || ""),
-              name: String(contentBlock.name || ""),
-              input: contentBlock.input && typeof contentBlock.input === "object" && !Array.isArray(contentBlock.input)
-                ? { ...contentBlock.input }
-                : {},
-              inputJson: "",
-            });
-            const toolName = String(contentBlock.name || "");
-            if (toolName) {
-              emitPhase(onPhase, { type: "tool_request", name: toolName });
-            }
-          }
-          continue;
-        }
-
-        if (event === "content_block_delta") {
-          let index;
-          if (Number.isFinite(payloadChunk.index)) {
-            index = payloadChunk.index;
-          } else if (lastBlockIndex >= 0) {
-            // No index: continuation of the most recently started block.
-            index = lastBlockIndex;
-          } else {
-            index = 0;
-          }
-          const delta = payloadChunk.delta && typeof payloadChunk.delta === "object"
-            ? payloadChunk.delta
-            : {};
-          const current = blockMap.get(index) || { order: index, type: "text", text: "" };
-
-          if (delta.type === "text_delta") {
-            const deltaText = String(delta.text || "");
-            current.type = "text";
-            current.text = `${String(current.text || "")}${deltaText}`;
-            blockMap.set(index, current);
-            if (deltaText) {
-              responseText += deltaText;
-              emitPhase(onPhase, { type: "text_delta", text: deltaText });
-              if (typeof onTextDelta === "function") {
-                onTextDelta(deltaText);
-              }
-            }
-            continue;
-          }
-
-          if (delta.type === "thinking_delta") {
-            const deltaText = String(delta.thinking || "");
-            current.type = "thinking";
-            current.text = `${String(current.text || "")}${deltaText}`;
-            blockMap.set(index, current);
-            if (deltaText) {
-              emitPhase(onPhase, { type: "thinking_delta", text: deltaText });
-              if (typeof onThinkingDelta === "function") {
-                onThinkingDelta(deltaText);
-              }
-            }
-            continue;
-          }
-
-          if (delta.type === "input_json_delta") {
-            current.type = "tool_use";
-            current.inputJson = `${String(current.inputJson || "")}${String(delta.partial_json || "")}`;
-            blockMap.set(index, current);
-            continue;
-          }
-        }
+      if (event === "error") {
+        const errMsg = payloadChunk.error && payloadChunk.error.message
+          ? String(payloadChunk.error.message)
+          : "anthropic stream error";
+        throw new Error(errMsg);
       }
 
-      if (sawDone) break;
-    }
+      if (event === "content_block_start") {
+        let index;
+        if (Number.isFinite(payloadChunk.index)) {
+          index = payloadChunk.index;
+        } else {
+          // Provider omitted index: each start opens a new block, so give
+          // it its own synthetic index instead of collapsing every block
+          // into slot 0.
+          while (blockMap.has(nextSyntheticBlockIndex)) nextSyntheticBlockIndex += 1;
+          index = nextSyntheticBlockIndex;
+          nextSyntheticBlockIndex += 1;
+        }
+        lastBlockIndex = index;
+        const contentBlock = payloadChunk.content_block && typeof payloadChunk.content_block === "object"
+          ? payloadChunk.content_block
+          : {};
 
-    const assistantContent = Array.from(blockMap.values())
-      .sort((a, b) => a.order - b.order)
-      .filter((item) => item.type !== "thinking")
-      .map((item) => {
-        if (item.type === "text") {
-          return {
+        if (contentBlock.type === "text") {
+          blockMap.set(index, {
+            order: index,
             type: "text",
-            text: String(item.text || ""),
-          };
+            text: String(contentBlock.text || ""),
+          });
+        } else if (contentBlock.type === "thinking") {
+          blockMap.set(index, {
+            order: index,
+            type: "thinking",
+            text: String(contentBlock.thinking || ""),
+          });
+        } else if (contentBlock.type === "tool_use") {
+          blockMap.set(index, {
+            order: index,
+            type: "tool_use",
+            id: String(contentBlock.id || ""),
+            name: String(contentBlock.name || ""),
+            input: contentBlock.input && typeof contentBlock.input === "object" && !Array.isArray(contentBlock.input)
+              ? { ...contentBlock.input }
+              : {},
+            inputJson: "",
+          });
+          const toolName = String(contentBlock.name || "");
+          if (toolName) {
+            emitPhase(onPhase, { type: "tool_request", name: toolName });
+          }
+        }
+        return;
+      }
+
+      if (event === "content_block_delta") {
+        let index;
+        if (Number.isFinite(payloadChunk.index)) {
+          index = payloadChunk.index;
+        } else if (lastBlockIndex >= 0) {
+          // No index: continuation of the most recently started block.
+          index = lastBlockIndex;
+        } else {
+          index = 0;
+        }
+        const delta = payloadChunk.delta && typeof payloadChunk.delta === "object"
+          ? payloadChunk.delta
+          : {};
+        const current = blockMap.get(index) || { order: index, type: "text", text: "" };
+
+        if (delta.type === "text_delta") {
+          const deltaText = String(delta.text || "");
+          current.type = "text";
+          current.text = `${String(current.text || "")}${deltaText}`;
+          blockMap.set(index, current);
+          if (deltaText) {
+            responseText += deltaText;
+            emitPhase(onPhase, { type: "text_delta", text: deltaText });
+            if (typeof onTextDelta === "function") {
+              onTextDelta(deltaText);
+            }
+          }
+          return;
         }
 
-        const inputFromDelta = normalizeToolCallArgs(item.inputJson || "");
-        const mergedInput = {
-          ...(item.input && typeof item.input === "object" ? item.input : {}),
-          ...(inputFromDelta && typeof inputFromDelta === "object" ? inputFromDelta : {}),
-        };
-        return {
-          type: "tool_use",
-          id: String(item.id || `tool_${randomUUID()}`),
-          name: String(item.name || ""),
-          input: mergedInput,
-        };
-      });
+        if (delta.type === "thinking_delta") {
+          const deltaText = String(delta.thinking || "");
+          current.type = "thinking";
+          current.text = `${String(current.text || "")}${deltaText}`;
+          blockMap.set(index, current);
+          if (deltaText) {
+            emitPhase(onPhase, { type: "thinking_delta", text: deltaText });
+            if (typeof onThinkingDelta === "function") {
+              onThinkingDelta(deltaText);
+            }
+          }
+          return;
+        }
 
-    if (!responseText) {
-      responseText = assistantContent
-        .filter((item) => item.type === "text")
-        .map((item) => item.text)
-        .join("");
-    }
+        if (delta.type === "input_json_delta") {
+          current.type = "tool_use";
+          current.inputJson = `${String(current.inputJson || "")}${String(delta.partial_json || "")}`;
+          blockMap.set(index, current);
+          return;
+        }
+      }
+    },
+    buildResult: () => {
+      const assistantContent = Array.from(blockMap.values())
+        .sort((a, b) => a.order - b.order)
+        .filter((item) => item.type !== "thinking")
+        .map((item) => {
+          if (item.type === "text") {
+            return {
+              type: "text",
+              text: String(item.text || ""),
+            };
+          }
 
-    return {
-      text: responseText,
-      assistantContent,
-      toolCalls: extractAnthropicToolCalls(assistantContent),
-    };
-  } catch (err) {
-    if (request.timedOut()) {
-      const timeoutError = new Error(`CLI timeout (${normalizeTimeoutMs(timeoutMs)}ms)`);
-      timeoutError.code = "timeout";
-      throw timeoutError;
-    }
-    if (signal && typeof signal === "object" && signal.aborted) {
-      const cancelError = new Error("CLI cancelled");
-      cancelError.code = "cancelled";
-      throw cancelError;
-    }
-    throw err;
-  } finally {
-    request.cleanup();
-  }
+          const inputFromDelta = normalizeToolCallArgs(item.inputJson || "");
+          const mergedInput = {
+            ...(item.input && typeof item.input === "object" ? item.input : {}),
+            ...(inputFromDelta && typeof inputFromDelta === "object" ? inputFromDelta : {}),
+          };
+          return {
+            type: "tool_use",
+            id: String(item.id || `tool_${randomUUID()}`),
+            name: String(item.name || ""),
+            input: mergedInput,
+          };
+        });
+
+      if (!responseText) {
+        responseText = assistantContent
+          .filter((item) => item.type === "text")
+          .map((item) => item.text)
+          .join("");
+      }
+
+      return {
+        text: responseText,
+        assistantContent,
+        toolCalls: extractAnthropicToolCalls(assistantContent),
+      };
+    },
+  });
 }
 
-async function runNativeLoopOpenAi({
-  workspaceRoot = process.cwd(),
-  prompt = "",
-  systemPrompt = "",
-  historyMessages = [],
-  model = "",
-  baseUrl = "",
-  apiKey = "",
-  timeoutMs = 300000,
-  onStreamDelta = null,
-  onThinkingDelta = null,
-  onPhase = null,
-  onToolEvent = null,
-  signal = null,
-  guards,
-} = {}) {
-  const requestModel = String(model || "").trim();
-  if (!requestModel) {
-    throw new Error("ucode model is not configured");
-  }
-
-  const requestUrl = resolveCompletionUrl(baseUrl);
-  if (!requestUrl) {
-    throw new Error("ucode baseUrl is not configured");
-  }
-
-  const messages = cloneMessageList(historyMessages);
-  const systemText = String(systemPrompt || "").trim();
-  const hasSystem = messages.some((entry) => String(entry.role || "").trim() === "system");
-  if (systemText && !hasSystem) {
-    messages.unshift({ role: "system", content: systemText });
-  }
-  messages.push({ role: "user", content: String(prompt || "") });
-
-  let aggregated = "";
-  let streamed = false;
-  let toolCallsExecuted = 0;
-  let toolErrors = 0;
-  const toolBudget = resolveNativeToolBudget();
-
-  while (true) {
-    guards.ensureActive();
-
-    const turnResult = await runOpenAiLikeTurn({
-      url: requestUrl,
-      apiKey,
-      model: requestModel,
-      messages,
-      signal,
-      timeoutMs,
-      onPhase,
-      onThinkingDelta,
-      onTextDelta: (chunk) => {
-        const text = String(chunk || "");
-        if (!text) return;
-        aggregated += text;
-        if (typeof onStreamDelta === "function") {
-          streamed = true;
-          onStreamDelta(text);
-        }
-      },
-    });
-
-    const toolCalls = Array.isArray(turnResult.toolCalls)
-      ? turnResult.toolCalls.filter((call) => call && call.function && typeof call.function === "object")
-      : [];
-
-    if (toolCalls.length === 0) {
+// Transport descriptors: everything the shared native loop needs that differs
+// between the OpenAI chat-completions and Anthropic messages protocols —
+// request URL resolution, initial message shaping, turn execution, and
+// assistant/tool-result message formatting.
+const TRANSPORTS = {
+  "openai-chat": {
+    resolveUrl: resolveCompletionUrl,
+    prepareMessages({ messages, systemPrompt, prompt }) {
+      const systemText = String(systemPrompt || "").trim();
+      const hasSystem = messages.some((entry) => String(entry.role || "").trim() === "system");
+      if (systemText && !hasSystem) {
+        messages.unshift({ role: "system", content: systemText });
+      }
+      messages.push({ role: "user", content: String(prompt || "") });
+    },
+    runTurn: runOpenAiLikeTurn,
+    getToolCalls(turnResult) {
+      return Array.isArray(turnResult.toolCalls)
+        ? turnResult.toolCalls.filter((call) => call && call.function && typeof call.function === "object")
+        : [];
+    },
+    appendFinalAssistantMessage({ messages, turnResult }) {
       const text = String(turnResult.text || "").trim();
       if (text) {
         messages.push({
@@ -1016,78 +960,114 @@ async function runNativeLoopOpenAi({
           content: text,
         });
       }
-      if (!aggregated.trim() && text) {
-        aggregated = text;
+    },
+    prepareToolCalls({ messages, toolCalls }) {
+      const assistantToolCalls = [];
+      for (const call of toolCalls) {
+        const callId = String(call.id || `call_${randomUUID()}`);
+        const name = normalizeToolName(call.function.name || "");
+        const args = normalizeToolCallArgs(call.function.arguments || "");
+
+        assistantToolCalls.push({
+          id: callId,
+          type: "function",
+          function: {
+            name: name || String(call.function.name || ""),
+            arguments: toJsonString(args),
+          },
+        });
       }
-      return {
-        text: aggregated,
-        streamed,
-        toolCallsExecuted,
-        messages,
-      };
-    }
 
-    const assistantToolCalls = [];
-    for (const call of toolCalls) {
-      const callId = String(call.id || `call_${randomUUID()}`);
-      const name = normalizeToolName(call.function.name || "");
-      const args = normalizeToolCallArgs(call.function.arguments || "");
+      if (assistantToolCalls.length === 0) return null;
 
-      assistantToolCalls.push({
-        id: callId,
-        type: "function",
-        function: {
-          name: name || String(call.function.name || ""),
-          arguments: toJsonString(args),
-        },
+      messages.push({
+        role: "assistant",
+        content: null,
+        tool_calls: assistantToolCalls,
       });
-    }
 
-    if (assistantToolCalls.length === 0) {
-      return {
-        text: aggregated,
-        streamed,
-        toolCallsExecuted,
-        messages,
-      };
-    }
-
-    messages.push({
-      role: "assistant",
-      content: null,
-      tool_calls: assistantToolCalls,
-    });
-
-    for (const toolCall of assistantToolCalls) {
-      const toolResult = runCoreTool({
-        tool: toolCall.function.name,
+      return assistantToolCalls.map((toolCall) => ({
+        name: toolCall.function.name,
         args: normalizeToolCallArgs(toolCall.function.arguments),
-        workspaceRoot,
-        onToolEvent,
-      });
-      toolCallsExecuted += 1;
-      if (!toolResult || toolResult.ok === false) {
-        toolErrors += 1;
-      }
-      enforceNativeToolBudget({
-        toolCallsExecuted,
-        toolErrors,
-        maxToolCalls: toolBudget.maxToolCalls,
-        maxToolErrors: toolBudget.maxToolErrors,
-        lastTool: toolCall.function.name,
-        lastError: toolResult && toolResult.error ? String(toolResult.error) : "",
-      });
+        source: toolCall,
+      }));
+    },
+    appendToolResult({ messages, call, toolResult }) {
       messages.push({
         role: "tool",
-        tool_call_id: toolCall.id,
+        tool_call_id: call.source.id,
         content: clipText(toJsonString(toolResult), 12000),
       });
-    }
-  }
+    },
+  },
+  "anthropic-messages": {
+    resolveUrl: resolveAnthropicMessagesUrl,
+    prepareMessages({ messages, prompt }) {
+      messages.push({
+        role: "user",
+        content: String(prompt || ""),
+      });
+    },
+    runTurn: runAnthropicTurn,
+    getToolCalls(turnResult) {
+      return Array.isArray(turnResult.toolCalls) ? turnResult.toolCalls : [];
+    },
+    appendFinalAssistantMessage({ messages, turnResult }) {
+      const assistantContent = Array.isArray(turnResult.assistantContent)
+        ? turnResult.assistantContent
+        : [];
+      if (assistantContent.length > 0) {
+        messages.push({
+          role: "assistant",
+          content: assistantContent,
+        });
+      } else if (String(turnResult.text || "").trim()) {
+        messages.push({
+          role: "assistant",
+          content: [
+            {
+              type: "text",
+              text: String(turnResult.text || ""),
+            },
+          ],
+        });
+      }
+    },
+    prepareToolCalls({ messages, turnResult, toolCalls }) {
+      const assistantContent = Array.isArray(turnResult.assistantContent)
+        ? turnResult.assistantContent
+        : [];
 
-}
+      messages.push({
+        role: "assistant",
+        content: assistantContent,
+      });
 
-async function runNativeLoopAnthropic({
+      return toolCalls.map((call) => ({
+        name: call.name,
+        args: call.args,
+        source: call,
+      }));
+    },
+    appendToolResult({ collected, call, toolResult }) {
+      collected.push({
+        type: "tool_result",
+        tool_use_id: String(call.source.id || ""),
+        content: clipText(toJsonString(toolResult), 12000),
+        is_error: Boolean(!toolResult || toolResult.ok === false),
+      });
+    },
+    flushToolResults({ messages, collected }) {
+      messages.push({
+        role: "user",
+        content: collected,
+      });
+    },
+  },
+};
+
+async function runNativeLoop({
+  transport,
   workspaceRoot = process.cwd(),
   prompt = "",
   systemPrompt = "",
@@ -1108,16 +1088,13 @@ async function runNativeLoopAnthropic({
     throw new Error("ucode model is not configured");
   }
 
-  const requestUrl = resolveAnthropicMessagesUrl(baseUrl);
+  const requestUrl = transport.resolveUrl(baseUrl);
   if (!requestUrl) {
     throw new Error("ucode baseUrl is not configured");
   }
 
   const messages = cloneMessageList(historyMessages);
-  messages.push({
-    role: "user",
-    content: String(prompt || ""),
-  });
+  transport.prepareMessages({ messages, systemPrompt, prompt });
 
   let aggregated = "";
   let streamed = false;
@@ -1128,7 +1105,7 @@ async function runNativeLoopAnthropic({
   while (true) {
     guards.ensureActive();
 
-    const turnResult = await runAnthropicTurn({
+    const turnResult = await transport.runTurn({
       url: requestUrl,
       apiKey,
       model: requestModel,
@@ -1149,28 +1126,10 @@ async function runNativeLoopAnthropic({
       },
     });
 
-    const toolCalls = Array.isArray(turnResult.toolCalls) ? turnResult.toolCalls : [];
+    const toolCalls = transport.getToolCalls(turnResult);
 
     if (toolCalls.length === 0) {
-      const assistantContent = Array.isArray(turnResult.assistantContent)
-        ? turnResult.assistantContent
-        : [];
-      if (assistantContent.length > 0) {
-        messages.push({
-          role: "assistant",
-          content: assistantContent,
-        });
-      } else if (String(turnResult.text || "").trim()) {
-        messages.push({
-          role: "assistant",
-          content: [
-            {
-              type: "text",
-              text: String(turnResult.text || ""),
-            },
-          ],
-        });
-      }
+      transport.appendFinalAssistantMessage({ messages, turnResult });
       const text = String(turnResult.text || "").trim();
       if (!aggregated.trim() && text) {
         aggregated = text;
@@ -1183,20 +1142,21 @@ async function runNativeLoopAnthropic({
       };
     }
 
-    const assistantContent = Array.isArray(turnResult.assistantContent)
-      ? turnResult.assistantContent
-      : [];
+    const pendingCalls = transport.prepareToolCalls({ messages, turnResult, toolCalls });
+    if (!pendingCalls) {
+      return {
+        text: aggregated,
+        streamed,
+        toolCallsExecuted,
+        messages,
+      };
+    }
 
-    messages.push({
-      role: "assistant",
-      content: assistantContent,
-    });
-
-    const toolResults = [];
-    for (const call of toolCalls) {
+    const collectedResults = [];
+    for (const pending of pendingCalls) {
       const toolResult = runCoreTool({
-        tool: call.name,
-        args: call.args,
+        tool: pending.name,
+        args: pending.args,
         workspaceRoot,
         onToolEvent,
       });
@@ -1209,23 +1169,21 @@ async function runNativeLoopAnthropic({
         toolErrors,
         maxToolCalls: toolBudget.maxToolCalls,
         maxToolErrors: toolBudget.maxToolErrors,
-        lastTool: call.name,
+        lastTool: pending.name,
         lastError: toolResult && toolResult.error ? String(toolResult.error) : "",
       });
-      toolResults.push({
-        type: "tool_result",
-        tool_use_id: String(call.id || ""),
-        content: clipText(toJsonString(toolResult), 12000),
-        is_error: Boolean(!toolResult || toolResult.ok === false),
+      transport.appendToolResult({
+        messages,
+        collected: collectedResults,
+        call: pending,
+        toolResult,
       });
     }
 
-    messages.push({
-      role: "user",
-      content: toolResults,
-    });
+    if (typeof transport.flushToolResults === "function") {
+      transport.flushToolResults({ messages, collected: collectedResults });
+    }
   }
-
 }
 
 async function runNativeAgentTask({
@@ -1277,11 +1235,10 @@ async function runNativeAgentTask({
       model,
     });
 
-    const loopRunner = runtime.transport === "anthropic-messages"
-      ? runNativeLoopAnthropic
-      : runNativeLoopOpenAi;
+    const transport = TRANSPORTS[runtime.transport] || TRANSPORTS["openai-chat"];
 
-    const runResult = await loopRunner({
+    const runResult = await runNativeLoop({
+      transport,
       workspaceRoot,
       prompt: promptText,
       systemPrompt,
