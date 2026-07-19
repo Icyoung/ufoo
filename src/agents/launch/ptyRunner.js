@@ -61,8 +61,8 @@ function stripAnsi(text) {
 function rewriteTitleOscPrefix(text, prefix) {
   if (!prefix || !text) return text;
   return String(text).replace(/\x1b\]([012]);([^\x07\x1b]*)(\x07|\x1b\\)/g, (match, code, title, terminator) => {
-    if (!title || title.startsWith(`${prefix}:`)) return match;
-    return `\x1b]${code};${prefix}:${title}${terminator}`;
+    if (!title || title.startsWith(`${prefix}: `)) return match;
+    return `\x1b]${code};${prefix}: ${title}${terminator}`;
   });
 }
 

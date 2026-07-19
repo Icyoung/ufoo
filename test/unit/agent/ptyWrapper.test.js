@@ -92,8 +92,8 @@ describe('PtyWrapper', () => {
   test('prepends host nickname prefix to OSC title updates', () => {
     const wrapper = new PtyWrapper('echo', ['test'], { titlePrefix: 'builder' });
 
-    expect(wrapper._prependTitlePrefix('\x1b]0;Claude Code\x07')).toBe('\x1b]0;builder:Claude Code\x07');
-    expect(wrapper._prependTitlePrefix('\x1b]2;builder:Code X\x07')).toBe('\x1b]2;builder:Code X\x07');
+    expect(wrapper._prependTitlePrefix('\x1b]0;Claude Code\x07')).toBe('\x1b]0;builder: Claude Code\x07');
+    expect(wrapper._prependTitlePrefix('\x1b]2;builder: Code X\x07')).toBe('\x1b]2;builder: Code X\x07');
     expect(wrapper._prependTitlePrefix('plain output')).toBe('plain output');
   });
 
@@ -101,6 +101,6 @@ describe('PtyWrapper', () => {
     const wrapper = new PtyWrapper('echo', ['test'], { titlePrefix: 'reviewer' });
 
     expect(wrapper._prependTitlePrefix('\x1b]0;Claude')).toBe('');
-    expect(wrapper._prependTitlePrefix(' Code\x07ready')).toBe('\x1b]0;reviewer:Claude Code\x07ready');
+    expect(wrapper._prependTitlePrefix(' Code\x07ready')).toBe('\x1b]0;reviewer: Claude Code\x07ready');
   });
 });

@@ -211,8 +211,8 @@ class PtyWrapper {
     if (!this.titlePrefix || !text) return text;
     const prefix = this.titlePrefix;
     return text.replace(/\x1b\]([012]);([^\x07\x1b]*)(\x07|\x1b\\)/g, (match, code, title, terminator) => {
-      if (!title || title.startsWith(`${prefix}:`)) return match;
-      return `\x1b]${code};${prefix}:${title}${terminator}`;
+      if (!title || title.startsWith(`${prefix}: `)) return match;
+      return `\x1b]${code};${prefix}: ${title}${terminator}`;
     });
   }
 
