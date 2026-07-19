@@ -9,6 +9,7 @@ Usage notes:
 - You must read the file first before editing. This tool will produce incorrect results if you guess at file contents.
 - The find string must match exactly — including whitespace and indentation. Copy it precisely from the read output.
 - The find string should be unique in the file. If it's not unique, provide more surrounding context to make it unique, or use all: true to replace every occurrence.
+- If the find string does not match anything, the tool fails with a "not found" error — no partial edit is applied. Re-read the file and adjust the find string instead of assuming the edit succeeded.
 - Use all: true for bulk replacements like renaming a variable across the file.
 - Preserve the exact indentation of the original code when specifying the replacement.`;
 }

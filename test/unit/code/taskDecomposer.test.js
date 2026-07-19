@@ -58,6 +58,34 @@ describe("taskDecomposer", () => {
         expect(steps[0].id).toBe("identify");
       }
     });
+
+    it("should recognize inflected keyword forms like bugs/errors/fixing", () => {
+      const bugTasks = [
+        "There are bugs in the parser",
+        "Fixing the rendering issues",
+        "The build errors out on startup",
+      ];
+
+      for (const task of bugTasks) {
+        const steps = decomposeBugFixTask(task);
+        expect(steps.length).toBeGreaterThan(1);
+        expect(steps[0].id).toBe("identify");
+      }
+    });
+
+    it("should not treat fixture/prefix/debug substrings as bug fix tasks", () => {
+      const nonBugTasks = [
+        "Update the test fixture for the parser",
+        "Add a prefix to generated IDs",
+        "Produce a debug build locally",
+      ];
+
+      for (const task of nonBugTasks) {
+        const steps = decomposeBugFixTask(task);
+        expect(steps).toHaveLength(1);
+        expect(steps[0].id).toBe("execute");
+      }
+    });
   });
 
   describe("compileSummary", () => {
@@ -162,51 +190,66 @@ Let me verify this`,
       expect(typeof reporter).toBe("function");
     });
 
-    it("throttles calls within MIN_REPORT_INTERVAL (5s)", () => {
+    it("reports the first event immediately, then throttles within MIN_REPORT_INTERVAL (5s)", () => {
       const shell = jest.fn();
       const reporter = createBusProgressReporter(shell, "codex:abc");
-      // First call is throttled because lastReportTime = Date.now()
-      reporter({ type: "step_start", name: "Step 1", current: 1, total: 2 });
-      expect(shell).not.toHaveBeenCalled();
-      // Second call also throttled
-      reporter({ type: "step_start", name: "Step 2", current: 2, total: 2 });
-      expect(shell).not.toHaveBeenCalled();
-    });
-
-    it("calls shell after MIN_REPORT_INTERVAL using fake timers", () => {
-      jest.useFakeTimers();
-      const shell = jest.fn();
-      const reporter = createBusProgressReporter(shell, "codex:abc");
-      // Advance time past MIN_REPORT_INTERVAL (5000ms)
-      jest.advanceTimersByTime(6000);
+      // First call goes through right away (lastReportTime starts at 0)
       reporter({ type: "step_start", name: "Step 1", current: 1, total: 2 });
       expect(shell).toHaveBeenCalledTimes(1);
-      jest.useRealTimers();
+      // Second call inside the 5s window is throttled
+      reporter({ type: "step_start", name: "Step 2", current: 2, total: 2 });
+      expect(shell).toHaveBeenCalledTimes(1);
+    });
+
+    it("reports again once MIN_REPORT_INTERVAL has elapsed", () => {
+      jest.useFakeTimers();
+      try {
+        const shell = jest.fn();
+        const reporter = createBusProgressReporter(shell, "codex:abc");
+        reporter({ type: "step_start", name: "Step 1", current: 1, total: 2 });
+        expect(shell).toHaveBeenCalledTimes(1);
+        // Still inside the window: throttled
+        jest.advanceTimersByTime(4000);
+        reporter({ type: "step_start", name: "Step 2", current: 2, total: 2 });
+        expect(shell).toHaveBeenCalledTimes(1);
+        // Past the window: reported again
+        jest.advanceTimersByTime(2000);
+        reporter({ type: "step_complete", name: "Step 2", success: true });
+        expect(shell).toHaveBeenCalledTimes(2);
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     it("shell-quotes publisher and message to prevent shell expansion", () => {
       jest.useFakeTimers();
-      const shell = jest.fn();
-      const reporter = createBusProgressReporter(shell, "codex:abc $(touch /tmp/pwned)");
-      jest.advanceTimersByTime(6000);
-      reporter({ type: "step_start", name: "Run `whoami`", current: 1, total: 2 });
-      expect(shell).toHaveBeenCalledTimes(1);
-      const command = shell.mock.calls[0][0];
-      const expectedMessage = JSON.stringify("⏳ Run `whoami` (1/2)");
-      expect(command).toBe(`ufoo bus send 'codex:abc $(touch /tmp/pwned)' '${expectedMessage}'`);
-      jest.useRealTimers();
+      try {
+        const shell = jest.fn();
+        const reporter = createBusProgressReporter(shell, "codex:abc $(touch /tmp/pwned)");
+        jest.advanceTimersByTime(6000);
+        reporter({ type: "step_start", name: "Run `whoami`", current: 1, total: 2 });
+        expect(shell).toHaveBeenCalledTimes(1);
+        const command = shell.mock.calls[0][0];
+        const expectedMessage = JSON.stringify("⏳ Run `whoami` (1/2)");
+        expect(command).toBe(`ufoo bus send 'codex:abc $(touch /tmp/pwned)' '${expectedMessage}'`);
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     it("escapes embedded single quotes in bus send arguments", () => {
       jest.useFakeTimers();
-      const shell = jest.fn();
-      const reporter = createBusProgressReporter(shell, "codex:abc");
-      jest.advanceTimersByTime(6000);
-      reporter({ type: "step_complete", name: "It's fixed", success: true });
-      expect(shell).toHaveBeenCalledTimes(1);
-      const command = shell.mock.calls[0][0];
-      expect(command).toBe(`ufoo bus send 'codex:abc' '"✅ It'"'"'s fixed completed"'`);
-      jest.useRealTimers();
+      try {
+        const shell = jest.fn();
+        const reporter = createBusProgressReporter(shell, "codex:abc");
+        jest.advanceTimersByTime(6000);
+        reporter({ type: "step_complete", name: "It's fixed", success: true });
+        expect(shell).toHaveBeenCalledTimes(1);
+        const command = shell.mock.calls[0][0];
+        expect(command).toBe(`ufoo bus send 'codex:abc' '"✅ It'"'"'s fixed completed"'`);
+      } finally {
+        jest.useRealTimers();
+      }
     });
   });
 
@@ -410,6 +453,43 @@ Let me verify this`,
       expect(onProgress).toHaveBeenCalledWith(
         expect.objectContaining({ type: "step_complete", success: true })
       );
+    });
+
+    it("keeps running when the onProgress callback throws", async () => {
+      runNativeAgentTask.mockResolvedValue({ ok: true, output: "done" });
+      const onProgress = jest.fn(() => {
+        throw new Error("ui exploded");
+      });
+
+      const result = await runDecomposedTask({
+        task: "add a feature",
+        workspaceRoot: "/tmp",
+        provider: "openai",
+        model: "gpt-4",
+        onProgress,
+      });
+
+      expect(result.ok).toBe(true);
+      expect(result.results).toHaveLength(1);
+      expect(onProgress).toHaveBeenCalled();
+    });
+
+    it("returns the step error when onProgress throws on the failure path", async () => {
+      runNativeAgentTask.mockRejectedValue(new Error("network error"));
+      const onProgress = jest.fn(() => {
+        throw new Error("ui exploded");
+      });
+
+      const result = await runDecomposedTask({
+        task: "fix the error",
+        workspaceRoot: "/tmp",
+        provider: "openai",
+        model: "gpt-4",
+        onProgress,
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain("network error");
     });
   });
 });

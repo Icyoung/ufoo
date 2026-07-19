@@ -54,7 +54,7 @@ function getSystemPrompt({
     return [overrideSystemPrompt];
   }
 
-  // --- Static sections (cacheable, computed once per session) ---
+  // --- Static sections (session-independent content, recomputed on every call) ---
   const staticSections = [
     getIdentitySection(),
     getSystemSection(),

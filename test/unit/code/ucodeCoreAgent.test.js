@@ -44,6 +44,8 @@ const {
   parseBusCheckOutput,
   extractBusMessageTask,
   runUbusCommand,
+  runShellCapture,
+  readTextOrFile,
   stripAnsi,
   busCheckOutputIndicatesPending,
   resolvePendingQueueFile,
@@ -667,6 +669,83 @@ describe("ucode core agent nl path", () => {
     }
   });
 
+  test("persistSessionState skips writing sessions without messages", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-empty-persist-"));
+    const state = {
+      workspaceRoot: projectRoot,
+      provider: "openai",
+      model: "gpt-5.2-codex",
+      context: "",
+      sessionId: "sess-empty",
+      nlMessages: [],
+    };
+    try {
+      const persisted = persistSessionState(state);
+      expect(persisted.ok).toBe(true);
+      expect(persisted.skipped).toBe(true);
+      expect(persisted.sessionId).toBe("sess-empty");
+      const sessionsDir = path.join(projectRoot, ".ufoo", "agent", "ucode", "sessions");
+      expect(fs.existsSync(sessionsDir)).toBe(false);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("runUcodeCoreAgent does not persist an empty session at startup", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-startup-persist-"));
+    const { PassThrough } = require("stream");
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    let output = "";
+    stdout.on("data", (chunk) => {
+      output += String(chunk);
+    });
+    try {
+      const runPromise = runUcodeCoreAgent({
+        stdin,
+        stdout,
+        workspaceRoot: projectRoot,
+        provider: "openai",
+        model: "gpt-5.2-codex",
+        disableTui: true,
+      });
+      stdin.write("exit\n");
+      stdin.end();
+      await runPromise;
+      const sessionsDir = path.join(projectRoot, ".ufoo", "agent", "ucode", "sessions");
+      expect(fs.existsSync(sessionsDir)).toBe(false);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("runUcodeCoreAgent writes the prompt to the injected stdout", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-prompt-stdout-"));
+    const { PassThrough } = require("stream");
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    let output = "";
+    stdout.on("data", (chunk) => {
+      output += String(chunk);
+    });
+    try {
+      const runPromise = runUcodeCoreAgent({
+        stdin,
+        stdout,
+        workspaceRoot: projectRoot,
+        provider: "openai",
+        model: "gpt-5.2-codex",
+        disableTui: true,
+      });
+      stdin.write("exit\n");
+      stdin.end();
+      await runPromise;
+      expect(output).toContain("> ");
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
   test("runUcodeCoreAgent resumes sessions stored under the resolved project root", async () => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-resume-root-"));
     const unresolvedRoot = path.join(base, "nested");
@@ -684,6 +763,11 @@ describe("ucode core agent nl path", () => {
     });
     const previousEnv = process.env.UFOO_UCODE_PROJECT_ROOT;
     process.env.UFOO_UCODE_PROJECT_ROOT = resolvedRoot;
+    // Isolate ambient env: a subscriber id exported by an enclosing ufoo
+    // session would enable the autoBus interval/subprocess path and make
+    // this readline test environment-dependent.
+    const previousSubscriberId = process.env.UFOO_SUBSCRIBER_ID;
+    delete process.env.UFOO_SUBSCRIBER_ID;
     const { PassThrough } = require("stream");
     const stdin = new PassThrough();
     const stdout = new PassThrough();
@@ -709,6 +793,8 @@ describe("ucode core agent nl path", () => {
     } finally {
       if (previousEnv === undefined) delete process.env.UFOO_UCODE_PROJECT_ROOT;
       else process.env.UFOO_UCODE_PROJECT_ROOT = previousEnv;
+      if (previousSubscriberId === undefined) delete process.env.UFOO_SUBSCRIBER_ID;
+      else process.env.UFOO_SUBSCRIBER_ID = previousSubscriberId;
       fs.rmSync(base, { recursive: true, force: true });
     }
   });
@@ -1118,6 +1204,59 @@ describe("ucode core agent nl path", () => {
 
   test("extractBusMessageTask handles plain text", () => {
     expect(extractBusMessageTask("plain text")).toBe("plain text");
+  });
+
+  test("runShellCapture passes a 15s timeout to execSync and treats timeout as failure", () => {
+    const execSync = jest.fn(() => {
+      const err = new Error("Command failed: ufoo bus check");
+      err.signal = "SIGTERM";
+      throw err;
+    });
+    jest.doMock("child_process", () => ({ ...jest.requireActual("child_process"), execSync }));
+    try {
+      let runShellCaptureIsolated;
+      jest.isolateModules(() => {
+        ({ runShellCapture: runShellCaptureIsolated } = require("../../../src/code/agent"));
+      });
+      const result = runShellCaptureIsolated("ufoo bus check", "/tmp");
+      expect(execSync).toHaveBeenCalledWith(
+        "ufoo bus check",
+        expect.objectContaining({ timeout: 15000 })
+      );
+      expect(result.ok).toBe(false);
+      expect(result.error).toBeTruthy();
+    } finally {
+      jest.dontMock("child_process");
+    }
+  });
+
+  test("readTextOrFile keeps literal text that exists on disk but does not look like a path", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-readtext-"));
+    try {
+      const file = path.join(tmp, "notes");
+      fs.writeFileSync(file, "SECRET-CONTENT", "utf8");
+      // Resolvable from cwd, yet lacks ./ / ~ prefix and .md/.txt suffix.
+      const relative = path.relative(process.cwd(), file);
+      expect(fs.existsSync(relative)).toBe(true);
+      expect(readTextOrFile(relative)).toBe(relative);
+      expect(readTextOrFile("please fix the flaky test")).toBe("please fix the flaky test");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("readTextOrFile reads explicit file paths and rejects multi-line values", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-readtext-"));
+    try {
+      const file = path.join(tmp, "prompt.txt");
+      fs.writeFileSync(file, "FILE-BODY", "utf8");
+      expect(readTextOrFile(file)).toBe("FILE-BODY");
+      const multi = `line one\n${file}`;
+      expect(readTextOrFile(multi)).toBe(multi);
+      expect(readTextOrFile("")).toBe("");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   test("resolveUcodeProviderModel defaults to ufoo config provider mapping", () => {

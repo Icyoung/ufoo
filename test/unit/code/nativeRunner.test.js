@@ -25,11 +25,9 @@ jest.mock("../../../src/config", () => {
 });
 
 const { runToolCall } = require("../../../src/code/dispatch");
+const { defaultAgentModelForProvider } = require("../../../src/config");
 const {
   runNativeAgentTask,
-  parseReadIntent,
-  parseBashIntent,
-  extractPreflightEvidence,
   resolveRuntimeConfig,
   resolveCompletionUrl,
   resolveAnthropicMessagesUrl,
@@ -471,7 +469,7 @@ describe("ucode native runner", () => {
     expect(result.ok).toBe(true);
     expect(result.output).toBe("Hello");
     const requestBody = JSON.parse(global.fetch.mock.calls[0][1].body);
-    expect(requestBody.model).toBe("gpt-5.5");
+    expect(requestBody.model).toBe(defaultAgentModelForProvider("openai"));
   });
 
   test("returns cancelled when signal aborted", async () => {
@@ -522,50 +520,6 @@ describe("ucode native runner", () => {
     expect(resolveTransport({ provider: "openai", baseUrl: "https://api.openai.com/v1" })).toBe("openai-chat");
     expect(resolveTransport({ provider: "anthropic", baseUrl: "https://api.anthropic.com/v1" })).toBe("anthropic-messages");
     expect(resolveTransport({ provider: "", baseUrl: "https://gateway.example/messages" })).toBe("anthropic-messages");
-  });
-
-  test("intent parsers and preflight evidence parser still available", () => {
-    expect(parseReadIntent("read src/code/agent.js")).toBe("src/code/agent.js");
-    expect(parseBashIntent("please list files")).toBe("ls -la");
-    expect(extractPreflightEvidence("Preflight snapshot (captured by ucode):\n---\nFile: A.md\n# A").length).toBe(1);
-  });
-
-  test("parseReadIntent extracts file from various patterns", () => {
-    expect(parseReadIntent("cat README.md")).toBe("README.md");
-    expect(parseReadIntent("查看 src/index.js")).toBe("src/index.js");
-    expect(parseReadIntent("读取 config.json")).toBe("config.json");
-    expect(parseReadIntent("look at package.json please")).toBe("package.json");
-  });
-
-  test("parseReadIntent returns empty for no match", () => {
-    expect(parseReadIntent("hello world")).toBe("");
-    expect(parseReadIntent("")).toBe("");
-  });
-
-  test("parseBashIntent extracts commands", () => {
-    expect(parseBashIntent("show files")).toBe("ls -la");
-    expect(parseBashIntent("list directories")).toBe("ls -la");
-    expect(parseBashIntent("列出文件")).toBe("ls -la");
-    expect(parseBashIntent("run `npm test`")).toBe("npm test");
-    expect(parseBashIntent("执行 `git status`")).toBe("git status");
-  });
-
-  test("parseBashIntent returns empty for no match", () => {
-    expect(parseBashIntent("hello")).toBe("");
-    expect(parseBashIntent("")).toBe("");
-  });
-
-  test("extractPreflightEvidence parses command entries", () => {
-    const input = "---\nCommand: ls -la\nfile1\nfile2\n---\nFile: README.md\n# Hello";
-    const evidence = extractPreflightEvidence(input);
-    expect(evidence.length).toBe(2);
-    expect(evidence.some(e => e.kind === "command")).toBe(true);
-    expect(evidence.some(e => e.kind === "file")).toBe(true);
-  });
-
-  test("extractPreflightEvidence returns empty for empty input", () => {
-    expect(extractPreflightEvidence("")).toEqual([]);
-    expect(extractPreflightEvidence(null)).toEqual([]);
   });
 
   test("resolveTransport handles various provider/url combos", () => {
@@ -774,6 +728,104 @@ describe("ucode native runner", () => {
     );
   });
 
+  test("does not drop blocks after [DONE] within the same SSE batch", async () => {
+    const sse = [
+      'data: {"choices":[{"delta":{"content":"Hello"}}]}',
+      "",
+      "data: [DONE]",
+      "",
+      'data: {"choices":[{"delta":{"content":" world"}}]}',
+      "",
+      "",
+    ].join("\n");
+    const encoder = new TextEncoder();
+    global.fetch.mockResolvedValueOnce({
+      ok: true,
+      body: {
+        getReader() {
+          let sent = false;
+          return {
+            read() {
+              if (sent) return Promise.resolve({ done: true, value: undefined });
+              sent = true;
+              return Promise.resolve({ done: false, value: encoder.encode(sse) });
+            },
+          };
+        },
+      },
+    });
+
+    const deltas = [];
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "hello",
+      provider: "openai",
+      model: "gpt-test",
+      onStreamDelta: (delta) => deltas.push(delta),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.output).toBe("Hello world");
+    expect(deltas).toEqual(["Hello", " world"]);
+  });
+
+  test("does not collapse anthropic content blocks when stream omits index", async () => {
+    const sse = [
+      "event: content_block_start",
+      'data: {"type":"content_block_start","content_block":{"type":"tool_use","id":"t1","name":"read","input":{}}}',
+      "",
+      "event: content_block_delta",
+      'data: {"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{\\"path\\":\\"a.txt\\"}"}}',
+      "",
+      "event: content_block_start",
+      'data: {"type":"content_block_start","content_block":{"type":"tool_use","id":"t2","name":"bash","input":{}}}',
+      "",
+      "event: content_block_delta",
+      'data: {"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{\\"command\\":\\"ls\\"}"}}',
+      "",
+      "event: message_stop",
+      'data: {"type":"message_stop"}',
+      "",
+    ].join("\n");
+    global.fetch.mockResolvedValueOnce(new Response(sse, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    }));
+    runToolCall.mockReturnValue({ ok: true, content: "ok" });
+    global.fetch.mockResolvedValueOnce(new Response([
+      "event: content_block_start",
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}',
+      "",
+      "event: content_block_delta",
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"done"}}',
+      "",
+      "event: message_stop",
+      'data: {"type":"message_stop"}',
+      "",
+    ].join("\n"), {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    }));
+
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "go",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(runToolCall).toHaveBeenCalledTimes(2);
+    expect(runToolCall).toHaveBeenNthCalledWith(1,
+      { tool: "read", args: { path: "a.txt" } },
+      { workspaceRoot, cwd: workspaceRoot }
+    );
+    expect(runToolCall).toHaveBeenNthCalledWith(2,
+      { tool: "bash", args: { command: "ls" } },
+      { workspaceRoot, cwd: workspaceRoot }
+    );
+  });
+
   test("stops tool loop after exactly max tool calls", async () => {
     process.env.UFOO_UCODE_MAX_TOOL_CALLS = "2";
     global.fetch.mockImplementation(() => Promise.resolve(makeSseResponse([
@@ -807,5 +859,125 @@ describe("ucode native runner", () => {
     expect(result.error).toContain("tool call budget exceeded (2)");
     expect(runToolCall).toHaveBeenCalledTimes(2);
     expect(global.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  test("write tool spec declares the mode parameter supported by the implementation", async () => {
+    global.fetch.mockResolvedValueOnce(makeSseResponse([
+      { choices: [{ delta: { content: "ok" } }] },
+    ]));
+
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "hi",
+      provider: "openai",
+      model: "gpt-test",
+    });
+
+    expect(result.ok).toBe(true);
+    const requestBody = JSON.parse(global.fetch.mock.calls[0][1].body);
+    const writeSpec = requestBody.tools.find((tool) => tool.function.name === "write");
+    expect(writeSpec).toBeDefined();
+    // src/code/tools/write.js treats mode "append" (or append: true) as
+    // append and anything else as overwrite, so the schema must expose it.
+    expect(writeSpec.function.parameters.properties.mode).toEqual({
+      type: "string",
+      enum: ["overwrite", "append"],
+      description: expect.stringContaining("append"),
+    });
+    expect(writeSpec.function.parameters.required).toEqual(["path", "content"]);
+  });
+
+  test("returns partial output when the stream fails mid-response", async () => {
+    const encoder = new TextEncoder();
+    global.fetch.mockResolvedValueOnce({
+      ok: true,
+      body: {
+        getReader() {
+          let calls = 0;
+          return {
+            read() {
+              calls += 1;
+              if (calls === 1) {
+                return Promise.resolve({
+                  done: false,
+                  value: encoder.encode('data: {"choices":[{"delta":{"content":"partial answer"}}]}\n\n'),
+                });
+              }
+              return Promise.reject(new Error("stream reset"));
+            },
+          };
+        },
+      },
+    });
+
+    const deltas = [];
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "hello",
+      provider: "openai",
+      model: "gpt-test",
+      onStreamDelta: (delta) => deltas.push(delta),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("stream reset");
+    expect(result.output).toBe("partial answer");
+    expect(deltas).toEqual(["partial answer"]);
+  });
+
+  test("stops reading the anthropic stream after [DONE]", async () => {
+    const encoder = new TextEncoder();
+    const firstBatch = [
+      "event: content_block_start",
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}',
+      "",
+      "event: content_block_delta",
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}',
+      "",
+      "data: [DONE]",
+      "",
+      "",
+    ].join("\n");
+    const secondBatch = [
+      "event: content_block_delta",
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"LATE"}}',
+      "",
+      "",
+    ].join("\n");
+
+    let readCalls = 0;
+    global.fetch.mockResolvedValueOnce({
+      ok: true,
+      body: {
+        getReader() {
+          return {
+            read() {
+              readCalls += 1;
+              if (readCalls === 1) {
+                return Promise.resolve({ done: false, value: encoder.encode(firstBatch) });
+              }
+              if (readCalls === 2) {
+                return Promise.resolve({ done: false, value: encoder.encode(secondBatch) });
+              }
+              return Promise.resolve({ done: true, value: undefined });
+            },
+          };
+        },
+      },
+    });
+
+    const deltas = [];
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "hello",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      onStreamDelta: (delta) => deltas.push(delta),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.output).toBe("Hi");
+    expect(deltas).toEqual(["Hi"]);
+    expect(readCalls).toBe(1);
   });
 });

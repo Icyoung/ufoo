@@ -27,12 +27,7 @@ function runToolCall(input = {}, options = {}) {
   if (tool === "read") return runReadTool(args, options);
   if (tool === "write") return runWriteTool(args, options);
   if (tool === "edit") return runEditTool(args, options);
-  if (tool === "bash") return runBashTool(args, options);
-  return {
-    ok: false,
-    error: "unknown tool",
-    supported_tools: TOOL_NAMES.slice(),
-  };
+  return runBashTool(args, options);
 }
 
 module.exports = {

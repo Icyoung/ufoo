@@ -55,8 +55,24 @@ function findSkillByPath(skills = [], targetPath = "") {
   return (Array.isArray(skills) ? skills : []).find((skill) => canonicalPath(skill.path) === target) || null;
 }
 
+// Skill bodies are inlined into the prompt verbatim. A hostile or bloated
+// SKILL.md could otherwise blow up the context window or close the <skill>
+// block early to smuggle instructions, so cap the body size and neutralize
+// any embedded closing tag. 32KB chars is a rough token budget proxy.
+const MAX_SKILL_CONTENT_CHARS = 32 * 1024;
+
+function sanitizeSkillContent(content = "") {
+  let text = String(content || "");
+  // Escape literal closing tags so the body cannot break out of the block.
+  text = text.replace(/<\/skill\s*>/gi, "&lt;/skill&gt;");
+  if (text.length > MAX_SKILL_CONTENT_CHARS) {
+    text = `${text.slice(0, MAX_SKILL_CONTENT_CHARS)}\n...[skill content truncated: exceeded ${MAX_SKILL_CONTENT_CHARS} chars]`;
+  }
+  return text;
+}
+
 function readSkillBlock(skill) {
-  const content = fs.readFileSync(skill.path, "utf8");
+  const content = sanitizeSkillContent(fs.readFileSync(skill.path, "utf8"));
   return `<skill>\n<name>${skill.name}</name>\n<path>${String(skill.path).replace(/\\/g, "/")}</path>\n${content}\n</skill>`;
 }
 

@@ -12,8 +12,9 @@ function decomposeBugFixTask(task) {
   const steps = [];
   const taskContext = String(task || "");
 
-  // Analyze task to determine if it's a bug fix
-  const isBugFix = /fix|bug|issue|problem|error|broken|doesn't work|not work/i.test(task);
+  // Analyze task to determine if it's a bug fix. Word boundaries keep
+  // substrings like "fixture"/"prefix"/"debug" from false-matching.
+  const isBugFix = /\b(?:fix(?:es|ed|ing)?|bugs?|issues?|problems?|errors?|broken)\b|doesn't work|not work/i.test(taskContext);
 
   if (isBugFix) {
     steps.push({
@@ -67,6 +68,17 @@ function clipStepOutput(value = "", maxChars = 2000) {
   return `${text.slice(0, maxChars)}\n...[truncated]`;
 }
 
+// Progress callbacks are user-supplied; a throwing callback must not abort
+// the task (mirrors nativeRunner's emitToolEvent/emitPhase policy).
+function reportProgress(callback, event = {}) {
+  if (typeof callback !== "function") return;
+  try {
+    callback(event);
+  } catch {
+    // ignore callback failures
+  }
+}
+
 function buildStepPrompt(step, previousResults = []) {
   const basePrompt = String(step && step.prompt ? step.prompt : "");
   const prior = Array.isArray(previousResults) ? previousResults : [];
@@ -111,7 +123,6 @@ function shouldEarlyExitStep(step, stepResult = {}) {
  */
 async function runDecomposedTask({
   task,
-  state,
   onProgress,
   onToolEvent,
   signal,
@@ -143,15 +154,13 @@ async function runDecomposedTask({
     }
 
     // Report progress
-    if (onProgress) {
-      onProgress({
-        type: "step_start",
-        step: step.id,
-        name: step.name,
-        current: steps.indexOf(step) + 1,
-        total: steps.length,
-      });
-    }
+    reportProgress(onProgress, {
+      type: "step_start",
+      step: step.id,
+      name: step.name,
+      current: steps.indexOf(step) + 1,
+      total: steps.length,
+    });
 
     try {
       // Run the step with its own timeout
@@ -176,14 +185,12 @@ async function runDecomposedTask({
       });
 
       // Report step completion
-      if (onProgress) {
-        onProgress({
-          type: "step_complete",
-          step: step.id,
-          name: step.name,
-          success: stepResult.ok,
-        });
-      }
+      reportProgress(onProgress, {
+        type: "step_complete",
+        step: step.id,
+        name: step.name,
+        success: stepResult.ok,
+      });
 
       // Early exit if solution found
       if (shouldEarlyExitStep(step, stepResult)) {
@@ -202,14 +209,12 @@ async function runDecomposedTask({
 
     } catch (err) {
       // Report step error
-      if (onProgress) {
-        onProgress({
-          type: "step_error",
-          step: step.id,
-          name: step.name,
-          error: err.message,
-        });
-      }
+      reportProgress(onProgress, {
+        type: "step_error",
+        step: step.id,
+        name: step.name,
+        error: err.message,
+      });
 
       return {
         ok: false,
@@ -293,7 +298,9 @@ function shellQuote(value = "") {
  * Create a progress reporter that sends updates via bus
  */
 function createBusProgressReporter(shell, publisher) {
-  let lastReportTime = Date.now();
+  // Start at 0 so the first event reports immediately instead of being
+  // swallowed by the throttle window.
+  let lastReportTime = 0;
   const MIN_REPORT_INTERVAL = 5000; // Report at most every 5 seconds
 
   return (progress) => {

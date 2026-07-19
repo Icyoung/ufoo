@@ -69,4 +69,21 @@ describe("ucode session store", () => {
     expect(loaded.ok).toBe(false);
     expect(loaded.error).toContain("session not found");
   });
+
+  test("save writes atomically without leaving temp files behind", () => {
+    const saved = saveSessionSnapshot(workspaceRoot, {
+      sessionId: "sess-atomic",
+      workspaceRoot,
+      nlMessages: [{ role: "user", content: "hello" }],
+    });
+    expect(saved.ok).toBe(true);
+
+    const sessionsDir = path.join(workspaceRoot, ".ufoo", "agent", "ucode", "sessions");
+    const entries = fs.readdirSync(sessionsDir);
+    expect(entries).toEqual(["sess-atomic.json"]);
+
+    const loaded = loadSessionSnapshot(workspaceRoot, "sess-atomic");
+    expect(loaded.ok).toBe(true);
+    expect(loaded.snapshot.nlMessages).toEqual([{ role: "user", content: "hello" }]);
+  });
 });

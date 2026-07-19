@@ -10,6 +10,7 @@ const {
 } = require("../../../src/code");
 const { MAX_FULL_READ_BYTES } = require("../../../src/code/tools/read");
 const { getReadToolDescription } = require("../../../src/agents/prompts/native/toolDescriptions/read");
+const { getEditToolDescription } = require("../../../src/agents/prompts/native/toolDescriptions/edit");
 const { getBashToolDescription } = require("../../../src/agents/prompts/native/toolDescriptions/bash");
 
 describe("ucode-core tool kernel", () => {
@@ -77,6 +78,7 @@ describe("ucode-core tool kernel", () => {
     });
     expect(result.ok).toBe(false);
     expect(result.error).toContain("unknown");
+    expect(result.supported_tools).toEqual(["read", "write", "edit", "bash"]);
   });
 
   test("edit returns error when find pattern is empty", () => {
@@ -101,13 +103,16 @@ describe("ucode-core tool kernel", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  test("edit returns ok=true changed=false when find not found", () => {
+  test("edit returns ok=false with a not-found error when find misses", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-edit-nochange-"));
     runWriteTool({ path: "test.txt", content: "hello" }, { workspaceRoot: root });
     const result = runEditTool({ path: "test.txt", find: "xyz", replace: "abc" }, { workspaceRoot: root });
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
     expect(result.changed).toBe(false);
     expect(result.replacements).toBe(0);
+    expect(result.error).toContain("not found");
+    expect(result.error).toContain(path.join(root, "test.txt"));
+    expect(fs.readFileSync(path.join(root, "test.txt"), "utf8")).toBe("hello");
     fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -128,6 +133,48 @@ describe("ucode-core tool kernel", () => {
     expect(result.ok).toBe(false);
     expect(result.error).toContain("escapes workspace root");
     fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test("workspace symlink pointing outside is rejected for read/write/edit", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-core-link-"));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-core-outside-"));
+    fs.writeFileSync(path.join(outside, "secret.txt"), "top-secret\n", "utf8");
+    fs.symlinkSync(outside, path.join(root, "link"));
+    fs.symlinkSync(path.join(outside, "secret.txt"), path.join(root, "direct-link.txt"));
+    try {
+      const read = runReadTool({ path: "link/secret.txt" }, { workspaceRoot: root });
+      expect(read.ok).toBe(false);
+      expect(read.error).toContain("escapes workspace root");
+
+      const readDirect = runReadTool({ path: "direct-link.txt" }, { workspaceRoot: root });
+      expect(readDirect.ok).toBe(false);
+      expect(readDirect.error).toContain("escapes workspace root");
+
+      const write = runWriteTool({ path: "link/evil.txt", content: "pwned" }, { workspaceRoot: root });
+      expect(write.ok).toBe(false);
+      expect(write.error).toContain("escapes workspace root");
+      expect(fs.existsSync(path.join(outside, "evil.txt"))).toBe(false);
+
+      const edit = runEditTool(
+        { path: "direct-link.txt", find: "top-secret", replace: "pwned" },
+        { workspaceRoot: root }
+      );
+      expect(edit.ok).toBe(false);
+      expect(edit.error).toContain("escapes workspace root");
+      expect(fs.readFileSync(path.join(outside, "secret.txt"), "utf8")).toBe("top-secret\n");
+
+      // Control: plain in-workspace paths still work (tmpdir itself sits
+      // behind a symlink on macOS, so this also guards against false positives).
+      const okWrite = runWriteTool({ path: "normal/file.txt", content: "fine" }, { workspaceRoot: root });
+      expect(okWrite.ok).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  test("edit tool description documents the not-found failure", () => {
+    expect(getEditToolDescription()).toContain("not found");
   });
 
   test("bash clamps timeoutMs to the 600s maximum and keeps the 60s default", () => {

@@ -102,104 +102,6 @@ function clipText(value = "", maxChars = 6000) {
   return `${text.slice(0, maxChars)}\n...[truncated]`;
 }
 
-function summarizeFileSnippet(file = "", content = "") {
-  const target = String(file || "").trim();
-  const body = String(content || "").trim();
-  if (!body) return `${target}: empty`;
-
-  if (target.toLowerCase().endsWith("package.json")) {
-    try {
-      const parsed = JSON.parse(body);
-      const name = String(parsed.name || "").trim() || "(unknown)";
-      const version = String(parsed.version || "").trim() || "(unknown)";
-      const scripts = parsed.scripts && typeof parsed.scripts === "object"
-        ? Object.keys(parsed.scripts).slice(0, 4)
-        : [];
-      const scriptText = scripts.length > 0 ? ` scripts=${scripts.join(",")}` : "";
-      return `${target}: name=${name} version=${version}${scriptText}`;
-    } catch {
-      // fall through
-    }
-  }
-
-  const lines = body
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .slice(0, 3)
-    .map((line) => (line.length > 120 ? `${line.slice(0, 120)}...` : line));
-
-  if (lines.length === 0) return `${target}: empty`;
-  return `${target}: ${lines.join(" | ")}`;
-}
-
-function extractPreflightEvidence(systemPrompt = "") {
-  const source = String(systemPrompt || "");
-  if (!source) return [];
-
-  const results = [];
-  const fileRegex = /File:\s*([^\n]+)\n([\s\S]*?)(?=\n---\n(?:File|Command):|$)/g;
-  let match = fileRegex.exec(source);
-  while (match) {
-    const file = String(match[1] || "").trim();
-    const content = String(match[2] || "").trim();
-    if (file) {
-      results.push({ kind: "file", label: file, summary: summarizeFileSnippet(file, content) });
-    }
-    match = fileRegex.exec(source);
-  }
-
-  const cmdRegex = /Command:\s*([^\n]+)\n([\s\S]*?)(?=\n---\n(?:File|Command):|$)/g;
-  match = cmdRegex.exec(source);
-  while (match) {
-    const command = String(match[1] || "").trim();
-    const output = String(match[2] || "").trim();
-    if (command) {
-      const clipped = clipText(output, 300).replace(/\s+/g, " ").trim();
-      results.push({ kind: "command", label: command, summary: `${command}: ${clipped || "(no output)"}` });
-    }
-    match = cmdRegex.exec(source);
-  }
-
-  return results;
-}
-
-function isAnalysisPrompt(text = "") {
-  return /(?:analy[sz]e|analysis|review|audit|status|architecture|codebase|repo|project|现状|架构|审查|分析|项目|代码库)/i.test(text);
-}
-
-function parseReadIntent(prompt = "") {
-  const text = String(prompt || "");
-  const patterns = [
-    /(?:\bread\b|\bcat\b|查看|读取)\s+([A-Za-z0-9_./\\-]+(?:\.[A-Za-z0-9._-]+)?)/i,
-    /([A-Za-z0-9_./\\-]+\.(?:md|txt|json|js|ts|jsx|tsx|yml|yaml|toml|sh))/i,
-  ];
-  for (const re of patterns) {
-    const match = text.match(re);
-    if (!match || !match[1]) continue;
-    const candidate = String(match[1]).trim().replace(/[),.;:]+$/, "");
-    if (!candidate) continue;
-    if (candidate.length > 260) continue;
-    return candidate;
-  }
-  return "";
-}
-
-function parseBashIntent(prompt = "") {
-  const text = String(prompt || "").trim();
-  if (!text) return "";
-  if (
-    /\b(ls|dir|tree)\b/i.test(text)
-    || /\b(list|show)\s+(files|dirs|directories|folders)\b/i.test(text)
-    || /列出|目录|文件列表/.test(text)
-  ) {
-    return "ls -la";
-  }
-  const cmdMatch = text.match(/(?:运行|执行|run|exec(?:ute)?)\s+`([^`]+)`/i);
-  if (cmdMatch && cmdMatch[1]) return String(cmdMatch[1]).trim();
-  return "";
-}
-
 function normalizeProvider(value = "") {
   const text = String(value || "").trim().toLowerCase();
   if (!text) return "";
@@ -317,6 +219,11 @@ function buildCoreToolSpecs() {
           properties: {
             path: { type: "string" },
             content: { type: "string" },
+            mode: {
+              type: "string",
+              enum: ["overwrite", "append"],
+              description: 'Write mode: "overwrite" replaces the file (default), "append" adds to its end.',
+            },
             append: { type: "boolean" },
           },
           required: ["path", "content"],
@@ -599,6 +506,7 @@ async function runOpenAiLikeTurn({
     const announcedToolNames = new Set();
     let nextSyntheticIndex = 0;
     let lastSyntheticIndex = -1;
+    let sawDone = false;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -612,8 +520,11 @@ async function runOpenAiLikeTurn({
         const payloadText = parseSseDataBlock(block);
         if (!payloadText) continue;
         if (payloadText === "[DONE]") {
-          rawBuffer = "";
-          break;
+          // Stop reading after this batch, but keep the buffered tail and
+          // finish the blocks already parsed alongside [DONE] instead of
+          // silently dropping them.
+          sawDone = true;
+          continue;
         }
 
         const chunk = parseJsonSafe(payloadText, null);
@@ -691,6 +602,8 @@ async function runOpenAiLikeTurn({
           }
         }
       }
+
+      if (sawDone) break;
     }
 
     if (rawBuffer.trim()) {
@@ -839,6 +752,9 @@ async function runAnthropicTurn({
     const blockMap = new Map();
     let rawBuffer = "";
     let responseText = "";
+    let nextSyntheticBlockIndex = 0;
+    let lastBlockIndex = -1;
+    let sawDone = false;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -850,7 +766,13 @@ async function runAnthropicTurn({
 
       for (const rawBlock of parsed.blocks) {
         const { event, data } = parseSseEventBlock(rawBlock);
-        if (!data || data === "[DONE]") continue;
+        if (!data) continue;
+        if (data === "[DONE]") {
+          // Stop reading after this batch instead of waiting for the server
+          // to close the connection, mirroring the OpenAI transport.
+          sawDone = true;
+          continue;
+        }
 
         const payloadChunk = parseJsonSafe(data, null);
         if (!payloadChunk || typeof payloadChunk !== "object") continue;
@@ -863,7 +785,18 @@ async function runAnthropicTurn({
         }
 
         if (event === "content_block_start") {
-          const index = Number.isFinite(payloadChunk.index) ? payloadChunk.index : 0;
+          let index;
+          if (Number.isFinite(payloadChunk.index)) {
+            index = payloadChunk.index;
+          } else {
+            // Provider omitted index: each start opens a new block, so give
+            // it its own synthetic index instead of collapsing every block
+            // into slot 0.
+            while (blockMap.has(nextSyntheticBlockIndex)) nextSyntheticBlockIndex += 1;
+            index = nextSyntheticBlockIndex;
+            nextSyntheticBlockIndex += 1;
+          }
+          lastBlockIndex = index;
           const contentBlock = payloadChunk.content_block && typeof payloadChunk.content_block === "object"
             ? payloadChunk.content_block
             : {};
@@ -900,7 +833,15 @@ async function runAnthropicTurn({
         }
 
         if (event === "content_block_delta") {
-          const index = Number.isFinite(payloadChunk.index) ? payloadChunk.index : 0;
+          let index;
+          if (Number.isFinite(payloadChunk.index)) {
+            index = payloadChunk.index;
+          } else if (lastBlockIndex >= 0) {
+            // No index: continuation of the most recently started block.
+            index = lastBlockIndex;
+          } else {
+            index = 0;
+          }
           const delta = payloadChunk.delta && typeof payloadChunk.delta === "object"
             ? payloadChunk.delta
             : {};
@@ -943,6 +884,8 @@ async function runAnthropicTurn({
           }
         }
       }
+
+      if (sawDone) break;
     }
 
     const assistantContent = Array.from(blockMap.values())
@@ -1303,6 +1246,17 @@ async function runNativeAgentTask({
   const guards = createGuards({ signal, timeoutMs });
   const nextSessionId = String(sessionId || "").trim() || `native-${randomUUID()}`;
   const promptText = String(prompt || "").trim();
+  // Track every text delta so the error path can return the partial output
+  // the model already produced instead of discarding it.
+  let partialOutput = "";
+  const trackingStreamDelta = (chunk) => {
+    const text = String(chunk || "");
+    if (!text) return;
+    partialOutput += text;
+    if (typeof onStreamDelta === "function") {
+      onStreamDelta(chunk);
+    }
+  };
 
   try {
     guards.ensureActive();
@@ -1336,7 +1290,7 @@ async function runNativeAgentTask({
       baseUrl: runtime.baseUrl,
       apiKey: runtime.apiKey,
       timeoutMs,
-      onStreamDelta,
+      onStreamDelta: trackingStreamDelta,
       onThinkingDelta,
       onPhase,
       onToolEvent,
@@ -1356,14 +1310,16 @@ async function runNativeAgentTask({
       output: outputText,
       messages: cloneMessageList(runResult.messages),
       sessionId: nextSessionId,
-      streamed: Boolean(runResult.streamed),
+      // The loop marks streamed=true whenever it receives a stream callback;
+      // only report it when the caller actually registered one.
+      streamed: Boolean(runResult.streamed) && typeof onStreamDelta === "function",
     };
   } catch (err) {
     const message = err && err.message ? err.message : "native runner failed";
     return {
       ok: false,
       error: message,
-      output: "",
+      output: partialOutput.trim(),
       sessionId: nextSessionId,
       streamed: false,
     };
@@ -1372,9 +1328,6 @@ async function runNativeAgentTask({
 
 module.exports = {
   runNativeAgentTask,
-  parseReadIntent,
-  parseBashIntent,
-  extractPreflightEvidence,
   resolveRuntimeConfig,
   resolveCompletionUrl,
   resolveAnthropicMessagesUrl,

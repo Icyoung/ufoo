@@ -81,7 +81,11 @@ function saveSessionSnapshot(workspaceRoot = process.cwd(), snapshot = {}) {
 
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+    // Write to a temp file and rename so a crash mid-write cannot leave a
+    // corrupted session JSON behind.
+    const tmpFile = `${filePath}.${process.pid}-${randomUUID()}.tmp`;
+    fs.writeFileSync(tmpFile, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+    fs.renameSync(tmpFile, filePath);
     return {
       ok: true,
       error: "",

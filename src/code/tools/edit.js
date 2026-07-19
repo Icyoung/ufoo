@@ -47,14 +47,22 @@ function runEditTool(input = {}, options = {}) {
       ? replaceAll(original, find, replace)
       : replaceOnce(original, find, replace);
     const changed = applied.count > 0;
-    if (changed) {
-      fs.writeFileSync(resolved, applied.next, "utf8");
+    if (!changed) {
+      return {
+        ok: false,
+        workspaceRoot,
+        path: resolved,
+        changed: false,
+        replacements: 0,
+        error: `find pattern not found in ${resolved}`,
+      };
     }
+    fs.writeFileSync(resolved, applied.next, "utf8");
     return {
       ok: true,
       workspaceRoot,
       path: resolved,
-      changed,
+      changed: true,
       replacements: applied.count,
     };
   } catch (err) {
