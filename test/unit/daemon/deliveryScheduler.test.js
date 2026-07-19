@@ -6,6 +6,7 @@ function makeQueue(event) {
     claimNext: jest.fn(() => queue.claim),
     completeClaim: jest.fn(),
     restoreClaim: jest.fn(),
+    readPending: jest.fn(() => []),
   };
   return queue;
 }
@@ -200,5 +201,162 @@ describe("DeliveryScheduler", () => {
         delivery: expect.objectContaining({ mode: "inject", gate: "idle" }),
       }),
     }));
+  });
+
+  test("logs gate deferral once per reason and warns after sustained defer", async () => {
+    let now = 1000000;
+    let activityState = "working";
+    const log = jest.fn();
+    const queue = makeQueue(null);
+    queue.readPending.mockReturnValue([{ seq: 1 }, { seq: 2 }]);
+    const scheduler = new DeliveryScheduler("/tmp/project", {
+      injector: { inject: jest.fn() },
+      queueFactory: () => queue,
+      readAgents: () => ({
+        agents: {
+          "codex:busy": { status: "active", activity_state: activityState, launch_mode: "terminal" },
+        },
+      }),
+      log,
+      now: () => now,
+      deferWarnAfterMs: 1000,
+      warnIntervalMs: 1000,
+    });
+
+    await scheduler.deliverSubscriber("codex:busy");
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(log.mock.calls[0][0]).toContain("delivery deferred subscriber=codex:busy reason=working pending=2");
+
+    now += 500;
+    await scheduler.deliverSubscriber("codex:busy");
+    expect(log).toHaveBeenCalledTimes(1); // debounced while reason is unchanged
+
+    now += 600; // 1100ms into the same deferral
+    await scheduler.deliverSubscriber("codex:busy");
+    expect(log).toHaveBeenCalledTimes(2);
+    expect(log.mock.calls[1][0]).toContain("WARN delivery still deferred subscriber=codex:busy reason=working pending=2");
+
+    now += 500;
+    await scheduler.deliverSubscriber("codex:busy");
+    expect(log).toHaveBeenCalledTimes(2); // warn interval not reached yet
+
+    activityState = "paused";
+    await scheduler.deliverSubscriber("codex:busy");
+    expect(log).toHaveBeenCalledTimes(3); // reason change logs again
+    expect(log.mock.calls[2][0]).toContain("delivery deferred subscriber=codex:busy reason=paused");
+  });
+
+  test("delivers after blocked state exceeds the grace period", async () => {
+    const now = Date.parse("2026-01-01T00:20:00.000Z");
+    const event = { seq: 1, event: "message", data: { message: "hello" } };
+    const queue = makeQueue(event);
+    const injector = { inject: jest.fn().mockResolvedValue(undefined) };
+    const log = jest.fn();
+    const scheduler = new DeliveryScheduler("/tmp/project", {
+      injector,
+      queueFactory: () => queue,
+      readAgents: () => ({
+        agents: {
+          "codex:stuck": {
+            status: "active",
+            activity_state: "blocked",
+            activity_since: "2026-01-01T00:00:00.000Z",
+            launch_mode: "terminal",
+          },
+        },
+      }),
+      log,
+      now: () => now,
+      blockedGraceMs: 15 * 60 * 1000,
+    });
+
+    const result = await scheduler.deliverSubscriber("codex:stuck");
+
+    expect(result).toEqual(expect.objectContaining({ ok: true, delivered: 1 }));
+    expect(injector.inject).toHaveBeenCalledTimes(1);
+    const graceLogs = log.mock.calls.filter(([msg]) => msg.includes("grace override"));
+    expect(graceLogs).toHaveLength(1);
+    expect(graceLogs[0][0]).toContain("subscriber=codex:stuck activity_state=blocked");
+
+    await scheduler.deliverSubscriber("codex:stuck");
+    expect(log.mock.calls.filter(([msg]) => msg.includes("grace override"))).toHaveLength(1); // warn once per stuck episode
+  });
+
+  test("uses first-observed time for the grace period when activity_since is missing", async () => {
+    let now = 1000000;
+    const event = { seq: 1, event: "message", data: { message: "hello" } };
+    const queue = makeQueue(event);
+    const injector = { inject: jest.fn().mockResolvedValue(undefined) };
+    const scheduler = new DeliveryScheduler("/tmp/project", {
+      injector,
+      queueFactory: () => queue,
+      readAgents: () => ({
+        agents: {
+          "codex:waiting": { status: "active", activity_state: "waiting_input", launch_mode: "terminal" },
+        },
+      }),
+      now: () => now,
+      blockedGraceMs: 1000,
+      deferWarnAfterMs: 60 * 60 * 1000,
+    });
+
+    const first = await scheduler.deliverSubscriber("codex:waiting");
+    expect(first).toEqual(expect.objectContaining({ deferred: true, reason: "waiting_input" }));
+    expect(injector.inject).not.toHaveBeenCalled();
+
+    now += 1001;
+    const second = await scheduler.deliverSubscriber("codex:waiting");
+    expect(second).toEqual(expect.objectContaining({ ok: true, delivered: 1 }));
+    expect(injector.inject).toHaveBeenCalledTimes(1);
+  });
+
+  test("warns when an inject lock is held beyond the threshold", async () => {
+    let now = 1000000;
+    const event = { seq: 1, event: "message", data: { message: "hello" } };
+    const queue = makeQueue(event);
+    let releaseInject;
+    const injector = { inject: jest.fn(() => new Promise((resolve) => { releaseInject = resolve; })) };
+    const log = jest.fn();
+    const scheduler = new DeliveryScheduler("/tmp/project", {
+      injector,
+      queueFactory: () => queue,
+      readAgents: () => ({
+        agents: {
+          "codex:one": { status: "active", activity_state: "idle", launch_mode: "terminal" },
+        },
+      }),
+      log,
+      now: () => now,
+      lockedWarnAfterMs: 1000,
+      warnIntervalMs: 1000,
+    });
+
+    const inflight = scheduler.deliverSubscriber("codex:one"); // holds the lock inside inject
+
+    const firstLocked = await scheduler.deliverSubscriber("codex:one");
+    expect(firstLocked).toEqual(expect.objectContaining({ deferred: true, reason: "locked" }));
+    expect(log.mock.calls.filter(([msg]) => msg.includes("lock held"))).toHaveLength(0);
+
+    now += 1500;
+    await scheduler.deliverSubscriber("codex:one");
+    const lockWarnings = () => log.mock.calls.filter(([msg]) => msg.includes("lock held"));
+    expect(lockWarnings()).toHaveLength(1);
+    expect(lockWarnings()[0][0]).toContain("subscriber=codex:one");
+
+    now += 500;
+    await scheduler.deliverSubscriber("codex:one");
+    expect(lockWarnings()).toHaveLength(1); // warn interval debounce
+
+    now += 1100;
+    await scheduler.deliverSubscriber("codex:one");
+    expect(lockWarnings()).toHaveLength(2);
+
+    releaseInject();
+    const result = await inflight;
+    expect(result).toEqual(expect.objectContaining({ ok: true, delivered: 1 }));
+
+    injector.inject.mockResolvedValue(undefined);
+    const after = await scheduler.deliverSubscriber("codex:one");
+    expect(after).toEqual(expect.objectContaining({ ok: true, delivered: 1 }));
   });
 });

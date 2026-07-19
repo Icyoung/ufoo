@@ -12,6 +12,22 @@ const logInject = (message) => {
   }
 };
 
+// osascript 遇到权限弹窗或 System Events 挂起时会永不退出；tmux 客户端
+// 卡死时同样不退出。daemon 的 DeliveryScheduler 会 await 这些 Promise，
+// 没有超时就会永久持有该 subscriber 的推送锁，只能重启 daemon 恢复。
+const SPAWN_TIMEOUT_MS = 10000;
+
+function killAfterTimeout(proc, cmd, onTimeout) {
+  return setTimeout(() => {
+    try {
+      proc.kill("SIGKILL");
+    } catch {
+      // 进程已退出，无需处理
+    }
+    onTimeout(new Error(`${cmd} timeout after ${SPAWN_TIMEOUT_MS}ms`));
+  }, SPAWN_TIMEOUT_MS);
+}
+
 function escapeAppleScriptString(value) {
   return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
@@ -28,6 +44,8 @@ function runAppleScript(lines = []) {
     let stderr = "";
     let stdout = "";
 
+    const timeout = killAfterTimeout(proc, "osascript", reject);
+
     proc.stdout.on("data", (data) => {
       stdout += data.toString("utf8");
     });
@@ -35,13 +53,17 @@ function runAppleScript(lines = []) {
       stderr += data.toString("utf8");
     });
     proc.on("close", (code) => {
+      clearTimeout(timeout);
       if (code === 0) {
         resolve(stdout.trim());
       } else {
         reject(new Error(stderr.trim() || "AppleScript failed"));
       }
     });
-    proc.on("error", reject);
+    proc.on("error", (err) => {
+      clearTimeout(timeout);
+      reject(err);
+    });
   });
 }
 
@@ -109,15 +131,18 @@ class Injector {
    * 检查 tmux pane 是否存在
    */
   async checkTmuxPane(paneId) {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const proc = spawn("tmux", ["list-panes", "-a", "-F", "#{pane_id}"]);
       let output = "";
+
+      const timeout = killAfterTimeout(proc, "tmux list-panes", reject);
 
       proc.stdout.on("data", (data) => {
         output += data.toString();
       });
 
       proc.on("close", (code) => {
+        clearTimeout(timeout);
         if (code !== 0) {
           resolve(false);
           return;
@@ -126,7 +151,10 @@ class Injector {
         resolve(panes.includes(paneId));
       });
 
-      proc.on("error", () => resolve(false));
+      proc.on("error", () => {
+        clearTimeout(timeout);
+        resolve(false);
+      });
     });
   }
 
@@ -134,15 +162,18 @@ class Injector {
    * 根据 tty 查找 tmux pane
    */
   async findTmuxPaneByTty(tty) {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const proc = spawn("tmux", ["list-panes", "-a", "-F", "#{pane_id} #{pane_tty}"]);
       let output = "";
+
+      const timeout = killAfterTimeout(proc, "tmux list-panes", reject);
 
       proc.stdout.on("data", (data) => {
         output += data.toString();
       });
 
       proc.on("close", (code) => {
+        clearTimeout(timeout);
         if (code !== 0) {
           resolve(null);
           return;
@@ -158,7 +189,10 @@ class Injector {
         resolve(null);
       });
 
-      proc.on("error", () => resolve(null));
+      proc.on("error", () => {
+        clearTimeout(timeout);
+        resolve(null);
+      });
     });
   }
 
@@ -186,11 +220,14 @@ class Injector {
     const textProc = spawn("tmux", ["send-keys", "-t", paneId, command]);
     let stderr = "";
 
+    const textTimeout = killAfterTimeout(textProc, "tmux send-keys", reject);
+
     textProc.stderr.on("data", (data) => {
       stderr += data.toString();
     });
 
     textProc.on("close", (code) => {
+      clearTimeout(textTimeout);
       if (code !== 0) {
         reject(new Error(stderr || "tmux send-keys failed"));
         return;
@@ -198,15 +235,23 @@ class Injector {
       // Delay before sending Enter — gives the target app time to process input
       setTimeout(() => {
         const enterProc = spawn("tmux", ["send-keys", "-t", paneId, "Enter"]);
+        const enterTimeout = killAfterTimeout(enterProc, "tmux send-keys Enter", reject);
         enterProc.on("close", (enterCode) => {
+          clearTimeout(enterTimeout);
           if (enterCode === 0) resolve();
           else reject(new Error("tmux send-keys Enter failed"));
         });
-        enterProc.on("error", reject);
+        enterProc.on("error", (err) => {
+          clearTimeout(enterTimeout);
+          reject(err);
+        });
       }, 150);
     });
 
-    textProc.on("error", reject);
+    textProc.on("error", (err) => {
+      clearTimeout(textTimeout);
+      reject(err);
+    });
   }
 
   /**

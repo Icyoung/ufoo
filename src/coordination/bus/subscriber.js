@@ -1,4 +1,5 @@
 const fs = require("fs");
+const path = require("path");
 const { getTimestamp, isAgentPidAlive, isMetaActive, isValidTty, getTtyProcessInfo } = require("./utils");
 const NicknameManager = require("./nickname");
 const { spawnSync } = require("child_process");
@@ -113,8 +114,29 @@ class SubscriberManager {
     appendAgentRegistryDiagnostic(this.agentsFile, event, payload);
   }
 
+  /**
+   * 检查订阅者的 pending.jsonl 中是否仍有未投递消息
+   * 读取失败时保守返回 true，避免误删未投递消息
+   */
+  hasUndeliveredPending(subscriber) {
+    try {
+      const pendingPath = this.queueManager.getPendingPath
+        ? this.queueManager.getPendingPath(subscriber)
+        : (this.queueManager.getQueueDir
+          ? path.join(this.queueManager.getQueueDir(subscriber), "pending.jsonl")
+          : "");
+      if (!pendingPath || !fs.existsSync(pendingPath)) return false;
+      return fs.readFileSync(pendingPath, "utf8").trim().length > 0;
+    } catch {
+      return true;
+    }
+  }
+
   cleanupSubscriberArtifacts(subscriber) {
     if (!subscriber || !this.queueManager) return;
+    // pending.jsonl 里还有未投递消息时绝不能删队列目录和 offset 文件，
+    // 保留给订阅者复活或重新激活后继续投递；长期清理由其他机制负责。
+    if (this.hasUndeliveredPending(subscriber)) return;
     try {
       const queueDir = this.queueManager.getQueueDir
         ? this.queueManager.getQueueDir(subscriber)
@@ -168,16 +190,21 @@ class SubscriberManager {
           nickname: meta?.nickname || "",
         });
         delete this.busData.agents[id];
+        // Migrate undelivered messages to the replacement subscriber before
+        // removing the stale queue, so a tty takeover does not drop them.
         try {
-          const queueDir = this.queueManager.getQueueDir(id);
-          if (queueDir) {
-            fs.rmSync(queueDir, { recursive: true, force: true });
+          const dq = this.queueManager.getDeliveryQueue && this.queueManager.getDeliveryQueue(id);
+          const undelivered = dq && typeof dq.readPending === "function" ? dq.readPending() : [];
+          for (const event of undelivered) {
+            await this.queueManager.appendPending(currentSubscriber, event);
           }
-          const offsetPath = this.queueManager.getOffsetPath(id);
-          if (offsetPath) fs.rmSync(offsetPath, { force: true });
+          if (undelivered.length > 0 && typeof this.queueManager.clearPending === "function") {
+            await this.queueManager.clearPending(id);
+          }
         } catch {
-          // ignore cleanup errors
+          // best-effort migration; the guard below keeps the queue if it failed
         }
+        this.cleanupSubscriberArtifacts(id);
       }
     }
     return inheritedNickname;

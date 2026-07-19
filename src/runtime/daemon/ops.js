@@ -282,11 +282,28 @@ function buildShellEnvPrefix(extraEnv = {}) {
     .join(" ");
 }
 
+// osascript can hang forever on permission prompts or a stuck System Events;
+// launch and close both await runAppleScript, so without a timeout the daemon
+// would stay blocked until restart.
+const APPLESCRIPT_TIMEOUT_MS = 10000;
+
+function killAfterTimeout(proc, cmd, onTimeout) {
+  return setTimeout(() => {
+    try {
+      proc.kill("SIGKILL");
+    } catch {
+      // process already exited, nothing to kill
+    }
+    onTimeout(new Error(`${cmd} timeout after ${APPLESCRIPT_TIMEOUT_MS}ms`));
+  }, APPLESCRIPT_TIMEOUT_MS);
+}
+
 function runAppleScript(lines) {
   return new Promise((resolve, reject) => {
     const proc = spawn("osascript", lines.flatMap((l) => ["-e", l]));
     let stderr = "";
     let stdout = "";
+    const timeout = killAfterTimeout(proc, "osascript", reject);
     proc.stderr.on("data", (d) => {
       stderr += d.toString("utf8");
     });
@@ -294,8 +311,13 @@ function runAppleScript(lines) {
       stdout += d.toString("utf8");
     });
     proc.on("close", (code) => {
+      clearTimeout(timeout);
       if (code === 0) resolve(stdout.trim());
       else reject(new Error(stderr || "osascript failed"));
+    });
+    proc.on("error", (err) => {
+      clearTimeout(timeout);
+      reject(err);
     });
   });
 }
@@ -1317,5 +1339,6 @@ module.exports = {
     toTerminalBinary,
     toTmuxBinary,
     buildResumeArgs,
+    runAppleScript,
   },
 };

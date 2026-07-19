@@ -2,7 +2,14 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const net = require("net");
+const { EventEmitter } = require("events");
 
+jest.mock("child_process", () => {
+  const actual = jest.requireActual("child_process");
+  return { ...actual, spawn: jest.fn(actual.spawn) };
+});
+
+const { spawn } = require("child_process");
 const Injector = require("../../../src/coordination/bus/inject");
 
 describe("Injector", () => {
@@ -388,6 +395,112 @@ describe("Injector", () => {
         "hello",
         expect.objectContaining({ tty: "/dev/ttys456" })
       );
+    });
+  });
+
+  describe("subprocess timeouts", () => {
+    function makeHungProc() {
+      const proc = new EventEmitter();
+      proc.stdout = new EventEmitter();
+      proc.stderr = new EventEmitter();
+      proc.kill = jest.fn();
+      return proc;
+    }
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+      spawn.mockClear();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    test("rejects with timeout when osascript hangs", async () => {
+      const proc = makeHungProc();
+      spawn.mockReturnValueOnce(proc);
+
+      const injector = new Injector(busDir, null);
+      const promise = injector.injectTerminal("/dev/ttys123", "hello");
+      const assertion = expect(promise).rejects.toThrow("timeout");
+
+      jest.advanceTimersByTime(10000);
+      await assertion;
+      expect(proc.kill).toHaveBeenCalledWith("SIGKILL");
+    });
+
+    test("rejects with timeout when tmux list-panes hangs in checkTmuxPane", async () => {
+      const proc = makeHungProc();
+      spawn.mockReturnValueOnce(proc);
+
+      const injector = new Injector(busDir, null);
+      const promise = injector.checkTmuxPane("%5");
+      const assertion = expect(promise).rejects.toThrow("timeout");
+
+      jest.advanceTimersByTime(10000);
+      await assertion;
+      expect(proc.kill).toHaveBeenCalledWith("SIGKILL");
+    });
+
+    test("rejects with timeout when tmux list-panes hangs in findTmuxPaneByTty", async () => {
+      const proc = makeHungProc();
+      spawn.mockReturnValueOnce(proc);
+
+      const injector = new Injector(busDir, null);
+      const promise = injector.findTmuxPaneByTty("/dev/ttys123");
+      const assertion = expect(promise).rejects.toThrow("timeout");
+
+      jest.advanceTimersByTime(10000);
+      await assertion;
+      expect(proc.kill).toHaveBeenCalledWith("SIGKILL");
+    });
+
+    test("rejects with timeout when tmux send-keys hangs", async () => {
+      const proc = makeHungProc();
+      spawn.mockReturnValueOnce(proc);
+
+      const injector = new Injector(busDir, null);
+      const promise = injector.injectTmux("%5", "hello");
+      const assertion = expect(promise).rejects.toThrow("timeout");
+
+      jest.advanceTimersByTime(10000);
+      await assertion;
+      expect(proc.kill).toHaveBeenCalledWith("SIGKILL");
+    });
+
+    test("rejects with timeout when the Enter send-keys hangs", async () => {
+      const textProc = makeHungProc();
+      const enterProc = makeHungProc();
+      spawn.mockReturnValueOnce(textProc).mockReturnValueOnce(enterProc);
+
+      const injector = new Injector(busDir, null);
+      const promise = injector.injectTmux("%5", "hello");
+      const assertion = expect(promise).rejects.toThrow("timeout");
+
+      textProc.emit("close", 0);
+      jest.advanceTimersByTime(150); // fires the delayed Enter send
+      expect(spawn).toHaveBeenCalledTimes(2);
+      jest.advanceTimersByTime(10000);
+      await assertion;
+      expect(enterProc.kill).toHaveBeenCalledWith("SIGKILL");
+    });
+
+    test("inject rejects instead of pending forever when a tmux subprocess hangs", async () => {
+      const proc = makeHungProc();
+      spawn.mockReturnValue(proc);
+
+      const agentsFile = path.join(busDir, "agents.json");
+      fs.writeFileSync(
+        agentsFile,
+        JSON.stringify({ agents: { "codex:test": { tmux_pane: "%5" } } })
+      );
+
+      const injector = new Injector(busDir, agentsFile);
+      const promise = injector.inject("codex:test", "hello");
+      const assertion = expect(promise).rejects.toThrow("timeout");
+
+      jest.advanceTimersByTime(10000);
+      await assertion;
     });
   });
 });

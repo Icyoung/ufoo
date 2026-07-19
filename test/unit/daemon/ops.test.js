@@ -735,3 +735,46 @@ describe("daemon ops agy provider mappings", () => {
     expect(__private.buildResumeArgs("agy", "")).toEqual([]);
   });
 });
+
+describe("daemon ops runAppleScript timeout", () => {
+  const { EventEmitter } = require("events");
+
+  function hangingProc() {
+    const proc = new EventEmitter();
+    proc.stdout = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.kill = jest.fn();
+    return proc;
+  }
+
+  beforeEach(() => {
+    spawn.mockClear();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  test("rejects with a timeout error and SIGKILLs osascript when it never exits", async () => {
+    jest.useFakeTimers();
+    const proc = hangingProc();
+    spawn.mockImplementationOnce(() => proc);
+
+    const promise = __private.runAppleScript(['tell application "Terminal" to activate']);
+    const assertion = expect(promise).rejects.toThrow(/timeout after 10000ms/);
+    jest.advanceTimersByTime(10000);
+    await assertion;
+    expect(proc.kill).toHaveBeenCalledWith("SIGKILL");
+  });
+
+  test("resolves stdout and never SIGKILLs when osascript exits before the timeout", async () => {
+    const proc = hangingProc();
+    spawn.mockImplementationOnce(() => proc);
+
+    const promise = __private.runAppleScript(['tell application "Terminal" to activate']);
+    proc.stdout.emit("data", "ok\n");
+    proc.emit("close", 0);
+    await expect(promise).resolves.toBe("ok");
+    expect(proc.kill).not.toHaveBeenCalled();
+  });
+});

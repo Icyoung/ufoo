@@ -1340,7 +1340,14 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
       log(`report bus event failed request=${meta.requestId || ""} error=${err.message || String(err)}`);
     }
   });
-  const deliveryScheduler = new DeliveryScheduler(projectRoot, { log });
+  const deliveryScheduler = new DeliveryScheduler(projectRoot, {
+    log,
+    emitDelivery: async ({ subscriber, status, error } = {}) => {
+      if (status === "error") {
+        log(`delivery failed subscriber=${subscriber || "unknown"} error=${error || "unknown"}`);
+      }
+    },
+  });
   deliveryScheduler.start();
 
   handleIpcRequest = async (req, socket) => {

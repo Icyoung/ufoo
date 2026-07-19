@@ -1,3 +1,6 @@
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const SubscriberManager = require('../../../src/coordination/bus/subscriber');
 
 describe('SubscriberManager', () => {
@@ -230,6 +233,41 @@ describe('SubscriberManager', () => {
       expect(result.nickname).toBe('architect');
       expect(busData.agents['claude-code:abc123'].status).toBe('active');
     });
+
+    it('should preserve pending queue and offset on leave when messages are undelivered', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ufoo-subscriber-'));
+      try {
+        const queueDir = path.join(tmpDir, 'queues', 'claude-code_abc1');
+        const offsetPath = path.join(tmpDir, 'offsets', 'claude-code_abc1.offset');
+        const pendingPath = path.join(queueDir, 'pending.jsonl');
+        fs.mkdirSync(queueDir, { recursive: true });
+        fs.mkdirSync(path.dirname(offsetPath), { recursive: true });
+        fs.writeFileSync(pendingPath, '{"event":"wake","seq":1}\n');
+        fs.writeFileSync(offsetPath, '3\n');
+
+        busData.agents['claude-code:abc1'] = {
+          agent_type: 'claude-code',
+          nickname: 'claude-1',
+          status: 'active',
+          pid: process.pid,
+        };
+        const fileQueueManager = {
+          getQueueDir: jest.fn(() => queueDir),
+          getOffsetPath: jest.fn(() => offsetPath),
+          getPendingPath: jest.fn(() => pendingPath),
+        };
+        const fileManager = new SubscriberManager(busData, fileQueueManager);
+
+        await fileManager.leave('claude-code:abc1');
+
+        expect(busData.agents['claude-code:abc1'].status).toBe('inactive');
+        expect(fs.existsSync(pendingPath)).toBe(true);
+        expect(fs.readFileSync(pendingPath, 'utf8')).toBe('{"event":"wake","seq":1}\n');
+        expect(fs.existsSync(offsetPath)).toBe(true);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
   });
 
   describe('rename', () => {
@@ -434,6 +472,75 @@ describe('SubscriberManager', () => {
       expect(mockQueueManager.getOffsetPath).toHaveBeenCalledWith('claude-code:abc1');
     });
 
+    it('should preserve pending queue and offset when marking inactive with undelivered messages', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ufoo-subscriber-'));
+      try {
+        const queueDir = path.join(tmpDir, 'queues', 'claude-code_abc1');
+        const offsetPath = path.join(tmpDir, 'offsets', 'claude-code_abc1.offset');
+        const pendingPath = path.join(queueDir, 'pending.jsonl');
+        fs.mkdirSync(queueDir, { recursive: true });
+        fs.mkdirSync(path.dirname(offsetPath), { recursive: true });
+        fs.writeFileSync(pendingPath, '{"event":"wake","seq":1}\n');
+        fs.writeFileSync(offsetPath, '3\n');
+
+        busData.agents['claude-code:abc1'] = {
+          agent_type: 'claude-code',
+          nickname: 'claude-1',
+          status: 'active',
+          pid: 999999,
+        };
+        const fileQueueManager = {
+          getQueueDir: jest.fn(() => queueDir),
+          getOffsetPath: jest.fn(() => offsetPath),
+          getPendingPath: jest.fn(() => pendingPath),
+        };
+        const fileManager = new SubscriberManager(busData, fileQueueManager);
+
+        fileManager.cleanupInactive();
+
+        expect(busData.agents['claude-code:abc1'].status).toBe('inactive');
+        expect(fs.existsSync(pendingPath)).toBe(true);
+        expect(fs.readFileSync(pendingPath, 'utf8')).toBe('{"event":"wake","seq":1}\n');
+        expect(fs.existsSync(offsetPath)).toBe(true);
+        expect(fs.readFileSync(offsetPath, 'utf8')).toBe('3\n');
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should still cleanup queue artifacts when pending queue is empty', () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ufoo-subscriber-'));
+      try {
+        const queueDir = path.join(tmpDir, 'queues', 'claude-code_abc1');
+        const offsetPath = path.join(tmpDir, 'offsets', 'claude-code_abc1.offset');
+        fs.mkdirSync(queueDir, { recursive: true });
+        fs.mkdirSync(path.dirname(offsetPath), { recursive: true });
+        fs.writeFileSync(path.join(queueDir, 'pending.jsonl'), '');
+        fs.writeFileSync(offsetPath, '3\n');
+
+        busData.agents['claude-code:abc1'] = {
+          agent_type: 'claude-code',
+          nickname: 'claude-1',
+          status: 'active',
+          pid: 999999,
+        };
+        const fileQueueManager = {
+          getQueueDir: jest.fn(() => queueDir),
+          getOffsetPath: jest.fn(() => offsetPath),
+          getPendingPath: jest.fn(() => path.join(queueDir, 'pending.jsonl')),
+        };
+        const fileManager = new SubscriberManager(busData, fileQueueManager);
+
+        fileManager.cleanupInactive();
+
+        expect(busData.agents['claude-code:abc1'].status).toBe('inactive');
+        expect(fs.existsSync(queueDir)).toBe(false);
+        expect(fs.existsSync(offsetPath)).toBe(false);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
     it('should remove dead internal subscribers without provider sessions from the registry', async () => {
       await manager.join('abc1', 'claude-code', '', {
         launchMode: 'internal',
@@ -507,6 +614,88 @@ describe('SubscriberManager', () => {
       manager.cleanupInactive();
 
       expect(busData.agents['codex:old']).toBeDefined();
+    });
+  });
+
+  describe('cleanupDuplicateTty', () => {
+    function setupDuplicateTtyFiles(tmpDir) {
+      const { DeliveryQueue } = require('../../../src/coordination/bus/deliveryQueue');
+      const queueDirOf = (name) => path.join(tmpDir, 'queues', name);
+      const pendingPathOf = (name) => path.join(queueDirOf(name), 'pending.jsonl');
+      fs.mkdirSync(queueDirOf('claude-code_old1'), { recursive: true });
+      fs.mkdirSync(queueDirOf('claude-code_new1'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'offsets'), { recursive: true });
+      const events = [
+        { event: 'message', seq: 1, data: { message: 'hello-1' } },
+        { event: 'message', seq: 2, data: { message: 'hello-2' } },
+      ];
+      fs.writeFileSync(pendingPathOf('claude-code_old1'), events.map((e) => JSON.stringify(e)).join('\n') + '\n');
+      const offsetOf = (name) => path.join(tmpDir, 'offsets', `${name}.offset`);
+      fs.writeFileSync(offsetOf('claude-code_old1'), '2\n');
+      return { queueDirOf, pendingPathOf, offsetOf, DeliveryQueue, events };
+    }
+
+    it('should migrate undelivered messages to the replacement subscriber', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ufoo-duptty-'));
+      try {
+        const { queueDirOf, pendingPathOf, DeliveryQueue, events } = setupDuplicateTtyFiles(tmpDir);
+        const fileQueueManager = {
+          getQueueDir: jest.fn((s) => queueDirOf(s.replace(':', '_'))),
+          getOffsetPath: jest.fn((s) => path.join(tmpDir, 'offsets', `${s.replace(':', '_')}.offset`)),
+          getPendingPath: jest.fn((s) => pendingPathOf(s.replace(':', '_'))),
+          getDeliveryQueue: jest.fn((s) => new DeliveryQueue(pendingPathOf(s.replace(':', '_')))),
+          appendPending: jest.fn(async (s, event) => {
+            new DeliveryQueue(pendingPathOf(s.replace(':', '_'))).append(event);
+          }),
+          clearPending: jest.fn(async (s) => {
+            fs.writeFileSync(pendingPathOf(s.replace(':', '_')), '');
+          }),
+        };
+        busData.agents['claude-code:old1'] = {
+          agent_type: 'claude-code', nickname: 'old-one', status: 'active', tty: '/dev/ttys099',
+        };
+        busData.agents['claude-code:new1'] = {
+          agent_type: 'claude-code', nickname: 'new-one', status: 'active', tty: '/dev/ttys099',
+        };
+        const fileManager = new SubscriberManager(busData, fileQueueManager);
+
+        await fileManager.cleanupDuplicateTty('claude-code:new1', '/dev/ttys099', { agentType: 'claude-code' });
+
+        expect(busData.agents['claude-code:old1']).toBeUndefined();
+        const migrated = new DeliveryQueue(pendingPathOf('claude-code_new1')).readPending();
+        expect(migrated.map((e) => e.data.message)).toEqual(['hello-1', 'hello-2']);
+        expect(fs.existsSync(queueDirOf('claude-code_old1'))).toBe(false);
+        expect(events).toHaveLength(2);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should keep the stale queue when migration is not possible', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ufoo-duptty-'));
+      try {
+        const { queueDirOf, pendingPathOf } = setupDuplicateTtyFiles(tmpDir);
+        const fileQueueManager = {
+          getQueueDir: jest.fn((s) => queueDirOf(s.replace(':', '_'))),
+          getOffsetPath: jest.fn((s) => path.join(tmpDir, 'offsets', `${s.replace(':', '_')}.offset`)),
+          getPendingPath: jest.fn((s) => pendingPathOf(s.replace(':', '_'))),
+        };
+        busData.agents['claude-code:old1'] = {
+          agent_type: 'claude-code', nickname: 'old-one', status: 'active', tty: '/dev/ttys099',
+        };
+        busData.agents['claude-code:new1'] = {
+          agent_type: 'claude-code', nickname: 'new-one', status: 'active', tty: '/dev/ttys099',
+        };
+        const fileManager = new SubscriberManager(busData, fileQueueManager);
+
+        await fileManager.cleanupDuplicateTty('claude-code:new1', '/dev/ttys099', { agentType: 'claude-code' });
+
+        expect(busData.agents['claude-code:old1']).toBeUndefined();
+        expect(fs.existsSync(pendingPathOf('claude-code_old1'))).toBe(true);
+        expect(fs.readFileSync(pendingPathOf('claude-code_old1'), 'utf8')).toContain('hello-1');
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
     });
   });
 
