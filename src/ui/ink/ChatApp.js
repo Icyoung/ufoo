@@ -1264,7 +1264,16 @@ function createChatApp({ React, ink, props, interactive = true }) {
       appendChatHistory(activeChatHistoryRoot, kind, text, meta, activeChatHistoryOptions);
     }, [activeChatHistoryRoot, activeChatHistoryOptions.globalMode]);
 
+    // Terminal statuses (command replies, ✓/✗ resolutions) must not animate
+    // forever; show them briefly, then revert the status line to Ready.
+    const statusAutoClearRef = useRef(null);
+
     const setStatusText = useCallback((text, options = {}) => {
+      // Any new status supersedes a pending auto-clear.
+      if (statusAutoClearRef.current) {
+        clearTimeout(statusAutoClearRef.current);
+        statusAutoClearRef.current = null;
+      }
       const clean = stripBlessedTags(text).trim();
       if (!clean) {
         dispatch({ type: "status/idle" });
@@ -1280,6 +1289,15 @@ function createChatApp({ React, ink, props, interactive = true }) {
           startedAt: options.startedAt || Date.now(),
         },
       });
+    }, []);
+
+    const scheduleStatusAutoClear = useCallback(() => {
+      if (statusAutoClearRef.current) clearTimeout(statusAutoClearRef.current);
+      statusAutoClearRef.current = setTimeout(() => {
+        statusAutoClearRef.current = null;
+        dispatch({ type: "status/idle" });
+      }, 5000);
+      if (typeof statusAutoClearRef.current.unref === "function") statusAutoClearRef.current.unref();
     }, []);
 
     const logInkMessage = useCallback((kind, text, meta = {}) => {
@@ -1786,13 +1804,18 @@ function createChatApp({ React, ink, props, interactive = true }) {
         updateDashboard: updateDashboardFromStatus,
         requestStatus: requestDaemonStatus,
         resolveStatusLine: (text, data = {}) => {
+          // Terminal status: static (no UFO) and auto-revert to Ready.
           setStatusText(text, {
-            type: data && data.phase === "error" ? "error" : "typing",
+            type: data && data.phase === "error" ? "error" : "none",
             showTimer: false,
           });
+          scheduleStatusAutoClear();
         },
         enqueueBusStatus: (item = {}) => setStatusText(item.text || "Processing bus message", { type: "typing" }),
-        resolveBusStatus: (item = {}) => setStatusText(item.text || "Bus message processed", { type: "done" }),
+        resolveBusStatus: (item = {}) => {
+          setStatusText(item.text || "Bus message processed", { type: "done" });
+          scheduleStatusAutoClear();
+        },
         getPending: () => pendingRef.current,
         setPending: (value) => { pendingRef.current = value || null; },
         resolveAgentDisplayName: (value) => {

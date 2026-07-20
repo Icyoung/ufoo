@@ -78,6 +78,14 @@ describe("chat status line", () => {
     expect(isAnimatedStatusType("done")).toBe(false);
     expect(isAnimatedStatusType("typing")).toBe(true);
   });
+
+  test("terminal resolve statuses stay static via the none type", () => {
+    // Replies like "← Launched 1 kimi agent(s)" must not animate forever.
+    expect(inferStatusType("← Launched 1 kimi agent(s)", "none")).toBe("none");
+    expect(isAnimatedStatusType("none")).toBe(false);
+    expect(computeStatusText({ message: "← Launched 1 kimi agent(s)", type: "none" }, 3))
+      .toBe("← Launched 1 kimi agent(s)");
+  });
 });
 
 describe("chat log display classification", () => {
