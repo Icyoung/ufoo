@@ -16,9 +16,21 @@ const UCODE_BANNER_LINES = [
 
 const UCODE_VERSION = String((pkg && pkg.version) || "dev");
 
+// Flying-saucer patrol for busy/loading states: the 🛸 drifts left-right
+// inside a fixed 6-cell field (three emoji slots), so the status text after
+// it stays anchored instead of shifting with the saucer.
+const UFO_FIELD_CELLS = 6;
+const UFO_FRAMES = [];
+for (let i = 0; i <= UFO_FIELD_CELLS - 2; i += 1) {
+  UFO_FRAMES.push(`${" ".repeat(i)}🛸${" ".repeat(UFO_FIELD_CELLS - 2 - i)}`);
+}
+for (let i = UFO_FIELD_CELLS - 3; i > 0; i -= 1) {
+  UFO_FRAMES.push(`${" ".repeat(i)}🛸${" ".repeat(UFO_FIELD_CELLS - 2 - i)}`);
+}
+
 const STATUS_INDICATORS = {
-  thinking: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
-  typing: ["◐", "◓", "◑", "◒"],
+  thinking: UFO_FRAMES,
+  typing: UFO_FRAMES,
   waiting: ["∙", "∙∙", "∙∙∙", "∙∙", "∙"],
 };
 
