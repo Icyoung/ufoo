@@ -1119,4 +1119,255 @@ describe("ucode native runner", () => {
     expect(deltas).toEqual(["Hi"]);
     expect(readCalls).toBe(1);
   });
+
+  test("parses anthropic stream usage from message_start and message_delta", async () => {
+    const sse = [
+      "event: message_start",
+      'data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-opus-4-6","usage":{"input_tokens":1200,"cache_creation_input_tokens":300,"cache_read_input_tokens":800,"output_tokens":1}}}',
+      "",
+      "event: content_block_start",
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}',
+      "",
+      "event: content_block_delta",
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}',
+      "",
+      "event: content_block_stop",
+      'data: {"type":"content_block_stop","index":0}',
+      "",
+      "event: message_delta",
+      'data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":42}}',
+      "",
+      "event: message_stop",
+      'data: {"type":"message_stop"}',
+      "",
+    ].join("\n");
+    global.fetch.mockResolvedValueOnce(new Response(sse, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    }));
+
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "hello",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      systemPrompt: "project rules",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.usage).toEqual({
+      turns: 1,
+      input: 1200,
+      output: 42,
+      cacheRead: 800,
+      cacheCreation: 300,
+    });
+
+    const requestBody = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(requestBody.system).toEqual([
+      {
+        type: "text",
+        text: "project rules",
+        cache_control: { type: "ephemeral" },
+      },
+    ]);
+    // The only history message becomes a text block carrying the second
+    // cache breakpoint.
+    expect(requestBody.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "hello",
+            cache_control: { type: "ephemeral" },
+          },
+        ],
+      },
+    ]);
+    const headers = global.fetch.mock.calls[0][1].headers;
+    expect(headers["anthropic-version"]).toBe("2023-06-01");
+  });
+
+  test("stamps the cache breakpoint only on the last anthropic history message without mutating history", async () => {
+    global.fetch.mockResolvedValueOnce(new Response([
+      "event: content_block_start",
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}',
+      "",
+      "event: content_block_delta",
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}',
+      "",
+      "event: message_stop",
+      'data: {"type":"message_stop"}',
+      "",
+    ].join("\n"), {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    }));
+
+    const history = [
+      { role: "user", content: "first question" },
+      { role: "assistant", content: [{ type: "text", text: "first answer" }] },
+    ];
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "second question",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      messages: history,
+    });
+
+    expect(result.ok).toBe(true);
+    const requestBody = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(requestBody.messages).toEqual([
+      { role: "user", content: "first question" },
+      { role: "assistant", content: [{ type: "text", text: "first answer" }] },
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "second question",
+            cache_control: { type: "ephemeral" },
+          },
+        ],
+      },
+    ]);
+    // History array stays free of cache_control so later turns never carry
+    // stale breakpoints past the 4-breakpoint limit.
+    expect(JSON.stringify(history)).not.toContain("cache_control");
+  });
+
+  test("requests include_usage and parses the terminal openai usage chunk", async () => {
+    global.fetch.mockResolvedValueOnce(makeSseResponse([
+      { choices: [{ delta: { content: "Hello" } }] },
+      {
+        choices: [],
+        usage: {
+          prompt_tokens: 100,
+          completion_tokens: 20,
+          prompt_tokens_details: { cached_tokens: 40 },
+        },
+      },
+    ]));
+
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "hello",
+      provider: "openai",
+      model: "gpt-test",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.usage).toEqual({
+      turns: 1,
+      input: 100,
+      output: 20,
+      cacheRead: 40,
+      cacheCreation: 0,
+    });
+    const requestBody = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(requestBody.stream_options).toEqual({ include_usage: true });
+  });
+
+  test("reads usage from a non-streaming openai response", async () => {
+    global.fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: "plain answer", tool_calls: [] } }],
+        usage: {
+          prompt_tokens: 12,
+          completion_tokens: 5,
+          prompt_tokens_details: { cached_tokens: 4 },
+        },
+      }),
+    });
+
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "hello",
+      provider: "openai",
+      model: "gpt-test",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.output).toBe("plain answer");
+    expect(result.usage).toEqual({
+      turns: 1,
+      input: 12,
+      output: 5,
+      cacheRead: 4,
+      cacheCreation: 0,
+    });
+  });
+
+  test("accumulates usage across tool-loop turns and appends one usage.jsonl row", async () => {
+    global.fetch
+      .mockResolvedValueOnce(makeSseResponse([
+        {
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call_1",
+                    type: "function",
+                    function: { name: "read", arguments: '{"path":"a.txt"}' },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+        { choices: [], usage: { prompt_tokens: 50, completion_tokens: 10 } },
+      ]))
+      .mockResolvedValueOnce(makeSseResponse([
+        { choices: [{ delta: { content: "done" } }] },
+        {
+          choices: [],
+          usage: {
+            prompt_tokens: 80,
+            completion_tokens: 15,
+            prompt_tokens_details: { cached_tokens: 30 },
+          },
+        },
+      ]));
+    runToolCall.mockReturnValue({ ok: true, content: "ok" });
+
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "go",
+      provider: "openai",
+      model: "gpt-test",
+      sessionId: "sess-usage-1",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.usage).toEqual({
+      turns: 2,
+      input: 130,
+      output: 25,
+      cacheRead: 30,
+      cacheCreation: 0,
+    });
+
+    const usageFile = path.join(workspaceRoot, ".ufoo", "agent", "ucode", "usage.jsonl");
+    const rows = fs.readFileSync(usageFile, "utf8")
+      .split(/\r?\n/)
+      .filter((line) => line.trim())
+      .map((line) => JSON.parse(line));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      sessionId: "sess-usage-1",
+      model: "gpt-test",
+      provider: "openai",
+      turns: 2,
+      input: 130,
+      output: 25,
+      cacheRead: 30,
+      cacheCreation: 0,
+    });
+    expect(typeof rows[0].ts).toBe("string");
+  });
 });

@@ -99,6 +99,58 @@ describe("ufooAgent prompt schema", () => {
     expect(systemPrompt).toContain("dispatch.injection_mode defaults to immediate when omitted.");
   });
 
+  test("maps upstream usage fields into result meta", async () => {
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: "{\"reply\":\"ok\",\"dispatch\":[],\"ops\":[]}" } }],
+        usage: { prompt_tokens: 120, completion_tokens: 30 },
+      }),
+    });
+
+    const res = await runUfooAgent({
+      projectRoot,
+      prompt: "inspect project",
+      provider: "codex-cli",
+      model: "gpt-5.3-codex-spark",
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.meta.input_tokens).toBe(120);
+    expect(res.meta.output_tokens).toBe(30);
+    expect(res.meta.cache_read_tokens).toBe(0);
+    expect(res.meta.cache_creation_tokens).toBe(0);
+    expect(res.meta.memory_prefix_tokens).toBe(0);
+  });
+
+  test("maps anthropic-style cache usage fields into result meta", async () => {
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: "{\"reply\":\"ok\",\"dispatch\":[],\"ops\":[]}" } }],
+        usage: {
+          input_tokens: 64,
+          output_tokens: 12,
+          cache_read_input_tokens: 40,
+          cache_creation_input_tokens: 8,
+        },
+      }),
+    });
+
+    const res = await runUfooAgent({
+      projectRoot,
+      prompt: "inspect project",
+      provider: "codex-cli",
+      model: "gpt-5.3-codex-spark",
+    });
+
+    expect(res.ok).toBe(true);
+    expect(res.meta.input_tokens).toBe(64);
+    expect(res.meta.output_tokens).toBe(12);
+    expect(res.meta.cache_read_tokens).toBe(40);
+    expect(res.meta.cache_creation_tokens).toBe(8);
+  });
+
   test("switches to limited loop schema when loop runtime is enabled", async () => {
     const res = await runUfooAgent({
       projectRoot,

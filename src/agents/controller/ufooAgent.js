@@ -640,6 +640,31 @@ function stripMarkdownFence(text = "") {
   return raw;
 }
 
+function toNonNegativeInt(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num < 0) return 0;
+  return Math.floor(num);
+}
+
+// Maps provider usage payloads (OpenAI chat, Anthropic messages, Codex responses)
+// onto the metric fields read by extractModelMetrics in loopRuntime.js.
+function extractUsageTokens(usage = null) {
+  const item = usage && typeof usage === "object" ? usage : {};
+  return {
+    input_tokens: toNonNegativeInt(item.input_tokens || item.prompt_tokens),
+    output_tokens: toNonNegativeInt(item.output_tokens || item.completion_tokens),
+    cache_read_tokens: toNonNegativeInt(
+      item.cache_read_tokens
+        || item.cache_read_input_tokens
+        || item.cached_input_tokens
+        || (item.input_tokens_details && item.input_tokens_details.cached_tokens)
+    ),
+    cache_creation_tokens: toNonNegativeInt(
+      item.cache_creation_tokens || item.cache_creation_input_tokens
+    ),
+  };
+}
+
 async function runNativeRouterCall({
   projectRoot,
   prompt,
@@ -708,7 +733,7 @@ async function runUfooAgent({
       console.error(`[ufoo-agent] native provider failed: ${res.error || "unknown error"}`);
       return { ok: false, error: res.error };
     } else {
-      res = { ok: true, output: res.output, sessionId: "", provider: res.provider, model: res.model };
+      res = { ok: true, output: res.output, sessionId: "", provider: res.provider, model: res.model, usage: res.usage };
     }
   }
 
@@ -746,6 +771,7 @@ async function runUfooAgent({
     ok: true,
     payload,
     meta: {
+      ...extractUsageTokens(res.usage),
       memory_prefix_tokens: memoryPrefixResult.estimated_tokens || 0,
       cache_semistatic_hit: memoryPrefixResult.cache_semistatic_hit || 0,
       cache_semistatic_miss: memoryPrefixResult.cache_semistatic_miss || 0,

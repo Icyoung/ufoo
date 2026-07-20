@@ -46,6 +46,45 @@ describe("Ink DashboardBar view model", () => {
     });
   });
 
+  test("summary row appends cache hit rate when cache reads exist", () => {
+    const rows = buildDashboardRows({
+      focusMode: "input",
+      activeAgents: [],
+      loopSummary: {
+        rounds: 1,
+        tool_calls: 0,
+        total_tokens: 180,
+        input_tokens: 40,
+        cache_read_tokens: 160,
+        cache_creation_tokens: 20,
+      },
+    });
+
+    expect(rows[0].parts).toContainEqual({
+      label: "Loop",
+      value: "r1 tc0 tok180 cache160/20(80%)",
+    });
+  });
+
+  test("summary row omits cache hit rate when there are no cache reads", () => {
+    const rows = buildDashboardRows({
+      focusMode: "input",
+      activeAgents: [],
+      loopSummary: {
+        rounds: 1,
+        tool_calls: 0,
+        total_tokens: 50,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 5,
+      },
+    });
+
+    expect(rows[0].parts).toContainEqual({
+      label: "Loop",
+      value: "r1 tc0 tok50 cache0/5",
+    });
+  });
+
   test("normal dashboard agents row shows selected item and activity markers", () => {
     const rows = buildDashboardRows({
       focusMode: "dashboard",

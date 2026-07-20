@@ -327,7 +327,7 @@ async function handleEvent(
   };
 
   if (threadRuntime && threadRuntime.enabled && threadRuntime.thread) {
-    await handleThreadedEvent({
+    return handleThreadedEvent({
       agentType,
       provider,
       publisher,
@@ -338,7 +338,6 @@ async function handleEvent(
       threadRuntime,
       tracker,
     });
-    return;
   }
 
   const errorText = `[internal:${agentType}] error: no thread runtime available for provider ${provider}; cliRunner fallback has been removed`;
@@ -374,6 +373,31 @@ function summarizeThreadToolCall(event = {}) {
   return [name, compactToolDetail(detail)].filter(Boolean).join(" · ");
 }
 
+function toNonNegativeInt(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num < 0) return 0;
+  return Math.floor(num);
+}
+
+// Normalizes provider usage payloads (claude/codex thread events) onto the
+// metric fields read by extractModelMetrics in agents/controller/loopRuntime.js.
+function normalizeTurnUsage(usage = null) {
+  const item = usage && typeof usage === "object" ? usage : {};
+  return {
+    input_tokens: toNonNegativeInt(item.input_tokens || item.prompt_tokens),
+    output_tokens: toNonNegativeInt(item.output_tokens || item.completion_tokens),
+    cache_read_tokens: toNonNegativeInt(
+      item.cache_read_tokens
+        || item.cache_read_input_tokens
+        || item.cached_input_tokens
+        || (item.input_tokens_details && item.input_tokens_details.cached_tokens)
+    ),
+    cache_creation_tokens: toNonNegativeInt(
+      item.cache_creation_tokens || item.cache_creation_input_tokens
+    ),
+  };
+}
+
 async function handleThreadedEvent({
   agentType,
   provider,
@@ -387,6 +411,8 @@ async function handleThreadedEvent({
 }) {
   try {
     const plainReplyParts = [];
+    let turnUsage = null;
+    let stopReason = "";
     if (tracker && typeof tracker.notifyTurnStart === "function") {
       tracker.notifyTurnStart();
     }
@@ -409,6 +435,11 @@ async function handleThreadedEvent({
         if (streamToPublisher && summary) {
           emitStreamDelta(`\nTool: ${summary}\n`);
         }
+      } else if (event.type === "usage" && event.usage) {
+        turnUsage = normalizeTurnUsage(event.usage);
+      } else if (event.type === "turn_completed") {
+        if (event.usage) turnUsage = normalizeTurnUsage(event.usage);
+        if (event.stopReason) stopReason = String(event.stopReason);
       } else if (event.type === "turn_failed") {
         throw new Error(event.error || `thread turn failed for ${agentType}`);
       }
@@ -418,15 +449,21 @@ async function handleThreadedEvent({
     }
 
     if (streamToPublisher) {
-      busSender.enqueue(
-        publisher,
-        JSON.stringify({ stream: true, done: true, reason: "complete" })
-      );
+      const doneEnvelope = { stream: true, done: true, reason: "complete" };
+      if (turnUsage) doneEnvelope.usage = turnUsage;
+      busSender.enqueue(publisher, JSON.stringify(doneEnvelope));
     } else {
       const reply = plainReplyParts.join("").trim();
       if (reply) busSender.enqueue(publisher, reply);
     }
     await busSender.flush();
+    return {
+      ok: true,
+      meta: {
+        ...(turnUsage || normalizeTurnUsage(null)),
+        stop_reason: stopReason,
+      },
+    };
   } catch (err) {
     if (threadRuntime && typeof threadRuntime.rebuildThread === "function") {
       await threadRuntime.rebuildThread();
@@ -450,6 +487,7 @@ async function handleThreadedEvent({
       busSender.enqueue(publisher, errorText);
     }
     await busSender.flush();
+    return { ok: false, error: errorText };
   }
 }
 

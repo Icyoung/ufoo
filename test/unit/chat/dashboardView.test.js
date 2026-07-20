@@ -37,6 +37,7 @@ describe("chat dashboardView", () => {
         rounds: 2,
         tool_calls: 1,
         total_tokens: 165,
+        input_tokens: 30,
         cache_read_tokens: 10,
         cache_creation_tokens: 5,
         terminal_reason: "final_answer",
@@ -52,7 +53,29 @@ describe("chat dashboardView", () => {
     expect(out.content).toContain("{gray-fg}Agent:{/gray-fg} {cyan-fg}claude{/cyan-fg}");
     expect(out.content).not.toContain("{gray-fg}Reports:{/gray-fg}");
     expect(out.content).toContain("{gray-fg}Cron:{/gray-fg} {cyan-fg}2{/cyan-fg}");
-    expect(out.content).toContain("{gray-fg}Loop:{/gray-fg} {cyan-fg}r2 tc1 tok165 cache10/5 dispatch_messagex1 final_answer{/cyan-fg}");
+    expect(out.content).toContain("{gray-fg}Loop:{/gray-fg} {cyan-fg}r2 tc1 tok165 cache10/5(25%) dispatch_messagex1 final_answer{/cyan-fg}");
+  });
+
+  test("omits cache hit rate when there are no cache reads", () => {
+    const out = computeDashboardContent({
+      focusMode: "input",
+      activeAgents: ["a"],
+      getAgentLabel: (id) => id,
+      loopSummary: {
+        rounds: 1,
+        tool_calls: 0,
+        total_tokens: 50,
+        input_tokens: 50,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 5,
+        terminal_reason: "",
+        tools: [],
+      },
+      dashHints,
+    });
+
+    expect(out.content).toContain("{gray-fg}Loop:{/gray-fg} {cyan-fg}r1 tc0 tok50 cache0/5{/cyan-fg}");
+    expect(out.content).not.toContain("%");
   });
 
   test("dashboard mode page highlights selected mode", () => {

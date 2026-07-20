@@ -21,6 +21,7 @@ const {
   getPendingBusCount,
   shouldAutoConsumeBus,
 } = require("./busConsumer");
+const { summarizeSessionUsage } = require("./usageStore");
 
 function printPrompt(stdout = process.stdout) {
   stdout.write("> ");
@@ -74,6 +75,20 @@ function extractAgentNickname(agentId = "") {
   return base;
 }
 
+function formatSessionUsageStatus(summary = {}) {
+  const source = summary && typeof summary === "object" ? summary : {};
+  const input = Number(source.input) || 0;
+  const output = Number(source.output) || 0;
+  const cacheRead = Number(source.cacheRead) || 0;
+  const cacheCreation = Number(source.cacheCreation) || 0;
+  const denominator = cacheRead + input;
+  const hitRate = denominator > 0 ? (cacheRead / denominator) * 100 : 0;
+  return [
+    `Session tokens: input=${input} output=${output} cache_read=${cacheRead} cache_creation=${cacheCreation}`,
+    `Cache hit rate: ${hitRate.toFixed(1)}% (cache_read/(cache_read+input))`,
+  ].join("\n");
+}
+
 function runSingleCommand(line = "", workspaceRoot = process.cwd()) {
   const text = normalizeLine(line);
   if (!text) return { kind: "empty" };
@@ -86,6 +101,7 @@ function runSingleCommand(line = "", workspaceRoot = process.cwd()) {
         "  help",
         "  exit|quit",
         "  ubus|/ubus",
+        "  status|/status",
         "  skills [list]",
         "  skills show <name>",
         "  bg|/bg <task>",
@@ -105,6 +121,11 @@ function runSingleCommand(line = "", workspaceRoot = process.cwd()) {
   if (text === "ubus" || text === "/ubus") {
     return {
       kind: "ubus",
+    };
+  }
+  if (text === "status" || text === "/status") {
+    return {
+      kind: "status",
     };
   }
   const skillsMatch = text.match(/^(?:\/skills|skills)(?:\s+(.*))?$/i);
@@ -410,6 +431,13 @@ async function runUcodeCoreAgent({
       if (result.kind === "help" || result.kind === "tool" || result.kind === "skills" || result.kind === "error") {
         stdout.write(`${result.output}\n`);
       }
+      if (result.kind === "status") {
+        const usageSummary = summarizeSessionUsage({
+          workspaceRoot: runtimeWorkspace,
+          sessionId: state.sessionId,
+        });
+        stdout.write(`${formatSessionUsageStatus(usageSummary)}\n`);
+      }
       if (result.kind === "ubus") {
         const ubusResult = await runUbusCommand(state, {
           workspaceRoot: runtimeWorkspace,
@@ -607,4 +635,5 @@ module.exports = {
   runSingleCommand,
   extractAgentNickname,
   parseAgentArgs,
+  formatSessionUsageStatus,
 };

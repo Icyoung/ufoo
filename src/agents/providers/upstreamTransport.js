@@ -69,6 +69,29 @@ function buildOpenAiChatRequest({
   return request;
 }
 
+// Anthropic prompt caching allows up to 4 cache_control breakpoints; the
+// system prompt is a stable prefix, so it is always marked, and once there
+// is real history the last user message is marked too so follow-up turns
+// reuse the cached conversation prefix.
+const ANTHROPIC_CACHE_CONTROL = { type: "ephemeral" };
+const ANTHROPIC_CACHE_MIN_HISTORY = 3;
+
+function withAnthropicCacheControl(content) {
+  if (Array.isArray(content)) {
+    if (!content.length) return content;
+    return content.map((block, index) => (
+      index === content.length - 1 && block && typeof block === "object"
+        ? { ...block, cache_control: { ...ANTHROPIC_CACHE_CONTROL } }
+        : block
+    ));
+  }
+  return [{
+    type: "text",
+    text: String(content || ""),
+    cache_control: { ...ANTHROPIC_CACHE_CONTROL },
+  }];
+}
+
 function buildAnthropicMessagesRequest({
   model = "",
   systemPrompt = "",
@@ -82,13 +105,20 @@ function buildAnthropicMessagesRequest({
   if (!requestMessages.length) {
     requestMessages.push({ role: "user", content: String(prompt || "") });
   }
+  if (requestMessages.length >= ANTHROPIC_CACHE_MIN_HISTORY) {
+    for (let i = requestMessages.length - 1; i >= 0; i -= 1) {
+      if (requestMessages[i].role !== "user") continue;
+      requestMessages[i].content = withAnthropicCacheControl(requestMessages[i].content);
+      break;
+    }
+  }
   const request = {
     model: String(model || "").trim(),
     max_tokens: maxTokens,
     messages: requestMessages,
     temperature,
   };
-  if (systemPrompt) request.system = systemPrompt;
+  if (systemPrompt) request.system = withAnthropicCacheControl(String(systemPrompt));
   if (Array.isArray(tools) && tools.length > 0) {
     request.tools = tools.slice();
   }

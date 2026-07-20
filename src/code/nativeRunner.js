@@ -5,6 +5,7 @@ const {
   resolveKimiUpstreamCredentials,
 } = require("../agents/providers/credentials/kimi");
 const { runToolCall } = require("./dispatch");
+const { appendUsageRecord } = require("./usageStore");
 const { getReadToolDescription } = require("../agents/prompts/native/toolDescriptions/read");
 const { getWriteToolDescription } = require("../agents/prompts/native/toolDescriptions/write");
 const { getEditToolDescription } = require("../agents/prompts/native/toolDescriptions/edit");
@@ -25,6 +26,11 @@ const DEFAULT_MAX_NATIVE_TOOL_ERRORS = 5;
 // via UFOO_UCODE_MAX_TOKENS (positive integer).
 const DEFAULT_OPENAI_MAX_TOKENS = 131072;
 const DEFAULT_ANTHROPIC_MAX_TOKENS = 64000;
+// Prompt caching is GA on the current Messages API: cache_control blocks need
+// no anthropic-beta header. Kept as a constant so the marker shape stays in
+// one place (system block + last history message, 2 of the 4 allowed
+// breakpoints).
+const ANTHROPIC_CACHE_CONTROL = Object.freeze({ type: "ephemeral" });
 
 function nowMs() {
   return Date.now();
@@ -51,6 +57,58 @@ function resolveNativeToolBudget(env = process.env) {
 
 function resolveMaxTokens(fallback) {
   return normalizePositiveInt(process.env.UFOO_UCODE_MAX_TOKENS, fallback);
+}
+
+function toUsageInt(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  return Math.floor(parsed);
+}
+
+function createUsageTotals() {
+  return {
+    turns: 0,
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheCreation: 0,
+  };
+}
+
+function addUsageTotals(totals, usage = null) {
+  if (!usage || typeof usage !== "object") return totals;
+  totals.input += toUsageInt(usage.input);
+  totals.output += toUsageInt(usage.output);
+  totals.cacheRead += toUsageInt(usage.cacheRead);
+  totals.cacheCreation += toUsageInt(usage.cacheCreation);
+  return totals;
+}
+
+// OpenAI-compatible streams end with one usage chunk carrying whole-turn
+// totals (prompt_tokens_details.cached_tokens counts the cache hits).
+function readOpenAiUsage(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const details = raw.prompt_tokens_details && typeof raw.prompt_tokens_details === "object"
+    ? raw.prompt_tokens_details
+    : {};
+  return {
+    input: toUsageInt(raw.prompt_tokens),
+    output: toUsageInt(raw.completion_tokens),
+    cacheRead: toUsageInt(details.cached_tokens),
+    cacheCreation: 0,
+  };
+}
+
+// Anthropic reports input/cache tokens once on message_start; output tokens
+// arrive per message_delta. The non-streaming body carries the full totals.
+function readAnthropicUsage(raw, { includeOutput = false } = {}) {
+  if (!raw || typeof raw !== "object") return null;
+  return {
+    input: toUsageInt(raw.input_tokens),
+    output: includeOutput ? toUsageInt(raw.output_tokens) : 0,
+    cacheRead: toUsageInt(raw.cache_read_input_tokens),
+    cacheCreation: toUsageInt(raw.cache_creation_input_tokens),
+  };
 }
 
 function enforceNativeToolBudget({
@@ -576,6 +634,8 @@ async function runOpenAiLikeTurn({
     tools: buildCoreToolSpecs(),
     tool_choice: "auto",
     stream: true,
+    // Ask for the terminal usage chunk so token/cache accounting works.
+    stream_options: { include_usage: true },
     // Kimi k3 rejects any temperature other than 1.
     temperature: normalizeProvider(provider) === "kimi" ? 1 : 0,
   };
@@ -592,6 +652,7 @@ async function runOpenAiLikeTurn({
   let responseText = "";
   let nextSyntheticIndex = 0;
   let lastSyntheticIndex = -1;
+  let streamUsage = null;
 
   return runSseRequest({
     url,
@@ -612,11 +673,17 @@ async function runOpenAiLikeTurn({
       return {
         text,
         toolCalls,
+        usage: readOpenAiUsage(data && data.usage),
       };
     },
     onEvent: ({ data }) => {
       const chunk = parseJsonSafe(data, null);
       if (!chunk || typeof chunk !== "object") return;
+
+      // The usage chunk carries empty choices, so read it before the
+      // choice guard below; latest wins (it reports whole-turn totals).
+      const chunkUsage = readOpenAiUsage(chunk.usage);
+      if (chunkUsage) streamUsage = chunkUsage;
 
       const choice = chunk.choices && chunk.choices[0] ? chunk.choices[0] : null;
       if (!choice || typeof choice !== "object") return;
@@ -695,6 +762,8 @@ async function runOpenAiLikeTurn({
       const fallbackBlock = parseSseDataBlock(rawBuffer);
       if (fallbackBlock && fallbackBlock !== "[DONE]") {
         const chunk = parseJsonSafe(fallbackBlock, null);
+        const tailUsage = readOpenAiUsage(chunk && chunk.usage);
+        if (tailUsage) streamUsage = tailUsage;
         const choice = chunk && chunk.choices && chunk.choices[0] ? chunk.choices[0] : null;
         if (choice && choice.delta && typeof choice.delta.content === "string" && choice.delta.content) {
           responseText += choice.delta.content;
@@ -709,6 +778,7 @@ async function runOpenAiLikeTurn({
       toolCalls: Array.from(toolCallMap.entries())
         .sort((a, b) => a[0] - b[0])
         .map((entry) => entry[1]),
+      usage: streamUsage,
     }),
   });
 }
@@ -751,6 +821,48 @@ function extractAnthropicToolCalls(content = []) {
     }));
 }
 
+// Mark the newest message with a cache breakpoint so the append-only history
+// prefix is served from the prompt cache. The payload gets a copy: stamping
+// cache_control onto the shared history array would leave stale breakpoints
+// behind as later turns append, eventually exceeding the 4-breakpoint limit.
+function withAnthropicCacheBreakpoint(messages = []) {
+  if (!Array.isArray(messages) || messages.length === 0) return messages;
+  const copy = messages.slice();
+  const lastIndex = copy.length - 1;
+  const last = copy[lastIndex];
+  if (!last || typeof last !== "object" || Array.isArray(last)) return copy;
+  if (typeof last.content === "string") {
+    if (!last.content) return copy;
+    copy[lastIndex] = {
+      ...last,
+      content: [
+        {
+          type: "text",
+          text: last.content,
+          cache_control: { ...ANTHROPIC_CACHE_CONTROL },
+        },
+      ],
+    };
+    return copy;
+  }
+  if (Array.isArray(last.content) && last.content.length > 0) {
+    const blocks = last.content.slice();
+    const blockIndex = blocks.length - 1;
+    const block = blocks[blockIndex];
+    if (block && typeof block === "object" && !Array.isArray(block)) {
+      blocks[blockIndex] = {
+        ...block,
+        cache_control: { ...ANTHROPIC_CACHE_CONTROL },
+      };
+      copy[lastIndex] = {
+        ...last,
+        content: blocks,
+      };
+    }
+  }
+  return copy;
+}
+
 async function runAnthropicTurn({
   url = "",
   apiKey = "",
@@ -766,13 +878,21 @@ async function runAnthropicTurn({
   const payload = {
     model,
     max_tokens: resolveMaxTokens(DEFAULT_ANTHROPIC_MAX_TOKENS),
-    messages,
+    messages: withAnthropicCacheBreakpoint(messages),
     tools: buildAnthropicToolSpecs(),
     stream: true,
   };
   const systemText = String(systemPrompt || "").trim();
   if (systemText) {
-    payload.system = systemText;
+    // Block form with a cache breakpoint; the system prompt is the most
+    // stable prefix of every request.
+    payload.system = [
+      {
+        type: "text",
+        text: systemText,
+        cache_control: { ...ANTHROPIC_CACHE_CONTROL },
+      },
+    ];
   }
 
   const headers = {
@@ -787,6 +907,7 @@ async function runAnthropicTurn({
   let responseText = "";
   let nextSyntheticBlockIndex = 0;
   let lastBlockIndex = -1;
+  const turnUsage = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
 
   return runSseRequest({
     url,
@@ -804,10 +925,12 @@ async function runAnthropicTurn({
       if (text && typeof onTextDelta === "function") {
         onTextDelta(text);
       }
+      addUsageTotals(turnUsage, readAnthropicUsage(data && data.usage, { includeOutput: true }));
       return {
         text,
         assistantContent: content,
         toolCalls: extractAnthropicToolCalls(content),
+        usage: turnUsage,
       };
     },
     onEvent: ({ event, data }) => {
@@ -819,6 +942,28 @@ async function runAnthropicTurn({
           ? String(payloadChunk.error.message)
           : "anthropic stream error";
         throw new Error(errMsg);
+      }
+
+      if (event === "message_start") {
+        const messageUsage = readAnthropicUsage(
+          payloadChunk.message && typeof payloadChunk.message === "object"
+            ? payloadChunk.message.usage
+            : null
+        );
+        if (messageUsage) {
+          turnUsage.input = messageUsage.input;
+          turnUsage.cacheRead = messageUsage.cacheRead;
+          turnUsage.cacheCreation = messageUsage.cacheCreation;
+        }
+        return;
+      }
+
+      if (event === "message_delta") {
+        const deltaUsage = payloadChunk.usage && typeof payloadChunk.usage === "object"
+          ? payloadChunk.usage
+          : {};
+        turnUsage.output += toUsageInt(deltaUsage.output_tokens);
+        return;
       }
 
       if (event === "content_block_start") {
@@ -957,6 +1102,7 @@ async function runAnthropicTurn({
         text: responseText,
         assistantContent,
         toolCalls: extractAnthropicToolCalls(assistantContent),
+        usage: turnUsage,
       };
     },
   });
@@ -1133,6 +1279,7 @@ async function runNativeLoop({
   let toolCallsExecuted = 0;
   let toolErrors = 0;
   const toolBudget = resolveNativeToolBudget();
+  const usage = createUsageTotals();
 
   while (true) {
     guards.ensureActive();
@@ -1159,6 +1306,9 @@ async function runNativeLoop({
       },
     });
 
+    usage.turns += 1;
+    addUsageTotals(usage, turnResult && turnResult.usage);
+
     const toolCalls = transport.getToolCalls(turnResult);
 
     if (toolCalls.length === 0) {
@@ -1172,6 +1322,7 @@ async function runNativeLoop({
         streamed,
         toolCallsExecuted,
         messages,
+        usage,
       };
     }
 
@@ -1182,6 +1333,7 @@ async function runNativeLoop({
         streamed,
         toolCallsExecuted,
         messages,
+        usage,
       };
     }
 
@@ -1312,12 +1464,27 @@ async function runNativeAgentTask({
         : ""
     );
 
+    const usage = runResult.usage && typeof runResult.usage === "object"
+      ? runResult.usage
+      : createUsageTotals();
+    appendUsageRecord(workspaceRoot, {
+      sessionId: nextSessionId,
+      model: runtime.model,
+      provider: runtime.provider,
+      turns: usage.turns,
+      input: usage.input,
+      output: usage.output,
+      cacheRead: usage.cacheRead,
+      cacheCreation: usage.cacheCreation,
+    });
+
     return {
       ok: true,
       error: "",
       output: outputText,
       messages: cloneMessageList(runResult.messages),
       sessionId: nextSessionId,
+      usage,
       // The loop marks streamed=true whenever it receives a stream callback;
       // only report it when the caller actually registered one.
       streamed: Boolean(runResult.streamed) && typeof onStreamDelta === "function",

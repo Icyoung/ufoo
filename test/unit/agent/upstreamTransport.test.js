@@ -22,6 +22,7 @@ const { resolveRuntimeConfig } = require("../../../src/code/nativeRunner");
 const { resolveCodexUpstreamCredentials } = require("../../../src/agents/providers/credentials/codex");
 const { resolveClaudeUpstreamCredentials } = require("../../../src/agents/providers/credentials/claude");
 const {
+  buildAnthropicMessagesRequest,
   buildCodexResponsesRequest,
   normalizeProvider,
   parseCodexSsePayload,
@@ -70,6 +71,61 @@ describe("agent upstreamTransport", () => {
         },
       ],
     });
+  });
+
+  test("builds anthropic request with cache_control on the system prompt", () => {
+    expect(buildAnthropicMessagesRequest({
+      model: "claude-sonnet",
+      systemPrompt: "system rules",
+      prompt: "hello",
+    })).toEqual({
+      model: "claude-sonnet",
+      max_tokens: 4096,
+      temperature: 0,
+      system: [{
+        type: "text",
+        text: "system rules",
+        cache_control: { type: "ephemeral" },
+      }],
+      messages: [{ role: "user", content: "hello" }],
+    });
+  });
+
+  test("marks the last user message with cache_control when history is long", () => {
+    const request = buildAnthropicMessagesRequest({
+      model: "claude-sonnet",
+      systemPrompt: "system rules",
+      messages: [
+        { role: "user", content: "first" },
+        { role: "assistant", content: "reply" },
+        { role: "user", content: "second" },
+      ],
+    });
+    expect(request.messages[0]).toEqual({ role: "user", content: "first" });
+    expect(request.messages[1]).toEqual({ role: "assistant", content: "reply" });
+    expect(request.messages[2]).toEqual({
+      role: "user",
+      content: [{
+        type: "text",
+        text: "second",
+        cache_control: { type: "ephemeral" },
+      }],
+    });
+  });
+
+  test("leaves short anthropic history untouched by message breakpoints", () => {
+    const request = buildAnthropicMessagesRequest({
+      model: "claude-sonnet",
+      messages: [
+        { role: "user", content: "first" },
+        { role: "assistant", content: "reply" },
+      ],
+    });
+    expect(request.messages).toEqual([
+      { role: "user", content: "first" },
+      { role: "assistant", content: "reply" },
+    ]);
+    expect(request.system).toBeUndefined();
   });
 
   test("parses codex SSE payload into output text and usage", () => {

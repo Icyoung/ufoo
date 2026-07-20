@@ -347,6 +347,158 @@ describe("agent internalRunner stream forwarding", () => {
     );
   });
 
+  test("forwards thread usage into result meta and done envelope", async () => {
+    const busSender = {
+      enqueue: jest.fn(),
+      flush: jest.fn(async () => {}),
+    };
+    const evt = { publisher: "chat:usage", data: { message: "task" } };
+    const threadRuntime = {
+      enabled: true,
+      thread: {
+        runStreamed: jest.fn(async function* () {
+          yield { type: "text_delta", delta: "hello" };
+          yield { type: "usage", turnId: "t1", usage: { input_tokens: 10, output_tokens: 4 } };
+          yield {
+            type: "turn_completed",
+            turnId: "t1",
+            usage: {
+              input_tokens: 12,
+              output_tokens: 5,
+              cache_read_input_tokens: 7,
+              cache_creation_input_tokens: 3,
+            },
+            stopReason: "end_turn",
+          };
+        }),
+      },
+      rebuildThread: jest.fn(async () => {}),
+    };
+
+    const result = await handleEvent(
+      process.cwd(),
+      "claude",
+      "claude-cli",
+      "",
+      "claude:usage",
+      "claude-usage",
+      evt,
+      busSender,
+      [],
+      threadRuntime
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.meta).toEqual({
+      input_tokens: 12,
+      output_tokens: 5,
+      cache_read_tokens: 7,
+      cache_creation_tokens: 3,
+      stop_reason: "end_turn",
+    });
+    expect(busSender.enqueue).toHaveBeenCalledWith(
+      "chat:usage",
+      JSON.stringify({
+        stream: true,
+        done: true,
+        reason: "complete",
+        usage: {
+          input_tokens: 12,
+          output_tokens: 5,
+          cache_read_tokens: 7,
+          cache_creation_tokens: 3,
+        },
+      })
+    );
+  });
+
+  test("maps codex cached_input_tokens into cache_read_tokens meta", async () => {
+    const busSender = {
+      enqueue: jest.fn(),
+      flush: jest.fn(async () => {}),
+    };
+    const evt = { publisher: "chat:codex-usage", data: { message: "task" } };
+    const threadRuntime = {
+      enabled: true,
+      thread: {
+        runStreamed: jest.fn(async function* () {
+          yield { type: "text_delta", delta: "hello" };
+          yield {
+            type: "turn_completed",
+            turnId: "t2",
+            usage: { input_tokens: 21, cached_input_tokens: 9, output_tokens: 6 },
+          };
+        }),
+      },
+      rebuildThread: jest.fn(async () => {}),
+    };
+
+    const result = await handleEvent(
+      process.cwd(),
+      "codex",
+      "codex-cli",
+      "",
+      "codex:usage",
+      "codex-usage",
+      evt,
+      busSender,
+      [],
+      threadRuntime
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.meta).toEqual({
+      input_tokens: 21,
+      output_tokens: 6,
+      cache_read_tokens: 9,
+      cache_creation_tokens: 0,
+      stop_reason: "",
+    });
+  });
+
+  test("returns zeroed usage meta when the thread reports no usage", async () => {
+    const busSender = {
+      enqueue: jest.fn(),
+      flush: jest.fn(async () => {}),
+    };
+    const evt = { publisher: "chat:no-usage", data: { message: "task" } };
+    const threadRuntime = {
+      enabled: true,
+      thread: {
+        runStreamed: jest.fn(async function* () {
+          yield { type: "text_delta", delta: "hello" };
+        }),
+      },
+      rebuildThread: jest.fn(async () => {}),
+    };
+
+    const result = await handleEvent(
+      process.cwd(),
+      "codex",
+      "codex-cli",
+      "",
+      "codex:no-usage",
+      "codex-no-usage",
+      evt,
+      busSender,
+      [],
+      threadRuntime
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.meta).toEqual({
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_creation_tokens: 0,
+      stop_reason: "",
+    });
+    expect(busSender.enqueue).toHaveBeenCalledWith(
+      "chat:no-usage",
+      JSON.stringify({ stream: true, done: true, reason: "complete" })
+    );
+  });
+
   test.each(["chat-agent-view", "ufoo-agent", "ufoo-agent-gate-router"])(
     "thread runtime streams replies for %s source through managed ufoo-agent",
     async (source) => {
