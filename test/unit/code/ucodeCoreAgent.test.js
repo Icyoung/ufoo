@@ -38,6 +38,7 @@ const {
   resolvePlannerProvider,
   extractJsonSummary,
   enrichNativeError,
+  resolveNlTaskTimeoutMs,
   resolveUcodeProviderModel,
   persistSessionState,
   resumeSessionState,
@@ -1123,6 +1124,27 @@ describe("ucode core agent nl path", () => {
     const text = enrichNativeError("fetch failed");
     expect(text).toContain("Network connection to provider failed");
     expect(text).toContain("/settings ucode show");
+  });
+
+  test("enrichNativeError adds budget hint for task timeouts", () => {
+    const text = enrichNativeError("CLI timeout (1800000ms)");
+    expect(text).toContain("UFOO_UCODE_TASK_TIMEOUT_MS");
+    expect(text).toContain("--timeout-ms");
+  });
+
+  test("resolveNlTaskTimeoutMs prefers explicit value, then env, then 30min default", () => {
+    const saved = process.env.UFOO_UCODE_TASK_TIMEOUT_MS;
+    try {
+      delete process.env.UFOO_UCODE_TASK_TIMEOUT_MS;
+      expect(resolveNlTaskTimeoutMs(45000)).toBe(45000);
+      expect(resolveNlTaskTimeoutMs(NaN)).toBe(1800000);
+      process.env.UFOO_UCODE_TASK_TIMEOUT_MS = "3600000";
+      expect(resolveNlTaskTimeoutMs(NaN)).toBe(3600000);
+      expect(resolveNlTaskTimeoutMs(45000)).toBe(45000);
+    } finally {
+      if (saved === undefined) delete process.env.UFOO_UCODE_TASK_TIMEOUT_MS;
+      else process.env.UFOO_UCODE_TASK_TIMEOUT_MS = saved;
+    }
   });
 
   test("formatNlResult returns friendly plain error in non-json mode", () => {

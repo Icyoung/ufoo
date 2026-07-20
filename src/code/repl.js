@@ -249,7 +249,7 @@ async function runUcodeCoreAgent({
   appendSystemPrompt = "",
   systemPrompt = "",
   sessionId = "",
-  timeoutMs = 600000,
+  timeoutMs = 0,
   jsonOutput = false,
   forceTui = false,
   disableTui = false,
@@ -261,6 +261,7 @@ async function runUcodeCoreAgent({
     formatNlResult,
     persistSessionState,
     resumeSessionState,
+    resolveNlTaskTimeoutMs,
     resolveUcodeProviderModel,
     runNaturalLanguageTask,
   } = require("./agent");
@@ -284,7 +285,7 @@ async function runUcodeCoreAgent({
     }),
     nlMessages: [],
     sessionId: resolveSessionId(String(sessionId || "").trim()),
-    timeoutMs,
+    timeoutMs: resolveNlTaskTimeoutMs(Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : NaN),
     jsonOutput,
   };
   persistSessionState(state);
@@ -570,7 +571,7 @@ function parseAgentArgs(argv = []) {
     appendSystemPrompt: "",
     systemPrompt: "",
     sessionId: "",
-    timeoutMs: 600000,
+    timeoutMs: 0,
     jsonOutput: false,
     forceTui: false,
     disableTui: false,

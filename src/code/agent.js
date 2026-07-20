@@ -141,6 +141,18 @@ function computeExtendedTimeout(baseTimeoutMs) {
   return Math.min(1800000, Math.max(base * 2, base + 120000));
 }
 
+// Reasoning models routinely blew the old 10min budget across a multi-turn
+// tool loop. Total per-task budget defaults to 30min and can be raised per
+// call, via --timeout-ms, or via UFOO_UCODE_TASK_TIMEOUT_MS.
+const DEFAULT_NL_TASK_TIMEOUT_MS = 1800000;
+
+function resolveNlTaskTimeoutMs(value) {
+  if (Number.isFinite(value) && value > 0) return Math.max(1000, Math.floor(value));
+  const env = Number(process.env.UFOO_UCODE_TASK_TIMEOUT_MS);
+  if (Number.isFinite(env) && env > 0) return Math.max(1000, Math.floor(env));
+  return DEFAULT_NL_TASK_TIMEOUT_MS;
+}
+
 function enrichNativeError(errorMessage = "") {
   const text = String(errorMessage || "").trim();
   if (!text) return "nl task failed";
@@ -167,6 +179,9 @@ function enrichNativeError(errorMessage = "") {
     || lower.includes("invalid api key")
   ) {
     return `${text}. Check provider/url/key via /settings ucode show.`;
+  }
+  if (lower.includes("cli timeout")) {
+    return `${text}. Task budget exceeded; raise it with --timeout-ms or UFOO_UCODE_TASK_TIMEOUT_MS.`;
   }
   return text;
 }
@@ -394,7 +409,7 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
     state.provider || process.env.UFOO_UCODE_PROVIDER || ""
   );
   const model = String(state.model || process.env.UFOO_UCODE_MODEL || "").trim();
-  const timeoutMs = Number.isFinite(state.timeoutMs) ? state.timeoutMs : 600000;
+  const timeoutMs = resolveNlTaskTimeoutMs(state.timeoutMs);
   let streamed = false;
   let streamLastChar = "";
   let toolEventsThisAttempt = 0;
@@ -715,6 +730,8 @@ module.exports = {
   resolvePlannerProvider,
   extractJsonSummary,
   enrichNativeError,
+  resolveNlTaskTimeoutMs,
+  DEFAULT_NL_TASK_TIMEOUT_MS,
   resolveUcodeProviderModel,
   buildSessionSnapshotFromState,
   persistSessionState,
