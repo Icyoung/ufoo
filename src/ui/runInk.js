@@ -18,19 +18,28 @@
  *   await handle.waitUntilExit();
  */
 
+// Resolve the ink.render options. patchConsole defaults ON so stray
+// console.log/warn output is routed through Ink (rendered above the live
+// frame) instead of punching holes through the repainted frame — direct
+// stdout writes mid-frame are a classic cause of visible flicker/tearing.
+function resolveInkRenderOptions(options = {}) {
+  return {
+    stdin: options.stdin || process.stdin,
+    stdout: options.stdout || process.stdout,
+    stderr: options.stderr || process.stderr,
+    exitOnCtrlC: options.exitOnCtrlC !== false,
+    patchConsole: options.patchConsole !== false,
+  };
+}
+
 async function runInk(createRoot, options = {}) {
   const ink = await import("ink");
   const React = require("react");
   const element = createRoot(React, ink);
   if (!element) throw new Error("runInk: createRoot returned no element");
-  const stdout = options.stdout || process.stdout;
-  const inst = ink.render(element, {
-    stdin: options.stdin || process.stdin,
-    stdout,
-    stderr: options.stderr || process.stderr,
-    exitOnCtrlC: options.exitOnCtrlC !== false,
-    patchConsole: options.patchConsole === true,
-  });
+  const renderOptions = resolveInkRenderOptions(options);
+  const stdout = renderOptions.stdout;
+  const inst = ink.render(element, renderOptions);
   // ink keeps the final rendered frame on screen when it unmounts (it writes
   // the frame as plain stdout output), which leaves the TUI lingering after
   // Ctrl+C. Clear and home the cursor on every clean exit so the shell prompt
@@ -54,4 +63,4 @@ async function runInk(createRoot, options = {}) {
   };
 }
 
-module.exports = { runInk };
+module.exports = { runInk, resolveInkRenderOptions };

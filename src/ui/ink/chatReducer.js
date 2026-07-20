@@ -44,6 +44,7 @@ const DEFAULT_PROVIDER_OPTIONS = [
   { label: "codex", value: "codex-cli" },
   { label: "claude", value: "claude-cli" },
   { label: "agy", value: "agy-cli" },
+  { label: "kimi", value: "kimi-cli" },
 ];
 function projectRootOf(row = {}) {
   return String((row && (row.root || row.project_root || row.projectRoot)) || "");
@@ -133,7 +134,9 @@ function createInitialState({ banner = [], globalMode = false, globalScope = "co
     // activeStream is the in-flight chunk-by-chunk publisher message (set
     // while the daemon is streaming). Rendered live below <Static>;
     // promoted to <Static> when the stream finishes the same way the
-    // tool-merge group is.
+    // tool-merge group is. Text accumulates in `chunks` (joined on read via
+    // activeStreamText) so each delta dispatch is O(1) instead of O(n)
+    // string concatenation.
     activeStream: null,
     inputHistory: [],
     historyIndex: 0,
@@ -164,6 +167,15 @@ function freezeMergeIntoLog(state) {
   if (!state.activeMerge) return state;
   const summary = fmt.buildToolMergeRowText(state.activeMerge.entries);
   return appendLog({ ...state, activeMerge: null }, summary);
+}
+
+// Joined text of the in-flight stream. Deltas accumulate in `chunks` so the
+// reducer never does per-delta string concatenation (O(n²) over a stream);
+// readers pay a single O(n) join when they actually need the text.
+function activeStreamText(stream) {
+  if (!stream || typeof stream !== "object") return "";
+  if (Array.isArray(stream.chunks)) return stream.chunks.join("");
+  return String(stream.text || "");
 }
 
 function reducer(state, action) {
@@ -244,9 +256,17 @@ function reducer(state, action) {
     case "agents/patchMeta": {
       const agentId = String(action.agentId || "").trim();
       if (!agentId) return state;
+      const patch = action.patch || {};
+      const patchKeys = Object.keys(patch);
+      const current = (state.activeAgentMeta instanceof Map ? state.activeAgentMeta.get(agentId) : null) || {};
+      // Skip no-op patches: activity updates stream in at a high rate and an
+      // unchanged patch would still mint a new Map + state, forcing a full
+      // re-render of the Ink tree.
+      if (patchKeys.every((key) => stableJson(current[key]) === stableJson(patch[key]))) {
+        return state;
+      }
       const meta = new Map(state.activeAgentMeta instanceof Map ? state.activeAgentMeta : []);
-      const current = meta.get(agentId) || {};
-      meta.set(agentId, { ...current, ...(action.patch || {}) });
+      meta.set(agentId, { ...current, ...patch });
       return { ...state, activeAgentMeta: meta };
     }
     case "agents/select":
@@ -396,26 +416,30 @@ function reducer(state, action) {
     case "stream/begin":
       return {
         ...state,
-        activeStream: { publisher: action.publisher || "", text: "" },
+        activeStream: { publisher: action.publisher || "", chunks: [] },
       };
     case "stream/delta": {
+      const delta = String(action.delta || "");
       if (!state.activeStream) {
         return {
           ...state,
-          activeStream: { publisher: action.publisher || "", text: String(action.delta || "") },
+          activeStream: { publisher: action.publisher || "", chunks: [delta] },
         };
       }
+      const chunks = Array.isArray(state.activeStream.chunks)
+        ? state.activeStream.chunks
+        : [String(state.activeStream.text || "")];
       return {
         ...state,
         activeStream: {
           ...state.activeStream,
-          text: state.activeStream.text + String(action.delta || ""),
+          chunks: chunks.concat([delta]),
         },
       };
     }
     case "stream/end": {
       if (!state.activeStream) return state;
-      const lines = String(state.activeStream.text || "").split(/\r?\n/);
+      const lines = activeStreamText(state.activeStream).split(/\r?\n/);
       const prefix = state.activeStream.publisher
         ? `${state.activeStream.publisher}: `
         : "";
@@ -434,4 +458,4 @@ function reducer(state, action) {
   }
 }
 
-module.exports = { reducer, createInitialState, DASHBOARD_VIEWS };
+module.exports = { reducer, createInitialState, DASHBOARD_VIEWS, activeStreamText };

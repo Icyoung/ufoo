@@ -10,8 +10,34 @@ function createRenderer(options = {}) {
     write: rawWrite = process.stdout.write.bind(process.stdout),
   } = options;
 
+  // Last-write caches used to skip redundant output. Both are reset by
+  // clear()/clearRows() so a blanked region is always repainted.
+  let slotCache = new Map();
+  let paneSigs = new WeakMap();
+
   function write(data) {
     try { rawWrite(data); } catch {}
+  }
+
+  function writeIfChanged(slot, data, top, height) {
+    const prev = slotCache.get(slot);
+    if (prev && prev.data === data && prev.top === top) return;
+    slotCache.set(slot, { data, top, height });
+    write(data);
+  }
+
+  function paneSignature(pane, focused, extra) {
+    return [pane.top, pane.left, pane.width, pane.height, focused ? 1 : 0, extra || ""].join("|");
+  }
+
+  function shouldSkipPane(vt, sig, force) {
+    if (force || paneSigs.get(vt) !== sig) return false;
+    return typeof vt.isDirty === "function" ? !vt.isDirty() : false;
+  }
+
+  function markPaneRendered(vt, sig) {
+    paneSigs.set(vt, sig);
+    if (vt && typeof vt.clearDirty === "function") vt.clearDirty();
   }
 
   function moveTo(row, col) {
@@ -59,7 +85,9 @@ function createRenderer(options = {}) {
     );
   }
 
-  function renderPane(vt, pane, focused, label) {
+  function renderPane(vt, pane, focused, label, opts = {}) {
+    const sig = paneSignature(pane, focused, label || "");
+    if (shouldSkipPane(vt, sig, opts.force)) return;
     const { buffer, rows, cols, cursorRow, cursorCol } = vt.getScreen();
     const { top, left, width, height } = pane;
 
@@ -108,6 +136,7 @@ function createRenderer(options = {}) {
     out += moveTo(top + height - 1, left) + borderColor + botLine + reset;
 
     write(out);
+    markPaneRendered(vt, sig);
   }
 
   function renderCells(cells, maxWidth, cursorCol = -1) {
@@ -147,7 +176,13 @@ function createRenderer(options = {}) {
     return `${color}${truncated}${" ".repeat(pad)}${reset}`;
   }
 
-  function renderInternalPane(vt, pane, focused, info = {}) {
+  function renderInternalPane(vt, pane, focused, info = {}, opts = {}) {
+    const extra = JSON.stringify([
+      info.label || "", info.status || "", info.detail || "",
+      info.input || "", info.cursor ?? "",
+    ]);
+    const sig = paneSignature(pane, focused, extra);
+    if (shouldSkipPane(vt, sig, opts.force)) return;
     const { buffer, rows, cols } = vt.getScreen();
     const { top, left, width, height } = pane;
 
@@ -217,6 +252,7 @@ function createRenderer(options = {}) {
     out += moveTo(top + height - 1, left) + borderColor + botLine + reset;
 
     write(out);
+    markPaneRendered(vt, sig);
   }
 
   function stripControl(str) {
@@ -288,14 +324,14 @@ function createRenderer(options = {}) {
       out += truncated + reset + " ".repeat(pad);
       out += dim + BOX.v + reset;
     }
-    write(out);
+    writeIfChanged("chatlog", out, top, height);
   }
 
   function renderSeparator(pane, highlighted) {
     const { top, left, width } = pane;
     const reset = "\x1b[0m";
     const color = highlighted ? "\x1b[36m" : "\x1b[90m";
-    write(moveTo(top, left) + color + "─".repeat(width) + reset);
+    writeIfChanged(`sep:${top}:${left}`, moveTo(top, left) + color + "─".repeat(width) + reset, top, 1);
   }
 
   function renderStatusLine(pane, text) {
@@ -304,17 +340,19 @@ function createRenderer(options = {}) {
     const dim = "\x1b[90m";
     const truncated = truncateVisible(text || "", width);
     const pad = Math.max(0, width - visibleLength(truncated));
-    write(moveTo(top, left) + dim + truncated + " ".repeat(pad) + reset);
+    writeIfChanged("status", moveTo(top, left) + dim + truncated + " ".repeat(pad) + reset, top, 1);
   }
 
   function renderDashboard(pane, lines) {
     const { top, left, width } = pane;
     const reset = "\x1b[0m";
+    let out = "";
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i] || "";
       const pad = Math.max(0, width - visibleLength(line));
-      write(moveTo(top + i, left) + line + " ".repeat(pad) + reset);
+      out += moveTo(top + i, left) + line + " ".repeat(pad) + reset;
     }
+    writeIfChanged("dashboard", out, top, lines.length);
   }
 
   function renderInputPrompt(pane, prefix, draft, cursor) {
@@ -331,17 +369,28 @@ function createRenderer(options = {}) {
     const promptLine = cyan + prefixStr + reset + before + inverse + cursorChar + reset + after;
     const truncated = truncateVisible(promptLine, width);
     const pad = Math.max(0, width - visibleLength(truncated));
-    write(moveTo(top, left) + truncated + " ".repeat(pad) + reset);
+    writeIfChanged("input", moveTo(top, left) + truncated + " ".repeat(pad) + reset, top, 1);
   }
 
   function hideCursor() { write("\x1b[?25l"); }
   function showCursor() { write("\x1b[?25h"); }
-  function clear() { write("\x1b[2J\x1b[H"); }
+  function clear() {
+    slotCache = new Map();
+    paneSigs = new WeakMap();
+    write("\x1b[2J\x1b[H");
+  }
 
   function clearRows(top, count, width, left = 0) {
     const rows = Math.max(0, Number(count) || 0);
     const cols = Math.max(0, Number(width) || 0);
     if (rows === 0 || cols === 0) return;
+    // Blanked rows must be repainted on the next pass: drop every cached
+    // slot overlapping the cleared range and reset pane signatures (kept
+    // in a WeakMap, so they cannot be filtered selectively).
+    for (const [slot, entry] of slotCache) {
+      if (entry.top < top + rows && top < entry.top + entry.height) slotCache.delete(slot);
+    }
+    paneSigs = new WeakMap();
     let out = "";
     const blank = " ".repeat(cols);
     for (let i = 0; i < rows; i++) {

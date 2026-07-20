@@ -1,6 +1,6 @@
 "use strict";
 
-const { reducer, createInitialState, DASHBOARD_VIEWS } = require("../../../src/ui/ink/chatReducer");
+const { reducer, createInitialState, DASHBOARD_VIEWS, activeStreamText } = require("../../../src/ui/ink/chatReducer");
 
 describe("chatReducer", () => {
   test("createInitialState seeds the log with the banner", () => {
@@ -353,7 +353,7 @@ describe("chatReducer", () => {
     expect(state.activeStream).toBeTruthy();
     state = reducer(state, { type: "stream/delta", delta: "Hello, " });
     state = reducer(state, { type: "stream/delta", delta: "world!" });
-    expect(state.activeStream.text).toBe("Hello, world!");
+    expect(activeStreamText(state.activeStream)).toBe("Hello, world!");
     state = reducer(state, { type: "stream/end" });
     expect(state.activeStream).toBeNull();
     const last = state.logLines[state.logLines.length - 1].text;
@@ -363,6 +363,41 @@ describe("chatReducer", () => {
   test("stream/delta without prior begin still seeds the active stream", () => {
     let state = createInitialState({ banner: [] });
     state = reducer(state, { type: "stream/delta", publisher: "x", delta: "hi" });
-    expect(state.activeStream.text).toBe("hi");
+    expect(activeStreamText(state.activeStream)).toBe("hi");
+  });
+
+  test("stream/delta accumulates chunks without per-delta string copies", () => {
+    let state = createInitialState({ banner: [] });
+    state = reducer(state, { type: "stream/begin", publisher: "claude" });
+    state = reducer(state, { type: "stream/delta", delta: "a" });
+    state = reducer(state, { type: "stream/delta", delta: "b" });
+    state = reducer(state, { type: "stream/delta", delta: "c" });
+    expect(state.activeStream.chunks).toEqual(["a", "b", "c"]);
+    expect(activeStreamText(state.activeStream)).toBe("abc");
+  });
+
+  test("agents/patchMeta with an identical patch is a no-op", () => {
+    let state = createInitialState();
+    state = reducer(state, { type: "agents/set", list: [
+      { type: "codex", id: "1", fullId: "codex:1", nickname: "worker" },
+    ]});
+    state = reducer(state, {
+      type: "agents/patchMeta",
+      agentId: "codex:1",
+      patch: { activity_state: "working", activity_detail: "running" },
+    });
+    const same = reducer(state, {
+      type: "agents/patchMeta",
+      agentId: "codex:1",
+      patch: { activity_state: "working", activity_detail: "running" },
+    });
+    expect(same).toBe(state);
+    const changed = reducer(state, {
+      type: "agents/patchMeta",
+      agentId: "codex:1",
+      patch: { activity_state: "working", activity_detail: "other" },
+    });
+    expect(changed).not.toBe(state);
+    expect(changed.activeAgentMeta.get("codex:1").activity_detail).toBe("other");
   });
 });

@@ -12,6 +12,11 @@ const path = require("path");
 
 const {
   createChatApp,
+  createChatStatusLine,
+  createInternalStatusLine,
+  createInkStreamState,
+  createThrottledSender,
+  decorateStaticLogEntry,
   bootstrapEnvironment,
   buildInternalLogRows,
   buildDirectBusSendRequest,
@@ -445,5 +450,152 @@ describe("chat history scope helpers", () => {
     expect(chatHistoryOptionsForScope({ globalMode: true, globalScope: "controller" })).toEqual({
       globalMode: true,
     });
+  });
+});
+
+describe("status line components", () => {
+  test("factories return render functions for stub React + ink", () => {
+    const React = require("react");
+    const ink = {
+      Box: () => null,
+      Text: () => null,
+    };
+    expect(typeof createChatStatusLine({ React, ink })).toBe("function");
+    expect(typeof createInternalStatusLine({ React, ink })).toBe("function");
+  });
+});
+
+describe("stream delta batching", () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  test("deltas accumulate and flush as a single dispatch per window", () => {
+    jest.useFakeTimers();
+    const dispatched = [];
+    const history = [];
+    const streamState = createInkStreamState({
+      dispatch: (action) => dispatched.push(action),
+      appendHistory: (kind, text) => history.push(text),
+      displayNameForPublisher: (value) => value,
+      flushIntervalMs: 50,
+    });
+
+    const stream = streamState.beginStream("codex:1", "codex-1", "", {});
+    expect(dispatched).toEqual([{ type: "stream/begin", publisher: "codex-1" }]);
+
+    streamState.appendStreamDelta(stream, "Hello, ");
+    streamState.appendStreamDelta(stream, "world");
+    streamState.appendStreamDelta(stream, "!");
+    // Batched: nothing dispatched until the flush window elapses.
+    expect(dispatched).toHaveLength(1);
+
+    jest.advanceTimersByTime(60);
+    expect(dispatched).toHaveLength(2);
+    expect(dispatched[1]).toEqual({
+      type: "stream/delta",
+      publisher: "codex-1",
+      delta: "Hello, world!",
+    });
+    expect(streamState.hasStream("codex:1")).toBe(true);
+  });
+
+  test("finalizeStream flushes pending deltas before stream/end", () => {
+    jest.useFakeTimers();
+    const dispatched = [];
+    const history = [];
+    const streamState = createInkStreamState({
+      dispatch: (action) => dispatched.push(action),
+      appendHistory: (kind, text) => history.push(text),
+      displayNameForPublisher: (value) => value,
+      flushIntervalMs: 50,
+    });
+
+    const stream = streamState.beginStream("codex:1", "codex-1", "", {});
+    streamState.appendStreamDelta(stream, "partial");
+    streamState.finalizeStream("codex:1", {}, "end");
+
+    expect(dispatched.map((action) => action.type)).toEqual([
+      "stream/begin",
+      "stream/delta",
+      "stream/end",
+    ]);
+    expect(dispatched[1].delta).toBe("partial");
+    expect(history).toEqual(["codex-1: partial"]);
+    expect(streamState.hasStream("codex:1")).toBe(false);
+  });
+});
+
+describe("daemon status request throttling", () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  test("first call sends immediately, bursts coalesce into one trailing send", () => {
+    jest.useFakeTimers();
+    const send = jest.fn();
+    const throttled = createThrottledSender(send, 500);
+
+    throttled();
+    expect(send).toHaveBeenCalledTimes(1);
+
+    throttled();
+    throttled();
+    throttled();
+    expect(send).toHaveBeenCalledTimes(1);
+
+    jest.advanceTimersByTime(500);
+    expect(send).toHaveBeenCalledTimes(2);
+
+    // A call right after the trailing send starts a new window.
+    throttled();
+    expect(send).toHaveBeenCalledTimes(2);
+    jest.advanceTimersByTime(500);
+    expect(send).toHaveBeenCalledTimes(3);
+  });
+
+  test("calls after a quiet window send immediately again", () => {
+    jest.useFakeTimers();
+    const send = jest.fn();
+    const throttled = createThrottledSender(send, 500);
+
+    throttled();
+    jest.advanceTimersByTime(600);
+    throttled();
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("static log decoration", () => {
+  test("mirrors buildChatLogGroups grouping with append-only flags", () => {
+    const lines = [
+      { id: "l-1", text: "ufoo · 已交给 qa" },
+      { id: "l-2", text: "  补充上下文" },
+      { id: "l-3", text: "✓ Done" },
+      { id: "l-4", text: "─── history ───" },
+      { id: "l-5", text: "" },
+    ];
+    const decorated = [];
+    for (const entry of lines) {
+      decorated.push(decorateStaticLogEntry(decorated[decorated.length - 1] || null, entry));
+    }
+
+    // Group start: assistant message.
+    expect(decorated[0]).toMatchObject({ continuation: false, groupKind: "assistant", marginBefore: false });
+    // Plain line continues the assistant group — no gap inside the group.
+    expect(decorated[1]).toMatchObject({ continuation: true, groupKind: "assistant", marginBefore: false });
+    // Success starts a new group; previous group contributes the gap.
+    expect(decorated[2]).toMatchObject({ continuation: false, groupKind: "success", marginBefore: true });
+    // Divider is standalone but still follows a groupable group.
+    expect(decorated[3]).toMatchObject({ continuation: false, groupKind: "divider", marginBefore: true });
+    // Spacer after a divider: no gap (divider renders its own marginBottom).
+    expect(decorated[4]).toMatchObject({ continuation: false, groupKind: "spacer", marginBefore: false });
+  });
+
+  test("decoration flags are stable once appended (Static-compatible)", () => {
+    const first = decorateStaticLogEntry(null, { id: "l-1", text: "agent-1 · hi" });
+    const second = decorateStaticLogEntry(first, { id: "l-2", text: "  more" });
+    const secondAgain = decorateStaticLogEntry(first, { id: "l-2", text: "  more" });
+    expect(secondAgain).toEqual(second);
   });
 });

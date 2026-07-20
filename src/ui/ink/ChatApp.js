@@ -22,7 +22,7 @@ const { runInk } = require("../runInk");
 const fmt = require("../format");
 const { createMultilineInput } = require("./MultilineInput");
 const { createDashboardBar } = require("./DashboardBar");
-const { reducer, createInitialState } = require("./chatReducer");
+const { reducer, createInitialState, activeStreamText } = require("./chatReducer");
 const {
   stripBlessedTags,
   compactDividerLabel,
@@ -396,13 +396,117 @@ function normalizeInkLogLines(text = "") {
   return clean.split(/\r?\n/);
 }
 
+// Stream deltas are batched into one dispatch per window (see
+// createInkStreamState) so a fast stream can't force 30+ full-tree
+// re-renders per second.
+const STREAM_FLUSH_INTERVAL_MS = 80;
+
+// Burst-coalescing sender: the first call fires immediately, calls inside
+// the window collapse into a single trailing send. Used for daemon STATUS
+// requests, which arrive in bursts (bus traffic + router callbacks) and
+// each trigger a dashboard re-render.
+function createThrottledSender(send, windowMs = 500) {
+  let lastSentAt = 0;
+  let timer = null;
+  const fire = () => {
+    timer = null;
+    lastSentAt = Date.now();
+    send();
+  };
+  return () => {
+    const now = Date.now();
+    const elapsed = now - lastSentAt;
+    if (elapsed >= windowMs) {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      lastSentAt = now;
+      send();
+      return;
+    }
+    if (!timer) {
+      timer = setTimeout(fire, windowMs - elapsed);
+      if (typeof timer.unref === "function") timer.unref();
+    }
+  };
+}
+
+// Kinds whose log entries render as a margin-bottom "transcript cell" in
+// buildChatLogGroups. Kept in sync with canAppendToChatLogGroup in
+// chatLogModel.js.
+const STATIC_GROUPABLE_KINDS = new Set(["assistant", "agent", "success", "error", "meta", "plain"]);
+
+// Shared row colors for both the dynamic (stream) and <Static> renderers.
+const CHAT_LOG_ROW_PALETTE = {
+  assistant: { marker: "cyan", speaker: "white", body: undefined, bold: true },
+  agent: { marker: "cyan", speaker: "cyan", body: undefined, bold: false },
+  error: { marker: "red", speaker: "red", body: "red", bold: true },
+  success: { marker: "green", speaker: "green", body: "green", bold: false },
+  divider: { marker: "gray", speaker: "gray", body: "gray", bold: false },
+  banner: { marker: "cyan", speaker: "cyan", body: "cyan", bold: true },
+  meta: { marker: "gray", speaker: "gray", body: "gray", bold: false },
+  plain: { marker: "gray", speaker: "gray", body: undefined, bold: false },
+};
+
+// Decorate one finalized log entry with the grouping facts the <Static>
+// renderer needs. Grouping is a deterministic left-to-right fold (same
+// rules as buildChatLogGroups), so once an entry is decorated its flags
+// never change — which is exactly what Static's append-only rendering
+// requires. `marginBefore` reproduces the old group marginBottom as a
+// margin-top on the next entry, because per-item rendering can't know a
+// group's end until the following entry arrives.
+function decorateStaticLogEntry(prev, entry) {
+  const row = buildChatLogLineModel(entry);
+  const continuation = Boolean(
+    prev
+    && (row.kind === "plain" || row.kind === "spacer")
+    && STATIC_GROUPABLE_KINDS.has(prev.groupKind)
+  );
+  const groupKind = continuation ? prev.groupKind : row.kind;
+  // A gap belongs between visual blocks: only on entries that START a new
+  // block, and only when the previous block was a transcript group (whose
+  // old dynamic renderer contributed a trailing marginBottom).
+  const marginBefore = Boolean(!continuation && prev && STATIC_GROUPABLE_KINDS.has(prev.groupKind));
+  return { entry, row, groupKind, continuation, marginBefore };
+}
+
 function createInkStreamState({
   dispatch,
   appendHistory,
   displayNameForPublisher = (value) => value,
+  flushIntervalMs = STREAM_FLUSH_INTERVAL_MS,
 } = {}) {
   const streams = new Map();
   const pendingDeliveries = new Map();
+  // Delta batches awaiting dispatch, keyed like `streams`. Deltas arrive per
+  // daemon chunk (dozens per second); dispatching each one re-renders the
+  // whole Ink tree, so we accumulate for a short window and flush one
+  // stream/delta action per publisher per window.
+  const pendingDeltas = new Map();
+  let flushTimer = null;
+
+  function flushDeltas() {
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    if (pendingDeltas.size === 0) return;
+    for (const batch of pendingDeltas.values()) {
+      dispatch({
+        type: "stream/delta",
+        publisher: batch.publisher,
+        delta: batch.parts.join(""),
+      });
+    }
+    pendingDeltas.clear();
+  }
+
+  function scheduleFlush() {
+    if (flushTimer) return;
+    flushTimer = setTimeout(flushDeltas, flushIntervalMs);
+    if (typeof flushTimer.unref === "function") flushTimer.unref();
+  }
 
   function deliveryKey(agentId, agentLabel) {
     return String(agentId || agentLabel || "").trim();
@@ -454,7 +558,7 @@ function createInkStreamState({
       displayName,
       prefix,
       continuationPrefix,
-      full: "",
+      parts: [],
       meta: meta || {},
     };
     streams.set(key, state);
@@ -464,19 +568,30 @@ function createInkStreamState({
 
   function appendStreamDelta(state, delta) {
     if (!state || !delta) return;
-    state.full += String(delta || "");
-    dispatch({ type: "stream/delta", publisher: state.displayName || state.publisher, delta: String(delta || "") });
+    const text = String(delta || "");
+    state.parts.push(text);
+    let batch = pendingDeltas.get(state.publisher);
+    if (!batch) {
+      batch = { publisher: state.displayName || state.publisher, parts: [] };
+      pendingDeltas.set(state.publisher, batch);
+    }
+    batch.parts.push(text);
+    scheduleFlush();
   }
 
   function finalizeStream(publisher, meta, reason = "") {
     const key = String(publisher || "bus");
     const state = streams.get(key);
     if (!state) return;
+    // Flush first so the trailing deltas land on activeStream before the
+    // stream/end fold reads them.
+    flushDeltas();
     dispatch({ type: "stream/end" });
     if (typeof appendHistory === "function") {
+      const full = state.parts.join("");
       const text = state.displayName
-        ? `${state.displayName}: ${state.full}`
-        : state.full;
+        ? `${state.displayName}: ${full}`
+        : full;
       appendHistory("bus", text, { ...(meta || state.meta || {}), stream_done: true, stream_reason: reason });
     }
     streams.delete(key);
@@ -494,6 +609,7 @@ function createInkStreamState({
     appendStreamDelta,
     finalizeStream,
     hasStream,
+    flushDeltas,
   };
 }
 
@@ -1003,6 +1119,53 @@ function isAnimatedStatusType(type = "") {
   return value !== "done" && value !== "success" && value !== "error" && value !== "idle" && value !== "none";
 }
 
+// The status bar owns its spinner tick: the 100ms animation timer lives in
+// this leaf component instead of the ChatApp root, so animating the spinner
+// re-renders one line of text rather than the whole tree (previously every
+// tick re-rendered the full log area, which Ink erased and rewrote at
+// 10fps — the visible flicker).
+function createChatStatusLine({ React, ink }) {
+  const { useEffect, useState } = React;
+  const { Box, Text } = ink;
+  const h = React.createElement;
+  return function ChatStatusLine({ status, version }) {
+    const message = String((status && status.message) || "");
+    const animated = Boolean(message)
+      && isAnimatedStatusType(inferStatusType(message, status && status.type));
+    const [tick, setTick] = useState(0);
+    useEffect(() => {
+      if (!animated) return undefined;
+      const timer = setInterval(() => setTick((t) => t + 1), 100);
+      return () => clearInterval(timer);
+    }, [animated]);
+    return h(Box, { marginTop: 1, width: "100%" },
+      h(Text, { color: "gray" }, computeStatusText(status, animated ? tick : 0)),
+      h(Box, { flexGrow: 1 }),
+      h(Text, { color: "gray" }, `v${version}`),
+    );
+  };
+}
+
+// Same spinner isolation for the internal-agent view's status row.
+function createInternalStatusLine({ React, ink }) {
+  const { useEffect, useState } = React;
+  const { Text } = ink;
+  const h = React.createElement;
+  return function InternalStatusLine({ view, maxWidth }) {
+    const status = internalStatusLabel(view && view.status);
+    const active = status !== "ready";
+    const [tick, setTick] = useState(0);
+    useEffect(() => {
+      if (!active) return undefined;
+      const timer = setInterval(() => setTick((t) => t + 1), 100);
+      return () => clearInterval(timer);
+    }, [active]);
+    const color = status === "blocked" ? "red" : (status === "ready" ? "gray" : "cyan");
+    const text = computeInternalStatusText(view || {}, active ? tick : 0);
+    return h(Text, { color, wrap: "truncate" }, fitPlainLine(text, maxWidth));
+  };
+}
+
 function inkKeyToRaw(input, key) {
   if (key.ctrl && input) {
     const code = input.charCodeAt(0) - 96;
@@ -1023,11 +1186,13 @@ function inkKeyToRaw(input, key) {
 }
 
 function createChatApp({ React, ink, props, interactive = true }) {
-  const { useReducer, useEffect, useState, useCallback, useRef } = React;
+  const { useReducer, useEffect, useState, useCallback, useRef, useMemo } = React;
   const { Box, Text, Static, useInput, useApp, useStdout } = ink;
   const h = React.createElement;
   const MultilineInput = createMultilineInput({ React, ink });
   const DashboardBar = createDashboardBar({ React, ink });
+  const ChatStatusLine = createChatStatusLine({ React, ink });
+  const InternalStatusLine = createInternalStatusLine({ React, ink });
 
   // Build the initial log: chat history if there is any, otherwise an
   // ASCII banner with project / mode / version info. We resolve history
@@ -1052,7 +1217,6 @@ function createChatApp({ React, ink, props, interactive = true }) {
       })
     );
     const [size, setSize] = useState({ cols: 0, rows: 0 });
-    const [spinnerTick, setSpinnerTick] = useState(0);
     const [currentProjectRoot, setCurrentProjectRoot] = useState(props.activeProjectRoot || props.projectRoot || "");
     const [internalAgentView, setInternalAgentView] = useState(() => createInternalAgentViewState());
     const [multiWindowActive, setMultiWindowActive] = useState(false);
@@ -1556,13 +1720,24 @@ function createChatApp({ React, ink, props, interactive = true }) {
       return true;
     };
 
+    // STATUS requests arrive in bursts (every bus message routes through
+    // the router's requestStatus plus command callbacks); each response
+    // dispatches dashboard updates. Coalesce bursts into one send per
+    // window so a busy bus can't spin the render loop.
+    const statusRequestThrottlerRef = useRef(null);
+    if (!statusRequestThrottlerRef.current) {
+      statusRequestThrottlerRef.current = createThrottledSender(() => {
+        try {
+          const { IPC_REQUEST_TYPES } = require("../../runtime/contracts/eventContract");
+          const conn = props.daemonConnection;
+          if (conn && typeof conn.send === "function") conn.send({ type: IPC_REQUEST_TYPES.STATUS });
+        } catch { /* ignore */ }
+      }, 500);
+    }
     const requestDaemonStatus = useCallback(() => {
-      try {
-        const { IPC_REQUEST_TYPES } = require("../../runtime/contracts/eventContract");
-        const conn = props.daemonConnection;
-        if (conn && typeof conn.send === "function") conn.send({ type: IPC_REQUEST_TYPES.STATUS });
-      } catch { /* ignore */ }
-    }, [props.daemonConnection]);
+      const throttled = statusRequestThrottlerRef.current;
+      if (throttled) throttled();
+    }, []);
 
     const updateDashboardFromStatus = useCallback((data = {}) => {
       const activeIds = Array.isArray(data.active) ? data.active : [];
@@ -1661,17 +1836,30 @@ function createChatApp({ React, ink, props, interactive = true }) {
         hasStream: (...args) => streamState.hasStream(...args),
         setTransientAgentState: (agentId, value, options = {}) => {
           if (!agentId || !value) return;
+          const detail = options.detail || "";
+          // Activity updates fire per agent event; skip the dispatch (and
+          // the re-render it implies) when nothing actually changed.
+          const current = stateRef.current || {};
+          const metaMap = current.activeAgentMeta instanceof Map ? current.activeAgentMeta : null;
+          const existing = (metaMap && metaMap.get(agentId)) || {};
+          if (existing.activity_state === value && String(existing.activity_detail || "") === detail) {
+            return;
+          }
           dispatch({
             type: "agents/patchMeta",
             agentId,
             patch: {
               activity_state: value,
-              activity_detail: options.detail || "",
+              activity_detail: detail,
             },
           });
         },
         clearTransientAgentState: (agentId) => {
           if (!agentId) return;
+          const current = stateRef.current || {};
+          const metaMap = current.activeAgentMeta instanceof Map ? current.activeAgentMeta : null;
+          const existing = (metaMap && metaMap.get(agentId)) || {};
+          if (!existing.activity_state && !existing.activity_detail) return;
           dispatch({
             type: "agents/patchMeta",
             agentId,
@@ -1867,16 +2055,6 @@ function createChatApp({ React, ink, props, interactive = true }) {
       const timer = setInterval(refresh, 4000);
       return () => clearInterval(timer);
     }, [interactive, props.globalMode, currentProjectRoot, refreshGlobalProjects]);
-
-    useEffect(() => {
-      const internalStatus = state.viewingAgentId ? internalStatusLabel(internalAgentView.status) : "ready";
-      const internalActive = internalStatus !== "ready";
-      const statusType = inferStatusType(state.status.message, state.status.type);
-      const statusAnimated = state.status.message && isAnimatedStatusType(statusType);
-      if ((!statusAnimated) && !internalActive) return undefined;
-      const timer = setInterval(() => setSpinnerTick((t) => t + 1), 100);
-      return () => clearInterval(timer);
-    }, [state.status.message, state.status.type, state.viewingAgentId, internalAgentView.status]);
 
     const selectedProject = state.selectedProjectIndex >= 0 ? state.projects[state.selectedProjectIndex] : null;
     const selectedProjectRoot = state.selectedProjectRoot || resolveProjectRowRoot(selectedProject);
@@ -3159,7 +3337,11 @@ function createChatApp({ React, ink, props, interactive = true }) {
       }
     }, { isActive: interactive });
 
-    const statusText = computeStatusText(state.status, spinnerTick);
+    // Chrome text for multi-window mode only — the visible status bar is the
+    // ChatStatusLine component below, which owns its spinner tick. The
+    // multi-window controller re-renders on its own events, so a static
+    // first-frame indicator here matches what was effectively shown before.
+    const statusText = computeStatusText(state.status, 0);
     const inputWidth = Math.max(20, (size.cols || 80) - 4);
     const promptPrefix = (() => {
       const projectPrefix = inCommittedProjectScope && currentProjectLabel ? `${currentProjectLabel} ` : "";
@@ -3224,6 +3406,54 @@ function createChatApp({ React, ink, props, interactive = true }) {
       }
     }, [multiWindowActive, completionsOpen, completions.length, completionIndex, completionWindowStart]);
 
+    // Append-only feed for the <Static> log area. Ink's Static renders each
+    // item exactly once (permanently, above the live frame), which is what
+    // stops the 10fps full-log erase/rewrite — but it also means items must
+    // be immutable and the array must never shrink. The reducer's LOG_CAP
+    // truncates from the head of state.logLines, so we can't pass it
+    // directly; instead we copy only the newly appended tail (tracked via
+    // the monotonic lineSeq) into our own list. log/clear resets lineSeq,
+    // which bumps `generation` and remounts the Static (its internal cursor
+    // would otherwise point past the shrunk array). The fresh array per
+    // batch matters too: Static memoizes on the items reference.
+    const staticLogRef = useRef({ items: [], lastSeq: 0, generation: 0 });
+    const staticLog = useMemo(() => {
+      const prev = staticLogRef.current || { items: [], lastSeq: 0, generation: 0 };
+      let { items, lastSeq, generation } = prev;
+      if (state.lineSeq < lastSeq) {
+        items = [];
+        lastSeq = 0;
+        generation += 1;
+      }
+      const newCount = state.lineSeq - lastSeq;
+      if (newCount > 0) {
+        const fresh = state.logLines.slice(-newCount);
+        items = items.slice();
+        for (const entry of fresh) {
+          items.push(decorateStaticLogEntry(items[items.length - 1], entry));
+        }
+        lastSeq = state.lineSeq;
+      }
+      const next = { items, lastSeq, generation };
+      staticLogRef.current = next;
+      return next;
+    }, [state.logLines, state.lineSeq]);
+
+    // Grouped view of the in-flight stream, recomputed only when the stream
+    // itself advances (the batched flush above keeps that cadence low)
+    // instead of on every unrelated render.
+    const activeStreamGroups = useMemo(() => {
+      if (!state.activeStream) return null;
+      const lines = activeStreamText(state.activeStream).split(/\r?\n/);
+      const prefix = state.activeStream.publisher
+        ? `${state.activeStream.publisher}: `
+        : "";
+      return buildChatLogGroups(lines.map((line, idx) => ({
+        id: `s-${idx}`,
+        text: idx === 0 ? `${prefix}${line}` : `  ${line}`,
+      })));
+    }, [state.activeStream]);
+
     if (multiWindowActive) {
       return null;
     }
@@ -3234,17 +3464,7 @@ function createChatApp({ React, ink, props, interactive = true }) {
       if (row.kind === "spacer") {
         return h(Text, { key, color: "gray" }, " ");
       }
-      const palette = {
-        assistant: { marker: "cyan", speaker: "white", body: undefined, bold: true },
-        agent: { marker: "cyan", speaker: "cyan", body: undefined, bold: false },
-        error: { marker: "red", speaker: "red", body: "red", bold: true },
-        success: { marker: "green", speaker: "green", body: "green", bold: false },
-        divider: { marker: "gray", speaker: "gray", body: "gray", bold: false },
-        banner: { marker: "cyan", speaker: "cyan", body: "cyan", bold: true },
-        meta: { marker: "gray", speaker: "gray", body: "gray", bold: false },
-        plain: { marker: "gray", speaker: "gray", body: undefined, bold: false },
-      };
-      const colors = palette[row.kind] || palette.plain;
+      const colors = CHAT_LOG_ROW_PALETTE[row.kind] || CHAT_LOG_ROW_PALETTE.plain;
       if (row.kind === "divider") {
         return h(Box, { key, marginBottom: 1 },
           h(Text, { color: colors.body, wrap: "truncate" }, `  ${compactDividerLabel(row.body)}`),
@@ -3289,17 +3509,51 @@ function createChatApp({ React, ink, props, interactive = true }) {
       ...entries.map((entry) => renderChatLogEntry(entry, group)));
     };
 
-    const renderChatLogGroups = (items) => buildChatLogGroups(items)
-      .map(renderChatLogGroup)
-      .filter(Boolean);
+    // Renderer for one finalized (append-only) <Static> log item. Mirrors
+    // renderChatLogEntry visually; spacing differs because per-item
+    // rendering can't wrap a group in one margin-bottom Box — instead the
+    // decoration pass flags `marginBefore` on whatever entry follows a
+    // transcript group.
+    const renderStaticChatLogItem = (item) => {
+      const { row, groupKind, continuation, marginBefore } = item;
+      const key = item.entry && item.entry.id ? item.entry.id : `log-${row.body}`;
+      const marginTop = marginBefore ? 1 : 0;
+      if (row.kind === "spacer") {
+        return h(Box, { key, marginTop },
+          h(Text, { color: "gray" }, " "));
+      }
+      const colors = CHAT_LOG_ROW_PALETTE[row.kind] || CHAT_LOG_ROW_PALETTE.plain;
+      if (row.kind === "divider") {
+        return h(Box, { key, marginTop, marginBottom: 1 },
+          h(Text, { color: colors.body, wrap: "truncate" }, `  ${compactDividerLabel(row.body)}`),
+        );
+      }
+      if (row.kind === "banner") {
+        return h(Box, { key, marginTop },
+          h(Text, { color: colors.body, bold: true, wrap: "truncate" }, row.body),
+        );
+      }
+      const markerText = continuation
+        ? (groupKind === "assistant" || groupKind === "agent" ? "   " : "  ")
+        : row.markerText;
+      return h(Box, { key, width: "100%", marginTop },
+        h(Text, { color: colors.marker, bold: row.kind === "error" }, markerText),
+        h(Text, { color: colors.body, wrap: "wrap" },
+          row.speaker && !continuation
+            ? h(Text, { color: colors.speaker, bold: colors.bold }, row.speaker)
+            : null,
+          row.speaker && !continuation
+            ? h(Text, { color: "gray" }, " · ")
+            : null,
+          row.bodyText,
+        ),
+      );
+    };
 
     if (state.viewingAgentId) {
       const maxWidth = Math.max(20, size.cols || 80);
       const logRows = Math.max(1, (size.rows || 24) - 5);
       const visibleRows = buildInternalLogRows(internalAgentView.lines || [], maxWidth, logRows);
-      const status = internalStatusLabel(internalAgentView.status);
-      const internalStatusText = computeInternalStatusText(internalAgentView, spinnerTick);
-      const internalStatusColor = status === "blocked" ? "red" : (status === "ready" ? "gray" : "cyan");
       const inputText = String(internalAgentView.input || "");
       const cursor = Math.max(0, Math.min(inputText.length, Number(internalAgentView.cursor) || 0));
       const beforeCursor = inputText.slice(0, cursor);
@@ -3347,8 +3601,7 @@ function createChatApp({ React, ink, props, interactive = true }) {
             }, (row && row.text) || " ");
           }),
         ),
-        h(Text, { color: internalStatusColor, wrap: "truncate" },
-          fitPlainLine(internalStatusText, maxWidth)),
+        h(InternalStatusLine, { view: internalAgentView, maxWidth }),
         h(Text, { color: "gray", wrap: "truncate" }, "─".repeat(maxWidth)),
         h(Box, { width: "100%" },
           h(Text, { color: "magenta" }, "› "),
@@ -3367,31 +3620,30 @@ function createChatApp({ React, ink, props, interactive = true }) {
       );
     }
 
+    const lastStaticItem = staticLog.items[staticLog.items.length - 1] || null;
+
     return h(Box, { flexDirection: "column", width: "100%" },
-      h(Box, { flexDirection: "column", width: "100%" },
-        ...renderChatLogGroups(state.logLines),
-      ),
+      // Finalized log entries live in <Static>: each item is written to the
+      // terminal exactly once (above the live frame) and never re-rendered,
+      // so spinner ticks and keystrokes no longer erase/rewrite the whole
+      // scrollback. key=generation remounts the Static after log/clear.
+      h(Static, {
+        key: `chat-log-${staticLog.generation}`,
+        items: staticLog.items,
+      }, (item) => renderStaticChatLogItem(item)),
+      // Reproduces the trailing marginBottom the last transcript group used
+      // to contribute in the dynamic layout.
+      lastStaticItem && STATIC_GROUPABLE_KINDS.has(lastStaticItem.groupKind)
+        ? h(Text, { color: "gray" }, " ")
+        : null,
       state.activeMerge ? h(Box, null,
         h(Text, { color: state.activeMerge.entries.some((e) => e.isError) ? "red" : "cyan" },
           fmt.buildToolMergeRowText(state.activeMerge.entries)),
       ) : null,
-      state.activeStream ? h(Box, { flexDirection: "column" },
-        ...(() => {
-          const lines = String(state.activeStream.text || "").split(/\r?\n/);
-          const prefix = state.activeStream.publisher
-            ? `${state.activeStream.publisher}: `
-            : "";
-          return renderChatLogGroups(lines.map((line, idx) => ({
-            id: `s-${idx}`,
-            text: idx === 0 ? `${prefix}${line}` : `  ${line}`,
-          })));
-        })(),
+      activeStreamGroups ? h(Box, { flexDirection: "column" },
+        ...activeStreamGroups.map(renderChatLogGroup).filter(Boolean),
       ) : null,
-      h(Box, { marginTop: 1, width: "100%" },
-        h(Text, { color: "gray" }, statusText),
-        h(Box, { flexGrow: 1 }),
-        h(Text, { color: "gray" }, `v${fmt.UCODE_VERSION}`),
-      ),
+      h(ChatStatusLine, { status: state.status, version: fmt.UCODE_VERSION }),
       completionsOpen ? (() => {
         const start = Math.min(completionWindowStart, Math.max(0, completions.length - POPUP_PAGE_SIZE));
         const end = Math.min(completions.length, start + POPUP_PAGE_SIZE);
@@ -3664,6 +3916,11 @@ async function runChatInk(projectRoot, options = {}) {
 module.exports = {
   runChatInk,
   createChatApp,
+  createChatStatusLine,
+  createInternalStatusLine,
+  createInkStreamState,
+  createThrottledSender,
+  decorateStaticLogEntry,
   bootstrapEnvironment,
   buildDirectBusSendRequest,
   buildPromptIpcRequest,

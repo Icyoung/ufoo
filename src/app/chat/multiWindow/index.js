@@ -2,6 +2,11 @@ const { calculatePaneLayout } = require("./paneLayout");
 const { createPaneManager } = require("./paneManager");
 const { createRenderer } = require("./renderer");
 
+// Pane output bursts are coalesced into short batches; full chrome repaints
+// are throttled with a trailing frame so the final state always renders.
+const PANE_OUTPUT_BATCH_MS = 50;
+const RENDER_ALL_MIN_INTERVAL_MS = 100;
+
 function createMultiWindowController(options = {}) {
   const {
     processStdout = process.stdout,
@@ -30,6 +35,9 @@ function createMultiWindowController(options = {}) {
   let active = false;
   let renderThrottleTimer = null;
   let dirtyPanes = new Set();
+  let renderAllTimer = null;
+  let renderAllTrailing = false;
+  let lastRenderAllAt = 0;
   let lastCompletionPopup = null;
   const renderer = createRenderer({ write: (d) => processStdout.write(d) });
   const paneManager = createPaneManager({
@@ -37,18 +45,14 @@ function createMultiWindowController(options = {}) {
     onInternalSubmit,
     onPaneOutput: (agentId) => {
       if (!active) return;
-      if (getTerminalFocused()) {
-        renderSinglePane(agentId);
-      } else {
-        dirtyPanes.add(agentId);
-        if (!renderThrottleTimer) {
-          renderThrottleTimer = setTimeout(() => {
-            renderThrottleTimer = null;
-            const panes = [...dirtyPanes];
-            dirtyPanes.clear();
-            for (const id of panes) renderSinglePane(id);
-          }, 200);
-        }
+      dirtyPanes.add(agentId);
+      if (!renderThrottleTimer) {
+        renderThrottleTimer = setTimeout(() => {
+          renderThrottleTimer = null;
+          const panes = [...dirtyPanes];
+          dirtyPanes.clear();
+          for (const id of panes) renderSinglePane(id);
+        }, PANE_OUTPUT_BATCH_MS);
       }
     },
   });
@@ -62,7 +66,7 @@ function createMultiWindowController(options = {}) {
     renderer.hideCursor();
     renderer.clear();
     syncAgents();
-    renderAll();
+    renderAllNow();
     return true;
   }
 
@@ -73,6 +77,11 @@ function createMultiWindowController(options = {}) {
       clearTimeout(renderThrottleTimer);
       renderThrottleTimer = null;
       dirtyPanes.clear();
+    }
+    if (renderAllTimer) {
+      clearTimeout(renderAllTimer);
+      renderAllTimer = null;
+      renderAllTrailing = false;
     }
     paneManager.disconnectAll();
     renderer.showCursor();
@@ -130,12 +139,40 @@ function createMultiWindowController(options = {}) {
     }
   }
 
-  function renderAll() {
+  function renderAllNow() {
     if (!active) return;
+    lastRenderAllAt = Date.now();
     try {
       const agents = paneManager.getAgentIds();
       const layout = calculatePaneLayout(getCols(), getRows(), agents.length);
       const cols = getCols();
+
+      // Resolve the completion popup up front so stale rows are cleared
+      // before anything repaints (clearing also invalidates renderer caches).
+      const cmp = getCompletions();
+      let nextCompletionPopup = null;
+      let nextCompletionItems = null;
+      let nextCompletionStart = 0;
+      if (cmp && Array.isArray(cmp.items) && cmp.items.length > 0 && layout.inputPane) {
+        const start = Math.min(cmp.windowStart || 0, Math.max(0, cmp.items.length - (cmp.pageSize || 8)));
+        const end = Math.min(cmp.items.length, start + (cmp.pageSize || 8));
+        const visible = cmp.items.slice(start, end);
+        const popupTop = layout.inputPane.top - visible.length - 1;
+        if (popupTop >= 0) {
+          nextCompletionPopup = { top: popupTop, left: 0, width: cols, height: visible.length + 1 };
+          nextCompletionItems = visible;
+          nextCompletionStart = start;
+        }
+      }
+      const prevPopup = lastCompletionPopup;
+      const samePopupRect = prevPopup && nextCompletionPopup &&
+        prevPopup.top === nextCompletionPopup.top &&
+        prevPopup.width === nextCompletionPopup.width &&
+        prevPopup.height === nextCompletionPopup.height &&
+        (prevPopup.left || 0) === (nextCompletionPopup.left || 0);
+      if (prevPopup && !samePopupRect && typeof renderer.clearRows === "function") {
+        renderer.clearRows(prevPopup.top, prevPopup.height, prevPopup.width, prevPopup.left || 0);
+      }
 
       renderer.renderChatLog(layout.chatPane, getChatLogLines());
 
@@ -173,40 +210,45 @@ function createMultiWindowController(options = {}) {
         renderer.renderDashboard(layout.dashboardPane, lines);
       }
 
-      const cmp = getCompletions();
-      let nextCompletionPopup = null;
-      if (lastCompletionPopup && typeof renderer.clearRows === "function") {
-        renderer.clearRows(
-          lastCompletionPopup.top,
-          lastCompletionPopup.height,
-          lastCompletionPopup.width,
-          lastCompletionPopup.left || 0
-        );
-      }
-      if (cmp && Array.isArray(cmp.items) && cmp.items.length > 0 && layout.inputPane) {
-        const start = Math.min(cmp.windowStart || 0, Math.max(0, cmp.items.length - (cmp.pageSize || 8)));
-        const end = Math.min(cmp.items.length, start + (cmp.pageSize || 8));
-        const visible = cmp.items.slice(start, end);
-        const popupTop = layout.inputPane.top - visible.length - 1;
-        if (popupTop >= 0) {
-          nextCompletionPopup = { top: popupTop, left: 0, width: cols, height: visible.length + 1 };
-          renderer.renderSeparator({ top: popupTop, left: 0, width: cols });
-          for (let i = 0; i < visible.length; i++) {
-            const idx = start + i;
-            const selected = idx === cmp.index;
-            const label = visible[i].label || "";
-            const desc = visible[i].description || "";
-            const line = selected
-              ? `\x1b[7;36m${label}\x1b[0m  \x1b[90m${desc}\x1b[0m`
-              : `\x1b[90m${label}  ${desc}\x1b[0m`;
-            const pad = Math.max(0, cols - renderer.visibleLength(line));
-            renderer.write(renderer.moveTo(popupTop + 1 + i, 0) + line + " ".repeat(pad) + "\x1b[0m");
-          }
+      if (nextCompletionPopup && nextCompletionItems) {
+        const popupTop = nextCompletionPopup.top;
+        renderer.renderSeparator({ top: popupTop, left: 0, width: cols });
+        for (let i = 0; i < nextCompletionItems.length; i++) {
+          const idx = nextCompletionStart + i;
+          const selected = idx === cmp.index;
+          const label = nextCompletionItems[i].label || "";
+          const desc = nextCompletionItems[i].description || "";
+          const line = selected
+            ? `\x1b[7;36m${label}\x1b[0m  \x1b[90m${desc}\x1b[0m`
+            : `\x1b[90m${label}  ${desc}\x1b[0m`;
+          const pad = Math.max(0, cols - renderer.visibleLength(line));
+          renderer.write(renderer.moveTo(popupTop + 1 + i, 0) + line + " ".repeat(pad) + "\x1b[0m");
         }
       }
       lastCompletionPopup = nextCompletionPopup;
     } catch {
       // swallow render errors to prevent crash
+    }
+  }
+
+  // Throttled entry point for external callers: renders immediately when idle,
+  // otherwise coalesces bursts into one trailing frame so state stays consistent.
+  function renderAll() {
+    if (!active) return;
+    const elapsed = Date.now() - lastRenderAllAt;
+    if (!renderAllTimer && elapsed >= RENDER_ALL_MIN_INTERVAL_MS) {
+      renderAllNow();
+      return;
+    }
+    renderAllTrailing = true;
+    if (!renderAllTimer) {
+      renderAllTimer = setTimeout(() => {
+        renderAllTimer = null;
+        if (!renderAllTrailing) return;
+        renderAllTrailing = false;
+        renderAllNow();
+      }, Math.max(RENDER_ALL_MIN_INTERVAL_MS - elapsed, 16));
+      if (typeof renderAllTimer.unref === "function") renderAllTimer.unref();
     }
   }
 
@@ -219,7 +261,7 @@ function createMultiWindowController(options = {}) {
 
     if (key.name === "w" && key.ctrl) {
       paneManager.cycleFocus();
-      renderAll();
+      renderAllNow();
       return true;
     }
 
@@ -237,14 +279,14 @@ function createMultiWindowController(options = {}) {
     if (!agents.includes(agentId)) return;
     paneManager.setFocused(agentId);
     onFocusAgent(agentId);
-    renderAll();
+    renderAllNow();
   }
 
   function handleResize() {
     if (!active) return;
     syncAgents();
     renderer.clear();
-    renderAll();
+    renderAllNow();
   }
 
   function isActive() { return active; }
