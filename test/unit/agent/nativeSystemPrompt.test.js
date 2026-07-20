@@ -50,4 +50,33 @@ describe("native system prompt assembly", () => {
     expect(context).toContain("Provider: openai");
     expect(context).not.toContain("__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__");
   });
+
+  test("environment section shows bus identity from env and hides it when absent", () => {
+    const savedId = process.env.UFOO_SUBSCRIBER_ID;
+    const savedNick = process.env.UFOO_NICKNAME;
+    try {
+      process.env.UFOO_SUBSCRIBER_ID = "ucode:abc123";
+      process.env.UFOO_NICKNAME = "ucode-3";
+      const withIdentity = getSystemPrompt({ workspaceRoot: "/repo" });
+      expect(findSection(withIdentity, "# Environment"))
+        .toContain("Bus identity: ucode:abc123 (nickname: ucode-3)");
+
+      delete process.env.UFOO_SUBSCRIBER_ID;
+      delete process.env.UFOO_NICKNAME;
+      const withoutIdentity = getSystemPrompt({ workspaceRoot: "/repo" });
+      expect(findSection(withoutIdentity, "# Environment")).not.toContain("Bus identity:");
+    } finally {
+      if (savedId === undefined) delete process.env.UFOO_SUBSCRIBER_ID;
+      else process.env.UFOO_SUBSCRIBER_ID = savedId;
+      if (savedNick === undefined) delete process.env.UFOO_NICKNAME;
+      else process.env.UFOO_NICKNAME = savedNick;
+    }
+  });
+
+  test("ufoo section frames shared records as other agents' work", () => {
+    const sections = getSystemPrompt({ workspaceRoot: "/repo" });
+    const ufoo = findSection(sections, "# ufoo integration");
+    expect(ufoo).toContain("OTHER agents");
+    expect(ufoo).toContain("not your work history");
+  });
 });

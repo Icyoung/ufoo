@@ -44,6 +44,17 @@ function getEnvironmentSection({ workspaceRoot = "", model = "", provider = "" }
   if (provider) lines.push(`Provider: ${provider}`);
   if (model) lines.push(`Model: ${model}`);
 
+  // Tell the model who it is on the bus. Without this, the only identities
+  // it ever sees are other agents' records in shared context — and it
+  // adopts them (observed in the wild: ucode-3 introducing itself as
+  // claude-6, then accepting a wrong name from the user).
+  const subscriberId = String(process.env.UFOO_SUBSCRIBER_ID || "").trim();
+  const nickname = String(process.env.UFOO_NICKNAME || "").trim();
+  if (subscriberId || nickname) {
+    const label = nickname ? `${subscriberId || "unknown"} (nickname: ${nickname})` : subscriberId;
+    lines.push(`Bus identity: ${label}`);
+  }
+
   return `# Environment\n${lines.map((l) => ` - ${l}`).join("\n")}`;
 }
 
