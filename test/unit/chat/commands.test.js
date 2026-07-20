@@ -29,13 +29,14 @@ describe("chat command helpers", () => {
     expect((launch.subcommands || []).some((sub) => sub.cmd === "ucode")).toBe(true);
   });
 
-  test("launch subcommands are ordered claude / codex / agy / ucode", () => {
+  test("launch subcommands are ordered claude / codex / agy / ucode / kimi", () => {
     const launch = COMMAND_REGISTRY.find((item) => item.cmd === "/launch");
     expect((launch.subcommands || []).map((sub) => sub.cmd)).toEqual([
       "claude",
       "codex",
       "agy",
       "ucode",
+      "kimi",
     ]);
   });
 

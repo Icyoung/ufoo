@@ -65,6 +65,7 @@ const COMMAND_TREE = {
       codex: { desc: "Launch Codex agent", order: 2 },
       agy: { desc: "Launch Antigravity (agy) agent", order: 3 },
       ucode: { desc: "Launch ucode core agent", order: 4 },
+      kimi: { desc: "Launch Kimi Code agent", order: 5 },
     },
   },
   "/project": {
