@@ -228,6 +228,7 @@ function normalizeAgentLabel(value = "") {
   if (raw === "claude" || raw === "uclaude") return "claude";
   if (raw === "codex" || raw === "ucodex") return "codex";
   if (raw === "agy" || raw === "antigravity" || raw === "uagy") return "agy";
+  if (raw === "kimi" || raw === "kimi-cli" || raw === "kimi-code" || raw === "ukimi") return "kimi";
   if (raw === "ucode" || raw === "ufoo") return "ufoo";
   return raw || "agent";
 }

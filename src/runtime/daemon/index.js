@@ -62,6 +62,7 @@ function normalizeBusAgentType(agentType = "") {
   if (value === "codex") return "codex";
   if (value === "claude" || value === "claude-code") return "claude-code";
   if (value === "agy" || value === "antigravity") return "agy";
+  if (value === "kimi" || value === "kimi-cli" || value === "kimi-code") return "kimi";
   if (value === "ufoo" || value === "ucode" || value === "ufoo-code") return "ufoo-code";
   return value;
 }
@@ -71,6 +72,7 @@ function normalizeLaunchAgent(agent = "") {
   if (value === "codex") return "codex";
   if (value === "claude" || value === "claude-code") return "claude";
   if (value === "agy" || value === "antigravity") return "agy";
+  if (value === "kimi" || value === "kimi-cli" || value === "kimi-code") return "kimi";
   if (value === "ufoo" || value === "ucode" || value === "ufoo-code") return "ufoo";
   return "";
 }
@@ -1685,9 +1687,9 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
             : null,
       };
       let soloLaunchBootstrap = null;
-      if (requestedProfile && (normalizedAgent === "ufoo" || normalizedAgent === "claude" || normalizedAgent === "codex" || normalizedAgent === "agy")) {
-        const agentTypeMap = { ufoo: "ufoo-code", claude: "claude-code", codex: "codex", agy: "agy" };
-        const defaultNickMap = { ufoo: "ucode", claude: "claude", codex: "codex", agy: "agy" };
+      if (requestedProfile && (normalizedAgent === "ufoo" || normalizedAgent === "claude" || normalizedAgent === "codex" || normalizedAgent === "agy" || normalizedAgent === "kimi")) {
+        const agentTypeMap = { ufoo: "ufoo-code", claude: "claude-code", codex: "codex", agy: "agy", kimi: "kimi" };
+        const defaultNickMap = { ufoo: "ucode", claude: "claude", codex: "codex", agy: "agy", kimi: "kimi" };
         const agentTypeForBootstrap = agentTypeMap[normalizedAgent];
         const soloNickname = explicitNickname || defaultNickMap[normalizedAgent];
         const profileResult = resolveSoloPromptProfile(projectRoot, requestedProfile);
@@ -1738,6 +1740,13 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
                 ...(Array.isArray(op.extra_args) ? op.extra_args : []),
                 "-i", built.promptText,
               ];
+            } else if (normalizedAgent === "kimi") {
+              // kimi: no initial-prompt flag — deliver the bootstrap through
+              // the launcher's post-launch PTY injection instead.
+              op.extra_env = {
+                ...(op.extra_env && typeof op.extra_env === "object" ? op.extra_env : {}),
+                UFOO_STARTUP_BOOTSTRAP_TEXT: built.promptText,
+              };
             }
             soloLaunchBootstrap = {
               requested_profile: profileResult.requested_profile,

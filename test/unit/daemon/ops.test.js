@@ -736,6 +736,34 @@ describe("daemon ops agy provider mappings", () => {
   });
 });
 
+describe("daemon ops kimi provider mappings", () => {
+  test("normalizeLaunchAgent accepts kimi aliases", () => {
+    expect(__private.normalizeLaunchAgent("kimi")).toBe("kimi");
+    expect(__private.normalizeLaunchAgent("kimi-cli")).toBe("kimi");
+    expect(__private.normalizeLaunchAgent("kimi-code")).toBe("kimi");
+    expect(__private.normalizeLaunchAgent("KIMI")).toBe("kimi");
+    // Sanity check: existing providers still resolve correctly.
+    expect(__private.normalizeLaunchAgent("codex")).toBe("codex");
+    expect(__private.normalizeLaunchAgent("agy")).toBe("agy");
+  });
+
+  test("toBusAgentType maps kimi to the kimi bus prefix", () => {
+    expect(__private.toBusAgentType("kimi")).toBe("kimi");
+    expect(__private.toBusAgentType("unknown")).toBe("");
+  });
+
+  test("toTerminalBinary and toTmuxBinary map kimi to ukimi", () => {
+    expect(__private.toTerminalBinary("kimi")).toBe("ukimi");
+    expect(__private.toTmuxBinary("kimi")).toBe("ukimi");
+  });
+
+  test("buildResumeArgs emits --session <id> for kimi", () => {
+    expect(__private.buildResumeArgs("kimi", "session_10a39474-fdd2-4108-ba24-b7b782a3888b"))
+      .toEqual(["--session", "session_10a39474-fdd2-4108-ba24-b7b782a3888b"]);
+    expect(__private.buildResumeArgs("kimi", "")).toEqual([]);
+  });
+});
+
 describe("daemon ops runAppleScript timeout", () => {
   const { EventEmitter } = require("events");
 

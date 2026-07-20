@@ -15,6 +15,13 @@ jest.mock("../../../src/agents/providers/credentials/claude", () => ({
   })),
   resolveClaudeUpstreamCredentials: jest.fn(),
 }));
+jest.mock("../../../src/agents/providers/credentials/kimi", () => ({
+  resolveKimiCredentialPaths: jest.fn(({ credentialPath } = {}) => ({
+    home: "/tmp/kimi-code",
+    credentialPath: credentialPath || "/tmp/kimi-code/credentials/kimi-code.json",
+  })),
+  resolveKimiUpstreamCredentials: jest.fn(),
+}));
 
 const {
   resolveCodexAuthPaths,
@@ -24,12 +31,18 @@ const {
   resolveClaudeUpstreamCredentials,
 } = require("../../../src/agents/providers/credentials/claude");
 const {
+  resolveKimiUpstreamCredentials,
+} = require("../../../src/agents/providers/credentials/kimi");
+const {
   inspectDirectAuthStatus,
   inspectCodexDirectAuth,
   inspectClaudeDirectAuth,
+  inspectKimiDirectAuth,
   formatDirectAuthStatus,
   formatCodexDirectAuthStatus,
   formatClaudeDirectAuthStatus,
+  formatKimiDirectAuthStatus,
+  normalizeDirectAuthProvider,
 } = require("../../../src/agents/providers/directAuthStatus");
 
 describe("agent directAuthStatus", () => {
@@ -263,5 +276,80 @@ describe("agent directAuthStatus", () => {
     expect(lines.join("\n")).not.toContain("/tmp/claude");
     expect(formatClaudeDirectAuthStatus({ ok: false, provider: "claude", errorCode: "CLAUDE_AUTH_UNAVAILABLE" }, { compact: true })[0])
       .toBe("Claude API: FAIL · CLAUDE_AUTH_UNAVAILABLE");
+  });
+
+  test("normalizes kimi provider aliases", () => {
+    expect(normalizeDirectAuthProvider("kimi")).toBe("kimi");
+    expect(normalizeDirectAuthProvider("kimi-code")).toBe("kimi");
+    expect(normalizeDirectAuthProvider("moonshot")).toBe("kimi");
+    expect(normalizeDirectAuthProvider("KIMI-CODE")).toBe("kimi");
+  });
+
+  test("inspects kimi direct credentials via inspectDirectAuthStatus", async () => {
+    resolveKimiUpstreamCredentials.mockResolvedValue({
+      provider: "kimi",
+      credentialKind: "oauth",
+      source: "credential-file",
+      state: "fresh",
+      refreshable: true,
+      expiresAt: "2026-05-06T16:05:33.613Z",
+      credentialPath: "/tmp/kimi-code/credentials/kimi-code.json",
+    });
+
+    const result = await inspectDirectAuthStatus({
+      projectRoot: "/tmp/project",
+      env: {},
+      loadConfigImpl: () => ({ agentProvider: "kimi-code" }),
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      provider: "kimi",
+      transport: "openai-chat",
+      credentialKind: "oauth",
+      state: "fresh",
+      refreshable: true,
+    });
+    expect(resolveKimiUpstreamCredentials).toHaveBeenCalledWith(expect.objectContaining({
+      autoRefresh: false,
+    }));
+    expect(resolveCodexUpstreamCredentials).not.toHaveBeenCalled();
+  });
+
+  test("formats unavailable kimi credentials with login hint", async () => {
+    const err = new Error("Kimi credential file not found; run `kimi` once to sign in");
+    err.code = "KIMI_AUTH_UNAVAILABLE";
+    resolveKimiUpstreamCredentials.mockRejectedValue(err);
+
+    const result = await inspectKimiDirectAuth({ env: {} });
+    const lines = formatKimiDirectAuthStatus(result);
+
+    expect(result.ok).toBe(false);
+    expect(result.errorCode).toBe("KIMI_AUTH_UNAVAILABLE");
+    expect(result.credentialPath).toBe("/tmp/kimi-code/credentials/kimi-code.json");
+    expect(lines.join("\n")).toContain("Kimi direct API: FAIL");
+    expect(lines.join("\n")).toContain("Run `kimi` once to sign in");
+  });
+
+  test("formats compact kimi status", () => {
+    const lines = formatDirectAuthStatus({
+      ok: true,
+      provider: "kimi",
+      transport: "openai-chat",
+      credentialKind: "oauth",
+      source: "credential-file",
+      state: "fresh",
+      expiresAt: "2026-05-06T16:05:33.613Z",
+      credentialPath: "/tmp/kimi-code/credentials/kimi-code.json",
+      refreshable: true,
+    }, { compact: true });
+
+    expect(lines).toEqual([
+      "Kimi API: OK · oauth/openai-chat · fresh",
+      "  credential-file · expires 2026-05-06 16:05Z · refreshable",
+    ]);
+    expect(lines.join("\n")).not.toContain("/tmp/kimi-code");
+    expect(formatKimiDirectAuthStatus({ ok: false, provider: "kimi", errorCode: "KIMI_AUTH_UNAVAILABLE" }, { compact: true })[0])
+      .toBe("Kimi API: FAIL · KIMI_AUTH_UNAVAILABLE");
   });
 });

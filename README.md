@@ -61,6 +61,7 @@ Installed binaries:
 | `uclaude` | Claude Code wrapper with ufoo bootstrap and bus identity. |
 | `ucodex` | Codex wrapper with ufoo bootstrap and bus identity. |
 | `uagy` | Antigravity wrapper with ufoo bootstrap and bus identity. |
+| `ukimi` | Kimi Code wrapper with ufoo bootstrap and bus identity. |
 | `ucode` | Native ufoo coding-agent CLI/TUI. |
 
 ## Quick Start
@@ -88,6 +89,7 @@ Or launch wrappers directly inside a project:
 uclaude
 ucodex
 uagy
+ukimi
 ucode
 ```
 

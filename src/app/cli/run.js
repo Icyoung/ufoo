@@ -733,8 +733,8 @@ async function runCli(argv) {
 
     program
       .command("launch")
-      .description("Launch an agent (uclaude, ucodex, uagy, ucode)")
-      .argument("<agent>", "Agent type: uclaude|ucodex|uagy|ucode|claude|codex|agy")
+      .description("Launch an agent (uclaude, ucodex, uagy, ukimi, ucode)")
+      .argument("<agent>", "Agent type: uclaude|ucodex|uagy|ukimi|ucode|claude|codex|agy|kimi")
       .argument("[nickname]", "Optional nickname for the agent")
       .option("--profile <id>", "Prompt profile to assign after launch")
       .action(async (agent, nickname, opts) => {
@@ -751,11 +751,13 @@ async function runCli(argv) {
             normalizedAgent = "codex";
           } else if (agentLower === "uagy" || agentLower === "agy" || agentLower === "antigravity") {
             normalizedAgent = "agy";
+          } else if (agentLower === "ukimi" || agentLower === "kimi" || agentLower === "kimi-cli" || agentLower === "kimi-code") {
+            normalizedAgent = "kimi";
           } else if (agentLower === "ucode" || agentLower === "ufoo-code" || agentLower === "ufoo") {
             normalizedAgent = "ucode";
           } else {
             console.error(`Unknown agent type: ${agent}`);
-            console.error("Valid types: uclaude, ucodex, uagy, ucode, claude, codex, agy");
+            console.error("Valid types: uclaude, ucodex, uagy, ukimi, ucode, claude, codex, agy, kimi");
             process.exitCode = 1;
             return;
           }

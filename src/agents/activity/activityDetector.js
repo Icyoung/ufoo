@@ -53,6 +53,13 @@ const INPUT_PATTERNS = {
     /Yes, and run (?:in|without) sandbox/i, // Terminal command approval (sandbox toggle)
     /\bn\b\s*-\s*Don't run/i,          // y/n/edit confirmation
   ],
+  // kimi (Kimi Code CLI) ink-style approval menus (verified against 0.27.0).
+  kimi: [
+    /Run this command\?/,              // Bash command approval question
+    /Approve once[\s\S]*Approve for this session/, // Approval option list
+    /Reject with feedback/,            // Approval option (reject path)
+    /↑\/↓ select · .*choose · ↵ confirm/, // Interactive menu navigation bar (option count varies)
+  ],
 };
 
 // Agent-specific FATAL patterns that immediately move the agent into BLOCKED

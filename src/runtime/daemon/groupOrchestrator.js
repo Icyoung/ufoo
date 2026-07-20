@@ -310,6 +310,7 @@ function resolveAutoAgentType(projectRoot, requestedType) {
   if (provider === "claude-cli") return "claude";
   if (provider === "ucode") return "ucode";
   if (provider === "agy-cli") return "agy";
+  if (provider === "kimi-cli") return "kimi";
   return "codex";
 }
 
@@ -397,6 +398,8 @@ function buildExecutionPlan({
             // not via post-launch injection.
             : (resolvedType === "agy"
               ? "initial-prompt-arg"
+              // Kimi has no initial-prompt flag, so it falls through to
+              // post-launch PTY injection like any other future type.
               : "post-launch-inject"))));
     const bootstrapPrompt = bootstrapRequired
       ? composeGroupBootstrapPrompt({
@@ -923,6 +926,9 @@ function createGroupOrchestrator(options = {}) {
       // Agy uses the same "send bootstrap as a launch flag" model, but its
       // flag is `-i <text>` (alias for --prompt-interactive). Same strategy
       // key, different arg shape.
+      //
+      // Kimi never enters this branch: it has no initial-prompt flag, so its
+      // bootstrap strategy is post-launch-inject (handled further below).
       if (item.bootstrap_strategy === "initial-prompt-arg") {
         member.bootstrap_attempted_at = nowIso();
         member.bootstrap_error = "";

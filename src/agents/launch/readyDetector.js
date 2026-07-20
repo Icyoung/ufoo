@@ -109,6 +109,25 @@ class ReadyDetector {
   }
 
   /**
+   * Detect kimi (Kimi Code CLI) ready markers.
+   *
+   * kimi renders an ink-style TUI (verified against 0.27.0 via PTY capture):
+   *   - A status footer "... @: mention files" that only appears once the
+   *     prompt box is mounted (most reliable signal — post-boot only).
+   *   - The welcome banner "Welcome to Kimi Code!" as fallback, in case the
+   *     statusline render changes (e.g. narrow terminal).
+   */
+  _detectKimiReady(text) {
+    if (text.includes("@: mention files")) {
+      return true;
+    }
+    if (text.includes("Welcome to Kimi Code!")) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * 检测ufoo-code/ucode的ready标记
    */
   _detectUfooCodeReady(text) {
@@ -158,6 +177,8 @@ class ReadyDetector {
       isReady = this._detectCodexReady(this.buffer);
     } else if (this.agentType === "agy") {
       isReady = this._detectAgyReady(this.buffer);
+    } else if (this.agentType === "kimi") {
+      isReady = this._detectKimiReady(this.buffer);
     } else if (this.agentType === "ufoo" || this.agentType === "ucode" || this.agentType === "ufoo-code") {
       isReady = this._detectUfooCodeReady(this.buffer);
     }

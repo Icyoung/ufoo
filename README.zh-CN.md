@@ -59,6 +59,7 @@ npm link
 | `uclaude` | Claude Code 包装器，注入 ufoo bootstrap 和 bus 身份。 |
 | `ucodex` | Codex 包装器，注入 ufoo bootstrap 和 bus 身份。 |
 | `uagy` | Antigravity 包装器，注入 ufoo bootstrap 和 bus 身份。 |
+| `ukimi` | Kimi Code 包装器，注入 ufoo bootstrap 和 bus 身份。 |
 | `ucode` | 原生 ufoo coding-agent CLI/TUI。 |
 
 ## 快速开始
@@ -86,6 +87,7 @@ ufoo
 uclaude
 ucodex
 uagy
+ukimi
 ucode
 ```
 
@@ -155,7 +157,7 @@ ufoo -g
 /open /path/to/project
 ```
 
-`uclaude`、`ucodex`、`uagy`、`ucode` 这些直接包装器仍然可用，但 ufoo 的
+`uclaude`、`ucodex`、`uagy`、`ukimi`、`ucode` 这些直接包装器仍然可用，但 ufoo 的
 主要工作流是在 chat 里完成。
 
 ### 初始化与维护

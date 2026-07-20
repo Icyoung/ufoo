@@ -20,6 +20,7 @@
     "uclaude": "bin/uclaude.js",
     "ucodex": "bin/ucodex.js",
     "uagy": "bin/uagy.js",
+    "ukimi": "bin/ukimi.js",
     "ucode": "bin/ucode.js"
   },
   "files": [

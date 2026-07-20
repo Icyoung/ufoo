@@ -456,7 +456,7 @@ const LAUNCH_AGENT_SCHEMA = Object.freeze({
     properties: Object.freeze({
       agent: Object.freeze({
         type: "string",
-        enum: Object.freeze(["codex", "claude", "ucode", "agy"]),
+        enum: Object.freeze(["codex", "claude", "ucode", "agy", "kimi"]),
       }),
       count: Object.freeze({ type: "integer", minimum: 1 }),
       nickname: Object.freeze({ type: "string" }),

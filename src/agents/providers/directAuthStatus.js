@@ -12,6 +12,10 @@ const {
   resolveClaudeOauthPaths,
   resolveClaudeUpstreamCredentials,
 } = require("./credentials/claude");
+const {
+  resolveKimiCredentialPaths,
+  resolveKimiUpstreamCredentials,
+} = require("./credentials/kimi");
 
 function normalizeRefreshWindowMs(value) {
   const num = Number(value);
@@ -27,6 +31,7 @@ function normalizeDirectAuthProvider(value = "") {
   const text = String(value || "").trim().toLowerCase();
   if (text === "claude" || text === "claude-cli" || text === "claude-code" || text === "anthropic") return "claude";
   if (text === "agy" || text === "agy-cli" || text === "antigravity") return "agy";
+  if (text === "kimi" || text === "kimi-code" || text === "moonshot") return "kimi";
   return "codex";
 }
 
@@ -272,6 +277,41 @@ async function inspectAgyDirectAuth({
   };
 }
 
+async function inspectKimiDirectAuth({
+  env = process.env,
+  fetchImpl = global.fetch,
+  autoRefresh = false,
+} = {}) {
+  const paths = resolveKimiCredentialPaths({ env });
+  try {
+    const credential = await resolveKimiUpstreamCredentials({
+      env,
+      fetchImpl,
+      autoRefresh,
+    });
+    return {
+      ok: true,
+      provider: "kimi",
+      transport: "openai-chat",
+      credentialKind: String(credential.credentialKind || ""),
+      source: String(credential.source || ""),
+      state: String(credential.state || ""),
+      refreshable: credential.refreshable === true,
+      expiresAt: String(credential.expiresAt || ""),
+      credentialPath: String(credential.credentialPath || paths.credentialPath || ""),
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      provider: "kimi",
+      error: err && err.message ? err.message : "Kimi direct API credentials are unavailable",
+      errorCode: normalizeErrorCode(err, "KIMI_AUTH_STATUS_FAILED"),
+      credentialPath: paths.credentialPath || "",
+      hint: "Run `kimi` once to sign in or set UFOO_UCODE_API_KEY; ufoo-agent will not fall back to the CLI.",
+    };
+  }
+}
+
 async function inspectDirectAuthStatus(options = {}) {
   const { projectRoot, loadConfigImpl = loadConfig, provider = "" } = options;
   const config = loadConfigImpl(projectRoot) || {};
@@ -285,6 +325,9 @@ async function inspectDirectAuthStatus(options = {}) {
   }
   if (selected === "agy") {
     return inspectAgyDirectAuth(nextOptions);
+  }
+  if (selected === "kimi") {
+    return inspectKimiDirectAuth(nextOptions);
   }
   return inspectCodexDirectAuth(nextOptions);
 }
@@ -423,12 +466,61 @@ function formatAgyDirectAuthStatus(status = {}, options = {}) {
   return lines;
 }
 
+function formatKimiDirectAuthStatus(status = {}, options = {}) {
+  if (options.compact === true) {
+    if (status.ok) {
+      const credential = status.credentialKind || "credential";
+      const transport = status.transport || "openai-chat";
+      const state = status.state || "unknown";
+      const details = [
+        status.source || "",
+        status.expiresAt ? `expires ${formatCompactExpires(status.expiresAt)}` : "",
+        status.refreshable ? "refreshable" : "",
+      ].filter(Boolean);
+      const lines = [
+        `Kimi API: OK · ${credential}/${transport} · ${state}`,
+      ];
+      if (details.length > 0) lines.push(`  ${details.join(" · ")}`);
+      return lines;
+    }
+
+    const hint = String(status.hint || "Run `kimi` once to sign in or set UFOO_UCODE_API_KEY.").replace(/;.*$/, ".");
+    return [
+      `Kimi API: FAIL · ${status.errorCode || "KIMI_AUTH_STATUS_FAILED"}`,
+      `  ${status.error || "Kimi direct API credentials are unavailable"} · ${hint}`,
+    ];
+  }
+
+  if (status.ok) {
+    const state = status.state || "unknown";
+    const lines = [
+      `Kimi direct API: OK (${status.transport || "openai-chat"}, ${status.credentialKind || "credential"}, ${state})`,
+      `  - source: ${status.source || "(unknown)"}`,
+    ];
+    if (status.expiresAt) lines.push(`  - expires: ${status.expiresAt}`);
+    if (status.credentialPath) lines.push(`  - path: ${status.credentialPath}`);
+    if (status.refreshable) lines.push("  - refreshable: yes");
+    return lines;
+  }
+
+  const lines = [
+    `Kimi direct API: FAIL (${status.errorCode || "KIMI_AUTH_STATUS_FAILED"})`,
+    `  - ${status.error || "Kimi direct API credentials are unavailable"}`,
+  ];
+  if (status.credentialPath) lines.push(`  - expected path: ${status.credentialPath}`);
+  if (status.hint) lines.push(`  - ${status.hint}`);
+  return lines;
+}
+
 function formatDirectAuthStatus(status = {}, options = {}) {
   if (status.provider === "claude") {
     return formatClaudeDirectAuthStatus(status, options);
   }
   if (status.provider === "agy") {
     return formatAgyDirectAuthStatus(status, options);
+  }
+  if (status.provider === "kimi") {
+    return formatKimiDirectAuthStatus(status, options);
   }
   return formatCodexDirectAuthStatus(status, options);
 }
@@ -438,10 +530,12 @@ module.exports = {
   inspectCodexDirectAuth,
   inspectClaudeDirectAuth,
   inspectAgyDirectAuth,
+  inspectKimiDirectAuth,
   formatDirectAuthStatus,
   formatCodexDirectAuthStatus,
   formatClaudeDirectAuthStatus,
   formatAgyDirectAuthStatus,
+  formatKimiDirectAuthStatus,
   normalizeDirectAuthProvider,
   classifyAgyLogTail,
 };

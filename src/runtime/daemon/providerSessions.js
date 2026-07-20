@@ -114,8 +114,43 @@ function resolveCodexSessionFromFile(cwd) {
 }
 
 /**
+ * Resolve Kimi Code session ID from the session index.
+ * Kimi writes $KIMI_CODE_HOME/session_index.jsonl (default ~/.kimi-code/)
+ * with one JSON line per session: { sessionId, sessionDir, workDir }.
+ * The file is append-only, so the last line matching the cwd is the most
+ * recent session for that directory.
+ */
+function resolveKimiSessionFromIndex(cwd) {
+  if (!cwd) return null;
+  try {
+    const kimiHome = String(process.env.KIMI_CODE_HOME || "").trim()
+      || path.join(os.homedir(), ".kimi-code");
+    const indexPath = path.join(kimiHome, "session_index.jsonl");
+    if (!fs.existsSync(indexPath)) return null;
+    const lines = fs.readFileSync(indexPath, "utf8").split("\n");
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      try {
+        const record = JSON.parse(line);
+        const sessionId = record.sessionId || record.session_id || "";
+        const workDir = record.workDir || record.work_dir || record.cwd || "";
+        if (sessionId && workDir === cwd) {
+          return { sessionId, source: indexPath };
+        }
+      } catch {
+        continue;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Resolve provider session ID directly from session files.
- * @param {string} agentType - "claude-code" or "codex"
+ * @param {string} agentType - "claude-code", "codex" or "kimi"
  * @param {object} opts - { pid, cwd }
  */
 function resolveSessionFromFile(agentType, opts = {}) {
@@ -124,6 +159,9 @@ function resolveSessionFromFile(agentType, opts = {}) {
   }
   if (agentType === "codex") {
     return resolveCodexSessionFromFile(opts.cwd);
+  }
+  if (agentType === "kimi") {
+    return resolveKimiSessionFromIndex(opts.cwd);
   }
   return null;
 }
@@ -169,7 +207,7 @@ function scheduleProviderSessionResolve({
   onResolved = null,
 }) {
   if (!subscriberId || !agentType) return null;
-  if (agentType !== "codex" && agentType !== "claude-code") return null;
+  if (agentType !== "codex" && agentType !== "claude-code" && agentType !== "kimi") return null;
 
   let executed = false;
   let cancelled = false;
@@ -226,5 +264,6 @@ module.exports = {
   __private: {
     resolveClaudeSessionFromFile,
     resolveCodexSessionFromFile,
+    resolveKimiSessionFromIndex,
   },
 };

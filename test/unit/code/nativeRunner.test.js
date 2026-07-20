@@ -537,6 +537,145 @@ describe("ucode native runner", () => {
     expect(config.model).toBe("claude-sonnet");
   });
 
+  test("resolveTransport maps kimi aliases to openai-chat", () => {
+    expect(resolveTransport({ provider: "kimi" })).toBe("openai-chat");
+    expect(resolveTransport({ provider: "kimi-code" })).toBe("openai-chat");
+    expect(resolveTransport({ provider: "moonshot" })).toBe("openai-chat");
+  });
+
+  test("runtime config maps kimi aliases with default url and model", () => {
+    const kimiHome = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-kimi-home-"));
+    process.env.KIMI_CODE_HOME = kimiHome;
+    try {
+      for (const alias of ["kimi", "kimi-code", "moonshot"]) {
+        const config = resolveRuntimeConfig({ workspaceRoot, provider: alias });
+        expect(config.provider).toBe("kimi");
+        expect(config.baseUrl).toBe("https://api.kimi.com/coding/v1");
+        expect(config.model).toBe("k3");
+        expect(config.transport).toBe("openai-chat");
+        expect(config.apiKey).toBe("");
+      }
+    } finally {
+      delete process.env.KIMI_CODE_HOME;
+      fs.rmSync(kimiHome, { recursive: true, force: true });
+    }
+  });
+
+  test("runtime config reads kimi credential file for apiKey", () => {
+    const kimiHome = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-kimi-home-"));
+    const credentialDir = path.join(kimiHome, "credentials");
+    fs.mkdirSync(credentialDir, { recursive: true });
+    fs.writeFileSync(path.join(credentialDir, "kimi-code.json"), JSON.stringify({
+      access_token: "kimi-access-1",
+      refresh_token: "kimi-refresh-1",
+      expires_at: Math.floor((Date.now() + 3600 * 1000) / 1000),
+    }));
+    process.env.KIMI_CODE_HOME = kimiHome;
+    try {
+      const config = resolveRuntimeConfig({ workspaceRoot, provider: "kimi" });
+      expect(config.apiKey).toBe("kimi-access-1");
+      expect(config.apiKeySource).toBe("kimi-credential");
+      expect(config.kimiCredentialState).toBe("fresh");
+
+      process.env.UFOO_UCODE_API_KEY = "explicit-key";
+      const overridden = resolveRuntimeConfig({ workspaceRoot, provider: "kimi" });
+      expect(overridden.apiKey).toBe("explicit-key");
+      expect(overridden.apiKeySource).toBe("explicit");
+    } finally {
+      delete process.env.KIMI_CODE_HOME;
+      delete process.env.UFOO_UCODE_API_KEY;
+      fs.rmSync(kimiHome, { recursive: true, force: true });
+    }
+  });
+
+  test("kimi run refreshes near-expiry credential before the chat request", async () => {
+    const kimiHome = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-kimi-home-"));
+    const credentialDir = path.join(kimiHome, "credentials");
+    fs.mkdirSync(credentialDir, { recursive: true });
+    const credentialPath = path.join(credentialDir, "kimi-code.json");
+    fs.writeFileSync(credentialPath, JSON.stringify({
+      access_token: "kimi-access-old",
+      refresh_token: "kimi-refresh-old",
+      expires_at: Math.floor((Date.now() + 60 * 1000) / 1000),
+    }));
+    process.env.KIMI_CODE_HOME = kimiHome;
+
+    global.fetch
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        access_token: "kimi-access-new",
+        refresh_token: "kimi-refresh-new",
+        token_type: "Bearer",
+        expires_in: 3600,
+      }), { status: 200, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(makeSseResponse([
+        { choices: [{ delta: { content: "ok" } }] },
+      ]));
+
+    try {
+      const result = await runNativeAgentTask({
+        workspaceRoot,
+        prompt: "Reply with exactly: ok",
+        provider: "kimi",
+      });
+
+      expect(result.ok).toBe(true);
+      expect(result.output).toBe("ok");
+      expect(global.fetch).toHaveBeenCalledTimes(2);
+
+      const [refreshUrl, refreshInit] = global.fetch.mock.calls[0];
+      expect(refreshUrl).toBe("https://auth.kimi.com/api/oauth/token");
+      expect(refreshInit.method).toBe("POST");
+      expect(String(refreshInit.body)).toContain("grant_type=refresh_token");
+      expect(String(refreshInit.body)).toContain("refresh_token=kimi-refresh-old");
+
+      const [chatUrl, chatInit] = global.fetch.mock.calls[1];
+      expect(chatUrl).toBe("https://api.kimi.com/coding/v1/chat/completions");
+      expect(chatInit.headers.authorization).toBe("Bearer kimi-access-new");
+      expect(JSON.parse(chatInit.body).model).toBe("k3");
+
+      const saved = JSON.parse(fs.readFileSync(credentialPath, "utf8"));
+      expect(saved.access_token).toBe("kimi-access-new");
+    } finally {
+      delete process.env.KIMI_CODE_HOME;
+      fs.rmSync(kimiHome, { recursive: true, force: true });
+    }
+  });
+
+  test("kimi run uses fresh credential without a refresh round-trip", async () => {
+    const kimiHome = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-kimi-home-"));
+    const credentialDir = path.join(kimiHome, "credentials");
+    fs.mkdirSync(credentialDir, { recursive: true });
+    fs.writeFileSync(path.join(credentialDir, "kimi-code.json"), JSON.stringify({
+      access_token: "kimi-access-fresh",
+      refresh_token: "kimi-refresh-fresh",
+      expires_at: Math.floor((Date.now() + 3600 * 1000) / 1000),
+    }));
+    process.env.KIMI_CODE_HOME = kimiHome;
+
+    global.fetch.mockResolvedValueOnce(makeSseResponse([
+      { choices: [{ delta: { content: "ok" } }] },
+    ]));
+
+    try {
+      const result = await runNativeAgentTask({
+        workspaceRoot,
+        prompt: "Reply with exactly: ok",
+        provider: "kimi",
+      });
+
+      expect(result.ok).toBe(true);
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      const [chatUrl, chatInit] = global.fetch.mock.calls[0];
+      expect(chatUrl).toBe("https://api.kimi.com/coding/v1/chat/completions");
+      expect(chatInit.headers.authorization).toBe("Bearer kimi-access-fresh");
+      // Kimi k3 rejects any temperature other than 1.
+      expect(JSON.parse(chatInit.body).temperature).toBe(1);
+    } finally {
+      delete process.env.KIMI_CODE_HOME;
+      fs.rmSync(kimiHome, { recursive: true, force: true });
+    }
+  });
+
   test("sends transport-specific default max_tokens", async () => {
     global.fetch.mockResolvedValueOnce(makeSseResponse([
       { choices: [{ delta: { content: "ok" } }] },

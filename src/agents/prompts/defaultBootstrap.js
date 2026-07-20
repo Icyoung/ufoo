@@ -58,7 +58,9 @@ function buildDefaultStartupBootstrapPrompt({ agentType = "", projectRoot = "" }
       ? "Codex"
       : (normalizedAgent === "ufoo-code"
         ? "ucode"
-        : (normalizedAgent === "agy" ? "Agy" : "agent")));
+        : (normalizedAgent === "agy"
+          ? "Agy"
+          : (normalizedAgent === "kimi" ? "Kimi" : "agent"))));
 
   const segments = [
     `Session bootstrap for ${displayAgent}.`,
@@ -253,11 +255,11 @@ function resolveDefaultManualBootstrap({
   const normalizedAgent = asTrimmedString(agentType).toLowerCase();
   const currentEnv = env && typeof env === "object" ? env : {};
   const currentArgs = Array.isArray(args) ? args.slice() : [];
-  const hasCodexStartupBootstrap = normalizedAgent === "codex"
+  const hasStartupBootstrap = (normalizedAgent === "codex" || normalizedAgent === "kimi")
     && Boolean(currentEnv.UFOO_STARTUP_BOOTSTRAP_TEXT);
   if (
     currentEnv.UFOO_SKIP_DEFAULT_BOOTSTRAP === "1"
-    || hasCodexStartupBootstrap
+    || hasStartupBootstrap
     || hasMetaCommandArgs(currentArgs)
   ) {
     return { args: currentArgs, env: {}, mode: "skip" };
@@ -318,6 +320,21 @@ function resolveDefaultManualBootstrap({
         promptText,
       };
     }
+    return {
+      args: currentArgs,
+      env: {
+        UFOO_STARTUP_BOOTSTRAP_TEXT: promptText,
+      },
+      mode: "post-launch-inject",
+      promptText,
+    };
+  }
+
+  if (normalizedAgent === "kimi") {
+    // kimi has no --append-system-prompt or positional initial-prompt flag,
+    // so the bootstrap always goes out via post-launch PTY injection (the
+    // launcher reads UFOO_STARTUP_BOOTSTRAP_TEXT, same as the codex path).
+    const promptText = buildDefaultStartupBootstrapPrompt({ agentType: normalizedAgent, projectRoot });
     return {
       args: currentArgs,
       env: {

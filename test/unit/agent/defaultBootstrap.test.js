@@ -208,4 +208,52 @@ describe("default bootstrap", () => {
     expect(resolved.mode).toBe("skip");
     expect(resolved.args).toEqual(["--help"]);
   });
+
+  test("kimi: resolves bootstrap as post-launch inject and keeps args untouched", () => {
+    const resolved = resolveDefaultManualBootstrap({
+      projectRoot: "/tmp/ufoo",
+      agentType: "kimi",
+      args: [],
+      env: {},
+    });
+    expect(resolved.mode).toBe("post-launch-inject");
+    expect(resolved.args).toEqual([]);
+    expect(resolved.env.UFOO_STARTUP_BOOTSTRAP_TEXT).toContain("Session bootstrap for Kimi.");
+    expect(resolved.env.UFOO_STARTUP_BOOTSTRAP_TEXT).toContain("ufoo ctx decisions -l");
+  });
+
+  test("kimi: never folds the bootstrap into user args", () => {
+    const resolved = resolveDefaultManualBootstrap({
+      projectRoot: "/tmp/ufoo",
+      agentType: "kimi",
+      args: ["--session", "session_abc", "--yolo"],
+      env: {},
+    });
+    expect(resolved.mode).toBe("post-launch-inject");
+    expect(resolved.args).toEqual(["--session", "session_abc", "--yolo"]);
+    expect(resolved.env.UFOO_STARTUP_BOOTSTRAP_TEXT).toContain("Session bootstrap for Kimi.");
+  });
+
+  test("kimi: skips bootstrap when a startup bootstrap is already pending", () => {
+    const resolved = resolveDefaultManualBootstrap({
+      projectRoot: "/tmp/ufoo",
+      agentType: "kimi",
+      args: [],
+      env: { UFOO_STARTUP_BOOTSTRAP_TEXT: "solo profile bootstrap" },
+    });
+    expect(resolved.mode).toBe("skip");
+    expect(resolved.args).toEqual([]);
+    expect(resolved.env).toEqual({});
+  });
+
+  test("kimi: skips bootstrap when meta command args are present", () => {
+    const resolved = resolveDefaultManualBootstrap({
+      projectRoot: "/tmp/ufoo",
+      agentType: "kimi",
+      args: ["--help"],
+      env: {},
+    });
+    expect(resolved.mode).toBe("skip");
+    expect(resolved.args).toEqual(["--help"]);
+  });
 });

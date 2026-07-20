@@ -166,6 +166,77 @@ describe("resolveCodexSessionFromFile", () => {
   });
 });
 
+describe("resolveKimiSessionFromIndex", () => {
+  let fakeKimiHome;
+  const origKimiHome = process.env.KIMI_CODE_HOME;
+
+  beforeEach(() => {
+    fakeKimiHome = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-kimi-sess-"));
+    process.env.KIMI_CODE_HOME = fakeKimiHome;
+  });
+
+  afterEach(() => {
+    if (origKimiHome === undefined) {
+      delete process.env.KIMI_CODE_HOME;
+    } else {
+      process.env.KIMI_CODE_HOME = origKimiHome;
+    }
+    fs.rmSync(fakeKimiHome, { recursive: true, force: true });
+  });
+
+  function writeIndex(lines) {
+    fs.writeFileSync(
+      path.join(fakeKimiHome, "session_index.jsonl"),
+      lines.map((line) => (typeof line === "string" ? line : JSON.stringify(line))).join("\n") + "\n"
+    );
+  }
+
+  test("returns null when cwd is falsy", () => {
+    expect(__private.resolveKimiSessionFromIndex("")).toBeNull();
+    expect(__private.resolveKimiSessionFromIndex(null)).toBeNull();
+  });
+
+  test("returns null when session index does not exist", () => {
+    expect(__private.resolveKimiSessionFromIndex("/some/cwd")).toBeNull();
+  });
+
+  test("reads sessionId from the index line matching workDir", () => {
+    writeIndex([
+      { sessionId: "session_aaa", sessionDir: "/x/sessions/session_aaa", workDir: "/my/project" },
+      { sessionId: "session_bbb", sessionDir: "/x/sessions/session_bbb", workDir: "/other" },
+    ]);
+    const result = __private.resolveKimiSessionFromIndex("/my/project");
+    expect(result).not.toBeNull();
+    expect(result.sessionId).toBe("session_aaa");
+    expect(result.source).toContain("session_index.jsonl");
+  });
+
+  test("picks the last matching line (index is append-only)", () => {
+    writeIndex([
+      { sessionId: "session_old", workDir: "/my/project" },
+      { sessionId: "session_new", workDir: "/my/project" },
+      { sessionId: "session_other", workDir: "/other" },
+    ]);
+    const result = __private.resolveKimiSessionFromIndex("/my/project");
+    expect(result.sessionId).toBe("session_new");
+  });
+
+  test("returns null when no line matches the cwd", () => {
+    writeIndex([{ sessionId: "session_aaa", workDir: "/somewhere/else" }]);
+    expect(__private.resolveKimiSessionFromIndex("/my/project")).toBeNull();
+  });
+
+  test("skips malformed lines and keeps scanning", () => {
+    writeIndex([
+      "not-json{{{",
+      { sessionId: "session_good", workDir: "/my/project" },
+      '{"sessionId":',
+    ]);
+    const result = __private.resolveKimiSessionFromIndex("/my/project");
+    expect(result.sessionId).toBe("session_good");
+  });
+});
+
 describe("resolveSessionFromFile", () => {
   let fakeHome;
   const origHomedir = os.homedir;
@@ -204,6 +275,23 @@ describe("resolveSessionFromFile", () => {
     );
     const result = resolveSessionFromFile("codex", { cwd: "/test" });
     expect(result.sessionId).toBe("cx-sess");
+  });
+
+  test("dispatches to kimi resolver for kimi", () => {
+    const origKimiHome = process.env.KIMI_CODE_HOME;
+    delete process.env.KIMI_CODE_HOME;
+    try {
+      const kimiHome = path.join(fakeHome, ".kimi-code");
+      fs.mkdirSync(kimiHome, { recursive: true });
+      fs.writeFileSync(
+        path.join(kimiHome, "session_index.jsonl"),
+        JSON.stringify({ sessionId: "kimi-sess-1", workDir: "/test" }) + "\n"
+      );
+      const result = resolveSessionFromFile("kimi", { cwd: "/test" });
+      expect(result.sessionId).toBe("kimi-sess-1");
+    } finally {
+      if (origKimiHome !== undefined) process.env.KIMI_CODE_HOME = origKimiHome;
+    }
   });
 
   test("returns null for unknown agent type", () => {

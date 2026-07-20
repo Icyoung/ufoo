@@ -59,6 +59,9 @@ function normalizeSettingsProvider(value = "", fallback = "codex-cli") {
   if (text === "agy" || text === "agy-cli" || text === "antigravity") {
     return "agy-cli";
   }
+  if (text === "kimi" || text === "kimi-cli" || text === "kimi-code" || text === "ukimi") {
+    return "kimi-cli";
+  }
   if (text === "codex" || text === "codex-cli" || text === "codex-code" || text === "openai") {
     return "codex-cli";
   }
@@ -69,6 +72,7 @@ function agentProviderKey(value = "") {
   const provider = normalizeSettingsProvider(value);
   if (provider === "claude-cli") return "claude";
   if (provider === "agy-cli") return "agy";
+  if (provider === "kimi-cli") return "kimi";
   return "codex";
 }
 
@@ -597,7 +601,7 @@ function createCommandExecutor(options = {}) {
     if (args.length === 0) {
       logMessage(
         "error",
-        "{white-fg}✗{/white-fg} Usage: /launch <claude|codex|agy|ucode> [nickname=<name>] [profile=<id>] [count=<n>] [scope=inplace|window]"
+        "{white-fg}✗{/white-fg} Usage: /launch <claude|codex|agy|kimi|ucode> [nickname=<name>] [profile=<id>] [count=<n>] [scope=inplace|window]"
       );
       return;
     }
@@ -606,8 +610,9 @@ function createCommandExecutor(options = {}) {
     // Accept friendly aliases the same way `ufoo launch` does in cli.js.
     let agentType = agentTypeInput;
     if (agentTypeInput === "antigravity" || agentTypeInput === "uagy") agentType = "agy";
-    if (agentType !== "claude" && agentType !== "codex" && agentType !== "agy" && agentType !== "ucode") {
-      logMessage("error", "{white-fg}✗{/white-fg} Unknown agent type. Use: claude, codex, agy, or ucode");
+    if (agentTypeInput === "kimi-cli" || agentTypeInput === "kimi-code" || agentTypeInput === "ukimi") agentType = "kimi";
+    if (agentType !== "claude" && agentType !== "codex" && agentType !== "agy" && agentType !== "kimi" && agentType !== "ucode") {
+      logMessage("error", "{white-fg}✗{/white-fg} Unknown agent type. Use: claude, codex, agy, kimi, or ucode");
       return;
     }
     const normalizedAgent = agentType === "ucode" ? "ufoo" : agentType;
@@ -1380,11 +1385,11 @@ function createCommandExecutor(options = {}) {
       return;
     }
 
-    if (action === "codex" || action === "claude" || action === "agy") {
+    if (action === "codex" || action === "claude" || action === "agy" || action === "kimi") {
       const kv = parseKeyValueArgs(args.slice(1));
       const provider = action === "claude"
         ? "claude-cli"
-        : (action === "agy" ? "agy-cli" : "codex-cli");
+        : (action === "agy" ? "agy-cli" : (action === "kimi" ? "kimi-cli" : "codex-cli"));
       const model = String(kv.model || defaultAgentModelForProvider(provider)).trim();
       saveConfig(projectRoot, {
         agentProvider: provider,

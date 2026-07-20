@@ -209,8 +209,9 @@ function computeInjectedSubmitDelayMs(agentType, text) {
   const normalizedAgent = String(agentType || "").trim().toLowerCase();
   const input = typeof text === "string" ? text : "";
   // Agy uses an ink-style TUI like claude-code, so it needs a similar grace
-  // window before the input handler picks up injected text.
-  const isInkStyle = normalizedAgent === "claude-code" || normalizedAgent === "agy";
+  // window before the input handler picks up injected text. Kimi Code is an
+  // Ink TUI as well and gets the same treatment.
+  const isInkStyle = normalizedAgent === "claude-code" || normalizedAgent === "agy" || normalizedAgent === "kimi";
   let delayMs = isInkStyle ? 350 : 200;
   if (input.includes("\n")) {
     delayMs += isInkStyle ? 250 : 120;
@@ -244,10 +245,10 @@ async function injectPtyCommand(wrapper, agentType, commandText, source = "injec
   const normalizedAgentType = String(agentType || "").trim().toLowerCase();
   const submitDelayMs = computeInjectedSubmitDelayMs(agentType, text);
   wrapper.write(text);
-  // claude-code and agy both run ink-style TUIs that accept a bare CR to
-  // submit. codex needs the Esc-prefix trick to flush its multi-byte input
+  // claude-code, agy and kimi all run ink-style TUIs that accept a bare CR
+  // to submit. codex needs the Esc-prefix trick to flush its multi-byte input
   // handler before the CR.
-  const isInkStyle = normalizedAgentType === "claude-code" || normalizedAgentType === "agy";
+  const isInkStyle = normalizedAgentType === "claude-code" || normalizedAgentType === "agy" || normalizedAgentType === "kimi";
   if (isInkStyle) {
     await sleep(submitDelayMs);
     wrapper.write("\r");

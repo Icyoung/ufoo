@@ -104,3 +104,10 @@ module.exports = {
   toLegacyResolvedAuth,
   buildUpstreamAuthFromCredential,
 };
+
+// Attached lazily after the shared helpers so the circular require from
+// ./kimi (which pulls buildCredentialDescriptor from here) always resolves.
+Object.defineProperty(module.exports, "kimi", {
+  enumerable: true,
+  get: () => require("./kimi"),
+});

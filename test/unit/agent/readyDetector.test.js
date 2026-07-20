@@ -247,6 +247,47 @@ describe("ReadyDetector", () => {
     });
   });
 
+  describe("kimi detection", () => {
+    // Fixtures below are trimmed from a real kimi 0.27.0 PTY boot capture.
+    const KIMI_BOOT_CAPTURE = [
+      " ╭────────────────────────────────────────────────────────────────────────────────────────────────╮",
+      " │  ▐█▛█▛█▌  Welcome to Kimi Code!                                                                │",
+      " │  ▐█████▌  Send /help for help information.                                                     │",
+      " │  Model:     K3    Version:   0.27.0                                                            │",
+      " ╰────────────────────────────────────────────────────────────────────────────────────────────────╯",
+      " ╭────────────────────────────────────────────────────────────────────────────────────────────────╮",
+      " │ >                                                                                              │",
+      " ╰────────────────────────────────────────────────────────────────────────────────────────────────╯",
+      " K3 thinking: max  …/T/kimi-probe-cwd        @: mention files",
+      "                                                                                 context: 0% (0/1M)",
+    ].join("\n");
+
+    test("triggers ready on the real boot capture (statusline '@: mention files')", () => {
+      const detector = new ReadyDetector("kimi");
+      let readyCalled = false;
+      detector.onReady(() => { readyCalled = true; });
+      detector.processOutput(KIMI_BOOT_CAPTURE);
+      expect(readyCalled).toBe(true);
+    });
+
+    test("fires ready on the welcome banner alone (fallback)", () => {
+      const detector = new ReadyDetector("kimi");
+      let readyCalled = false;
+      detector.onReady(() => { readyCalled = true; });
+      detector.processOutput(" │  ▐█▛█▛█▌  Welcome to Kimi Code!  │\n");
+      expect(readyCalled).toBe(true);
+    });
+
+    test("does not fire ready before the prompt box mounts", () => {
+      const detector = new ReadyDetector("kimi");
+      let readyCalled = false;
+      detector.onReady(() => { readyCalled = true; });
+      detector.processOutput(" ⠙ thinking...\n");
+      detector.processOutput(" ╭────────────────────────────────╮\n │ > │\n");
+      expect(readyCalled).toBe(false);
+    });
+  });
+
   describe("edge cases", () => {
     test("should handle Buffer input", () => {
       const detector = new ReadyDetector("claude-code");

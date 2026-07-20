@@ -23,6 +23,7 @@ Published binaries are defined in `package.json`.
 | `uclaude` | `bin/uclaude.js` | Claude Code wrapper with bootstrap, identity, bus registration, and resume metadata. |
 | `ucodex` | `bin/ucodex.js` | Codex wrapper with bootstrap, identity, bus registration, and resume metadata. |
 | `uagy` | `bin/uagy.js` | Antigravity wrapper with bootstrap, identity, and conversation resume capture. |
+| `ukimi` | `bin/ukimi.js` | Kimi Code wrapper with bootstrap, identity, bus registration, and resume metadata. |
 | `ucode` | `bin/ucode.js` | Native ufoo coding-agent CLI/TUI. |
 
 ## Runtime Shape

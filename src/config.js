@@ -13,11 +13,15 @@ const SETTINGS_MODEL_DEFAULTS = Object.freeze({
     // command-line flag for model, so the value here is a placeholder for
     // display; we never pass it on the agy command line.
     agy: "",
+    // kimi reads its model from its own config.toml (default_model); ufoo
+    // never injects -m/--model, so keep the placeholder empty like agy.
+    kimi: "",
   }),
   router: Object.freeze({
     codex: "gpt-5.3-codex-spark",
     claude: "sonnet-4.7",
     agy: "",
+    kimi: "",
   }),
 });
 
@@ -57,6 +61,7 @@ function normalizeLaunchMode(value) {
 function normalizeAgentProvider(value) {
   if (value === "claude-cli") return "claude-cli";
   if (value === "agy-cli" || value === "agy" || value === "antigravity") return "agy-cli";
+  if (value === "kimi-cli" || value === "kimi") return "kimi-cli";
   return "codex-cli";
 }
 
@@ -64,6 +69,7 @@ function providerKey(value = "") {
   const text = String(value || "").trim().toLowerCase();
   if (text === "claude" || text === "claude-cli" || text === "claude-code" || text === "anthropic") return "claude";
   if (text === "agy" || text === "agy-cli" || text === "antigravity") return "agy";
+  if (text === "kimi" || text === "kimi-cli" || text === "kimi-code") return "kimi";
   return "codex";
 }
 
@@ -81,6 +87,8 @@ function defaultRouterProviderForAgentProvider(value = "") {
   // agy has no router-model API; fall back to codex (the controller still
   // routes via codex/claude regardless of which agent provider runs).
   if (key === "agy") return "codex";
+  // kimi likewise manages its own models; router falls back to codex.
+  if (key === "kimi") return "codex";
   return "codex";
 }
 

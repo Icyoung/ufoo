@@ -179,6 +179,49 @@ describe("ActivityDetector", () => {
       jest.advanceTimersByTime(51);
       expect(detector.getState().state).toBe("blocked");
     });
+
+    // Fixture trimmed from a real kimi 0.27.0 PTY capture of the bash
+    // approval dialog (default permission mode, prompt "运行 ls 命令").
+    const KIMI_APPROVAL_DIALOG = [
+      "  ▶ Run this command?",
+      "",
+      "  cwd: /private/tmp/kimi-probe-cwd",
+      "  $ ls",
+      "",
+      "  ▶ 1. Approve once",
+      "    2. Approve for this session",
+      "    3. Reject",
+      "    4. Reject with feedback",
+      "",
+      "  ↑/↓ select · 1/2/3/4 choose · ↵ confirm",
+    ].join("\n");
+
+    test("kimi: bash approval dialog is waiting_input", () => {
+      jest.useFakeTimers();
+      const detector = createDetector("kimi");
+      detector.markReady();
+      detector.processOutput(KIMI_APPROVAL_DIALOG);
+      jest.advanceTimersByTime(51);
+      expect(detector.getState().state).toBe("waiting_input");
+    });
+
+    test("kimi: approval question line alone is waiting_input", () => {
+      jest.useFakeTimers();
+      const detector = createDetector("kimi");
+      detector.markReady();
+      detector.processOutput("● Running a command\n  $ ls\n  ▶ Run this command?\n");
+      jest.advanceTimersByTime(51);
+      expect(detector.getState().state).toBe("waiting_input");
+    });
+
+    test("kimi: thinking spinner without a prompt goes idle", () => {
+      jest.useFakeTimers();
+      const detector = createDetector("kimi");
+      detector.markReady();
+      detector.processOutput(" ⠙ thinking...\n ⠹ thinking...\n");
+      jest.advanceTimersByTime(51);
+      expect(detector.getState().state).toBe("idle");
+    });
   });
 
   describe("markWorking behavior", () => {

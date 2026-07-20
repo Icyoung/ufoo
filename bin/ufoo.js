@@ -143,6 +143,9 @@ async function main() {
       } else if (agentType === "codex") {
         scriptName = "ucodex.js";
         displayName = "ucodex";
+      } else if (agentType === "kimi") {
+        scriptName = "ukimi.js";
+        displayName = "ukimi";
       } else {
         console.error(`Error: Unable to determine agent type for ${subscriberId}`);
         process.exitCode = 1;
@@ -182,11 +185,13 @@ async function main() {
       scriptName = "uclaude.js";
     } else if (targetLower === "ucodex" || targetLower === "codex" || targetLower === "openai") {
       scriptName = "ucodex.js";
+    } else if (targetLower === "ukimi" || targetLower === "kimi" || targetLower === "kimi-cli" || targetLower === "kimi-code") {
+      scriptName = "ukimi.js";
     } else {
       // Not a valid agent type - might be an offline agent nickname
       console.error(`Error: Agent '${target}' is not online and is not a valid agent type`);
       console.error("");
-      console.error("Valid agent types: ucode, uclaude, ucodex");
+      console.error("Valid agent types: ucode, uclaude, ucodex, ukimi");
       console.error("");
       console.error("To see online agents, run: ufoo bus status");
       process.exitCode = 1;

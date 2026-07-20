@@ -1,5 +1,9 @@
 const { randomUUID } = require("crypto");
 const { loadConfig, defaultAgentModelForProvider, sameModelProvider } = require("../config");
+const {
+  readKimiAccessToken,
+  resolveKimiUpstreamCredentials,
+} = require("../agents/providers/credentials/kimi");
 const { runToolCall } = require("./dispatch");
 const { getReadToolDescription } = require("../agents/prompts/native/toolDescriptions/read");
 const { getWriteToolDescription } = require("../agents/prompts/native/toolDescriptions/write");
@@ -9,6 +13,8 @@ const { getBashToolDescription } = require("../agents/prompts/native/toolDescrip
 const CORE_TOOL_NAMES = new Set(["read", "write", "edit", "bash"]);
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1";
+const DEFAULT_KIMI_BASE_URL = "https://api.kimi.com/coding/v1";
+const DEFAULT_KIMI_MODEL = "k3";
 // Claude Code SDK defaults to no turn limit; built-in agents cap at 30 (DreamTask)
 // to 200 (fork). We count individual tool calls (not turns), so 100 leaves headroom
 // for non-trivial tasks while still catching runaway loops. Override via env.
@@ -107,6 +113,7 @@ function normalizeProvider(value = "") {
   if (!text) return "";
   if (text === "codex" || text === "codex-cli" || text === "codex-code") return "openai";
   if (text === "claude" || text === "claude-cli" || text === "claude-code") return "anthropic";
+  if (text === "kimi" || text === "kimi-code" || text === "moonshot") return "kimi";
   if (text === "openai" || text === "anthropic") return text;
   return text;
 }
@@ -116,6 +123,7 @@ function resolveTransport({ provider = "", baseUrl = "" } = {}) {
   const url = String(baseUrl || "").trim().toLowerCase();
 
   if (normalizedProvider === "anthropic") return "anthropic-messages";
+  if (normalizedProvider === "kimi") return "openai-chat";
   if (url.includes("anthropic.com")) return "anthropic-messages";
   if (/\/messages(?:$|[/?#])/.test(url) && !/\/chat\/completions(?:$|[/?#])/.test(url)) {
     return "anthropic-messages";
@@ -141,12 +149,14 @@ function resolveRuntimeConfig({ workspaceRoot = process.cwd(), provider = "", mo
     model
       || process.env.UFOO_UCODE_MODEL
       || configuredModel
-      || defaultAgentModelForProvider(selectedProvider)
+      || (selectedProvider === "kimi" ? DEFAULT_KIMI_MODEL : defaultAgentModelForProvider(selectedProvider))
   ).trim();
 
   const defaultBaseUrl = selectedProvider === "anthropic"
     ? String(process.env.ANTHROPIC_BASE_URL || DEFAULT_ANTHROPIC_BASE_URL)
-    : String(process.env.OPENAI_BASE_URL || DEFAULT_OPENAI_BASE_URL);
+    : selectedProvider === "kimi"
+      ? DEFAULT_KIMI_BASE_URL
+      : String(process.env.OPENAI_BASE_URL || DEFAULT_OPENAI_BASE_URL);
 
   const baseUrl = String(
     process.env.UFOO_UCODE_BASE_URL
@@ -154,19 +164,38 @@ function resolveRuntimeConfig({ workspaceRoot = process.cwd(), provider = "", mo
       || defaultBaseUrl
   ).trim();
 
-  const apiKey = String(
+  const explicitApiKey = String(
     process.env.UFOO_UCODE_API_KEY
       || config.ucodeApiKey
-      || (selectedProvider === "openai" ? process.env.OPENAI_API_KEY : "")
-      || (selectedProvider === "anthropic" ? process.env.ANTHROPIC_API_KEY : "")
       || ""
   ).trim();
+  let apiKey = explicitApiKey;
+  let apiKeySource = explicitApiKey ? "explicit" : "";
+  let kimiCredentialState = "";
+  if (!apiKey && selectedProvider === "kimi") {
+    const credential = readKimiAccessToken({ env: process.env });
+    if (credential && credential.accessToken) {
+      apiKey = String(credential.accessToken).trim();
+      apiKeySource = "kimi-credential";
+      kimiCredentialState = String(credential.state || "");
+    }
+  }
+  if (!apiKey) {
+    apiKey = String(
+      (selectedProvider === "openai" ? process.env.OPENAI_API_KEY : "")
+        || (selectedProvider === "anthropic" ? process.env.ANTHROPIC_API_KEY : "")
+        || ""
+    ).trim();
+    if (apiKey) apiKeySource = "env";
+  }
 
   return {
     provider: selectedProvider,
     model: selectedModel,
     baseUrl,
     apiKey,
+    apiKeySource,
+    kimiCredentialState,
     transport: resolveTransport({ provider: selectedProvider, baseUrl }),
   };
 }
@@ -532,6 +561,7 @@ async function runOpenAiLikeTurn({
   url = "",
   apiKey = "",
   model = "",
+  provider = "",
   messages = [],
   onTextDelta = null,
   onThinkingDelta = null,
@@ -546,7 +576,8 @@ async function runOpenAiLikeTurn({
     tools: buildCoreToolSpecs(),
     tool_choice: "auto",
     stream: true,
-    temperature: 0,
+    // Kimi k3 rejects any temperature other than 1.
+    temperature: normalizeProvider(provider) === "kimi" ? 1 : 0,
   };
 
   const headers = {
@@ -1075,6 +1106,7 @@ async function runNativeLoop({
   model = "",
   baseUrl = "",
   apiKey = "",
+  provider = "",
   timeoutMs = 300000,
   onStreamDelta = null,
   onThinkingDelta = null,
@@ -1109,6 +1141,7 @@ async function runNativeLoop({
       url: requestUrl,
       apiKey,
       model: requestModel,
+      provider,
       systemPrompt,
       messages,
       signal,
@@ -1235,6 +1268,23 @@ async function runNativeAgentTask({
       model,
     });
 
+    // Kimi tokens expire; resolveRuntimeConfig reads the credential file
+    // synchronously, so refresh it here (async) when the key came from that
+    // file and the token is outside the fresh window.
+    if (
+      runtime.provider === "kimi"
+      && runtime.apiKeySource === "kimi-credential"
+      && runtime.kimiCredentialState !== "fresh"
+    ) {
+      try {
+        const credential = await resolveKimiUpstreamCredentials({ env: process.env });
+        const token = String(credential && credential.accessToken || "").trim();
+        if (token) runtime.apiKey = token;
+      } catch {
+        // Keep the file token; the request itself will surface auth failures.
+      }
+    }
+
     const transport = TRANSPORTS[runtime.transport] || TRANSPORTS["openai-chat"];
 
     const runResult = await runNativeLoop({
@@ -1246,6 +1296,7 @@ async function runNativeAgentTask({
       model: runtime.model,
       baseUrl: runtime.baseUrl,
       apiKey: runtime.apiKey,
+      provider: runtime.provider,
       timeoutMs,
       onStreamDelta: trackingStreamDelta,
       onThinkingDelta,

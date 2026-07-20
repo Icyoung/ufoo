@@ -99,15 +99,44 @@ describe("config save/load", () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  test("normalizeAgentProvider only allows codex, claude and agy engines", () => {
+  test("normalizeAgentProvider only allows codex, claude, agy and kimi engines", () => {
     expect(normalizeAgentProvider("codex-cli")).toBe("codex-cli");
     expect(normalizeAgentProvider("claude-cli")).toBe("claude-cli");
     expect(normalizeAgentProvider("agy-cli")).toBe("agy-cli");
     expect(normalizeAgentProvider("agy")).toBe("agy-cli");
     expect(normalizeAgentProvider("antigravity")).toBe("agy-cli");
+    expect(normalizeAgentProvider("kimi-cli")).toBe("kimi-cli");
+    expect(normalizeAgentProvider("kimi")).toBe("kimi-cli");
     expect(normalizeAgentProvider("ucode")).toBe("codex-cli");
     expect(normalizeAgentProvider("ufoo")).toBe("codex-cli");
     expect(normalizeAgentProvider("unknown")).toBe("codex-cli");
+  });
+
+  test("providerKey maps kimi aliases to the kimi bucket", () => {
+    const { providerKey } = require("../../src/config");
+    expect(providerKey("kimi")).toBe("kimi");
+    expect(providerKey("kimi-cli")).toBe("kimi");
+    expect(providerKey("kimi-code")).toBe("kimi");
+    expect(providerKey("KIMI")).toBe("kimi");
+    // Sanity: existing providers still resolve correctly.
+    expect(providerKey("claude-code")).toBe("claude");
+    expect(providerKey("codex")).toBe("codex");
+  });
+
+  test("kimi has no provider-specific default model, so lookups fall through to codex", () => {
+    // kimi reads its model from its own config.toml (default_model); ufoo
+    // never passes one on the command line. SETTINGS_MODEL_DEFAULTS reserves
+    // "" for kimi and the lookup helpers degrade gracefully to codex.
+    expect(defaultAgentModelForProvider("kimi-cli")).toBe(defaultAgentModelForProvider("codex"));
+    expect(defaultRouterModelForProvider("kimi")).toBe(defaultRouterModelForProvider("codex"));
+  });
+
+  test("defaultRouterProviderForAgentProvider falls back to codex for kimi", () => {
+    const { defaultRouterProviderForAgentProvider } = require("../../src/config");
+    expect(defaultRouterProviderForAgentProvider("kimi-cli")).toBe("codex");
+    expect(defaultRouterProviderForAgentProvider("kimi")).toBe("codex");
+    // Sanity: claude still routes via claude.
+    expect(defaultRouterProviderForAgentProvider("claude-cli")).toBe("claude");
   });
 
   test("providerKey maps agy aliases to the agy bucket", () => {

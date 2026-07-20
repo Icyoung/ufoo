@@ -339,6 +339,21 @@ describe("chat commandExecutor", () => {
     }
   });
 
+  test("handleLaunchCommand accepts kimi and kimi-cli / ukimi aliases", async () => {
+    for (const alias of ["kimi", "kimi-cli", "kimi-code", "ukimi"]) {
+      const { executor, options } = createHarness();
+      await executor.handleLaunchCommand([alias, "nickname=lead"]);
+      expect(options.send).toHaveBeenCalledWith({
+        type: "launch_agent",
+        agent: "kimi",
+        count: 1,
+        nickname: "lead",
+        prompt_profile: "",
+        launch_scope: "inplace",
+      });
+    }
+  });
+
   test("handleLaunchCommand rejects unknown agent types but accepts agy in the error hint", async () => {
     const { executor, options, logs } = createHarness();
     await executor.handleLaunchCommand(["mystery"]);
@@ -441,7 +456,7 @@ describe("chat commandExecutor", () => {
     await executor.handleLaunchCommand(["ufoo", "nickname=core2"]);
 
     expect(options.send).not.toHaveBeenCalled();
-    expect(logs.some((entry) => entry.text.includes("Unknown agent type. Use: claude, codex, agy, or ucode"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("Unknown agent type. Use: claude, codex, agy, kimi, or ucode"))).toBe(true);
   });
 
   test("handleLaunchCommand forwards prompt profile", async () => {
