@@ -26,6 +26,11 @@ const DEFAULT_MAX_NATIVE_TOOL_ERRORS = 5;
 // via UFOO_UCODE_MAX_TOKENS (positive integer).
 const DEFAULT_OPENAI_MAX_TOKENS = 131072;
 const DEFAULT_ANTHROPIC_MAX_TOKENS = 64000;
+// Extended thinking is on by default for the anthropic transport; the budget
+// stays well below the 64K max_tokens cap as the Messages API requires.
+// UFOO_UCODE_THINKING_BUDGET_TOKENS overrides; 0 or a non-numeric value
+// disables thinking (the payload then omits the field entirely).
+const DEFAULT_ANTHROPIC_THINKING_BUDGET_TOKENS = 10000;
 // Prompt caching is GA on the current Messages API: cache_control blocks need
 // no anthropic-beta header. Kept as a constant so the marker shape stays in
 // one place (system block + last history message, 2 of the 4 allowed
@@ -57,6 +62,16 @@ function resolveNativeToolBudget(env = process.env) {
 
 function resolveMaxTokens(fallback) {
   return normalizePositiveInt(process.env.UFOO_UCODE_MAX_TOKENS, fallback);
+}
+
+function resolveThinkingBudgetTokens() {
+  const raw = process.env.UFOO_UCODE_THINKING_BUDGET_TOKENS;
+  if (raw === undefined || raw === null || String(raw).trim() === "") {
+    return DEFAULT_ANTHROPIC_THINKING_BUDGET_TOKENS;
+  }
+  const parsed = Number.parseInt(String(raw), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  return Math.floor(parsed);
 }
 
 function toUsageInt(value) {
@@ -794,6 +809,13 @@ function normalizeAnthropicMessageContent(raw = []) {
           text: String(item.text || ""),
         };
       }
+      if (item.type === "thinking") {
+        return {
+          type: "thinking",
+          thinking: String(item.thinking || ""),
+          signature: String(item.signature || ""),
+        };
+      }
       if (item.type === "tool_use") {
         return {
           type: "tool_use",
@@ -882,6 +904,10 @@ async function runAnthropicTurn({
     tools: buildAnthropicToolSpecs(),
     stream: true,
   };
+  const thinkingBudget = resolveThinkingBudgetTokens();
+  if (thinkingBudget > 0) {
+    payload.thinking = { type: "enabled", budget_tokens: thinkingBudget };
+  }
   const systemText = String(systemPrompt || "").trim();
   if (systemText) {
     // Block form with a cache breakpoint; the system prompt is the most
@@ -994,6 +1020,7 @@ async function runAnthropicTurn({
             order: index,
             type: "thinking",
             text: String(contentBlock.thinking || ""),
+            signature: String(contentBlock.signature || ""),
           });
         } else if (contentBlock.type === "tool_use") {
           blockMap.set(index, {
@@ -1058,6 +1085,16 @@ async function runAnthropicTurn({
           return;
         }
 
+        if (delta.type === "signature_delta") {
+          // Signed thinking blocks must be replayed verbatim on later turns
+          // (tool-use continuation contract), so accumulate the signature
+          // alongside the thinking text.
+          current.type = "thinking";
+          current.signature = `${String(current.signature || "")}${String(delta.signature || "")}`;
+          blockMap.set(index, current);
+          return;
+        }
+
         if (delta.type === "input_json_delta") {
           current.type = "tool_use";
           current.inputJson = `${String(current.inputJson || "")}${String(delta.partial_json || "")}`;
@@ -1069,8 +1106,17 @@ async function runAnthropicTurn({
     buildResult: () => {
       const assistantContent = Array.from(blockMap.values())
         .sort((a, b) => a.order - b.order)
-        .filter((item) => item.type !== "thinking")
         .map((item) => {
+          if (item.type === "thinking") {
+            // Kept (with signature) so tool-use continuation turns can
+            // replay the thinking blocks the API requires.
+            return {
+              type: "thinking",
+              thinking: String(item.text || ""),
+              signature: String(item.signature || ""),
+            };
+          }
+
           if (item.type === "text") {
             return {
               type: "text",

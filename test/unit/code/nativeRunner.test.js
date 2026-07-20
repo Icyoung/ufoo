@@ -59,6 +59,7 @@ describe("ucode native runner", () => {
   const originalMaxToolCalls = process.env.UFOO_UCODE_MAX_TOOL_CALLS;
   const originalMaxToolErrors = process.env.UFOO_UCODE_MAX_TOOL_ERRORS;
   const originalMaxTokens = process.env.UFOO_UCODE_MAX_TOKENS;
+  const originalThinkingBudget = process.env.UFOO_UCODE_THINKING_BUDGET_TOKENS;
   let workspaceRoot = "";
 
   beforeEach(() => {
@@ -71,6 +72,7 @@ describe("ucode native runner", () => {
     delete process.env.UFOO_UCODE_MAX_TOOL_CALLS;
     delete process.env.UFOO_UCODE_MAX_TOOL_ERRORS;
     delete process.env.UFOO_UCODE_MAX_TOKENS;
+    delete process.env.UFOO_UCODE_THINKING_BUDGET_TOKENS;
     workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-native-runner-"));
     fs.mkdirSync(path.join(workspaceRoot, ".ufoo"), { recursive: true });
     fs.writeFileSync(path.join(workspaceRoot, ".ufoo", "config.json"), JSON.stringify({
@@ -107,6 +109,8 @@ describe("ucode native runner", () => {
     else delete process.env.UFOO_UCODE_MAX_TOOL_ERRORS;
     if (typeof originalMaxTokens === "string") process.env.UFOO_UCODE_MAX_TOKENS = originalMaxTokens;
     else delete process.env.UFOO_UCODE_MAX_TOKENS;
+    if (typeof originalThinkingBudget === "string") process.env.UFOO_UCODE_THINKING_BUDGET_TOKENS = originalThinkingBudget;
+    else delete process.env.UFOO_UCODE_THINKING_BUDGET_TOKENS;
   });
 
   test("streams model output through openai-compatible provider", async () => {
@@ -452,6 +456,141 @@ describe("ucode native runner", () => {
     expect(types).toContain("tool_request");
     const toolReq = phaseEvents.find((e) => e.type === "tool_request");
     expect(toolReq.name).toBe("read");
+  });
+
+  test("enables extended thinking in the anthropic payload by default", async () => {
+    global.fetch.mockResolvedValueOnce(new Response([
+      "event: content_block_start",
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}',
+      "",
+      "event: content_block_delta",
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}',
+      "",
+      "event: message_stop",
+      'data: {"type":"message_stop"}',
+      "",
+    ].join("\n"), {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    }));
+
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "hello",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+    });
+
+    expect(result.ok).toBe(true);
+    const requestBody = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(requestBody.thinking).toEqual({ type: "enabled", budget_tokens: 10000 });
+    expect(requestBody.max_tokens).toBeGreaterThan(requestBody.thinking.budget_tokens);
+  });
+
+  test("omits thinking from the anthropic payload when the budget env disables it", async () => {
+    const makeTextStream = () => new Response([
+      "event: content_block_start",
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}',
+      "",
+      "event: content_block_delta",
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}',
+      "",
+      "event: message_stop",
+      'data: {"type":"message_stop"}',
+      "",
+    ].join("\n"), {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+
+    for (const disabled of ["0", "not-a-number"]) {
+      process.env.UFOO_UCODE_THINKING_BUDGET_TOKENS = disabled;
+      global.fetch.mockResolvedValueOnce(makeTextStream());
+      const result = await runNativeAgentTask({
+        workspaceRoot,
+        prompt: "hello",
+        provider: "anthropic",
+        model: "claude-opus-4-6",
+      });
+      expect(result.ok).toBe(true);
+      const requestBody = JSON.parse(global.fetch.mock.calls[global.fetch.mock.calls.length - 1][1].body);
+      expect(requestBody).not.toHaveProperty("thinking");
+    }
+
+    process.env.UFOO_UCODE_THINKING_BUDGET_TOKENS = "4096";
+    global.fetch.mockResolvedValueOnce(makeTextStream());
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "hello",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+    });
+    expect(result.ok).toBe(true);
+    const requestBody = JSON.parse(global.fetch.mock.calls[global.fetch.mock.calls.length - 1][1].body);
+    expect(requestBody.thinking).toEqual({ type: "enabled", budget_tokens: 4096 });
+  });
+
+  test("accumulates signature_delta and replays signed thinking blocks on tool-use continuation", async () => {
+    global.fetch.mockResolvedValueOnce(new Response([
+      "event: content_block_start",
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}',
+      "",
+      "event: content_block_delta",
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"plan first"}}',
+      "",
+      "event: content_block_delta",
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sigA"}}',
+      "",
+      "event: content_block_delta",
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"BC"}}',
+      "",
+      "event: content_block_start",
+      'data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t1","name":"read","input":{}}}',
+      "",
+      "event: content_block_delta",
+      'data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"path\\":\\"AGENTS.md\\"}"}}',
+      "",
+      "event: message_stop",
+      'data: {"type":"message_stop"}',
+      "",
+    ].join("\n"), {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    }));
+    runToolCall.mockReturnValue({ ok: true, content: "ok" });
+    global.fetch.mockResolvedValueOnce(new Response([
+      "event: content_block_start",
+      'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}',
+      "",
+      "event: content_block_delta",
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"done"}}',
+      "",
+      "event: message_stop",
+      'data: {"type":"message_stop"}',
+      "",
+    ].join("\n"), {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    }));
+
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "go",
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    const secondBody = JSON.parse(global.fetch.mock.calls[1][1].body);
+    const assistantMessage = secondBody.messages.find((entry) => entry.role === "assistant");
+    expect(assistantMessage).toBeTruthy();
+    expect(assistantMessage.content[0]).toEqual({
+      type: "thinking",
+      thinking: "plan first",
+      signature: "sigABC",
+    });
+    expect(assistantMessage.content.map((block) => block.type)).toEqual(["thinking", "tool_use"]);
   });
 
   test("uses default agent model when model is missing", async () => {
