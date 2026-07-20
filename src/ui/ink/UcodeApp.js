@@ -18,6 +18,27 @@ const { runInk } = require("../runInk");
 const fmt = require("../format");
 const { createMultilineInput } = require("./MultilineInput");
 
+// Throttle for the live thinking-chain status line: rapid thinking_delta
+// chunks would otherwise re-render the footer on every SSE event.
+const THINKING_STATUS_THROTTLE_MS = 120;
+
+// Log line kinds drive the color treatment of scrollback rows. Kind is pure
+// presentation metadata — the stored text never changes.
+const LOG_LINE_TEXT_PROPS = {
+  user: { color: "green", bold: true },
+  assistant: {},
+  system: { color: "gray", dimColor: true },
+  error: { color: "red" },
+  toolDetail: { color: "gray", dimColor: true },
+  bus: { color: "cyan" },
+};
+
+// Resolve a log line kind to ink <Text> props. Unknown/missing kinds (e.g.
+// the banner, which already carries chalk ANSI styling) render uncolored.
+function resolveLogLineTextProps(kind) {
+  return LOG_LINE_TEXT_PROPS[kind] || LOG_LINE_TEXT_PROPS.assistant;
+}
+
 function createUcodeApp({ React, ink, props, interactive = true }) {
   const { useEffect, useState, useCallback, useRef } = React;
   const { Box, Text, useInput, useApp, useStdout } = ink;
@@ -79,6 +100,13 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
     const lineSeqRef = useRef(banner.length + 1);
     const mergeIdRef = useRef(0);
     const toolMergeScopeRef = useRef(0);
+    // thinkingTailRef accumulates raw thinking_delta text for the live
+    // status line; the collapsed tail is pushed through a throttled
+    // trailing flush (thinkingTimerRef) so fast streams don't re-render
+    // the footer on every chunk.
+    const thinkingTailRef = useRef("");
+    const thinkingFlushAtRef = useRef(0);
+    const thinkingTimerRef = useRef(null);
 
     const targetAgent = agentSelectionMode && selectedAgentIndex >= 0
       ? agents[selectedAgentIndex]
@@ -225,11 +253,11 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       setSelectedAgentIndex(next);
     }, [agents, agentSelectionMode, selectedAgentIndex]);
 
-    const appendLogLine = useCallback((text) => {
+    const appendLogLine = useCallback((text, kind = "assistant") => {
       setLogLines((prev) => {
         const id = `l-${lineSeqRef.current}`;
         lineSeqRef.current += 1;
-        const next = prev.concat([{ id, text: String(text || "") }]);
+        const next = prev.concat([{ id, text: String(text || ""), kind }]);
         return next.length > 1000 ? next.slice(-1000) : next;
       });
     }, []);
@@ -273,7 +301,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       });
     }, []);
 
-    const appendLogText = useCallback((text) => {
+    const appendLogText = useCallback((text, kind = "assistant") => {
       // Multi-line text → split into separate log entries so <Static> keys
       // stay stable when streaming arrives line-by-line. Always promote any
       // in-flight tool group first so it freezes above the new text.
@@ -281,7 +309,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       if (!raw) return;
       flushActiveMerge();
       const lines = raw.split(/\r?\n/);
-      for (const line of lines) appendLogLine(line);
+      for (const line of lines) appendLogLine(line, kind);
     }, [appendLogLine, flushActiveMerge]);
 
     const expandLastMerge = useCallback(() => {
@@ -299,7 +327,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       const lines = fmt.buildMergedToolExpandedLines(candidate.entries);
       for (let i = 0; i < lines.length; i += 1) {
         const branch = i === lines.length - 1 ? "└" : "│";
-        appendLogLine(`${branch} ${lines[i]}`);
+        appendLogLine(`${branch} ${lines[i]}`, "toolDetail");
       }
       candidate.expanded = true;
       if (active && active.id === candidate.id) setActiveMerge(null);
@@ -315,7 +343,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       if (!normalized) return;
       toolMergeScopeRef.current += 1;
       flushActiveMerge();
-      appendLogLine(`› ${normalized}`);
+      appendLogLine(`› ${normalized}`, "user");
 
       const runtimeWorkspace = String(
         (props.state && props.state.workspaceRoot) || props.workspaceRoot || process.cwd()
@@ -325,7 +353,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       try {
         result = props.runSingleCommand(normalized, runtimeWorkspace);
       } catch (err) {
-        appendLogText(`Error: ${err && err.message ? err.message : "command parse failed"}`);
+        appendLogText(`Error: ${err && err.message ? err.message : "command parse failed"}`, "error");
         return;
       }
       if (!result || typeof result !== "object") return;
@@ -350,26 +378,26 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
               workspaceRoot: runtimeWorkspace,
               onMessageReceived: (msg) => {
                 const nickname = extractAgentNickname(msg && msg.from) || (msg && msg.from) || "bus";
-                appendLogText(`${nickname}: ${(msg && msg.task) || ""}`);
+                appendLogText(`${nickname}: ${(msg && msg.task) || ""}`, "bus");
               },
             });
             if (!ubusResult || !ubusResult.ok) {
-              appendLogText(`Error: ${(ubusResult && ubusResult.error) || "ubus failed"}`);
+              appendLogText(`Error: ${(ubusResult && ubusResult.error) || "ubus failed"}`, "error");
               return;
             }
             const exchanges = Array.isArray(ubusResult.messageExchanges) ? ubusResult.messageExchanges : [];
             if (exchanges.length > 0) {
               for (const exchange of exchanges) {
                 const nickname = extractAgentNickname(exchange && exchange.from) || (exchange && exchange.from) || "bus";
-                appendLogText(`@${nickname} ${(exchange && exchange.reply) || ""}`);
+                appendLogText(`@${nickname} ${(exchange && exchange.reply) || ""}`, "bus");
               }
             } else if (Number(ubusResult.handled) === 0) {
-              appendLogText("ubus: no pending messages.");
+              appendLogText("ubus: no pending messages.", "system");
             }
             if (typeof props.persistSessionState === "function") {
               const persisted = props.persistSessionState(props.state);
               if (!persisted || persisted.ok === false) {
-                appendLogText(`Error: failed to persist session ${(props.state && props.state.sessionId) || ""}: ${(persisted && persisted.error) || "unknown error"}`);
+                appendLogText(`Error: failed to persist session ${(props.state && props.state.sessionId) || ""}: ${(persisted && persisted.error) || "unknown error"}`, "error");
               }
             }
           } finally {
@@ -379,15 +407,15 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
         }
         case "resume": {
           if (typeof props.resumeSessionState !== "function") {
-            appendLogText("Error: resume unsupported");
+            appendLogText("Error: resume unsupported", "error");
             return;
           }
           const resumed = props.resumeSessionState(props.state, result.sessionId, runtimeWorkspace);
           if (!resumed || !resumed.ok) {
-            appendLogText(`Error: ${(resumed && resumed.error) || "resume failed"}`);
+            appendLogText(`Error: ${(resumed && resumed.error) || "resume failed"}`, "error");
             return;
           }
-          appendLogText(`Resumed session ${resumed.sessionId} (${resumed.restoredMessages} messages).`);
+          appendLogText(`Resumed session ${resumed.sessionId} (${resumed.restoredMessages} messages).`, "system");
           return;
         }
         case "tool": {
@@ -413,7 +441,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
           backgroundTasksRef.current.set(jobId, taskRecord);
           bumpBackground();
           setStatus({ message: "", type: "thinking", showTimer: false, startedAt: 0 });
-          appendLogText(`[${jobId}] started in background.`);
+          appendLogText(`[${jobId}] started in background.`, "system");
 
           const bgState = {
             workspaceRoot: props.state && props.state.workspaceRoot,
@@ -434,13 +462,13 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
               taskRecord.finishedAt = Date.now();
               taskRecord.summary = String(props.formatNlResult(nlResult, false) || "").trim();
               const title = taskRecord.status === "done" ? "done" : "failed";
-              appendLogText(`[${jobId}] ${title}: ${taskRecord.summary || "no summary"}`);
+              appendLogText(`[${jobId}] ${title}: ${taskRecord.summary || "no summary"}`, "system");
             })
             .catch((err) => {
               taskRecord.status = "failed";
               taskRecord.finishedAt = Date.now();
               taskRecord.summary = err && err.message ? String(err.message) : "background task failed";
-              appendLogText(`[${jobId}] failed: ${taskRecord.summary}`);
+              appendLogText(`[${jobId}] failed: ${taskRecord.summary}`, "system");
             })
             .finally(() => {
               bumpBackground();
@@ -458,6 +486,16 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
             showTimer: true,
             startedAt,
           });
+          const cancelThinkingFlush = () => {
+            if (thinkingTimerRef.current) {
+              clearTimeout(thinkingTimerRef.current);
+              thinkingTimerRef.current = null;
+            }
+          };
+          const flushThinkingStatus = () => {
+            thinkingFlushAtRef.current = Date.now();
+            setNlStatus(collapseThinkingTail(thinkingTailRef.current) || "Thinking...");
+          };
           setNlStatus("Waiting for model...");
           let streamBuf = "";
           let sawStreamText = false;
@@ -469,10 +507,28 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
               signal: abortController.signal,
               onPhase: (event) => {
                 if (!event || typeof event !== "object") return;
-                if (event.type === "request_start") setNlStatus("Waiting for model...");
-                else if (event.type === "thinking_delta") setNlStatus("Thinking...");
-                else if (event.type === "text_delta") setNlStatus("Generating response...");
-                else if (event.type === "tool_request") {
+                if (event.type === "request_start") {
+                  cancelThinkingFlush();
+                  setNlStatus("Waiting for model...");
+                } else if (event.type === "thinking_delta") {
+                  thinkingTailRef.current += String(event.text || "");
+                  const elapsed = Date.now() - thinkingFlushAtRef.current;
+                  if (elapsed >= THINKING_STATUS_THROTTLE_MS) {
+                    cancelThinkingFlush();
+                    flushThinkingStatus();
+                  } else if (!thinkingTimerRef.current) {
+                    // Trailing flush guarantees the final tail lands even
+                    // when the stream ends inside a throttle window.
+                    thinkingTimerRef.current = setTimeout(() => {
+                      thinkingTimerRef.current = null;
+                      flushThinkingStatus();
+                    }, THINKING_STATUS_THROTTLE_MS - elapsed);
+                  }
+                } else if (event.type === "text_delta") {
+                  cancelThinkingFlush();
+                  setNlStatus("Generating response...");
+                } else if (event.type === "tool_request") {
+                  cancelThinkingFlush();
                   const label = fmt.TOOL_LABELS[String(event.name || "").toLowerCase()] ||
                     `Calling ${event.name}`;
                   setNlStatus(`${label}...`);
@@ -509,10 +565,12 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
               },
             });
           } catch (err) {
-            appendLogText(`Error: ${err && err.message ? err.message : "agent loop failed"}`);
+            appendLogText(`Error: ${err && err.message ? err.message : "agent loop failed"}`, "error");
             return;
           } finally {
             pendingTaskRef.current = null;
+            cancelThinkingFlush();
+            thinkingTailRef.current = "";
             setStatus({ message: "", type: "thinking", showTimer: false, startedAt: 0 });
           }
           if (streamBuf) {
@@ -534,7 +592,8 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
             const persisted = props.persistSessionState(props.state);
             if (persisted && persisted.ok === false) {
               appendLogText(
-                `Error: failed to persist session ${(props.state && props.state.sessionId) || ""}: ${persisted.error || "unknown error"}`
+                `Error: failed to persist session ${(props.state && props.state.sessionId) || ""}: ${persisted.error || "unknown error"}`,
+                "error"
               );
             }
           } catch {
@@ -579,7 +638,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
           signal: abortController.signal,
           onMessageReceived: (msg) => {
             const nickname = extractAgentNickname(msg && msg.from) || (msg && msg.from) || "bus";
-            appendLogText(`${nickname}: ${(msg && msg.task) || ""}`);
+            appendLogText(`${nickname}: ${(msg && msg.task) || ""}`, "bus");
             setStatus({
               message: "Working on task...",
               type: "thinking",
@@ -593,7 +652,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
           const nextError = String((ubusResult && ubusResult.error) || "ubus failed");
           if (nextError !== autoBusErrorRef.current) {
             autoBusErrorRef.current = nextError;
-            appendLogText(`Error: ${nextError}`);
+            appendLogText(`Error: ${nextError}`, "error");
           }
           return;
         }
@@ -602,12 +661,12 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
         const exchanges = Array.isArray(ubusResult.messageExchanges) ? ubusResult.messageExchanges : [];
         for (const exchange of exchanges) {
           const nickname = extractAgentNickname(exchange && exchange.from) || (exchange && exchange.from) || "bus";
-          appendLogText(`@${nickname} ${(exchange && exchange.reply) || ""}`);
+          appendLogText(`@${nickname} ${(exchange && exchange.reply) || ""}`, "bus");
         }
         if (Number(ubusResult.handled) > 0 && typeof props.persistSessionState === "function") {
           const persisted = props.persistSessionState(props.state);
           if (!persisted || persisted.ok === false) {
-            appendLogText(`Error: failed to persist session ${(props.state && props.state.sessionId) || ""}: ${(persisted && persisted.error) || "unknown error"}`);
+            appendLogText(`Error: failed to persist session ${(props.state && props.state.sessionId) || ""}: ${(persisted && persisted.error) || "unknown error"}`, "error");
           }
         }
       } finally {
@@ -627,7 +686,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
         autoBusQueuedRef.current = true;
         runChainRef.current = runChainRef.current
           .then(() => runAutoBusOnce())
-          .catch((err) => appendLogText(`Error: ${err && err.message ? err.message : "ubus failed"}`))
+          .catch((err) => appendLogText(`Error: ${err && err.message ? err.message : "ubus failed"}`, "error"))
           .finally(() => {
             autoBusQueuedRef.current = false;
           });
@@ -651,7 +710,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       // Serialize executions so streaming tasks don't interleave.
       runChainRef.current = runChainRef.current
         .then(() => executeLine(value))
-        .catch((err) => appendLogText(`Error: ${err && err.message ? err.message : err}`));
+        .catch((err) => appendLogText(`Error: ${err && err.message ? err.message : err}`, "error"));
     }, [draft, executeLine, appendLogText]);
 
     useEffect(() => {
@@ -690,7 +749,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
     return h(Box, { flexDirection: "column", width: "100%" },
       h(Box, { flexDirection: "column", width: "100%" },
         ...logLines.map((item) =>
-          h(Text, { key: item.id }, item.text || " ")
+          h(Text, { key: item.id, ...resolveLogLineTextProps(item.kind) }, item.text || " ")
         )
       ),
       activeMerge ? h(Box, null,
@@ -716,7 +775,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
             const pending = pendingTaskRef.current;
             if (pending && pending.abortController && !pending.abortController.signal.aborted) {
               try { pending.abortController.abort(); } catch { /* ignore */ }
-              appendLogLine("⚙ Cancellation requested. Stopping the current task...");
+              appendLogLine("⚙ Cancellation requested. Stopping the current task...", "system");
               setStatus({
                 message: "Cancelling...",
                 type: "waiting",
@@ -813,7 +872,7 @@ function runUcodeInkTui(props = {}) {
   });
 }
 
-module.exports = { runUcodeInkTui, createUcodeApp, computeStatusText };
+module.exports = { runUcodeInkTui, createUcodeApp, computeStatusText, collapseThinkingTail, resolveLogLineTextProps };
 
 function inferStatusType(text = "", requestedType = "") {
   const type = String(requestedType || "").trim().toLowerCase();
@@ -837,6 +896,14 @@ function inferStatusType(text = "", requestedType = "") {
  * combination while a task is in flight, mirroring updateStatus() in the
  * blessed implementation.
  */
+function collapseThinkingTail(text, maxChars = 80) {
+  const collapsed = String(text || "").replace(/\s+/g, " ").trim();
+  const parsed = Number(maxChars);
+  const limit = Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 80;
+  if (collapsed.length <= limit) return collapsed;
+  return collapsed.slice(collapsed.length - limit);
+}
+
 function computeStatusText(status, spinnerTick, backgroundSuffix = "") {
   const message = String((status && status.message) || "");
   const suffix = String(backgroundSuffix || "");
