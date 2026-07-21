@@ -3,6 +3,7 @@ const {
   buildUcodeBannerLines,
   parseActiveAgentsFromBusStatus,
   renderLogLinesWithMarkdown,
+  renderLogLinesWithMarkdownAnsi,
   shouldEnterAgentSelection,
   resolveAgentSelectionOnDown,
   cycleAgentSelectionIndex,
@@ -230,11 +231,70 @@ describe("ucode tui switch", () => {
     );
 
     expect(lines).toEqual([
-      "{cyan-fg}#{/cyan-fg} {bold}Title{/bold}",
+      "{cyan-fg}{bold}Title{/bold}{/cyan-fg}",
       "{gray-fg}•{/gray-fg} item {yellow-fg}x{/yellow-fg}",
       "{gray-fg}1.{/gray-fg} step",
-      "{gray-fg}▍{/gray-fg} quote",
+      "{gray-fg}│{/gray-fg} quote",
     ]);
+  });
+
+  test("renders inline bold and italic emphasis", () => {
+    const state = { inCodeBlock: false };
+    const lines = renderLogLinesWithMarkdown(
+      "use **bold** and *italic* with `code`",
+      state,
+      (v) => String(v)
+    );
+
+    expect(lines).toEqual([
+      "use {bold}{white-fg}bold{/white-fg}{/bold} and {italic}{gray-fg}italic{/gray-fg}{/italic} with {yellow-fg}code{/yellow-fg}",
+    ]);
+  });
+
+  test("hides heading hashes and horizontal rules", () => {
+    const state = { inCodeBlock: false };
+    const lines = renderLogLinesWithMarkdown(
+      "## Design\n### Risks\n---\n**summary** stays bold",
+      state,
+      (v) => String(v)
+    );
+    expect(lines[0]).toBe("{cyan-fg}{bold}Design{/bold}{/cyan-fg}");
+    expect(lines[1]).toBe("{blue-fg}{bold}Risks{/bold}{/blue-fg}");
+    expect(lines[2]).toBe("{gray-fg}────────────────────────{/gray-fg}");
+    expect(lines[3]).toContain("{bold}{white-fg}summary{/white-fg}{/bold}");
+    expect(lines[3]).not.toContain("**");
+  });
+
+  test("renders ansi markdown for ink log lines", () => {
+    const state = { inCodeBlock: false };
+    const lines = renderLogLinesWithMarkdownAnsi(
+      "**Done** — see `assembler.js`\n- keep going",
+      state
+    );
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain("Done");
+    expect(lines[0]).not.toContain("**Done**");
+    expect(lines[0]).toContain("assembler.js");
+    expect(lines[0]).not.toContain("`assembler.js`");
+    expect(lines[1]).toContain("keep going");
+    expect(lines[1]).not.toMatch(/^\s*-\s/);
+  });
+
+  test("bold wins over nested code and code-wrapped bold", () => {
+    const state = { inCodeBlock: false };
+    const cases = [
+      "1. **summary 目前是启发式摘要**",
+      "1. **`summary` 目前是启发式摘要**",
+      "1. `**summary 目前是启发式摘要**`",
+      "1. **`summary`**",
+    ];
+    for (const sample of cases) {
+      const plain = renderLogLinesWithMarkdownAnsi(sample, state)
+        .map((line) => String(line).replace(/\x1b\[[0-9;]*m/g, ""))
+        .join("\n");
+      expect(plain).toContain("summary");
+      expect(plain).not.toContain("*");
+    }
   });
 
   test("renders inline code in normal lines", () => {
@@ -310,6 +370,21 @@ describe("ucode tui switch", () => {
       agentSelectionMode: false,
       inputValue: "",
     })).toBe(false);
+  });
+
+  test("arrow-up clears @ target before walking history when draft is empty", () => {
+    // Documents the intended priority: agent-selection clear wins over
+    // history recall whenever the draft is empty in selection mode.
+    const inSelectionEmpty = shouldClearAgentSelectionOnUp({
+      agentSelectionMode: true,
+      inputValue: "",
+    });
+    const inSelectionWithDraft = shouldClearAgentSelectionOnUp({
+      agentSelectionMode: true,
+      inputValue: "hello",
+    });
+    expect(inSelectionEmpty).toBe(true);
+    expect(inSelectionWithDraft).toBe(false);
   });
 
   test("moveCursorHorizontally clamps within input bounds", () => {
@@ -477,6 +552,19 @@ describe("ucode tui switch", () => {
       { cmd: "pwd" },
       {}
     )).toBe("pwd");
+  });
+
+  test("normalizeToolLogDetail covers read/write/edit/artifact_read", () => {
+    const {
+      normalizeToolLogDetail,
+    } = require("../../../src/ui/format");
+    expect(normalizeToolLogDetail("read", { path: "src/code/context/assembler.js" }))
+      .toBe("src/code/context/assembler.js");
+    expect(normalizeToolLogDetail("write", { path: "a.txt" })).toBe("a.txt");
+    expect(normalizeToolLogDetail("edit", { path: "b.txt" })).toBe("b.txt");
+    expect(normalizeToolLogDetail("artifact_read", { artifactId: "artifact_1", startLine: 2, endLine: 4 }))
+      .toBe("artifact_1 · L2-L4");
+    expect(normalizeToolLogDetail("bash", { command: "ls" }, { code: 1 })).toBe("ls · exit 1");
   });
 
   test("normalizeToolMergeEntry normalizes fields for fold rendering", () => {

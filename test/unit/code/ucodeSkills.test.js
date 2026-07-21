@@ -237,4 +237,56 @@ describe("ucode skills", () => {
     expect(block).not.toContain("TAIL_MARKER");
     expect(block.length).toBeLessThan(33 * 1024);
   });
+
+  test("discovers triggers and workflowSummary from frontmatter", () => {
+    const workspace = path.join(tmp, "workspace");
+    const dir = path.join(workspace, ".agents", "skills", "demo");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "SKILL.md"), `---
+name: demo
+description: Demo workflow
+triggers:
+  - inspect
+  - audit
+workflowSummary: Inspect then summarize
+metadata:
+  short-description: short demo
+---
+
+body
+`, "utf8");
+    const outcome = listUcodeSkills({
+      workspaceRoot: workspace,
+      env: { HOME: home, CODEX_HOME: codexHome },
+      repoRoot,
+    });
+    expect(outcome.skills[0].triggers).toEqual(["inspect", "audit"]);
+    expect(outcome.skills[0].workflowSummary).toBe("Inspect then summarize");
+  });
+
+  test("v2 injection can persist skill body artifact and use active_skill tag", () => {
+    const workspace = path.join(tmp, "workspace");
+    writeSkill(path.join(workspace, ".agents", "skills"), "demo", {
+      name: "demo",
+      description: "Demo workflow",
+      body: "Demo body",
+    });
+    const outcome = listUcodeSkills({
+      workspaceRoot: workspace,
+      env: { HOME: home, CODEX_HOME: codexHome },
+      repoRoot,
+    });
+    const injected = buildSkillInjections({
+      prompt: "use $demo",
+      workspaceRoot: workspace,
+      skillsOutcome: outcome,
+      sessionId: "sess-skill",
+      persistBodies: true,
+      useActiveSkillTag: true,
+    });
+    expect(injected.blocks).toHaveLength(1);
+    expect(injected.blocks[0]).toContain("<active_skill>");
+    expect(injected.activeSkills[0].bodyArtifactId).toMatch(/^artifact_/);
+    expect(injected.manifests[0].bodyArtifactId).toBe(injected.activeSkills[0].bodyArtifactId);
+  });
 });

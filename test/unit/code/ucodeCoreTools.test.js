@@ -78,7 +78,7 @@ describe("ucode-core tool kernel", () => {
     });
     expect(result.ok).toBe(false);
     expect(result.error).toContain("unknown");
-    expect(result.supported_tools).toEqual(["read", "write", "edit", "bash"]);
+    expect(result.supported_tools).toEqual(["read", "write", "edit", "bash", "artifact_read"]);
   });
 
   test("edit returns error when find pattern is empty", () => {

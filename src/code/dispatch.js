@@ -2,8 +2,9 @@ const { runReadTool } = require("./tools/read");
 const { runWriteTool } = require("./tools/write");
 const { runEditTool } = require("./tools/edit");
 const { runBashTool } = require("./tools/bash");
+const { runArtifactReadTool } = require("./tools/artifactRead");
 
-const TOOL_NAMES = ["read", "write", "edit", "bash"];
+const TOOL_NAMES = ["read", "write", "edit", "bash", "artifact_read"];
 
 function normalizeToolName(value = "") {
   const text = String(value || "").trim().toLowerCase();
@@ -11,6 +12,7 @@ function normalizeToolName(value = "") {
   if (text === "write") return "write";
   if (text === "edit") return "edit";
   if (text === "bash") return "bash";
+  if (text === "artifact_read" || text === "artifact-read" || text === "artifactread") return "artifact_read";
   return "";
 }
 
@@ -27,6 +29,7 @@ function runToolCall(input = {}, options = {}) {
   if (tool === "read") return runReadTool(args, options);
   if (tool === "write") return runWriteTool(args, options);
   if (tool === "edit") return runEditTool(args, options);
+  if (tool === "artifact_read") return runArtifactReadTool(args, options);
   return runBashTool(args, options);
 }
 

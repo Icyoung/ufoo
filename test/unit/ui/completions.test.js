@@ -160,4 +160,103 @@ describe("buildCompletions", () => {
       groupTemplates: [{ alias: "build-lane", desc: "Build lane" }],
     })).toEqual([]);
   });
+
+  test("ucode /resume argumentLists offers session ids", () => {
+    const { UCODE_COMMAND_REGISTRY, UCODE_COMMAND_TREE } = require("../../../src/code/commands");
+    const out = buildCompletions({
+      text: "/resume ",
+      commands: UCODE_COMMAND_REGISTRY,
+      commandTree: UCODE_COMMAND_TREE,
+      argumentLists: {
+        "/resume": [
+          { id: "ucode-abc", desc: "2026-07-21 · gpt" },
+          { id: "ucode-def", desc: "older" },
+        ],
+      },
+    });
+    expect(out.map((s) => s.label)).toEqual([
+      "/resume ucode-abc",
+      "/resume ucode-def",
+    ]);
+    expect(out[0].replace).toBe("/resume ucode-abc ");
+  });
+
+  test("ucode slash top-level lists registry commands", () => {
+    const { UCODE_COMMAND_REGISTRY, UCODE_COMMAND_TREE } = require("../../../src/code/commands");
+    const out = buildCompletions({
+      text: "/",
+      commands: UCODE_COMMAND_REGISTRY,
+      commandTree: UCODE_COMMAND_TREE,
+      argumentLists: { "/resume": [{ id: "sess-1" }] },
+      limit: 20,
+    });
+    expect(out.map((s) => s.label)).toEqual([
+      "/help",
+      "/status",
+      "/model",
+      "/ubus",
+      "/resume",
+      "/skills",
+      "/bg",
+      "/exit",
+    ]);
+    expect(out.find((s) => s.label === "/resume").hasChildren).toBe(true);
+    expect(out.find((s) => s.label === "/model").hasChildren).toBe(true);
+    expect(out.find((s) => s.label === "/model").optionalArguments).toBe(true);
+  });
+
+  test("exact /model closes popup so Enter can show current model", () => {
+    const { UCODE_COMMAND_REGISTRY, UCODE_COMMAND_TREE } = require("../../../src/code/commands");
+    expect(buildCompletions({
+      text: "/model",
+      commands: UCODE_COMMAND_REGISTRY,
+      commandTree: UCODE_COMMAND_TREE,
+      argumentLists: { "/model": [{ id: "gpt-5.4" }] },
+    })).toEqual([]);
+  });
+
+  test("ucode /model argumentLists offers model ids", () => {
+    const { UCODE_COMMAND_REGISTRY, UCODE_COMMAND_TREE } = require("../../../src/code/commands");
+    const out = buildCompletions({
+      text: "/model ",
+      commands: UCODE_COMMAND_REGISTRY,
+      commandTree: UCODE_COMMAND_TREE,
+      argumentLists: {
+        "/model": [
+          { id: "gpt-5.4", desc: "current" },
+          { id: "o3", desc: "" },
+        ],
+      },
+    });
+    expect(out.map((s) => s.label)).toEqual([
+      "/model gpt-5.4",
+      "/model o3",
+    ]);
+    expect(out[0].hasChildren).toBe(false);
+  });
+});
+
+describe("buildUcodeSessionLogEntries", () => {
+  const { buildUcodeSessionLogEntries } = require("../../../src/ui/format");
+
+  test("maps user/assistant/tool messages into log rows", () => {
+    const { entries } = buildUcodeSessionLogEntries([
+      { role: "user", content: "fix resume" },
+      { role: "assistant", content: "ok **ready**" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "c1", type: "function", function: { name: "read", arguments: "{}" } }],
+      },
+      {
+        role: "tool",
+        tool_call_id: "c1",
+        content: JSON.stringify({ artifactId: "artifact_1", preview: "file contents" }),
+      },
+    ]);
+    expect(entries.some((row) => row.kind === "user" && row.text.includes("fix resume"))).toBe(true);
+    expect(entries.some((row) => row.kind === "assistant" && row.text.includes("ready"))).toBe(true);
+    expect(entries.some((row) => row.kind === "system" && /read/.test(row.text))).toBe(true);
+    expect(entries.some((row) => row.kind === "toolDetail" && row.text.includes("file contents"))).toBe(true);
+  });
 });

@@ -6,8 +6,9 @@ const {
   getUsageFilePath,
   appendUsageRecord,
   summarizeSessionUsage,
+  formatSessionUsageStatus,
 } = require("../../../src/code/usageStore");
-const { runSingleCommand, formatSessionUsageStatus } = require("../../../src/code/repl");
+const { runSingleCommand } = require("../../../src/code/repl");
 
 describe("ucode usage store", () => {
   let workspaceRoot = "";
@@ -136,7 +137,7 @@ describe("ucode repl status command", () => {
   test("help output lists the status command", () => {
     const result = runSingleCommand("help", process.cwd());
     expect(result.kind).toBe("help");
-    expect(result.output).toContain("status|/status");
+    expect(result.output).toContain("/status");
   });
 
   test("formatSessionUsageStatus shows totals and the cache hit rate", () => {

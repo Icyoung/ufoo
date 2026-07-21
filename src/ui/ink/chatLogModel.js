@@ -1,5 +1,9 @@
 "use strict";
 
+const { renderMarkdownLinesAnsi } = require("../format/markdownRenderer");
+
+const MARKDOWN_BODY_KINDS = new Set(["assistant", "agent", "plain", "error", "success"]);
+
 function stripBlessedTags(text = "") {
   return String(text || "")
     .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
@@ -26,6 +30,39 @@ function compactDividerLabel(text = "") {
   return label || String(text || "").trim() || "section";
 }
 
+function splitSpeakerBody(raw = "") {
+  const source = String(raw || "");
+  const dotIdx = source.indexOf(" · ");
+  if (dotIdx >= 0) {
+    return {
+      speaker: source.slice(0, dotIdx).trim(),
+      body: source.slice(dotIdx + 3),
+    };
+  }
+  const colonMatch = source.match(/^([A-Za-z0-9_.:@/-]{1,42}):\s+(.*)$/);
+  if (colonMatch) {
+    return { speaker: colonMatch[1], body: colonMatch[2] || "" };
+  }
+  return { speaker: "", body: source };
+}
+
+function formatChatLogBody(body = "", kind = "plain", markdownState = null) {
+  const text = String(body || "");
+  if (!MARKDOWN_BODY_KINDS.has(kind)) return text;
+  // Structural markers / empty rows stay untouched.
+  if (!text.trim()) return text;
+  try {
+    const state = markdownState && typeof markdownState === "object"
+      ? markdownState
+      : { inCodeBlock: false };
+    const lines = renderMarkdownLinesAnsi(text, state);
+    if (!Array.isArray(lines) || lines.length === 0) return text;
+    return lines.length === 1 ? lines[0] : lines.join("\n");
+  } catch {
+    return text;
+  }
+}
+
 function classifyChatLogLine(text = "") {
   const raw = stripBlessedTags(text).replace(/\r/g, "");
   const clean = stripMarkdownDecorators(raw);
@@ -41,23 +78,47 @@ function classifyChatLogLine(text = "") {
     return { kind: "meta", marker: "·", speaker: "", body: clean };
   }
   if (/^(error:|✗|failed\b)/i.test(trimmed)) {
-    return { kind: "error", marker: "!", speaker: "error", body: clean.replace(/^(error:\s*)/i, "") };
+    const rawBody = raw.replace(/^(error:\s*)/i, "");
+    return {
+      kind: "error",
+      marker: "!",
+      speaker: "error",
+      body: rawBody || clean.replace(/^(error:\s*)/i, ""),
+    };
   }
   if (/^(✓|✔|done\b|closed\b)/i.test(trimmed)) {
-    return { kind: "success", marker: "✓", speaker: "", body: clean.replace(/^[✓✔]\s*/, "") };
+    const rawBody = raw.replace(/^[✓✔]\s*/, "");
+    return {
+      kind: "success",
+      marker: "✓",
+      speaker: "",
+      body: rawBody || clean.replace(/^[✓✔]\s*/, ""),
+    };
   }
-  const dotMatch = clean.match(/^([^·\n]{1,64})\s+·\s+(.*)$/);
-  if (dotMatch) {
-    const speaker = dotMatch[1].trim();
+  const cleanDot = clean.match(/^([^·\n]{1,64})\s+·\s+(.*)$/);
+  if (cleanDot) {
+    const parts = splitSpeakerBody(raw);
+    const speaker = stripMarkdownDecorators(parts.speaker || cleanDot[1]).trim();
     const lower = speaker.toLowerCase();
     const kind = lower === "ufoo" ? "assistant" : "agent";
-    return { kind, marker: kind === "assistant" ? "◆" : "•", speaker, body: dotMatch[2] || " " };
+    return {
+      kind,
+      marker: kind === "assistant" ? "◆" : "•",
+      speaker,
+      body: parts.body != null ? parts.body : (cleanDot[2] || " "),
+    };
   }
-  const colonMatch = clean.match(/^([A-Za-z0-9_.:@/-]{1,42}):\s+(.*)$/);
-  if (colonMatch) {
-    return { kind: "agent", marker: "•", speaker: colonMatch[1], body: colonMatch[2] || " " };
+  const cleanColon = clean.match(/^([A-Za-z0-9_.:@/-]{1,42}):\s+(.*)$/);
+  if (cleanColon) {
+    const parts = splitSpeakerBody(raw);
+    return {
+      kind: "agent",
+      marker: "•",
+      speaker: stripMarkdownDecorators(parts.speaker || cleanColon[1]).trim(),
+      body: parts.body != null ? parts.body : (cleanColon[2] || " "),
+    };
   }
-  return { kind: "plain", marker: "", speaker: "", body: clean };
+  return { kind: "plain", marker: "", speaker: "", body: raw || clean };
 }
 
 function defaultMarkerForKind(kind = "", speaker = "") {
@@ -71,12 +132,19 @@ function defaultMarkerForKind(kind = "", speaker = "") {
   return speaker ? "•" : "";
 }
 
-function buildChatLogLineModel(input = "") {
+function buildChatLogLineModel(input = "", options = {}) {
+  const markdownState = options && options.markdownState;
+
   if (input && typeof input === "object" && !input.kind) {
-    return buildChatLogLineModel(chatLogEntryText(input));
+    return buildChatLogLineModel(chatLogEntryText(input), options);
   }
 
   if (input && typeof input === "object" && input.kind) {
+    // Prefer original text when present so markdown can be (re)applied with
+    // a shared fence state — e.g. Static decoration.
+    if (input.text != null && String(input.text).length > 0 && markdownState) {
+      return buildChatLogLineModel(String(input.text), options);
+    }
     const kind = String(input.kind || "plain");
     const speaker = String(input.speaker || "");
     const marker = input.marker != null ? String(input.marker) : defaultMarkerForKind(kind, speaker);
@@ -84,6 +152,9 @@ function buildChatLogLineModel(input = "") {
       ? String(input.bodyText)
       : String(input.body != null ? input.body : chatLogEntryText(input));
     const body = kind === "plain" ? compactContinuationIndent(rawBody || " ") : (rawBody || " ");
+    const bodyText = markdownState
+      ? formatChatLogBody(body, kind, markdownState)
+      : body;
     return {
       kind,
       marker,
@@ -92,7 +163,7 @@ function buildChatLogLineModel(input = "") {
       markerText: input.markerText != null
         ? String(input.markerText)
         : (speaker ? `${marker || " "}  ` : `${marker || " "} `),
-      bodyText: body,
+      bodyText,
     };
   }
 
@@ -104,7 +175,7 @@ function buildChatLogLineModel(input = "") {
   return {
     ...row,
     markerText: hasSpeaker ? `${row.marker || " "}  ` : `${row.marker || " "} `,
-    bodyText: body,
+    bodyText: formatChatLogBody(body, row.kind, markdownState || { inCodeBlock: false }),
   };
 }
 
@@ -113,12 +184,15 @@ function normalizeEntryInput(input) {
   return { text: input };
 }
 
-function createChatLogEntry(input = "", id = "") {
+function createChatLogEntry(input = "", id = "", options = {}) {
   const source = normalizeEntryInput(input);
   const text = String(source.text != null ? source.text : chatLogEntryText(source));
-  const row = source.kind
-    ? buildChatLogLineModel({ ...source, text })
-    : buildChatLogLineModel(text);
+  const markdownState = options && options.markdownState
+    ? options.markdownState
+    : { inCodeBlock: false };
+  const row = source.kind && !(options && options.markdownState)
+    ? buildChatLogLineModel({ ...source, text }, { markdownState })
+    : buildChatLogLineModel(text, { markdownState });
   const meta = source.meta && typeof source.meta === "object" && !Array.isArray(source.meta)
     ? { ...source.meta }
     : {};
@@ -160,13 +234,17 @@ function buildChatLogGroups(items = []) {
   const source = Array.isArray(items) ? items : [];
   const groups = [];
   let current = null;
+  const markdownState = { inCodeBlock: false };
   for (let index = 0; index < source.length; index += 1) {
     const item = source[index] || {};
     const itemId = item && typeof item === "object" && item.id ? item.id : `log-${index}`;
-    const row = buildChatLogLineModel(item);
+    const text = item && typeof item === "object" && item.text != null
+      ? String(item.text)
+      : chatLogEntryText(item);
+    const row = buildChatLogLineModel(text, { markdownState });
     const entry = {
       id: itemId,
-      text: chatLogEntryText(item),
+      text,
       row,
       sourceType: item && typeof item === "object" ? String(item.sourceType || item.type || "") : "",
       meta: item && typeof item === "object" && item.meta ? item.meta : {},
@@ -196,7 +274,10 @@ module.exports = {
   compactDividerLabel,
   classifyChatLogLine,
   buildChatLogLineModel,
-  buildChatLogGroups,
+  formatChatLogBody,
   createChatLogEntry,
   chatLogEntryText,
+  canAppendToChatLogGroup,
+  buildChatLogGroups,
+  MARKDOWN_BODY_KINDS,
 };

@@ -1,4 +1,9 @@
-function renderSkillsSection(skills = []) {
+const {
+  buildSkillManifests,
+  renderSkillManifestSection,
+} = require("./manifest");
+
+function renderSkillsSection(skills = [], options = {}) {
   const list = (Array.isArray(skills) ? skills : []).filter((skill) => skill && skill.enabled !== false);
   if (list.length === 0) return "";
 
@@ -18,6 +23,15 @@ function renderSkillsSection(skills = []) {
   lines.push("- Do not assume a skill applies just because it exists; match the user request to the listed skill descriptions.");
   lines.push("- When a skill is selected, read only the specific skill body and nearby referenced files needed for the task.");
   lines.push("- If a skill is ambiguous, missing, or unreadable, say so briefly and continue with the best fallback.");
+
+  if (options.includeManifests !== false) {
+    const manifests = buildSkillManifests(list);
+    const manifestSection = renderSkillManifestSection(manifests);
+    if (manifestSection) {
+      lines.push("");
+      lines.push(manifestSection);
+    }
+  }
 
   return lines.join("\n");
 }

@@ -49,8 +49,16 @@ describe("collapseThinkingTail", () => {
     const text = "x".repeat(50) + " " + "y".repeat(60);
     const tail = collapseThinkingTail(text, 40);
     expect(tail).toHaveLength(40);
-    expect(tail).toBe("y".repeat(40));
+    expect(tail.startsWith("…")).toBe(true);
+    expect(tail.endsWith("y".repeat(39))).toBe(true);
     expect(collapseThinkingTail("short", 40)).toBe("short");
+  });
+
+  test("prefers the latest markdown emphasis segment", () => {
+    expect(collapseThinkingTail(
+      "**Planning code inspection** **Identifying duplicate skill injection and prompt bloat**",
+      80,
+    )).toBe("Identifying duplicate skill injection and prompt bloat");
   });
 
   test("handles empty and non-string input", () => {
@@ -63,6 +71,7 @@ describe("collapseThinkingTail", () => {
   test("falls back to the default limit for invalid maxChars", () => {
     const text = "z".repeat(200);
     expect(collapseThinkingTail(text)).toHaveLength(80);
+    expect(collapseThinkingTail(text).startsWith("…")).toBe(true);
     expect(collapseThinkingTail(text, 0)).toHaveLength(80);
     expect(collapseThinkingTail(text, "nope")).toHaveLength(80);
   });
@@ -200,12 +209,31 @@ describe("log line kinds", () => {
   test("user prompt rows render green + bold and are stored with kind user", async () => {
     const harness = createHarness();
     await submitLine(harness.render(), "hello world");
-    const row = findRow(collectLogRows(harness.render(), harness.ink.Text), "› hello world");
+    const tree = harness.render();
+    const row = findRow(collectLogRows(tree, harness.ink.Text), "› hello world");
     expect(row).toBeDefined();
     expect(row.color).toBe("green");
     expect(row.bold).toBe(true);
     const stored = getLogLines(harness.slots).find((line) => line.text === "› hello world");
     expect(stored.kind).toBe("user");
+
+    // User turns get a blank line of breathing room above and below.
+    let userBox = null;
+    walkElements(tree.props.children[0], (el) => {
+      if (
+        !userBox
+        && el.type === harness.ink.Box
+        && el.props
+        && el.props.children
+        && el.props.children.props
+        && el.props.children.props.children === "› hello world"
+      ) {
+        userBox = el.props;
+      }
+    });
+    expect(userBox).toBeDefined();
+    expect(userBox.marginTop).toBe(1);
+    expect(userBox.marginBottom).toBe(1);
   });
 
   test("error rows render red", async () => {

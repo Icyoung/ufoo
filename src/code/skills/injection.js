@@ -5,6 +5,10 @@ const {
   findSkillsByName,
   listUcodeSkills,
 } = require("./loader");
+const {
+  buildSkillManifest,
+  renderActiveSkillBlock,
+} = require("./manifest");
 
 function markdownSkillLinks(prompt = "") {
   const text = String(prompt || "");
@@ -71,9 +75,41 @@ function sanitizeSkillContent(content = "") {
   return text;
 }
 
-function readSkillBlock(skill) {
+function readSkillBlock(skill, options = {}) {
   const content = sanitizeSkillContent(fs.readFileSync(skill.path, "utf8"));
-  return `<skill>\n<name>${skill.name}</name>\n<path>${String(skill.path).replace(/\\/g, "/")}</path>\n${content}\n</skill>`;
+  const useActive = options.useActiveSkillTag === true;
+  const tag = useActive ? "active_skill" : "skill";
+  const bodyArtifactId = String(options.bodyArtifactId || "").trim();
+  const header = [
+    `<${tag}>`,
+    `<name>${skill.name}</name>`,
+    `<path>${String(skill.path).replace(/\\/g, "/")}</path>`,
+    bodyArtifactId ? `<bodyArtifactId>${bodyArtifactId}</bodyArtifactId>` : "",
+  ].filter(Boolean).join("\n");
+  return `${header}\n${content}\n</${tag}>`;
+}
+
+function persistSkillBodyArtifact(skill = {}, content = "", options = {}) {
+  const workspaceRoot = options.workspaceRoot || process.cwd();
+  const sessionId = String(options.sessionId || "").trim();
+  if (!sessionId) return "";
+  try {
+    const { saveArtifact } = require("../context/artifacts");
+    const saved = saveArtifact(workspaceRoot, sessionId, {
+      type: "skill_body",
+      tool: "skill",
+      source: skill.path || "",
+      args: { skill: skill.name || "" },
+      raw: { ok: true, path: skill.path || "", content: String(content || "") },
+      summary: `skill body ${skill.name || ""}`,
+      createdBy: "skill_injection",
+    });
+    return saved && saved.artifact && saved.artifact.artifactId
+      ? saved.artifact.artifactId
+      : "";
+  } catch {
+    return "";
+  }
 }
 
 function buildSkillInjections({
@@ -81,6 +117,9 @@ function buildSkillInjections({
   workspaceRoot = process.cwd(),
   skillsOutcome = null,
   loadSkills = listUcodeSkills,
+  sessionId = "",
+  persistBodies = false,
+  useActiveSkillTag = false,
 } = {}) {
   const outcome = skillsOutcome || loadSkills({ workspaceRoot });
   const skills = Array.isArray(outcome.skills) ? outcome.skills : [];
@@ -111,9 +150,28 @@ function buildSkillInjections({
   }
 
   const blocks = [];
+  const manifests = [];
+  const activeSkills = [];
   for (const skill of selected.values()) {
     try {
-      blocks.push(readSkillBlock(skill));
+      const rawContent = fs.readFileSync(skill.path, "utf8");
+      const content = sanitizeSkillContent(rawContent);
+      let bodyArtifactId = "";
+      if (persistBodies && sessionId) {
+        bodyArtifactId = persistSkillBodyArtifact(skill, content, { workspaceRoot, sessionId });
+      }
+      const manifest = buildSkillManifest(skill, { bodyArtifactId });
+      manifests.push(manifest);
+      activeSkills.push({
+        name: skill.name,
+        path: skill.path,
+        bodyArtifactId,
+      });
+      if (useActiveSkillTag) {
+        blocks.push(renderActiveSkillBlock(manifest, content));
+      } else {
+        blocks.push(readSkillBlock(skill, { bodyArtifactId, useActiveSkillTag: false }));
+      }
     } catch (err) {
       warnings.push(`failed to read skill ${skill.path}: ${err && err.message ? err.message : "read failed"}`);
     }
@@ -121,6 +179,8 @@ function buildSkillInjections({
 
   return {
     blocks,
+    manifests,
+    activeSkills,
     warnings,
     skills,
     errors: Array.isArray(outcome.errors) ? outcome.errors : [],
@@ -132,5 +192,7 @@ module.exports = {
   markdownSkillLinks,
   resolveSkillLinkTarget,
   findSkillByPath,
+  readSkillBlock,
+  persistSkillBodyArtifact,
   buildSkillInjections,
 };

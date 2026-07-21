@@ -4,6 +4,8 @@
  */
 
 const { runNativeAgentTask } = require("./nativeRunner");
+const { isContextV2Enabled } = require("./context/featureFlag");
+const { assembleModelContext, recordToolCallInSession } = require("./context/assembler");
 
 /**
  * Decompose a bug fix task into manageable steps
@@ -132,10 +134,14 @@ async function runDecomposedTask({
   systemPrompt,
   messages = [],
   sessionId = "",
+  state = null,
+  contextV2 = false,
+  systemBlocks = null,
 }) {
   const steps = decomposeBugFixTask(task);
   const results = [];
   let aborted = false;
+  const useV2 = Boolean(contextV2 || isContextV2Enabled());
 
   // Check if already aborted
   if (signal && signal.aborted) {
@@ -165,18 +171,42 @@ async function runDecomposedTask({
     try {
       // Run the step with its own timeout
       const stepPrompt = buildStepPrompt(step, results);
+      let stepMessages = messages;
+      let stepSystemPrompt = systemPrompt;
+      let stepSystemBlocks = systemBlocks;
+      if (useV2 && state) {
+        const assembled = assembleModelContext(state, {
+          workspaceRoot,
+          model,
+          provider,
+          turnDynamic: stepPrompt,
+        });
+        stepMessages = assembled.messages;
+        stepSystemPrompt = assembled.systemPrompt;
+        stepSystemBlocks = assembled.systemBlocks;
+      }
       const stepResult = await runNativeAgentTask({
         workspaceRoot,
         provider,
         model,
         prompt: stepPrompt,
-        systemPrompt,
-        messages,
+        systemPrompt: stepSystemPrompt,
+        systemBlocks: stepSystemBlocks,
+        messages: stepMessages,
         sessionId,
         timeoutMs: step.timeoutMs,
         onToolEvent,
         signal,
+        contextV2: useV2,
+        onArtifactPersisted: useV2 && state
+          ? (persisted) => recordToolCallInSession(state, persisted, workspaceRoot)
+          : null,
       });
+
+      if (useV2 && state && stepResult && Array.isArray(stepResult.messages)) {
+        const { syncMessagesToTranscript } = require("./context/assembler");
+        syncMessagesToTranscript(state, stepResult.messages, workspaceRoot);
+      }
 
       results.push({
         step: step.id,

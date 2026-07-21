@@ -9,6 +9,12 @@ const {
 const {
   buildSkillInjections,
 } = require("./injection");
+const {
+  buildSkillManifest,
+  buildSkillManifests,
+  renderSkillManifestSection,
+  renderActiveSkillBlock,
+} = require("./manifest");
 
 function showSkill({ name = "", workspaceRoot = process.cwd(), asJson = false } = {}) {
   const outcome = listUcodeSkills({ workspaceRoot });
@@ -70,5 +76,9 @@ module.exports = {
   renderSkillsSection,
   formatSkillsList,
   buildSkillInjections,
+  buildSkillManifest,
+  buildSkillManifests,
+  renderSkillManifestSection,
+  renderActiveSkillBlock,
   showSkill,
 };

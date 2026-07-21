@@ -457,7 +457,13 @@ const CHAT_LOG_ROW_PALETTE = {
 // margin-top on the next entry, because per-item rendering can't know a
 // group's end until the following entry arrives.
 function decorateStaticLogEntry(prev, entry) {
-  const row = buildChatLogLineModel(entry);
+  const markdownState = prev && prev.markdownState && typeof prev.markdownState === "object"
+    ? { inCodeBlock: Boolean(prev.markdownState.inCodeBlock) }
+    : { inCodeBlock: false };
+  const sourceText = entry && typeof entry === "object" && entry.text != null
+    ? String(entry.text)
+    : entry;
+  const row = buildChatLogLineModel(sourceText, { markdownState });
   const continuation = Boolean(
     prev
     && (row.kind === "plain" || row.kind === "spacer")
@@ -468,7 +474,7 @@ function decorateStaticLogEntry(prev, entry) {
   // block, and only when the previous block was a transcript group (whose
   // old dynamic renderer contributed a trailing marginBottom).
   const marginBefore = Boolean(!continuation && prev && STATIC_GROUPABLE_KINDS.has(prev.groupKind));
-  return { entry, row, groupKind, continuation, marginBefore };
+  return { entry, row, groupKind, continuation, marginBefore, markdownState };
 }
 
 function createInkStreamState({
@@ -713,8 +719,9 @@ function buildInternalLogRows(lines = [], width = 80, maxRows = 20) {
     let rendered = [classified.text];
     if (classified.markdown) {
       try {
-        rendered = fmt.renderLogLinesWithMarkdown(classified.text, markdownState, (value) => String(value || ""))
-          .map(stripInternalLogMarkup);
+        // Share ucode's ANSI markdown renderer so Ink can show bold/code
+        // without blessed tags (which would otherwise be stripped).
+        rendered = fmt.renderLogLinesWithMarkdownAnsi(classified.text, markdownState);
       } catch {
         rendered = [classified.text];
       }
@@ -2484,7 +2491,17 @@ function createChatApp({ React, ink, props, interactive = true }) {
       exit,
     ]);
 
-    const onArrowUpAtTop = useCallback(() => {
+    const onArrowUpAtTop = useCallback((currentValue) => {
+      // Clear @-target before history so Up from an empty ›@agent prompt
+      // restores the bare › prompt instead of recalling a prior draft.
+      const inputValue = currentValue != null ? currentValue : state.draft;
+      if (fmt.shouldClearAgentSelectionOnUp({
+        agentSelectionMode: state.agentSelectionMode,
+        inputValue,
+      })) {
+        dispatch({ type: "agents/clearTarget" });
+        return;
+      }
       if (state.inputHistory.length > 0) {
         const next = Math.max(0, state.historyIndex - 1);
         if (next !== state.historyIndex || state.draft !== state.inputHistory[next]) {
@@ -2492,10 +2509,8 @@ function createChatApp({ React, ink, props, interactive = true }) {
           dispatch({ type: "draft/set", value: state.inputHistory[next] || "" });
           setCompletionSuppressedDraft(state.inputHistory[next] || "");
           setDraftVersion((v) => v + 1);
-          return;
         }
       }
-      if (state.agentSelectionMode) dispatch({ type: "agents/clearTarget" });
     }, [state.inputHistory, state.historyIndex, state.draft, state.agentSelectionMode]);
 
     const onArrowDownAtBottom = useCallback((currentValue) => {
@@ -2985,7 +3000,23 @@ function createChatApp({ React, ink, props, interactive = true }) {
           });
           return;
         }
-        if (key.return || key.tab) { acceptCompletion(); return; }
+        if (key.return) {
+          // Final/leaf completions submit immediately; parents only fill draft.
+          const item = completions[Math.max(0, Math.min(completions.length - 1, completionIndex))];
+          if (item && !item.hasChildren) {
+            const cmd = String(item.replace || "").trim();
+            setCompletionIndex(0);
+            setCompletionSuppressedDraft(null);
+            if (cmd) void submit(cmd);
+            return;
+          }
+          acceptCompletion();
+          return;
+        }
+        if (key.tab) {
+          acceptCompletion();
+          return;
+        }
         if (key.escape) {
           setCompletionSuppressedDraft(null);
           dispatch({ type: "draft/clear" });

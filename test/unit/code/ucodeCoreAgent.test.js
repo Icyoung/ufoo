@@ -64,8 +64,17 @@ const {
 } = require("../../../src/code/agent");
 
 describe("ucode core agent nl path", () => {
+  const originalV2 = process.env.UFOO_UCODE_CONTEXT_V2;
+
   beforeEach(() => {
+    // Core agent regression suite pins v1 wire format (skill tags, nlMessages).
+    process.env.UFOO_UCODE_CONTEXT_V2 = "0";
     jest.clearAllMocks();
+  });
+
+  afterEach(() => {
+    if (originalV2 === undefined) delete process.env.UFOO_UCODE_CONTEXT_V2;
+    else process.env.UFOO_UCODE_CONTEXT_V2 = originalV2;
   });
 
   test("runSingleCommand routes free-form text to nl task path", () => {
@@ -109,17 +118,56 @@ describe("ucode core agent nl path", () => {
     const result = runSingleCommand("resume sess-abc123", process.cwd());
     expect(result.kind).toBe("resume");
     expect(result.sessionId).toBe("sess-abc123");
+    expect(runSingleCommand("/resume sess-abc123", process.cwd())).toEqual({
+      kind: "resume",
+      sessionId: "sess-abc123",
+    });
   });
 
   test("runSingleCommand returns usage error for resume without id", () => {
     const result = runSingleCommand("resume", process.cwd());
     expect(result.kind).toBe("error");
-    expect(result.output).toContain("usage: resume");
+    expect(result.output).toContain("usage: /resume");
+    expect(runSingleCommand("/resume", process.cwd()).output).toContain("usage: /resume");
   });
 
   test("runSingleCommand parses ubus command variants", () => {
     expect(runSingleCommand("ubus", process.cwd())).toEqual({ kind: "ubus" });
     expect(runSingleCommand("/ubus", process.cwd())).toEqual({ kind: "ubus" });
+  });
+
+  test("runSingleCommand parses /model show and set", () => {
+    expect(runSingleCommand("/model", process.cwd())).toEqual({
+      kind: "model",
+      action: "show",
+    });
+    expect(runSingleCommand("model", process.cwd())).toEqual({
+      kind: "model",
+      action: "show",
+    });
+    expect(runSingleCommand("/model gpt-5.4", process.cwd())).toEqual({
+      kind: "model",
+      action: "set",
+      model: "gpt-5.4",
+    });
+    expect(runSingleCommand("/model too many", process.cwd())).toEqual({
+      kind: "error",
+      output: "usage: /model [model-id]",
+    });
+  });
+
+  test("applyUcodeModelCommand updates session state", () => {
+    const { applyUcodeModelCommand } = require("../../../src/code/modelCommand");
+    const state = { model: "gpt-old", provider: "openai" };
+    const shown = applyUcodeModelCommand(state, { action: "show" });
+    expect(shown.ok).toBe(true);
+    expect(shown.output).toContain("model: gpt-old");
+
+    const set = applyUcodeModelCommand(state, { action: "set", model: "gpt-5.4" });
+    expect(set.ok).toBe(true);
+    expect(state.model).toBe("gpt-5.4");
+    expect(set.output).toContain("gpt-old");
+    expect(set.output).toContain("gpt-5.4");
   });
 
   test("runSingleCommand parses background nl commands", () => {
@@ -346,11 +394,81 @@ describe("ucode core agent nl path", () => {
           },
         ],
       },
+      {
+        role: "user",
+        content: "<active_skill>\n<name>demo</name>\nACTIVE SECRET\n</active_skill>\n\nuse $demo again",
+      },
     ]);
 
     expect(messages[0].content).toBe("use $demo");
     expect(messages[1].content[0].text).toBe("continue");
+    expect(messages[2].content).toBe("use $demo again");
     expect(JSON.stringify(messages)).not.toContain("SECRET BODY");
+    expect(JSON.stringify(messages)).not.toContain("ACTIVE SECRET");
+    expect(JSON.stringify(messages)).not.toContain("<active_skill>");
+  });
+
+  test("context v2 injects active skill once in system turnDynamic only", async () => {
+    const prev = process.env.UFOO_UCODE_CONTEXT_V2;
+    process.env.UFOO_UCODE_CONTEXT_V2 = "1";
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-v2-skill-once-"));
+    const oldHome = process.env.HOME;
+    const oldCodexHome = process.env.CODEX_HOME;
+    process.env.HOME = path.join(tmp, "home");
+    process.env.CODEX_HOME = path.join(tmp, "codex-home");
+    const workspace = path.join(tmp, "workspace");
+    fs.mkdirSync(path.join(workspace, ".agents", "skills", "demo"), { recursive: true });
+    fs.mkdirSync(process.env.HOME, { recursive: true });
+    fs.mkdirSync(process.env.CODEX_HOME, { recursive: true });
+    fs.writeFileSync(
+      path.join(workspace, ".agents", "skills", "demo", "SKILL.md"),
+      "---\nname: demo\ndescription: Demo workflow\n---\n\nDemo body once\n",
+      "utf8"
+    );
+
+    runNativeAgentTask.mockImplementation(async (params) => ({
+      ok: true,
+      output: "done",
+      streamed: false,
+      sessionId: "sess-v2-skill",
+      messages: [
+        { role: "user", content: params.prompt },
+        { role: "assistant", content: "done" },
+      ],
+    }));
+
+    try {
+      const state = {
+        workspaceRoot: workspace,
+        provider: "openai",
+        model: "gpt-5.2-codex",
+        context: "",
+        sessionId: "sess-v2-skill",
+        timeoutMs: 30000,
+      };
+
+      const result = await runNaturalLanguageTask("use $demo to inspect this", state);
+      expect(result.ok).toBe(true);
+      const call = runNativeAgentTask.mock.calls[0][0];
+      expect(call.prompt).not.toContain("<active_skill>");
+      expect(call.prompt).not.toContain("Demo body once");
+      expect(call.prompt).toContain("use $demo to inspect this");
+      expect(call.systemPrompt).toContain("<active_skill>");
+      expect(call.systemPrompt).toContain("Demo body once");
+      expect((call.systemPrompt.match(/<active_skill>/g) || []).length).toBe(1);
+      const persisted = JSON.stringify(state.nlMessages || []);
+      expect(persisted).not.toContain("<active_skill>");
+      expect(persisted).not.toContain("<skill>");
+      expect(persisted).not.toContain("Demo body once");
+    } finally {
+      if (prev === undefined) delete process.env.UFOO_UCODE_CONTEXT_V2;
+      else process.env.UFOO_UCODE_CONTEXT_V2 = prev;
+      if (oldHome === undefined) delete process.env.HOME;
+      else process.env.HOME = oldHome;
+      if (oldCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = oldCodexHome;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   test("runSingleCommand lists skills from ucode command surface", () => {
@@ -536,7 +654,7 @@ describe("ucode core agent nl path", () => {
     expect(liveLogs.some((entry) => entry.tool === "read" && entry.phase === "start")).toBe(true);
     expect(runNativeAgentTask).toHaveBeenCalledWith(expect.objectContaining({
       prompt: expect.stringContaining("Analysis requirements"),
-      systemPrompt: expect.stringContaining("Preflight snapshot"),
+      systemPrompt: expect.stringMatching(/Preflight snapshot|Project Snapshot/),
     }));
   });
 
@@ -1132,12 +1250,12 @@ describe("ucode core agent nl path", () => {
     expect(text).toContain("--timeout-ms");
   });
 
-  test("resolveNlTaskTimeoutMs prefers explicit value, then env, then 30min default", () => {
+  test("resolveNlTaskTimeoutMs prefers explicit value, then env, then 12h default", () => {
     const saved = process.env.UFOO_UCODE_TASK_TIMEOUT_MS;
     try {
       delete process.env.UFOO_UCODE_TASK_TIMEOUT_MS;
       expect(resolveNlTaskTimeoutMs(45000)).toBe(45000);
-      expect(resolveNlTaskTimeoutMs(NaN)).toBe(1800000);
+      expect(resolveNlTaskTimeoutMs(NaN)).toBe(43200000);
       process.env.UFOO_UCODE_TASK_TIMEOUT_MS = "3600000";
       expect(resolveNlTaskTimeoutMs(NaN)).toBe(3600000);
       expect(resolveNlTaskTimeoutMs(45000)).toBe(45000);

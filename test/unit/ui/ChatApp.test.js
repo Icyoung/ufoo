@@ -125,6 +125,29 @@ describe("chat log display classification", () => {
     });
   });
 
+  test("agent and assistant bodies render shared markdown ansi", () => {
+    const row = buildChatLogLineModel("ufoo · use **bold** and `code`");
+    expect(row).toMatchObject({
+      kind: "assistant",
+      speaker: "ufoo",
+    });
+    expect(row.bodyText).toContain("bold");
+    expect(row.bodyText).toContain("code");
+    expect(row.bodyText).not.toContain("**bold**");
+    expect(row.bodyText).not.toContain("`code`");
+
+    const state = { inCodeBlock: false };
+    const open = buildChatLogLineModel("codex · ```js", { markdownState: state });
+    expect(state.inCodeBlock).toBe(true);
+    expect(open.bodyText).toContain("code");
+    const body = buildChatLogLineModel("const x = 1", { markdownState: state });
+    expect(state.inCodeBlock).toBe(true);
+    expect(body.bodyText).toContain("const x = 1");
+    const close = buildChatLogLineModel("```", { markdownState: state });
+    expect(state.inCodeBlock).toBe(false);
+    expect(close.bodyText).toContain("└");
+  });
+
   test("subscriber-id speaker rows and continuations avoid the plain gutter", () => {
     expect(buildChatLogLineModel("claude-code:221e94 · Handoff")).toMatchObject({
       kind: "agent",
@@ -355,7 +378,7 @@ describe("internal agent view helpers", () => {
       "  agent: codex:7",
       "",
       "› run build",
-      "# Done",
+      "Done",
       "• item one",
       "Error: failed",
     ]);

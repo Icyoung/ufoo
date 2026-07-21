@@ -21,7 +21,9 @@ const {
   getPendingBusCount,
   shouldAutoConsumeBus,
 } = require("./busConsumer");
-const { summarizeSessionUsage } = require("./usageStore");
+const { summarizeSessionUsage, formatSessionUsageStatus } = require("./usageStore");
+const { listUcodeCommandsForHelp } = require("./commands");
+const { applyUcodeModelCommand, suggestUcodeModels } = require("./modelCommand");
 
 function printPrompt(stdout = process.stdout) {
   stdout.write("> ");
@@ -75,40 +77,14 @@ function extractAgentNickname(agentId = "") {
   return base;
 }
 
-function formatSessionUsageStatus(summary = {}) {
-  const source = summary && typeof summary === "object" ? summary : {};
-  const input = Number(source.input) || 0;
-  const output = Number(source.output) || 0;
-  const cacheRead = Number(source.cacheRead) || 0;
-  const cacheCreation = Number(source.cacheCreation) || 0;
-  const denominator = cacheRead + input;
-  const hitRate = denominator > 0 ? (cacheRead / denominator) * 100 : 0;
-  return [
-    `Session tokens: input=${input} output=${output} cache_read=${cacheRead} cache_creation=${cacheCreation}`,
-    `Cache hit rate: ${hitRate.toFixed(1)}% (cache_read/(cache_read+input))`,
-  ].join("\n");
-}
-
 function runSingleCommand(line = "", workspaceRoot = process.cwd()) {
   const text = normalizeLine(line);
   if (!text) return { kind: "empty" };
-  if (text === "exit" || text === "quit") return { kind: "exit" };
-  if (text === "help") {
+  if (text === "exit" || text === "quit" || text === "/exit" || text === "/quit") return { kind: "exit" };
+  if (text === "help" || text === "/help") {
     return {
       kind: "help",
-      output: [
-        "Commands:",
-        "  help",
-        "  exit|quit",
-        "  ubus|/ubus",
-        "  status|/status",
-        "  skills [list]",
-        "  skills show <name>",
-        "  bg|/bg <task>",
-        "  resume <session-id>",
-        "  tool <read|write|edit|bash> <args-json>",
-        "  run <read|write|edit|bash> <args-json>",
-      ].join("\n"),
+      output: listUcodeCommandsForHelp(),
     };
   }
   const legacyUfooMarker = parseLegacyUfooMarkerCommand(text);
@@ -126,6 +102,25 @@ function runSingleCommand(line = "", workspaceRoot = process.cwd()) {
   if (text === "status" || text === "/status") {
     return {
       kind: "status",
+    };
+  }
+  const modelMatch = text.match(/^(?:\/model|model)(?:\s+(.*))?$/i);
+  if (modelMatch) {
+    const nextModel = String(modelMatch[1] || "").trim();
+    if (!nextModel) {
+      return { kind: "model", action: "show" };
+    }
+    // Reject accidental multi-token garbage; model ids are single tokens.
+    if (/\s/.test(nextModel)) {
+      return {
+        kind: "error",
+        output: "usage: /model [model-id]",
+      };
+    }
+    return {
+      kind: "model",
+      action: "set",
+      model: nextModel,
     };
   }
   const skillsMatch = text.match(/^(?:\/skills|skills)(?:\s+(.*))?$/i);
@@ -187,13 +182,13 @@ function runSingleCommand(line = "", workspaceRoot = process.cwd()) {
       task,
     };
   }
-  const resumeMatch = text.match(/^resume(?:\s+(.+))?$/i);
+  const resumeMatch = text.match(/^(?:\/resume|resume)(?:\s+(.+))?$/i);
   if (resumeMatch) {
     const session = String(resumeMatch[1] || "").trim();
     if (!session) {
       return {
         kind: "error",
-        output: "usage: resume <session-id>",
+        output: "usage: /resume <session-id>",
       };
     }
     return {
@@ -439,6 +434,13 @@ async function runUcodeCoreAgent({
         });
         stdout.write(`${formatSessionUsageStatus(usageSummary)}\n`);
       }
+      if (result.kind === "model") {
+        const applied = applyUcodeModelCommand(state, result);
+        stdout.write(`${applied.output}\n`);
+        if (applied.ok && result.action === "set") {
+          persistSessionState(state);
+        }
+      }
       if (result.kind === "ubus") {
         const ubusResult = await runUbusCommand(state, {
           workspaceRoot: runtimeWorkspace,
@@ -637,4 +639,6 @@ module.exports = {
   extractAgentNickname,
   parseAgentArgs,
   formatSessionUsageStatus,
+  applyUcodeModelCommand,
+  suggestUcodeModels,
 };

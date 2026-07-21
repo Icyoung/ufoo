@@ -29,9 +29,16 @@ const LOG_LINE_TEXT_PROPS = {
   assistant: {},
   system: { color: "gray", dimColor: true },
   error: { color: "red" },
+  tool: {},
   toolDetail: { color: "gray", dimColor: true },
   bus: { color: "cyan" },
 };
+
+// Only assistant prose gets markdown. Error rows are app-generated
+// (`Error: …`) and already painted red via resolveLogLineTextProps — running
+// them through the MD Error: line rule would wrap chalk ANSI and break the
+// plain-text body the Ink color prop expects.
+const MARKDOWN_LOG_KINDS = new Set(["assistant"]);
 
 // Resolve a log line kind to ink <Text> props. Unknown/missing kinds (e.g.
 // the banner, which already carries chalk ANSI styling) render uncolored.
@@ -95,6 +102,10 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
     // visual row (i.e. moveCursorVertically returned moved=false).
     const [inputHistory, setInputHistory] = useState([]);
     const [historyIndex, setHistoryIndex] = useState(0);
+    const [completionIndex, setCompletionIndex] = useState(0);
+    const [completionWindowStart, setCompletionWindowStart] = useState(0);
+    const [completionSuppressedDraft, setCompletionSuppressedDraft] = useState(null);
+    const POPUP_PAGE_SIZE = 8;
     const { exit } = useApp();
     const { stdout } = useStdout();
     const lineSeqRef = useRef(banner.length + 1);
@@ -107,6 +118,9 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
     const thinkingTailRef = useRef("");
     const thinkingFlushAtRef = useRef(0);
     const thinkingTimerRef = useRef(null);
+    // Persist fence/open-code state across streamed assistant log lines so
+    // ``` blocks stay styled even when deltas arrive one line at a time.
+    const markdownStateRef = useRef({ inCodeBlock: false });
 
     const targetAgent = agentSelectionMode && selectedAgentIndex >= 0
       ? agents[selectedAgentIndex]
@@ -208,6 +222,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
         if (transition.moved) {
           setHistoryIndex(transition.nextHistoryIndex);
           setDraft(transition.nextValue);
+          setCompletionSuppressedDraft(transition.nextValue || null);
           setDraftVersion((v) => v + 1);
           return;
         }
@@ -224,21 +239,30 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       }
     }, [inputHistory, historyIndex, agents, agentSelectionMode, selectedAgentIndex]);
 
-    const onArrowUpAtStart = useCallback(() => {
-      // History first: if we're already on the top visual row, walk back
-      // through the recent history before doing anything else.
+    const onArrowUpAtStart = useCallback((currentValue) => {
+      // While @-targeting an agent with an empty draft, Up clears the
+      // selection before walking input history — otherwise history eats the
+      // key and the ›@agent prefix sticks.
+      const inputValue = currentValue != null ? currentValue : draft;
+      if (fmt.shouldClearAgentSelectionOnUp({
+        agentSelectionMode,
+        inputValue,
+      })) {
+        setAgentSelectionMode(false);
+        setSelectedAgentIndex(-1);
+        return;
+      }
+      // History: if we're already on the top visual row, walk back through
+      // the recent history before doing anything else.
       if (inputHistory.length > 0) {
         const nextIndex = Math.max(0, historyIndex - 1);
         if (nextIndex !== historyIndex || draft !== inputHistory[nextIndex]) {
           setHistoryIndex(nextIndex);
-          setDraft(inputHistory[nextIndex] || "");
+          const nextValue = inputHistory[nextIndex] || "";
+          setDraft(nextValue);
+          setCompletionSuppressedDraft(nextValue || null);
           setDraftVersion((v) => v + 1);
-          return;
         }
-      }
-      if (agentSelectionMode) {
-        setAgentSelectionMode(false);
-        setSelectedAgentIndex(-1);
       }
     }, [inputHistory, historyIndex, draft, agentSelectionMode]);
 
@@ -253,11 +277,73 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       setSelectedAgentIndex(next);
     }, [agents, agentSelectionMode, selectedAgentIndex]);
 
+    const { UCODE_COMMAND_REGISTRY, UCODE_COMMAND_TREE } = require("../../code/commands");
+    const { listSessionSummaries } = require("../../code/sessionStore");
+    const { suggestUcodeModels, applyUcodeModelCommand } = require("../../code/modelCommand");
+    let resumeSessions = [];
+    try {
+      resumeSessions = listSessionSummaries(props.workspaceRoot || process.cwd(), { limit: 40 });
+    } catch {
+      resumeSessions = [];
+    }
+    const modelSuggestions = suggestUcodeModels(props.state || {});
+
+    const completions = fmt.buildCompletions({
+      text: draft,
+      agents: agents.map((a) => String((a && (a.fullId || a.id || a.nickname)) || "")).filter(Boolean),
+      agentLabels: agents.map((a) => getAgentLabel(a)),
+      commands: UCODE_COMMAND_REGISTRY,
+      commandTree: UCODE_COMMAND_TREE,
+      argumentLists: {
+        "/resume": resumeSessions,
+        "/model": modelSuggestions,
+      },
+      limit: 20,
+    });
+    const completionsOpen = completions.length > 0 && draft !== completionSuppressedDraft;
+
+    useEffect(() => {
+      if (completions.length === 0) {
+        if (completionIndex !== 0) setCompletionIndex(0);
+        if (completionWindowStart !== 0) setCompletionWindowStart(0);
+      } else if (completionIndex >= completions.length) {
+        setCompletionIndex(completions.length - 1);
+        setCompletionWindowStart(Math.max(0, completions.length - POPUP_PAGE_SIZE));
+      }
+    }, [completions.length, completionIndex, completionWindowStart]);
+
+    const acceptCompletion = useCallback(() => {
+      if (!completionsOpen) return false;
+      const item = completions[Math.max(0, Math.min(completions.length - 1, completionIndex))];
+      if (item) {
+        setDraft(item.replace);
+        setCompletionSuppressedDraft(item.hasChildren ? null : item.replace);
+        setDraftVersion((v) => v + 1);
+      }
+      setCompletionIndex(0);
+      return true;
+    }, [completionsOpen, completions, completionIndex]);
+
     const appendLogLine = useCallback((text, kind = "assistant") => {
+      const raw = String(text == null ? "" : text);
+      let renderedLines = [raw];
+      if (MARKDOWN_LOG_KINDS.has(kind)) {
+        try {
+          renderedLines = fmt.renderLogLinesWithMarkdownAnsi(raw, markdownStateRef.current);
+          if (!Array.isArray(renderedLines) || renderedLines.length === 0) {
+            renderedLines = [raw];
+          }
+        } catch {
+          renderedLines = [raw];
+        }
+      }
       setLogLines((prev) => {
-        const id = `l-${lineSeqRef.current}`;
-        lineSeqRef.current += 1;
-        const next = prev.concat([{ id, text: String(text || ""), kind }]);
+        const next = prev.slice();
+        for (const line of renderedLines) {
+          const id = `l-${lineSeqRef.current}`;
+          lineSeqRef.current += 1;
+          next.push({ id, text: String(line || ""), kind });
+        }
         return next.length > 1000 ? next.slice(-1000) : next;
       });
     }, []);
@@ -274,7 +360,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
     const flushActiveMerge = useCallback(() => {
       setActiveMerge((current) => {
         if (!current) return null;
-        appendLogLine(renderMergeText(current));
+        appendLogLine(renderMergeText(current), "tool");
         return null;
       });
     }, [appendLogLine, renderMergeText]);
@@ -285,7 +371,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       const resObj = payload && typeof payload === "object" ? payload : (entry && entry.result) || {};
       const phase = String((entry && entry.phase) || "").trim().toLowerCase();
       const isError = phase === "error" || resObj.ok === false;
-      const detail = tool === "bash" ? fmt.normalizeBashToolCommand(entry && entry.args, resObj) : "";
+      const detail = fmt.normalizeToolLogDetail(tool, entry && entry.args, resObj);
       const errorText = String((entry && entry.error) || resObj.error || "").trim();
       const toolEntry = fmt.normalizeToolMergeEntry({ tool, detail, isError, errorText });
 
@@ -370,6 +456,37 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
         case "error":
           appendLogText(result.output || "");
           return;
+        case "status": {
+          try {
+            const { summarizeSessionUsage, formatSessionUsageStatus } = require("../../code/usageStore");
+            const usageSummary = summarizeSessionUsage({
+              workspaceRoot: runtimeWorkspace,
+              sessionId: (props.state && props.state.sessionId) || "",
+            });
+            appendLogText(formatSessionUsageStatus(usageSummary), "system");
+          } catch (err) {
+            appendLogText(`Error: ${err && err.message ? err.message : "status failed"}`, "error");
+          }
+          return;
+        }
+        case "model": {
+          const applied = applyUcodeModelCommand(props.state || {}, result);
+          appendLogText(applied.output || "", applied.ok ? "system" : "error");
+          if (applied.ok && result.action === "set" && typeof props.persistSessionState === "function") {
+            try {
+              const persisted = props.persistSessionState(props.state);
+              if (persisted && persisted.ok === false) {
+                appendLogText(
+                  `Error: failed to persist session ${(props.state && props.state.sessionId) || ""}: ${persisted.error || "unknown error"}`,
+                  "error"
+                );
+              }
+            } catch {
+              // persist is best-effort after a successful model switch
+            }
+          }
+          return;
+        }
         case "ubus": {
           setStatus({ message: "Checking bus messages...", type: "typing", showTimer: false, startedAt: Date.now() });
           try {
@@ -415,7 +532,31 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
             appendLogText(`Error: ${(resumed && resumed.error) || "resume failed"}`, "error");
             return;
           }
-          appendLogText(`Resumed session ${resumed.sessionId} (${resumed.restoredMessages} messages).`, "system");
+          // Rebuild the visible log from the restored session transcript so
+          // the user sees prior turns instead of only a status toast.
+          markdownStateRef.current = { inCodeBlock: false };
+          const history = fmt.buildUcodeSessionLogEntries(
+            Array.isArray(props.state && props.state.nlMessages) ? props.state.nlMessages : [],
+            { markdownState: markdownStateRef.current, idPrefix: "h", startSeq: 0 },
+          );
+          const bannerEntries = banner.concat([""]).map((line, idx) => ({
+            id: `b-${idx}`,
+            text: line,
+          }));
+          const notice = {
+            id: `h-resume-${Date.now().toString(36)}`,
+            text: `Resumed session ${resumed.sessionId} (${resumed.restoredMessages} messages).`,
+            kind: "system",
+          };
+          const nextLines = bannerEntries.concat(history.entries).concat([notice]);
+          setLogLines(nextLines.length > 1000 ? nextLines.slice(-1000) : nextLines);
+          lineSeqRef.current = Math.max(
+            bannerEntries.length + 1,
+            Number(history.nextSeq) || 0,
+            nextLines.length,
+          );
+          setActiveMerge(null);
+          lastMergeRef.current = null;
           return;
         }
         case "tool": {
@@ -739,18 +880,107 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
 
     const statusText = useMemoStatusText(React, status, spinnerTick, getBackgroundSuffix());
 
-    // Top-level only catches Ctrl+C and Ctrl+O (expand last tool group);
-    // the editor handles all text editing.
+    // Top-level catches Ctrl+C / Ctrl+O, plus completion popup navigation
+    // while a slash/agent menu is open.
     useInput((input, key) => {
       if (key.ctrl && input === "c") { exit(); return; }
       if (key.ctrl && input === "o") { expandLastMerge(); return; }
+      if (!completionsOpen) return;
+      if (key.upArrow) {
+        setCompletionIndex((i) => {
+          const next = (i - 1 + completions.length) % completions.length;
+          setCompletionWindowStart((ws) => {
+            if (next < ws) return next;
+            if (next === completions.length - 1) {
+              return Math.max(0, completions.length - POPUP_PAGE_SIZE);
+            }
+            return ws;
+          });
+          return next;
+        });
+        return;
+      }
+      if (key.downArrow) {
+        setCompletionIndex((i) => {
+          const next = (i + 1) % completions.length;
+          setCompletionWindowStart((ws) => {
+            if (next === 0) return 0;
+            if (next >= ws + POPUP_PAGE_SIZE) return next - POPUP_PAGE_SIZE + 1;
+            return ws;
+          });
+          return next;
+        });
+        return;
+      }
+      if (key.return) {
+        // Leaf completions (e.g. /resume <session>) run immediately on Enter.
+        // Parents with children only fill the draft so the next menu can open.
+        const item = completions[Math.max(0, Math.min(completions.length - 1, completionIndex))];
+        if (item && !item.hasChildren) {
+          const cmd = String(item.replace || "").trim();
+          setCompletionIndex(0);
+          setCompletionSuppressedDraft(null);
+          if (cmd) submit(cmd);
+          return;
+        }
+        acceptCompletion();
+        return;
+      }
+      if (key.tab) {
+        acceptCompletion();
+        return;
+      }
+      if (key.escape) {
+        setCompletionSuppressedDraft(null);
+        setDraft("");
+        setDraftVersion((v) => v + 1);
+      }
     }, { isActive: interactive });
 
     return h(Box, { flexDirection: "column", width: "100%" },
       h(Box, { flexDirection: "column", width: "100%" },
-        ...logLines.map((item) =>
-          h(Text, { key: item.id, ...resolveLogLineTextProps(item.kind) }, item.text || " ")
-        )
+        ...(() => {
+          // Re-render raw markdown at paint time so leftover ** / ### from
+          // older append paths or nested `**code**` patterns still resolve.
+          const mdState = { inCodeBlock: false };
+          return logLines.map((item, idx) => {
+            let text = item.text || " ";
+            if (MARKDOWN_LOG_KINDS.has(item.kind) && /(?:\*\*|__|^\s*#{1,6}\s|^\s*`{3})/m.test(text)) {
+              try {
+                const rendered = fmt.renderLogLinesWithMarkdownAnsi(text, mdState);
+                if (Array.isArray(rendered) && rendered.length > 0) {
+                  text = rendered.length === 1 ? rendered[0] : rendered.join("\n");
+                }
+              } catch {
+                // keep original
+              }
+            } else if (MARKDOWN_LOG_KINDS.has(item.kind) && mdState.inCodeBlock) {
+              try {
+                const rendered = fmt.renderLogLinesWithMarkdownAnsi(text, mdState);
+                if (Array.isArray(rendered) && rendered[0] != null) text = rendered[0];
+              } catch {
+                // keep original
+              }
+            }
+            const textEl = h(Text, { ...resolveLogLineTextProps(item.kind) }, text || " ");
+            // Give user turns a blank line above/below so › prompts don't
+            // sit flush against system/tool rows. Multi-line user blocks
+            // only pad the outer edges.
+            if (item.kind === "user") {
+              const prev = logLines[idx - 1];
+              const next = logLines[idx + 1];
+              const marginTop = !prev || prev.kind !== "user" ? 1 : 0;
+              const marginBottom = !next || next.kind !== "user" ? 1 : 0;
+              return h(Box, {
+                key: item.id,
+                width: "100%",
+                marginTop,
+                marginBottom,
+              }, textEl);
+            }
+            return h(Text, { key: item.id, ...resolveLogLineTextProps(item.kind) }, text || " ");
+          });
+        })()
       ),
       activeMerge ? h(Box, null,
         h(Text, { color: activeMerge.entries.some((e) => e.isError) ? "red" : "cyan" },
@@ -762,13 +992,55 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
         h(Box, { flexGrow: 1 }),
         h(Text, { color: "gray" }, `v${fmt.UCODE_VERSION}`),
       ),
+      completionsOpen ? (() => {
+        const start = Math.min(completionWindowStart, Math.max(0, completions.length - POPUP_PAGE_SIZE));
+        const end = Math.min(completions.length, start + POPUP_PAGE_SIZE);
+        const visible = completions.slice(start, end);
+        const cols = Math.max(8, size.cols || 80);
+        // Frame the popup with a top rule; MultilineInput's borderTop is the
+        // matching bottom rule, so we intentionally omit a trailing ─ here.
+        return h(Box, { flexDirection: "column", width: "100%" },
+          h(Text, { color: "gray" }, "─".repeat(cols)),
+          ...visible.map((s, idxInWindow) => {
+            const idx = start + idxInWindow;
+            const selected = idx === completionIndex;
+            // Keep label+description in one Text. Splitting into sibling
+            // Text nodes with wrap:"truncate" lets Yoga shrink the label
+            // and mid-cut commands (e.g. "/help" → "/he p").
+            const line = s.description
+              ? `${s.label}  ${s.description}`
+              : String(s.label || "");
+            return h(Box, { key: `cmp-${idx}`, width: "100%" },
+              h(Text, {
+                color: selected ? "cyan" : "gray",
+                inverse: selected,
+                wrap: "truncate",
+              }, line),
+            );
+          }),
+        );
+      })() : null,
       h(Box, { width: "100%" },
         h(MultilineInput, {
           value: draft,
           valueVersion: draftVersion,
-          onChange: (next) => setDraft(next),
-          onSubmit: (value) => submit(value),
+          onChange: (next) => {
+            if (completionSuppressedDraft !== null && next !== completionSuppressedDraft) {
+              setCompletionSuppressedDraft(null);
+            }
+            setDraft(next);
+          },
+          onSubmit: (value) => {
+            setCompletionSuppressedDraft(null);
+            submit(value);
+          },
           onCancel: () => {
+            if (completionsOpen) {
+              setCompletionSuppressedDraft(null);
+              setDraft("");
+              setDraftVersion((v) => v + 1);
+              return;
+            }
             // If a task is in flight, Esc requests cancellation. Otherwise
             // it clears the agent selection (matches blessed). The text
             // value is left alone so the user doesn't lose what they typed.
@@ -795,11 +1067,12 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
           onArrowRightAtEmpty: () => onArrowSideAtEmpty("right"),
           width: Math.max(20, (size.cols || 80) - 4),
           interactive,
+          interceptArrowsAndEnter: completionsOpen,
           placeholder: "",
           promptPrefix: targetAgent ? `›@${getAgentLabel(targetAgent)} ` : "› ",
-          // The agents footer is rendered below the input. Matching chat's
-          // IME parking contract keeps the hardware cursor aligned with the
-          // inverse caret instead of drifting to the bottom of the frame.
+          // Completions render ABOVE the input. Only the Agents footer is
+          // below — counting popup rows here parks the hardware cursor up
+          // into the menu (ghost block on /status etc.).
           linesBelowInput: 1,
           // During model/tool activity ucode redraws the status line every
           // spinner frame. Keeping the hardware cursor hidden avoids a
@@ -900,8 +1173,21 @@ function collapseThinkingTail(text, maxChars = 80) {
   const collapsed = String(text || "").replace(/\s+/g, " ").trim();
   const parsed = Number(maxChars);
   const limit = Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 80;
-  if (collapsed.length <= limit) return collapsed;
-  return collapsed.slice(collapsed.length - limit);
+  if (!collapsed) return "";
+
+  // Prefer the latest markdown emphasis / section so the status line shows the
+  // current thought instead of a mid-word tail of an earlier heading.
+  let candidate = collapsed;
+  const boldParts = collapsed.match(/\*\*[^*]+\*\*/g);
+  if (boldParts && boldParts.length > 0) {
+    candidate = boldParts[boldParts.length - 1].replace(/\*/g, "").trim() || candidate;
+  } else {
+    const clauses = collapsed.split(/(?<=[.!?。！？])\s+/).map((part) => part.trim()).filter(Boolean);
+    if (clauses.length > 1) candidate = clauses[clauses.length - 1];
+  }
+
+  if (candidate.length <= limit) return candidate;
+  return `…${candidate.slice(-(limit - 1))}`;
 }
 
 function computeStatusText(status, spinnerTick, backgroundSuffix = "") {

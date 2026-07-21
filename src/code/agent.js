@@ -12,6 +12,31 @@ const {
 } = require("./sessionStore");
 const { buildPromptContext } = require("../agents/prompts/native");
 const { buildSkillInjections } = require("./skills");
+const { isContextV2Enabled } = require("./context/featureFlag");
+const {
+  assembleModelContext,
+  syncMessagesToTranscript,
+  applyContextSideEffects,
+  ensureProjectSnapshot,
+  recordToolCallInSession,
+  commitAfterSegmentEnd,
+  sanitizeModelMessages,
+} = require("./context/assembler");
+const { buildLayeredSystemPrompt } = require("./context/promptLayers");
+const {
+  createProjectPreflightContextV2,
+} = require("./context/projectSnapshot");
+const {
+  ensureTaskContract,
+  ensureStateEpoch,
+  parseStructuredSideEffects,
+  patchTaskContractFromUserMessage,
+} = require("./context/stateCommit");
+const { applyWorkingSetPlan } = require("./context/workingSet");
+const {
+  parseExecutionSegment,
+  executeExecutionSegment,
+} = require("./context/executionSegment");
 const {
   runUbusCommand,
   parseBusCheckOutput,
@@ -33,6 +58,104 @@ const {
   extractAgentNickname,
   parseAgentArgs,
 } = require("./repl");
+
+function ensureContextSessionState(state = {}) {
+  if (!Array.isArray(state.workingSet)) state.workingSet = [];
+  if (!state.executionState || typeof state.executionState !== "object") {
+    const { emptyExecutionState } = require("./context/executionSegment");
+    state.executionState = emptyExecutionState();
+  }
+  if (!state.contextPolicy || typeof state.contextPolicy !== "object") {
+    const { defaultContextPolicy } = require("./context/assembler");
+    state.contextPolicy = defaultContextPolicy();
+  }
+  if (!Number.isFinite(state.toolCallsSinceCommit)) state.toolCallsSinceCommit = 0;
+  ensureStateEpoch(state);
+  return state;
+}
+
+function buildSkillBodyBlocks(skillInjections = {}) {
+  const blocks = Array.isArray(skillInjections.blocks) ? skillInjections.blocks : [];
+  return blocks.map((block) => {
+    const text = String(block || "");
+    if (text.includes("<active_skill>")) return text;
+    return text.replace(/^<skill>/, "<active_skill>").replace(/<\/skill>/, "</active_skill>");
+  });
+}
+
+async function runExecutionSegmentSteps({
+  segment = {},
+  workspaceRoot = process.cwd(),
+  sessionId = "",
+  state = {},
+  pushToolLog = () => null,
+} = {}) {
+  const exec = executeExecutionSegment({
+    segment,
+    executionState: state.executionState,
+    onStepStart: ({ tool, args }) => {
+      pushToolLog({ tool, phase: "start", args, error: "" });
+    },
+    onStepComplete: ({ tool, args, result }) => {
+      pushToolLog({
+        tool,
+        phase: result && result.ok === false ? "error" : "",
+        args,
+        error: result && result.ok === false ? String(result.error || "") : "",
+      });
+      if (isContextV2Enabled() && result && result.ok !== false) {
+        const plan = require("./context/workingSet").defaultContextPlanFromToolEvent(
+          tool,
+          result.artifactId,
+          args,
+        );
+        if (plan) state.workingSet = applyWorkingSetPlan(state.workingSet, plan, state);
+      }
+      if ((tool === "write" || tool === "edit") && args && args.path) {
+        const filePath = String(args.path);
+        if (!state.executionState || typeof state.executionState !== "object") {
+          state.executionState = require("./context/executionSegment").emptyExecutionState();
+        }
+        const files = Array.isArray(state.executionState.modifiedFiles)
+          ? state.executionState.modifiedFiles.slice()
+          : [];
+        if (!files.includes(filePath)) files.push(filePath);
+        state.executionState.modifiedFiles = files;
+      }
+    },
+    runStep: ({ tool, args }) => {
+      const { runToolCall: dispatchToolCall } = require("./dispatch");
+      const { persistToolResultToContext } = require("./context/assembler");
+      const result = dispatchToolCall(
+        { tool, args },
+        { workspaceRoot, cwd: workspaceRoot, sessionId },
+      );
+      if (!result || result.ok === false || !isContextV2Enabled()) {
+        return result;
+      }
+      const persisted = persistToolResultToContext({
+        workspaceRoot,
+        sessionId,
+        tool,
+        args,
+        rawResult: result,
+      });
+      recordToolCallInSession(state, persisted, workspaceRoot);
+      return persisted.modelPayload || result;
+    },
+  });
+  state.executionState = exec.executionState;
+  if (isContextV2Enabled()) {
+    commitAfterSegmentEnd(state, exec, workspaceRoot);
+  }
+  return {
+    ok: exec.ok,
+    segmentId: exec.segmentId,
+    error: exec.error,
+    stoppedAt: exec.stoppedAt,
+  };
+}
+
 
 function readTextOrFile(value = "") {
   const raw = String(value || "").trim();
@@ -137,14 +260,14 @@ function isCliCancelledError(message = "") {
 }
 
 function computeExtendedTimeout(baseTimeoutMs) {
-  const base = Number.isFinite(baseTimeoutMs) ? Math.max(1000, Math.floor(baseTimeoutMs)) : 300000;
-  return Math.min(1800000, Math.max(base * 2, base + 120000));
+  const base = Number.isFinite(baseTimeoutMs) ? Math.max(1000, Math.floor(baseTimeoutMs)) : 43200000;
+  return Math.min(43200000, Math.max(base * 2, base + 120000));
 }
 
 // Reasoning models routinely blew the old 10min budget across a multi-turn
-// tool loop. Total per-task budget defaults to 30min and can be raised per
+// tool loop. Total per-task budget defaults to 12h and can be raised per
 // call, via --timeout-ms, or via UFOO_UCODE_TASK_TIMEOUT_MS.
-const DEFAULT_NL_TASK_TIMEOUT_MS = 1800000;
+const DEFAULT_NL_TASK_TIMEOUT_MS = 43200000;
 
 function resolveNlTaskTimeoutMs(value) {
   if (Number.isFinite(value) && value > 0) return Math.max(1000, Math.floor(value));
@@ -190,7 +313,7 @@ function normalizeToolLogEvent(event = {}) {
   if (!event || typeof event !== "object") return null;
   const tool = String(event.tool || event.name || "").trim().toLowerCase();
   if (!tool) return null;
-  if (tool !== "read" && tool !== "write" && tool !== "edit" && tool !== "bash") return null;
+  if (tool !== "read" && tool !== "write" && tool !== "edit" && tool !== "bash" && tool !== "artifact_read") return null;
   const phase = String(event.phase || "update").trim().toLowerCase();
   const normalizedPhase = phase === "error" ? "error" : (phase === "start" ? "start" : "");
   if (!normalizedPhase) return null;
@@ -247,7 +370,7 @@ function pushSkillWarning(logs = [], onToolLog = null, warning = "") {
 
 function stripSkillBlocksFromText(value = "") {
   return String(value || "")
-    .replace(/<skill>\s*[\s\S]*?<\/skill>\s*/g, "")
+    .replace(/<(?:active_)?skill>\s*[\s\S]*?<\/(?:active_)?skill>\s*/gi, "")
     .trim();
 }
 
@@ -427,28 +550,80 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
   const useDecomposition = isBugFixTask && !options.disableDecomposition;
   const analysisTask = isProjectAnalysisTask(taskText);
   const workspaceRoot = String(state.workspaceRoot || process.cwd());
-  const preflightContext = analysisTask
-    ? createProjectPreflightContext({
-      workspaceRoot,
-      pushToolLog,
-    })
-    : "";
+  const contextV2 = isContextV2Enabled();
+  if (contextV2) ensureContextSessionState(state);
+
+  let preflightContext = "";
+  let projectSnapshot = state.projectSnapshot || null;
+  if (analysisTask) {
+    if (contextV2) {
+      projectSnapshot = createProjectPreflightContextV2({
+        workspaceRoot,
+        sessionId: String(state.sessionId || ""),
+        pushToolLog,
+        existingSnapshot: state.projectSnapshot,
+      });
+      state.projectSnapshot = projectSnapshot;
+    } else {
+      preflightContext = createProjectPreflightContext({
+        workspaceRoot,
+        pushToolLog,
+      });
+    }
+  } else if (contextV2) {
+    projectSnapshot = ensureProjectSnapshot(state, workspaceRoot);
+  }
+
+  if (contextV2) {
+    ensureTaskContract(state, taskText);
+    state.taskContract = patchTaskContractFromUserMessage(state.taskContract, taskText);
+  }
+
   const taskPrompt = analysisTask
     ? `${taskText}\n\nAnalysis requirements:\n- Inspect repository evidence before concluding.\n- Cite concrete file observations.\n- Keep findings concise and actionable.`
     : taskText;
   const skillInjections = buildSkillInjections({
     prompt: taskPrompt,
     workspaceRoot,
+    sessionId: String(state.sessionId || ""),
+    persistBodies: contextV2,
+    useActiveSkillTag: contextV2,
   });
   for (const warning of skillInjections.warnings || []) {
     pushSkillWarning(logs, onToolLog, warning);
   }
-  const effectiveTaskPrompt = Array.isArray(skillInjections.blocks) && skillInjections.blocks.length > 0
-    ? `${skillInjections.blocks.join("\n\n")}\n\n${taskPrompt}`
-    : taskPrompt;
-  const systemContext = [String(state.context || "").trim(), preflightContext]
-    .filter(Boolean)
-    .join("\n\n");
+  if (contextV2 && Array.isArray(skillInjections.activeSkills) && skillInjections.activeSkills.length > 0) {
+    state.activeSkills = skillInjections.activeSkills;
+  }
+  const skillBodyBlocks = contextV2
+    ? buildSkillBodyBlocks(skillInjections)
+    : (skillInjections.blocks || []);
+  // v1: skill body rides in the user prompt.
+  // v2: skill body goes only into turnDynamic (system layered prompt) to avoid
+  // double injection and mixed system/user privilege semantics.
+  const effectiveTaskPrompt = contextV2
+    ? taskPrompt
+    : (skillBodyBlocks.length > 0
+      ? `${skillBodyBlocks.join("\n\n")}\n\n${taskPrompt}`
+      : taskPrompt);
+
+  let assembled = null;
+  let systemContext = "";
+  if (contextV2) {
+    assembled = assembleModelContext(state, {
+      workspaceRoot,
+      model,
+      provider,
+      turnDynamic: skillBodyBlocks.join("\n\n"),
+      latestUserMessage: effectiveTaskPrompt,
+    });
+    systemContext = assembled.systemPrompt;
+    state.summary = assembled.summary || state.summary;
+  } else {
+    systemContext = [String(state.context || "").trim(), preflightContext]
+      .filter(Boolean)
+      .join("\n\n");
+  }
 
   const onStream = onDelta
     ? (delta) => {
@@ -468,20 +643,32 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
     : runNativeAgentTask;
   const onPhase = typeof options.onPhase === "function" ? options.onPhase : null;
   const onThinkingDelta = typeof options.onThinkingDelta === "function" ? options.onThinkingDelta : null;
+  let lastTranscriptBaseline = 0;
   const invokeNative = (sessionIdValue = "", timeoutOverrideMs = timeoutMs) => {
     toolEventsThisAttempt = 0;
+    const historyMessages = contextV2 && assembled
+      ? assembled.messages
+      : (Array.isArray(state.nlMessages) ? state.nlMessages : []);
+    // Sanitized length matches what nativeRunner clones before appending this
+    // turn's user/tool/assistant messages — used as the transcript sync baseline.
+    lastTranscriptBaseline = sanitizeModelMessages(historyMessages).length;
     return runNativeAgentImpl({
       workspaceRoot,
       provider,
       model,
       prompt: effectiveTaskPrompt,
       systemPrompt: systemContext,
-      messages: Array.isArray(state.nlMessages) ? state.nlMessages : [],
-      sessionId: String(sessionIdValue || ""),
+      systemBlocks: contextV2 && assembled ? assembled.systemBlocks : null,
+      messages: historyMessages,
+      sessionId: String(sessionIdValue || state.sessionId || ""),
       timeoutMs: timeoutOverrideMs,
       onStreamDelta: onStream,
       onThinkingDelta,
       onPhase,
+      contextV2,
+      onArtifactPersisted: contextV2
+        ? (persisted) => recordToolCallInSession(state, persisted, workspaceRoot)
+        : null,
       onToolEvent: (event) => {
         toolEventsThisAttempt += 1;
         pushToolLog(event);
@@ -492,6 +679,29 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
 
   try {
     let cliRes;
+
+    const requestedSegment = parseExecutionSegment(options.executionSegment || options.nextSegment || null);
+    if (contextV2 && requestedSegment && requestedSegment.steps && requestedSegment.steps.length > 0) {
+      const segmentResult = await runExecutionSegmentSteps({
+        segment: requestedSegment,
+        workspaceRoot,
+        sessionId: String(state.sessionId || ""),
+        state,
+        pushToolLog,
+      });
+      if (!segmentResult.ok) {
+        return {
+          ok: false,
+          summary: "",
+          artifacts: [],
+          logs: logs.slice(),
+          error: segmentResult.error,
+          metrics: {},
+          streamed: false,
+          streamLastChar: "",
+        };
+      }
+    }
 
     // Use decomposed runner for bug fix tasks
     if (useDecomposition) {
@@ -506,6 +716,9 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
         systemPrompt: systemContext,
         messages: Array.isArray(state.nlMessages) ? state.nlMessages : [],
         sessionId: String(state.sessionId || ""),
+        state: contextV2 ? state : null,
+        contextV2,
+        systemBlocks: contextV2 && assembled ? assembled.systemBlocks : null,
       });
 
       if (decomposedResult.ok) {
@@ -555,14 +768,36 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
     }
     if (cliRes && Array.isArray(cliRes.messages)) {
       state.nlMessages = stripSkillBlocksFromMessages(cliRes.messages);
+      if (contextV2) {
+        syncMessagesToTranscript(state, cliRes.messages, workspaceRoot, {
+          baselineCount: lastTranscriptBaseline,
+        });
+      }
     }
     const normalized = String(cliRes.output || "").trim();
+    const sideEffects = contextV2 ? parseStructuredSideEffects(normalized) : null;
+    if (contextV2 && sideEffects) {
+      applyContextSideEffects(state, sideEffects);
+      const nextSegment = parseExecutionSegment(sideEffects);
+      if (nextSegment && nextSegment.steps && nextSegment.steps.length > 0) {
+        await runExecutionSegmentSteps({
+          segment: nextSegment,
+          workspaceRoot,
+          sessionId: String(state.sessionId || ""),
+          state,
+          pushToolLog,
+        });
+      }
+    }
     const summary = extractJsonSummary(normalized);
     const resolvedSummary = String(summary || "").trim() || buildNlFallbackSummary(logs);
+    const artifactIds = contextV2 && Array.isArray(state.workingSet)
+      ? state.workingSet.map((entry) => entry.artifactId).filter(Boolean)
+      : [];
     return {
       ok: true,
       summary: resolvedSummary,
-      artifacts: [],
+      artifacts: artifactIds,
       logs: logs.slice(),
       error: "",
       metrics: {},
@@ -626,13 +861,50 @@ function buildNlContext({
     || readTextOrFile(process.env.UFOO_UCODE_PROMPT_FILE)
     || "";
 
-  // New modular prompt assembly
-  return clampContext(buildPromptContext({
+  return clampContext(resolveWireSystemPrompt({
     workspaceRoot: workspaceRoot || process.cwd(),
     model,
     provider,
     appendSystemPrompt: append,
   }));
+}
+
+/**
+ * Single wire entry for system prompt assembly.
+ * v2 (default): layered Context Manager prompt.
+ * v1 (explicit off): legacy flat buildPromptContext.
+ */
+function resolveWireSystemPrompt({
+  workspaceRoot = process.cwd(),
+  model = "",
+  provider = "",
+  appendSystemPrompt = "",
+  overrideSystemPrompt = "",
+  epochDynamic = "",
+  turnDynamic = "",
+  sessionStableExtras = "",
+} = {}) {
+  if (overrideSystemPrompt) return String(overrideSystemPrompt);
+
+  if (isContextV2Enabled()) {
+    return buildLayeredSystemPrompt({
+      workspaceRoot,
+      model,
+      provider,
+      appendSystemPrompt,
+      epochDynamic,
+      turnDynamic,
+      sessionStableExtras,
+    }).flatText;
+  }
+
+  // Legacy v1 path — kept for UFOO_UCODE_CONTEXT_V2=0 compatibility only.
+  return buildPromptContext({
+    workspaceRoot,
+    model,
+    provider,
+    appendSystemPrompt,
+  });
 }
 
 function buildSessionSnapshotFromState(state = {}) {
@@ -645,6 +917,27 @@ function buildSessionSnapshotFromState(state = {}) {
     context: String(source.context || ""),
     nlMessages: Array.isArray(source.nlMessages) ? source.nlMessages : [],
     createdAt: String(source.sessionCreatedAt || "").trim(),
+    summary: String(source.summary || "").trim(),
+    projectSnapshot: source.projectSnapshot && typeof source.projectSnapshot === "object"
+      ? source.projectSnapshot
+      : null,
+    taskContract: source.taskContract && typeof source.taskContract === "object"
+      ? source.taskContract
+      : null,
+    stateEpoch: source.stateEpoch && typeof source.stateEpoch === "object"
+      ? source.stateEpoch
+      : null,
+    workingSet: Array.isArray(source.workingSet) ? source.workingSet : [],
+    executionState: source.executionState && typeof source.executionState === "object"
+      ? source.executionState
+      : null,
+    contextPolicy: source.contextPolicy && typeof source.contextPolicy === "object"
+      ? source.contextPolicy
+      : null,
+    toolCallsSinceCommit: Number.isFinite(source.toolCallsSinceCommit)
+      ? Math.max(0, Math.floor(source.toolCallsSinceCommit))
+      : 0,
+    activeSkills: Array.isArray(source.activeSkills) ? source.activeSkills : [],
   };
 }
 
@@ -708,12 +1001,32 @@ function resumeSessionState(state = {}, sessionId = "", workspaceRoot = process.
   state.context = String(snapshot.context || "");
   state.nlMessages = Array.isArray(snapshot.nlMessages) ? snapshot.nlMessages : [];
   state.sessionCreatedAt = String(snapshot.createdAt || "").trim();
+  state.summary = String(snapshot.summary || "").trim();
+  state.projectSnapshot = snapshot.projectSnapshot || null;
+  state.taskContract = snapshot.taskContract || null;
+  state.stateEpoch = snapshot.stateEpoch || null;
+  state.workingSet = Array.isArray(snapshot.workingSet) ? snapshot.workingSet : [];
+  state.executionState = snapshot.executionState || null;
+  state.contextPolicy = snapshot.contextPolicy || null;
+  state.toolCallsSinceCommit = Number.isFinite(snapshot.toolCallsSinceCommit)
+    ? snapshot.toolCallsSinceCommit
+    : 0;
+  state.activeSkills = Array.isArray(snapshot.activeSkills) ? snapshot.activeSkills : [];
+  if (isContextV2Enabled()) {
+    ensureContextSessionState(state);
+    const { ensureTranscript } = require("./context/assembler");
+    ensureTranscript(state, state.workspaceRoot);
+    if (Array.isArray(state.transcriptEvents) && state.transcriptEvents.length > 0) {
+      const { transcriptEventsToMessages } = require("./context/transcript");
+      state.nlMessages = transcriptEventsToMessages(state.transcriptEvents, { preferArtifact: true });
+    }
+  }
 
   return {
     ok: true,
     error: "",
     sessionId: state.sessionId,
-    restoredMessages: state.nlMessages.length,
+    restoredMessages: Array.isArray(state.nlMessages) ? state.nlMessages.length : 0,
   };
 }
 
@@ -726,7 +1039,9 @@ module.exports = {
   isProjectAnalysisTask,
   buildNlFallbackSummary,
   buildNlContext,
+  resolveWireSystemPrompt,
   stripSkillBlocksFromMessages,
+  stripSkillBlocksFromText,
   resolvePlannerProvider,
   extractJsonSummary,
   enrichNativeError,

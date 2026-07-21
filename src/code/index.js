@@ -31,7 +31,10 @@ const {
   getSessionFilePath,
   saveSessionSnapshot,
   loadSessionSnapshot,
+  listSessionSummaries,
+  deleteSessionData,
 } = require("./sessionStore");
+const context = require("./context");
 const launcher = require("./launcher");
 
 module.exports = {
@@ -68,5 +71,8 @@ module.exports = {
   getSessionFilePath,
   saveSessionSnapshot,
   loadSessionSnapshot,
+  listSessionSummaries,
+  deleteSessionData,
+  context,
   ...launcher,
 };

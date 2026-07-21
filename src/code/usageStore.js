@@ -92,10 +92,25 @@ function summarizeSessionUsage({ workspaceRoot = process.cwd(), sessionId = "" }
   return summary;
 }
 
+function formatSessionUsageStatus(summary = {}) {
+  const source = summary && typeof summary === "object" ? summary : {};
+  const input = Number(source.input) || 0;
+  const output = Number(source.output) || 0;
+  const cacheRead = Number(source.cacheRead) || 0;
+  const cacheCreation = Number(source.cacheCreation) || 0;
+  const denominator = cacheRead + input;
+  const hitRate = denominator > 0 ? (cacheRead / denominator) * 100 : 0;
+  return [
+    `Session tokens: input=${input} output=${output} cache_read=${cacheRead} cache_creation=${cacheCreation}`,
+    `Cache hit rate: ${hitRate.toFixed(1)}% (cache_read/(cache_read+input))`,
+  ].join("\n");
+}
+
 module.exports = {
   getUsageFilePath,
   buildUsageRecord,
   appendUsageRecord,
   createUsageSummary,
   summarizeSessionUsage,
+  formatSessionUsageStatus,
 };

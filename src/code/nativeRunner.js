@@ -6,12 +6,26 @@ const {
 } = require("../agents/providers/credentials/kimi");
 const { runToolCall } = require("./dispatch");
 const { appendUsageRecord } = require("./usageStore");
+const { isContextV2Enabled } = require("./context/featureFlag");
+const {
+  persistToolResultToContext,
+  sanitizeModelMessages,
+} = require("./context/assembler");
+const { systemBlocksToAnthropicPayload } = require("./context/promptLayers");
+const { parseStructuredSideEffects } = require("./context/stateCommit");
+const {
+  parseExecutionSegment,
+  executeExecutionSegment,
+  formatSegmentResultMessage,
+  emptyExecutionState,
+} = require("./context/executionSegment");
+const { stableStringify } = require("./context/stableJson");
 const { getReadToolDescription } = require("../agents/prompts/native/toolDescriptions/read");
 const { getWriteToolDescription } = require("../agents/prompts/native/toolDescriptions/write");
 const { getEditToolDescription } = require("../agents/prompts/native/toolDescriptions/edit");
 const { getBashToolDescription } = require("../agents/prompts/native/toolDescriptions/bash");
 
-const CORE_TOOL_NAMES = new Set(["read", "write", "edit", "bash"]);
+const CORE_TOOL_NAMES = new Set(["read", "write", "edit", "bash", "artifact_read"]);
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1";
 const DEFAULT_KIMI_BASE_URL = "https://api.kimi.com/coding/v1";
@@ -20,7 +34,8 @@ const DEFAULT_KIMI_MODEL = "k3";
 // to 200 (fork). We count individual tool calls (not turns), so 100 leaves headroom
 // for non-trivial tasks while still catching runaway loops. Override via env.
 const DEFAULT_MAX_NATIVE_TOOL_CALLS = 100;
-const DEFAULT_MAX_NATIVE_TOOL_ERRORS = 5;
+const DEFAULT_MAX_NATIVE_TOOL_ERRORS = 20;
+const DEFAULT_NATIVE_TIMEOUT_MS = 43200000; // 12 hours
 // Anthropic Messages rejects max_tokens above the model's real cap (64K on
 // current models), so the transports use different defaults. Override either
 // via UFOO_UCODE_MAX_TOKENS (positive integer).
@@ -43,7 +58,7 @@ function nowMs() {
 
 function normalizeTimeoutMs(value) {
   const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return 300000;
+  if (!Number.isFinite(parsed)) return DEFAULT_NATIVE_TIMEOUT_MS;
   return Math.max(1000, Math.floor(parsed));
 }
 
@@ -143,7 +158,7 @@ function enforceNativeToolBudget({
   }
 }
 
-function createGuards({ signal = null, timeoutMs = 300000 } = {}) {
+function createGuards({ signal = null, timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS } = {}) {
   const startedAt = nowMs();
   const budgetMs = normalizeTimeoutMs(timeoutMs);
 
@@ -364,6 +379,25 @@ function buildCoreToolSpecs() {
         },
       },
     },
+    {
+      type: "function",
+      function: {
+        name: "artifact_read",
+        description: "Load a stored artifact by artifactId. Use selectors startLine/endLine, maxChars, or tailLines to read a slice.",
+        parameters: {
+          type: "object",
+          properties: {
+            artifactId: { type: "string" },
+            sessionId: { type: "string" },
+            startLine: { type: "integer" },
+            endLine: { type: "integer" },
+            maxChars: { type: "integer" },
+            tailLines: { type: "integer" },
+          },
+          required: ["artifactId"],
+        },
+      },
+    },
   ];
 }
 
@@ -375,7 +409,7 @@ function buildAnthropicToolSpecs() {
   }));
 }
 
-function createRequestController({ signal = null, timeoutMs = 300000 } = {}) {
+function createRequestController({ signal = null, timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS } = {}) {
   const controller = new AbortController();
   let timedOut = false;
 
@@ -437,11 +471,7 @@ function normalizeToolName(value = "") {
 }
 
 function toJsonString(value) {
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value || "");
-  }
+  return stableStringify(value);
 }
 
 function parseSseBlocks(text = "") {
@@ -490,7 +520,15 @@ function normalizeToolCallArgs(raw = "") {
   return {};
 }
 
-function runCoreTool({ tool = "", args = {}, workspaceRoot = process.cwd(), onToolEvent = null } = {}) {
+function runCoreTool({
+  tool = "",
+  args = {},
+  workspaceRoot = process.cwd(),
+  onToolEvent = null,
+  sessionId = "",
+  contextV2 = false,
+  onArtifactPersisted = null,
+} = {}) {
   const normalizedTool = normalizeToolName(tool);
   if (!normalizedTool) {
     emitToolEvent(onToolEvent, {
@@ -506,6 +544,9 @@ function runCoreTool({ tool = "", args = {}, workspaceRoot = process.cwd(), onTo
   }
 
   const safeArgs = args && typeof args === "object" ? { ...args } : {};
+  if (normalizedTool === "artifact_read" && sessionId && !safeArgs.sessionId) {
+    safeArgs.sessionId = sessionId;
+  }
   emitToolEvent(onToolEvent, {
     tool: normalizedTool,
     phase: "start",
@@ -513,9 +554,13 @@ function runCoreTool({ tool = "", args = {}, workspaceRoot = process.cwd(), onTo
     error: "",
   });
 
+  const toolOptions = { workspaceRoot, cwd: workspaceRoot };
+  if (normalizedTool === "artifact_read" && sessionId) {
+    toolOptions.sessionId = sessionId;
+  }
   const result = runToolCall(
     { tool: normalizedTool, args: safeArgs },
-    { workspaceRoot, cwd: workspaceRoot }
+    toolOptions,
   );
 
   if (!result || result.ok === false) {
@@ -525,6 +570,26 @@ function runCoreTool({ tool = "", args = {}, workspaceRoot = process.cwd(), onTo
       args: safeArgs,
       error: String((result && result.error) || `${normalizedTool} failed`),
     });
+    return result;
+  }
+
+  const useContextV2 = contextV2 || isContextV2Enabled();
+  if (useContextV2 && normalizedTool !== "artifact_read") {
+    const persisted = persistToolResultToContext({
+      workspaceRoot,
+      sessionId,
+      tool: normalizedTool,
+      args: safeArgs,
+      rawResult: result,
+    });
+    if (typeof onArtifactPersisted === "function") {
+      try {
+        onArtifactPersisted(persisted);
+      } catch {
+        // ignore
+      }
+    }
+    return persisted.modelPayload || result;
   }
 
   return result;
@@ -548,7 +613,7 @@ async function runSseRequest({
   headers = {},
   payload = {},
   signal = null,
-  timeoutMs = 300000,
+  timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
   onPhase = null,
   onNonStream,
   onEvent,
@@ -640,7 +705,7 @@ async function runOpenAiLikeTurn({
   onThinkingDelta = null,
   onPhase = null,
   signal = null,
-  timeoutMs = 300000,
+  timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
 } = {}) {
   const payload = {
     model,
@@ -890,12 +955,13 @@ async function runAnthropicTurn({
   apiKey = "",
   model = "",
   systemPrompt = "",
+  systemBlocks = null,
   messages = [],
   onTextDelta = null,
   onThinkingDelta = null,
   onPhase = null,
   signal = null,
-  timeoutMs = 300000,
+  timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
 } = {}) {
   const payload = {
     model,
@@ -908,17 +974,19 @@ async function runAnthropicTurn({
   if (thinkingBudget > 0) {
     payload.thinking = { type: "enabled", budget_tokens: thinkingBudget };
   }
-  const systemText = String(systemPrompt || "").trim();
-  if (systemText) {
-    // Block form with a cache breakpoint; the system prompt is the most
-    // stable prefix of every request.
-    payload.system = [
-      {
-        type: "text",
-        text: systemText,
-        cache_control: { ...ANTHROPIC_CACHE_CONTROL },
-      },
-    ];
+  if (Array.isArray(systemBlocks) && systemBlocks.length > 0) {
+    payload.system = systemBlocksToAnthropicPayload(systemBlocks);
+  } else {
+    const systemText = String(systemPrompt || "").trim();
+    if (systemText) {
+      payload.system = [
+        {
+          type: "text",
+          text: systemText,
+          cache_control: { ...ANTHROPIC_CACHE_CONTROL },
+        },
+      ];
+    }
   }
 
   const headers = {
@@ -1294,16 +1362,20 @@ async function runNativeLoop({
   workspaceRoot = process.cwd(),
   prompt = "",
   systemPrompt = "",
+  systemBlocks = null,
   historyMessages = [],
   model = "",
   baseUrl = "",
   apiKey = "",
   provider = "",
-  timeoutMs = 300000,
+  timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
   onStreamDelta = null,
   onThinkingDelta = null,
   onPhase = null,
   onToolEvent = null,
+  onArtifactPersisted = null,
+  sessionId = "",
+  contextV2 = false,
   signal = null,
   guards,
 } = {}) {
@@ -1317,13 +1389,14 @@ async function runNativeLoop({
     throw new Error("ucode baseUrl is not configured");
   }
 
-  const messages = cloneMessageList(historyMessages);
+  const messages = sanitizeModelMessages(cloneMessageList(historyMessages));
   transport.prepareMessages({ messages, systemPrompt, prompt });
 
   let aggregated = "";
   let streamed = false;
   let toolCallsExecuted = 0;
   let toolErrors = 0;
+  let executionState = emptyExecutionState();
   const toolBudget = resolveNativeToolBudget();
   const usage = createUsageTotals();
 
@@ -1336,6 +1409,7 @@ async function runNativeLoop({
       model: requestModel,
       provider,
       systemPrompt,
+      systemBlocks,
       messages,
       signal,
       timeoutMs,
@@ -1358,8 +1432,34 @@ async function runNativeLoop({
     const toolCalls = transport.getToolCalls(turnResult);
 
     if (toolCalls.length === 0) {
-      transport.appendFinalAssistantMessage({ messages, turnResult });
       const text = String(turnResult.text || "").trim();
+      if (contextV2) {
+        const sideEffects = parseStructuredSideEffects(text);
+        const segment = parseExecutionSegment(sideEffects);
+        if (segment && segment.steps && segment.steps.length > 0) {
+          transport.appendFinalAssistantMessage({ messages, turnResult });
+          const exec = executeExecutionSegment({
+            segment,
+            executionState,
+            runStep: ({ tool, args }) => runCoreTool({
+              tool,
+              args,
+              workspaceRoot,
+              onToolEvent,
+              sessionId,
+              contextV2,
+              onArtifactPersisted,
+            }),
+          });
+          executionState = exec.executionState;
+          messages.push({
+            role: "user",
+            content: formatSegmentResultMessage(exec),
+          });
+          continue;
+        }
+      }
+      transport.appendFinalAssistantMessage({ messages, turnResult });
       if (!aggregated.trim() && text) {
         aggregated = text;
       }
@@ -1390,6 +1490,9 @@ async function runNativeLoop({
         args: pending.args,
         workspaceRoot,
         onToolEvent,
+        sessionId,
+        contextV2,
+        onArtifactPersisted,
       });
       toolCallsExecuted += 1;
       if (!toolResult || toolResult.ok === false) {
@@ -1421,15 +1524,18 @@ async function runNativeAgentTask({
   workspaceRoot = process.cwd(),
   prompt = "",
   systemPrompt = "",
+  systemBlocks = null,
   provider = "",
   model = "",
   messages = [],
   sessionId = "",
-  timeoutMs = 300000,
+  timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
   onStreamDelta = null,
   onThinkingDelta = null,
   onPhase = null,
   onToolEvent = null,
+  onArtifactPersisted = null,
+  contextV2 = false,
   signal = null,
 } = {}) {
   const guards = createGuards({ signal, timeoutMs });
@@ -1490,6 +1596,7 @@ async function runNativeAgentTask({
       workspaceRoot,
       prompt: promptText,
       systemPrompt,
+      systemBlocks,
       historyMessages: messages,
       model: runtime.model,
       baseUrl: runtime.baseUrl,
@@ -1500,6 +1607,9 @@ async function runNativeAgentTask({
       onThinkingDelta,
       onPhase,
       onToolEvent,
+      onArtifactPersisted,
+      sessionId: nextSessionId,
+      contextV2: contextV2 || isContextV2Enabled(),
       signal,
       guards,
     });

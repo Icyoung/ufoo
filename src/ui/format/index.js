@@ -41,6 +41,7 @@ const TOOL_LABELS = {
   write: "Writing file",
   edit: "Editing file",
   bash: "Running command",
+  artifact_read: "Reading artifact",
 };
 
 const ANSI_PATTERN = /\x1B\[[0-9;?]*[ -/]*[@-~]/g;
@@ -246,6 +247,120 @@ function loadActiveAgents(workspaceRoot) {
 function renderLogLinesWithMarkdown(text = "", state = {}, escapeFn = (value) => String(value || "")) {
   const { renderMarkdownLines } = require("./markdownRenderer");
   return renderMarkdownLines(text, state, escapeFn);
+}
+
+function renderLogLinesWithMarkdownAnsi(text = "", state = {}) {
+  const { renderMarkdownLinesAnsi } = require("./markdownRenderer");
+  return renderMarkdownLinesAnsi(text, state);
+}
+
+function messageContentText(message = {}) {
+  if (!message || typeof message !== "object") return "";
+  const content = message.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((part) => {
+      if (typeof part === "string") return part;
+      if (part && typeof part === "object" && part.text != null) return String(part.text);
+      return "";
+    }).join("");
+  }
+  return "";
+}
+
+function toolMessagePreview(message = {}) {
+  const raw = messageContentText(message).trim();
+  if (!raw) return "";
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") {
+      if (parsed.preview) return String(parsed.preview);
+      if (parsed.artifactId) return `artifact:${parsed.artifactId}`;
+    }
+  } catch {
+    // plain tool text
+  }
+  return raw;
+}
+
+/**
+ * Convert persisted nlMessages into ucode TUI log rows for resume/history.
+ * Applies the shared ANSI markdown renderer so restored assistant text matches
+ * live streaming output.
+ */
+function buildUcodeSessionLogEntries(messages = [], options = {}) {
+  const list = Array.isArray(messages) ? messages : [];
+  const markdownState = options.markdownState && typeof options.markdownState === "object"
+    ? options.markdownState
+    : { inCodeBlock: false };
+  const idPrefix = String(options.idPrefix || "h");
+  let seq = Number.isFinite(options.startSeq) ? Math.max(0, Math.floor(options.startSeq)) : 0;
+  const maxToolPreviewLines = Number.isFinite(options.maxToolPreviewLines)
+    ? Math.max(1, Math.floor(options.maxToolPreviewLines))
+    : 4;
+  const entries = [];
+
+  const pushLines = (text, kind) => {
+    const source = String(text == null ? "" : text);
+    let lines;
+    if (kind === "assistant" || kind === "error") {
+      try {
+        lines = renderLogLinesWithMarkdownAnsi(source, markdownState);
+        if (!Array.isArray(lines) || lines.length === 0) lines = source.split(/\r?\n/);
+      } catch {
+        lines = source.split(/\r?\n/);
+      }
+    } else {
+      lines = source.split(/\r?\n/);
+    }
+    for (const line of lines) {
+      entries.push({
+        id: `${idPrefix}-${seq}`,
+        text: String(line || ""),
+        kind,
+      });
+      seq += 1;
+    }
+  };
+
+  for (const message of list) {
+    if (!message || typeof message !== "object") continue;
+    const role = String(message.role || "").trim().toLowerCase();
+    if (role === "user") {
+      const text = messageContentText(message);
+      if (!text.trim()) continue;
+      const lines = text.split(/\r?\n/);
+      lines.forEach((line, index) => {
+        pushLines(index === 0 ? `› ${line}` : line, "user");
+      });
+      continue;
+    }
+    if (role === "assistant") {
+      const text = messageContentText(message);
+      if (text) pushLines(text, "assistant");
+      const calls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+      if (calls.length > 0) {
+        const names = calls
+          .map((call) => {
+            if (!call || typeof call !== "object") return "";
+            if (call.function && call.function.name) return String(call.function.name);
+            return String(call.name || "");
+          })
+          .map((name) => name.trim())
+          .filter(Boolean);
+        if (names.length > 0) pushLines(`⚙ ${names.join(" · ")}`, "system");
+      }
+      continue;
+    }
+    if (role === "tool") {
+      const preview = toolMessagePreview(message);
+      if (!preview.trim()) continue;
+      const clipped = preview.split(/\r?\n/).slice(0, maxToolPreviewLines).join("\n");
+      pushLines(clipped, "toolDetail");
+    }
+  }
+
+  return { entries, nextSeq: seq, markdownState };
 }
 
 function shouldEnterAgentSelection(inputValue = "") {
@@ -512,6 +627,39 @@ function normalizeBashToolCommand(args = {}, payload = {}) {
   const command = String(argObj.command || argObj.cmd || "").trim();
   const code = Number.isFinite(resObj.code) ? `exit ${resObj.code}` : "";
   return [command, code].filter(Boolean).join(" · ");
+}
+
+function shortenPathDetail(value = "", maxChars = 72) {
+  const text = String(value || "").trim().replace(/\\/g, "/");
+  if (!text) return "";
+  const limit = Number.isFinite(maxChars) && maxChars > 8 ? Math.floor(maxChars) : 72;
+  if (text.length <= limit) return text;
+  return `…${text.slice(-(limit - 1))}`;
+}
+
+function normalizeToolLogDetail(tool = "", args = {}, payload = {}) {
+  const name = String(tool || "").trim().toLowerCase();
+  const argObj = args && typeof args === "object" ? args : {};
+  const resObj = payload && typeof payload === "object" ? payload : {};
+
+  if (name === "bash") return normalizeBashToolCommand(argObj, resObj);
+
+  if (name === "read" || name === "write" || name === "edit") {
+    const pathText = String(argObj.path || resObj.path || "").trim();
+    return shortenPathDetail(pathText);
+  }
+
+  if (name === "artifact_read") {
+    const artifactId = String(argObj.artifactId || argObj.id || resObj.artifactId || "").trim();
+    const rangeBits = [];
+    if (argObj.startLine != null) rangeBits.push(`L${argObj.startLine}`);
+    if (argObj.endLine != null) rangeBits.push(`L${argObj.endLine}`);
+    const range = rangeBits.length > 0 ? rangeBits.join("-") : "";
+    return [artifactId, range].filter(Boolean).join(" · ");
+  }
+
+  const fallback = String(argObj.path || argObj.command || argObj.cmd || "").trim();
+  return shortenPathDetail(fallback);
 }
 
 function normalizeToolMergeEntry(entry = {}) {
@@ -822,6 +970,7 @@ function buildCompletions({
   commandTree = null,
   groupTemplates = [],
   soloProfiles = [],
+  argumentLists = null,
   limit = 8,
 } = {}) {
   const raw = String(text || "");
@@ -830,9 +979,14 @@ function buildCompletions({
   const endsWithWhitespace = /\s$/.test(trimmed);
 
   if (trimmed.startsWith("/")) {
-    const parts = trimmed.split(/\s+/);
-    const head = parts[0]; // "/launch"
-    const tail = parts.slice(1);
+    const tokenParts = trimmed.trimEnd().split(/\s+/).filter(Boolean);
+    const head = tokenParts[0] || ""; // "/launch"
+    const tail = tokenParts.slice(1);
+    const headKey = head.startsWith("/") ? head : `/${head}`;
+    const headNode = commandTree && typeof commandTree === "object" ? commandTree[headKey] : null;
+    const argListForHead = argumentLists && typeof argumentLists === "object"
+      ? argumentLists[headKey]
+      : null;
 
     // Dynamic argument completion for /group run <alias> and
     // /solo run <profile>. These pull from runtime sources (group
@@ -842,7 +996,7 @@ function buildCompletions({
       : (head === "/solo" && tail[0] === "run")
           ? soloProfiles
           : null;
-    if (dynList && (tail.length >= 2 || trimmed.endsWith(" "))) {
+    if (dynList && (tail.length >= 2 || (tail[0] === "run" && endsWithWhitespace))) {
       const partial = String(tail[1] || "").toLowerCase();
       const out = [];
       for (const item of (Array.isArray(dynList) ? dynList : [])) {
@@ -867,49 +1021,91 @@ function buildCompletions({
     }
 
     // Sub-command completion: "/cmd <prefix>" or "/cmd sub <prefix>".
-    if (tail.length >= 1 && commandTree) {
-      const headKey = head.startsWith("/") ? head : `/${head}`;
-      let node = commandTree[headKey];
-      if (!node || typeof node !== "object") return [];
-      // Walk into nested children for everything but the last token.
-      for (let i = 0; i < tail.length - 1; i += 1) {
-        const segment = tail[i];
-        if (!segment) return [];
-        const next = node && node.children && node.children[segment];
-        if (!next) return [];
-        node = next;
+    if ((tail.length >= 1 || (endsWithWhitespace && headNode && headNode.children)) && commandTree) {
+      let node = headNode;
+      if (!node || typeof node !== "object") {
+        // fall through
+      } else if (node.children && typeof node.children === "object") {
+        const walkTail = endsWithWhitespace && tail.length === 0
+          ? []
+          : (endsWithWhitespace ? tail : tail.slice(0, -1));
+        const partial = endsWithWhitespace && tail.length === 0
+          ? ""
+          : (endsWithWhitespace ? "" : String(tail[tail.length - 1] || "").toLowerCase());
+        let walkNode = node;
+        let walkOk = true;
+        for (const segment of walkTail) {
+          const next = walkNode.children && walkNode.children[segment];
+          if (!next) {
+            walkOk = false;
+            break;
+          }
+          walkNode = next;
+        }
+        const children = walkOk ? (walkNode && walkNode.children) : null;
+        if (children && typeof children === "object") {
+          const prefixSoFar = walkTail.length > 0
+            ? `${head} ${walkTail.join(" ")}`
+            : head;
+          const entries = Object.keys(children).map((name) => ({
+            name,
+            ...children[name],
+          }));
+          entries.sort((a, b) => {
+            const orderA = Number.isFinite(a.order) ? a.order : 999;
+            const orderB = Number.isFinite(b.order) ? b.order : 999;
+            if (orderA !== orderB) return orderA - orderB;
+            return a.name.localeCompare(b.name);
+          });
+          const out = [];
+          for (const entry of entries) {
+            if (partial && !entry.name.toLowerCase().startsWith(partial)) continue;
+            const hasDynamicArguments = (head === "/group" && entry.name === "run")
+              || (head === "/solo" && entry.name === "run")
+              || Boolean(entry.hasArguments);
+            out.push({
+              kind: "subcommand",
+              label: `${prefixSoFar} ${entry.name}`.trim(),
+              replace: `${prefixSoFar} ${entry.name} `.replace(/^\s+/, ""),
+              description: String(entry.desc || entry.summary || entry.description || ""),
+              hasChildren: Boolean((entry.children && typeof entry.children === "object") || hasDynamicArguments),
+            });
+            if (out.length >= limit) break;
+          }
+          if (!endsWithWhitespace && out.length === 1) {
+            const candidate = String(out[0].replace || "").trim().split(/\s+/).pop() || "";
+            if (candidate.toLowerCase() === partial && !out[0].hasChildren) return [];
+          }
+          return out;
+        }
       }
-      const children = node && node.children;
-      if (!children || typeof children !== "object") return [];
-      const partial = String(tail[tail.length - 1] || "").toLowerCase();
-      const prefixSoFar = `${head} ${tail.slice(0, -1).join(" ")}`.replace(/\s+$/, "");
-      // Sort by `order` (when present) then alphabetically — matches the
-      // sortCommands helper used by the blessed completion popup.
-      const entries = Object.keys(children).map((name) => ({
-        name,
-        ...children[name],
-      }));
-      entries.sort((a, b) => {
-        const orderA = Number.isFinite(a.order) ? a.order : 999;
-        const orderB = Number.isFinite(b.order) ? b.order : 999;
-        if (orderA !== orderB) return orderA - orderB;
-        return a.name.localeCompare(b.name);
-      });
+    }
+
+    // Generic top-level argument lists (e.g. /resume <session-id>).
+    if (
+      Array.isArray(argListForHead)
+      && argListForHead.length > 0
+      && !(headNode && headNode.children)
+      && (endsWithWhitespace || tail.length >= 1)
+    ) {
+      if (tail.length > 1) return [];
+      const partial = String(tail[0] || "").toLowerCase();
       const out = [];
-      for (const entry of entries) {
-        if (!entry.name.toLowerCase().startsWith(partial)) continue;
-        const hasDynamicArguments = (head === "/group" && entry.name === "run")
-          || (head === "/solo" && entry.name === "run");
+      for (const item of argListForHead) {
+        const id = String((item && (item.alias || item.cmd || item.id || item.name)) || item || "");
+        if (!id) continue;
+        if (partial && !id.toLowerCase().startsWith(partial)) continue;
+        const desc = String((item && (item.desc || item.summary || item.description || item.source)) || "");
         out.push({
-          kind: "subcommand",
-          label: `${prefixSoFar} ${entry.name}`.trim(),
-          replace: `${prefixSoFar} ${entry.name} `.replace(/^\s+/, ""),
-          description: String(entry.desc || entry.summary || entry.description || ""),
-          hasChildren: Boolean((entry.children && typeof entry.children === "object") || hasDynamicArguments),
+          kind: "argument",
+          label: `${head} ${id}`,
+          replace: `${head} ${id} `,
+          description: desc,
+          hasChildren: false,
         });
         if (out.length >= limit) break;
       }
-      if (!endsWithWhitespace && out.length === 1) {
+      if (partial && out.length === 1) {
         const candidate = String(out[0].replace || "").trim().split(/\s+/).pop() || "";
         if (candidate.toLowerCase() === partial && !out[0].hasChildren) return [];
       }
@@ -920,8 +1116,16 @@ function buildCompletions({
     const after = trimmed.slice(1);
     const prefix = after.toLowerCase();
     const list = Array.isArray(commands) ? commands : [];
+    const sorted = list.slice().sort((a, b) => {
+      const orderA = Number.isFinite(a && a.order) ? a.order : 999;
+      const orderB = Number.isFinite(b && b.order) ? b.order : 999;
+      if (orderA !== orderB) return orderA - orderB;
+      const nameA = String((a && a.cmd) || a || "");
+      const nameB = String((b && b.cmd) || b || "");
+      return nameA.localeCompare(nameB);
+    });
     const out = [];
-    for (const item of list) {
+    for (const item of sorted) {
       // Registry entries already include the leading '/' in `cmd`. Strip
       // it before matching the user's prefix and put it back when we
       // render so we don't end up with '//cron'.
@@ -930,18 +1134,27 @@ function buildCompletions({
       const lower = bare.toLowerCase();
       if (!bare) continue;
       if (!lower.startsWith(prefix)) continue;
+      const node = commandTree && commandTree[`/${bare}`];
+      const hasChildren = Boolean(
+        (node && node.children && typeof node.children === "object")
+        || (node && node.hasArguments)
+        || (argumentLists && Array.isArray(argumentLists[`/${bare}`]) && argumentLists[`/${bare}`].length > 0),
+      );
       out.push({
         kind: "command",
         label: `/${bare}`,
         replace: `/${bare} `,
         description: String((item && (item.desc || item.summary || item.description)) || ""),
-        hasChildren: Boolean(commandTree && commandTree[`/${bare}`] && commandTree[`/${bare}`].children),
+        hasChildren,
+        optionalArguments: Boolean(node && node.optionalArguments),
       });
       if (out.length >= limit) break;
     }
     if (!endsWithWhitespace && out.length === 1) {
       const candidate = String(out[0].replace || "").trim().replace(/^\//, "").toLowerCase();
-      if (candidate === prefix && !out[0].hasChildren) return [];
+      // Exact bare command: close the popup so Enter submits. Commands with
+      // optionalArguments (e.g. /model) are valid both bare and with an arg.
+      if (candidate === prefix && (!out[0].hasChildren || out[0].optionalArguments)) return [];
     }
     return out;
   }
@@ -994,6 +1207,7 @@ module.exports = {
   buildToolMergeRowText,
   buildCompletions,
   buildUcodeBannerLines,
+  buildUcodeSessionLogEntries,
   charDisplayWidth,
   clampCursorPos,
   createEscapeTagStripper,
@@ -1012,11 +1226,13 @@ module.exports = {
   moveCursorVertically,
   normalizeBashToolCommand,
   normalizeModelLabel,
+  normalizeToolLogDetail,
   normalizeToolMergeEntry,
   parseActiveAgentsFromBusStatus,
   planAgentsFooter,
   planProjectsRail,
   renderLogLinesWithMarkdown,
+  renderLogLinesWithMarkdownAnsi,
   resolveAgentSelectionOnDown,
   resolveHistoryDownTransition,
   shouldClearAgentSelectionOnUp,

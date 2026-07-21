@@ -18,6 +18,7 @@ planning material in `docs/archive/`.
 | `ufoo-group-role-presets-plan.md` | implemented with gaps | Role preset work that still has documented gaps to close. |
 | `ufoo-prompt-envelope-and-tags-plan.md` | needs audit | Prompt envelope/tag core exists, but timeline/history details need a final implementation check. |
 | `implementation_plan.md` | stale/unverified | Older chat log copy plan; implementation was not found during this cleanup. |
+| `ucode-context-manager-plan.md` | **complete** (P3 optional) | Native `ucode` Context Manager：已落地能力、延后项、env/验证。 |
 | `codebase-review-2026.md` | reference | Historical review notes. |
 | `ufoo-docs-implementation-audit.md` | reference | Audit used to classify plan documents before this archive pass. |
 

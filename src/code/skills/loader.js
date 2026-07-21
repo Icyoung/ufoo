@@ -98,11 +98,32 @@ function parseSkillFile(filePath, rootInfo = {}) {
       || data.shortDescription
       || ""
   ).trim();
+  const workflowSummary = String(
+    data.workflowSummary
+      || data["workflow-summary"]
+      || metadata.workflowSummary
+      || metadata["workflow-summary"]
+      || shortDescription
+      || ""
+  ).trim();
+  const triggersRaw = data.triggers != null
+    ? data.triggers
+    : (data.trigger != null
+      ? data.trigger
+      : (metadata.triggers != null ? metadata.triggers : metadata.trigger));
+  let triggers = [];
+  if (Array.isArray(triggersRaw)) {
+    triggers = triggersRaw.map((item) => String(item || "").trim()).filter(Boolean);
+  } else if (typeof triggersRaw === "string" && triggersRaw.trim()) {
+    triggers = triggersRaw.split(/[,|]/).map((item) => item.trim()).filter(Boolean);
+  }
 
   return {
     name,
     description,
     shortDescription,
+    workflowSummary,
+    triggers,
     path: skillPath,
     dir,
     scope: rootInfo.scope || "repo",
