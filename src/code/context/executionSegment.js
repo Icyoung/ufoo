@@ -1,17 +1,33 @@
 "use strict";
 
 const { randomUUID } = require("crypto");
+const {
+  executePlanGraph,
+  planGraphFromExecutionSegment,
+  compilePlanGraph,
+} = require("./planGraph");
 
 function emptyExecutionState() {
   return {
     currentSegmentId: "",
     mode: "single_action",
+    planMode: false,
+    planModeSource: "",
     steps: {},
     modifiedFiles: [],
     lastExitCodes: [],
     approvals: [],
     retries: {},
     segments: [],
+    pendingUserPrompts: [],
+    planGraph: require("./planGraphService").emptyPlanGraphState(),
+    graphs: {},
+    taskRuns: require("../runtime/taskRun").emptyTaskRunStore(),
+    agentMailbox: require("../runtime/loopMailbox").emptyMailbox(),
+    taskMailboxes: {},
+    workspaceLease: require("../runtime/workspaceLease").emptyWorkspaceLease(),
+    planUi: { bandMode: "auto" },
+    pendingUserInteraction: null,
   };
 }
 
@@ -93,19 +109,29 @@ function shouldStopSegment(executionState = null, {
 }
 
 function renderExecutionSegmentContext(executionState = null) {
-  if (!executionState || !executionState.currentSegmentId) return "";
-  const lines = [
-    "Current Execution Segment:",
-    `- Segment: ${executionState.currentSegmentId}`,
-    `- Mode: ${executionState.mode || "single_action"}`,
-  ];
-  const steps = executionState.steps && typeof executionState.steps === "object"
-    ? Object.entries(executionState.steps)
-    : [];
-  if (steps.length > 0) {
-    lines.push("Step status:");
-    for (const [id, info] of steps) {
-      lines.push(`- ${id}: ${info.status}${info.error ? ` (${info.error})` : ""}`);
+  if (!executionState || typeof executionState !== "object") return "";
+  const lines = [];
+  if (executionState.planMode) {
+    // Detailed plan-mode instructions come from renderPlanModeContext.
+    lines.push("Execution mode: plan_mode");
+  }
+  if (!executionState.currentSegmentId && !(executionState.planGraph && executionState.planGraph.graphId)) {
+    return lines.join("\n");
+  }
+  if (executionState.currentSegmentId) {
+    lines.push(
+      "Current Execution Segment:",
+      `- Segment: ${executionState.currentSegmentId}`,
+      `- Mode: ${executionState.mode || "single_action"}`,
+    );
+    const steps = executionState.steps && typeof executionState.steps === "object"
+      ? Object.entries(executionState.steps)
+      : [];
+    if (steps.length > 0) {
+      lines.push("Step status:");
+      for (const [id, info] of steps) {
+        lines.push(`- ${id}: ${info.status}${info.error ? ` (${info.error})` : ""}`);
+      }
     }
   }
   return lines.join("\n");
@@ -118,20 +144,8 @@ function parseExecutionSegment(sideEffects = null) {
   return null;
 }
 
-const DEFAULT_MAX_SEGMENT_STEPS = 4;
+const DEFAULT_MAX_SEGMENT_STEPS = 16;
 const SIDE_EFFECT_TOOLS = new Set(["write", "edit"]);
-
-function resolveStepArgs(args = {}, stepOutputs = new Map()) {
-  const next = args && typeof args === "object" ? { ...args } : {};
-  const argsJson = JSON.stringify(next);
-  for (const [depId, depValue] of stepOutputs.entries()) {
-    const token = `\${${depId}.matches}`;
-    if (argsJson.includes(token) && depValue && depValue.matches) {
-      next.matches = depValue.matches;
-    }
-  }
-  return next;
-}
 
 function isSideEffectTool(tool = "") {
   return SIDE_EFFECT_TOOLS.has(String(tool || "").trim().toLowerCase());
@@ -146,9 +160,14 @@ function formatSegmentResultMessage(result = {}) {
     stoppedAt: result.stoppedAt || "",
     steps: Array.isArray(result.results) ? result.results : [],
     error: result.error || "",
+    plan: result.summary || null,
   });
 }
 
+/**
+ * Execute a legacy execution_segment via the unified plan graph engine.
+ * Preserves the previous return shape used by agent/nativeRunner.
+ */
 function executeExecutionSegment({
   segment = {},
   executionState = null,
@@ -162,113 +181,69 @@ function executeExecutionSegment({
   const cappedSegment = { ...normalized, steps: cappedSteps };
   const { state: startedState, segmentId } = startExecutionSegment(executionState, cappedSegment);
   let state = startedState;
-  const stepOutputs = new Map();
-  const results = [];
-  const checkpointAfter = new Set(
-    Array.isArray(cappedSegment.checkpoint && cappedSegment.checkpoint.after)
-      ? cappedSegment.checkpoint.after.map(String)
-      : [],
-  );
-  let stoppedAt = "";
-  let fatalError = "";
 
-  for (const step of cappedSteps) {
-    const deps = Array.isArray(step.dependsOn) ? step.dependsOn : [];
-    for (const dep of deps) {
-      if (!stepOutputs.has(dep)) {
+  const plan = planGraphFromExecutionSegment(cappedSegment);
+  plan.id = segmentId;
+
+  const graphResult = executePlanGraph(plan, {
+    maxNodeRuns: Math.max(1, Math.floor(maxSteps)) * 2,
+    runStep: ({ stepId, tool, args }) => {
+      if (typeof onStepStart === "function") {
+        try {
+          onStepStart({ stepId, tool, args });
+        } catch {
+          // ignore
+        }
+      }
+      const result = runStep({ stepId, tool, args }) || { ok: false, error: "step failed" };
+      if (typeof onStepComplete === "function") {
+        try {
+          onStepComplete({ stepId, tool, args, result });
+        } catch {
+          // ignore
+        }
+      }
+      if (result && result.ok !== false) {
         state = recordStepResult(state, {
-          stepId: step.id,
-          status: "failed",
-          error: `missing dependency ${dep}`,
+          stepId,
+          status: "success",
+          artifactId: result.artifactId || "",
+          exitCode: Number.isFinite(result.code) ? result.code : null,
         });
-        fatalError = `segment dependency missing: ${dep}`;
-        state = completeExecutionSegment(state, { status: "failed", error: fatalError });
-        return {
-          ok: false,
-          segmentId,
-          objective: cappedSegment.objective,
-          executionState: state,
-          results,
-          error: fatalError,
-          stoppedAt: "dependency",
-        };
+      } else {
+        state = recordStepResult(state, {
+          stepId,
+          status: "failed",
+          error: String((result && result.error) || "step failed"),
+        });
       }
-    }
+      return result;
+    },
+  });
 
-    const args = resolveStepArgs(step.args, stepOutputs);
-    if (typeof onStepStart === "function") {
-      try {
-        onStepStart({ stepId: step.id, tool: step.tool, args });
-      } catch {
-        // ignore
-      }
-    }
+  const results = Array.isArray(graphResult.results) ? graphResult.results : [];
+  const stoppedAt = String(graphResult.stoppedAt || "");
+  const fatalError = graphResult.ok === false
+    ? String(graphResult.error || "segment failed")
+    : "";
 
-    const result = runStep({ stepId: step.id, tool: step.tool, args }) || { ok: false, error: "step failed" };
-    const stepRecord = {
-      stepId: step.id,
-      tool: step.tool,
-      ok: result.ok !== false,
-      artifactId: result.artifactId || "",
-      error: result.error || "",
-    };
-    results.push(stepRecord);
+  let finalStatus = "success";
+  if (fatalError) finalStatus = "failed";
+  else if (stoppedAt === "checkpoint" || stoppedAt === "waiting_llm") finalStatus = "checkpoint";
+  else if (stoppedAt === "side_effect") finalStatus = "success";
 
-    if (result.ok === false) {
-      state = recordStepResult(state, {
-        stepId: step.id,
-        status: "failed",
-        error: String(result.error || "step failed"),
-      });
-      fatalError = String(result.error || "segment step failed");
-      state = completeExecutionSegment(state, { status: "failed", error: fatalError });
-      return {
-        ok: false,
-        segmentId,
-        objective: cappedSegment.objective,
-        executionState: state,
-        results,
-        error: fatalError,
-        stoppedAt: "error",
-      };
-    }
-
-    stepOutputs.set(step.id, result);
-    state = recordStepResult(state, {
-      stepId: step.id,
-      status: "success",
-      artifactId: result.artifactId || "",
-      exitCode: Number.isFinite(result.code) ? result.code : null,
-    });
-
-    if (typeof onStepComplete === "function") {
-      try {
-        onStepComplete({ stepId: step.id, tool: step.tool, args, result });
-      } catch {
-        // ignore
-      }
-    }
-
-    if (checkpointAfter.has(step.id)) {
-      stoppedAt = "checkpoint";
-      break;
-    }
-    if (isSideEffectTool(step.tool)) {
-      stoppedAt = "side_effect";
-      break;
-    }
-  }
-
-  const finalStatus = stoppedAt === "checkpoint" ? "checkpoint" : "success";
-  state = completeExecutionSegment(state, { status: finalStatus });
+  state = completeExecutionSegment(state, { status: finalStatus, error: fatalError });
   return {
-    ok: true,
+    ok: graphResult.ok !== false,
     segmentId,
     objective: cappedSegment.objective,
     executionState: state,
     results,
-    error: "",
+    error: fatalError,
     stoppedAt,
+    waitingFor: graphResult.waitingFor || null,
+    summary: graphResult.summary || null,
+    compile: graphResult.compile || null,
   };
 }
 
@@ -311,4 +286,7 @@ module.exports = {
   executeExecutionSegment,
   formatSegmentResultMessage,
   isSideEffectTool,
+  planGraphFromExecutionSegment,
+  compilePlanGraph,
+  executePlanGraph,
 };

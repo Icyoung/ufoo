@@ -271,4 +271,46 @@ describe("log line kinds", () => {
     expect(row.color).toBe("gray");
     expect(row.dimColor).toBe(true);
   });
+
+  test("renders streamed deltas after resuming a pending user interaction", async () => {
+    const { emptyExecutionState } = require("../../../src/code/context/executionSegment");
+    const { requestUserInteraction } = require("../../../src/code/context/userInteraction");
+    const executionState = emptyExecutionState();
+    requestUserInteraction(executionState, {
+      kind: "chat",
+      prompt: "Continue?",
+      resume: { call: { source: { id: "call_ask" } } },
+    });
+
+    const deltas = [];
+    const harness = createHarness({
+      state: {
+        model: "test-model",
+        sessionId: "ut-resume",
+        engine: "ufoo-core",
+        executionState,
+      },
+      resumeAfterUserInteraction: async (_answer, _state, opts) => {
+        if (opts && typeof opts.onDelta === "function") {
+          opts.onDelta("Hello ");
+          opts.onDelta("after resume");
+          deltas.push("Hello ", "after resume");
+        }
+        return {
+          ok: true,
+          summary: "should not appear when streamed",
+          streamed: true,
+          waitingUserInteraction: false,
+        };
+      },
+    });
+
+    await submitLine(harness.render(), "yes continue");
+    const lines = getLogLines(harness.slots).map((line) => line.text);
+    expect(lines).toContain("› yes continue");
+    expect(lines.some((text) => text.includes("Hello"))).toBe(true);
+    expect(lines.some((text) => text.includes("after resume"))).toBe(true);
+    expect(lines).not.toContain("should not appear when streamed");
+    expect(deltas).toEqual(["Hello ", "after resume"]);
+  });
 });

@@ -1509,4 +1509,72 @@ describe("ucode native runner", () => {
     });
     expect(typeof rows[0].ts).toBe("string");
   });
+
+  test("rejects mixed plan_graph and data tools with contiguous tool results", async () => {
+    global.fetch
+      .mockResolvedValueOnce(makeSseResponse([
+        {
+          choices: [
+            {
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call_plan",
+                    type: "function",
+                    function: {
+                      name: "plan_graph",
+                      arguments: '{"operations":[{"op":"add_node","node":{"id":"n1","title":"A"}}]}',
+                    },
+                  },
+                  {
+                    index: 1,
+                    id: "call_read",
+                    type: "function",
+                    function: {
+                      name: "read",
+                      arguments: '{"path":"AGENTS.md"}',
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ]))
+      .mockResolvedValueOnce(makeSseResponse([
+        { choices: [{ delta: { content: "understood, will separate tools" } }] },
+      ]));
+
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "plan and read",
+      provider: "openai",
+      model: "gpt-test",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.output).toBe("understood, will separate tools");
+    expect(runToolCall).not.toHaveBeenCalled();
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+
+    const secondBody = JSON.parse(global.fetch.mock.calls[1][1].body);
+    const roles = secondBody.messages.map((entry) => entry.role);
+    const assistantIdx = roles.lastIndexOf("assistant");
+    expect(assistantIdx).toBeGreaterThanOrEqual(0);
+    expect(secondBody.messages[assistantIdx].tool_calls).toHaveLength(2);
+    const toolMsgs = secondBody.messages.slice(assistantIdx + 1).filter((entry) => entry.role === "tool");
+    expect(toolMsgs).toHaveLength(2);
+    expect(toolMsgs.map((entry) => entry.tool_call_id)).toEqual(["call_plan", "call_read"]);
+    for (const toolMsg of toolMsgs) {
+      const payload = JSON.parse(toolMsg.content);
+      expect(payload).toMatchObject({
+        ok: false,
+        status: "rejected",
+        code: "MIXED_PLAN_AND_DATA_TOOLS",
+      });
+    }
+    // Must not insert a plain user policy message between assistant tool_calls and tool results.
+    expect(secondBody.messages[assistantIdx + 1].role).toBe("tool");
+  });
 });

@@ -31,7 +31,7 @@ const {
 } = require("../skills");
 const { hashContent } = require("./artifacts");
 
-const PROMPT_VERSION = "native-v4";
+const PROMPT_VERSION = "native-v5";
 
 function buildImmutablePrefix() {
   return [
@@ -44,12 +44,28 @@ function buildImmutablePrefix() {
     getOutputEfficiencySection(),
     [
       "Tool calling grammar:",
-      "- Use read, write, edit, bash, artifact_read tools.",
-      "- Tool results may reference artifactId; use artifact_read to hydrate raw content.",
+      "- Use read, write, edit, bash, and artifact_read for direct work, even when it takes several tool calls. Use plan_graph only when the work needs a durable semantic/executable plan, explicit dependencies or checkpoints, or asynchronous TaskRuns.",
+      "- Plan Mode is a runtime posture for the Agent Loop, not an agent tool. While Plan Mode is ON, direct write, edit, and bash calls from the Agent Loop are blocked; read and artifact_read remain available.",
+      "- In the Agent Loop, plan_graph operation=create automatically enables Plan Mode. The user may also use /plan on or /plan off.",
+      "- Turning Plan Mode off does not cancel an existing graph or running TaskRuns. Use plan_graph operation=cancel_graph or operation=control with cancel_task to stop them.",
+      "- When the user enables Plan Mode and no active graph exists, create a plan_graph before performing side effects.",
+      "- Use plan_graph for durable graph structure and TaskRun lifecycle: create, patch, inspect, cancel_graph, and control.",
+      "- After an accepted plan_graph create or patch, Runtime automatically advances ready tool nodes. Never invent or request an execute_graph tool.",
+      "- Do not call plan_graph together with read, write, edit, bash, or artifact_read in the same assistant turn.",
+      "- When an active graph is waiting on a task, advance that node through plan_graph instead of bypassing it with direct workspace tools: use patch.expand_node for execution.kind=expand, control.complete_task (nodeId) for execution.kind=inline_llm, or control.start_task for execution.kind=task_loop.",
+      "- control.complete_task with nodeId completes a waiting_llm inline_llm task for the current Graph owner. control.complete_task with taskRunId is reserved for the owning TaskLoop. Do not directly complete expand or aggregate tasks.",
+      "- While Plan Mode is ON, workspace mutations must be represented as plan_graph tool nodes or performed inside a running task_loop.",
+      "- Treat a User reminder as the latest user instruction. Reconcile it before continuing from tool results. If it is compatible with the active plan, resume the waiting plan node; otherwise patch, cancel, or replan first.",
+      "- Use execution.kind=task_loop for work that should continue asynchronously without occupying the Agent Loop. plan_graph operation=control action=start_task starts the TaskRun and returns immediately.",
+      "- TaskLoops do not consume User reminders. The Agent Loop is woken by runtime task_started, task_succeeded, task_failed, and task_cancelled events.",
+      "- Runtime enforces TaskRun concurrency limits and workspace write leases. Direct Agent write, edit, or bash calls may be rejected while writing TaskRuns are active.",
+      "- Tool results may contain an artifactId. Use artifact_read to hydrate raw stored output or a slice of it; use read for workspace file paths.",
+      "- Use ask_user only when user input is required to proceed. It must be the only tool call in the turn. Use kind=approval for yes/no confirmation, kind=choice for numbered options, and kind=chat for free text.",
+      "- The answer to ask_user is returned only as that tool's result, not as a separate user message or pending User reminder. Continue from the returned answer and do not repeat the question.",
+      "- ask_user is available only to the Agent Loop. It pauses the Agent Loop, but running TaskRuns continue unless explicitly cancelled.",
+      "- Prefer structured argument references when passing upstream node outputs or artifacts into downstream tool arguments. Use string templates only when string interpolation is required, and reference only existing upstream nodes.",
       "State commit schema (optional at segment end):",
       '{"stateCommit":{"factsAdd":[],"hypothesesUpdate":[],"decisionsAdd":[],"questionsClose":[],"nextObjective":""},"contextPlan":{"retainRaw":[],"retainRegions":[],"summarize":[],"evict":[],"rehydrateNext":[]}}',
-      "Context action schema:",
-      '{"type":"execution_segment","objective":"","steps":[],"checkpoint":{"after":[]}}',
     ].join("\n"),
   ].join("\n\n");
 }

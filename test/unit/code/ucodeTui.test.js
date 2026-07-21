@@ -280,6 +280,54 @@ describe("ucode tui switch", () => {
     expect(lines[1]).not.toMatch(/^\s*-\s/);
   });
 
+  test("renders GFM pipe tables as an aligned grid", () => {
+    const state = { inCodeBlock: false };
+    const lines = renderLogLinesWithMarkdown(
+      [
+        "| Name | Age | Role |",
+        "| :--- | ---: | :---: |",
+        "| Alice | 12 | Dev |",
+        "| Bob | 100 | Ops |",
+      ].join("\n"),
+      state,
+      (v) => String(v)
+    );
+    expect(lines.length).toBeGreaterThanOrEqual(3);
+    const plain = lines.map((line) => String(line).replace(/\{[^}]+\}/g, ""));
+    expect(plain[0]).toMatch(/│\s*Name\s+│\s*Age\s+│\s*Role\s+│/);
+    expect(plain[1]).toMatch(/┼/);
+    expect(plain.some((line) => /Alice/.test(line) && /12/.test(line))).toBe(true);
+    expect(plain.some((line) => /Bob/.test(line) && /100/.test(line))).toBe(true);
+    // Column padding: Age is right-aligned, so "12" sits closer to the right pipe.
+    const alice = plain.find((line) => /Alice/.test(line));
+    expect(alice).toMatch(/│\s*Alice\s+│\s+12\s*│/);
+  });
+
+  test("renders ansi GFM tables without leftover pipes from the separator row", () => {
+    const state = { inCodeBlock: false };
+    const lines = renderLogLinesWithMarkdownAnsi(
+      "| A | B |\n| --- | --- |\n| 1 | 22 |",
+      state
+    );
+    const plain = lines.map((line) => String(line).replace(/\x1b\[[0-9;]*m/g, ""));
+    expect(plain.some((line) => /^[|\-\s:]+$/.test(line.trim()))).toBe(false);
+    expect(plain.some((line) => /┼/.test(line) || /─/.test(line))).toBe(true);
+    expect(plain.join("\n")).toContain("22");
+    expect(plain.join("\n")).not.toContain("| ---");
+  });
+
+  test("table buffer flushes consecutive pipe rows as one markdown unit", () => {
+    const { createMarkdownTableBuffer } = require("../../../src/ui/format");
+    const buf = createMarkdownTableBuffer();
+    expect(buf.push("| A | B |")).toBe(true);
+    expect(buf.push("| --- | --- |")).toBe(true);
+    expect(buf.push("| 1 | 2 |")).toBe(true);
+    expect(buf.push("trail")).toBe(false);
+    const block = buf.flush();
+    expect(block).toBe("| A | B |\n| --- | --- |\n| 1 | 2 |");
+    expect(buf.flush()).toBeNull();
+  });
+
   test("bold wins over nested code and code-wrapped bold", () => {
     const state = { inCodeBlock: false };
     const cases = [

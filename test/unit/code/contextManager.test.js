@@ -51,34 +51,19 @@ const {
   loadSessionSnapshot,
 } = require("../../../src/code/sessionStore");
 const { runArtifactReadTool } = require("../../../src/code/tools/artifactRead");
-const { isContextV2Enabled } = require("../../../src/code/context/featureFlag");
-
 describe("ucode context manager", () => {
   let workspaceRoot = "";
-  const originalV2 = process.env.UFOO_UCODE_CONTEXT_V2;
 
   beforeEach(() => {
     workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-ctx-"));
-    process.env.UFOO_UCODE_CONTEXT_V2 = "1";
   });
 
   afterEach(() => {
-    if (originalV2 === undefined) delete process.env.UFOO_UCODE_CONTEXT_V2;
-    else process.env.UFOO_UCODE_CONTEXT_V2 = originalV2;
     try {
       fs.rmSync(workspaceRoot, { recursive: true, force: true });
     } catch {
       // ignore
     }
-  });
-
-  test("feature flag detects v2", () => {
-    process.env.UFOO_UCODE_CONTEXT_V2 = "1";
-    expect(isContextV2Enabled()).toBe(true);
-    process.env.UFOO_UCODE_CONTEXT_V2 = "0";
-    expect(isContextV2Enabled()).toBe(false);
-    delete process.env.UFOO_UCODE_CONTEXT_V2;
-    expect(isContextV2Enabled()).toBe(true);
   });
 
   test("artifact store saves and reads slices", () => {
@@ -677,18 +662,11 @@ describe("ucode context manager", () => {
     expect(hydrated.selector.startLine).toBeGreaterThan(0);
   });
 
-  test("resolveWireSystemPrompt uses layered path by default", () => {
+  test("resolveWireSystemPrompt uses layered path", () => {
     const { resolveWireSystemPrompt } = require("../../../src/code/agent");
-    const prev = process.env.UFOO_UCODE_CONTEXT_V2;
-    delete process.env.UFOO_UCODE_CONTEXT_V2;
-    try {
-      const text = resolveWireSystemPrompt({ workspaceRoot });
-      expect(text).toContain("promptVersion:");
-      expect(text).toContain("artifact_read");
-    } finally {
-      if (prev === undefined) delete process.env.UFOO_UCODE_CONTEXT_V2;
-      else process.env.UFOO_UCODE_CONTEXT_V2 = prev;
-    }
+    const text = resolveWireSystemPrompt({ workspaceRoot });
+    expect(text).toContain("promptVersion:");
+    expect(text).toContain("artifact_read");
   });
 
   test("syncMessagesToTranscript appends windowed turn deltas past full transcript", () => {

@@ -57,6 +57,11 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
     engine: (props.state && props.state.engine) || "ufoo-core",
     workspaceRoot: props.workspaceRoot,
     sessionId: (props.state && props.state.sessionId) || "",
+    planMode: Boolean(
+      props.state
+      && props.state.executionState
+      && props.state.executionState.planMode
+    ),
   });
 
   return function UcodeApp() {
@@ -75,6 +80,15 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       showTimer: false,
       startedAt: 0,
     });
+    const [planUi, setPlanUi] = useState(() => ({
+      hasPlan: false,
+      visible: false,
+      bandLines: [],
+      idleHint: "",
+      statusLine: "",
+      hash: "",
+    }));
+    const [interactionLines, setInteractionLines] = useState([]);
     const [spinnerTick, setSpinnerTick] = useState(0);
     const [size, setSize] = useState({ cols: 0, rows: 0 });
     const [agents, setAgents] = useState([]);
@@ -121,12 +135,42 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
     // Persist fence/open-code state across streamed assistant log lines so
     // ``` blocks stay styled even when deltas arrive one line at a time.
     const markdownStateRef = useRef({ inCodeBlock: false });
+    // GFM tables need the full block for column alignment — buffer consecutive
+    // pipe rows and flush as one multi-line markdown unit.
+    const tableBufRef = useRef(fmt.createMarkdownTableBuffer());
 
     const targetAgent = agentSelectionMode && selectedAgentIndex >= 0
       ? agents[selectedAgentIndex]
       : null;
 
     const bumpBackground = useCallback(() => setBackgroundVersion((v) => v + 1), []);
+
+    const refreshPlanUi = useCallback((activityMessage = "") => {
+      try {
+        const { buildPlanUiProjection } = require("../../code/context/planProjection");
+        const {
+          getPendingUserInteraction,
+          formatInteractionPromptLines,
+          syncInteractionFromPlanGraph,
+        } = require("../../code/context/userInteraction");
+        if (props.state && props.state.executionState) {
+          syncInteractionFromPlanGraph(props.state.executionState);
+        }
+        const next = buildPlanUiProjection(
+          props.state && props.state.executionState,
+          {
+            cols: size.cols || 80,
+            activityMessage: String(activityMessage || ""),
+          }
+        );
+        setPlanUi((prev) => (prev && prev.hash === next.hash ? prev : next));
+        const pending = getPendingUserInteraction(props.state && props.state.executionState);
+        setInteractionLines(pending ? formatInteractionPromptLines(pending) : []);
+        return next;
+      } catch {
+        return null;
+      }
+    }, [props.state, size.cols]);
 
     const getBackgroundSuffix = useCallback(() => {
       const tasks = backgroundTasksRef.current;
@@ -324,17 +368,17 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       return true;
     }, [completionsOpen, completions, completionIndex]);
 
-    const appendLogLine = useCallback((text, kind = "assistant") => {
-      const raw = String(text == null ? "" : text);
+    const pushRenderedLogLines = useCallback((rawText, kind = "assistant") => {
+      const raw = String(rawText == null ? "" : rawText);
       let renderedLines = [raw];
       if (MARKDOWN_LOG_KINDS.has(kind)) {
         try {
           renderedLines = fmt.renderLogLinesWithMarkdownAnsi(raw, markdownStateRef.current);
           if (!Array.isArray(renderedLines) || renderedLines.length === 0) {
-            renderedLines = [raw];
+            renderedLines = raw.split(/\r?\n/);
           }
         } catch {
-          renderedLines = [raw];
+          renderedLines = raw.split(/\r?\n/);
         }
       }
       setLogLines((prev) => {
@@ -347,6 +391,23 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
         return next.length > 1000 ? next.slice(-1000) : next;
       });
     }, []);
+
+    const flushTableBuffer = useCallback(() => {
+      const buffered = tableBufRef.current.flush();
+      if (buffered == null) return;
+      pushRenderedLogLines(buffered, "assistant");
+    }, [pushRenderedLogLines]);
+
+    const appendLogLine = useCallback((text, kind = "assistant") => {
+      const raw = String(text == null ? "" : text);
+      if (MARKDOWN_LOG_KINDS.has(kind)) {
+        if (tableBufRef.current.push(raw)) return;
+        flushTableBuffer();
+      } else {
+        flushTableBuffer();
+      }
+      pushRenderedLogLines(raw, kind);
+    }, [flushTableBuffer, pushRenderedLogLines]);
 
     const renderMergeText = useCallback((merge) => {
       if (!merge || !Array.isArray(merge.entries)) return "";
@@ -391,12 +452,14 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       // Multi-line text → split into separate log entries so <Static> keys
       // stay stable when streaming arrives line-by-line. Always promote any
       // in-flight tool group first so it freezes above the new text.
+      // Table rows are re-batched inside appendLogLine before markdown render.
       const raw = String(text == null ? "" : text);
       if (!raw) return;
       flushActiveMerge();
       const lines = raw.split(/\r?\n/);
       for (const line of lines) appendLogLine(line, kind);
-    }, [appendLogLine, flushActiveMerge]);
+      if (MARKDOWN_LOG_KINDS.has(kind)) flushTableBuffer();
+    }, [appendLogLine, flushActiveMerge, flushTableBuffer]);
 
     const expandLastMerge = useCallback(() => {
       // Try the active group first; fall back to the most recent frozen one.
@@ -464,6 +527,14 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
               sessionId: (props.state && props.state.sessionId) || "",
             });
             appendLogText(formatSessionUsageStatus(usageSummary), "system");
+            if (props.state && props.state.executionState) {
+              const { formatPlanModeStatus } = require("../../code/context/planMode");
+              const planLines = formatPlanModeStatus(props.state.executionState)
+                .split("\n")
+                .slice(0, 6)
+                .join("\n");
+              appendLogText(planLines, "system");
+            }
           } catch (err) {
             appendLogText(`Error: ${err && err.message ? err.message : "status failed"}`, "error");
           }
@@ -483,6 +554,22 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
               }
             } catch {
               // persist is best-effort after a successful model switch
+            }
+          }
+          return;
+        }
+        case "plan": {
+          const { applyUcodePlanCommand } = require("../../code/context/planMode");
+          const applied = applyUcodePlanCommand(props.state || {}, result);
+          appendLogText(applied.output || "", applied.ok ? "system" : "error");
+          if (applied.refreshPlanUi || applied.ok) {
+            refreshPlanUi();
+          }
+          if (applied.ok && typeof props.persistSessionState === "function") {
+            try {
+              props.persistSessionState(props.state);
+            } catch {
+              // best-effort
             }
           }
           return;
@@ -535,6 +622,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
           // Rebuild the visible log from the restored session transcript so
           // the user sees prior turns instead of only a status toast.
           markdownStateRef.current = { inCodeBlock: false };
+          tableBufRef.current = fmt.createMarkdownTableBuffer();
           const history = fmt.buildUcodeSessionLogEntries(
             Array.isArray(props.state && props.state.nlMessages) ? props.state.nlMessages : [],
             { markdownState: markdownStateRef.current, idPrefix: "h", startSeq: 0 },
@@ -621,12 +709,18 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
           const startedAt = Date.now();
           const abortController = new AbortController();
           pendingTaskRef.current = { abortController, startedAt };
-          const setNlStatus = (msg) => setStatus({
-            message: msg,
-            type: "thinking",
-            showTimer: true,
-            startedAt,
-          });
+          const setNlStatus = (msg) => {
+            const projection = refreshPlanUi(msg);
+            const message = projection && projection.hasPlan && projection.activityStatusLine
+              ? projection.activityStatusLine
+              : msg;
+            setStatus({
+              message,
+              type: "thinking",
+              showTimer: true,
+              startedAt,
+            });
+          };
           const cancelThinkingFlush = () => {
             if (thinkingTimerRef.current) {
               clearTimeout(thinkingTimerRef.current);
@@ -702,6 +796,9 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
                   setNlStatus(`${label}...`);
                   dropLeadingStreamBlank = true;
                 }
+                if (entry.tool === "plan_graph" || entry.phase === "end" || entry.phase === "result") {
+                  refreshPlanUi();
+                }
                 logToolHint(entry, entry.result);
               },
             });
@@ -712,12 +809,14 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
             pendingTaskRef.current = null;
             cancelThinkingFlush();
             thinkingTailRef.current = "";
+            refreshPlanUi();
             setStatus({ message: "", type: "thinking", showTimer: false, startedAt: 0 });
           }
           if (streamBuf) {
             if (/[^\s]/.test(streamBuf)) sawStreamText = true;
             appendLogLine(streamBuf);
           }
+          flushTableBuffer();
           // Skip the summary echo when the model already streamed its
           // response in full — otherwise the user sees the same text twice.
           // Mirrors the shouldSkipSummary check in tui.js.
@@ -745,7 +844,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
         default:
           if (result.output) appendLogText(result.output);
       }
-    }, [appendLogLine, appendLogText, exit, props, logToolHint, flushActiveMerge]);
+    }, [appendLogLine, appendLogText, exit, props, logToolHint, flushActiveMerge, flushTableBuffer, refreshPlanUi]);
     // ^ `props` is captured by the createUcodeApp closure on a single mount,
     // so its reference is stable across renders even though it looks like a
     // changing dep to React's exhaustive-deps lint.
@@ -848,11 +947,129 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
         setHistoryIndex(next.length);
         return next;
       });
+
+      // Pending approval/choice/chat takes priority over nudge / new NL.
+      try {
+        const {
+          hasPendingUserInteraction,
+          parseUserInteractionInput,
+          getPendingUserInteraction,
+        } = require("../../code/context/userInteraction");
+        if (props.state && props.state.executionState && hasPendingUserInteraction(props.state.executionState)) {
+          const pending = getPendingUserInteraction(props.state.executionState);
+          const parsed = parseUserInteractionInput(pending, trimmed);
+          if (!parsed.ok) {
+            appendLogText(parsed.error || "Invalid reply", "error");
+            return;
+          }
+          appendLogText(`› ${trimmed}`, "user");
+          const startedAt = Date.now();
+          setStatus({
+            message: "Applying your reply...",
+            type: "thinking",
+            showTimer: true,
+            startedAt,
+          });
+          runChainRef.current = runChainRef.current
+            .then(async () => {
+              const resume = typeof props.resumeAfterUserInteraction === "function"
+                ? props.resumeAfterUserInteraction
+                : require("../../code/agent").resumeAfterUserInteraction;
+              let streamBuf = "";
+              let sawStreamText = false;
+              let streamStarted = false;
+              let dropLeadingStreamBlank = false;
+              const result = await resume(trimmed, props.state, {
+                onDelta: (delta) => {
+                  const text = String(delta || "");
+                  if (!text) return;
+                  if (!streamStarted) {
+                    flushActiveMerge();
+                    streamStarted = true;
+                  }
+                  const split = fmt.splitStreamingLogChunk(streamBuf, text, {
+                    dropLeadingBlank: dropLeadingStreamBlank,
+                  });
+                  if (split.sawVisible) {
+                    sawStreamText = true;
+                    dropLeadingStreamBlank = false;
+                  }
+                  for (const line of split.lines) {
+                    appendLogLine(line);
+                  }
+                  streamBuf = split.buffer;
+                },
+              });
+              if (streamBuf) {
+                if (/[^\s]/.test(streamBuf)) sawStreamText = true;
+                appendLogLine(streamBuf);
+              }
+              flushTableBuffer();
+              refreshPlanUi();
+              if (result && result.waitingUserInteraction) {
+                appendLogText("Still waiting for your reply.", "system");
+                setStatus({ message: "", type: "thinking", showTimer: false, startedAt: 0 });
+                return;
+              }
+              if (!result || result.ok === false) {
+                appendLogText(`Error: ${(result && result.error) || "resume failed"}`, "error");
+              } else {
+                // Skip summary echo when deltas were already rendered (mirrors NL path).
+                const shouldSkipSummary = Boolean(result.streamed && result.ok && sawStreamText);
+                if (result.summary && !shouldSkipSummary) {
+                  appendLogText(result.summary);
+                }
+              }
+              setStatus({ message: "", type: "thinking", showTimer: false, startedAt: 0 });
+            })
+            .catch((err) => {
+              appendLogText(`Error: ${err && err.message ? err.message : err}`, "error");
+              setStatus({ message: "", type: "thinking", showTimer: false, startedAt: 0 });
+            });
+          return;
+        }
+      } catch (err) {
+        appendLogText(`Error: ${err && err.message ? err.message : "interaction failed"}`, "error");
+        return;
+      }
+
+      // While a native task is in flight, queue an additional user reminder
+      // for the next LLM turn instead of starting a second NL task.
+      if (pendingTaskRef.current) {
+        const { enqueueUserPrompt } = require("../../code/context/userNudge");
+        const { emptyExecutionState } = require("../../code/context/executionSegment");
+        if (!props.state || typeof props.state !== "object") {
+          appendLogText("Error: missing session state for user reminder", "error");
+          return;
+        }
+        if (!props.state.executionState || typeof props.state.executionState !== "object") {
+          props.state.executionState = emptyExecutionState();
+        }
+        const queued = enqueueUserPrompt(props.state.executionState, trimmed);
+        appendLogText(
+          queued.enqueued
+            ? `Queued user reminder for next model turn: ${trimmed.slice(0, 120)}${trimmed.length > 120 ? "…" : ""}`
+            : "Could not queue user reminder (empty).",
+          "system",
+        );
+        return;
+      }
+
       // Serialize executions so streaming tasks don't interleave.
       runChainRef.current = runChainRef.current
         .then(() => executeLine(value))
         .catch((err) => appendLogText(`Error: ${err && err.message ? err.message : err}`, "error"));
-    }, [draft, executeLine, appendLogText]);
+    }, [
+      draft,
+      executeLine,
+      appendLogText,
+      appendLogLine,
+      flushActiveMerge,
+      flushTableBuffer,
+      props.state,
+      props.resumeAfterUserInteraction,
+      refreshPlanUi,
+    ]);
 
     useEffect(() => {
       if (!stdout) return undefined;
@@ -864,6 +1081,10 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       stdout.on("resize", update);
       return () => stdout.off("resize", update);
     }, [stdout]);
+
+    useEffect(() => {
+      refreshPlanUi();
+    }, [refreshPlanUi]);
 
     // Drive the spinner + elapsed-timer redraws while a task is in flight.
     useEffect(() => {
@@ -878,7 +1099,13 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       return () => clearInterval(timer);
     }, [status.message, status.type, status.showTimer]);
 
-    const statusText = useMemoStatusText(React, status, spinnerTick, getBackgroundSuffix());
+    const statusText = useMemoStatusText(
+      React,
+      status,
+      spinnerTick,
+      getBackgroundSuffix(),
+      !status.message ? (planUi.idleHint || "") : ""
+    );
 
     // Top-level catches Ctrl+C / Ctrl+O, plus completion popup navigation
     // while a slash/agent menu is open.
@@ -940,12 +1167,12 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
     return h(Box, { flexDirection: "column", width: "100%" },
       h(Box, { flexDirection: "column", width: "100%" },
         ...(() => {
-          // Re-render raw markdown at paint time so leftover ** / ### from
-          // older append paths or nested `**code**` patterns still resolve.
+          // Re-render raw markdown at paint time so leftover ** / ### / tables
+          // from older append paths or nested `**code**` patterns still resolve.
           const mdState = { inCodeBlock: false };
           return logLines.map((item, idx) => {
             let text = item.text || " ";
-            if (MARKDOWN_LOG_KINDS.has(item.kind) && /(?:\*\*|__|^\s*#{1,6}\s|^\s*`{3})/m.test(text)) {
+            if (MARKDOWN_LOG_KINDS.has(item.kind) && /(?:\*\*|__|^\s*#{1,6}\s|^\s*`{3}|^\s*\|)/m.test(text)) {
               try {
                 const rendered = fmt.renderLogLinesWithMarkdownAnsi(text, mdState);
                 if (Array.isArray(rendered) && rendered.length > 0) {
@@ -987,6 +1214,33 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
           renderMergeText(activeMerge)
         ),
       ) : null,
+      planUi.visible && planUi.bandLines.length > 0
+        ? h(Box, {
+          flexDirection: "column",
+          width: "100%",
+          marginTop: 1,
+        },
+          ...planUi.bandLines.map((line, idx) => h(Text, {
+            key: `plan-band-${idx}`,
+            color: "magenta",
+            dimColor: idx > 0,
+            wrap: "truncate",
+          }, line || " ")),
+        )
+        : null,
+      interactionLines.length > 0
+        ? h(Box, {
+          flexDirection: "column",
+          width: "100%",
+          marginTop: 1,
+        },
+          ...interactionLines.map((line, idx) => h(Text, {
+            key: `ask-${idx}`,
+            color: "yellow",
+            wrap: "truncate",
+          }, line || " ")),
+        )
+        : null,
       h(Box, { marginTop: 1, width: "100%" },
         h(Text, { color: "gray" }, statusText),
         h(Box, { flexGrow: 1 }),
@@ -1047,6 +1301,12 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
             const pending = pendingTaskRef.current;
             if (pending && pending.abortController && !pending.abortController.signal.aborted) {
               try { pending.abortController.abort(); } catch { /* ignore */ }
+              try {
+                const { clearUserPrompts } = require("../../code/context/userNudge");
+                if (props.state && props.state.executionState) {
+                  clearUserPrompts(props.state.executionState);
+                }
+              } catch { /* ignore */ }
               appendLogLine("⚙ Cancellation requested. Stopping the current task...", "system");
               setStatus({
                 message: "Cancelling...",
@@ -1190,10 +1450,13 @@ function collapseThinkingTail(text, maxChars = 80) {
   return `…${candidate.slice(-(limit - 1))}`;
 }
 
-function computeStatusText(status, spinnerTick, backgroundSuffix = "") {
+function computeStatusText(status, spinnerTick, backgroundSuffix = "", idlePlanHint = "") {
   const message = String((status && status.message) || "");
   const suffix = String(backgroundSuffix || "");
-  if (!message) return `UCODE · Ready${suffix}`;
+  if (!message) {
+    const hint = String(idlePlanHint || "").trim();
+    return hint ? `UCODE · Ready · ${hint}${suffix}` : `UCODE · Ready${suffix}`;
+  }
   const type = inferStatusType(message, status && status.type);
   if (type === "done" || type === "success") {
     const clean = message.trim();
@@ -1213,11 +1476,11 @@ function computeStatusText(status, spinnerTick, backgroundSuffix = "") {
   return `${indicator} ${message}${timerText}${suffix}`;
 }
 
-function useMemoStatusText(React, status, spinnerTick, backgroundSuffix = "") {
+function useMemoStatusText(React, status, spinnerTick, backgroundSuffix = "", idlePlanHint = "") {
   // Dependencies intentionally include startedAt so the timer ticks even
   // when the message string is unchanged.
   return React.useMemo(
-    () => computeStatusText(status, spinnerTick, backgroundSuffix),
-    [status, spinnerTick, backgroundSuffix]
+    () => computeStatusText(status, spinnerTick, backgroundSuffix, idlePlanHint),
+    [status, spinnerTick, backgroundSuffix, idlePlanHint]
   );
 }

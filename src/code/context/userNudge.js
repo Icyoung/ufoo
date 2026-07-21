@@ -1,0 +1,116 @@
+"use strict";
+
+/**
+ * Unified user interjection (nudge) queue for the native agent loop.
+ *
+ * While a task is running, user submits enqueue here. nativeRunner drains
+ * before each LLM turn and appends a labeled additional user reminder.
+ */
+
+function ensurePendingUserPrompts(executionState = null) {
+  const state = executionState && typeof executionState === "object"
+    ? executionState
+    : {};
+  if (!Array.isArray(state.pendingUserPrompts)) {
+    state.pendingUserPrompts = [];
+  }
+  return state;
+}
+
+function enqueueUserPrompt(executionState = null, text = "") {
+  const state = ensurePendingUserPrompts(executionState);
+  const value = String(text || "").trim();
+  if (!value) {
+    return { ok: false, enqueued: false, reason: "empty", executionState: state };
+  }
+  state.pendingUserPrompts.push({
+    text: value,
+    at: new Date().toISOString(),
+  });
+  return {
+    ok: true,
+    enqueued: true,
+    count: state.pendingUserPrompts.length,
+    executionState: state,
+  };
+}
+
+/**
+ * Atomically take all pending prompts and clear the queue.
+ * @returns {string[]}
+ */
+function drainUserPrompts(executionState = null) {
+  const state = ensurePendingUserPrompts(executionState);
+  if (state.pendingUserPrompts.length === 0) return [];
+  const texts = state.pendingUserPrompts.map((entry) => String(entry.text || "").trim()).filter(Boolean);
+  state.pendingUserPrompts = [];
+  return texts;
+}
+
+function clearUserPrompts(executionState = null) {
+  const state = ensurePendingUserPrompts(executionState);
+  state.pendingUserPrompts = [];
+  return state;
+}
+
+function hasPendingUserPrompts(executionState = null) {
+  const state = ensurePendingUserPrompts(executionState);
+  return state.pendingUserPrompts.length > 0;
+}
+
+function shouldFrameAsUserReminder(executionState = null) {
+  if (!executionState || typeof executionState !== "object") return false;
+  if (executionState.planMode === true) return true;
+  const waiting = executionState.planGraph && executionState.planGraph.waitingFor;
+  return Boolean(waiting && waiting.id);
+}
+
+function formatUserReminderMessage(texts = [], { waitingFor = null } = {}) {
+  const lines = Array.isArray(texts)
+    ? texts.map((t) => String(t || "").trim()).filter(Boolean)
+    : [String(texts || "").trim()].filter(Boolean);
+  if (lines.length === 0) return "";
+
+  const parts = ["User reminder (additional prompt):"];
+  if (lines.length === 1) {
+    parts.push(lines[0]);
+  } else {
+    lines.forEach((line, index) => {
+      parts.push(`${index + 1}. ${line}`);
+    });
+  }
+  if (waitingFor && waitingFor.id) {
+    const label = waitingFor.title || waitingFor.objective || waitingFor.reason || waitingFor.id;
+    parts.push(
+      `Prefer serving the current waiting ${waitingFor.type || "node"}: ${waitingFor.id}`
+        + (label && label !== waitingFor.id ? ` — ${label}` : "")
+        + ". Do not start an unrelated objective.",
+    );
+  }
+  return parts.join("\n");
+}
+
+/**
+ * Idle + plan waiting: wrap a new user message as continuation reminder.
+ */
+function buildContinuationUserPrompt(userText = "", executionState = null) {
+  const text = String(userText || "").trim();
+  if (!text) return "";
+  const waiting = executionState
+    && executionState.planGraph
+    && executionState.planGraph.waitingFor
+    ? executionState.planGraph.waitingFor
+    : null;
+  return formatUserReminderMessage([text], { waitingFor: waiting });
+}
+
+module.exports = {
+  ensurePendingUserPrompts,
+  enqueueUserPrompt,
+  drainUserPrompts,
+  clearUserPrompts,
+  hasPendingUserPrompts,
+  shouldFrameAsUserReminder,
+  formatUserReminderMessage,
+  buildContinuationUserPrompt,
+};

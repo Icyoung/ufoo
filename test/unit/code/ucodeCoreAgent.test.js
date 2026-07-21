@@ -64,17 +64,8 @@ const {
 } = require("../../../src/code/agent");
 
 describe("ucode core agent nl path", () => {
-  const originalV2 = process.env.UFOO_UCODE_CONTEXT_V2;
-
   beforeEach(() => {
-    // Core agent regression suite pins v1 wire format (skill tags, nlMessages).
-    process.env.UFOO_UCODE_CONTEXT_V2 = "0";
     jest.clearAllMocks();
-  });
-
-  afterEach(() => {
-    if (originalV2 === undefined) delete process.env.UFOO_UCODE_CONTEXT_V2;
-    else process.env.UFOO_UCODE_CONTEXT_V2 = originalV2;
   });
 
   test("runSingleCommand routes free-form text to nl task path", () => {
@@ -233,6 +224,41 @@ describe("ucode core agent nl path", () => {
     expect(state.sessionId).toBe("sess-1");
   });
 
+  test("plan-mode idle message is framed as user reminder without overwriting contract", async () => {
+      const { emptyExecutionState } = require("../../../src/code/context/executionSegment");
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-nudge-idle-"));
+      const state = {
+        workspaceRoot: root,
+        provider: "openai",
+        model: "gpt-test",
+        sessionId: "sess-nudge",
+        executionState: emptyExecutionState(),
+        taskContract: {
+          objective: "original objective",
+          constraints: ["keep original"],
+        },
+      };
+      state.executionState.planMode = true;
+      state.executionState.planGraph.waitingFor = {
+        id: "inspect",
+        type: "task",
+        title: "Locate code",
+      };
+
+      const result = await runNaturalLanguageTask("please avoid rewriting docs", state, {
+        disableDecomposition: true,
+      });
+      expect(result.ok).toBe(true);
+      expect(runNativeAgentTask).toHaveBeenCalledTimes(1);
+      const prompt = runNativeAgentTask.mock.calls[0][0].prompt;
+      expect(prompt).toMatch(/User reminder \(additional prompt\):/);
+      expect(prompt).toContain("please avoid rewriting docs");
+      expect(prompt).toMatch(/waiting task: inspect/);
+      expect(state.taskContract.objective).toBe("original objective");
+      expect(state.taskContract.constraints).toEqual(["keep original"]);
+      fs.rmSync(root, { recursive: true, force: true });
+  });
+
   test("buildNlContext includes skills metadata without full body", () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-context-"));
     const oldHome = process.env.HOME;
@@ -306,14 +332,18 @@ describe("ucode core agent nl path", () => {
       const result = await runNaturalLanguageTask("use $demo to inspect this", state);
 
       expect(result.ok).toBe(true);
-      const prompt = runNativeAgentTask.mock.calls[0][0].prompt;
-      expect(prompt).toContain("<skill>");
-      expect(prompt).toContain("<name>demo</name>");
-      expect(prompt).toContain("Demo body");
-      expect((prompt.match(/<skill>/g) || []).length).toBe(1);
+      const call = runNativeAgentTask.mock.calls[0][0];
+      expect(call.prompt).not.toContain("<skill>");
+      expect(call.prompt).not.toContain("Demo body");
+      expect(call.prompt).toContain("use $demo to inspect this");
+      expect(call.systemPrompt).toContain("<active_skill>");
+      expect(call.systemPrompt).toContain("<name>demo</name>");
+      expect(call.systemPrompt).toContain("Demo body");
+      expect((call.systemPrompt.match(/<active_skill>/g) || []).length).toBe(1);
       const persisted = JSON.stringify(state.nlMessages);
       expect(persisted).toContain("use $demo to inspect this");
       expect(persisted).not.toContain("<skill>");
+      expect(persisted).not.toContain("<active_skill>");
       expect(persisted).not.toContain("Demo body");
     } finally {
       if (oldHome === undefined) delete process.env.HOME;
@@ -364,9 +394,10 @@ describe("ucode core agent nl path", () => {
       expect(result.ok).toBe(true);
       expect(runNativeAgentTask).toHaveBeenCalledTimes(4);
       for (const call of runNativeAgentTask.mock.calls) {
-        expect(call[0].prompt).toContain("<skill>");
-        expect(call[0].prompt).toContain("<name>demo</name>");
-        expect(call[0].prompt).toContain("Demo body");
+        const sys = String(call[0].systemPrompt || "") + JSON.stringify(call[0].systemBlocks || []);
+        expect(sys).toMatch(/Demo body|<active_skill>|<skill>/);
+        expect(call[0].prompt).not.toContain("<skill>");
+        expect(call[0].prompt).not.toContain("Demo body");
       }
       expect(JSON.stringify(state.nlMessages || [])).not.toContain("<skill>");
       expect(JSON.stringify(state.nlMessages || [])).not.toContain("Demo body");
@@ -408,9 +439,7 @@ describe("ucode core agent nl path", () => {
     expect(JSON.stringify(messages)).not.toContain("<active_skill>");
   });
 
-  test("context v2 injects active skill once in system turnDynamic only", async () => {
-    const prev = process.env.UFOO_UCODE_CONTEXT_V2;
-    process.env.UFOO_UCODE_CONTEXT_V2 = "1";
+  test("injects active skill once in system turnDynamic only", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-v2-skill-once-"));
     const oldHome = process.env.HOME;
     const oldCodexHome = process.env.CODEX_HOME;
@@ -461,8 +490,6 @@ describe("ucode core agent nl path", () => {
       expect(persisted).not.toContain("<skill>");
       expect(persisted).not.toContain("Demo body once");
     } finally {
-      if (prev === undefined) delete process.env.UFOO_UCODE_CONTEXT_V2;
-      else process.env.UFOO_UCODE_CONTEXT_V2 = prev;
       if (oldHome === undefined) delete process.env.HOME;
       else process.env.HOME = oldHome;
       if (oldCodexHome === undefined) delete process.env.CODEX_HOME;
@@ -535,6 +562,7 @@ describe("ucode core agent nl path", () => {
   });
 
   test("runNaturalLanguageTask persists native message history across turns", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-history-"));
     runNativeAgentTask.mockImplementation(async (params) => {
       const prior = Array.isArray(params.messages) ? params.messages.slice() : [];
       return {
@@ -550,11 +578,11 @@ describe("ucode core agent nl path", () => {
     });
 
     const state = {
-      workspaceRoot: process.cwd(),
+      workspaceRoot: root,
       provider: "openai",
       model: "gpt-5.2-codex",
       context: "",
-      sessionId: "",
+      sessionId: "sess-history",
       timeoutMs: 30000,
     };
 
@@ -581,6 +609,7 @@ describe("ucode core agent nl path", () => {
       { role: "user", content: "second question" },
       { role: "assistant", content: "ack:second question" },
     ]);
+    fs.rmSync(root, { recursive: true, force: true });
   });
 
   test("runNaturalLanguageTask captures core tool logs from cli tool events", async () => {

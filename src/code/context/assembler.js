@@ -1,6 +1,5 @@
 "use strict";
 
-const { isContextV2Enabled } = require("./featureFlag");
 const {
   loadTranscript,
   transcriptEventsToMessages,
@@ -33,6 +32,8 @@ const {
   pruneWorkingSetByRetention,
 } = require("./workingSet");
 const { renderExecutionSegmentContext } = require("./executionSegment");
+const { renderPlanModeContext } = require("./planMode");
+const { drainAgentMailboxForTurn } = require("../runtime/agentWakeup");
 
 const DEFAULT_TRANSCRIPT_WINDOW = 12;
 const DEFAULT_RECENT_TOOL_EVENTS = 4;
@@ -47,7 +48,6 @@ function defaultContextPolicy(env = process.env) {
   return {
     transcriptWindow: resolveTranscriptWindow(env),
     commitInterval: resolveCommitInterval(env),
-    v2: isContextV2Enabled(env),
   };
 }
 
@@ -342,11 +342,11 @@ function buildModelMessagesFromTranscript(transcriptEvents = [], session = {}, w
 }
 
 function buildRecentMessages(transcriptEvents = [], windowSize = DEFAULT_TRANSCRIPT_WINDOW, session = null) {
-  if (session && isContextV2Enabled()) {
+  if (session) {
     return buildModelMessagesFromTranscript(transcriptEvents, session, windowSize);
   }
   const recent = eventsSliceWindow(transcriptEvents, windowSize);
-  return recent.map((event) => eventToModelMessage(event, { preferArtifact: isContextV2Enabled() })).filter(Boolean);
+  return recent.map((event) => eventToModelMessage(event, { preferArtifact: true })).filter(Boolean);
 }
 
 function eventsSliceWindow(events = [], windowSize = DEFAULT_TRANSCRIPT_WINDOW) {
@@ -397,6 +397,16 @@ function assembleModelContext(session = {}, request = {}, env = process.env) {
     ].filter(Boolean).join("\n\n"),
     turnDynamic: [
       request.turnDynamic || "",
+      (() => {
+        try {
+          const { MAX_CONCURRENT_WRITE_LEASES } = require("../runtime/workspaceLease");
+          return `Current max concurrent writing TaskRuns: ${MAX_CONCURRENT_WRITE_LEASES}`;
+        } catch {
+          return "";
+        }
+      })(),
+      renderPlanModeContext(session.executionState),
+      drainAgentMailboxForTurn(session.executionState).text,
       renderProjectSnapshotContext(session.projectSnapshot),
       renderWorkingSetContext(session.workingSet, session),
       renderExecutionSegmentContext(session.executionState),
@@ -541,7 +551,7 @@ function syncMessagesToTranscript(session = {}, messages = [], workspaceRoot = p
     : null;
   if (baseline == null) {
     const existingMessages = transcriptEventsToMessages(prior, {
-      preferArtifact: isContextV2Enabled(),
+      preferArtifact: true,
     });
     baseline = matchTranscriptBaseline(existingMessages, full);
   }
@@ -549,7 +559,7 @@ function syncMessagesToTranscript(session = {}, messages = [], workspaceRoot = p
 
   if (full.length <= baseline) {
     session.nlMessages = transcriptEventsToMessages(session.transcriptEvents, {
-      preferArtifact: isContextV2Enabled(),
+      preferArtifact: true,
     });
     return session.transcriptEvents || prior;
   }
@@ -560,15 +570,10 @@ function syncMessagesToTranscript(session = {}, messages = [], workspaceRoot = p
       ? session.executionState.currentSegmentId
       : "",
   };
-  if (isContextV2Enabled()) {
-    appendTranscriptMessagesForStorage(workspaceRoot, sessionId, delta, extra);
-  } else {
-    const { appendTranscriptMessages } = require("./transcript");
-    appendTranscriptMessages(workspaceRoot, sessionId, delta, extra);
-  }
+  appendTranscriptMessagesForStorage(workspaceRoot, sessionId, delta, extra);
   session.transcriptEvents = loadTranscript(workspaceRoot, sessionId).events;
   session.nlMessages = transcriptEventsToMessages(session.transcriptEvents, {
-    preferArtifact: isContextV2Enabled(),
+    preferArtifact: true,
   });
   session.summary = buildRollingSummary(session.transcriptEvents, session.summary, session);
   return session.transcriptEvents;

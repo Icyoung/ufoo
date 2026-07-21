@@ -195,4 +195,5 @@ module.exports = {
   readSkillBlock,
   persistSkillBodyArtifact,
   buildSkillInjections,
+  sanitizeSkillContent,
 };

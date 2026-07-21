@@ -194,6 +194,7 @@ describe("buildCompletions", () => {
       "/help",
       "/status",
       "/model",
+      "/plan",
       "/ubus",
       "/resume",
       "/skills",

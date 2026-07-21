@@ -12,17 +12,12 @@ const {
 
 describe("ucode session store", () => {
   let workspaceRoot = "";
-  const originalV2 = process.env.UFOO_UCODE_CONTEXT_V2;
 
   beforeEach(() => {
     workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-session-"));
-    // Keep legacy v1 assertions unless a test enables v2 explicitly.
-    process.env.UFOO_UCODE_CONTEXT_V2 = "0";
   });
 
   afterEach(() => {
-    if (originalV2 === undefined) delete process.env.UFOO_UCODE_CONTEXT_V2;
-    else process.env.UFOO_UCODE_CONTEXT_V2 = originalV2;
     try {
       fs.rmSync(workspaceRoot, { recursive: true, force: true });
     } catch {
@@ -69,23 +64,16 @@ describe("ucode session store", () => {
     }));
   });
 
-  test("v2 snapshot externalizes transcript when context v2 enabled", () => {
-    const prev = process.env.UFOO_UCODE_CONTEXT_V2;
-    process.env.UFOO_UCODE_CONTEXT_V2 = "1";
-    try {
-      const saved = saveSessionSnapshot(workspaceRoot, {
-        sessionId: "sess-v2-local",
-        workspaceRoot,
-        nlMessages: [{ role: "user", content: "hello" }],
-      });
-      expect(saved.ok).toBe(true);
-      const raw = JSON.parse(fs.readFileSync(saved.filePath, "utf8"));
-      expect(raw.version).toBe(2);
-      expect(raw.transcript.path).toContain("sess-v2-local.jsonl");
-    } finally {
-      if (prev === undefined) delete process.env.UFOO_UCODE_CONTEXT_V2;
-      else process.env.UFOO_UCODE_CONTEXT_V2 = prev;
-    }
+  test("snapshot externalizes transcript on disk", () => {
+    const saved = saveSessionSnapshot(workspaceRoot, {
+      sessionId: "sess-v2-local",
+      workspaceRoot,
+      nlMessages: [{ role: "user", content: "hello" }],
+    });
+    expect(saved.ok).toBe(true);
+    const raw = JSON.parse(fs.readFileSync(saved.filePath, "utf8"));
+    expect(raw.version).toBe(2);
+    expect(raw.transcript.path).toContain("sess-v2-local.jsonl");
   });
 
   test("load returns not found for unknown session", () => {

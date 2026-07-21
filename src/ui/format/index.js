@@ -129,7 +129,16 @@ function normalizeModelLabel(model = "") {
   return "default";
 }
 
-function buildUcodeBannerLines({ model = "", engine = "ufoo-core", nickname = "", agentId = "", workspaceRoot = "", sessionId = "", width = 0 } = {}) {
+function buildUcodeBannerLines({
+  model = "",
+  engine = "ufoo-core",
+  nickname = "",
+  agentId = "",
+  workspaceRoot = "",
+  sessionId = "",
+  width = 0,
+  planMode = false,
+} = {}) {
   const modelLabel = normalizeModelLabel(model);
   void width;
   void engine;
@@ -151,6 +160,9 @@ function buildUcodeBannerLines({ model = "", engine = "ufoo-core", nickname = ""
   const infoLines = [];
   infoLines.push(`${chalk.dim("Version:")} ${chalk.cyan.bold(UCODE_VERSION)}`);
   infoLines.push(`${chalk.dim("Model:")} ${chalk.yellow(modelLabel)}`);
+  if (planMode) {
+    infoLines.push(`${chalk.dim("Mode:")} ${chalk.magenta.bold("PLAN")}`);
+  }
   infoLines.push(`${chalk.dim("Dictionary:")} ${chalk.gray(shortPath)}`);
   const normalizedSessionId = String(sessionId || "").trim();
   if (normalizedSessionId) {
@@ -252,6 +264,16 @@ function renderLogLinesWithMarkdown(text = "", state = {}, escapeFn = (value) =>
 function renderLogLinesWithMarkdownAnsi(text = "", state = {}) {
   const { renderMarkdownLinesAnsi } = require("./markdownRenderer");
   return renderMarkdownLinesAnsi(text, state);
+}
+
+function createMarkdownTableBuffer() {
+  const { createMarkdownTableBuffer: create } = require("./markdownRenderer");
+  return create();
+}
+
+function isTableRowLine(line = "") {
+  const { isTableRowLine: check } = require("./markdownRenderer");
+  return check(line);
 }
 
 function messageContentText(message = {}) {
@@ -1233,6 +1255,8 @@ module.exports = {
   planProjectsRail,
   renderLogLinesWithMarkdown,
   renderLogLinesWithMarkdownAnsi,
+  createMarkdownTableBuffer,
+  isTableRowLine,
   resolveAgentSelectionOnDown,
   resolveHistoryDownTransition,
   shouldClearAgentSelectionOnUp,

@@ -4,8 +4,34 @@
  */
 
 const { runNativeAgentTask } = require("./nativeRunner");
-const { isContextV2Enabled } = require("./context/featureFlag");
 const { assembleModelContext, recordToolCallInSession } = require("./context/assembler");
+const fs = require("fs");
+const {
+  buildSkillManifest,
+  renderActiveSkillBlock,
+} = require("./skills");
+const { sanitizeSkillContent } = require("./skills/injection");
+
+function renderActiveSkillBodiesFromState(state = {}) {
+  const skills = Array.isArray(state.activeSkills) ? state.activeSkills : [];
+  const blocks = [];
+  for (const skill of skills) {
+    const skillPath = String(skill && skill.path || "").trim();
+    if (!skillPath) continue;
+    try {
+      const raw = fs.readFileSync(skillPath, "utf8");
+      const content = sanitizeSkillContent(raw);
+      const manifest = buildSkillManifest({
+        name: skill.name || "",
+        path: skillPath,
+      }, { bodyArtifactId: skill.bodyArtifactId || "" });
+      blocks.push(renderActiveSkillBlock(manifest, content));
+    } catch {
+      // ignore missing skill bodies
+    }
+  }
+  return blocks;
+}
 
 /**
  * Decompose a bug fix task into manageable steps
@@ -135,13 +161,11 @@ async function runDecomposedTask({
   messages = [],
   sessionId = "",
   state = null,
-  contextV2 = false,
   systemBlocks = null,
 }) {
   const steps = decomposeBugFixTask(task);
   const results = [];
   let aborted = false;
-  const useV2 = Boolean(contextV2 || isContextV2Enabled());
 
   // Check if already aborted
   if (signal && signal.aborted) {
@@ -174,12 +198,13 @@ async function runDecomposedTask({
       let stepMessages = messages;
       let stepSystemPrompt = systemPrompt;
       let stepSystemBlocks = systemBlocks;
-      if (useV2 && state) {
+      if (state) {
+        const skillBodies = renderActiveSkillBodiesFromState(state);
         const assembled = assembleModelContext(state, {
           workspaceRoot,
           model,
           provider,
-          turnDynamic: stepPrompt,
+          turnDynamic: [...skillBodies, stepPrompt].filter(Boolean).join("\n\n"),
         });
         stepMessages = assembled.messages;
         stepSystemPrompt = assembled.systemPrompt;
@@ -197,13 +222,12 @@ async function runDecomposedTask({
         timeoutMs: step.timeoutMs,
         onToolEvent,
         signal,
-        contextV2: useV2,
-        onArtifactPersisted: useV2 && state
+        onArtifactPersisted: state
           ? (persisted) => recordToolCallInSession(state, persisted, workspaceRoot)
           : null,
       });
 
-      if (useV2 && state && stepResult && Array.isArray(stepResult.messages)) {
+      if (state && stepResult && Array.isArray(stepResult.messages)) {
         const { syncMessagesToTranscript } = require("./context/assembler");
         syncMessagesToTranscript(state, stepResult.messages, workspaceRoot);
       }

@@ -1,7 +1,6 @@
 const fs = require("fs");
 const path = require("path");
 const { randomUUID } = require("crypto");
-const { isContextV2Enabled } = require("./context/featureFlag");
 const {
   getTranscriptsDir,
   getTranscriptFilePath,
@@ -72,7 +71,6 @@ function buildSessionSnapshot(input = {}) {
   const source = input && typeof input === "object" ? input : {};
   const sessionId = resolveSessionId(source.sessionId);
   const createdAt = String(source.createdAt || "").trim() || toIsoNow();
-  const useV2 = isContextV2Enabled() || Number(source.version) >= 2;
 
   const base = {
     sessionId,
@@ -83,14 +81,6 @@ function buildSessionSnapshot(input = {}) {
     createdAt,
     updatedAt: toIsoNow(),
   };
-
-  if (!useV2) {
-    return {
-      version: 1,
-      ...base,
-      nlMessages: cloneMessages(source.nlMessages),
-    };
-  }
 
   return {
     version: 2,

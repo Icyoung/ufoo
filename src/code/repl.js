@@ -24,17 +24,24 @@ const {
 const { summarizeSessionUsage, formatSessionUsageStatus } = require("./usageStore");
 const { listUcodeCommandsForHelp } = require("./commands");
 const { applyUcodeModelCommand, suggestUcodeModels } = require("./modelCommand");
+const { applyUcodePlanCommand } = require("./context/planMode");
 
 function printPrompt(stdout = process.stdout) {
   stdout.write("> ");
 }
 
-function printUcodeBanner(stdout = process.stdout, { model = "", workspaceRoot = process.cwd(), sessionId = "" } = {}) {
+function printUcodeBanner(stdout = process.stdout, {
+  model = "",
+  workspaceRoot = process.cwd(),
+  sessionId = "",
+  planMode = false,
+} = {}) {
   stdout.write(`${buildUcodeBannerLines({
     model,
     engine: "ufoo-core",
     workspaceRoot,
     sessionId,
+    planMode,
     width: (stdout && stdout.columns) || 0,
   }).join("\n")}\n`);
 }
@@ -121,6 +128,22 @@ function runSingleCommand(line = "", workspaceRoot = process.cwd()) {
       kind: "model",
       action: "set",
       model: nextModel,
+    };
+  }
+  const planMatch = text.match(/^(?:\/plan|plan)(?:\s+(.*))?$/i);
+  if (planMatch) {
+    const arg = String(planMatch[1] || "").trim().toLowerCase();
+    if (!arg || arg === "show" || arg === "status") return { kind: "plan", action: "show" };
+    if (arg === "on" || arg === "enable") return { kind: "plan", action: "on" };
+    if (arg === "off" || arg === "disable") return { kind: "plan", action: "off" };
+    if (arg === "clear") return { kind: "plan", action: "clear" };
+    if (arg === "hide") return { kind: "plan", action: "hide" };
+    if (arg === "focus") return { kind: "plan", action: "focus" };
+    if (arg === "debug") return { kind: "plan", action: "debug" };
+    if (arg === "toggle") return { kind: "plan", action: "toggle" };
+    return {
+      kind: "error",
+      output: "usage: /plan [on|off|show|hide|focus|debug|clear]",
     };
   }
   const skillsMatch = text.match(/^(?:\/skills|skills)(?:\s+(.*))?$/i);
@@ -259,6 +282,7 @@ async function runUcodeCoreAgent({
     resolveNlTaskTimeoutMs,
     resolveUcodeProviderModel,
     runNaturalLanguageTask,
+    resumeAfterUserInteraction,
   } = require("./agent");
   const resolvedWorkspaceRoot = resolveUfooProjectRoot(workspaceRoot);
   const resolvedUcode = resolveUcodeProviderModel({
@@ -315,6 +339,7 @@ async function runUcodeCoreAgent({
     model: state.model || "default",
     workspaceRoot: workspaceRoot,
     sessionId: state.sessionId,
+    planMode: Boolean(state.executionState && state.executionState.planMode),
   });
   printPrompt(stdout);
   const rl = readline.createInterface({
@@ -333,6 +358,7 @@ async function runUcodeCoreAgent({
     let autoBusQueued = false;
     let autoBusError = "";
     let closing = false;
+    let taskInFlight = false;
 
     const runAutoBusOnce = async () => {
       if (!autoBusEnabled || closing) return;
@@ -433,6 +459,10 @@ async function runUcodeCoreAgent({
           sessionId: state.sessionId,
         });
         stdout.write(`${formatSessionUsageStatus(usageSummary)}\n`);
+        const { formatPlanModeStatus } = require("./context/planMode");
+        if (state.executionState) {
+          stdout.write(`${formatPlanModeStatus(state.executionState).split("\n").slice(0, 5).join("\n")}\n`);
+        }
       }
       if (result.kind === "model") {
         const applied = applyUcodeModelCommand(state, result);
@@ -440,6 +470,11 @@ async function runUcodeCoreAgent({
         if (applied.ok && result.action === "set") {
           persistSessionState(state);
         }
+      }
+      if (result.kind === "plan") {
+        const applied = applyUcodePlanCommand(state, result);
+        stdout.write(`${applied.output}\n`);
+        if (applied.ok) persistSessionState(state);
       }
       if (result.kind === "ubus") {
         const ubusResult = await runUbusCommand(state, {
@@ -488,23 +523,29 @@ async function runUcodeCoreAgent({
           });
         }
 
-        const nlResult = await runNaturalLanguageTask(result.task, state, {
-          onDelta: state.jsonOutput
-            ? null
-            : async (delta) => {
-              const text = escapeStripper.write(String(delta || ""));
-              const safeText = stripBlessedTags(stripLeakedEscapeTags(text));
-              if (!safeText) return;
-              if (/[^\s]/.test(safeText)) {
-                streamedVisible = true;
-              }
-              if (streamBuffer) {
-                await streamBuffer.write(safeText);
-              } else {
-                stdout.write(safeText);
-              }
-            },
-        });
+        taskInFlight = true;
+        let nlResult;
+        try {
+          nlResult = await runNaturalLanguageTask(result.task, state, {
+            onDelta: state.jsonOutput
+              ? null
+              : async (delta) => {
+                const text = escapeStripper.write(String(delta || ""));
+                const safeText = stripBlessedTags(stripLeakedEscapeTags(text));
+                if (!safeText) return;
+                if (/[^\s]/.test(safeText)) {
+                  streamedVisible = true;
+                }
+                if (streamBuffer) {
+                  await streamBuffer.write(safeText);
+                } else {
+                  stdout.write(safeText);
+                }
+              },
+          });
+        } finally {
+          taskInFlight = false;
+        }
 
         if (!state.jsonOutput) {
           const tail = escapeStripper.flush();
@@ -547,6 +588,106 @@ async function runUcodeCoreAgent({
     };
 
     rl.on("line", (line) => {
+      const trimmed = normalizeLine(line);
+
+      // Pending approval/choice/chat takes priority over nudge / new NL.
+      try {
+        const {
+          hasPendingUserInteraction,
+          parseUserInteractionInput,
+          getPendingUserInteraction,
+        } = require("./context/userInteraction");
+        if (
+          trimmed
+          && state.executionState
+          && hasPendingUserInteraction(state.executionState)
+        ) {
+          const pending = getPendingUserInteraction(state.executionState);
+          const parsed = parseUserInteractionInput(pending, trimmed);
+          if (!parsed.ok) {
+            stdout.write(`${parsed.error || "Invalid reply"}\n`);
+            printPrompt(stdout);
+            return;
+          }
+          chain = chain.then(async () => {
+            let streamBuffer = null;
+            let streamedVisible = false;
+            const escapeStripper = createEscapeTagStripper();
+            if (!state.jsonOutput) {
+              streamBuffer = new StreamBuffer(stdout.write.bind(stdout), {
+                delay: 10,
+                chunkSize: 4,
+              });
+            }
+            taskInFlight = true;
+            let resumeResult;
+            try {
+              resumeResult = await resumeAfterUserInteraction(trimmed, state, {
+                onDelta: state.jsonOutput
+                  ? null
+                  : async (delta) => {
+                    const text = escapeStripper.write(String(delta || ""));
+                    const safeText = stripBlessedTags(stripLeakedEscapeTags(text));
+                    if (!safeText) return;
+                    if (/[^\s]/.test(safeText)) {
+                      streamedVisible = true;
+                    }
+                    if (streamBuffer) {
+                      await streamBuffer.write(safeText);
+                    } else {
+                      stdout.write(safeText);
+                    }
+                  },
+              });
+            } finally {
+              taskInFlight = false;
+            }
+            if (streamBuffer) {
+              await streamBuffer.finish();
+            }
+            const streamed = !state.jsonOutput && Boolean(resumeResult && resumeResult.streamed);
+            if (streamed && streamedVisible && resumeResult && resumeResult.streamLastChar !== "\n") {
+              stdout.write("\n");
+            }
+            if (resumeResult && resumeResult.waitingUserInteraction) {
+              stdout.write("Still waiting for your reply.\n");
+            } else if (!resumeResult || resumeResult.ok === false) {
+              stdout.write(`Error: ${(resumeResult && resumeResult.error) || "resume failed"}\n`);
+            } else {
+              const shouldSkipSummary = Boolean(streamed && resumeResult.ok && streamedVisible);
+              if (!shouldSkipSummary && resumeResult.summary) {
+                stdout.write(`${resumeResult.summary}\n`);
+              }
+            }
+            const persisted = persistSessionState(state);
+            if (!state.jsonOutput && (!persisted || persisted.ok === false)) {
+              stdout.write(`Warning: failed to persist session ${state.sessionId}: ${(persisted && persisted.error) || "unknown error"}\n`);
+            }
+            printPrompt(stdout);
+          }).catch((err) => {
+            stdout.write(`${JSON.stringify({ ok: false, error: err && err.message ? err.message : "resume failed" })}\n`);
+            printPrompt(stdout);
+          });
+          return;
+        }
+      } catch (err) {
+        stdout.write(`Error: ${err && err.message ? err.message : "interaction failed"}\n`);
+        printPrompt(stdout);
+        return;
+      }
+
+      // Mid-task NL input becomes a pending user reminder for the next LLM turn.
+      if (taskInFlight && trimmed && !/^\//.test(trimmed)) {
+        const { enqueueUserPrompt } = require("./context/userNudge");
+        const { emptyExecutionState } = require("./context/executionSegment");
+        if (!state.executionState || typeof state.executionState !== "object") {
+          state.executionState = emptyExecutionState();
+        }
+        enqueueUserPrompt(state.executionState, trimmed);
+        stdout.write("Queued user reminder for next model turn.\n");
+        printPrompt(stdout);
+        return;
+      }
       chain = chain.then(() => handleLine(line)).catch((err) => {
         stdout.write(`${JSON.stringify({ ok: false, error: err && err.message ? err.message : "agent loop failed" })}\n`);
         printPrompt(stdout);
@@ -640,5 +781,6 @@ module.exports = {
   parseAgentArgs,
   formatSessionUsageStatus,
   applyUcodeModelCommand,
+  applyUcodePlanCommand,
   suggestUcodeModels,
 };

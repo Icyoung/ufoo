@@ -6,7 +6,6 @@ const {
 } = require("../agents/providers/credentials/kimi");
 const { runToolCall } = require("./dispatch");
 const { appendUsageRecord } = require("./usageStore");
-const { isContextV2Enabled } = require("./context/featureFlag");
 const {
   persistToolResultToContext,
   sanitizeModelMessages,
@@ -14,18 +13,43 @@ const {
 const { systemBlocksToAnthropicPayload } = require("./context/promptLayers");
 const { parseStructuredSideEffects } = require("./context/stateCommit");
 const {
-  parseExecutionSegment,
-  executeExecutionSegment,
-  formatSegmentResultMessage,
   emptyExecutionState,
 } = require("./context/executionSegment");
+const {
+  normalizePlanGraphCommand,
+  runPlanGraphCommand,
+  activePlanRequiresExpansion,
+} = require("./context/planGraphService");
+const { planModeBlocksDirectTool } = require("./context/planMode");
+const {
+  drainUserPrompts,
+  clearUserPrompts,
+  formatUserReminderMessage,
+  ensurePendingUserPrompts,
+} = require("./context/userNudge");
+const {
+  runAskUserTool,
+  syncInteractionFromPlanGraph,
+  hasPendingUserInteraction,
+  getPendingUserInteraction,
+} = require("./context/userInteraction");
+const { checkWriteAllowed } = require("./runtime/workspaceLease");
 const { stableStringify } = require("./context/stableJson");
 const { getReadToolDescription } = require("../agents/prompts/native/toolDescriptions/read");
 const { getWriteToolDescription } = require("../agents/prompts/native/toolDescriptions/write");
 const { getEditToolDescription } = require("../agents/prompts/native/toolDescriptions/edit");
 const { getBashToolDescription } = require("../agents/prompts/native/toolDescriptions/bash");
 
-const CORE_TOOL_NAMES = new Set(["read", "write", "edit", "bash", "artifact_read"]);
+const CORE_TOOL_NAMES = new Set([
+  "read",
+  "write",
+  "edit",
+  "bash",
+  "artifact_read",
+  "plan_graph",
+  "ask_user",
+]);
+const EXECUTABLE_GRAPH_TOOLS = new Set(["read", "write", "edit", "bash", "artifact_read"]);
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1";
 const DEFAULT_KIMI_BASE_URL = "https://api.kimi.com/coding/v1";
@@ -184,7 +208,9 @@ function createGuards({ signal = null, timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS } =
 function emitToolEvent(callback, event = {}) {
   if (typeof callback !== "function") return;
   try {
-    callback(event);
+    const payload = event && typeof event === "object" ? { ...event } : {};
+    if (payload.origin == null) delete payload.origin;
+    callback(payload);
   } catch {
     // ignore callback failures
   }
@@ -383,7 +409,11 @@ function buildCoreToolSpecs() {
       type: "function",
       function: {
         name: "artifact_read",
-        description: "Load a stored artifact by artifactId. Use selectors startLine/endLine, maxChars, or tailLines to read a slice.",
+        description: [
+          "Read previously stored tool output by artifactId.",
+          "This does not read workspace files; use `read` for repository paths.",
+          "Optionally read a slice with startLine/endLine, maxChars, or tailLines.",
+        ].join(" "),
         parameters: {
           type: "object",
           properties: {
@@ -395,6 +425,128 @@ function buildCoreToolSpecs() {
             tailLines: { type: "integer" },
           },
           required: ["artifactId"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "plan_graph",
+        description: [
+          "Manage the persistent Plan Graph and asynchronous TaskRuns.",
+          "Use create, patch, inspect, or cancel_graph for graph operations, and control for TaskRun lifecycle.",
+          "`control.start_task` starts a `task_loop` asynchronously and returns immediately.",
+          "Use `inline_llm` for work handled by the current graph owner,",
+          "`expand` for tasks that must be lowered into child nodes,",
+          "and `task_loop` for asynchronous work in an independent TaskLoop.",
+          "Do not call `plan_graph` together with data-plane tools in the same assistant turn.",
+        ].join(" "),
+        parameters: {
+          type: "object",
+          properties: {
+            operation: {
+              type: "string",
+              enum: [
+                "create",
+                "patch",
+                "inspect",
+                "clear",
+                "cancel_graph",
+                "control",
+              ],
+              description: [
+                "create/patch/inspect/cancel_graph mutate or inspect the graph spec;",
+                "control runs TaskRun lifecycle and node status actions.",
+              ].join(" "),
+            },
+            graph: {
+              type: "object",
+              description: "Full graph for create (objective + nodes). group is input sugar only.",
+            },
+            operations: {
+              type: "array",
+              description: [
+                "Patch ops only: add_node, expand_node, add_dependency, remove_dependency.",
+                "Status actions (complete_task, skip_node, cancel_subtree) belong under control.actions.",
+              ].join(" "),
+              items: { type: "object" },
+            },
+            actions: {
+              type: "array",
+              description: [
+                "Control actions: start_task, cancel_task, fail_task, complete_task, skip_node, cancel_subtree.",
+                "complete_task with taskRunId finishes a TaskLoop TaskRun;",
+                "complete_task with nodeId finishes a waiting_llm inline task owned by the graph owner.",
+              ].join(" "),
+              items: { type: "object" },
+            },
+            reason: {
+              type: "string",
+              description: "Optional reason for cancel_graph or fail/cancel task.",
+            },
+            commandId: {
+              type: "string",
+              description: [
+                "Optional idempotency key for explicit replay.",
+                "When omitted, the Runtime should derive one from the tool invocation when available.",
+              ].join(" "),
+            },
+            expectedSpecRevision: {
+              type: "integer",
+              description: "Optional optimistic concurrency token for patch.",
+            },
+            graphId: {
+              type: "string",
+              description: "Optional graph id check for patch/control.",
+            },
+          },
+          required: ["operation"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "ask_user",
+        description: [
+          "Ask the user for input and pause the current Agent loop until the reply arrives.",
+          "Use only when user input is required to proceed, not for routine updates or decisions the agent can safely make.",
+          "`kind=approval` requests yes/no confirmation; `kind=choice` presents the supplied options; `kind=chat` requests free text.",
+          "This must be the only tool call in the turn.",
+          "The reply is returned only as this tool result, not as a separate user message or pending user prompt.",
+          "After the tool returns, continue from the answer and do not ask the same question again.",
+          "Running TaskRuns are not paused automatically.",
+        ].join(" "),
+        parameters: {
+          type: "object",
+          properties: {
+            kind: {
+              type: "string",
+              enum: ["approval", "choice", "chat"],
+              description: "Interaction type.",
+            },
+            prompt: {
+              type: "string",
+              description: "Question shown to the user.",
+            },
+            options: {
+              type: "array",
+              description: "For choice: option labels (or {key,label} objects). Ignored for chat.",
+              items: {
+                oneOf: [
+                  { type: "string" },
+                  {
+                    type: "object",
+                    properties: {
+                      key: { type: "string" },
+                      label: { type: "string" },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+          required: ["kind", "prompt"],
         },
       },
     },
@@ -526,8 +678,10 @@ function runCoreTool({
   workspaceRoot = process.cwd(),
   onToolEvent = null,
   sessionId = "",
-  contextV2 = false,
   onArtifactPersisted = null,
+  executionState = null,
+  origin = null,
+  resume = null,
 } = {}) {
   const normalizedTool = normalizeToolName(tool);
   if (!normalizedTool) {
@@ -536,6 +690,7 @@ function runCoreTool({
       phase: "error",
       args: args && typeof args === "object" ? { ...args } : {},
       error: `unsupported tool: ${tool}`,
+      origin,
     });
     return {
       ok: false,
@@ -552,7 +707,85 @@ function runCoreTool({
     phase: "start",
     args: safeArgs,
     error: "",
+    origin,
   });
+
+  if (normalizedTool === "plan_graph") {
+    const state = executionState && typeof executionState === "object"
+      ? executionState
+      : emptyExecutionState();
+    const result = runPlanGraphCommand(safeArgs, {
+      executionState: state,
+      autoAdvance: true,
+      parallel: true,
+      runTool: ({ node, args: nestedArgs, tool: nestedTool, stepId }) => {
+        const nested = runCoreTool({
+          tool: nestedTool,
+          args: nestedArgs,
+          workspaceRoot,
+          onToolEvent,
+          sessionId,
+          onArtifactPersisted,
+          executionState: state,
+          origin: {
+            kind: "plan_graph",
+            graphId: String(state.planGraph && state.planGraph.graphId || ""),
+            graphRevision: Number(state.planGraph && state.planGraph.specRevision) || 0,
+            commandRevision: Number(state.planGraph && state.planGraph.specRevision) || 0,
+            nodeId: stepId || (node && node.id) || "",
+            attempt: Number(node && node.attempt) || 0,
+          },
+        });
+        return nested;
+      },
+    });
+    if (result.ok === false) {
+      emitToolEvent(onToolEvent, {
+        tool: "plan_graph",
+        phase: "error",
+        args: safeArgs,
+        error: Array.isArray(result.errors)
+          ? result.errors.map((e) => e.message || e.code).join("; ")
+          : "plan_graph rejected",
+        origin,
+      });
+    } else {
+      syncInteractionFromPlanGraph(result.executionState || state);
+    }
+    return {
+      ...result.modelPayload,
+      ok: result.status === "accepted",
+      executionState: result.executionState || state,
+    };
+  }
+
+  if (normalizedTool === "ask_user") {
+    const state = executionState && typeof executionState === "object"
+      ? executionState
+      : emptyExecutionState();
+    const result = runAskUserTool(safeArgs, {
+      executionState: state,
+      resume: resume || null,
+    });
+    const ok = result.ok !== false && result.status !== "rejected";
+    emitToolEvent(onToolEvent, {
+      tool: "ask_user",
+      phase: ok ? "end" : "error",
+      args: safeArgs,
+      result: result.modelPayload || result,
+      error: ok ? "" : (result.error || "ask_user rejected"),
+      origin,
+    });
+    return {
+      ...(result.modelPayload || result),
+      ok,
+      status: result.status,
+      waiting_user: Boolean(result.waiting_user || result.status === "waiting_user"),
+      interactionId: result.interactionId || "",
+      executionState: result.executionState || state,
+      deferToolResult: ok && result.status === "waiting_user",
+    };
+  }
 
   const toolOptions = { workspaceRoot, cwd: workspaceRoot };
   if (normalizedTool === "artifact_read" && sessionId) {
@@ -569,12 +802,12 @@ function runCoreTool({
       phase: "error",
       args: safeArgs,
       error: String((result && result.error) || `${normalizedTool} failed`),
+      origin,
     });
     return result;
   }
 
-  const useContextV2 = contextV2 || isContextV2Enabled();
-  if (useContextV2 && normalizedTool !== "artifact_read") {
+  if (normalizedTool !== "artifact_read" && EXECUTABLE_GRAPH_TOOLS.has(normalizedTool)) {
     const persisted = persistToolResultToContext({
       workspaceRoot,
       sessionId,
@@ -589,9 +822,14 @@ function runCoreTool({
         // ignore
       }
     }
-    return persisted.modelPayload || result;
+    const payload = persisted.modelPayload || result;
+    if (origin) payload.origin = origin;
+    return payload;
   }
 
+  if (origin && result && typeof result === "object") {
+    return { ...result, origin };
+  }
   return result;
 }
 
@@ -1375,9 +1613,10 @@ async function runNativeLoop({
   onToolEvent = null,
   onArtifactPersisted = null,
   sessionId = "",
-  contextV2 = false,
   signal = null,
   guards,
+  executionState: initialExecutionState = null,
+  resume = false,
 } = {}) {
   const requestModel = String(model || "").trim();
   if (!requestModel) {
@@ -1390,18 +1629,37 @@ async function runNativeLoop({
   }
 
   const messages = sanitizeModelMessages(cloneMessageList(historyMessages));
-  transport.prepareMessages({ messages, systemPrompt, prompt });
+  if (!resume) {
+    transport.prepareMessages({ messages, systemPrompt, prompt });
+  }
 
   let aggregated = "";
   let streamed = false;
   let toolCallsExecuted = 0;
   let toolErrors = 0;
-  let executionState = emptyExecutionState();
+  let executionState = initialExecutionState && typeof initialExecutionState === "object"
+    ? initialExecutionState
+    : emptyExecutionState();
+  if (typeof executionState.planMode !== "boolean") executionState.planMode = false;
+  ensurePendingUserPrompts(executionState);
   const toolBudget = resolveNativeToolBudget();
   const usage = createUsageTotals();
 
+  function injectPendingUserReminders() {
+    const nudges = drainUserPrompts(executionState);
+    if (nudges.length === 0) return;
+    const waiting = executionState.planGraph && executionState.planGraph.waitingFor
+      ? executionState.planGraph.waitingFor
+      : null;
+    const content = formatUserReminderMessage(nudges, { waitingFor: waiting });
+    if (!content) return;
+    messages.push({ role: "user", content });
+  }
+
   while (true) {
     guards.ensureActive();
+
+    injectPendingUserReminders();
 
     const turnResult = await transport.runTurn({
       url: requestUrl,
@@ -1433,31 +1691,33 @@ async function runNativeLoop({
 
     if (toolCalls.length === 0) {
       const text = String(turnResult.text || "").trim();
-      if (contextV2) {
-        const sideEffects = parseStructuredSideEffects(text);
-        const segment = parseExecutionSegment(sideEffects);
-        if (segment && segment.steps && segment.steps.length > 0) {
+      const sideEffects = parseStructuredSideEffects(text);
+      const planCommand = sideEffects ? normalizePlanGraphCommand(sideEffects) : null;
+      if (planCommand) {
           transport.appendFinalAssistantMessage({ messages, turnResult });
-          const exec = executeExecutionSegment({
-            segment,
+          const planResult = runCoreTool({
+            tool: "plan_graph",
+            args: planCommand,
+            workspaceRoot,
+            onToolEvent,
+            sessionId,
+            onArtifactPersisted,
             executionState,
-            runStep: ({ tool, args }) => runCoreTool({
-              tool,
-              args,
-              workspaceRoot,
-              onToolEvent,
-              sessionId,
-              contextV2,
-              onArtifactPersisted,
-            }),
+            origin: { kind: "legacy_side_effect", source: planCommand.source || "legacy" },
           });
-          executionState = exec.executionState;
+          if (planResult && planResult.executionState) {
+            executionState = planResult.executionState;
+          }
           messages.push({
             role: "user",
-            content: formatSegmentResultMessage(exec),
+            content: JSON.stringify({
+              type: "plan_graph_result",
+              ...((planResult && planResult.status)
+                ? planResult
+                : { status: "rejected", ok: false, error: "plan_graph failed" }),
+            }),
           });
           continue;
-        }
       }
       transport.appendFinalAssistantMessage({ messages, turnResult });
       if (!aggregated.trim() && text) {
@@ -1469,6 +1729,7 @@ async function runNativeLoop({
         toolCallsExecuted,
         messages,
         usage,
+        executionState,
       };
     }
 
@@ -1480,24 +1741,180 @@ async function runNativeLoop({
         toolCallsExecuted,
         messages,
         usage,
+        executionState,
       };
     }
 
+    const callNames = pendingCalls.map((call) => String(call.name || "").trim().toLowerCase());
+    const hasPlanGraph = callNames.includes("plan_graph");
+    const hasAskUser = callNames.includes("ask_user");
+    const hasDataTool = callNames.some((name) => EXECUTABLE_GRAPH_TOOLS.has(name));
+    if (hasPlanGraph && hasDataTool) {
+      // prepareToolCalls already appended the assistant tool_calls / tool_use
+      // message; every declared call must get a contiguous tool result.
+      const collectedResults = [];
+      for (const pending of pendingCalls) {
+        transport.appendToolResult({
+          messages,
+          collected: collectedResults,
+          call: pending,
+          toolResult: {
+            ok: false,
+            status: "rejected",
+            error: "Do not mix plan_graph with data-plane tools in the same turn",
+            code: "MIXED_PLAN_AND_DATA_TOOLS",
+          },
+        });
+        toolCallsExecuted += 1;
+        toolErrors += 1;
+      }
+      if (typeof transport.flushToolResults === "function") {
+        transport.flushToolResults({ messages, collected: collectedResults });
+      }
+      continue;
+    }
+    if (hasAskUser && pendingCalls.length > 1) {
+      const collectedResults = [];
+      for (const pending of pendingCalls) {
+        transport.appendToolResult({
+          messages,
+          collected: collectedResults,
+          call: pending,
+          toolResult: {
+            ok: false,
+            status: "rejected",
+            error: "ask_user must be the only tool call in the turn",
+            code: "ASK_USER_MUST_BE_ALONE",
+          },
+        });
+        toolCallsExecuted += 1;
+        toolErrors += 1;
+      }
+      if (typeof transport.flushToolResults === "function") {
+        transport.flushToolResults({ messages, collected: collectedResults });
+      }
+      continue;
+    }
+
     const collectedResults = [];
+    let deferredAskUser = null;
     for (const pending of pendingCalls) {
+      const pendingName = String(pending.name || "").trim().toLowerCase();
+      if (
+        EXECUTABLE_GRAPH_TOOLS.has(pendingName)
+        && activePlanRequiresExpansion(executionState.planGraph)
+      ) {
+        const blocked = {
+          ok: false,
+          status: "rejected",
+          errors: [{
+            code: "ACTIVE_PLAN_REQUIRES_EXPANSION",
+            message: "Active plan is waiting on a task; use plan_graph expand_node or control.complete_task instead of direct tools",
+          }],
+        };
+        toolCallsExecuted += 1;
+        toolErrors += 1;
+        transport.appendToolResult({
+          messages,
+          collected: collectedResults,
+          call: pending,
+          toolResult: blocked,
+        });
+        continue;
+      }
+      if (planModeBlocksDirectTool(pendingName, executionState)) {
+        const blocked = {
+          ok: false,
+          status: "rejected",
+          errors: [{
+            code: "PLAN_MODE_BLOCKS_SIDE_EFFECT",
+            message: "Plan mode is on; use plan_graph for write/edit/bash, or ask the user to /plan off",
+          }],
+        };
+        toolCallsExecuted += 1;
+        toolErrors += 1;
+        transport.appendToolResult({
+          messages,
+          collected: collectedResults,
+          call: pending,
+          toolResult: blocked,
+        });
+        continue;
+      }
+      const leaseCheck = checkWriteAllowed(executionState, {
+        tool: pendingName,
+        originKind: "agent_loop",
+      });
+      if (!leaseCheck.ok) {
+        const blocked = {
+          ok: false,
+          status: "rejected",
+          errors: [{
+            code: leaseCheck.code || "WORKSPACE_WRITE_LEASE_HELD",
+            message: leaseCheck.message
+              || "Workspace write lease held by an active TaskRun",
+            owner: leaseCheck.owner || null,
+          }],
+        };
+        toolCallsExecuted += 1;
+        toolErrors += 1;
+        transport.appendToolResult({
+          messages,
+          collected: collectedResults,
+          call: pending,
+          toolResult: blocked,
+        });
+        continue;
+      }
+
+      const toolCallId = pending.source && (pending.source.id || (pending.source.function && pending.source.id))
+        ? String(pending.source.id || "")
+        : "";
+      const resumeForAsk = pendingName === "ask_user"
+        ? {
+          toolCallId: toolCallId || String((pending.source && pending.source.id) || `call_${randomUUID()}`),
+          toolName: "ask_user",
+          call: {
+            name: pending.name,
+            args: pending.args,
+            source: pending.source,
+          },
+        }
+        : null;
+
       const toolResult = runCoreTool({
         tool: pending.name,
         args: pending.args,
         workspaceRoot,
         onToolEvent,
         sessionId,
-        contextV2,
         onArtifactPersisted,
+        executionState,
+        resume: resumeForAsk,
       });
+      if (toolResult && toolResult.executionState) {
+        executionState = toolResult.executionState;
+      }
       toolCallsExecuted += 1;
       if (!toolResult || toolResult.ok === false) {
         toolErrors += 1;
       }
+
+      if (pendingName === "ask_user" && toolResult && toolResult.deferToolResult) {
+        // Attach resume metadata onto pending interaction for contiguous tool_result later.
+        const pendingInteraction = getPendingUserInteraction(executionState);
+        if (pendingInteraction) {
+          pendingInteraction.resume = {
+            ...(pendingInteraction.resume || {}),
+            ...(resumeForAsk || {}),
+            mode: "ask_user",
+            transport: provider === "anthropic" ? "anthropic-messages" : "openai-chat",
+          };
+        }
+        deferredAskUser = { call: pending, interactionId: toolResult.interactionId || "" };
+        continue;
+      }
+
       enforceNativeToolBudget({
         toolCallsExecuted,
         toolErrors,
@@ -1517,7 +1934,59 @@ async function runNativeLoop({
     if (typeof transport.flushToolResults === "function") {
       transport.flushToolResults({ messages, collected: collectedResults });
     }
+
+    if (deferredAskUser) {
+      return {
+        text: aggregated,
+        streamed,
+        toolCallsExecuted,
+        messages,
+        usage,
+        executionState,
+        waitingUserInteraction: true,
+        interactionId: deferredAskUser.interactionId || "",
+      };
+    }
+
+    if (hasPendingUserInteraction(executionState)) {
+      // Checkpoint approval synced from plan_graph — pause for TUI.
+      return {
+        text: aggregated,
+        streamed,
+        toolCallsExecuted,
+        messages,
+        usage,
+        executionState,
+        waitingUserInteraction: true,
+        interactionId: (getPendingUserInteraction(executionState) || {}).id || "",
+      };
+    }
   }
+}
+
+function appendAnswerToolResult(messages = [], resume = null, answer = {}) {
+  const call = resume && resume.call ? resume.call : null;
+  if (!call || !call.source) return { ok: false, error: "missing deferred tool call" };
+  const transportName = String(resume.transport || "openai-chat");
+  const content = clipText(toJsonString(answer), 12000);
+  if (transportName === "anthropic-messages") {
+    messages.push({
+      role: "user",
+      content: [{
+        type: "tool_result",
+        tool_use_id: String(call.source.id || resume.toolCallId || ""),
+        content,
+        is_error: false,
+      }],
+    });
+  } else {
+    messages.push({
+      role: "tool",
+      tool_call_id: String(call.source.id || resume.toolCallId || ""),
+      content,
+    });
+  }
+  return { ok: true };
 }
 
 async function runNativeAgentTask({
@@ -1535,8 +2004,9 @@ async function runNativeAgentTask({
   onPhase = null,
   onToolEvent = null,
   onArtifactPersisted = null,
-  contextV2 = false,
   signal = null,
+  executionState = null,
+  resume = false,
 } = {}) {
   const guards = createGuards({ signal, timeoutMs });
   const nextSessionId = String(sessionId || "").trim() || `native-${randomUUID()}`;
@@ -1556,7 +2026,7 @@ async function runNativeAgentTask({
   try {
     guards.ensureActive();
 
-    if (!promptText) {
+    if (!resume && !promptText) {
       return {
         ok: false,
         error: "empty task",
@@ -1594,7 +2064,7 @@ async function runNativeAgentTask({
     const runResult = await runNativeLoop({
       transport,
       workspaceRoot,
-      prompt: promptText,
+      prompt: resume ? "" : promptText,
       systemPrompt,
       systemBlocks,
       historyMessages: messages,
@@ -1609,9 +2079,10 @@ async function runNativeAgentTask({
       onToolEvent,
       onArtifactPersisted,
       sessionId: nextSessionId,
-      contextV2: contextV2 || isContextV2Enabled(),
       signal,
       guards,
+      executionState,
+      resume: Boolean(resume),
     });
 
     const outputText = String(runResult.text || "").trim() || (
@@ -1641,26 +2112,36 @@ async function runNativeAgentTask({
       messages: cloneMessageList(runResult.messages),
       sessionId: nextSessionId,
       usage,
+      executionState: runResult.executionState || executionState || null,
       // The loop marks streamed=true whenever it receives a stream callback;
       // only report it when the caller actually registered one.
       streamed: Boolean(runResult.streamed) && typeof onStreamDelta === "function",
+      waitingUserInteraction: Boolean(runResult.waitingUserInteraction),
+      interactionId: runResult.interactionId || "",
     };
   } catch (err) {
     const message = err && err.message ? err.message : "native runner failed";
+    if (executionState && typeof executionState === "object") {
+      clearUserPrompts(executionState);
+    }
     return {
       ok: false,
       error: message,
       output: partialOutput.trim(),
       sessionId: nextSessionId,
       streamed: false,
+      executionState: executionState || null,
     };
   }
 }
 
 module.exports = {
   runNativeAgentTask,
+  appendAnswerToolResult,
   resolveRuntimeConfig,
   resolveCompletionUrl,
   resolveAnthropicMessagesUrl,
   resolveTransport,
+  buildCoreToolSpecs,
+  buildAnthropicToolSpecs,
 };

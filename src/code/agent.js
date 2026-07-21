@@ -10,9 +10,7 @@ const {
   saveSessionSnapshot,
   loadSessionSnapshot,
 } = require("./sessionStore");
-const { buildPromptContext } = require("../agents/prompts/native");
 const { buildSkillInjections } = require("./skills");
-const { isContextV2Enabled } = require("./context/featureFlag");
 const {
   assembleModelContext,
   syncMessagesToTranscript,
@@ -34,9 +32,14 @@ const {
 } = require("./context/stateCommit");
 const { applyWorkingSetPlan } = require("./context/workingSet");
 const {
-  parseExecutionSegment,
-  executeExecutionSegment,
-} = require("./context/executionSegment");
+  normalizePlanGraphCommand,
+  runPlanGraphCommand,
+} = require("./context/planGraphService");
+const {
+  shouldFrameAsUserReminder,
+  buildContinuationUserPrompt,
+  clearUserPrompts,
+} = require("./context/userNudge");
 const {
   runUbusCommand,
   parseBusCheckOutput,
@@ -65,6 +68,16 @@ function ensureContextSessionState(state = {}) {
     const { emptyExecutionState } = require("./context/executionSegment");
     state.executionState = emptyExecutionState();
   }
+  if (typeof state.executionState.planMode !== "boolean") {
+    state.executionState.planMode = false;
+  }
+  if (!Array.isArray(state.executionState.pendingUserPrompts)) {
+    state.executionState.pendingUserPrompts = [];
+  }
+  if (!state.executionState.planGraph || typeof state.executionState.planGraph !== "object") {
+    state.executionState.planGraph = require("./context/planGraphService").emptyPlanGraphState();
+  }
+  require("./context/planProjection").ensurePlanUiState(state.executionState);
   if (!state.contextPolicy || typeof state.contextPolicy !== "object") {
     const { defaultContextPolicy } = require("./context/assembler");
     state.contextPolicy = defaultContextPolicy();
@@ -83,6 +96,110 @@ function buildSkillBodyBlocks(skillInjections = {}) {
   });
 }
 
+async function runPlanGraphSteps({
+  command = null,
+  segment = null,
+  workspaceRoot = process.cwd(),
+  sessionId = "",
+  state = {},
+  pushToolLog = () => null,
+} = {}) {
+  if (!state.executionState || typeof state.executionState !== "object") {
+    state.executionState = require("./context/executionSegment").emptyExecutionState();
+  }
+
+  const normalized = command
+    || (segment ? normalizePlanGraphCommand(segment) : null);
+  if (!normalized) {
+    return { ok: false, error: "missing plan_graph command" };
+  }
+
+  const result = runPlanGraphCommand(normalized, {
+    executionState: state.executionState,
+    autoAdvance: true,
+    parallel: true,
+    runTool: ({ node, args, tool, stepId }) => {
+      pushToolLog({
+        tool,
+        phase: "start",
+        args,
+        error: "",
+        origin: {
+          kind: "plan_graph",
+          graphRevision: Number(state.executionState.planGraph && state.executionState.planGraph.revision) || 0,
+          nodeId: stepId || (node && node.id) || "",
+        },
+      });
+      const { runToolCall: dispatchToolCall } = require("./dispatch");
+      const { persistToolResultToContext } = require("./context/assembler");
+      const toolResult = dispatchToolCall(
+        { tool, args },
+        { workspaceRoot, cwd: workspaceRoot, sessionId },
+      );
+      if (!toolResult || toolResult.ok === false) {
+        pushToolLog({
+          tool,
+          phase: "error",
+          args,
+          error: String((toolResult && toolResult.error) || "tool failed"),
+          origin: {
+            kind: "plan_graph",
+            nodeId: stepId || (node && node.id) || "",
+          },
+        });
+        return toolResult;
+      }
+      const persisted = persistToolResultToContext({
+        workspaceRoot,
+        sessionId,
+        tool,
+        args,
+        rawResult: toolResult,
+      });
+      recordToolCallInSession(state, persisted, workspaceRoot);
+      const plan = require("./context/workingSet").defaultContextPlanFromToolEvent(
+        tool,
+        persisted.artifactId || (persisted.modelPayload && persisted.modelPayload.artifactId),
+        args,
+      );
+      if (plan) state.workingSet = applyWorkingSetPlan(state.workingSet, plan, state);
+      if ((tool === "write" || tool === "edit") && args && args.path) {
+        const filePath = String(args.path);
+        const files = Array.isArray(state.executionState.modifiedFiles)
+          ? state.executionState.modifiedFiles.slice()
+          : [];
+        if (!files.includes(filePath)) files.push(filePath);
+        state.executionState.modifiedFiles = files;
+      }
+      return {
+        ...(persisted.modelPayload || toolResult),
+        origin: {
+          kind: "plan_graph",
+          graphRevision: Number(state.executionState.planGraph && state.executionState.planGraph.revision) || 0,
+          nodeId: stepId || (node && node.id) || "",
+        },
+      };
+    },
+  });
+
+  state.executionState = result.executionState || state.executionState;
+  commitAfterSegmentEnd(state, {
+    ok: result.status === "accepted",
+    segmentId: result.graphId || "",
+    error: result.status === "accepted" ? "" : "plan_graph rejected",
+    stoppedAt: result.stoppedAt || "",
+  }, workspaceRoot);
+  return {
+    ok: result.status === "accepted",
+    graphId: result.graphId || "",
+    error: result.status === "accepted"
+      ? ""
+      : (Array.isArray(result.errors) ? result.errors.map((e) => e.message || e.code).join("; ") : "plan_graph rejected"),
+    stoppedAt: result.stoppedAt || "",
+    modelPayload: result.modelPayload || result,
+  };
+}
+
 async function runExecutionSegmentSteps({
   segment = {},
   workspaceRoot = process.cwd(),
@@ -90,70 +207,16 @@ async function runExecutionSegmentSteps({
   state = {},
   pushToolLog = () => null,
 } = {}) {
-  const exec = executeExecutionSegment({
-    segment,
-    executionState: state.executionState,
-    onStepStart: ({ tool, args }) => {
-      pushToolLog({ tool, phase: "start", args, error: "" });
-    },
-    onStepComplete: ({ tool, args, result }) => {
-      pushToolLog({
-        tool,
-        phase: result && result.ok === false ? "error" : "",
-        args,
-        error: result && result.ok === false ? String(result.error || "") : "",
-      });
-      if (isContextV2Enabled() && result && result.ok !== false) {
-        const plan = require("./context/workingSet").defaultContextPlanFromToolEvent(
-          tool,
-          result.artifactId,
-          args,
-        );
-        if (plan) state.workingSet = applyWorkingSetPlan(state.workingSet, plan, state);
-      }
-      if ((tool === "write" || tool === "edit") && args && args.path) {
-        const filePath = String(args.path);
-        if (!state.executionState || typeof state.executionState !== "object") {
-          state.executionState = require("./context/executionSegment").emptyExecutionState();
-        }
-        const files = Array.isArray(state.executionState.modifiedFiles)
-          ? state.executionState.modifiedFiles.slice()
-          : [];
-        if (!files.includes(filePath)) files.push(filePath);
-        state.executionState.modifiedFiles = files;
-      }
-    },
-    runStep: ({ tool, args }) => {
-      const { runToolCall: dispatchToolCall } = require("./dispatch");
-      const { persistToolResultToContext } = require("./context/assembler");
-      const result = dispatchToolCall(
-        { tool, args },
-        { workspaceRoot, cwd: workspaceRoot, sessionId },
-      );
-      if (!result || result.ok === false || !isContextV2Enabled()) {
-        return result;
-      }
-      const persisted = persistToolResultToContext({
-        workspaceRoot,
-        sessionId,
-        tool,
-        args,
-        rawResult: result,
-      });
-      recordToolCallInSession(state, persisted, workspaceRoot);
-      return persisted.modelPayload || result;
-    },
+  return runPlanGraphSteps({
+    command: normalizePlanGraphCommand(segment) || normalizePlanGraphCommand({
+      type: "execution_segment",
+      ...segment,
+    }),
+    workspaceRoot,
+    sessionId,
+    state,
+    pushToolLog,
   });
-  state.executionState = exec.executionState;
-  if (isContextV2Enabled()) {
-    commitAfterSegmentEnd(state, exec, workspaceRoot);
-  }
-  return {
-    ok: exec.ok,
-    segmentId: exec.segmentId,
-    error: exec.error,
-    stoppedAt: exec.stoppedAt,
-  };
 }
 
 
@@ -409,94 +472,6 @@ function isProjectAnalysisTask(task = "") {
   return /(?:analy[sz]e|analysis|review|audit|status|architecture|codebase|repo|project|现状|架构|审查|分析|项目|代码库)/i.test(text);
 }
 
-function createProjectPreflightContext({
-  workspaceRoot = process.cwd(),
-  pushToolLog = () => null,
-} = {}) {
-  const root = String(workspaceRoot || process.cwd());
-  const readCandidates = [
-    "AGENTS.md",
-    "README.md",
-    "README.zh-CN.md",
-    "package.json",
-  ];
-  const blocks = [];
-
-  for (const relPath of readCandidates) {
-    pushToolLog({
-      tool: "read",
-      phase: "start",
-      args: { path: relPath },
-      error: "",
-    });
-    const readRes = runToolCall(
-      {
-        tool: "read",
-        args: { path: relPath, maxBytes: 12000 },
-      },
-      {
-        workspaceRoot: root,
-        cwd: root,
-      }
-    );
-    pushToolLog({
-      tool: "read",
-      phase: readRes && readRes.ok === false ? "error" : "",
-      args: { path: relPath },
-      error: readRes && readRes.ok === false ? String(readRes.error || "") : "",
-    });
-    if (!readRes || readRes.ok === false) continue;
-    const content = String(readRes.content || "").trim();
-    if (!content) continue;
-    const clipped = content.length > 2400
-      ? `${content.slice(0, 2400)}\n...[truncated]`
-      : content;
-    blocks.push(`File: ${relPath}\n${clipped}`);
-    if (blocks.length >= 2) break;
-  }
-
-  if (blocks.length === 0) {
-    const command = "ls -la";
-    pushToolLog({
-      tool: "bash",
-      phase: "start",
-      args: { command },
-      error: "",
-    });
-    const bashRes = runToolCall(
-      {
-        tool: "bash",
-        args: { command, timeoutMs: 4000 },
-      },
-      {
-        workspaceRoot: root,
-        cwd: root,
-      }
-    );
-    pushToolLog({
-      tool: "bash",
-      phase: bashRes && bashRes.ok === false ? "error" : "",
-      args: { command },
-      error: bashRes && bashRes.ok === false ? String(bashRes.error || "") : "",
-    });
-    if (bashRes && bashRes.ok !== false) {
-      const stdout = String(bashRes.stdout || "").trim();
-      const clipped = stdout.length > 1200
-        ? `${stdout.slice(0, 1200)}\n...[truncated]`
-        : stdout;
-      if (clipped) {
-        blocks.push(`Command: ${command}\n${clipped}`);
-      }
-    }
-  }
-
-  if (blocks.length === 0) return "";
-  return [
-    "Preflight snapshot (captured by ucode):",
-    ...blocks.map((block) => `---\n${block}`),
-  ].join("\n");
-}
-
 function buildNlFallbackSummary(logs = []) {
   const list = Array.isArray(logs) ? logs : [];
   const started = list.filter((entry) => entry && entry.phase === "start").length;
@@ -550,32 +525,23 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
   const useDecomposition = isBugFixTask && !options.disableDecomposition;
   const analysisTask = isProjectAnalysisTask(taskText);
   const workspaceRoot = String(state.workspaceRoot || process.cwd());
-  const contextV2 = isContextV2Enabled();
-  if (contextV2) ensureContextSessionState(state);
+  ensureContextSessionState(state);
 
-  let preflightContext = "";
   let projectSnapshot = state.projectSnapshot || null;
   if (analysisTask) {
-    if (contextV2) {
-      projectSnapshot = createProjectPreflightContextV2({
-        workspaceRoot,
-        sessionId: String(state.sessionId || ""),
-        pushToolLog,
-        existingSnapshot: state.projectSnapshot,
-      });
-      state.projectSnapshot = projectSnapshot;
-    } else {
-      preflightContext = createProjectPreflightContext({
-        workspaceRoot,
-        pushToolLog,
-      });
-    }
-  } else if (contextV2) {
+    projectSnapshot = createProjectPreflightContextV2({
+      workspaceRoot,
+      sessionId: String(state.sessionId || ""),
+      pushToolLog,
+      existingSnapshot: state.projectSnapshot,
+    });
+    state.projectSnapshot = projectSnapshot;
+  } else {
     projectSnapshot = ensureProjectSnapshot(state, workspaceRoot);
   }
 
-  if (contextV2) {
-    ensureTaskContract(state, taskText);
+  ensureTaskContract(state, taskText);
+  if (!shouldFrameAsUserReminder(state.executionState)) {
     state.taskContract = patchTaskContractFromUserMessage(state.taskContract, taskText);
   }
 
@@ -586,44 +552,32 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
     prompt: taskPrompt,
     workspaceRoot,
     sessionId: String(state.sessionId || ""),
-    persistBodies: contextV2,
-    useActiveSkillTag: contextV2,
+    persistBodies: true,
+    useActiveSkillTag: true,
   });
   for (const warning of skillInjections.warnings || []) {
     pushSkillWarning(logs, onToolLog, warning);
   }
-  if (contextV2 && Array.isArray(skillInjections.activeSkills) && skillInjections.activeSkills.length > 0) {
+  if (Array.isArray(skillInjections.activeSkills) && skillInjections.activeSkills.length > 0) {
     state.activeSkills = skillInjections.activeSkills;
   }
-  const skillBodyBlocks = contextV2
-    ? buildSkillBodyBlocks(skillInjections)
-    : (skillInjections.blocks || []);
-  // v1: skill body rides in the user prompt.
-  // v2: skill body goes only into turnDynamic (system layered prompt) to avoid
+  const skillBodyBlocks = buildSkillBodyBlocks(skillInjections);
+  // Skill body goes into turnDynamic (system layered prompt) to avoid
   // double injection and mixed system/user privilege semantics.
-  const effectiveTaskPrompt = contextV2
-    ? taskPrompt
-    : (skillBodyBlocks.length > 0
-      ? `${skillBodyBlocks.join("\n\n")}\n\n${taskPrompt}`
-      : taskPrompt);
-
-  let assembled = null;
-  let systemContext = "";
-  if (contextV2) {
-    assembled = assembleModelContext(state, {
-      workspaceRoot,
-      model,
-      provider,
-      turnDynamic: skillBodyBlocks.join("\n\n"),
-      latestUserMessage: effectiveTaskPrompt,
-    });
-    systemContext = assembled.systemPrompt;
-    state.summary = assembled.summary || state.summary;
-  } else {
-    systemContext = [String(state.context || "").trim(), preflightContext]
-      .filter(Boolean)
-      .join("\n\n");
+  let effectiveTaskPrompt = taskPrompt;
+  if (shouldFrameAsUserReminder(state.executionState)) {
+    effectiveTaskPrompt = buildContinuationUserPrompt(effectiveTaskPrompt, state.executionState);
   }
+
+  const assembled = assembleModelContext(state, {
+    workspaceRoot,
+    model,
+    provider,
+    turnDynamic: skillBodyBlocks.join("\n\n"),
+    latestUserMessage: effectiveTaskPrompt,
+  });
+  const systemContext = assembled.systemPrompt;
+  state.summary = assembled.summary || state.summary;
 
   const onStream = onDelta
     ? (delta) => {
@@ -646,9 +600,7 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
   let lastTranscriptBaseline = 0;
   const invokeNative = (sessionIdValue = "", timeoutOverrideMs = timeoutMs) => {
     toolEventsThisAttempt = 0;
-    const historyMessages = contextV2 && assembled
-      ? assembled.messages
-      : (Array.isArray(state.nlMessages) ? state.nlMessages : []);
+    const historyMessages = assembled.messages;
     // Sanitized length matches what nativeRunner clones before appending this
     // turn's user/tool/assistant messages — used as the transcript sync baseline.
     lastTranscriptBaseline = sanitizeModelMessages(historyMessages).length;
@@ -658,17 +610,15 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
       model,
       prompt: effectiveTaskPrompt,
       systemPrompt: systemContext,
-      systemBlocks: contextV2 && assembled ? assembled.systemBlocks : null,
+      systemBlocks: assembled.systemBlocks || null,
       messages: historyMessages,
       sessionId: String(sessionIdValue || state.sessionId || ""),
       timeoutMs: timeoutOverrideMs,
       onStreamDelta: onStream,
       onThinkingDelta,
       onPhase,
-      contextV2,
-      onArtifactPersisted: contextV2
-        ? (persisted) => recordToolCallInSession(state, persisted, workspaceRoot)
-        : null,
+      executionState: state.executionState || null,
+      onArtifactPersisted: (persisted) => recordToolCallInSession(state, persisted, workspaceRoot),
       onToolEvent: (event) => {
         toolEventsThisAttempt += 1;
         pushToolLog(event);
@@ -680,22 +630,24 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
   try {
     let cliRes;
 
-    const requestedSegment = parseExecutionSegment(options.executionSegment || options.nextSegment || null);
-    if (contextV2 && requestedSegment && requestedSegment.steps && requestedSegment.steps.length > 0) {
-      const segmentResult = await runExecutionSegmentSteps({
-        segment: requestedSegment,
+    const requestedPlan = normalizePlanGraphCommand(
+      options.executionSegment || options.nextSegment || options.planGraph || null,
+    );
+    if (requestedPlan) {
+      const planResult = await runPlanGraphSteps({
+        command: requestedPlan,
         workspaceRoot,
         sessionId: String(state.sessionId || ""),
         state,
         pushToolLog,
       });
-      if (!segmentResult.ok) {
+      if (!planResult.ok) {
         return {
           ok: false,
           summary: "",
           artifacts: [],
           logs: logs.slice(),
-          error: segmentResult.error,
+          error: planResult.error,
           metrics: {},
           streamed: false,
           streamLastChar: "",
@@ -716,9 +668,8 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
         systemPrompt: systemContext,
         messages: Array.isArray(state.nlMessages) ? state.nlMessages : [],
         sessionId: String(state.sessionId || ""),
-        state: contextV2 ? state : null,
-        contextV2,
-        systemBlocks: contextV2 && assembled ? assembled.systemBlocks : null,
+        state,
+        systemBlocks: assembled.systemBlocks || null,
       });
 
       if (decomposedResult.ok) {
@@ -751,6 +702,9 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
 
     if (!cliRes || cliRes.ok === false) {
       const errMsg = String((cliRes && cliRes.error) || "");
+      if (isCliCancelledError(errMsg) && state.executionState) {
+        clearUserPrompts(state.executionState);
+      }
       return {
         ok: false,
         summary: "",
@@ -766,22 +720,40 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
     if (cliRes && typeof cliRes.sessionId === "string" && cliRes.sessionId.trim()) {
       state.sessionId = cliRes.sessionId.trim();
     }
-    if (cliRes && Array.isArray(cliRes.messages)) {
-      state.nlMessages = stripSkillBlocksFromMessages(cliRes.messages);
-      if (contextV2) {
-        syncMessagesToTranscript(state, cliRes.messages, workspaceRoot, {
-          baselineCount: lastTranscriptBaseline,
-        });
+    if (cliRes && cliRes.executionState && typeof cliRes.executionState === "object") {
+      // Preserve planMode if the runner returned a fresh empty state without it.
+      const priorPlanMode = Boolean(state.executionState && state.executionState.planMode);
+      const priorSource = state.executionState && state.executionState.planModeSource
+        ? String(state.executionState.planModeSource)
+        : "";
+      state.executionState = cliRes.executionState;
+      if (typeof state.executionState.planMode !== "boolean") {
+        state.executionState.planMode = priorPlanMode;
+      }
+      if (!state.executionState.planModeSource && priorSource) {
+        state.executionState.planModeSource = priorSource;
       }
     }
+    if (cliRes && Array.isArray(cliRes.messages)) {
+      // Sync first so ensureTranscript does not migrate the just-assigned
+      // nlMessages and then append the same delta again.
+      syncMessagesToTranscript(state, cliRes.messages, workspaceRoot, {
+        baselineCount: lastTranscriptBaseline,
+      });
+      state.nlMessages = stripSkillBlocksFromMessages(
+        Array.isArray(state.nlMessages) && state.nlMessages.length > 0
+          ? state.nlMessages
+          : cliRes.messages,
+      );
+    }
     const normalized = String(cliRes.output || "").trim();
-    const sideEffects = contextV2 ? parseStructuredSideEffects(normalized) : null;
-    if (contextV2 && sideEffects) {
+    const sideEffects = parseStructuredSideEffects(normalized);
+    if (sideEffects) {
       applyContextSideEffects(state, sideEffects);
-      const nextSegment = parseExecutionSegment(sideEffects);
-      if (nextSegment && nextSegment.steps && nextSegment.steps.length > 0) {
-        await runExecutionSegmentSteps({
-          segment: nextSegment,
+      const planCommand = normalizePlanGraphCommand(sideEffects);
+      if (planCommand) {
+        await runPlanGraphSteps({
+          command: planCommand,
           workspaceRoot,
           sessionId: String(state.sessionId || ""),
           state,
@@ -791,9 +763,23 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
     }
     const summary = extractJsonSummary(normalized);
     const resolvedSummary = String(summary || "").trim() || buildNlFallbackSummary(logs);
-    const artifactIds = contextV2 && Array.isArray(state.workingSet)
+    const artifactIds = Array.isArray(state.workingSet)
       ? state.workingSet.map((entry) => entry.artifactId).filter(Boolean)
       : [];
+    if (cliRes && cliRes.waitingUserInteraction) {
+      return {
+        ok: true,
+        summary: resolvedSummary || "Waiting for your reply",
+        artifacts: artifactIds,
+        logs: logs.slice(),
+        error: "",
+        metrics: {},
+        streamed: Boolean(streamed || cliRes.streamed),
+        streamLastChar,
+        waitingUserInteraction: true,
+        interactionId: cliRes.interactionId || "",
+      };
+    }
     return {
       ok: true,
       summary: resolvedSummary,
@@ -870,9 +856,7 @@ function buildNlContext({
 }
 
 /**
- * Single wire entry for system prompt assembly.
- * v2 (default): layered Context Manager prompt.
- * v1 (explicit off): legacy flat buildPromptContext.
+ * Single wire entry for system prompt assembly (layered Context Manager).
  */
 function resolveWireSystemPrompt({
   workspaceRoot = process.cwd(),
@@ -886,25 +870,15 @@ function resolveWireSystemPrompt({
 } = {}) {
   if (overrideSystemPrompt) return String(overrideSystemPrompt);
 
-  if (isContextV2Enabled()) {
-    return buildLayeredSystemPrompt({
-      workspaceRoot,
-      model,
-      provider,
-      appendSystemPrompt,
-      epochDynamic,
-      turnDynamic,
-      sessionStableExtras,
-    }).flatText;
-  }
-
-  // Legacy v1 path — kept for UFOO_UCODE_CONTEXT_V2=0 compatibility only.
-  return buildPromptContext({
+  return buildLayeredSystemPrompt({
     workspaceRoot,
     model,
     provider,
     appendSystemPrompt,
-  });
+    epochDynamic,
+    turnDynamic,
+    sessionStableExtras,
+  }).flatText;
 }
 
 function buildSessionSnapshotFromState(state = {}) {
@@ -1012,14 +986,12 @@ function resumeSessionState(state = {}, sessionId = "", workspaceRoot = process.
     ? snapshot.toolCallsSinceCommit
     : 0;
   state.activeSkills = Array.isArray(snapshot.activeSkills) ? snapshot.activeSkills : [];
-  if (isContextV2Enabled()) {
-    ensureContextSessionState(state);
-    const { ensureTranscript } = require("./context/assembler");
-    ensureTranscript(state, state.workspaceRoot);
-    if (Array.isArray(state.transcriptEvents) && state.transcriptEvents.length > 0) {
-      const { transcriptEventsToMessages } = require("./context/transcript");
-      state.nlMessages = transcriptEventsToMessages(state.transcriptEvents, { preferArtifact: true });
-    }
+  ensureContextSessionState(state);
+  const { ensureTranscript } = require("./context/assembler");
+  ensureTranscript(state, state.workspaceRoot);
+  if (Array.isArray(state.transcriptEvents) && state.transcriptEvents.length > 0) {
+    const { transcriptEventsToMessages } = require("./context/transcript");
+    state.nlMessages = transcriptEventsToMessages(state.transcriptEvents, { preferArtifact: true });
   }
 
   return {
@@ -1030,10 +1002,128 @@ function resumeSessionState(state = {}, sessionId = "", workspaceRoot = process.
   };
 }
 
+/**
+ * Continue after TUI resolves approval/choice/chat.
+ * ask_user: answer is written as the deferred tool_result (contiguous, no question echo).
+ * checkpoint: short answer-only user message referencing interaction/node.
+ */
+async function resumeAfterUserInteraction(answerText = "", state = {}, options = {}) {
+  ensureContextSessionState(state);
+  const { resolveUserInteraction } = require("./context/userInteraction");
+  const { appendAnswerToolResult } = require("./nativeRunner");
+  const resolved = resolveUserInteraction(state.executionState, answerText);
+  if (!resolved.ok) {
+    return {
+      ok: false,
+      error: resolved.error || "failed to resolve user interaction",
+      code: resolved.code || "",
+      waitingUserInteraction: true,
+    };
+  }
+
+  const logs = [];
+  const pushToolLog = (event) => {
+    try {
+      logs.push(normalizeToolLogEvent(event));
+    } catch { /* ignore */ }
+  };
+
+  let messages = Array.isArray(state.nlMessages) ? state.nlMessages.slice() : [];
+  if (resolved.continueMode === "tool_result" && resolved.resume && resolved.resume.call) {
+    const appended = appendAnswerToolResult(messages, resolved.resume, resolved.answer);
+    if (!appended.ok) {
+      return { ok: false, error: appended.error || "failed to append answer tool_result" };
+    }
+  } else {
+    // Checkpoint / non-tool path: answer-only contiguous user message (no question).
+    messages.push({
+      role: "user",
+      content: JSON.stringify(resolved.answer),
+    });
+  }
+  state.nlMessages = messages;
+
+  const workspaceRoot = state.workspaceRoot || process.cwd();
+  const assembled = assembleModelContext(state, {
+    workspaceRoot,
+    provider: state.provider,
+    model: state.model,
+  });
+  const systemContext = assembled.systemPrompt || "";
+
+  let streamLastChar = "";
+  const onDelta = typeof options.onDelta === "function" ? options.onDelta : null;
+  const trackingOnDelta = onDelta
+    ? (delta) => {
+      const text = String(delta || "");
+      if (text) streamLastChar = text.slice(-1);
+      return onDelta(delta);
+    }
+    : null;
+
+  const cliRes = await runNativeAgentTask({
+    workspaceRoot,
+    provider: state.provider,
+    model: state.model,
+    prompt: "",
+    systemPrompt: systemContext,
+    systemBlocks: assembled.systemBlocks || null,
+    messages,
+    sessionId: String(state.sessionId || ""),
+    onToolEvent: pushToolLog,
+    onStreamDelta: trackingOnDelta,
+    onThinkingDelta: typeof options.onThinkingDelta === "function" ? options.onThinkingDelta : null,
+    onPhase: typeof options.onPhase === "function" ? options.onPhase : null,
+    executionState: state.executionState,
+    signal: options.signal,
+    resume: true,
+  });
+
+  if (cliRes && cliRes.executionState) {
+    state.executionState = cliRes.executionState;
+  }
+  if (cliRes && Array.isArray(cliRes.messages)) {
+    state.nlMessages = stripSkillBlocksFromMessages(cliRes.messages);
+  }
+
+  if (!cliRes || cliRes.ok === false) {
+    return {
+      ok: false,
+      error: (cliRes && cliRes.error) || "resume failed",
+      logs,
+      waitingUserInteraction: false,
+      streamed: false,
+      streamLastChar: "",
+    };
+  }
+
+  if (cliRes.waitingUserInteraction) {
+    return {
+      ok: true,
+      summary: "Waiting for your reply",
+      logs,
+      waitingUserInteraction: true,
+      interactionId: cliRes.interactionId || "",
+      streamed: Boolean(cliRes.streamed),
+      streamLastChar,
+    };
+  }
+
+  return {
+    ok: true,
+    summary: String(cliRes.output || "").trim() || "continued",
+    logs,
+    waitingUserInteraction: false,
+    streamed: Boolean(cliRes.streamed),
+    streamLastChar,
+  };
+}
+
 module.exports = {
   runUcodeCoreAgent,
   runSingleCommand,
   runNaturalLanguageTask,
+  resumeAfterUserInteraction,
   formatNlResult,
   normalizeToolLogEvent,
   isProjectAnalysisTask,

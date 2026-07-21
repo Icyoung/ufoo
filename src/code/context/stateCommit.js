@@ -230,6 +230,8 @@ function extractBalancedJsonObjects(text = "") {
 
 function isStructuredSideEffectPayload(parsed = null) {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+  // Strict: only recognized control envelopes. Do not treat arbitrary JSON
+  // (examples, docs, code) as executable side effects.
   return Boolean(
     parsed.stateCommit
     || parsed.contextPlan
