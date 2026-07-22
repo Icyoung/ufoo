@@ -9,11 +9,37 @@ describe("chatReducer", () => {
     expect(state.logLines[0].text).toBe("a");
   });
 
+  test("createInitialState accepts structured history rows without [object Object]", () => {
+    const state = createInitialState({
+      banner: [
+        "banner-line",
+        "",
+        "─── history ───",
+        { text: "› hello", sourceType: "user" },
+        { text: "ufoo · hi", sourceType: "reply" },
+      ],
+    });
+    const texts = state.logLines.map((entry) => entry.text);
+    expect(texts).not.toContain("[object Object]");
+    expect(state.logLines.find((entry) => entry.sourceType === "user")).toMatchObject({
+      text: "› hello",
+      kind: "user",
+    });
+    expect(state.logLines.find((entry) => entry.sourceType === "reply")).toMatchObject({
+      text: "ufoo · hi",
+      kind: "assistant",
+    });
+  });
+
   test("log entries keep structured display fields in reducer state", () => {
     let state = createInitialState({ banner: [] });
     state = reducer(state, {
       type: "log/appendMany",
       lines: [
+        {
+          type: "user",
+          text: "› check status",
+        },
         {
           type: "bus",
           text: "claude-code:221e94 · Handoff from Codex",
@@ -26,6 +52,13 @@ describe("chatReducer", () => {
     const entries = state.logLines.filter((entry) => entry.text);
 
     expect(entries[0]).toMatchObject({
+      text: "› check status",
+      kind: "user",
+      marker: "›",
+      bodyText: "check status",
+      sourceType: "user",
+    });
+    expect(entries[1]).toMatchObject({
       text: "claude-code:221e94 · Handoff from Codex",
       kind: "agent",
       speaker: "claude-code:221e94",
@@ -33,7 +66,7 @@ describe("chatReducer", () => {
       sourceType: "bus",
       meta: { publisher: "claude-code:221e94" },
     });
-    expect(entries[1]).toMatchObject({
+    expect(entries[2]).toMatchObject({
       text: "                    Current state:",
       kind: "plain",
       speaker: "",

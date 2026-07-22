@@ -416,7 +416,7 @@ function createDaemonMessageRouter(options = {}) {
       const publisher = report.agent_id || data.publisher || "ufoo-agent";
       const displayName = resolveAgentDisplayName(publisher);
       const detail = report.summary || report.message || data.message || report.task_id || "report";
-      logMessage("bus", `${speakerPrefix(displayName)}${escapeBlessed(detail)}`);
+      logMessage("report", `${speakerPrefix(displayName)}${escapeBlessed(detail)}`, data);
       requestStatus();
       renderScreen();
       return true;

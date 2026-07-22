@@ -82,6 +82,7 @@ function buildTaskFocus({
   currentNodeId = "",
   taskRunsById = {},
   recentlyChangedFiles = [],
+  standaloneTask = null,
 } = {}) {
   const byId = new Map((Array.isArray(nodes) ? nodes : []).map((n) => [n.id, n]));
   const current = byId.get(currentNodeId);
@@ -96,19 +97,38 @@ function buildTaskFocus({
   });
   const writers = Object.values(runs)
     .filter((r) => r && (r.status === "running" || r.status === "cancelling"))
-    .map((r) => r.parentNodeId)
+    .map((r) => r.parentNodeId || r.id)
     .filter(Boolean);
 
+  let currentTask;
+  if (standaloneTask && typeof standaloneTask === "object") {
+    currentTask = {
+      id: standaloneTask.id || currentNodeId || "standalone",
+      objective: standaloneTask.objective || standaloneTask.title || "",
+      title: standaloneTask.title || standaloneTask.objective || standaloneTask.id || "standalone",
+      status: standaloneTask.status || (currentRun && currentRun.status) || "running",
+    };
+  } else if (current) {
+    currentTask = {
+      id: current.id,
+      objective: current.objective || current.title || "",
+      title: current.title || current.objective || current.id,
+      status: (currentRun && currentRun.status) || current.status,
+    };
+  } else {
+    currentTask = {
+      id: currentNodeId || "standalone",
+      objective: "",
+      title: currentNodeId || "standalone",
+      status: "unknown",
+    };
+  }
+
   return {
-    currentTask: current
-      ? {
-        id: current.id,
-        objective: current.objective || current.title || "",
-        title: current.title || current.objective || current.id,
-        status: (currentRun && currentRun.status) || current.status,
-      }
-      : { id: currentNodeId, objective: "", title: currentNodeId, status: "unknown" },
-    dependencies: listDependencySummaries(nodes, currentNodeId, runs),
+    currentTask,
+    dependencies: currentNodeId
+      ? listDependencySummaries(nodes, currentNodeId, runs)
+      : [],
     parallelSiblings: siblings,
     workspace: {
       concurrentWriters: writers,

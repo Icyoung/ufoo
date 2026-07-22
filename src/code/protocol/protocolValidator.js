@@ -78,7 +78,7 @@ function validateDeclaredBatch(ledger = null, {
 
   const names = calls.map((c) => c.name);
   const hasAskUser = names.includes("ask_user");
-  const hasPlanGraph = names.includes("plan_graph");
+  const hasControlPlane = names.includes("plan_graph") || names.includes("task_run");
   const dataSet = dataPlaneTools instanceof Set
     ? dataPlaneTools
     : new Set(["read", "write", "edit", "bash", "artifact_read"]);
@@ -90,10 +90,10 @@ function validateDeclaredBatch(ledger = null, {
       message: "ask_user must be the only tool call in the turn",
     });
   }
-  if (rejectPlanWithData && hasPlanGraph && hasData) {
+  if (rejectPlanWithData && hasControlPlane && hasData) {
     errors.push({
       code: "MIXED_PLAN_AND_DATA_TOOLS",
-      message: "Do not mix plan_graph with data-plane tools in the same turn",
+      message: "Do not mix plan_graph/task_run with data-plane tools in the same turn",
     });
   }
 

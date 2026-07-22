@@ -235,6 +235,51 @@ describe("buildCompletions", () => {
     ]);
     expect(out[0].hasChildren).toBe(false);
   });
+
+  test("ucode /model opens thinking intensity as a secondary menu", () => {
+    const { UCODE_COMMAND_REGISTRY, UCODE_COMMAND_TREE } = require("../../../src/code/commands");
+    const models = buildCompletions({
+      text: "/model ",
+      commands: UCODE_COMMAND_REGISTRY,
+      commandTree: UCODE_COMMAND_TREE,
+      argumentLists: {
+        "/model": [
+          { id: "gpt-5.4", desc: "current", hasChildren: true },
+          { id: "o3", hasChildren: true },
+        ],
+        "/model/thinking": [
+          { id: "off", desc: "disable" },
+          { id: "medium", desc: "default · current" },
+          { id: "high", desc: "deeper" },
+        ],
+      },
+    });
+    expect(models[0]).toMatchObject({
+      label: "/model gpt-5.4",
+      replace: "/model gpt-5.4 ",
+      hasChildren: true,
+    });
+
+    const thinking = buildCompletions({
+      text: "/model gpt-5.4 ",
+      commands: UCODE_COMMAND_REGISTRY,
+      commandTree: UCODE_COMMAND_TREE,
+      argumentLists: {
+        "/model": [{ id: "gpt-5.4", hasChildren: true }],
+        "/model/thinking": [
+          { id: "off", desc: "disable" },
+          { id: "medium", desc: "default · current" },
+          { id: "high", desc: "deeper" },
+        ],
+      },
+    });
+    expect(thinking.map((s) => s.label)).toEqual([
+      "/model gpt-5.4 off",
+      "/model gpt-5.4 medium",
+      "/model gpt-5.4 high",
+    ]);
+    expect(thinking[0].hasChildren).toBe(false);
+  });
 });
 
 describe("buildUcodeSessionLogEntries", () => {

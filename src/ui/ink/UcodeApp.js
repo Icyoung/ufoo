@@ -323,14 +323,36 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
 
     const { UCODE_COMMAND_REGISTRY, UCODE_COMMAND_TREE } = require("../../code/commands");
     const { listSessionSummaries } = require("../../code/sessionStore");
-    const { suggestUcodeModels, applyUcodeModelCommand } = require("../../code/modelCommand");
+    const { suggestUcodeModels, suggestUcodeThinkingLevels, applyUcodeModelCommand, listUcodeModels } = require("../../code/modelCommand");
     let resumeSessions = [];
     try {
       resumeSessions = listSessionSummaries(props.workspaceRoot || process.cwd(), { limit: 40 });
     } catch {
       resumeSessions = [];
     }
-    const modelSuggestions = suggestUcodeModels(props.state || {});
+    const [remoteModels, setRemoteModels] = useState([]);
+    useEffect(() => {
+      let cancelled = false;
+      (async () => {
+        try {
+          const listed = await listUcodeModels(props.state || {}, {
+            workspaceRoot: props.workspaceRoot || process.cwd(),
+          });
+          if (!cancelled && listed.ok) {
+            setRemoteModels(Array.isArray(listed.models) ? listed.models : []);
+          }
+        } catch {
+          if (!cancelled) setRemoteModels([]);
+        }
+      })();
+      return () => { cancelled = true; };
+    }, [
+      props.workspaceRoot,
+      props.state && props.state.provider,
+      props.state && props.state.model,
+    ]);
+    const modelSuggestions = suggestUcodeModels(props.state || {}, { models: remoteModels });
+    const thinkingSuggestions = suggestUcodeThinkingLevels(props.state || {});
 
     const completions = fmt.buildCompletions({
       text: draft,
@@ -341,6 +363,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       argumentLists: {
         "/resume": resumeSessions,
         "/model": modelSuggestions,
+        "/model/thinking": thinkingSuggestions,
       },
       limit: 20,
     });
@@ -541,7 +564,9 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
           return;
         }
         case "model": {
-          const applied = applyUcodeModelCommand(props.state || {}, result);
+          const applied = await applyUcodeModelCommand(props.state || {}, result, {
+            workspaceRoot: runtimeWorkspace,
+          });
           appendLogText(applied.output || "", applied.ok ? "system" : "error");
           if (applied.ok && result.action === "set" && typeof props.persistSessionState === "function") {
             try {

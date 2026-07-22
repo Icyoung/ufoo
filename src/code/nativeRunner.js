@@ -5,6 +5,7 @@ const {
   resolveKimiUpstreamCredentials,
 } = require("../agents/providers/credentials/kimi");
 const { runToolCall } = require("./dispatch");
+const { runTaskRunTool } = require("./tools/taskRun");
 const { appendUsageRecord } = require("./usageStore");
 const {
   persistToolResultToContext,
@@ -60,9 +61,11 @@ const CORE_TOOL_NAMES = new Set([
   "bash",
   "artifact_read",
   "plan_graph",
+  "task_run",
   "ask_user",
 ]);
 const EXECUTABLE_GRAPH_TOOLS = new Set(["read", "write", "edit", "bash", "artifact_read"]);
+const CONTROL_PLANE_TOOLS = new Set(["plan_graph", "task_run"]);
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1";
 const DEFAULT_KIMI_BASE_URL = "https://api.kimi.com/coding/v1";
@@ -78,11 +81,9 @@ const DEFAULT_NATIVE_TIMEOUT_MS = 43200000; // 12 hours
 // via UFOO_UCODE_MAX_TOKENS (positive integer).
 const DEFAULT_OPENAI_MAX_TOKENS = 131072;
 const DEFAULT_ANTHROPIC_MAX_TOKENS = 64000;
-// Extended thinking is on by default for the anthropic transport; the budget
-// stays well below the 64K max_tokens cap as the Messages API requires.
-// UFOO_UCODE_THINKING_BUDGET_TOKENS overrides; 0 or a non-numeric value
-// disables thinking (the payload then omits the field entirely).
-const DEFAULT_ANTHROPIC_THINKING_BUDGET_TOKENS = 10000;
+// Extended thinking defaults live in thinkingLevels.js (medium = 10k).
+// UFOO_UCODE_THINKING=off|low|medium|high|max selects a preset; numeric
+// UFOO_UCODE_THINKING_BUDGET_TOKENS still overrides. 0 disables thinking.
 // Prompt caching is GA on the current Messages API: cache_control blocks need
 // no anthropic-beta header. Kept as a constant so the marker shape stays in
 // one place (system block + last history message, 2 of the 4 allowed
@@ -116,14 +117,40 @@ function resolveMaxTokens(fallback) {
   return normalizePositiveInt(process.env.UFOO_UCODE_MAX_TOKENS, fallback);
 }
 
-function resolveThinkingBudgetTokens() {
-  const raw = process.env.UFOO_UCODE_THINKING_BUDGET_TOKENS;
-  if (raw === undefined || raw === null || String(raw).trim() === "") {
-    return DEFAULT_ANTHROPIC_THINKING_BUDGET_TOKENS;
+function resolveThinkingBudgetTokens(options = {}) {
+  const { resolveThinkingFromEnvAndConfig } = require("./thinkingLevels");
+  const { loadGlobalUcodeConfig } = require("../config");
+  let configLevel = String(options.configLevel || "").trim();
+  if (!configLevel) {
+    try {
+      configLevel = String((loadGlobalUcodeConfig() || {}).ucodeThinking || "").trim();
+    } catch {
+      configLevel = "";
+    }
   }
-  const parsed = Number.parseInt(String(raw), 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
-  return Math.floor(parsed);
+  const resolved = resolveThinkingFromEnvAndConfig({
+    env: options.env || process.env,
+    configLevel,
+  });
+  return resolved.budgetTokens;
+}
+
+function resolveReasoningEffort(options = {}) {
+  const { resolveThinkingFromEnvAndConfig } = require("./thinkingLevels");
+  const { loadGlobalUcodeConfig } = require("../config");
+  let configLevel = String(options.configLevel || "").trim();
+  if (!configLevel) {
+    try {
+      configLevel = String((loadGlobalUcodeConfig() || {}).ucodeThinking || "").trim();
+    } catch {
+      configLevel = "";
+    }
+  }
+  const resolved = resolveThinkingFromEnvAndConfig({
+    env: options.env || process.env,
+    configLevel,
+  });
+  return resolved.reasoningEffort || "";
 }
 
 function toUsageInt(value) {
@@ -446,12 +473,13 @@ function buildCoreToolSpecs() {
       function: {
         name: "plan_graph",
         description: [
-          "Manage the persistent Plan Graph and asynchronous TaskRuns.",
-          "Use create, patch, inspect, or cancel_graph for graph operations, and control for TaskRun lifecycle.",
-          "`control.start_task` starts a `task_loop` asynchronously and returns immediately.",
+          "Manage the persistent Plan Graph and graph-bound TaskRuns.",
+          "TaskRuns are orthogonal to Plan Mode; for a standalone TaskRun without a plan, use `task_run` instead.",
+          "Use create, patch, inspect, or cancel_graph for graph operations, and control for graph-bound TaskRun lifecycle.",
+          "`control.start_task` starts a graph `task_loop` asynchronously and returns immediately.",
           "Use `inline_llm` for work handled by the current graph owner,",
           "`expand` for tasks that must be lowered into child nodes,",
-          "and `task_loop` for asynchronous work in an independent TaskLoop.",
+          "and `task_loop` for asynchronous work in an independent TaskLoop attached to a plan node.",
           "Do not call `plan_graph` together with data-plane tools in the same assistant turn.",
         ].join(" "),
         parameters: {
@@ -511,6 +539,63 @@ function buildCoreToolSpecs() {
             graphId: {
               type: "string",
               description: "Optional graph id check for patch/control.",
+            },
+          },
+          required: ["operation"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "task_run",
+        description: [
+          "Start, inspect, cancel, fail, or complete a TaskRun.",
+          "TaskRuns are orthogonal to Plan Mode and do not require a plan_graph.",
+          "Use operation=start with an objective for a standalone single-point TaskRun; it returns immediately.",
+          "On complex multi-goal work, decompose into concrete objectives and start one or more TaskRuns.",
+          "Use plan_graph control.start_task only when the TaskRun is attached to a plan_graph task_loop node.",
+          "Do not call `task_run` together with data-plane tools in the same assistant turn.",
+        ].join(" "),
+        parameters: {
+          type: "object",
+          properties: {
+            operation: {
+              type: "string",
+              enum: ["start", "cancel", "fail", "complete", "inspect"],
+              description: [
+                "start creates a standalone TaskRun from objective;",
+                "cancel/fail/complete/inspect address an existing taskRunId",
+                "(cancel/fail may also use nodeId for graph-bound runs).",
+              ].join(" "),
+            },
+            objective: {
+              type: "string",
+              description: "Required for start: concrete TaskRun objective.",
+            },
+            title: {
+              type: "string",
+              description: "Optional short title for start.",
+            },
+            taskRunId: {
+              type: "string",
+              description: "TaskRun id for cancel, fail, complete, or inspect.",
+            },
+            nodeId: {
+              type: "string",
+              description: "Optional graph node id for cancel/fail of a graph-bound TaskRun.",
+            },
+            reason: {
+              type: "string",
+              description: "Optional reason for cancel or fail.",
+            },
+            result: {
+              type: "object",
+              description: "Optional result payload for complete (TaskLoop owner).",
+            },
+            commandId: {
+              type: "string",
+              description: "Optional idempotency key for explicit replay.",
             },
           },
           required: ["operation"],
@@ -772,6 +857,51 @@ function runCoreTool({
     };
   }
 
+  if (normalizedTool === "task_run") {
+    const state = executionState && typeof executionState === "object"
+      ? executionState
+      : emptyExecutionState();
+    const result = runTaskRunTool(safeArgs, {
+      executionState: state,
+      runTool: ({ node, args: nestedArgs, tool: nestedTool, stepId }) => {
+        const nested = runCoreTool({
+          tool: nestedTool,
+          args: nestedArgs,
+          workspaceRoot,
+          onToolEvent,
+          sessionId,
+          onArtifactPersisted,
+          executionState: state,
+          origin: {
+            kind: "task_run",
+            taskRunId: String(safeArgs.taskRunId || ""),
+            nodeId: stepId || (node && node.id) || "",
+            attempt: Number(node && node.attempt) || 0,
+          },
+        });
+        return nested;
+      },
+    });
+    const ok = result.ok !== false && result.status !== "rejected";
+    emitToolEvent(onToolEvent, {
+      tool: "task_run",
+      phase: ok ? "end" : "error",
+      args: safeArgs,
+      result,
+      error: ok
+        ? ""
+        : (Array.isArray(result.errors)
+          ? result.errors.map((e) => e.message || e.code).join("; ")
+          : (result.error || "task_run rejected")),
+      origin,
+    });
+    return {
+      ...result,
+      ok,
+      executionState: result.executionState || state,
+    };
+  }
+
   if (normalizedTool === "ask_user") {
     const state = executionState && typeof executionState === "object"
       ? executionState
@@ -970,6 +1100,12 @@ async function runOpenAiLikeTurn({
     // Kimi k3 rejects any temperature other than 1.
     temperature: normalizeProvider(provider) === "kimi" ? 1 : 0,
   };
+  const reasoningEffort = resolveReasoningEffort();
+  if (reasoningEffort) {
+    // OpenAI-compatible gateways that support reasoning models accept this;
+    // unknown fields are typically ignored by plain chat models.
+    payload.reasoning_effort = reasoningEffort;
+  }
 
   const headers = {
     "content-type": "application/json",
@@ -1715,16 +1851,16 @@ async function runNativeLoop({
     await withFaultPoint("before_tool_exec", () => {});
 
     const callNames = pendingCalls.map((call) => String(call.name || "").trim().toLowerCase());
-    const hasPlanGraph = callNames.includes("plan_graph");
+    const hasControlPlane = callNames.some((name) => CONTROL_PLANE_TOOLS.has(name));
     const hasAskUser = callNames.includes("ask_user");
     const hasDataTool = callNames.some((name) => EXECUTABLE_GRAPH_TOOLS.has(name));
-    if (hasPlanGraph && hasDataTool) {
+    if (hasControlPlane && hasDataTool) {
       // prepareToolCalls already appended the assistant tool_calls / tool_use
       // message; every declared call must get a contiguous tool result via ledger.
       const rejected = {
         ok: false,
         status: "rejected",
-        error: "Do not mix plan_graph with data-plane tools in the same turn",
+        error: "Do not mix plan_graph/task_run with data-plane tools in the same turn",
         code: "MIXED_PLAN_AND_DATA_TOOLS",
       };
       for (const pending of pendingCalls) {
@@ -2078,6 +2214,8 @@ module.exports = {
   resolveCompletionUrl,
   resolveAnthropicMessagesUrl,
   resolveTransport,
+  resolveThinkingBudgetTokens,
+  resolveReasoningEffort,
   buildCoreToolSpecs,
   buildAnthropicToolSpecs,
 };

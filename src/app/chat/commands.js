@@ -135,7 +135,8 @@ const COMMAND_TREE = {
         children: {
           show: { desc: "Show ucode provider/model/url/key", order: 1 },
           set: { desc: "Set ucode provider/model/url/key", order: 2 },
-          clear: { desc: "Clear ucode provider/model/url/key", order: 3 },
+          models: { desc: "List models from the provider /models route", order: 3 },
+          clear: { desc: "Clear ucode provider/model/url/key", order: 4 },
         },
       },
     },

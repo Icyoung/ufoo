@@ -7,7 +7,7 @@
 const UCODE_COMMAND_REGISTRY = [
   { cmd: "/help", desc: "Show available commands", order: 10 },
   { cmd: "/status", desc: "Show session / usage status", order: 20 },
-  { cmd: "/model", desc: "Show or switch the active model", order: 25 },
+  { cmd: "/model", desc: "Show or switch model (+ thinking intensity)", order: 25 },
   { cmd: "/plan", desc: "Show plan progress or set plan mode", order: 27 },
   { cmd: "/ubus", desc: "Check pending bus messages", order: 30 },
   { cmd: "/resume", desc: "Resume a saved session", order: 40 },
@@ -20,7 +20,7 @@ const UCODE_COMMAND_TREE = {
   "/help": { desc: "Show available commands" },
   "/status": { desc: "Show session / usage status" },
   "/model": {
-    desc: "Show or switch the active model",
+    desc: "Show or switch model, then pick thinking intensity",
     hasArguments: true,
     optionalArguments: true,
   },
@@ -59,7 +59,7 @@ function listUcodeCommandsForHelp() {
     "  /exit|/quit",
     "  /ubus",
     "  /status",
-    "  /model [model-id]",
+    "  /model [model-id] [off|low|medium|high|max]",
     "  /plan [on|off|show|hide|focus|debug|clear]",
     "  /skills [list]",
     "  /skills show <name>",

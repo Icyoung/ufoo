@@ -166,6 +166,7 @@ function createCommandExecutor(options = {}) {
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     schedule = (fn, ms) => setTimeout(fn, ms),
     clearLog = null,
+    fetchModelsImpl = null,
   } = options;
 
   if (!projectRoot) {
@@ -1623,7 +1624,35 @@ function createCommandExecutor(options = {}) {
       logMessage("system", `  • url: ${url || "(unset)"}`);
       logMessage("system", `  • key: ${maskSecret(key)}`);
       logMessage("system", `  • transport: ${transport} (auto)`);
+      try {
+        const { currentThinkingLevel } = require("../../code/modelCommand");
+        logMessage("system", `  • thinking: ${currentThinkingLevel({})}`);
+      } catch {
+        // ignore
+      }
       logMessage("system", "  • tip: url supports generic gateway base, transport is auto-detected");
+      try {
+        const { listUcodeModels } = require("../../code/modelCommand");
+        const listed = await listUcodeModels({
+          provider,
+          model,
+        }, {
+          workspaceRoot: getActiveProjectRoot() || projectRoot,
+          fetchImpl: fetchModelsImpl || undefined,
+        });
+        if (listed.ok && listed.models.length > 0) {
+          const sample = listed.models.slice(0, 10);
+          logMessage("system", `  • models route: ${listed.models.length} available`);
+          logMessage("system", `  • models: ${sample.join(", ")}${listed.models.length > 10 ? "…" : ""}`);
+          if (model && !listed.models.includes(model)) {
+            logMessage("system", `  • warning: configured model "${model}" is not in the provider catalog`);
+          }
+        } else if (listed.error) {
+          logMessage("system", `  • models route: ${listed.error}`);
+        }
+      } catch (err) {
+        logMessage("system", `  • models route: ${err && err.message ? err.message : "unavailable"}`);
+      }
       return;
     }
 
@@ -1645,6 +1674,52 @@ function createCommandExecutor(options = {}) {
         logMessage("error", "{white-fg}✗{/white-fg} Usage: /settings ucode set provider=<openai|anthropic> model=<id> url=<baseUrl> key=<apiKey>");
         return;
       }
+
+      // Preview the config that would apply after this set, then confirm the
+      // model id against the provider /models route when a model is present.
+      const preview = {
+        ...(loadUcodeConfig() || {}),
+        ...updates,
+      };
+      const modelToConfirm = String(preview.ucodeModel || "").trim();
+      if (modelToConfirm) {
+        try {
+          const { confirmModelSupported } = require("../../code/providers/modelsCatalog");
+          const { resolveRuntimeConfig } = require("../../code/nativeRunner");
+          const runtime = resolveRuntimeConfig({
+            workspaceRoot: getActiveProjectRoot() || projectRoot,
+            provider: preview.ucodeProvider || "",
+            model: modelToConfirm,
+          });
+          // Prefer the previewed url/key over env-only resolution so a single
+          // set line that changes url+model validates against the new gateway.
+          const confirmation = await confirmModelSupported({
+            provider: runtime.provider,
+            transport: inferUcodeTransport(preview.ucodeProvider, preview.ucodeBaseUrl || runtime.baseUrl),
+            baseUrl: String(preview.ucodeBaseUrl || runtime.baseUrl || "").trim(),
+            apiKey: String(preview.ucodeApiKey || runtime.apiKey || "").trim(),
+            model: modelToConfirm,
+            strict: false,
+            fetchImpl: fetchModelsImpl || undefined,
+          });
+          if (!confirmation.allowed) {
+            logMessage("error", `{white-fg}✗{/white-fg} ${escapeBlessed(confirmation.error || "model not supported")}`);
+            if (confirmation.models && confirmation.models.length > 0) {
+              const sample = confirmation.models.slice(0, 10).join(", ");
+              logMessage("system", `  • available: ${escapeBlessed(sample)}${confirmation.models.length > 10 ? "…" : ""}`);
+            }
+            return;
+          }
+          if (confirmation.warning) {
+            logMessage("system", `{gray-fg}note:{/gray-fg} ${escapeBlessed(confirmation.warning)}`);
+          } else if (confirmation.ok) {
+            logMessage("system", `{gray-fg}models route:{/gray-fg} confirmed ${escapeBlessed(modelToConfirm)}`);
+          }
+        } catch (err) {
+          logMessage("system", `{gray-fg}note:{/gray-fg} models route check skipped (${escapeBlessed(err && err.message ? err.message : "unavailable")})`);
+        }
+      }
+
       saveUcodeConfig(updates);
       logMessage("system", "{white-fg}✓{/white-fg} ucode config updated (global)");
       if (Object.prototype.hasOwnProperty.call(updates, "ucodeProvider")) {
@@ -1661,6 +1736,41 @@ function createCommandExecutor(options = {}) {
       }
       const nextConfig = loadUcodeConfig() || {};
       logMessage("system", `  • transport: ${inferUcodeTransport(nextConfig.ucodeProvider, nextConfig.ucodeBaseUrl)} (auto)`);
+      return;
+    }
+
+    if (action === "models") {
+      try {
+        const { listUcodeModels } = require("../../code/modelCommand");
+        const config = loadUcodeConfig() || {};
+        const listed = await listUcodeModels({
+          provider: config.ucodeProvider || "",
+          model: config.ucodeModel || "",
+        }, {
+          workspaceRoot: getActiveProjectRoot() || projectRoot,
+          skipCache: true,
+          fetchImpl: fetchModelsImpl || undefined,
+        });
+        if (!listed.ok) {
+          logMessage("error", `{white-fg}✗{/white-fg} ${escapeBlessed(listed.error || "models route failed")}`);
+          if (listed.url) logMessage("system", `  • url: ${escapeBlessed(listed.url)}`);
+          return;
+        }
+        logMessage("system", `{cyan-fg}ucode models:{/cyan-fg} ${listed.models.length} from ${escapeBlessed(listed.url)}`);
+        if (listed.models.length === 0) {
+          logMessage("system", "  • (empty catalog)");
+          return;
+        }
+        listed.models.slice(0, 40).forEach((id) => {
+          const current = String(config.ucodeModel || "").trim() === id ? " {gray-fg}(current){/gray-fg}" : "";
+          logMessage("system", `  • ${escapeBlessed(id)}${current}`);
+        });
+        if (listed.models.length > 40) {
+          logMessage("system", `  • … ${listed.models.length - 40} more`);
+        }
+      } catch (err) {
+        logMessage("error", `{white-fg}✗{/white-fg} ${escapeBlessed(err && err.message ? err.message : "models route failed")}`);
+      }
       return;
     }
 
@@ -1682,7 +1792,7 @@ function createCommandExecutor(options = {}) {
       return;
     }
 
-    logMessage("error", "{white-fg}✗{/white-fg} Unknown settings ucode action. Use: show, set, clear");
+    logMessage("error", "{white-fg}✗{/white-fg} Unknown settings ucode action. Use: show, set, models, clear");
   }
 
   async function executeCommand(text) {

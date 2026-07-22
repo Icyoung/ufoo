@@ -105,6 +105,69 @@ describe("chat log display classification", () => {
     expect(classifyChatLogLine("─── history ───")).toMatchObject({ kind: "divider" });
   });
 
+  test("classifies ucode-style user prompts", () => {
+    expect(classifyChatLogLine("› ship it")).toMatchObject({
+      kind: "user",
+      marker: "›",
+      body: "ship it",
+    });
+    expect(buildChatLogLineModel("ship it", { sourceType: "user" })).toMatchObject({
+      kind: "user",
+      markerText: "› ",
+      bodyText: "ship it",
+    });
+    expect(buildChatLogLineModel("› @qa check status", { sourceType: "user" })).toMatchObject({
+      kind: "user",
+      bodyText: "@qa check status",
+    });
+  });
+
+  test("sourceType maps reply/bus/report/system roles", () => {
+    expect(buildChatLogLineModel("ufoo · launched", { sourceType: "reply" })).toMatchObject({
+      kind: "assistant",
+      marker: "◆",
+      speaker: "ufoo",
+    });
+    expect(buildChatLogLineModel("qa · done", { sourceType: "bus" })).toMatchObject({
+      kind: "agent",
+      marker: "◇",
+      speaker: "qa",
+    });
+    expect(buildChatLogLineModel("qa · task finished", {
+      sourceType: "report",
+      meta: { event: "controller_report" },
+    })).toMatchObject({
+      kind: "report",
+      marker: "▣",
+      speaker: "qa",
+      bodyText: "task finished",
+    });
+    expect(buildChatLogLineModel("No active agents", { sourceType: "system" })).toMatchObject({
+      kind: "system",
+      marker: " ",
+      markerText: "  ",
+    });
+    expect(buildChatLogLineModel("  • provider: anthropic", { sourceType: "system" })).toMatchObject({
+      kind: "plain",
+      marker: "",
+      bodyText: expect.stringContaining("provider: anthropic"),
+    });
+    const configGroup = buildChatLogGroups([
+      { id: "a", text: "✓ ucode config updated (global)", sourceType: "system" },
+      { id: "b", text: "  • provider: anthropic", sourceType: "system" },
+      { id: "c", text: "  • model: kimi-k3", sourceType: "system" },
+    ]);
+    expect(configGroup).toHaveLength(1);
+    expect(configGroup[0]).toMatchObject({
+      kind: "success",
+      entries: [
+        { continuation: false, row: { kind: "success" } },
+        { continuation: true, row: { kind: "plain" } },
+        { continuation: true, row: { kind: "plain" } },
+      ],
+    });
+  });
+
   test("classifies chat banner rows with metadata as banner lines", () => {
     const line = "  █ █ █▀▀ █▀█ █▀█  Version: 2.4.7";
     expect(classifyChatLogLine(line)).toMatchObject({
@@ -119,7 +182,7 @@ describe("chat log display classification", () => {
 
   test("speaker rows reserve a visible gap after marker and wrap from speaker edge", () => {
     expect(buildChatLogLineModel("builder- · hello")).toMatchObject({
-      markerText: "•  ",
+      markerText: "◇  ",
       speaker: "builder-",
       bodyText: "hello",
     });
@@ -148,10 +211,17 @@ describe("chat log display classification", () => {
     expect(close.bodyText).toContain("└");
   });
 
+  test("user and system bodies skip markdown", () => {
+    expect(buildChatLogLineModel("› use **bold**", { sourceType: "user" }).bodyText)
+      .toContain("**bold**");
+    expect(buildChatLogLineModel("note **x**", { sourceType: "system" }).bodyText)
+      .toContain("**x**");
+  });
+
   test("subscriber-id speaker rows and continuations avoid the plain gutter", () => {
     expect(buildChatLogLineModel("claude-code:221e94 · Handoff")).toMatchObject({
       kind: "agent",
-      markerText: "•  ",
+      markerText: "◇  ",
       speaker: "claude-code:221e94",
       bodyText: "Handoff",
     });
@@ -166,10 +236,10 @@ describe("chat log display classification", () => {
 
   test("groups speaker messages with continuation lines into transcript cells", () => {
     const groups = buildChatLogGroups([
-      { id: "a", text: "claude-code:221e94 · Handoff" },
+      { id: "a", text: "claude-code:221e94 · Handoff", sourceType: "bus" },
       { id: "b", text: "" },
-      { id: "c", text: "                    Current state:" },
-      { id: "d", text: "                    • Reviewed docs" },
+      { id: "c", text: "                    Current state:", sourceType: "bus" },
+      { id: "d", text: "                    • Reviewed docs", sourceType: "bus" },
       { id: "e", text: "✓ Message delivered" },
     ]);
 

@@ -11,7 +11,10 @@ function getDoingTasksSection() {
  - Don't add error handling, fallbacks, or validation for scenarios that can't happen. Trust internal code and framework guarantees. Only validate at system boundaries (user input, external APIs).
  - Don't create helpers, utilities, or abstractions for one-time operations. Three similar lines of code is better than a premature abstraction.
  - Follow workspace conventions and project instructions (AGENTS.md) when present.
- - Prefer concrete code edits and verifiable outcomes over explanations.`;
+ - Prefer concrete code edits and verifiable outcomes over explanations.
+ - For simple, single-goal work, execute directly with read/write/edit/bash.
+ - For complex work — multiple goals, several subsystems, long multi-step delivery, or clear parallel tracks — automatically decompose before diving in: split into concrete sub-objectives, then start one or more TaskRuns via task_run (standalone; no Plan Mode required). Use plan_graph only when durable dependencies, checkpoints, or a shared executable plan are needed.
+ - When decomposing, each TaskRun objective should be independently verifiable; prefer a few sharp tasks over one vague mega-task.`;
 }
 
 module.exports = { getDoingTasksSection };

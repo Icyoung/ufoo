@@ -242,12 +242,23 @@ function processTaskRun(executionState = null, taskRunId = "", options = {}) {
     }
   }
 
-  const parent = getGraph(executionState, live.parentGraphId) || executionState.planGraph;
+  const parent = live.parentGraphId
+    ? (getGraph(executionState, live.parentGraphId) || executionState.planGraph)
+    : null;
+  const standalone = !live.parentNodeId;
   const focus = buildTaskFocus({
     nodes: parent && parent.nodes ? parent.nodes : [],
     currentNodeId: live.parentNodeId,
     taskRunsById: (executionState.taskRuns && executionState.taskRuns.byId) || {},
     recentlyChangedFiles: executionState.modifiedFiles || [],
+    standaloneTask: standalone
+      ? {
+        id: live.id,
+        objective: live.objective || live.title || "",
+        title: live.title || live.objective || live.id,
+        status: live.status,
+      }
+      : null,
   });
   live.lastFocusText = renderTaskFocusText(focus);
   putTaskRun(executionState, live);

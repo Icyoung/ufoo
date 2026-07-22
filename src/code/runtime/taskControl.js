@@ -1,8 +1,10 @@
 "use strict";
 
 /**
- * plan_graph control-plane actions:
- * start_task / cancel_task / fail_task / complete_task / skip_node / cancel_subtree.
+ * Control-plane TaskRun lifecycle:
+ * - startTask: graph-bound TaskRun from a plan_graph task_loop node
+ * - startStandaloneTask: single-point TaskRun (no plan graph / Plan Mode required)
+ * - cancel/fail/complete by nodeId or taskRunId
  *
  * complete_task:
  * - taskRunId → owning TaskLoop submitting TaskRun result
@@ -57,6 +59,44 @@ function dependenciesSatisfied(parent = null, node = null) {
     }
   }
   return { ok: unmet.length === 0, dependencies: unmet };
+}
+
+function rejectMaxConcurrent(executionState = null) {
+  const activeCount = listActiveWritingTaskRuns(executionState).length;
+  const leaseCount = countWriteLeases(executionState);
+  if (activeCount >= MAX_CONCURRENT_WRITE_LEASES || leaseCount >= MAX_CONCURRENT_WRITE_LEASES) {
+    return {
+      status: "rejected",
+      ok: false,
+      errors: [{
+        code: "MAX_CONCURRENT_TASKS",
+        message: `At most ${MAX_CONCURRENT_WRITE_LEASES} concurrent writing TaskRuns`,
+        max: MAX_CONCURRENT_WRITE_LEASES,
+        current: Math.max(activeCount, leaseCount),
+      }],
+    };
+  }
+  return null;
+}
+
+function resolveActiveRun(executionState = null, {
+  nodeId = "",
+  taskRunId = "",
+} = {}) {
+  const runId = String(taskRunId || "").trim();
+  if (runId) {
+    const run = getTaskRun(executionState, runId);
+    if (!run) return { run: null, errorCode: "TASK_RUN_NOT_FOUND" };
+    if (run.status === "queued" || run.status === "running" || run.status === "cancelling") {
+      return { run, errorCode: "" };
+    }
+    return { run, errorCode: "TASK_ALREADY_TERMINAL" };
+  }
+  const id = String(nodeId || "").trim();
+  if (!id) return { run: null, errorCode: "TASK_NOT_RUNNING" };
+  const active = findActiveTaskRunForNode(executionState, id);
+  if (active) return { run: active, errorCode: "" };
+  return { run: null, errorCode: "TASK_NOT_RUNNING" };
 }
 
 function startTask(executionState = null, {
@@ -125,20 +165,8 @@ function startTask(executionState = null, {
     };
   }
 
-  const activeCount = listActiveWritingTaskRuns(executionState).length;
-  const leaseCount = countWriteLeases(executionState);
-  if (activeCount >= MAX_CONCURRENT_WRITE_LEASES || leaseCount >= MAX_CONCURRENT_WRITE_LEASES) {
-    return {
-      status: "rejected",
-      ok: false,
-      errors: [{
-        code: "MAX_CONCURRENT_TASKS",
-        message: `At most ${MAX_CONCURRENT_WRITE_LEASES} concurrent writing TaskRuns`,
-        max: MAX_CONCURRENT_WRITE_LEASES,
-        current: Math.max(activeCount, leaseCount),
-      }],
-    };
-  }
+  const limited = rejectMaxConcurrent(executionState);
+  if (limited) return limited;
 
   // Freeze spec snapshot on node.runtime
   if (!node.runtime || typeof node.runtime !== "object") node.runtime = {};
@@ -151,16 +179,20 @@ function startTask(executionState = null, {
       : { kind: "task_loop" },
   };
 
+  const objective = node.objective || node.title || id;
   const run = createTaskRun({
+    kind: "graph_node",
     parentGraphId: parent.graphId || "",
     parentNodeId: id,
     attempt: (Number(node.attempt) || 0) + 1,
+    objective,
+    title: node.title || objective,
   });
   const child = createChildGraphState({
     parentGraphId: parent.graphId || "",
     parentNodeId: id,
     taskRunId: run.id,
-    objective: node.objective || node.title || id,
+    objective,
   });
   run.childGraphId = child.graphId;
   putTaskRun(executionState, run);
@@ -192,37 +224,116 @@ function startTask(executionState = null, {
   return payload;
 }
 
+/**
+ * Start a TaskRun that is not attached to any plan_graph node.
+ * Orthogonal to Plan Mode: never enters or requires Plan Mode.
+ */
+function startStandaloneTask(executionState = null, {
+  objective = "",
+  title = "",
+  commandId = "",
+  runTool = null,
+  knownTools = null,
+  processImmediately = true,
+} = {}) {
+  const cached = getCachedControlCommand(executionState, commandId);
+  if (cached) return { ...cached, idempotentReplay: true };
+
+  ensureGraphs(executionState);
+
+  const goal = String(objective || title || "").trim();
+  if (!goal) {
+    return {
+      status: "rejected",
+      ok: false,
+      errors: [{ code: "OBJECTIVE_REQUIRED", message: "standalone task requires objective" }],
+    };
+  }
+
+  const limited = rejectMaxConcurrent(executionState);
+  if (limited) return limited;
+
+  const run = createTaskRun({
+    kind: "standalone",
+    parentGraphId: "",
+    parentNodeId: "",
+    attempt: 1,
+    objective: goal,
+    title: String(title || goal).trim(),
+  });
+  const child = createChildGraphState({
+    parentGraphId: "",
+    parentNodeId: "",
+    taskRunId: run.id,
+    objective: goal,
+  });
+  run.childGraphId = child.graphId;
+  putTaskRun(executionState, run);
+  setGraph(executionState, child);
+
+  const payload = {
+    status: "started",
+    ok: true,
+    kind: "standalone",
+    graphId: "",
+    nodeId: "",
+    taskRunId: run.id,
+    childGraphId: child.graphId,
+    objective: goal,
+    title: run.title,
+    parentNodeStatus: "",
+  };
+  cacheControlCommand(executionState, commandId, payload);
+
+  enqueueTaskEvent(executionState, run.id, { kind: "advance" });
+
+  if (processImmediately) {
+    processTaskRun(executionState, run.id, { runTool, knownTools });
+  }
+
+  return payload;
+}
+
 function cancelTask(executionState = null, {
   nodeId = "",
+  taskRunId = "",
   reason = "",
   commandId = "",
 } = {}) {
   const cached = getCachedControlCommand(executionState, commandId);
   if (cached) return { ...cached, idempotentReplay: true };
 
-  const id = String(nodeId || "").trim();
-  const active = findActiveTaskRunForNode(executionState, id);
-  if (!active) {
-    const { node } = findParentNode(executionState, id);
-    if (node && (node.status === "succeeded" || node.status === "failed" || node.status === "cancelled")) {
-      return {
-        status: "rejected",
-        ok: false,
-        errors: [{
-          code: "TASK_ALREADY_TERMINAL",
-          message: `task ${id} already ${node.status}`,
-          currentStatus: node.status,
-        }],
-      };
+  const resolved = resolveActiveRun(executionState, { nodeId, taskRunId });
+  const active = resolved.run;
+  if (!active || resolved.errorCode === "TASK_RUN_NOT_FOUND") {
+    const id = String(nodeId || "").trim();
+    if (id) {
+      const { node } = findParentNode(executionState, id);
+      if (node && (node.status === "succeeded" || node.status === "failed" || node.status === "cancelled")) {
+        return {
+          status: "rejected",
+          ok: false,
+          errors: [{
+            code: "TASK_ALREADY_TERMINAL",
+            message: `task ${id} already ${node.status}`,
+            currentStatus: node.status,
+          }],
+        };
+      }
     }
     return {
       status: "rejected",
       ok: false,
-      errors: [{ code: "TASK_NOT_RUNNING", message: `no active run for ${id}` }],
+      errors: [{
+        code: resolved.errorCode || "TASK_NOT_RUNNING",
+        message: taskRunId
+          ? `no active run for taskRunId ${taskRunId}`
+          : `no active run for ${nodeId || "(missing id)"}`,
+      }],
     };
   }
 
-  if (isTerminalTaskRun(active)) {
+  if (isTerminalTaskRun(active) || resolved.errorCode === "TASK_ALREADY_TERMINAL") {
     return {
       status: "rejected",
       ok: false,
@@ -252,7 +363,7 @@ function cancelTask(executionState = null, {
   const payload = {
     status: "accepted",
     ok: Boolean(done.ok),
-    nodeId: id,
+    nodeId: active.parentNodeId || "",
     taskRunId: active.id,
     parentNodeStatus: done.run ? done.run.status : "cancelled",
   };
@@ -262,34 +373,43 @@ function cancelTask(executionState = null, {
 
 function failTask(executionState = null, {
   nodeId = "",
+  taskRunId = "",
   reason = "",
   commandId = "",
 } = {}) {
   const cached = getCachedControlCommand(executionState, commandId);
   if (cached) return { ...cached, idempotentReplay: true };
 
-  const id = String(nodeId || "").trim();
-  const active = findActiveTaskRunForNode(executionState, id);
-  if (!active) {
-    const { node } = findParentNode(executionState, id);
-    if (node && (node.status === "succeeded" || node.status === "failed" || node.status === "cancelled")) {
-      return {
-        status: "rejected",
-        ok: false,
-        errors: [{
-          code: "TASK_ALREADY_TERMINAL",
-          message: `task ${id} already ${node.status}`,
-          currentStatus: node.status,
-        }],
-      };
+  const resolved = resolveActiveRun(executionState, { nodeId, taskRunId });
+  const active = resolved.run;
+  if (!active || resolved.errorCode === "TASK_RUN_NOT_FOUND") {
+    const id = String(nodeId || "").trim();
+    if (id) {
+      const { node } = findParentNode(executionState, id);
+      if (node && (node.status === "succeeded" || node.status === "failed" || node.status === "cancelled")) {
+        return {
+          status: "rejected",
+          ok: false,
+          errors: [{
+            code: "TASK_ALREADY_TERMINAL",
+            message: `task ${id} already ${node.status}`,
+            currentStatus: node.status,
+          }],
+        };
+      }
     }
     return {
       status: "rejected",
       ok: false,
-      errors: [{ code: "TASK_NOT_RUNNING", message: `no active run for ${id}` }],
+      errors: [{
+        code: resolved.errorCode || "TASK_NOT_RUNNING",
+        message: taskRunId
+          ? `no active run for taskRunId ${taskRunId}`
+          : `no active run for ${nodeId || "(missing id)"}`,
+      }],
     };
   }
-  if (isTerminalTaskRun(active)) {
+  if (isTerminalTaskRun(active) || resolved.errorCode === "TASK_ALREADY_TERMINAL") {
     return {
       status: "rejected",
       ok: false,
@@ -313,7 +433,7 @@ function failTask(executionState = null, {
   const payload = {
     status: done.ok ? "accepted" : "rejected",
     ok: Boolean(done.ok),
-    nodeId: id,
+    nodeId: active.parentNodeId || "",
     taskRunId: active.id,
     parentNodeStatus: done.run ? done.run.status : "failed",
     errors: done.ok ? undefined : [{ code: done.code || "CAS_FAILED", currentStatus: done.currentStatus }],
@@ -485,14 +605,16 @@ function runControlActions(executionState = null, {
     } else if (op === "cancel_task") {
       results.push(cancelTask(executionState, {
         nodeId: action.nodeId,
+        taskRunId: action.taskRunId,
         reason: action.reason,
-        commandId: commandId && list.length === 1 ? commandId : `${commandId}:${op}:${action.nodeId}`,
+        commandId: commandId && list.length === 1 ? commandId : `${commandId}:${op}:${action.nodeId || action.taskRunId}`,
       }));
     } else if (op === "fail_task" || op === "mark_task_failed") {
       results.push(failTask(executionState, {
         nodeId: action.nodeId,
+        taskRunId: action.taskRunId,
         reason: action.reason,
-        commandId: commandId && list.length === 1 ? commandId : `${commandId}:${op}:${action.nodeId}`,
+        commandId: commandId && list.length === 1 ? commandId : `${commandId}:${op}:${action.nodeId || action.taskRunId}`,
       }));
     } else if (op === "complete_task") {
       const taskRunId = String(action.taskRunId || "").trim();
@@ -528,6 +650,7 @@ function runControlActions(executionState = null, {
     } else if (op === "fail_current_task") {
       results.push(failTask(executionState, {
         nodeId: action.nodeId || (getTaskRun(executionState, action.taskRunId) || {}).parentNodeId,
+        taskRunId: action.taskRunId,
         reason: action.reason,
         commandId: commandId && list.length === 1 ? commandId : `${commandId}:${op}`,
       }));
@@ -554,6 +677,7 @@ function runControlActions(executionState = null, {
 
 module.exports = {
   startTask,
+  startStandaloneTask,
   cancelTask,
   failTask,
   completeTaskFromLoop,

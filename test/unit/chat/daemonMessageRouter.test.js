@@ -298,8 +298,9 @@ describe("chat daemonMessageRouter", () => {
 
     expect(stop).toBe(true);
     expect(options.logMessage).toHaveBeenCalledWith(
-      "bus",
-      "{cyan-fg}ESC(name:codex:1){/cyan-fg} {gray-fg}·{/gray-fg} ESC(Discovery brief delivered)"
+      "report",
+      "{cyan-fg}ESC(name:codex:1){/cyan-fg} {gray-fg}·{/gray-fg} ESC(Discovery brief delivered)",
+      expect.objectContaining({ event: "controller_report" })
     );
     expect(options.requestStatus).toHaveBeenCalledTimes(1);
     expect(options.renderScreen).toHaveBeenCalledTimes(1);

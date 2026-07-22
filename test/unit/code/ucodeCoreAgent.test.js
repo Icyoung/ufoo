@@ -19,13 +19,17 @@ jest.mock("../../../src/config", () => {
   };
 });
 
-jest.mock("../../../src/code/nativeRunner", () => ({
-  runNativeAgentTask: jest.fn(async () => ({
-    ok: true,
-    output: "implemented",
-    sessionId: "sess-1",
-  })),
-}));
+jest.mock("../../../src/code/nativeRunner", () => {
+  const actual = jest.requireActual("../../../src/code/nativeRunner");
+  return {
+    ...actual,
+    runNativeAgentTask: jest.fn(async () => ({
+      ok: true,
+      output: "implemented",
+      sessionId: "sess-1",
+    })),
+  };
+});
 
 const { runNativeAgentTask } = require("../../../src/code/nativeRunner");
 const {
@@ -140,25 +144,62 @@ describe("ucode core agent nl path", () => {
       kind: "model",
       action: "set",
       model: "gpt-5.4",
+      thinking: "",
     });
-    expect(runSingleCommand("/model too many", process.cwd())).toEqual({
+    expect(runSingleCommand("/model gpt-5.4 high", process.cwd())).toEqual({
+      kind: "model",
+      action: "set",
+      model: "gpt-5.4",
+      thinking: "high",
+    });
+    expect(runSingleCommand("/model too many tokens here", process.cwd())).toEqual({
       kind: "error",
-      output: "usage: /model [model-id]",
+      output: "usage: /model [model-id] [off|low|medium|high|max]",
     });
   });
 
-  test("applyUcodeModelCommand updates session state", () => {
+  test("applyUcodeModelCommand updates session state", async () => {
     const { applyUcodeModelCommand } = require("../../../src/code/modelCommand");
-    const state = { model: "gpt-old", provider: "openai" };
-    const shown = applyUcodeModelCommand(state, { action: "show" });
+    const state = { model: "gpt-old", provider: "openai", thinking: "medium" };
+    const fetchImpl = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ data: [{ id: "gpt-5.4" }, { id: "gpt-old" }] }),
+    }));
+    const shown = await applyUcodeModelCommand(state, { action: "show" }, { fetchImpl });
     expect(shown.ok).toBe(true);
     expect(shown.output).toContain("model: gpt-old");
+    expect(shown.output).toContain("thinking:");
 
-    const set = applyUcodeModelCommand(state, { action: "set", model: "gpt-5.4" });
+    const set = await applyUcodeModelCommand(
+      state,
+      { action: "set", model: "gpt-5.4", thinking: "high" },
+      { fetchImpl }
+    );
     expect(set.ok).toBe(true);
     expect(state.model).toBe("gpt-5.4");
+    expect(state.thinking).toBe("high");
     expect(set.output).toContain("gpt-old");
     expect(set.output).toContain("gpt-5.4");
+    expect(set.output).toContain("thinking:");
+  });
+
+  test("applyUcodeModelCommand rejects models missing from the catalog", async () => {
+    const { applyUcodeModelCommand } = require("../../../src/code/modelCommand");
+    const state = { model: "gpt-old", provider: "openai" };
+    const fetchImpl = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ data: [{ id: "gpt-5.4" }] }),
+    }));
+    const set = await applyUcodeModelCommand(
+      state,
+      { action: "set", model: "not-a-real-model" },
+      { fetchImpl, skipCache: true }
+    );
+    expect(set.ok).toBe(false);
+    expect(state.model).toBe("gpt-old");
+    expect(set.output).toContain("not-a-real-model");
   });
 
   test("runSingleCommand parses background nl commands", () => {

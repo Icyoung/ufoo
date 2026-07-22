@@ -441,4 +441,58 @@ describe("Nested Plan Graph V1 — TaskLoop / Agent Loop", () => {
     expect(text).toMatch(/task_succeeded/);
     expect(text).not.toMatch(/^user:/m);
   });
+
+  test("standalone TaskRun starts without plan graph or Plan Mode", () => {
+    const { startStandaloneTask } = require("../../../src/code/runtime/taskControl");
+    const { runTaskRunTool } = require("../../../src/code/tools/taskRun");
+    const executionState = emptyExecutionState();
+    executionState.planMode = false;
+
+    const started = startStandaloneTask(executionState, {
+      objective: "Ship topology delivery scripts",
+      title: "Delivery scripts",
+      commandId: "solo-1",
+      processImmediately: true,
+    });
+    expect(started.status).toBe("started");
+    expect(started.ok).toBe(true);
+    expect(started.kind).toBe("standalone");
+    expect(started.nodeId).toBe("");
+    expect(started.graphId).toBe("");
+    expect(started.taskRunId).toBeTruthy();
+    expect(executionState.planMode).toBe(false);
+    expect(executionState.planGraph && executionState.planGraph.graphId).toBeFalsy();
+
+    const run = getTaskRun(executionState, started.taskRunId);
+    expect(run).toBeTruthy();
+    expect(run.kind).toBe("standalone");
+    expect(run.parentNodeId).toBe("");
+    expect(run.parentGraphId).toBe("");
+    expect(run.objective).toBe("Ship topology delivery scripts");
+    expect(["queued", "running"]).toContain(run.status);
+
+    const replay = startStandaloneTask(executionState, {
+      objective: "Ship topology delivery scripts",
+      commandId: "solo-1",
+    });
+    expect(replay.idempotentReplay).toBe(true);
+    expect(replay.taskRunId).toBe(started.taskRunId);
+
+    const cancelled = cancelTask(executionState, {
+      taskRunId: started.taskRunId,
+      reason: "stop",
+      commandId: "solo-cancel",
+    });
+    expect(cancelled.ok).toBe(true);
+    expect(getTaskRun(executionState, started.taskRunId).status).toBe("cancelled");
+
+    const viaTool = runTaskRunTool({
+      operation: "start",
+      objective: "Second standalone track",
+      commandId: "tool-start-1",
+    }, { executionState, processImmediately: true });
+    expect(viaTool.ok).toBe(true);
+    expect(viaTool.kind).toBe("standalone");
+    expect(executionState.planMode).toBe(false);
+  });
 });

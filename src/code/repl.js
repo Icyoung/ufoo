@@ -113,21 +113,24 @@ function runSingleCommand(line = "", workspaceRoot = process.cwd()) {
   }
   const modelMatch = text.match(/^(?:\/model|model)(?:\s+(.*))?$/i);
   if (modelMatch) {
-    const nextModel = String(modelMatch[1] || "").trim();
-    if (!nextModel) {
+    const rest = String(modelMatch[1] || "").trim();
+    if (!rest) {
       return { kind: "model", action: "show" };
     }
-    // Reject accidental multi-token garbage; model ids are single tokens.
-    if (/\s/.test(nextModel)) {
+    const parts = rest.split(/\s+/).filter(Boolean);
+    const modelId = parts[0] || "";
+    const thinking = parts[1] || "";
+    if (!modelId || parts.length > 2) {
       return {
         kind: "error",
-        output: "usage: /model [model-id]",
+        output: "usage: /model [model-id] [off|low|medium|high|max]",
       };
     }
     return {
       kind: "model",
       action: "set",
-      model: nextModel,
+      model: modelId,
+      thinking,
     };
   }
   const planMatch = text.match(/^(?:\/plan|plan)(?:\s+(.*))?$/i);
@@ -291,10 +294,29 @@ async function runUcodeCoreAgent({
     provider,
     model,
   });
+  const {
+    currentThinkingLevel,
+  } = require("./modelCommand");
+  const {
+    resolveThinkingFromEnvAndConfig,
+    applyThinkingLevelToEnv,
+  } = require("./thinkingLevels");
+  const { loadGlobalUcodeConfig } = require("../config");
+  let initialThinking = "";
+  try {
+    initialThinking = String((loadGlobalUcodeConfig() || {}).ucodeThinking || "").trim();
+  } catch {
+    initialThinking = "";
+  }
+  const thinkingResolved = resolveThinkingFromEnvAndConfig({
+    env: process.env,
+    configLevel: initialThinking,
+  });
   const state = {
     workspaceRoot: resolvedWorkspaceRoot,
     provider: resolvedUcode.provider,
     model: resolvedUcode.model,
+    thinking: currentThinkingLevel({ thinking: initialThinking }),
     engine: "ufoo-core",
     context: buildNlContext({
       appendSystemPrompt,
@@ -308,6 +330,10 @@ async function runUcodeCoreAgent({
     timeoutMs: resolveNlTaskTimeoutMs(Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : NaN),
     jsonOutput,
   };
+  // Named levels sync into env; leave an explicit numeric budget override alone.
+  if (thinkingResolved.source !== "env-budget") {
+    applyThinkingLevelToEnv(state.thinking, process.env);
+  }
   persistSessionState(state);
 
   if (shouldUseUcodeTui({
@@ -466,7 +492,9 @@ async function runUcodeCoreAgent({
         }
       }
       if (result.kind === "model") {
-        const applied = applyUcodeModelCommand(state, result);
+        const applied = await applyUcodeModelCommand(state, result, {
+          workspaceRoot: runtimeWorkspace,
+        });
         stdout.write(`${applied.output}\n`);
         if (applied.ok && result.action === "set") {
           persistSessionState(state);
@@ -770,4 +798,5 @@ module.exports = {
   applyUcodeModelCommand,
   applyUcodePlanCommand,
   suggestUcodeModels,
+  suggestUcodeThinkingLevels: require("./modelCommand").suggestUcodeThinkingLevels,
 };

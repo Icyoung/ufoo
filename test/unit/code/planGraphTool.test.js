@@ -18,7 +18,7 @@ const {
 } = require("../../../src/code/context/planGraph");
 
 describe("plan_graph control-plane tool", () => {
-  test("TOOL_NAMES includes plan_graph without plan_mode tool", () => {
+  test("TOOL_NAMES includes plan_graph and task_run without plan_mode tool", () => {
     expect(TOOL_NAMES).toEqual([
       "read",
       "write",
@@ -26,6 +26,7 @@ describe("plan_graph control-plane tool", () => {
       "bash",
       "artifact_read",
       "plan_graph",
+      "task_run",
       "ask_user",
     ]);
   });
@@ -33,15 +34,18 @@ describe("plan_graph control-plane tool", () => {
   test("immutable prompt treats Plan Mode as runtime posture, not an agent tool", () => {
     const text = buildImmutablePrefix();
     expect(text).toContain("plan_graph");
+    expect(text).toContain("task_run");
+    expect(text).toMatch(/TaskRuns are orthogonal to Plan Mode/i);
     expect(text).toMatch(/Plan Mode is a runtime posture for the Agent Loop/i);
     expect(text).toMatch(/operation=create automatically enables Plan Mode/i);
-    expect(text).toContain("Do not call plan_graph together with read, write, edit, bash, or artifact_read");
+    expect(text).toContain("Do not call plan_graph or task_run together with read, write, edit, bash, or artifact_read");
     expect(text).toMatch(/cancel_graph/i);
     expect(text).not.toContain("create/patch/inspect/control/cancel.");
     expect(text).not.toContain("create/patch/inspect/control/cancel)");
     expect(text).not.toContain("create/patch/inspect/control/cancel,");
     expect(text).toContain("create, patch, inspect, cancel_graph, and control");
     expect(text).toMatch(/control\.start_task for execution\.kind=task_loop/i);
+    expect(text).toMatch(/automatically decompose/i);
     expect(text).toMatch(/Treat a User reminder as the latest user instruction/i);
     expect(text).toMatch(/Turning Plan Mode off does not cancel/i);
     expect(text).toMatch(/Runtime enforces TaskRun concurrency limits/i);
@@ -53,7 +57,7 @@ describe("plan_graph control-plane tool", () => {
     expect(text).not.toContain("Plan patch ops:");
   });
 
-  test("tool schemas use layered descriptions for the three control-plane tools", () => {
+  test("tool schemas use layered descriptions for the control-plane tools", () => {
     const { buildCoreToolSpecs } = require("../../../src/code/nativeRunner");
     const specs = buildCoreToolSpecs();
     const byName = Object.fromEntries(
@@ -64,10 +68,21 @@ describe("plan_graph control-plane tool", () => {
     expect(byName.artifact_read.description).toMatch(/use `read` for repository paths/i);
 
     expect(byName.plan_graph.description).toMatch(/control\.start_task/i);
+    expect(byName.plan_graph.description).toMatch(/task_run/i);
     expect(byName.plan_graph.description).not.toMatch(/Patch ops:/);
     expect(byName.plan_graph.parameters.properties.operations.description).toMatch(/add_node/);
     expect(byName.plan_graph.parameters.properties.operations.description).toMatch(/control\.actions/);
     expect(byName.plan_graph.parameters.properties.actions.description).toMatch(/complete_task/);
+
+    expect(byName.task_run.description).toMatch(/orthogonal to Plan Mode/i);
+    expect(byName.task_run.description).toMatch(/standalone/i);
+    expect(byName.task_run.parameters.properties.operation.enum).toEqual([
+      "start",
+      "cancel",
+      "fail",
+      "complete",
+      "inspect",
+    ]);
 
     expect(byName.ask_user.description).toMatch(/pause the current Agent loop/i);
     expect(byName.ask_user.description).toMatch(/Running TaskRuns are not paused/i);

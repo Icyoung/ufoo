@@ -93,13 +93,22 @@ function createTaskRun({
   parentNodeId = "",
   childGraphId = "",
   attempt = 1,
+  kind = "",
+  objective = "",
+  title = "",
 } = {}) {
   const now = new Date().toISOString();
+  const parentNode = String(parentNodeId || "").trim();
+  const resolvedKind = String(kind || "").trim()
+    || (parentNode ? "graph_node" : "standalone");
   return {
     id: createTaskRunId(),
+    kind: resolvedKind,
     parentGraphId: String(parentGraphId || "").trim(),
-    parentNodeId: String(parentNodeId || "").trim(),
+    parentNodeId: parentNode,
     childGraphId: String(childGraphId || "").trim(),
+    objective: String(objective || "").trim(),
+    title: String(title || objective || "").trim(),
     status: "queued",
     phase: "initializing",
     attempt: Number.isFinite(attempt) ? Math.max(1, Math.floor(attempt)) : 1,

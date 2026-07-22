@@ -101,12 +101,20 @@ function createInitialState({ banner = [], globalMode = false, globalScope = "co
   const initialLaunchMode = settings.launchMode || "auto";
   const initialAgentProvider = settings.agentProvider || "codex-cli";
   const selectedProviderIndex = Math.max(0, DEFAULT_PROVIDER_OPTIONS.findIndex((opt) => opt.value === initialAgentProvider));
+  const seed = Array.isArray(banner) ? banner.concat([""]) : [""];
   return {
-    logLines: banner.concat([""]).map((line, idx) => createChatLogEntry({
-      text: line,
-      sourceType: "banner",
-    }, `b-${idx}`)),
-    lineSeq: banner.length + 1,
+    logLines: seed.map((line, idx) => {
+      // History reload may pass structured `{ text, sourceType }` rows —
+      // don't wrap those objects as `text` (that yields "[object Object]").
+      if (line && typeof line === "object" && !Array.isArray(line)) {
+        return createChatLogEntry(line, `b-${idx}`);
+      }
+      return createChatLogEntry({
+        text: line,
+        sourceType: "banner",
+      }, `b-${idx}`);
+    }),
+    lineSeq: seed.length,
     draft: "",
     focusMode: "input",
     dashboardView: globalMode ? "projects" : "agents",
@@ -446,7 +454,11 @@ function reducer(state, action) {
       const annotated = prefix && lines.length > 0
         ? [`${prefix}${lines[0]}`, ...lines.slice(1).map((l) => `  ${l}`)]
         : lines;
-      const next = appendLog(state, annotated);
+      const next = appendLog(state, annotated.map((text) => ({
+        text,
+        type: "bus",
+        sourceType: "bus",
+      })));
       return { ...next, activeStream: null };
     }
     case "agentView/enter":

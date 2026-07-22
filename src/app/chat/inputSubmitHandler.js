@@ -33,8 +33,9 @@ function createInputSubmitHandler(options = {}) {
 
   function userEcho(text, targetLabel = "") {
     const body = escapeBlessed(text);
-    if (!targetLabel) return body;
-    return `{magenta-fg}@${escapeBlessed(targetLabel)}{/magenta-fg} ${body}`;
+    // Match ucode › prompt echo so history reload and live log share a prefix.
+    if (!targetLabel) return `› ${body}`;
+    return `› {magenta-fg}@${escapeBlessed(targetLabel)}{/magenta-fg} ${body}`;
   }
 
   async function tryActivateTargetAgent(agentId) {

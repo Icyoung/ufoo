@@ -79,6 +79,20 @@ function createHarness(overrides = {}) {
     resolveTerminalApp: jest.fn(() => ""),
     sleep: jest.fn(() => Promise.resolve()),
     schedule: jest.fn((fn) => fn()),
+    // Keep settings ucode tests offline: pretend the models route lists common ids.
+    fetchModelsImpl: jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        data: [
+          { id: "gpt-5.1-codex" },
+          { id: "gpt-5.4" },
+          { id: "claude-opus-4-6" },
+          { id: "claude-opus-4-5" },
+          { id: "k3" },
+        ],
+      }),
+    })),
   };
 
   const options = { ...defaults, ...overrides };
@@ -988,6 +1002,49 @@ describe("chat commandExecutor", () => {
     expect(logs.some((entry) => entry.text.includes("ucode config updated"))).toBe(true);
     expect(logs.some((entry) => entry.text.includes("key: sk-s...0000"))).toBe(true);
     expect(logs.some((entry) => entry.text.includes("transport: openai-chat"))).toBe(true);
+  });
+
+  test("handleUcodeConfigCommand set rejects model missing from models route", async () => {
+    const { executor, options, logs } = createHarness({
+      fetchModelsImpl: jest.fn(async () => ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ data: [{ id: "gpt-5.4" }] }),
+      })),
+    });
+
+    await executor.handleUcodeConfigCommand([
+      "set",
+      "provider=openai",
+      "model=totally-fake",
+      "url=https://api.openai.com/v1",
+      "key=sk-secret-0000",
+    ]);
+
+    expect(options.saveUcodeConfig).not.toHaveBeenCalled();
+    expect(logs.some((entry) => entry.type === "error" && entry.text.includes("totally-fake"))).toBe(true);
+  });
+
+  test("handleUcodeConfigCommand models lists provider catalog", async () => {
+    const { executor, logs } = createHarness({
+      loadUcodeConfig: jest.fn(() => ({
+        ucodeProvider: "openai",
+        ucodeModel: "gpt-5.4",
+        ucodeBaseUrl: "https://api.openai.com/v1",
+        ucodeApiKey: "sk-test",
+      })),
+      fetchModelsImpl: jest.fn(async () => ({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ data: [{ id: "gpt-5.4" }, { id: "o3" }] }),
+      })),
+    });
+
+    await executor.handleUcodeConfigCommand(["models"]);
+
+    expect(logs.some((entry) => entry.text.includes("ucode models:"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("gpt-5.4") && entry.text.includes("(current)"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("o3"))).toBe(true);
   });
 
   test("executeCommand does not route removed /ucodeconfig alias", async () => {

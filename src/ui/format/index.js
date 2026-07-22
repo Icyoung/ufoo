@@ -1103,13 +1103,52 @@ function buildCompletions({
       }
     }
 
-    // Generic top-level argument lists (e.g. /resume <session-id>).
+    // Generic top-level argument lists (e.g. /resume <session-id>,
+    // /model <id> [thinking]). /model supports a secondary intensity menu.
     if (
       Array.isArray(argListForHead)
       && argListForHead.length > 0
       && !(headNode && headNode.children)
       && (endsWithWhitespace || tail.length >= 1)
     ) {
+      const secondaryList = argumentLists && typeof argumentLists === "object"
+        ? argumentLists[`${headKey}/thinking`] || argumentLists[`${headKey}/think`]
+        : null;
+      const supportsThinkingMenu = head === "/model" && Array.isArray(secondaryList) && secondaryList.length > 0;
+
+      // Secondary menu: "/model <id> " or "/model <id> <partial>"
+      if (supportsThinkingMenu && (
+        (tail.length === 1 && endsWithWhitespace)
+        || tail.length >= 2
+      )) {
+        if (tail.length > 2) return [];
+        const modelId = String(tail[0] || "").trim();
+        if (!modelId) return [];
+        const partial = tail.length >= 2 && !endsWithWhitespace
+          ? String(tail[1] || "").toLowerCase()
+          : "";
+        const out = [];
+        for (const item of secondaryList) {
+          const id = String((item && (item.alias || item.cmd || item.id || item.name)) || item || "");
+          if (!id) continue;
+          if (partial && !id.toLowerCase().startsWith(partial)) continue;
+          const desc = String((item && (item.desc || item.summary || item.description || item.source)) || "");
+          out.push({
+            kind: "argument",
+            label: `${head} ${modelId} ${id}`,
+            replace: `${head} ${modelId} ${id}`,
+            description: desc,
+            hasChildren: false,
+          });
+          if (out.length >= limit) break;
+        }
+        if (partial && out.length === 1) {
+          const candidate = String(out[0].replace || "").trim().split(/\s+/).pop() || "";
+          if (candidate.toLowerCase() === partial && !out[0].hasChildren) return [];
+        }
+        return out;
+      }
+
       if (tail.length > 1) return [];
       const partial = String(tail[0] || "").toLowerCase();
       const out = [];
@@ -1118,17 +1157,23 @@ function buildCompletions({
         if (!id) continue;
         if (partial && !id.toLowerCase().startsWith(partial)) continue;
         const desc = String((item && (item.desc || item.summary || item.description || item.source)) || "");
+        const hasChildren = Boolean(
+          (item && item.hasChildren)
+          || supportsThinkingMenu
+        );
         out.push({
           kind: "argument",
           label: `${head} ${id}`,
-          replace: `${head} ${id} `,
+          // Trailing space keeps the popup open for the thinking submenu.
+          replace: hasChildren ? `${head} ${id} ` : `${head} ${id} `,
           description: desc,
-          hasChildren: false,
+          hasChildren,
         });
         if (out.length >= limit) break;
       }
       if (partial && out.length === 1) {
         const candidate = String(out[0].replace || "").trim().split(/\s+/).pop() || "";
+        // Keep the popup open when the sole match still has a submenu.
         if (candidate.toLowerCase() === partial && !out[0].hasChildren) return [];
       }
       return out;

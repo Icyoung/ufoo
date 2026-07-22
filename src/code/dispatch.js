@@ -6,6 +6,7 @@ const { runEditTool } = require("./tools/edit");
 const { runBashTool } = require("./tools/bash");
 const { runArtifactReadTool } = require("./tools/artifactRead");
 const { runPlanGraphTool } = require("./tools/planGraph");
+const { runTaskRunTool } = require("./tools/taskRun");
 const { runAskUserTool } = require("./tools/askUser");
 
 const TOOL_NAMES = [
@@ -15,6 +16,7 @@ const TOOL_NAMES = [
   "bash",
   "artifact_read",
   "plan_graph",
+  "task_run",
   "ask_user",
 ];
 
@@ -26,6 +28,7 @@ function normalizeToolName(value = "") {
   if (text === "bash") return "bash";
   if (text === "artifact_read" || text === "artifact-read" || text === "artifactread") return "artifact_read";
   if (text === "plan_graph" || text === "plan-graph" || text === "plangraph") return "plan_graph";
+  if (text === "task_run" || text === "task-run" || text === "taskrun") return "task_run";
   if (text === "ask_user" || text === "ask-user" || text === "askuser") return "ask_user";
   return "";
 }
@@ -45,6 +48,7 @@ function runToolCall(input = {}, options = {}) {
   if (tool === "edit") return runEditTool(args, options);
   if (tool === "artifact_read") return runArtifactReadTool(args, options);
   if (tool === "plan_graph") return runPlanGraphTool(args, options);
+  if (tool === "task_run") return runTaskRunTool(args, options);
   if (tool === "ask_user") return runAskUserTool(args, options);
   return runBashTool(args, options);
 }

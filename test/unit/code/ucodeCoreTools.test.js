@@ -85,6 +85,7 @@ describe("ucode-core tool kernel", () => {
       "bash",
       "artifact_read",
       "plan_graph",
+      "task_run",
       "ask_user",
     ]);
   });

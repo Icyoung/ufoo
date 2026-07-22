@@ -31,7 +31,7 @@ const {
 } = require("../skills");
 const { hashContent } = require("./artifacts");
 
-const PROMPT_VERSION = "native-v5";
+const PROMPT_VERSION = "native-v6";
 
 function buildImmutablePrefix() {
   return [
@@ -44,19 +44,20 @@ function buildImmutablePrefix() {
     getOutputEfficiencySection(),
     [
       "Tool calling grammar:",
-      "- Use read, write, edit, bash, and artifact_read for direct work, even when it takes several tool calls. Use plan_graph only when the work needs a durable semantic/executable plan, explicit dependencies or checkpoints, or asynchronous TaskRuns.",
-      "- Plan Mode is a runtime posture for the Agent Loop, not an agent tool. While Plan Mode is ON, direct write, edit, and bash calls from the Agent Loop are blocked; read and artifact_read remain available.",
+      "- Use read, write, edit, bash, and artifact_read for direct, single-goal work, even when it takes several tool calls.",
+      "- TaskRuns are orthogonal to Plan Mode. A TaskRun does not require Plan Mode or a plan_graph. Use task_run operation=start with an objective for a standalone single-point TaskRun; it starts asynchronously and returns immediately.",
+      "- On complex or multi-goal requests, automatically decompose into concrete sub-objectives and start TaskRun(s) via task_run. Prefer task_run for independent or loosely coupled tracks; use plan_graph only when you need durable dependencies, checkpoints, or a shared executable plan.",
+      "- Use plan_graph for durable graph structure: create, patch, inspect, cancel_graph, and control. Graph-bound TaskRuns use plan_graph control.start_task on execution.kind=task_loop nodes.",
+      "- Plan Mode is a runtime posture for the Agent Loop, not an agent tool. While Plan Mode is ON, direct write, edit, and bash calls from the Agent Loop are blocked; read and artifact_read remain available. TaskRuns still run independently of Plan Mode.",
       "- In the Agent Loop, plan_graph operation=create automatically enables Plan Mode. The user may also use /plan on or /plan off.",
-      "- Turning Plan Mode off does not cancel an existing graph or running TaskRuns. Use plan_graph operation=cancel_graph or operation=control with cancel_task to stop them.",
+      "- Turning Plan Mode off does not cancel an existing graph or running TaskRuns. Cancel with task_run (standalone) or plan_graph operation=cancel_graph / control.cancel_task (graph-bound).",
       "- When the user enables Plan Mode and no active graph exists, create a plan_graph before performing side effects.",
-      "- Use plan_graph for durable graph structure and TaskRun lifecycle: create, patch, inspect, cancel_graph, and control.",
       "- After an accepted plan_graph create or patch, Runtime automatically advances ready tool nodes. Never invent or request an execute_graph tool.",
-      "- Do not call plan_graph together with read, write, edit, bash, or artifact_read in the same assistant turn.",
+      "- Do not call plan_graph or task_run together with read, write, edit, bash, or artifact_read in the same assistant turn.",
       "- When an active graph is waiting on a task, advance that node through plan_graph instead of bypassing it with direct workspace tools: use patch.expand_node for execution.kind=expand, control.complete_task (nodeId) for execution.kind=inline_llm, or control.start_task for execution.kind=task_loop.",
-      "- control.complete_task with nodeId completes a waiting_llm inline_llm task for the current Graph owner. control.complete_task with taskRunId is reserved for the owning TaskLoop. Do not directly complete expand or aggregate tasks.",
-      "- While Plan Mode is ON, workspace mutations must be represented as plan_graph tool nodes or performed inside a running task_loop.",
+      "- control.complete_task with nodeId completes a waiting_llm inline_llm task for the current Graph owner. control.complete_task with taskRunId (or task_run complete) is reserved for the owning TaskLoop. Do not directly complete expand or aggregate tasks.",
+      "- While Plan Mode is ON, workspace mutations must be represented as plan_graph tool nodes or performed inside a running TaskRun/task_loop.",
       "- Treat a User reminder as the latest user instruction. Reconcile it before continuing from tool results. If it is compatible with the active plan, resume the waiting plan node; otherwise patch, cancel, or replan first.",
-      "- Use execution.kind=task_loop for work that should continue asynchronously without occupying the Agent Loop. plan_graph operation=control action=start_task starts the TaskRun and returns immediately.",
       "- TaskLoops do not consume User reminders. The Agent Loop is woken by runtime task_started, task_succeeded, task_failed, and task_cancelled events.",
       "- Runtime enforces TaskRun concurrency limits and workspace write leases. Direct Agent write, edit, or bash calls may be rejected while writing TaskRuns are active.",
       "- Tool results may contain an artifactId. Use artifact_read to hydrate raw stored output or a slice of it; use read for workspace file paths.",

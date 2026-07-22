@@ -2,7 +2,14 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const UCODE_FIELDS = ["ucodeProvider", "ucodeModel", "ucodeBaseUrl", "ucodeApiKey", "ucodeAgentDir"];
+const UCODE_FIELDS = [
+  "ucodeProvider",
+  "ucodeModel",
+  "ucodeBaseUrl",
+  "ucodeApiKey",
+  "ucodeAgentDir",
+  "ucodeThinking",
+];
 
 const SETTINGS_MODEL_DEFAULTS = Object.freeze({
   agent: Object.freeze({
@@ -47,6 +54,7 @@ const DEFAULT_UCODE_CONFIG = {
   ucodeBaseUrl: "",
   ucodeApiKey: "",
   ucodeAgentDir: "",
+  ucodeThinking: "",
 };
 
 function normalizeLaunchMode(value) {
@@ -251,6 +259,7 @@ function loadGlobalUcodeConfig() {
     ucodeBaseUrl: typeof raw.ucodeBaseUrl === "string" ? raw.ucodeBaseUrl : "",
     ucodeApiKey: typeof raw.ucodeApiKey === "string" ? raw.ucodeApiKey : "",
     ucodeAgentDir: typeof raw.ucodeAgentDir === "string" ? raw.ucodeAgentDir : "",
+    ucodeThinking: typeof raw.ucodeThinking === "string" ? raw.ucodeThinking : "",
   };
 }
 
