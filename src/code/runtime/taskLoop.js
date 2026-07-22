@@ -357,17 +357,28 @@ function processTaskRun(executionState = null, taskRunId = "", options = {}) {
 
 /**
  * Resume queued/running TaskRuns after process restart (executionState restored).
+ * Requeues interrupted mid-tool/model runs, releases stale leases, then advances.
  */
 function resumePersistedTaskRuns(executionState = null, options = {}) {
   const state = ensureGraphs(executionState);
+  const {
+    recoverTaskRunsAfterRestart,
+  } = require("./taskRun");
+  const { releaseStaleWriteLeases } = require("./workspaceLease");
+  const recovery = recoverTaskRunsAfterRestart(state);
+  const leases = releaseStaleWriteLeases(state, {
+    maxAgeMs: options.leaseStaleMs,
+  });
   const byId = state.taskRuns && state.taskRuns.byId ? state.taskRuns.byId : {};
   const results = [];
   for (const run of Object.values(byId)) {
     if (!run) continue;
-    if (run.status !== "queued" && run.status !== "running") continue;
+    if (run.status !== "queued" && run.status !== "running" && run.status !== "cancelling") {
+      continue;
+    }
     results.push(processTaskRun(state, run.id, options));
   }
-  return results;
+  return { recovery, leases, results };
 }
 
 module.exports = {

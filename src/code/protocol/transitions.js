@@ -3,11 +3,24 @@
 /**
  * Current-state transition tables for Plan Mode and TaskRun (Phase 0).
  *
- * Documents *as-implemented* rules. R5 will replace planMode bool with
- * planningPolicy × executionOwner; until then this table locks the status quo.
+ * Documents *as-implemented* rules. R5 dual-writes planningPolicy alongside
+ * planMode; executionOwner is orthogonal to planningPolicy.
+ *
+ * NOTE: Status enums are duplicated in runtime/taskRun.js on purpose to avoid
+ * a require cycle (taskRun must not import this module).
  */
 
-const { TASK_RUN_STATUSES, TERMINAL_TASK_RUN } = require("../runtime/taskRun");
+/** Mirror of runtime/taskRun TASK_RUN_STATUSES (keep in sync). */
+const TASK_RUN_STATUSES = Object.freeze([
+  "queued",
+  "running",
+  "cancelling",
+  "succeeded",
+  "failed",
+  "cancelled",
+]);
+
+const TERMINAL_TASK_RUN = new Set(["succeeded", "failed", "cancelled"]);
 
 /** Allowed TaskRun status edges (from → to[]). Terminal states have no outbound edges. */
 const TASK_RUN_TRANSITIONS = Object.freeze({

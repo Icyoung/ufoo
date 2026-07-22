@@ -190,6 +190,46 @@ function hasActiveWriteLease(executionState = null) {
   return countWriteLeases(executionState) > 0;
 }
 
+/**
+ * Release leases whose TaskRun is missing/terminal, or whose acquiredAt is older
+ * than maxAgeMs without an active non-terminal run heartbeat.
+ */
+function releaseStaleWriteLeases(executionState = null, {
+  maxAgeMs = require("./taskRun").DEFAULT_LEASE_STALE_MS,
+  nowMs = Date.now(),
+} = {}) {
+  const {
+    getTaskRun,
+    isTerminalTaskRun,
+  } = require("./taskRun");
+  const lease = ensureWorkspaceLease(executionState);
+  const holders = normalizeHolders(lease);
+  const released = [];
+  const kept = [];
+  const maxAge = Number.isFinite(maxAgeMs) ? Math.max(0, maxAgeMs) : 0;
+
+  for (const holder of holders) {
+    const run = getTaskRun(executionState, holder.taskRunId);
+    if (!run || isTerminalTaskRun(run)) {
+      released.push({ taskRunId: holder.taskRunId, reason: "terminal_or_missing" });
+      continue;
+    }
+    const acquired = Date.parse(String(holder.acquiredAt || ""));
+    if (maxAge > 0 && Number.isFinite(acquired) && (nowMs - acquired) > maxAge) {
+      const beat = Date.parse(String(run.heartbeatAt || run.startedAt || ""));
+      if (!Number.isFinite(beat) || (nowMs - beat) > maxAge) {
+        released.push({ taskRunId: holder.taskRunId, reason: "stale_heartbeat" });
+        continue;
+      }
+    }
+    kept.push(holder);
+  }
+
+  lease.holders = kept;
+  if (kept.length === 0) lease.acquiredAt = "";
+  return { ok: true, released, kept: kept.slice(), lease };
+}
+
 module.exports = {
   WRITE_TOOLS,
   MAX_CONCURRENT_WRITE_LEASES,
@@ -205,4 +245,5 @@ module.exports = {
   clearWorkspaceLease,
   checkWriteAllowed,
   hasActiveWriteLease,
+  releaseStaleWriteLeases,
 };

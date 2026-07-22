@@ -359,8 +359,8 @@ describe("Nested Plan Graph V1 — TaskLoop / Agent Loop", () => {
     expect(getTaskRun(executionState, started.taskRunId).status).toBe("queued");
     // Simulate restore: same executionState object
     const ticks = resumePersistedTaskRuns(executionState, {});
-    expect(ticks.length).toBe(1);
-    expect(ticks[0].ok).toBe(true);
+    expect(ticks.results.length).toBe(1);
+    expect(ticks.results[0].ok).toBe(true);
     expect(["running", "queued"]).toContain(getTaskRun(executionState, started.taskRunId).status);
   });
 

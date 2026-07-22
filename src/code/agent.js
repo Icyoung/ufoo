@@ -520,9 +520,22 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
     : null;
   const pushToolLog = createToolLogCollector(logs, onToolLog);
 
-  // Detect bug fix tasks and use decomposed runner
-  const isBugFixTask = /\b(?:fix(?:es|ed|ing)?|bugs?|issues?|problems?|errors?|broken)\b|doesn't work|not work/i.test(taskText);
-  const useDecomposition = isBugFixTask && !options.disableDecomposition;
+  // Structural / explicit upgrade to decomposed runner (not keyword "fix").
+  const { shouldUpgradeToDecomposition } = require("./taskRoute");
+  const routeDecision = shouldUpgradeToDecomposition(taskText, {
+    disableDecomposition: options.disableDecomposition,
+    forceDecomposition: options.forceDecomposition,
+    forceDirect: options.forceDirect,
+    failureCount: options.failureCount,
+    modelRequestedUpgrade: options.modelRequestedUpgrade,
+    hasPlanGraph: Boolean(
+      state.executionState
+      && state.executionState.planGraph
+      && state.executionState.planGraph.graphId
+    ),
+  });
+  const useDecomposition = Boolean(routeDecision.upgrade);
+  state.lastRouteDecision = routeDecision;
   const analysisTask = isProjectAnalysisTask(taskText);
   const workspaceRoot = String(state.workspaceRoot || process.cwd());
   ensureContextSessionState(state);

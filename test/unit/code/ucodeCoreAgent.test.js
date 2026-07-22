@@ -389,7 +389,9 @@ describe("ucode core agent nl path", () => {
         timeoutMs: 30000,
       };
 
-      const result = await runNaturalLanguageTask("fix with $demo", state);
+      const result = await runNaturalLanguageTask("fix with $demo", state, {
+        forceDecomposition: true,
+      });
 
       expect(result.ok).toBe(true);
       expect(runNativeAgentTask).toHaveBeenCalledTimes(4);
