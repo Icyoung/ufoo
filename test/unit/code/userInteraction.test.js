@@ -163,4 +163,17 @@ describe("userInteraction", () => {
     expect(JSON.stringify(resolved.answer)).not.toMatch(/Proceed with write/);
     expect(executionState.pendingUserInteraction).toBe(null);
   });
+
+  test("formatInteractionPromptLines wraps long Question across rows", () => {
+    const long = "当前 Plan Mode 的嵌套任务执行器卡在启动前，且该模式禁止我直接编辑文件。请发送 /plan off，我会立即继续完成首页 Rank 现货交易对中 / 的英文字体修复和验证。";
+    const lines = formatInteractionPromptLines({
+      kind: "chat",
+      prompt: long,
+    }, { cols: 40 });
+    expect(lines[0]).toMatch(/^Question:/);
+    expect(lines.length).toBeGreaterThan(2);
+    expect(lines.join("")).toContain("嵌套任务执行器");
+    expect(lines.join("")).toContain("/plan off");
+    expect(lines[lines.length - 1]).toMatch(/type your reply/);
+  });
 });

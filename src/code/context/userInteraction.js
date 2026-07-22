@@ -387,15 +387,40 @@ function resolveUserInteraction(executionState = null, rawText = "") {
   };
 }
 
-function formatInteractionPromptLines(pending = null) {
+function wrapLabeledBlock(label = "", prompt = "", cols = 80) {
+  const title = String(label || "Question").trim() || "Question";
+  const text = String(prompt || "").replace(/\s+/g, " ").trim();
+  const width = Math.max(24, Math.min(120, Math.floor(Number(cols) || 80) - 2));
+  if (!text) return [`${title}:`];
+
+  const prefix = `${title}: `;
+  const firstWidth = Math.max(8, width - prefix.length);
+  const contPrefix = "  ";
+  const contWidth = Math.max(8, width - contPrefix.length);
+  const lines = [];
+
+  let offset = 0;
+  const firstChunk = text.slice(0, firstWidth);
+  lines.push(`${prefix}${firstChunk}`);
+  offset = firstChunk.length;
+  while (offset < text.length) {
+    const chunk = text.slice(offset, offset + contWidth);
+    lines.push(`${contPrefix}${chunk}`);
+    offset += chunk.length;
+  }
+  return lines;
+}
+
+function formatInteractionPromptLines(pending = null, options = {}) {
   if (!pending) return [];
+  const cols = Number(options.cols) > 0 ? Number(options.cols) : 80;
   const lines = [];
   const kind = pending.kind || "chat";
   if (kind === "approval") {
-    lines.push(`Approval: ${pending.prompt}`);
+    lines.push(...wrapLabeledBlock("Approval", pending.prompt, cols));
     lines.push("  [yes] Yes    [no] No    or type a free-text reply");
   } else if (kind === "choice") {
-    lines.push(`Choice: ${pending.prompt}`);
+    lines.push(...wrapLabeledBlock("Choice", pending.prompt, cols));
     for (const opt of pending.options || []) {
       lines.push(`  [${opt.key}] ${opt.label}`);
     }
@@ -403,7 +428,7 @@ function formatInteractionPromptLines(pending = null) {
       lines.push("  or type a free-text reply");
     }
   } else {
-    lines.push(`Question: ${pending.prompt}`);
+    lines.push(...wrapLabeledBlock("Question", pending.prompt, cols));
     lines.push("  (type your reply)");
   }
   return lines;

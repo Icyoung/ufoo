@@ -172,7 +172,9 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
         );
         setPlanUi((prev) => (prev && prev.hash === next.hash ? prev : next));
         const pending = getPendingUserInteraction(props.state && props.state.executionState);
-        setInteractionLines(pending ? formatInteractionPromptLines(pending) : []);
+        setInteractionLines(pending ? formatInteractionPromptLines(pending, {
+          cols: size.cols || 80,
+        }) : []);
         return next;
       } catch {
         return null;
@@ -1284,7 +1286,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
           ...interactionLines.map((line, idx) => h(Text, {
             key: `ask-${idx}`,
             color: "yellow",
-            wrap: "truncate",
+            wrap: "wrap",
           }, line || " ")),
         )
         : null,

@@ -495,4 +495,76 @@ describe("Nested Plan Graph V1 — TaskLoop / Agent Loop", () => {
     expect(viaTool.kind).toBe("standalone");
     expect(executionState.planMode).toBe(false);
   });
+
+  test("patch expand_node on childGraphId advances TaskLoop without GRAPH_ID_MISMATCH", () => {
+    const executionState = emptyExecutionState();
+    createParentWithTasks(executionState, [
+      {
+        id: "impl",
+        type: "task",
+        title: "Implement",
+        execution: { kind: "task_loop" },
+        objective: "Implement feature",
+      },
+    ]);
+    const stubTool = ({ stepId, tool }) => ({
+      ok: true,
+      summary: "ok",
+      output: { stepId, tool },
+    });
+    const started = startTask(executionState, {
+      nodeId: "impl",
+      commandId: "start-child-1",
+      processImmediately: true,
+      runTool: stubTool,
+    });
+    expect(started.ok).toBe(true);
+    expect(started.childGraphId).toBeTruthy();
+
+    const run = getTaskRun(executionState, started.taskRunId);
+    expect(["waiting_model", "planning"]).toContain(run.phase);
+    const child = executionState.graphs[started.childGraphId];
+    expect(child).toBeTruthy();
+    expect((child.nodes || []).some((n) => n.id === "root")).toBe(true);
+    const parentIdBefore = executionState.planGraph.graphId;
+
+    // Before the fix, patching with childGraphId returned GRAPH_ID_MISMATCH.
+    const mismatch = runPlanGraphCommand({
+      operation: "patch",
+      graphId: started.childGraphId,
+      commandId: "expand-child-root-probe",
+      operations: [],
+    }, { executionState, autoAdvance: false });
+    expect(mismatch.status).toBe("accepted");
+    expect(mismatch.errors || []).toEqual([]);
+    expect(executionState.planGraph.graphId).toBe(parentIdBefore);
+
+    const calls = [];
+    const patched = runPlanGraphCommand({
+      operation: "patch",
+      graphId: started.childGraphId,
+      commandId: "expand-child-root",
+      operations: [{
+        op: "expand_node",
+        nodeId: "root",
+        children: [
+          { id: "read_a", type: "tool", tool: "read", args: { path: "a.txt" } },
+        ],
+      }],
+    }, {
+      executionState,
+      autoAdvance: true,
+      runTool: ({ stepId, tool }) => {
+        calls.push({ stepId, tool });
+        return stubTool({ stepId, tool });
+      },
+    });
+
+    expect(patched.status).toBe("accepted");
+    expect(patched.graphId).toBe(started.childGraphId);
+    expect(calls.some((c) => c.stepId === "read_a")).toBe(true);
+    // Parent remains the active planGraph for the Agent Loop.
+    expect(executionState.planGraph.graphId).toBe(parentIdBefore);
+    expect(executionState.graphs[started.childGraphId]).toBeTruthy();
+  });
 });

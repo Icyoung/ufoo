@@ -96,14 +96,16 @@ function buildTaskRunWakeReminder(executionState = null) {
   if (runs.length === 0 && !hasPendingAgentMailbox(executionState)) return "";
   const lines = [
     "Runtime wake (not a user message): active TaskRun(s) still need the Agent Loop.",
-    "Continue serving them now (read/inspect/edit via tools, or plan_graph/task_run control).",
-    "Do not end the turn with text only while a TaskRun is waiting_model.",
+    "Continue serving them now. For a TaskLoop child graph waiting on root:",
+    "call plan_graph operation=patch with graphId=<childGraphId> and expand_node on nodeId=root",
+    "(tool children). Do not ask the user to /plan off. Do not end with text only.",
   ];
   for (const run of runs.slice(0, 4)) {
     const label = run.title || run.objective || run.parentNodeId || run.id;
     lines.push(
       `- taskRunId=${run.id} phase=${run.phase || ""} status=${run.status || ""}`
-      + (label ? ` — ${String(label).slice(0, 160)}` : "")
+      + (run.childGraphId ? ` childGraphId=${run.childGraphId}` : "")
+      + (label ? ` — ${String(label).slice(0, 120)}` : "")
     );
   }
   return lines.join("\n");

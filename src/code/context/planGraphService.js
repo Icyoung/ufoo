@@ -430,17 +430,128 @@ function cacheCommand(planGraph, commandId, payload) {
 }
 
 /**
- * Apply a normalized plan_graph command against executionState.planGraph.
+ * Resolve which graph a plan_graph command targets.
+ * Parent lives in executionState.planGraph; TaskLoop children live in graphs[].
+ */
+function selectGraphForCommand(executionState = null, command = {}) {
+  const state = ensurePlanGraphState(executionState);
+  if (!state.graphs || typeof state.graphs !== "object") state.graphs = {};
+  const primary = state.planGraph && typeof state.planGraph === "object"
+    ? state.planGraph
+    : emptyPlanGraphState();
+  if (primary.graphId) state.graphs[primary.graphId] = primary;
+
+  const requested = String(command && command.graphId || "").trim();
+  if (!requested) {
+    return {
+      ok: true,
+      graph: primary,
+      isPrimary: true,
+      primaryGraphId: String(primary.graphId || ""),
+    };
+  }
+  if (primary.graphId && primary.graphId === requested) {
+    return {
+      ok: true,
+      graph: primary,
+      isPrimary: true,
+      primaryGraphId: primary.graphId,
+    };
+  }
+  const mapped = state.graphs[requested];
+  if (mapped && typeof mapped === "object") {
+    return {
+      ok: true,
+      graph: mapped,
+      isPrimary: false,
+      primaryGraphId: String(primary.graphId || ""),
+    };
+  }
+  return {
+    ok: false,
+    code: "GRAPH_NOT_FOUND",
+    message: `graphId ${requested} not found`,
+  };
+}
+
+/**
+ * Apply a normalized plan_graph command against executionState.planGraph
+ * (or a TaskLoop child graph when command.graphId selects it).
  */
 function runPlanGraphCommand(commandInput = {}, options = {}) {
   const command = normalizePlanGraphCommand(commandInput) || commandInput;
   const operation = String(command && command.operation || "").trim().toLowerCase();
   const executionState = ensurePlanGraphState(options.executionState);
-  const planGraph = executionState.planGraph;
+  if (!executionState.graphs || typeof executionState.graphs !== "object") {
+    executionState.graphs = {};
+  }
   const commandId = String(command.commandId || "").trim();
+
+  if (!operation) {
+    const payload = rejected([{ code: "MISSING_OPERATION", message: "operation is required" }]);
+    return { ...payload, executionState, modelPayload: payload };
+  }
+
+  // create/control always target the primary agent graph; patch/inspect may
+  // select a TaskLoop child via command.graphId.
+  const selected = (operation === "patch" || operation === "inspect")
+    ? selectGraphForCommand(executionState, command)
+    : {
+      ok: true,
+      graph: executionState.planGraph,
+      isPrimary: true,
+      primaryGraphId: String(executionState.planGraph && executionState.planGraph.graphId || ""),
+    };
+
+  if (!selected.ok) {
+    const payload = rejected([{
+      code: selected.code || "GRAPH_NOT_FOUND",
+      message: selected.message || "graph not found",
+    }]);
+    return { ...payload, executionState, modelPayload: payload };
+  }
+
+  const primaryGraphId = selected.primaryGraphId
+    || String(executionState.planGraph && executionState.planGraph.graphId || "");
+  // Work on the selected graph for this command; restore primary afterward if child.
+  if (!selected.isPrimary) {
+    executionState.planGraph = selected.graph;
+  }
+  const planGraph = executionState.planGraph;
+
+  function restorePrimaryGraph() {
+    if (executionState.planGraph && executionState.planGraph.graphId) {
+      executionState.graphs[executionState.planGraph.graphId] = executionState.planGraph;
+    }
+    if (!selected.isPrimary && primaryGraphId && executionState.graphs[primaryGraphId]) {
+      executionState.planGraph = executionState.graphs[primaryGraphId];
+    } else if (executionState.planGraph && executionState.planGraph.graphId) {
+      executionState.graphs[executionState.planGraph.graphId] = executionState.planGraph;
+    }
+  }
+
+  function resumeChildTaskLoopIfNeeded(payload = null) {
+    if (selected.isPrimary) return null;
+    if (!payload || payload.status !== "accepted") return null;
+    if (typeof options.runTool !== "function") return null;
+    const childId = String((selected.graph && selected.graph.graphId) || "").trim();
+    const childLive = childId ? executionState.graphs[childId] : null;
+    const owner = childLive && childLive.owner;
+    if (!owner || owner.kind !== "task_loop" || !owner.taskRunId) return null;
+    try {
+      const { processTaskRun } = require("../runtime/taskLoop");
+      return processTaskRun(executionState, owner.taskRunId, {
+        runTool: options.runTool,
+        knownTools: options.knownTools,
+      });
+    } catch {
+      return null;
+    }
+  }
 
   if (commandId && planGraph.commandLog && planGraph.commandLog[commandId]) {
     const cached = cloneJson(planGraph.commandLog[commandId]);
+    restorePrimaryGraph();
     return {
       ...cached,
       ok: cached.status === "accepted",
@@ -450,13 +561,9 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
     };
   }
 
-  if (!operation) {
-    const payload = rejected([{ code: "MISSING_OPERATION", message: "operation is required" }]);
-    return { ...payload, executionState, modelPayload: payload };
-  }
-
   if (operation === "inspect") {
     const payload = inspectPlanGraph(planGraph);
+    restorePrimaryGraph();
     return { ...payload, executionState, modelPayload: payload };
   }
 
@@ -556,7 +663,13 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
       advance: { status: "completed", yieldReason: "cancelled", executedNodes: [], failedNodes: [] },
       validationWarnings: [],
     });
+    restorePrimaryGraph();
     return { ...payload, executionState, modelPayload: payload };
+  }
+
+  function rejectWorking(payload, extra = {}) {
+    restorePrimaryGraph();
+    return { ...payload, executionState, modelPayload: payload, ...extra };
   }
 
   if (
@@ -572,15 +685,16 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
       commandRevision: Number(planGraph.specRevision) || 0,
       stateRevision: Number(planGraph.stateRevision) || 0,
     });
-    return { ...payload, executionState, modelPayload: payload };
+    return rejectWorking(payload);
   }
 
   if (command.graphId && planGraph.graphId && command.graphId !== planGraph.graphId) {
+    // Should not happen after selectGraphForCommand switched the working graph.
     const payload = rejected([{
       code: "GRAPH_ID_MISMATCH",
       message: `expected graphId ${command.graphId}, actual ${planGraph.graphId}`,
     }]);
-    return { ...payload, executionState, modelPayload: payload };
+    return rejectWorking(payload);
   }
 
   const beforeIds = new Set(listNodeIds(planGraph.nodes));
@@ -622,7 +736,7 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
             code: "NESTED_TASK_LOOP_NOT_SUPPORTED",
             message: "V1 child graphs cannot create task_loop nodes",
           }]);
-          return { ...payload, executionState, modelPayload: payload };
+          return rejectWorking(payload);
         }
       }
       const targetId = String(op.nodeId || (op.node && op.node.id) || "").trim();
@@ -639,7 +753,7 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
               code: "RUNNING_TASK_SPEC_FROZEN",
               message: `cannot mutate running task_loop ${targetId}`,
             }]);
-            return { ...payload, executionState, modelPayload: payload };
+            return rejectWorking(payload);
           }
         }
       }
@@ -654,7 +768,7 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
         commandRevision: Number(planGraph.specRevision) || 0,
         stateRevision: Number(planGraph.stateRevision) || 0,
       });
-      return { ...payload, executionState, modelPayload: payload };
+      return rejectWorking(payload);
     }
     nextPlan = applied;
     for (const op of ops) {
@@ -668,7 +782,7 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
     }
   } else {
     const payload = rejected([{ code: "UNKNOWN_OPERATION", message: `unknown operation: ${operation}` }]);
-    return { ...payload, executionState, modelPayload: payload };
+    return rejectWorking(payload);
   }
 
   // Validate. Do not rewrite aggregate sinks via group rewrite when storing flat nodes.
@@ -680,7 +794,7 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
       stateRevision: Number(planGraph.stateRevision) || 0,
       validationWarnings: compiled.warnings || [],
     });
-    return { ...payload, executionState, modelPayload: payload, compile: compiled };
+    return rejectWorking(payload, { compile: compiled });
   }
 
   // Prefer the patched node list (includes aggregate expand status).
@@ -702,7 +816,7 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
       commandRevision: Number(planGraph.specRevision) || 0,
       stateRevision: Number(planGraph.stateRevision) || 0,
     });
-    return { ...payload, executionState, modelPayload: payload, compile: preferredCompile };
+    return rejectWorking(payload, { compile: preferredCompile });
   }
 
   const mergedNodes = applyStatusesFromStore(preferredCompile.nodes, preferredNodes, {
@@ -736,6 +850,8 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
     lastYieldReason: "",
     commandLog: planGraph.commandLog || {},
     owner: nextPlan.owner || planGraph.owner || null,
+    parentGraphId: planGraph.parentGraphId || "",
+    parentNodeId: planGraph.parentNodeId || "",
   };
   if (!executionState.graphs || typeof executionState.graphs !== "object") {
     executionState.graphs = {};
@@ -767,7 +883,7 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
         commandRevision: specRevision,
         stateRevision: Number(executionState.planGraph.stateRevision) || 0,
       });
-      return { ...payload, executionState, modelPayload: payload };
+      return rejectWorking(payload);
     }
     if (advanced.planGraph) {
       executionState.planGraph = {
@@ -775,6 +891,9 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
         specRevision,
         revision: specRevision,
         commandLog: planGraph.commandLog || {},
+        owner: advanced.planGraph.owner || planGraph.owner || null,
+        parentGraphId: advanced.planGraph.parentGraphId || planGraph.parentGraphId || "",
+        parentNodeId: advanced.planGraph.parentNodeId || planGraph.parentNodeId || "",
       };
     }
     if (advanced.advance) advance = advanced.advance;
@@ -822,12 +941,16 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
     }
   }
 
+  restorePrimaryGraph();
+  const resumed = resumeChildTaskLoopIfNeeded(payload);
+
   return {
     ...payload,
     executionState,
     modelPayload: payload,
     compile: preferredCompile,
     planModeEntered,
+    taskLoopResume: resumed || null,
   };
 }
 
@@ -853,5 +976,6 @@ module.exports = {
   executionSegmentToCreateGraph,
   projectPlanView,
   activePlanRequiresExpansion,
+  selectGraphForCommand,
   stripModelStatuses,
 };
