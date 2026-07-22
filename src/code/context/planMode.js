@@ -232,6 +232,7 @@ function renderPlanModeContext(executionState = null) {
     "  2) expand_node on the current ready/waiting task when needed",
     "  3) Runtime executes ready tools / TaskLoops; continue from results",
     "  4) control.complete_task (inline) or control.start_task (task_loop)",
+    "Do not end the turn with text only while a task is waiting — advance it.",
     "Do not mix plan_graph with data-plane tools in the same turn.",
   );
 

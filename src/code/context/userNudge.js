@@ -104,6 +104,52 @@ function buildContinuationUserPrompt(userText = "", executionState = null) {
   return formatUserReminderMessage([text], { waitingFor: waiting });
 }
 
+const PLAN_AUTO_CONTINUE_STOP_REASONS = new Set([
+  "approval_required",
+  "graph_terminal",
+  "scheduler_deadlock",
+]);
+
+/**
+ * Whether the Agent Loop should keep going after a text-only model turn
+ * because the plan graph is still waiting on an agent-actionable task.
+ */
+function shouldAutoContinuePlan(executionState = null) {
+  if (!executionState || typeof executionState !== "object") return false;
+  if (executionState.pendingUserInteraction) return false;
+  const pg = executionState.planGraph && typeof executionState.planGraph === "object"
+    ? executionState.planGraph
+    : null;
+  if (!pg) return false;
+  const waiting = pg.waitingFor && typeof pg.waitingFor === "object" ? pg.waitingFor : null;
+  if (!waiting || !waiting.id) return false;
+  if (String(waiting.type || "").trim().toLowerCase() !== "task") return false;
+  const yieldReason = String(pg.lastYieldReason || "").trim().toLowerCase();
+  if (yieldReason && PLAN_AUTO_CONTINUE_STOP_REASONS.has(yieldReason)) return false;
+  return true;
+}
+
+/**
+ * Internal reminder injected by runtime when the model ends a turn while the
+ * plan is still waiting on a task. Same shape as user nudges.
+ */
+function buildPlanAutoContinueReminder(executionState = null) {
+  const waiting = executionState
+    && executionState.planGraph
+    && executionState.planGraph.waitingFor
+    ? executionState.planGraph.waitingFor
+    : null;
+  if (!waiting || !waiting.id) return "";
+  return formatUserReminderMessage(
+    [
+      "Continue the active plan. Serve the waiting task now via plan_graph "
+        + "(expand_node, control.start_task, or control.complete_task as appropriate). "
+        + "Do not end the turn with text only while this node is waiting.",
+    ],
+    { waitingFor: waiting },
+  );
+}
+
 module.exports = {
   ensurePendingUserPrompts,
   enqueueUserPrompt,
@@ -113,4 +159,7 @@ module.exports = {
   shouldFrameAsUserReminder,
   formatUserReminderMessage,
   buildContinuationUserPrompt,
+  shouldAutoContinuePlan,
+  buildPlanAutoContinueReminder,
+  PLAN_AUTO_CONTINUE_STOP_REASONS,
 };

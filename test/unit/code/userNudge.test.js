@@ -40,6 +40,8 @@ const {
   shouldFrameAsUserReminder,
   formatUserReminderMessage,
   buildContinuationUserPrompt,
+  shouldAutoContinuePlan,
+  buildPlanAutoContinueReminder,
 } = require("../../../src/code/context/userNudge");
 const { emptyExecutionState } = require("../../../src/code/context/executionSegment");
 const { runNativeAgentTask } = require("../../../src/code/nativeRunner");
@@ -107,6 +109,41 @@ describe("user nudge queue", () => {
     expect(text).toMatch(/User reminder/);
     expect(text).toContain("skip the flaky test");
     expect(text).toMatch(/waiting task: fix/);
+  });
+
+  test("shouldAutoContinuePlan for waiting task only", () => {
+    expect(shouldAutoContinuePlan(null)).toBe(false);
+    expect(shouldAutoContinuePlan(emptyExecutionState())).toBe(false);
+    expect(shouldAutoContinuePlan({
+      planGraph: { waitingFor: { id: "t1", type: "task" }, lastYieldReason: "task_ready" },
+    })).toBe(true);
+    expect(shouldAutoContinuePlan({
+      pendingUserInteraction: { id: "ui_1" },
+      planGraph: { waitingFor: { id: "t1", type: "task" }, lastYieldReason: "task_ready" },
+    })).toBe(false);
+    expect(shouldAutoContinuePlan({
+      planGraph: { waitingFor: { id: "cp1", type: "checkpoint" }, lastYieldReason: "llm_checkpoint_ready" },
+    })).toBe(false);
+    expect(shouldAutoContinuePlan({
+      planGraph: { waitingFor: { id: "t1", type: "task" }, lastYieldReason: "approval_required" },
+    })).toBe(false);
+    expect(shouldAutoContinuePlan({
+      planGraph: { waitingFor: { id: "t1", type: "task" }, lastYieldReason: "scheduler_deadlock" },
+    })).toBe(false);
+    expect(shouldAutoContinuePlan({
+      planGraph: { waitingFor: { id: "t1", type: "task" }, lastYieldReason: "graph_terminal" },
+    })).toBe(false);
+  });
+
+  test("buildPlanAutoContinueReminder points at waiting task", () => {
+    const text = buildPlanAutoContinueReminder({
+      planGraph: { waitingFor: { id: "inspect", type: "task", title: "Inspect fonts" } },
+    });
+    expect(text).toMatch(/User reminder \(additional prompt\):/);
+    expect(text).toMatch(/Continue the active plan/);
+    expect(text).toMatch(/waiting task: inspect/);
+    expect(text).toContain("Inspect fonts");
+    expect(buildPlanAutoContinueReminder(emptyExecutionState())).toBe("");
   });
 });
 
@@ -211,6 +248,100 @@ describe("nativeRunner injects pending reminders before LLM turns", () => {
 
     expect(result.ok).toBe(false);
     expect(hasPendingUserPrompts(executionState)).toBe(false);
+  });
+
+  test("auto-continues text-only turn while plan waiting on task", async () => {
+    const executionState = emptyExecutionState();
+    executionState.planGraph = {
+      graphId: "plan_auto",
+      waitingFor: { id: "inspect", type: "task", title: "Inspect fonts" },
+      lastYieldReason: "task_ready",
+      nodes: [{ id: "inspect", type: "task", title: "Inspect fonts", status: "waiting_llm" }],
+    };
+    let turn = 0;
+    global.fetch.mockImplementation(async (_url, init) => {
+      turn += 1;
+      const body = JSON.parse(String(init && init.body || "{}"));
+      if (turn === 1) {
+        return makeSseResponse([
+          { choices: [{ delta: { content: "Here is the plan overview." } }] },
+        ]);
+      }
+      const reminder = (body.messages || []).find((m) => (
+        m.role === "user"
+        && String(m.content || "").includes("Continue the active plan")
+        && String(m.content || "").includes("waiting task: inspect")
+      ));
+      expect(reminder).toBeTruthy();
+      executionState.planGraph.waitingFor = null;
+      executionState.planGraph.lastYieldReason = "graph_terminal";
+      return makeSseResponse([
+        { choices: [{ delta: { content: "advancing inspect" } }] },
+      ]);
+    });
+
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "make a plan",
+      provider: "openai",
+      model: "gpt-test",
+      executionState,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.output).toContain("advancing inspect");
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  test("does not auto-continue when approval is required", async () => {
+    const executionState = emptyExecutionState();
+    executionState.planGraph = {
+      graphId: "plan_appr",
+      waitingFor: { id: "t1", type: "task", title: "Needs approval" },
+      lastYieldReason: "approval_required",
+      nodes: [{ id: "t1", type: "task", status: "waiting_llm" }],
+    };
+    global.fetch.mockImplementation(async () => makeSseResponse([
+      { choices: [{ delta: { content: "waiting for you" } }] },
+    ]));
+
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "go",
+      provider: "openai",
+      model: "gpt-test",
+      executionState,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.output).toBe("waiting for you");
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  test("stops auto-continue after consecutive empty turns on same waiting id", async () => {
+    const executionState = emptyExecutionState();
+    executionState.planGraph = {
+      graphId: "plan_stuck",
+      waitingFor: { id: "stuck", type: "task", title: "Stuck node" },
+      lastYieldReason: "task_ready",
+      nodes: [{ id: "stuck", type: "task", status: "waiting_llm" }],
+    };
+    global.fetch.mockImplementation(async () => makeSseResponse([
+      { choices: [{ delta: { content: "still thinking" } }] },
+    ]));
+
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "continue",
+      provider: "openai",
+      model: "gpt-test",
+      executionState,
+    });
+
+    expect(result.ok).toBe(true);
+    // Original empty + 2 auto-continues, then stuck stop.
+    expect(global.fetch).toHaveBeenCalledTimes(3);
+    expect(executionState.planGraph.waitingFor.id).toBe("stuck");
   });
 });
 

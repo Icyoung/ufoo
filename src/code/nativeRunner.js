@@ -27,6 +27,8 @@ const {
   clearUserPrompts,
   formatUserReminderMessage,
   ensurePendingUserPrompts,
+  shouldAutoContinuePlan,
+  buildPlanAutoContinueReminder,
 } = require("./context/userNudge");
 const {
   runAskUserTool,
@@ -85,6 +87,8 @@ const DEFAULT_KIMI_MODEL = "k3";
 const DEFAULT_MAX_NATIVE_TOOL_CALLS = 100;
 const DEFAULT_MAX_NATIVE_TOOL_ERRORS = 20;
 const DEFAULT_NATIVE_TIMEOUT_MS = 43200000; // 12 hours
+/** Max text-only auto-continues while a plan is waiting on a task (per user submit). */
+const DEFAULT_MAX_PLAN_AUTO_CONTINUES = 24;
 // Anthropic Messages rejects max_tokens above the model's real cap (64K on
 // current models), so the transports use different defaults. Override either
 // via UFOO_UCODE_MAX_TOKENS (positive integer).
@@ -1759,6 +1763,9 @@ async function runNativeLoop({
   // materialize Provider messages yet. STRICT via UFOO_UCODE_PROTOCOL_STRICT=1.
   let activeLedger = null;
   let lastProtocolLedger = null;
+  let planAutoContinues = 0;
+  let lastAutoContinueWaitingId = "";
+  let consecutiveEmptyAutoContinues = 0;
 
   if (resume) {
     await withFaultPoint("before_provider_resume", () => {});
@@ -1773,6 +1780,29 @@ async function runNativeLoop({
     const content = formatUserReminderMessage(nudges, { waitingFor: waiting });
     if (!content) return;
     messages.push({ role: "user", content });
+  }
+
+  function tryInjectPlanAutoContinue() {
+    if (!shouldAutoContinuePlan(executionState)) return false;
+    if (planAutoContinues >= DEFAULT_MAX_PLAN_AUTO_CONTINUES) return false;
+    const waitingId = String(
+      (executionState.planGraph && executionState.planGraph.waitingFor
+        && executionState.planGraph.waitingFor.id) || ""
+    ).trim();
+    if (
+      consecutiveEmptyAutoContinues >= 2
+      && waitingId
+      && waitingId === lastAutoContinueWaitingId
+    ) {
+      return false;
+    }
+    const reminder = buildPlanAutoContinueReminder(executionState);
+    if (!reminder) return false;
+    messages.push({ role: "user", content: reminder });
+    planAutoContinues += 1;
+    lastAutoContinueWaitingId = waitingId;
+    consecutiveEmptyAutoContinues += 1;
+    return true;
   }
 
   while (true) {
@@ -1846,6 +1876,9 @@ async function runNativeLoop({
       if (!aggregated.trim() && text) {
         aggregated = text;
       }
+      if (tryInjectPlanAutoContinue()) {
+        continue;
+      }
       return {
         text: aggregated,
         streamed,
@@ -1856,6 +1889,9 @@ async function runNativeLoop({
         protocolLedger: lastProtocolLedger || snapshotLedger(activeLedger),
       };
     }
+
+    // A tool-using turn resets the empty auto-continue streak (progress possible).
+    consecutiveEmptyAutoContinues = 0;
 
     const pendingCalls = transport.prepareToolCalls({ messages, turnResult, toolCalls });
     if (!pendingCalls) {

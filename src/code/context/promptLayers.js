@@ -56,6 +56,7 @@ function buildImmutablePrefix() {
       "- After an accepted plan_graph create or patch, Runtime automatically advances ready tool nodes. Never invent or request an execute_graph tool.",
       "- Do not call plan_graph or task_run together with read, read_image, write, edit, bash, or artifact_read in the same assistant turn.",
       "- When an active graph is waiting on a task, advance that node through plan_graph instead of bypassing it with direct workspace tools: use patch.expand_node for execution.kind=expand, control.complete_task (nodeId) for execution.kind=inline_llm, or control.start_task for execution.kind=task_loop.",
+      "- Do not end a turn with text only while the plan is still waiting on a task; expand, start, or complete that node. Runtime will auto-continue if you stop early, but prefer advancing in the same turn.",
       "- control.complete_task with nodeId completes a waiting_llm inline_llm task for the current Graph owner. control.complete_task with taskRunId (or task_run complete) is reserved for the owning TaskLoop. Do not directly complete expand or aggregate tasks.",
       "- While Plan Mode is ON, workspace mutations must be represented as plan_graph tool nodes or performed inside a running TaskRun/task_loop.",
       "- Treat a User reminder as the latest user instruction. Reconcile it before continuing from tool results. If it is compatible with the active plan, resume the waiting plan node; otherwise patch, cancel, or replan first.",
