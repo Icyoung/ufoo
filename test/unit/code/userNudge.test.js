@@ -426,6 +426,7 @@ describe("nativeRunner injects pending reminders before LLM turns", () => {
           phase: "waiting_model",
           parentNodeId: "impl",
           objective: "Do the work",
+          lastFocusText: "Focus: Do the work",
         },
       },
     };
@@ -433,17 +434,17 @@ describe("nativeRunner injects pending reminders before LLM turns", () => {
     global.fetch.mockImplementation(async (_url, init) => {
       turn += 1;
       const body = JSON.parse(String(init && init.body || "{}"));
+      const msgs = body.messages || [];
+      // TaskFocus isolation: provider sees a fresh one-message turn, not the
+      // accumulating Agent Loop transcript.
+      expect(msgs).toHaveLength(1);
+      expect(String(msgs[0].content || "")).toMatch(/Isolated TaskFocus turn/);
+      expect(String(msgs[0].content || "")).toMatch(/trun_wait|Runtime wake|Do the work/);
       if (turn === 1) {
         return makeSseResponse([
           { choices: [{ delta: { content: "I started a task." } }] },
         ]);
       }
-      const wake = (body.messages || []).find((m) => (
-        m.role === "user"
-        && String(m.content || "").includes("Runtime wake")
-        && String(m.content || "").includes("trun_wait")
-      ));
-      expect(wake).toBeTruthy();
       executionState.taskRuns.byId.trun_wait.status = "succeeded";
       executionState.taskRuns.byId.trun_wait.phase = "finalizing";
       return makeSseResponse([
@@ -456,12 +457,18 @@ describe("nativeRunner injects pending reminders before LLM turns", () => {
       prompt: "go",
       provider: "openai",
       model: "gpt-test",
+      messages: [
+        { role: "user", content: "earlier context that must not enter TaskFocus" },
+        { role: "assistant", content: "ok" },
+      ],
       executionState,
     });
 
     expect(result.ok).toBe(true);
     expect(result.output).toContain("continuing task");
     expect(global.fetch).toHaveBeenCalledTimes(2);
+    // Durable transcript keeps prior Agent Loop history.
+    expect(result.messages.some((m) => String(m.content || "").includes("earlier context"))).toBe(true);
   });
 });
 

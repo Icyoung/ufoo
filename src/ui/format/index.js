@@ -16,22 +16,16 @@ const UCODE_BANNER_LINES = [
 
 const UCODE_VERSION = String((pkg && pkg.version) || "dev");
 
-// Flying-saucer patrol for busy/loading states: the 🛸 drifts left-right
-// inside a fixed 6-cell field (three emoji slots), so the status text after
-// it stays anchored instead of shifting with the saucer.
-const UFO_FIELD_CELLS = 6;
-const UFO_FRAMES = [];
-for (let i = 0; i <= UFO_FIELD_CELLS - 2; i += 1) {
-  UFO_FRAMES.push(`${" ".repeat(i)}🛸${" ".repeat(UFO_FIELD_CELLS - 2 - i)}`);
-}
-for (let i = UFO_FIELD_CELLS - 3; i > 0; i -= 1) {
-  UFO_FRAMES.push(`${" ".repeat(i)}🛸${" ".repeat(UFO_FIELD_CELLS - 2 - i)}`);
-}
+// Fixed-width ASCII spinner. The old 🛸 patrol used emoji + padding that many
+// terminals measure differently from Ink/Yoga, so long status lines left a
+// staircase of ghost glyphs (and dragged vN.N.N into the log area).
+const SPINNER_FRAMES = ["-", "\\", "|", "/"];
+const WAITING_FRAMES = [".  ", ".. ", "...", ".. ", ".  "];
 
 const STATUS_INDICATORS = {
-  thinking: UFO_FRAMES,
-  typing: UFO_FRAMES,
-  waiting: ["∙", "∙∙", "∙∙∙", "∙∙", "∙"],
+  thinking: SPINNER_FRAMES,
+  typing: SPINNER_FRAMES,
+  waiting: WAITING_FRAMES,
 };
 
 // Friendly labels for the tool-call events surfaced in the status line.

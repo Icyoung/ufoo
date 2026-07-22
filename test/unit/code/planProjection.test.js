@@ -66,19 +66,19 @@ describe("planProjection", () => {
     expect(projection.roadmapMarkdown).toBe("");
   });
 
-  test("auto band shows sequential roadmap from plan JSON", () => {
+  test("auto band shows progress-focus roadmap (not full list)", () => {
     const executionState = emptyExecutionState();
     seedPlan(executionState);
     const projection = buildPlanUiProjection(executionState, { cols: 100 });
     expect(projection.hasPlan).toBe(true);
     expect(projection.visible).toBe(true);
-    expect(projection.roadmapMarkdown).toMatch(/\*\*Plan\*\*/);
-    expect(projection.roadmapMarkdown).toMatch(/1\. /);
-    expect(projection.roadmapMarkdown).toMatch(/2\. /);
-    expect(projection.roadmapMarkdown).toMatch(/3\. /);
-    expect(projection.roadmapMarkdown).toMatch(/Locate issue/);
+    expect(projection.roadmapMarkdown).toMatch(/\*\*Plan\*\* · \d+\/\d+/);
+    expect(projection.roadmapMarkdown).toMatch(/Locate issue|Apply fix|Verify/);
+    // Default auto should not dump every numbered step like expanded does.
+    expect(projection.roadmapMarkdown).not.toMatch(/✓ 1 |○ 1 |→ 1 /);
     expect(projection.bandLines.join("\n")).not.toMatch(/dependsOn/);
     expect(projection.bandLines.join("\n")).not.toMatch(/childGraphId/);
+    expect(projection.bandLines.join("\n")).not.toMatch(/┌─|└─|──┤/);
     expect(projection.progress.total).toBe(3);
     expect(projection.focus).toBeTruthy();
     expect(projection.statusLine).toMatch(/Plan ·/);
@@ -103,34 +103,71 @@ describe("planProjection", () => {
     ]));
   });
 
-  test("parallel roadmap renders ASCII branch labels", () => {
+  test("parallel focus roadmap has no ASCII tree or 2a/2b labels", () => {
     const executionState = emptyExecutionState();
     seedParallelPlan(executionState);
-    const { markdown, dag } = buildRoadmapMarkdown(executionState.planGraph, { cols: 100 });
+    const { markdown, dag } = buildRoadmapMarkdown(executionState.planGraph, {
+      cols: 100,
+      variant: "focus",
+    });
     expect(dag.linear).toBe(false);
-    expect(markdown).toMatch(/┌─/);
-    expect(markdown).toMatch(/└─/);
-    expect(markdown).toMatch(/2a /);
-    expect(markdown).toMatch(/2b /);
-    expect(markdown).toMatch(/Home Rank|Market entry/);
+    expect(markdown).toMatch(/\*\*Plan\*\* · 0\/4/);
+    expect(markdown).toMatch(/Inspect APIs|Home Rank|Market entry/);
+    expect(markdown).not.toMatch(/┌─|└─|──┤|├─/);
+    expect(markdown).not.toMatch(/2a |2b /);
     const projection = buildPlanUiProjection(executionState, { cols: 100 });
-    expect(projection.roadmapMarkdown).toMatch(/2a |2b /);
+    expect(projection.roadmapMarkdown).not.toMatch(/┌─|2a |2b /);
+    expect(projection.roadmapMarkdown).toMatch(/接下来 ·|→ |○ /);
+  });
+
+  test("expanded roadmap uses shared step numbers for parallel waves", () => {
+    const executionState = emptyExecutionState();
+    seedParallelPlan(executionState);
+    const inspect = executionState.planGraph.nodes.find((n) => n.id === "inspect");
+    inspect.status = "succeeded";
+    const home = executionState.planGraph.nodes.find((n) => n.id === "home");
+    home.status = "waiting_llm";
+
+    const { markdown, dag } = buildRoadmapMarkdown(executionState.planGraph, {
+      cols: 100,
+      variant: "expanded",
+    });
+    expect(dag.linear).toBe(false);
+    expect(markdown).toMatch(/✓ 1 Inspect APIs/);
+    expect(markdown).toMatch(/→ 2 Home Rank/);
+    expect(markdown).toMatch(/○ 2 Market entry/);
+    expect(markdown).toMatch(/○ 3 Verify all/);
+    expect(markdown).not.toMatch(/┌─|2a |2b /);
   });
 
   test("roadmap status marks update when node status changes", () => {
     const executionState = emptyExecutionState();
     seedParallelPlan(executionState);
-    const before = buildRoadmapMarkdown(executionState.planGraph, { cols: 80 });
-    expect(before.markdown).toMatch(/○ Inspect APIs|→ Inspect APIs/);
+    const before = buildRoadmapMarkdown(executionState.planGraph, {
+      cols: 80,
+      variant: "expanded",
+    });
+    expect(before.markdown).toMatch(/○ 1 Inspect APIs|→ 1 Inspect APIs/);
 
     const inspect = executionState.planGraph.nodes.find((n) => n.id === "inspect");
     inspect.status = "succeeded";
     const home = executionState.planGraph.nodes.find((n) => n.id === "home");
     home.status = "waiting_llm";
 
-    const after = buildRoadmapMarkdown(executionState.planGraph, { cols: 80 });
-    expect(after.markdown).toMatch(/✓ Inspect APIs/);
-    expect(after.markdown).toMatch(/→ Home Rank/);
+    const after = buildRoadmapMarkdown(executionState.planGraph, {
+      cols: 80,
+      variant: "expanded",
+    });
+    expect(after.markdown).toMatch(/✓ 1 Inspect APIs/);
+    expect(after.markdown).toMatch(/→ 2 Home Rank/);
+
+    const focus = buildRoadmapMarkdown(executionState.planGraph, {
+      cols: 80,
+      variant: "focus",
+    });
+    expect(focus.markdown).toMatch(/\*\*Plan\*\* · 1\/4/);
+    expect(focus.markdown).toMatch(/→ Home Rank/);
+    expect(focus.markdown).toMatch(/接下来 ·/);
   });
 
   test("hide / focus / debug band modes", () => {
@@ -144,6 +181,8 @@ describe("planProjection", () => {
     const expanded = buildPlanUiProjection(executionState, { cols: 100 });
     expect(expanded.visible).toBe(true);
     expect(expanded.roadmapMarkdown).toMatch(/Locate issue|Apply fix|Verify/);
+    expect(expanded.roadmapMarkdown).toMatch(/1 |2 |3 /);
+    expect(expanded.roadmapMarkdown).not.toMatch(/┌─/);
 
     setBandMode(executionState, "debug");
     const debug = buildPlanUiProjection(executionState, { cols: 100 });

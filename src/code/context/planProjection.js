@@ -287,83 +287,182 @@ function buildPlanDag(planGraph = {}) {
   };
 }
 
-function waveStepLabel(waveIndex = 0, nodeIndex = 0, waveSize = 1) {
-  const step = Math.max(1, Math.floor(Number(waveIndex) || 0) + 1);
-  if (waveSize <= 1) return String(step);
-  const letter = String.fromCharCode(97 + Math.max(0, Math.min(25, Math.floor(Number(nodeIndex) || 0))));
-  return `${step}${letter}`;
+function countDagProgress(dag = {}) {
+  const nodes = Array.isArray(dag.nodes) ? dag.nodes : [];
+  const total = nodes.length;
+  const done = nodes.filter((node) => node && node.kind === "done").length;
+  return { done, total };
 }
 
-function formatParallelWaveLines(wave = [], waveIndex = 0, titleMax = 40) {
-  const lines = [];
-  const size = wave.length;
-  wave.forEach((node, nodeIndex) => {
-    const label = waveStepLabel(waveIndex, nodeIndex, size);
-    const body = `${label} ${node.mark} ${truncate(node.title, titleMax)}`;
-    if (nodeIndex === 0) {
-      lines.push(`  ┌─ ${body}`);
-      if (size > 1) lines.push("──┤");
-      return;
+function titleMaxForCols(cols = 80, reserved = 12) {
+  return Math.max(12, Math.min(48, Math.floor(Number(cols) || 80) - reserved));
+}
+
+function pickFocusActiveNodes(dag = {}) {
+  const nodes = Array.isArray(dag.nodes) ? dag.nodes : [];
+  const active = nodes.filter((node) => node && node.kind === "active");
+  if (active.length > 0) return active;
+
+  const waves = Array.isArray(dag.waves) ? dag.waves : [];
+  for (const wave of waves) {
+    const incomplete = (Array.isArray(wave) ? wave : []).filter((node) => (
+      node
+      && node.kind !== "done"
+      && node.kind !== "cancelled"
+    ));
+    if (incomplete.length === 0) continue;
+    const ready = incomplete.filter((node) => String(node.status || "").toLowerCase() === "ready");
+    return ready.length > 0 ? ready : incomplete.slice(0, 1);
+  }
+  return [];
+}
+
+function pickUpcomingNodes(dag = {}, activeIds = new Set(), limit = 2) {
+  const upcoming = [];
+  const waves = Array.isArray(dag.waves) ? dag.waves : [];
+  for (const wave of waves) {
+    for (const node of (Array.isArray(wave) ? wave : [])) {
+      if (!node || activeIds.has(node.id)) continue;
+      if (node.kind === "done" || node.kind === "cancelled") continue;
+      upcoming.push(node);
+      if (upcoming.length >= limit) return upcoming;
     }
-    if (nodeIndex === size - 1) {
-      lines.push(`  └─ ${body}`);
-      return;
-    }
-    lines.push(`  ├─ ${body}`);
-  });
-  return lines;
+    if (upcoming.length >= limit) break;
+  }
+  return upcoming;
+}
+
+function clipRoadmapLines(lines = [], maxRows = 10) {
+  const list = Array.isArray(lines) ? lines : [];
+  const limit = Number.isFinite(maxRows) && maxRows > 0 ? Math.floor(maxRows) : 10;
+  if (list.length <= limit) return list.slice();
+  const clipped = list.slice(0, Math.max(1, limit - 1));
+  clipped.push(`… +${list.length - clipped.length} more`);
+  return clipped;
 }
 
 /**
- * Build markdown (linear list) or ASCII flowchart (parallel waves) from planGraph JSON.
+ * Default auto band: progress + current task(s) + next titles.
+ * No ASCII tree, no 4a/4b labels.
  */
-function buildRoadmapMarkdown(planGraph = {}, {
+function buildFocusRoadmap(planGraph = {}, {
   cols = 80,
   taskRunLine = "",
-  maxRows = 10,
+  maxRows = 4,
 } = {}) {
   const dag = buildPlanDag(planGraph);
   if (dag.nodes.length === 0) {
     return { markdown: "", lines: [], dag };
   }
 
-  const titleMax = Math.max(12, Math.min(48, Math.floor(Number(cols) || 80) - 12));
-  const objective = truncate(String(planGraph.objective || "").trim(), titleMax);
-  const lines = [objective ? `**Plan** · ${objective}` : "**Plan**"];
+  const titleMax = titleMaxForCols(cols, 8);
+  const { done, total } = countDagProgress(dag);
+  const lines = [`**Plan** · ${done}/${total}`];
 
-  if (dag.linear) {
-    dag.waves.forEach((wave, waveIndex) => {
-      const node = wave[0];
-      lines.push(`${waveIndex + 1}. ${node.mark} ${truncate(node.title, titleMax)}`);
-    });
-  } else {
-    dag.waves.forEach((wave, waveIndex) => {
-      if (wave.length === 1) {
-        const node = wave[0];
-        lines.push(`${waveStepLabel(waveIndex, 0, 1)} ${node.mark} ${truncate(node.title, titleMax)}`);
-        return;
-      }
-      for (const line of formatParallelWaveLines(wave, waveIndex, Math.max(8, titleMax - 4))) {
-        lines.push(line);
-      }
-    });
+  const active = pickFocusActiveNodes(dag);
+  const activeIds = new Set(active.map((node) => node.id));
+  for (const node of active) {
+    lines.push(`${node.mark} ${truncate(node.title, titleMax)}`);
+  }
+
+  const upcoming = pickUpcomingNodes(dag, activeIds, 2);
+  if (upcoming.length > 0) {
+    const titles = upcoming.map((node) => truncate(node.title, Math.max(8, Math.floor(titleMax / upcoming.length))));
+    lines.push(`接下来 · ${titles.join(" · ")}`);
   }
 
   const extra = String(taskRunLine || "").trim();
-  if (extra) lines.push(extra);
+  if (extra) lines.push(truncate(extra, Math.max(24, titleMax + 8)));
 
-  const limit = Number.isFinite(maxRows) && maxRows > 0 ? Math.floor(maxRows) : 10;
-  let clipped = lines.slice(0, Math.max(1, limit));
-  if (lines.length > clipped.length) {
-    clipped = clipped.slice(0, Math.max(1, limit - 1));
-    clipped.push(`… +${lines.length - clipped.length} more`);
-  }
-
+  const clipped = clipRoadmapLines(lines, maxRows);
   return {
     markdown: clipped.join("\n"),
     lines: clipped,
     dag,
   };
+}
+
+/**
+ * Expanded (/plan focus): flat numbered list; parallel waves share a step number.
+ */
+function buildExpandedRoadmap(planGraph = {}, {
+  cols = 80,
+  taskRunLine = "",
+  maxRows = 16,
+} = {}) {
+  const dag = buildPlanDag(planGraph);
+  if (dag.nodes.length === 0) {
+    return { markdown: "", lines: [], dag };
+  }
+
+  const titleMax = titleMaxForCols(cols, 14);
+  const { done, total } = countDagProgress(dag);
+  const objective = truncate(String(planGraph.objective || "").trim(), Math.max(12, titleMax - 8));
+  const header = objective
+    ? `**Plan** · ${done}/${total} · ${objective}`
+    : `**Plan** · ${done}/${total}`;
+  const body = [];
+
+  dag.waves.forEach((wave, waveIndex) => {
+    const step = waveIndex + 1;
+    for (const node of wave) {
+      body.push(`${node.mark} ${step} ${truncate(node.title, titleMax)}`);
+    }
+  });
+
+  const extra = String(taskRunLine || "").trim();
+  if (extra) body.push(truncate(extra, Math.max(24, titleMax + 8)));
+
+  const budget = Math.max(1, (Number.isFinite(maxRows) ? Math.floor(maxRows) : 16) - 1);
+  let clippedBody = body;
+  if (body.length > budget) {
+    let windowStart = 0;
+    while (
+      windowStart < body.length
+      && (body[windowStart].startsWith("✓") || body[windowStart].startsWith("⊘"))
+    ) {
+      windowStart += 1;
+    }
+    // Keep one completed row before the live window for context.
+    windowStart = Math.max(0, windowStart - 1);
+    const window = body.slice(windowStart);
+    if (window.length <= budget) {
+      clippedBody = windowStart > 0
+        ? [`… +${windowStart} more`, ...window]
+        : window;
+    } else {
+      const kept = window.slice(0, Math.max(1, budget - 1));
+      const omittedAfter = body.length - (windowStart + kept.length);
+      clippedBody = windowStart > 0
+        ? [`… +${windowStart} more`, ...kept.slice(0, Math.max(1, budget - 2)), `… +${omittedAfter} more`]
+        : [...kept, `… +${omittedAfter} more`];
+      // If double ellipsis blew the budget, fall back to simple clip.
+      if (clippedBody.length > budget) {
+        clippedBody = clipRoadmapLines(body, budget);
+      }
+    }
+  }
+
+  const lines = [header, ...clippedBody];
+  return {
+    markdown: lines.join("\n"),
+    lines,
+    dag,
+  };
+}
+
+/**
+ * Build roadmap markdown from planGraph JSON.
+ * variant=focus (default auto band) or expanded (/plan focus).
+ */
+function buildRoadmapMarkdown(planGraph = {}, options = {}) {
+  const variant = String(options.variant || "focus").trim().toLowerCase() === "expanded"
+    ? "expanded"
+    : "focus";
+  if (variant === "expanded") {
+    return buildExpandedRoadmap(planGraph, options);
+  }
+  return buildFocusRoadmap(planGraph, options);
 }
 
 function buildDebugLines(executionState = null, planGraph = {}) {
@@ -491,27 +590,27 @@ function buildPlanUiProjection(executionState = null, options = {}) {
       )];
       roadmapMarkdown = "";
     } else {
-      // auto + expanded: JSON → DAG → roadmap markdown
+      // auto → progress-focus; expanded → flat numbered list (no ASCII tree)
+      const variant = bandMode === "expanded" ? "expanded" : "focus";
       const maxRows = Number.isFinite(options.maxBandRows)
         ? options.maxBandRows
-        : (bandMode === "expanded" ? 16 : 10);
+        : (variant === "expanded" ? 16 : 4);
       const roadmap = buildRoadmapMarkdown(pg, {
         cols,
         taskRunLine: taskRunSuffix,
         maxRows,
+        variant,
       });
       planDag = roadmap.dag;
       roadmapMarkdown = roadmap.markdown;
       bandLines = roadmap.lines.slice();
-      if (bandMode === "expanded" && tree.length > 0) {
-        // Keep tree as fallback detail only when roadmap empty (shouldn't happen).
-        if (bandLines.length === 0) {
-          const title = pg.objective ? `Plan · ${pg.objective}` : "Plan";
-          bandLines = [truncate(title, Math.max(24, cols - 2))];
-          for (const row of tree) {
-            bandLines.push(truncate(formatTreeLine(row), Math.max(24, cols - 2)));
-          }
+      if (bandLines.length === 0 && tree.length > 0) {
+        const title = pg.objective ? `Plan · ${pg.objective}` : "Plan";
+        bandLines = [truncate(title, Math.max(24, cols - 2))];
+        for (const row of tree) {
+          bandLines.push(truncate(formatTreeLine(row), Math.max(24, cols - 2)));
         }
+        roadmapMarkdown = "";
       }
     }
   }
@@ -585,5 +684,7 @@ module.exports = {
   statusToMark,
   buildPlanDag,
   buildRoadmapMarkdown,
+  buildFocusRoadmap,
+  buildExpandedRoadmap,
   buildPlanUiProjection,
 };

@@ -138,7 +138,7 @@ describe("chat log display classification", () => {
       meta: { event: "controller_report" },
     })).toMatchObject({
       kind: "report",
-      marker: "▣",
+      marker: "●",
       speaker: "qa",
       bodyText: "task finished",
     });

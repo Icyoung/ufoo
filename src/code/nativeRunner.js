@@ -33,9 +33,13 @@ const {
 const {
   drainAgentMailboxForTurn,
   shouldAutoContinueForTaskWake,
-  buildTaskRunWakeReminder,
   listTaskRunsAwaitingModel,
 } = require("./runtime/agentWakeup");
+const {
+  shouldIsolateTaskFocusTurn,
+  buildIsolatedTaskFocusTurn,
+  sanitizeToolResultForModel,
+} = require("./runtime/taskFocusContext");
 const {
   runAskUserTool,
   syncInteractionFromPlanGraph,
@@ -185,6 +189,7 @@ function createUsageTotals() {
     output: 0,
     cacheRead: 0,
     cacheCreation: 0,
+    lastContextTokens: 0,
   };
 }
 
@@ -889,6 +894,8 @@ function runCoreTool({
     return {
       ...result.modelPayload,
       ok: result.status === "accepted",
+      // Keep executionState for the runner only; sanitizeToolResultForModel
+      // strips it before the payload enters provider messages.
       executionState: result.executionState || state,
     };
   }
@@ -1694,7 +1701,7 @@ function shadowResolvePending(ledger, pending, toolResult) {
   const callId = pendingToolCallId(pending);
   if (!callId) return;
   resolveCall(ledger, callId, {
-    result: toolResult,
+    result: sanitizeToolResultForModel(toolResult),
     isError: Boolean(!toolResult || toolResult.ok === false),
   });
 }
@@ -1733,6 +1740,7 @@ async function runNativeLoop({
   onPhase = null,
   onToolEvent = null,
   onArtifactPersisted = null,
+  onContextUsage = null,
   sessionId = "",
   signal = null,
   guards,
@@ -1743,12 +1751,31 @@ async function runNativeLoop({
   if (!requestModel) {
     throw new Error("ucode model is not configured");
   }
+  const {
+    contextTokensFromUsage,
+    buildContextMeter,
+  } = require("./contextWindow");
+  function emitContextUsage(turnUsage = null) {
+    const contextTokens = contextTokensFromUsage(turnUsage);
+    usage.lastContextTokens = contextTokens;
+    if (typeof onContextUsage !== "function") return;
+    try {
+      onContextUsage(buildContextMeter({
+        usedTokens: contextTokens,
+        model: requestModel,
+      }));
+    } catch {
+      // ignore UI callback failures
+    }
+  }
 
   const requestUrl = transport.resolveUrl(baseUrl);
   if (!requestUrl) {
     throw new Error("ucode baseUrl is not configured");
   }
 
+  // Durable Agent Loop transcript (returned + synced to session). Provider
+  // turns that serve TaskFocus use a fresh providerMessages list instead.
   const messages = sanitizeModelMessages(cloneMessageList(historyMessages));
   if (!resume) {
     transport.prepareMessages({ messages, systemPrompt, prompt });
@@ -1772,6 +1799,9 @@ async function runNativeLoop({
   let planAutoContinues = 0;
   let lastAutoContinueWaitingId = "";
   let consecutiveEmptyAutoContinues = 0;
+  let providerMessages = messages;
+  let isolatedActive = false;
+  let isolatedPrefixLength = 0;
 
   if (resume) {
     await withFaultPoint("before_provider_resume", () => {});
@@ -1779,20 +1809,55 @@ async function runNativeLoop({
 
   function injectPendingUserReminders() {
     const nudges = drainUserPrompts(executionState);
-    if (nudges.length === 0) return;
+    if (nudges.length === 0) return "";
     const waiting = executionState.planGraph && executionState.planGraph.waitingFor
       ? executionState.planGraph.waitingFor
       : null;
-    const content = formatUserReminderMessage(nudges, { waitingFor: waiting });
-    if (!content) return;
-    messages.push({ role: "user", content });
+    return formatUserReminderMessage(nudges, { waitingFor: waiting }) || "";
   }
 
   /** Deliver mid-loop TaskRun runtime events before the next model call. */
-  function injectRuntimeMailboxEvents() {
+  function injectRuntimeMailboxEvents(targetMessages) {
     const drained = drainAgentMailboxForTurn(executionState);
     if (!drained.text) return false;
-    messages.push({ role: "user", content: drained.text });
+    targetMessages.push({ role: "user", content: drained.text });
+    return true;
+  }
+
+  /**
+   * Mirror provider-only TaskFocus deltas onto the durable transcript so
+   * session sync / ask_user resume still see tool_use pairs, without feeding
+   * the full Agent Loop history back into the next isolated provider turn.
+   */
+  function mirrorIsolatedDeltaToDurable() {
+    if (!isolatedActive || providerMessages === messages) return;
+    const delta = providerMessages.slice(isolatedPrefixLength);
+    for (const entry of delta) {
+      messages.push(cloneMessageList([entry])[0]);
+    }
+    isolatedPrefixLength = providerMessages.length;
+  }
+
+  /**
+   * Serve waiting TaskRun / plan-task turns on a fresh one-message context.
+   * Durable `messages` is left intact for transcript sync.
+   */
+  function applyIsolatedTaskFocusContext() {
+    if (!shouldIsolateTaskFocusTurn(executionState)) {
+      isolatedActive = false;
+      providerMessages = messages;
+      isolatedPrefixLength = 0;
+      return false;
+    }
+    const drained = drainAgentMailboxForTurn(executionState);
+    const userNudge = injectPendingUserReminders();
+    const isolated = buildIsolatedTaskFocusTurn(executionState, {
+      mailboxEvents: drained.events || [],
+      userNudge,
+    });
+    providerMessages = isolated.messages;
+    isolatedActive = true;
+    isolatedPrefixLength = providerMessages.length;
     return true;
   }
 
@@ -1820,8 +1885,16 @@ async function runNativeLoop({
       return false;
     }
 
-    // Prefer draining fresh runtime mail (task_started, etc.) before nudges.
-    if (injectRuntimeMailboxEvents()) {
+    // TaskFocus isolation rebuilds providerMessages at the top of the next
+    // loop iteration — just signal continue when a task/plan still needs service.
+    if (shouldIsolateTaskFocusTurn(executionState) || shouldAutoContinueForTaskWake(executionState)) {
+      planAutoContinues += 1;
+      lastAutoContinueWaitingId = continueKey;
+      consecutiveEmptyAutoContinues += 1;
+      return true;
+    }
+
+    if (injectRuntimeMailboxEvents(messages)) {
       planAutoContinues += 1;
       lastAutoContinueWaitingId = continueKey;
       consecutiveEmptyAutoContinues += 1;
@@ -1838,24 +1911,17 @@ async function runNativeLoop({
       return true;
     }
 
-    if (shouldAutoContinueForTaskWake(executionState)) {
-      const reminder = buildTaskRunWakeReminder(executionState);
-      if (!reminder) return false;
-      messages.push({ role: "user", content: reminder });
-      planAutoContinues += 1;
-      lastAutoContinueWaitingId = continueKey;
-      consecutiveEmptyAutoContinues += 1;
-      return true;
-    }
-
     return false;
   }
 
   while (true) {
     guards.ensureActive();
 
-    injectPendingUserReminders();
-    injectRuntimeMailboxEvents();
+    if (!applyIsolatedTaskFocusContext()) {
+      const nudge = injectPendingUserReminders();
+      if (nudge) messages.push({ role: "user", content: nudge });
+      injectRuntimeMailboxEvents(messages);
+    }
 
     if (activeLedger) {
       runProviderTurnGate(activeLedger);
@@ -1868,7 +1934,7 @@ async function runNativeLoop({
       provider,
       systemPrompt,
       systemBlocks,
-      messages,
+      messages: providerMessages,
       signal,
       timeoutMs,
       onPhase,
@@ -1886,6 +1952,7 @@ async function runNativeLoop({
 
     usage.turns += 1;
     addUsageTotals(usage, turnResult && turnResult.usage);
+    emitContextUsage(turnResult && turnResult.usage);
 
     const toolCalls = transport.getToolCalls(turnResult);
 
@@ -1894,7 +1961,7 @@ async function runNativeLoop({
       const sideEffects = parseStructuredSideEffects(text);
       const planCommand = sideEffects ? normalizePlanGraphCommand(sideEffects) : null;
       if (planCommand) {
-          transport.appendFinalAssistantMessage({ messages, turnResult });
+          transport.appendFinalAssistantMessage({ messages: providerMessages, turnResult });
           const planResult = runCoreTool({
             tool: "plan_graph",
             args: planCommand,
@@ -1908,18 +1975,22 @@ async function runNativeLoop({
           if (planResult && planResult.executionState) {
             executionState = planResult.executionState;
           }
-          messages.push({
+          providerMessages.push({
             role: "user",
             content: JSON.stringify({
               type: "plan_graph_result",
-              ...((planResult && planResult.status)
-                ? planResult
-                : { status: "rejected", ok: false, error: "plan_graph failed" }),
+              ...sanitizeToolResultForModel(
+                (planResult && planResult.status)
+                  ? planResult
+                  : { status: "rejected", ok: false, error: "plan_graph failed" },
+              ),
             }),
           });
+          mirrorIsolatedDeltaToDurable();
           continue;
       }
-      transport.appendFinalAssistantMessage({ messages, turnResult });
+      transport.appendFinalAssistantMessage({ messages: providerMessages, turnResult });
+      mirrorIsolatedDeltaToDurable();
       if (!aggregated.trim() && text) {
         aggregated = text;
       }
@@ -1940,8 +2011,13 @@ async function runNativeLoop({
     // A tool-using turn resets the empty auto-continue streak (progress possible).
     consecutiveEmptyAutoContinues = 0;
 
-    const pendingCalls = transport.prepareToolCalls({ messages, turnResult, toolCalls });
+    const pendingCalls = transport.prepareToolCalls({
+      messages: providerMessages,
+      turnResult,
+      toolCalls,
+    });
     if (!pendingCalls) {
+      mirrorIsolatedDeltaToDurable();
       return {
         text: aggregated,
         streamed,
@@ -1977,7 +2053,8 @@ async function runNativeLoop({
         toolCallsExecuted += 1;
         toolErrors += 1;
       }
-      flushLedgerToolResults(activeLedger, transport, messages, pendingCalls);
+      flushLedgerToolResults(activeLedger, transport, providerMessages, pendingCalls);
+      mirrorIsolatedDeltaToDurable();
       lastProtocolLedger = snapshotLedger(activeLedger);
       continue;
     }
@@ -1993,7 +2070,8 @@ async function runNativeLoop({
         toolCallsExecuted += 1;
         toolErrors += 1;
       }
-      flushLedgerToolResults(activeLedger, transport, messages, pendingCalls);
+      flushLedgerToolResults(activeLedger, transport, providerMessages, pendingCalls);
+      mirrorIsolatedDeltaToDurable();
       lastProtocolLedger = snapshotLedger(activeLedger);
       continue;
     }
@@ -2114,7 +2192,8 @@ async function runNativeLoop({
       shadowResolvePending(activeLedger, pending, toolResult);
     }
 
-    flushLedgerToolResults(activeLedger, transport, messages, pendingCalls);
+    flushLedgerToolResults(activeLedger, transport, providerMessages, pendingCalls);
+    mirrorIsolatedDeltaToDurable();
     lastProtocolLedger = snapshotLedger(activeLedger);
 
     if (deferredAskUser) {
@@ -2184,6 +2263,7 @@ async function runNativeAgentTask({
   onPhase = null,
   onToolEvent = null,
   onArtifactPersisted = null,
+  onContextUsage = null,
   signal = null,
   executionState = null,
   resume = false,
@@ -2258,6 +2338,7 @@ async function runNativeAgentTask({
       onPhase,
       onToolEvent,
       onArtifactPersisted,
+      onContextUsage,
       sessionId: nextSessionId,
       signal,
       guards,
@@ -2274,6 +2355,11 @@ async function runNativeAgentTask({
     const usage = runResult.usage && typeof runResult.usage === "object"
       ? runResult.usage
       : createUsageTotals();
+    const { buildContextMeter } = require("./contextWindow");
+    const contextMeter = buildContextMeter({
+      usedTokens: usage.lastContextTokens,
+      model: runtime.model,
+    });
     appendUsageRecord(workspaceRoot, {
       sessionId: nextSessionId,
       model: runtime.model,
@@ -2292,6 +2378,7 @@ async function runNativeAgentTask({
       messages: cloneMessageList(runResult.messages),
       sessionId: nextSessionId,
       usage,
+      contextMeter,
       executionState: runResult.executionState || executionState || null,
       // The loop marks streamed=true whenever it receives a stream callback;
       // only report it when the caller actually registered one.

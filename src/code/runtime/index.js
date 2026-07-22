@@ -12,4 +12,5 @@ module.exports = {
   ...require("./toolProvenance"),
   ...require("./graphYieldRouter"),
   ...require("./agentWakeup"),
+  ...require("./taskFocusContext"),
 };

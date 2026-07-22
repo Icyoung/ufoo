@@ -98,6 +98,24 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
     const [interactionLines, setInteractionLines] = useState([]);
     const [spinnerTick, setSpinnerTick] = useState(0);
     const [size, setSize] = useState({ cols: 0, rows: 0 });
+    const [contextMeter, setContextMeter] = useState(() => {
+      try {
+        const {
+          buildContextMeter,
+          normalizeContextMeter,
+        } = require("../../code/contextWindow");
+        const existing = props.state && props.state.contextMeter;
+        if (existing && typeof existing === "object") {
+          return normalizeContextMeter(existing, (props.state && props.state.model) || "");
+        }
+        return buildContextMeter({
+          usedTokens: 0,
+          model: (props.state && props.state.model) || process.env.UFOO_UCODE_MODEL || "",
+        });
+      } catch {
+        return { usedTokens: 0, limitTokens: 200000, label: "0 / 200K", model: "" };
+      }
+    });
     const [agents, setAgents] = useState([]);
     const [selectedAgentIndex, setSelectedAgentIndex] = useState(-1);
     const [agentSelectionMode, setAgentSelectionMode] = useState(false);
@@ -585,6 +603,21 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
             workspaceRoot: runtimeWorkspace,
           });
           appendLogText(applied.output || "", applied.ok ? "system" : "error");
+          if (applied.ok && result.action === "set") {
+            try {
+              const { buildContextMeter } = require("../../code/contextWindow");
+              setContextMeter((prev) => {
+                const nextMeter = buildContextMeter({
+                  usedTokens: (prev && prev.usedTokens) || 0,
+                  model: (props.state && props.state.model) || "",
+                });
+                if (props.state && typeof props.state === "object") {
+                  props.state.contextMeter = nextMeter;
+                }
+                return nextMeter;
+              });
+            } catch { /* ignore */ }
+          }
           if (applied.ok && result.action === "set" && typeof props.persistSessionState === "function") {
             try {
               const persisted = props.persistSessionState(props.state);
@@ -687,6 +720,20 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
           );
           setActiveMerge(null);
           lastMergeRef.current = null;
+          try {
+            const {
+              buildContextMeter,
+              normalizeContextMeter,
+            } = require("../../code/contextWindow");
+            const restored = props.state && props.state.contextMeter;
+            const nextMeter = restored && typeof restored === "object"
+              ? normalizeContextMeter(restored, (props.state && props.state.model) || "")
+              : buildContextMeter({
+                usedTokens: 0,
+                model: (props.state && props.state.model) || "",
+              });
+            setContextMeter(nextMeter);
+          } catch { /* ignore */ }
           return;
         }
         case "tool": {
@@ -782,6 +829,10 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
           try {
             nlResult = await props.runNaturalLanguageTask(result.task, props.state, {
               signal: abortController.signal,
+              onContextUsage: (meter) => {
+                if (!meter || typeof meter !== "object") return;
+                setContextMeter(meter);
+              },
               onPhase: (event) => {
                 if (!event || typeof event !== "object") return;
                 if (event.type === "request_start") {
@@ -870,6 +921,11 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
             if (summary) appendLogText(summary);
           }
           flushActiveMerge();
+          if (nlResult && nlResult.contextMeter) {
+            setContextMeter(nlResult.contextMeter);
+          } else if (props.state && props.state.contextMeter) {
+            setContextMeter(props.state.contextMeter);
+          }
           try {
             const persisted = props.persistSessionState(props.state);
             if (persisted && persisted.ok === false) {
@@ -1018,6 +1074,10 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
               let streamStarted = false;
               let dropLeadingStreamBlank = false;
               const result = await submit(trimmed, props.state, {
+                onContextUsage: (meter) => {
+                  if (!meter || typeof meter !== "object") return;
+                  setContextMeter(meter);
+                },
                 onDelta: (delta) => {
                   const text = String(delta || "");
                   if (!text) return;
@@ -1044,6 +1104,11 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
               }
               flushTableBuffer();
               refreshPlanUi();
+              if (result && result.contextMeter) {
+                setContextMeter(result.contextMeter);
+              } else if (props.state && props.state.contextMeter) {
+                setContextMeter(props.state.contextMeter);
+              }
               if (!result || result.ok === false) {
                 appendLogText(`Error: ${(result && result.error) || "resume failed"}`, "error");
               } else if (result.shouldEchoSummary) {
@@ -1433,12 +1498,15 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
           ? h(Text, { wrap: "truncate", color: "cyan" }, "none")
           : (() => {
               const labels = agents.map((a) => `@${getAgentLabel(a)}`);
-              // Reserve 1 col for borders, the "Agents: " prefix, the hint
-              // and a few spaces for safety. We just clamp aggressively
-              // when stdout.cols is unknown.
+              // Reserve space for the context meter on the right plus the
+              // "Agents: " prefix / hint. Clamp aggressively when cols unknown.
               const cols = size.cols || 80;
+              const meterLabel = String((contextMeter && contextMeter.label) || "").trim();
+              const reservedForMeter = meterLabel
+                ? fmt.displayCellWidth(`  ${meterLabel}`) + 1
+                : 0;
               const reservedForHint = fmt.displayCellWidth(` · ${agentsHint}`);
-              const budget = Math.max(20, cols - 10 - reservedForHint);
+              const budget = Math.max(12, cols - 10 - reservedForHint - reservedForMeter);
               const plan = fmt.planAgentsFooter(
                 labels,
                 agentSelectionMode ? selectedAgentIndex : -1,
@@ -1461,6 +1529,9 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
               );
             })(),
         h(Text, { wrap: "truncate", color: "gray" }, ` · ${agentsHint}`),
+        h(Box, { flexGrow: 1 }),
+        h(Text, { wrap: "truncate", color: "gray" },
+          String((contextMeter && contextMeter.label) || "").trim() || "0 / 200K"),
       ),
     );
   };

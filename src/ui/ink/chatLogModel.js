@@ -195,7 +195,9 @@ function applySourceTypeToRow(row, sourceType = "", meta = {}) {
     return {
       ...base,
       kind: "report",
-      marker: "▣",
+      // Prefer ● over ▣: square box glyphs sit off the Latin baseline in
+      // most terminal fonts and look misaligned next to speaker · body.
+      marker: "●",
       speaker,
       body: base.body || " ",
     };
@@ -256,7 +258,7 @@ function defaultMarkerForKind(kind = "", speaker = "") {
   if (kind === "user") return "›";
   if (kind === "assistant") return "◆";
   if (kind === "agent") return "◇";
-  if (kind === "report") return "▣";
+  if (kind === "report") return "●";
   if (kind === "error") return "!";
   if (kind === "success") return "✓";
   if (kind === "divider") return "─";

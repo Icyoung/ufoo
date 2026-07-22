@@ -113,6 +113,15 @@ function buildSessionSnapshot(input = {}) {
       : 0,
     // In-memory compatibility for callers still reading nlMessages
     nlMessages: cloneMessages(source.nlMessages),
+    contextMeter: source.contextMeter && typeof source.contextMeter === "object"
+      ? {
+        usedTokens: Number(source.contextMeter.usedTokens) || 0,
+        limitTokens: Number(source.contextMeter.limitTokens) || 0,
+        model: String(source.contextMeter.model || source.model || "").trim(),
+        label: String(source.contextMeter.label || "").trim(),
+        updatedAt: String(source.contextMeter.updatedAt || "").trim(),
+      }
+      : null,
   };
 }
 

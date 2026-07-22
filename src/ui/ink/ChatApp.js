@@ -1187,7 +1187,7 @@ function createChatStatusLine({ React, ink }) {
   const { useEffect, useState } = React;
   const { Box, Text } = ink;
   const h = React.createElement;
-  return function ChatStatusLine({ status, version }) {
+  return function ChatStatusLine({ status, version, cols = 80 }) {
     const message = String((status && status.message) || "");
     const animated = Boolean(message)
       && isAnimatedStatusType(inferStatusType(message, status && status.type));
@@ -1197,10 +1197,16 @@ function createChatStatusLine({ React, ink }) {
       const timer = setInterval(() => setTick((t) => t + 1), 100);
       return () => clearInterval(timer);
     }, [animated]);
+    const versionText = `v${version || ""}`;
+    const raw = computeStatusText(status, animated ? tick : 0);
+    // Keep the version pinned on the right; truncate the live message so a
+    // long bus status cannot collide with it or leave redraw trails.
+    const leftBudget = Math.max(12, (Number(cols) || 80) - fmt.displayCellWidth(versionText) - 2);
+    const left = fitPlainLine(raw, leftBudget);
     return h(Box, { marginTop: 1, width: "100%" },
-      h(Text, { color: "gray" }, computeStatusText(status, animated ? tick : 0)),
+      h(Text, { color: "gray", wrap: "truncate" }, left),
       h(Box, { flexGrow: 1 }),
-      h(Text, { color: "gray" }, `v${version}`),
+      h(Text, { color: "gray" }, versionText),
     );
   };
 }
@@ -3605,7 +3611,7 @@ function createChatApp({ React, ink, props, interactive = true }) {
       }
       if (row.kind === "user") {
         const userBody = renderUserLogBody(row.bodyText);
-        return h(Box, { key, width: "100%", marginBottom: 1 },
+        return h(Box, { key, width: "100%", marginBottom: 1, alignItems: "flex-start" },
           h(Text, { color: "green", bold: true }, row.markerText || "› "),
           userBody.at
             ? h(Text, { color: "magenta", bold: true }, `@${userBody.at} `)
@@ -3621,7 +3627,9 @@ function createChatApp({ React, ink, props, interactive = true }) {
         wrap: "wrap",
       };
       if (colors.dim) bodyProps.dimColor = true;
-      return h(Box, { key, width: "100%" },
+      // Pin the gutter glyph to the first text line; default Yoga stretch/center
+      // floats markers above wrapped speaker · body rows.
+      return h(Box, { key, width: "100%", alignItems: "flex-start" },
         h(Text, {
           color: colors.marker,
           bold: row.kind === "error" || row.kind === "assistant",
@@ -3682,7 +3690,7 @@ function createChatApp({ React, ink, props, interactive = true }) {
       }
       if (row.kind === "user") {
         const userBody = renderUserLogBody(row.bodyText);
-        return h(Box, { key, width: "100%", marginTop, marginBottom: 1 },
+        return h(Box, { key, width: "100%", marginTop, marginBottom: 1, alignItems: "flex-start" },
           h(Text, { color: "green", bold: true }, row.markerText || "› "),
           userBody.at
             ? h(Text, { color: "magenta", bold: true }, `@${userBody.at} `)
@@ -3698,7 +3706,7 @@ function createChatApp({ React, ink, props, interactive = true }) {
         wrap: "wrap",
       };
       if (colors.dim) bodyProps.dimColor = true;
-      return h(Box, { key, width: "100%", marginTop },
+      return h(Box, { key, width: "100%", marginTop, alignItems: "flex-start" },
         h(Text, {
           color: colors.marker,
           bold: row.kind === "error" || row.kind === "assistant",
@@ -3809,7 +3817,11 @@ function createChatApp({ React, ink, props, interactive = true }) {
       activeStreamGroups ? h(Box, { flexDirection: "column" },
         ...activeStreamGroups.map(renderChatLogGroup).filter(Boolean),
       ) : null,
-      h(ChatStatusLine, { status: state.status, version: fmt.UCODE_VERSION }),
+      h(ChatStatusLine, {
+        status: state.status,
+        version: fmt.UCODE_VERSION,
+        cols: size.cols || 80,
+      }),
       completionsOpen ? (() => {
         const start = Math.min(completionWindowStart, Math.max(0, completions.length - POPUP_PAGE_SIZE));
         const end = Math.min(completions.length, start + POPUP_PAGE_SIZE);

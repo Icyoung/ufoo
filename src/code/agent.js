@@ -610,6 +610,21 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
     : runNativeAgentTask;
   const onPhase = typeof options.onPhase === "function" ? options.onPhase : null;
   const onThinkingDelta = typeof options.onThinkingDelta === "function" ? options.onThinkingDelta : null;
+  const onContextUsage = typeof options.onContextUsage === "function" ? options.onContextUsage : null;
+  const applyContextMeter = (meter = null) => {
+    if (!meter || typeof meter !== "object") return null;
+    state.contextMeter = {
+      usedTokens: Number(meter.usedTokens) || 0,
+      limitTokens: Number(meter.limitTokens) || 0,
+      model: String(meter.model || state.model || "").trim(),
+      label: String(meter.label || "").trim(),
+      updatedAt: String(meter.updatedAt || "").trim() || new Date().toISOString(),
+    };
+    if (typeof onContextUsage === "function") {
+      try { onContextUsage(state.contextMeter); } catch { /* ignore */ }
+    }
+    return state.contextMeter;
+  };
   let lastTranscriptBaseline = 0;
   const invokeNative = (sessionIdValue = "", timeoutOverrideMs = timeoutMs) => {
     toolEventsThisAttempt = 0;
@@ -630,6 +645,7 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
       onStreamDelta: onStream,
       onThinkingDelta,
       onPhase,
+      onContextUsage: applyContextMeter,
       executionState: state.executionState || null,
       onArtifactPersisted: (persisted) => recordToolCallInSession(state, persisted, workspaceRoot),
       onToolEvent: (event) => {
@@ -779,6 +795,9 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
     const artifactIds = Array.isArray(state.workingSet)
       ? state.workingSet.map((entry) => entry.artifactId).filter(Boolean)
       : [];
+    if (cliRes && cliRes.contextMeter) {
+      applyContextMeter(cliRes.contextMeter);
+    }
     if (cliRes && cliRes.waitingUserInteraction) {
       return {
         ok: true,
@@ -791,6 +810,8 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
         streamLastChar,
         waitingUserInteraction: true,
         interactionId: cliRes.interactionId || "",
+        contextMeter: state.contextMeter || null,
+        usage: cliRes.usage || null,
       };
     }
     return {
@@ -802,6 +823,8 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
       metrics: {},
       streamed: Boolean(streamed || cliRes.streamed),
       streamLastChar,
+      contextMeter: state.contextMeter || null,
+      usage: cliRes.usage || null,
     };
   } catch (err) {
     return {
@@ -925,6 +948,9 @@ function buildSessionSnapshotFromState(state = {}) {
       ? Math.max(0, Math.floor(source.toolCallsSinceCommit))
       : 0,
     activeSkills: Array.isArray(source.activeSkills) ? source.activeSkills : [],
+    contextMeter: source.contextMeter && typeof source.contextMeter === "object"
+      ? source.contextMeter
+      : null,
   };
 }
 
@@ -999,6 +1025,9 @@ function resumeSessionState(state = {}, sessionId = "", workspaceRoot = process.
     ? snapshot.toolCallsSinceCommit
     : 0;
   state.activeSkills = Array.isArray(snapshot.activeSkills) ? snapshot.activeSkills : [];
+  state.contextMeter = snapshot.contextMeter && typeof snapshot.contextMeter === "object"
+    ? snapshot.contextMeter
+    : null;
   ensureContextSessionState(state);
   const { ensureTranscript } = require("./context/assembler");
   ensureTranscript(state, state.workspaceRoot);
@@ -1087,6 +1116,13 @@ async function resumeAfterUserInteraction(answerText = "", state = {}, options =
     onStreamDelta: trackingOnDelta,
     onThinkingDelta: typeof options.onThinkingDelta === "function" ? options.onThinkingDelta : null,
     onPhase: typeof options.onPhase === "function" ? options.onPhase : null,
+    onContextUsage: (meter) => {
+      if (!meter || typeof meter !== "object") return;
+      state.contextMeter = meter;
+      if (typeof options.onContextUsage === "function") {
+        try { options.onContextUsage(meter); } catch { /* ignore */ }
+      }
+    },
     executionState: state.executionState,
     signal: options.signal,
     resume: true,
@@ -1098,6 +1134,9 @@ async function resumeAfterUserInteraction(answerText = "", state = {}, options =
   if (cliRes && Array.isArray(cliRes.messages)) {
     state.nlMessages = stripSkillBlocksFromMessages(cliRes.messages);
   }
+  if (cliRes && cliRes.contextMeter) {
+    state.contextMeter = cliRes.contextMeter;
+  }
 
   if (!cliRes || cliRes.ok === false) {
     return {
@@ -1107,6 +1146,7 @@ async function resumeAfterUserInteraction(answerText = "", state = {}, options =
       waitingUserInteraction: false,
       streamed: false,
       streamLastChar: "",
+      contextMeter: state.contextMeter || null,
     };
   }
 
@@ -1119,6 +1159,7 @@ async function resumeAfterUserInteraction(answerText = "", state = {}, options =
       interactionId: cliRes.interactionId || "",
       streamed: Boolean(cliRes.streamed),
       streamLastChar,
+      contextMeter: state.contextMeter || null,
     };
   }
 
@@ -1129,6 +1170,7 @@ async function resumeAfterUserInteraction(answerText = "", state = {}, options =
     waitingUserInteraction: false,
     streamed: Boolean(cliRes.streamed),
     streamLastChar,
+    contextMeter: state.contextMeter || null,
   };
 }
 
