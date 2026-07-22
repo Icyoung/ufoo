@@ -5,4 +5,5 @@ module.exports = {
   ...require("./openaiChatTransport"),
   ...require("./anthropicMessagesTransport"),
   ...require("./modelsCatalog"),
+  ...require("./visionBlocks"),
 };

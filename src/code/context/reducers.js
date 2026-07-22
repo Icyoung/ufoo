@@ -287,9 +287,43 @@ function reduceArtifactReadResult(raw = {}, artifactId = "") {
   };
 }
 
+function reduceReadImageResult(raw = {}, artifactId = "") {
+  const source = raw && typeof raw === "object" ? raw : {};
+  const pathText = String(source.path || "").trim();
+  const mediaType = String(source.mediaType || "").trim();
+  const bytes = Number.isFinite(source.bytes) ? source.bytes : null;
+  const preview = source.ok === false
+    ? clipText(String(source.error || "read_image failed"), PREVIEW_MAX_CHARS)
+    : clipText(
+      `image ${pathText || "file"} (${mediaType || "unknown"}, ${bytes != null ? `${bytes} bytes` : "size?"})`,
+      PREVIEW_MAX_CHARS,
+    );
+  const modelPayload = {
+    ok: source.ok !== false,
+    kind: "image",
+    artifactId,
+    path: pathText,
+    mediaType,
+    bytes,
+    preview,
+  };
+  if (source.error) modelPayload.error = String(source.error);
+  // Keep base64 in the in-memory model payload for the current turn only.
+  // Artifacts / transcript strip it via stripVisionBase64 before persistence.
+  if (modelPayload.ok && source.base64) {
+    modelPayload.base64 = String(source.base64);
+  }
+  return {
+    preview,
+    summary: `read_image ${pathText || "file"} (${mediaType || "image"})`,
+    modelPayload,
+  };
+}
+
 function reduceToolResult(tool = "", raw = {}, artifactId = "", args = {}) {
   const name = String(tool || "").trim().toLowerCase();
   if (name === "read") return reduceReadResult(raw, artifactId);
+  if (name === "read_image") return reduceReadImageResult(raw, artifactId);
   if (name === "bash") return reduceBashResult(raw, artifactId, args);
   if (name === "write") return reduceWriteResult(raw, artifactId);
   if (name === "edit") return reduceEditResult(raw, artifactId);
@@ -318,6 +352,7 @@ module.exports = {
   parseSearchMatches,
   reduceToolResult,
   reduceReadResult,
+  reduceReadImageResult,
   reduceBashResult,
   reduceTestResult,
   reduceGitDiffResult,

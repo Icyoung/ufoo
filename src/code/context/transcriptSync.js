@@ -5,6 +5,7 @@ const {
   createTranscriptEventId,
   appendTranscriptEvent,
 } = require("./transcript");
+const { stripVisionBase64, degradeVisionContent } = require("../providers/visionBlocks");
 
 function messageRole(message = {}) {
   return String(message && message.role || "").trim().toLowerCase();
@@ -35,6 +36,24 @@ function parseToolArtifactContent(content = "") {
   }
 }
 
+function contentForStorage(content) {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    const hasVision = content.some((block) => {
+      if (!block || typeof block !== "object") return false;
+      const type = String(block.type || "").trim().toLowerCase();
+      return type === "image" || type === "image_url"
+        || (type === "tool_result" && Array.isArray(block.content));
+    });
+    if (hasVision) return degradeVisionContent(stripVisionBase64(content));
+    return stripVisionBase64(content);
+  }
+  if (content && typeof content === "object") {
+    return stripVisionBase64(content);
+  }
+  return content;
+}
+
 function messageToTranscriptEventForStorage(message = {}, extra = {}) {
   if (!message || typeof message !== "object") return null;
   const role = messageRole(message);
@@ -60,9 +79,10 @@ function messageToTranscriptEventForStorage(message = {}, extra = {}) {
         toolCallId: message.tool_call_id ? String(message.tool_call_id) : undefined,
       });
     }
-    const preview = typeof message.content === "string"
-      ? message.content.slice(0, 600)
-      : JSON.stringify(message.content).slice(0, 600);
+    const stored = contentForStorage(message.content);
+    const preview = typeof stored === "string"
+      ? stored.slice(0, 600)
+      : JSON.stringify(stored).slice(0, 600);
     return normalizeTranscriptEvent({
       ...base,
       role: "tool",
@@ -75,14 +95,14 @@ function messageToTranscriptEventForStorage(message = {}, extra = {}) {
   if (role === "assistant" && Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
     return normalizeTranscriptEvent({
       ...base,
-      content: message.content,
+      content: contentForStorage(message.content),
       toolCalls: message.tool_calls,
     });
   }
 
   return normalizeTranscriptEvent({
     ...base,
-    content: message.content,
+    content: contentForStorage(message.content),
   });
 }
 

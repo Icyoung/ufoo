@@ -21,6 +21,7 @@ describe("plan_graph control-plane tool", () => {
   test("TOOL_NAMES includes plan_graph and task_run without plan_mode tool", () => {
     expect(TOOL_NAMES).toEqual([
       "read",
+      "read_image",
       "write",
       "edit",
       "bash",
@@ -35,10 +36,11 @@ describe("plan_graph control-plane tool", () => {
     const text = buildImmutablePrefix();
     expect(text).toContain("plan_graph");
     expect(text).toContain("task_run");
+    expect(text).toContain("read_image");
     expect(text).toMatch(/TaskRuns are orthogonal to Plan Mode/i);
     expect(text).toMatch(/Plan Mode is a runtime posture for the Agent Loop/i);
     expect(text).toMatch(/operation=create automatically enables Plan Mode/i);
-    expect(text).toContain("Do not call plan_graph or task_run together with read, write, edit, bash, or artifact_read");
+    expect(text).toContain("Do not call plan_graph or task_run together with read, read_image, write, edit, bash, or artifact_read");
     expect(text).toMatch(/cancel_graph/i);
     expect(text).not.toContain("create/patch/inspect/control/cancel.");
     expect(text).not.toContain("create/patch/inspect/control/cancel)");
@@ -66,6 +68,9 @@ describe("plan_graph control-plane tool", () => {
 
     expect(byName.artifact_read.description).toMatch(/does not read workspace files/i);
     expect(byName.artifact_read.description).toMatch(/use `read` for repository paths/i);
+
+    expect(byName.read_image.description).toMatch(/image/i);
+    expect(byName.read_image.parameters.required).toEqual(["path"]);
 
     expect(byName.plan_graph.description).toMatch(/control\.start_task/i);
     expect(byName.plan_graph.description).toMatch(/task_run/i);

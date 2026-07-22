@@ -181,7 +181,7 @@ function formatPlanModeStatus(executionState = null) {
     lines.push("Rules while ON:");
     lines.push("  - Use plan_graph to create/expand/complete the plan");
     lines.push("  - write / edit / bash are blocked as direct tools");
-    lines.push("  - read / artifact_read allowed for exploration");
+    lines.push("  - read / read_image / artifact_read allowed for exploration");
     lines.push("  - Runtime auto-advances ready tool nodes after plan_graph");
     lines.push("  - User leaves with /plan off (agents cannot toggle Plan Mode)");
   } else {
@@ -223,7 +223,7 @@ function renderPlanModeContext(executionState = null) {
   }
 
   lines.push(
-    "Allowed direct tools: read, artifact_read, plan_graph, ask_user.",
+    "Allowed direct tools: read, read_image, artifact_read, plan_graph, ask_user.",
     "Blocked direct tools: write, edit, bash (route them as plan_graph tool nodes or task_loop).",
     "Plan Mode constrains the Agent Loop only; running TaskLoops are not paused or reconfigured by /plan off.",
     "Only the user can leave Plan Mode (/plan off). That does not cancel the graph or TaskRuns — use cancel_graph / control.cancel_task.",

@@ -25,6 +25,11 @@
  *                               component (e.g. completion popup) can
  *                               handle them. Plain editing keys still work.
  *   placeholder (string)        rendered in gray when value is empty
+ *   onPasteText(filtered)       optional. Called for non-empty paste/insert
+ *                               chunks before insertText. May return:
+ *                                 string — insert that text instead
+ *                                 { text } — insert text (may be "")
+ *                                 null/undefined — fall back to filtered text
  *
  * Newlines: Enter submits. Use Alt+Enter (delivered as meta+Return) or end the
  * line with `\` (the legacy continuation trick) to insert a literal newline.
@@ -32,7 +37,8 @@
  * plain Enter, so it would silently submit.
  *
  * Bracketed paste arrives as a multi-byte `input` chunk in useInput; we route
- * it through insertText, so multi-line paste already works without extra code.
+ * it through insertText (or onPasteText), so multi-line paste already works
+ * without extra code.
  */
 
 const fmt = require("../format");
@@ -167,6 +173,7 @@ function createMultilineInput({ React, ink }) {
     // the IME composition window pops up at the visible (inverse) cursor
     // instead of at the bottom of the screen.
     linesBelowInput = 0,
+    onPasteText = null,
   }) {
     // Cursor is owned by this component. preferredCol tracks the visual
     // column we want to keep when bouncing across lines of different widths
@@ -392,7 +399,36 @@ function createMultilineInput({ React, ink }) {
       // Plain character / paste. Filter control bytes.
       if (input && !key.ctrl && !key.meta) {
         const filtered = input.replace(/[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]/g, "");
-        if (filtered) insertText(filtered);
+        // Binary clipboard paste can strip to empty — still notify parent so
+        // it can try macOS PNGf clipboard ingest.
+        if (!filtered) {
+          if (typeof onPasteText === "function") {
+            try { onPasteText(""); } catch { /* ignore */ }
+          }
+          return;
+        }
+        if (typeof onPasteText === "function" && (filtered.length > 1 || filtered.includes("\n"))) {
+          let rewritten;
+          try {
+            rewritten = onPasteText(filtered);
+          } catch {
+            rewritten = filtered;
+          }
+          if (rewritten == null) {
+            insertText(filtered);
+            return;
+          }
+          if (typeof rewritten === "string") {
+            if (rewritten) insertText(rewritten);
+            return;
+          }
+          if (rewritten && typeof rewritten === "object") {
+            const nextText = rewritten.text == null ? filtered : String(rewritten.text);
+            if (nextText) insertText(nextText);
+            return;
+          }
+        }
+        insertText(filtered);
       }
     }, { isActive: interactive });
 

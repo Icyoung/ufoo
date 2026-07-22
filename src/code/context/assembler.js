@@ -34,6 +34,7 @@ const {
 const { renderExecutionSegmentContext } = require("./executionSegment");
 const { renderPlanModeContext } = require("./planMode");
 const { drainAgentMailboxForTurn } = require("../runtime/agentWakeup");
+const { stripVisionBase64, degradeVisionContent } = require("../providers/visionBlocks");
 
 const DEFAULT_TRANSCRIPT_WINDOW = 12;
 const DEFAULT_RECENT_TOOL_EVENTS = 4;
@@ -291,6 +292,19 @@ function sanitizeModelMessages(messages = []) {
       continue;
     }
 
+    // Drop ephemeral OpenAI vision companion user messages (image_url data URIs)
+    // when rebuilding history so base64 does not re-enter later turns.
+    if (role === "user" && Array.isArray(message.content)) {
+      const hasImageUrl = message.content.some((block) => (
+        block && String(block.type || "").trim().toLowerCase() === "image_url"
+      ));
+      if (hasImageUrl) {
+        const degraded = degradeVisionContent(message.content);
+        out.push({ role: "user", content: degraded });
+        continue;
+      }
+    }
+
     out.push(message);
   }
   return out;
@@ -435,16 +449,18 @@ function persistToolResultToContext({
   rawResult = {},
   segmentId = "",
 } = {}) {
+  const rawForStorage = stripVisionBase64(rawResult);
   const saved = saveArtifact(workspaceRoot, sessionId, {
     type: "tool_result",
     tool,
     args,
-    raw: rawResult,
+    raw: rawForStorage,
     createdBy: tool,
   });
   const artifactId = saved.artifact && saved.artifact.artifactId
     ? saved.artifact.artifactId
     : "";
+  // Reduce from the live result so vision base64 stays available for this turn.
   const reduced = reduceToolResult(tool, rawResult, artifactId, args);
   return {
     artifactId,

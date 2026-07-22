@@ -1,6 +1,12 @@
 "use strict";
 
 const { assertTransport } = require("./transportContract");
+const {
+  extractVisionPayload,
+  stripVisionBase64,
+  visionSummaryText,
+  toAnthropicImageBlock,
+} = require("./visionBlocks");
 
 /**
  * Anthropic Messages API transport adapter.
@@ -70,11 +76,32 @@ function createAnthropicMessagesTransport(deps = {}) {
       }));
     },
     appendToolResult({ collected, call, toolResult }) {
+      const vision = extractVisionPayload(toolResult);
+      const isError = Boolean(!toolResult || toolResult.ok === false);
+      if (vision) {
+        const textPayload = stripVisionBase64(toolResult);
+        collected.push({
+          type: "tool_result",
+          tool_use_id: String(call.source.id || ""),
+          content: [
+            {
+              type: "text",
+              text: clipText(
+                `${visionSummaryText(vision, toolResult)}\n${toJsonString(textPayload)}`,
+                12000,
+              ),
+            },
+            toAnthropicImageBlock(vision),
+          ],
+          is_error: isError,
+        });
+        return;
+      }
       collected.push({
         type: "tool_result",
         tool_use_id: String(call.source.id || ""),
         content: clipText(toJsonString(toolResult), 12000),
-        is_error: Boolean(!toolResult || toolResult.ok === false),
+        is_error: isError,
       });
     },
     flushToolResults({ messages, collected }) {

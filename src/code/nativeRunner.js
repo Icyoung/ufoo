@@ -50,12 +50,14 @@ const {
 } = require("./protocol");
 const { stableStringify } = require("./context/stableJson");
 const { getReadToolDescription } = require("../agents/prompts/native/toolDescriptions/read");
+const { getReadImageToolDescription } = require("../agents/prompts/native/toolDescriptions/readImage");
 const { getWriteToolDescription } = require("../agents/prompts/native/toolDescriptions/write");
 const { getEditToolDescription } = require("../agents/prompts/native/toolDescriptions/edit");
 const { getBashToolDescription } = require("../agents/prompts/native/toolDescriptions/bash");
 
 const CORE_TOOL_NAMES = new Set([
   "read",
+  "read_image",
   "write",
   "edit",
   "bash",
@@ -64,7 +66,14 @@ const CORE_TOOL_NAMES = new Set([
   "task_run",
   "ask_user",
 ]);
-const EXECUTABLE_GRAPH_TOOLS = new Set(["read", "write", "edit", "bash", "artifact_read"]);
+const EXECUTABLE_GRAPH_TOOLS = new Set([
+  "read",
+  "read_image",
+  "write",
+  "edit",
+  "bash",
+  "artifact_read",
+]);
 const CONTROL_PLANE_TOOLS = new Set(["plan_graph", "task_run"]);
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1";
@@ -387,6 +396,23 @@ function buildCoreToolSpecs() {
             startLine: { type: "integer" },
             endLine: { type: "integer" },
             maxBytes: { type: "integer" },
+          },
+          required: ["path"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "read_image",
+        description: getReadImageToolDescription(),
+        parameters: {
+          type: "object",
+          properties: {
+            path: {
+              type: "string",
+              description: "Workspace-relative path to a png, jpeg, gif, or webp image.",
+            },
           },
           required: ["path"],
         },

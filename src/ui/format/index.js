@@ -38,10 +38,14 @@ const STATUS_INDICATORS = {
 // Keep this list in sync with the keys handled by buildMergedToolSummaryText.
 const TOOL_LABELS = {
   read: "Reading file",
+  read_image: "Reading image",
   write: "Writing file",
   edit: "Editing file",
   bash: "Running command",
   artifact_read: "Reading artifact",
+  plan_graph: "Updating plan",
+  task_run: "Managing task",
+  ask_user: "Asking user",
 };
 
 const ANSI_PATTERN = /\x1B\[[0-9;?]*[ -/]*[@-~]/g;
@@ -283,7 +287,15 @@ function messageContentText(message = {}) {
   if (Array.isArray(content)) {
     return content.map((part) => {
       if (typeof part === "string") return part;
-      if (part && typeof part === "object" && part.text != null) return String(part.text);
+      if (!part || typeof part !== "object") return "";
+      const type = String(part.type || "").trim().toLowerCase();
+      if (type === "image" || type === "image_url") {
+        const name = part.fileName
+          || (part.path ? require("path").basename(String(part.path)) : "")
+          || "image";
+        return `[image: ${name}]`;
+      }
+      if (part.text != null) return String(part.text);
       return "";
     }).join("");
   }
@@ -296,13 +308,45 @@ function toolMessagePreview(message = {}) {
   try {
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object") {
+      if (parsed.kind === "image" || parsed.base64 || parsed.mediaType) {
+        const name = require("path").basename(String(parsed.path || parsed.fileName || "image"));
+        return parsed.preview || `[image: ${name}]`;
+      }
       if (parsed.preview) return String(parsed.preview);
       if (parsed.artifactId) return `artifact:${parsed.artifactId}`;
+      if (parsed.base64) {
+        const clone = { ...parsed };
+        delete clone.base64;
+        return JSON.stringify(clone);
+      }
     }
   } catch {
     // plain tool text
   }
+  if (/data:image\/[a-zA-Z+]+;base64,/.test(raw) || /"base64"\s*:/.test(raw)) {
+    return "[image]";
+  }
   return raw;
+}
+
+/**
+ * Collapse attached-image prompt prefixes / base64 blobs for TUI log display.
+ */
+function redactUserMessageForLog(text = "") {
+  let out = String(text || "");
+  out = out.replace(
+    /\[Attached images[^\]]*\]\s*(?:-\s*.+\n?)*/gi,
+    (block) => {
+      const paths = [...block.matchAll(/^\s*-\s*(.+)$/gm)].map((m) => String(m[1] || "").trim());
+      if (paths.length === 0) return "[image]";
+      return paths
+        .map((p) => `[image: ${require("path").basename(p)}]`)
+        .join(" ");
+    },
+  );
+  out = out.replace(/data:image\/[a-zA-Z+]+;base64,[A-Za-z0-9+/=\s]+/g, "[image]");
+  out = out.replace(/"base64"\s*:\s*"[^"]*"/g, '"base64":"[redacted]"');
+  return out.replace(/\n{3,}/g, "\n\n").trim();
 }
 
 /**
@@ -349,7 +393,7 @@ function buildUcodeSessionLogEntries(messages = [], options = {}) {
     if (!message || typeof message !== "object") continue;
     const role = String(message.role || "").trim().toLowerCase();
     if (role === "user") {
-      const text = messageContentText(message);
+      const text = redactUserMessageForLog(messageContentText(message));
       if (!text.trim()) continue;
       const lines = text.split(/\r?\n/);
       lines.forEach((line, index) => {
@@ -669,6 +713,12 @@ function normalizeToolLogDetail(tool = "", args = {}, payload = {}) {
   if (name === "read" || name === "write" || name === "edit") {
     const pathText = String(argObj.path || resObj.path || "").trim();
     return shortenPathDetail(pathText);
+  }
+
+  if (name === "read_image") {
+    const pathText = String(argObj.path || resObj.path || resObj.fileName || "").trim();
+    const base = pathText ? require("path").basename(pathText) : "image";
+    return `[image: ${base}]`;
   }
 
   if (name === "artifact_read") {
@@ -1295,6 +1345,9 @@ module.exports = {
   normalizeModelLabel,
   normalizeToolLogDetail,
   normalizeToolMergeEntry,
+  messageContentText,
+  toolMessagePreview,
+  redactUserMessageForLog,
   parseActiveAgentsFromBusStatus,
   planAgentsFooter,
   planProjectsRail,

@@ -80,6 +80,7 @@ describe("ucode-core tool kernel", () => {
     expect(result.error).toContain("unknown");
     expect(result.supported_tools).toEqual([
       "read",
+      "read_image",
       "write",
       "edit",
       "bash",

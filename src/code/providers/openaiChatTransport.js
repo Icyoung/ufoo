@@ -2,6 +2,12 @@
 
 const { randomUUID } = require("crypto");
 const { assertTransport } = require("./transportContract");
+const {
+  extractVisionPayload,
+  stripVisionBase64,
+  visionSummaryText,
+  toOpenAiImagePart,
+} = require("./visionBlocks");
 
 /**
  * OpenAI-compatible chat-completions transport adapter.
@@ -82,11 +88,23 @@ function createOpenAiChatTransport(deps = {}) {
       }));
     },
     appendToolResult({ messages, call, toolResult }) {
+      const vision = extractVisionPayload(toolResult);
+      const payload = vision ? stripVisionBase64(toolResult) : toolResult;
       messages.push({
         role: "tool",
         tool_call_id: call.source.id,
-        content: clipText(toJsonString(toolResult), 12000),
+        content: clipText(toJsonString(payload), 12000),
       });
+      if (vision) {
+        const imagePart = toOpenAiImagePart(vision);
+        messages.push({
+          role: "user",
+          content: [
+            { type: "text", text: visionSummaryText(vision, toolResult) },
+            imagePart,
+          ],
+        });
+      }
     },
   };
 

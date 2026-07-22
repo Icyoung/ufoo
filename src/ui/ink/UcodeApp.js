@@ -17,6 +17,11 @@
 const { runInk } = require("../runInk");
 const fmt = require("../format");
 const { createMultilineInput } = require("./MultilineInput");
+const {
+  handleImagePaste,
+  formatUserLogWithAttachments,
+  buildAttachedImagesPromptPrefix,
+} = require("../../code/imageIngest");
 
 // Throttle for the live thinking-chain status line: rapid thinking_delta
 // chunks would otherwise re-render the footer on every SSE event.
@@ -70,6 +75,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
     );
     const [draft, setDraft] = useState("");
     const [draftVersion, setDraftVersion] = useState(0);
+    const [imageAttachments, setImageAttachments] = useState([]);
     // status: idle when message === "". `type` picks a STATUS_INDICATORS
     // bucket; `showTimer` and `startedAt` reproduce the blessed spinner
     // controls. The BG suffix is computed from backgroundTasksRef and
@@ -510,12 +516,20 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
 
     const runChainRef = useRef(Promise.resolve());
 
-    const executeLine = useCallback(async (rawValue) => {
-      const normalized = String(rawValue || "").replace(/\r?\n/g, " ").trim();
-      if (!normalized) return;
+    const executeLine = useCallback(async (rawValue, options = {}) => {
+      const modelSource = options.modelText != null ? options.modelText : rawValue;
+      const logSource = options.logText != null ? options.logText : modelSource;
+      const preserveNewlines = Boolean(options.preserveNewlines);
+      const modelNormalized = preserveNewlines
+        ? String(modelSource || "").trim()
+        : String(modelSource || "").replace(/\r?\n/g, " ").trim();
+      const logNormalized = fmt.redactUserMessageForLog(
+        String(logSource || "").replace(/\r?\n/g, " ").trim(),
+      );
+      if (!modelNormalized && !logNormalized) return;
       toolMergeScopeRef.current += 1;
       flushActiveMerge();
-      appendLogLine(`› ${normalized}`, "user");
+      appendLogLine(`› ${logNormalized || modelNormalized}`, "user");
 
       const runtimeWorkspace = String(
         (props.state && props.state.workspaceRoot) || props.workspaceRoot || process.cwd()
@@ -523,7 +537,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
 
       let result;
       try {
-        result = props.runSingleCommand(normalized, runtimeWorkspace);
+        result = props.runSingleCommand(modelNormalized, runtimeWorkspace);
       } catch (err) {
         appendLogText(`Error: ${err && err.message ? err.message : "command parse failed"}`, "error");
         return;
@@ -963,21 +977,27 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
 
     const submit = useCallback((submitted) => {
       const value = String(submitted == null ? draft : submitted);
+      const attachments = Array.isArray(imageAttachments) ? imageAttachments.slice() : [];
       const trimmed = value.trim();
-      if (!trimmed) return;
+      if (!trimmed && attachments.length === 0) return;
       setDraft("");
       setDraftVersion((v) => v + 1);
+      setImageAttachments([]);
       setInputHistory((prev) => {
-        const next = prev.concat([trimmed]).slice(-200);
+        const historyValue = formatUserLogWithAttachments(trimmed, attachments) || trimmed;
+        const next = prev.concat([historyValue]).slice(-200);
         setHistoryIndex(next.length);
         return next;
       });
+
+      const modelText = `${buildAttachedImagesPromptPrefix(attachments)}${trimmed}`.trim();
+      const logText = formatUserLogWithAttachments(trimmed, attachments);
 
       // Pending approval/choice/chat takes priority over nudge / new NL.
       try {
         const { hasPendingUserInteraction } = require("../../code/context/userInteraction");
         if (props.state && props.state.executionState && hasPendingUserInteraction(props.state.executionState)) {
-          appendLogText(`› ${trimmed}`, "user");
+          appendLogText(`› ${logText}`, "user");
           const startedAt = Date.now();
           setStatus({
             message: "Applying your reply...",
@@ -1053,10 +1073,11 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
         if (!props.state.executionState || typeof props.state.executionState !== "object") {
           props.state.executionState = emptyExecutionState();
         }
-        const queued = enqueueUserPrompt(props.state.executionState, trimmed);
+        const queued = enqueueUserPrompt(props.state.executionState, modelText);
+        const reminderPreview = logText.slice(0, 120) + (logText.length > 120 ? "…" : "");
         appendLogText(
           queued.enqueued
-            ? `Queued user reminder for next model turn: ${trimmed.slice(0, 120)}${trimmed.length > 120 ? "…" : ""}`
+            ? `Queued user reminder for next model turn: ${reminderPreview}`
             : "Could not queue user reminder (empty).",
           "system",
         );
@@ -1065,10 +1086,15 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
 
       // Serialize executions so streaming tasks don't interleave.
       runChainRef.current = runChainRef.current
-        .then(() => executeLine(value))
+        .then(() => executeLine(modelText, {
+          modelText,
+          logText,
+          preserveNewlines: attachments.length > 0,
+        }))
         .catch((err) => appendLogText(`Error: ${err && err.message ? err.message : err}`, "error"));
     }, [
       draft,
+      imageAttachments,
       executeLine,
       appendLogText,
       appendLogLine,
@@ -1282,6 +1308,16 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
           }),
         );
       })() : null,
+      imageAttachments.length > 0
+        ? h(Box, { flexDirection: "column", width: "100%", marginBottom: 0 },
+          h(Text, { color: "cyan", dimColor: true },
+            imageAttachments.map((item) => {
+              const name = item.fileName || require("path").basename(String(item.relPath || "image"));
+              return `[img] ${name}`;
+            }).join("  "),
+          ),
+        )
+        : null,
       h(Box, { width: "100%" },
         h(MultilineInput, {
           value: draft,
@@ -1291,6 +1327,33 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
               setCompletionSuppressedDraft(null);
             }
             setDraft(next);
+          },
+          onPasteText: (filtered) => {
+            const workspaceRoot = String(
+              (props.state && props.state.workspaceRoot) || props.workspaceRoot || process.cwd(),
+            );
+            const sessionId = String((props.state && props.state.sessionId) || "session");
+            const outcome = handleImagePaste(filtered, {
+              workspaceRoot,
+              sessionId,
+              tryClipboard: true,
+            });
+            if (Array.isArray(outcome.attachments) && outcome.attachments.length > 0) {
+              setImageAttachments((prev) => {
+                const next = prev.slice();
+                for (const item of outcome.attachments) {
+                  if (!item || !item.relPath) continue;
+                  if (next.some((existing) => existing.relPath === item.relPath)) continue;
+                  next.push(item);
+                }
+                return next;
+              });
+            }
+            if (Array.isArray(outcome.errors) && outcome.errors.length > 0 && outcome.attachments.length === 0) {
+              // Soft notice only when nothing was ingested.
+              appendLogText(`Image paste: ${outcome.errors[0]}`, "system");
+            }
+            return { text: outcome.text == null ? filtered : outcome.text };
           },
           onSubmit: (value) => {
             setCompletionSuppressedDraft(null);

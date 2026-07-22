@@ -1,6 +1,7 @@
 "use strict";
 
 const { runReadTool } = require("./tools/read");
+const { runReadImageTool } = require("./tools/readImage");
 const { runWriteTool } = require("./tools/write");
 const { runEditTool } = require("./tools/edit");
 const { runBashTool } = require("./tools/bash");
@@ -11,6 +12,7 @@ const { runAskUserTool } = require("./tools/askUser");
 
 const TOOL_NAMES = [
   "read",
+  "read_image",
   "write",
   "edit",
   "bash",
@@ -23,6 +25,7 @@ const TOOL_NAMES = [
 function normalizeToolName(value = "") {
   const text = String(value || "").trim().toLowerCase();
   if (text === "read") return "read";
+  if (text === "read_image" || text === "read-image" || text === "readimage") return "read_image";
   if (text === "write") return "write";
   if (text === "edit") return "edit";
   if (text === "bash") return "bash";
@@ -44,6 +47,7 @@ function runToolCall(input = {}, options = {}) {
     };
   }
   if (tool === "read") return runReadTool(args, options);
+  if (tool === "read_image") return runReadImageTool(args, options);
   if (tool === "write") return runWriteTool(args, options);
   if (tool === "edit") return runEditTool(args, options);
   if (tool === "artifact_read") return runArtifactReadTool(args, options);
