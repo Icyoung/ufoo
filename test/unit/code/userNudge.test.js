@@ -343,6 +343,126 @@ describe("nativeRunner injects pending reminders before LLM turns", () => {
     expect(global.fetch).toHaveBeenCalledTimes(3);
     expect(executionState.planGraph.waitingFor.id).toBe("stuck");
   });
+
+  test("delivers mid-loop task_started mailbox before next model turn", async () => {
+    const { enqueueAgentRuntime } = require("../../../src/code/runtime/loopMailbox");
+    const { createRuntimeEvent } = require("../../../src/code/runtime/runtimeEvents");
+    const executionState = emptyExecutionState();
+    let turn = 0;
+    global.fetch.mockImplementation(async (_url, init) => {
+      turn += 1;
+      const body = JSON.parse(String(init && init.body || "{}"));
+      if (turn === 1) {
+        enqueueAgentRuntime(executionState, createRuntimeEvent("task_started", {
+          taskId: "batch-1",
+          taskRunId: "trun_wake_1",
+        }));
+        executionState.taskRuns = {
+          byId: {
+            trun_wake_1: {
+              id: "trun_wake_1",
+              status: "running",
+              phase: "waiting_model",
+              parentNodeId: "batch-1",
+              objective: "Implement batch 1",
+            },
+          },
+        };
+        return makeSseResponse([
+          {
+            choices: [{
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  id: "call_read",
+                  type: "function",
+                  function: {
+                    name: "read",
+                    arguments: '{"path":"a.txt"}',
+                  },
+                }],
+              },
+            }],
+          },
+        ]);
+      }
+      const runtimeMsg = (body.messages || []).find((m) => (
+        m.role === "user"
+        && String(m.content || "").includes("Runtime events")
+        && String(m.content || "").includes("task_started")
+        && String(m.content || "").includes("trun_wake_1")
+      ));
+      expect(runtimeMsg).toBeTruthy();
+      executionState.taskRuns.byId.trun_wake_1.status = "succeeded";
+      executionState.taskRuns.byId.trun_wake_1.phase = "finalizing";
+      return makeSseResponse([
+        { choices: [{ delta: { content: "served task run" } }] },
+      ]);
+    });
+
+    runToolCall.mockImplementation(() => ({ ok: true, content: "file" }));
+
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "start work",
+      provider: "openai",
+      model: "gpt-test",
+      executionState,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.output).toBe("served task run");
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(executionState.agentMailbox.queue).toHaveLength(0);
+  });
+
+  test("auto-continues when TaskRun is waiting_model after text-only turn", async () => {
+    const executionState = emptyExecutionState();
+    executionState.taskRuns = {
+      byId: {
+        trun_wait: {
+          id: "trun_wait",
+          status: "running",
+          phase: "waiting_model",
+          parentNodeId: "impl",
+          objective: "Do the work",
+        },
+      },
+    };
+    let turn = 0;
+    global.fetch.mockImplementation(async (_url, init) => {
+      turn += 1;
+      const body = JSON.parse(String(init && init.body || "{}"));
+      if (turn === 1) {
+        return makeSseResponse([
+          { choices: [{ delta: { content: "I started a task." } }] },
+        ]);
+      }
+      const wake = (body.messages || []).find((m) => (
+        m.role === "user"
+        && String(m.content || "").includes("Runtime wake")
+        && String(m.content || "").includes("trun_wait")
+      ));
+      expect(wake).toBeTruthy();
+      executionState.taskRuns.byId.trun_wait.status = "succeeded";
+      executionState.taskRuns.byId.trun_wait.phase = "finalizing";
+      return makeSseResponse([
+        { choices: [{ delta: { content: "continuing task" } }] },
+      ]);
+    });
+
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "go",
+      provider: "openai",
+      model: "gpt-test",
+      executionState,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.output).toContain("continuing task");
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("busy submit enqueue helper path", () => {

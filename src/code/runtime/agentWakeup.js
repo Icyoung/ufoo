@@ -2,9 +2,12 @@
 
 /**
  * Drain Agent Loop mailbox into a turnDynamic block (never as user role).
+ * Mid-loop wakeups (nativeRunner) also consume the same mailbox into the
+ * conversation so TaskRun waiting_model does not strand the Agent Loop.
  */
 
-const { drainAgentMailbox, ensureMailbox } = require("./loopMailbox");
+const { drainAgentMailbox, ensureMailbox, peek } = require("./loopMailbox");
+const { ensureTaskRunStore } = require("./taskRun");
 
 function formatAgentRuntimeEvents(events = []) {
   const list = Array.isArray(events) ? events : [];
@@ -43,6 +46,11 @@ function peekAgentMailboxText(executionState = null) {
   return formatAgentRuntimeEvents(box.queue || []);
 }
 
+function hasPendingAgentMailbox(executionState = null) {
+  const state = executionState && typeof executionState === "object" ? executionState : {};
+  return Boolean(peek(ensureMailbox(state, "agentMailbox")));
+}
+
 function drainAgentMailboxForTurn(executionState = null) {
   const events = drainAgentMailbox(executionState);
   return {
@@ -51,8 +59,63 @@ function drainAgentMailboxForTurn(executionState = null) {
   };
 }
 
+const AWAITING_MODEL_PHASES = new Set([
+  "waiting_model",
+  "planning",
+  "initializing",
+]);
+
+/**
+ * TaskRuns that still need the Agent Loop (model turn / planning).
+ */
+function listTaskRunsAwaitingModel(executionState = null) {
+  const store = ensureTaskRunStore(executionState);
+  return Object.values(store.byId || {}).filter((run) => (
+    run
+    && (run.status === "running" || run.status === "queued")
+    && AWAITING_MODEL_PHASES.has(String(run.phase || "").trim().toLowerCase())
+  ));
+}
+
+function shouldWakeAgentForTaskRuns(executionState = null) {
+  return listTaskRunsAwaitingModel(executionState).length > 0;
+}
+
+/**
+ * Whether the Agent Loop must keep going after a text-only model turn
+ * because TaskRuns or unread runtime mail still need service.
+ */
+function shouldAutoContinueForTaskWake(executionState = null) {
+  if (!executionState || typeof executionState !== "object") return false;
+  if (executionState.pendingUserInteraction) return false;
+  return hasPendingAgentMailbox(executionState) || shouldWakeAgentForTaskRuns(executionState);
+}
+
+function buildTaskRunWakeReminder(executionState = null) {
+  const runs = listTaskRunsAwaitingModel(executionState);
+  if (runs.length === 0 && !hasPendingAgentMailbox(executionState)) return "";
+  const lines = [
+    "Runtime wake (not a user message): active TaskRun(s) still need the Agent Loop.",
+    "Continue serving them now (read/inspect/edit via tools, or plan_graph/task_run control).",
+    "Do not end the turn with text only while a TaskRun is waiting_model.",
+  ];
+  for (const run of runs.slice(0, 4)) {
+    const label = run.title || run.objective || run.parentNodeId || run.id;
+    lines.push(
+      `- taskRunId=${run.id} phase=${run.phase || ""} status=${run.status || ""}`
+      + (label ? ` — ${String(label).slice(0, 160)}` : "")
+    );
+  }
+  return lines.join("\n");
+}
+
 module.exports = {
   formatAgentRuntimeEvents,
   peekAgentMailboxText,
+  hasPendingAgentMailbox,
   drainAgentMailboxForTurn,
+  listTaskRunsAwaitingModel,
+  shouldWakeAgentForTaskRuns,
+  shouldAutoContinueForTaskWake,
+  buildTaskRunWakeReminder,
 };

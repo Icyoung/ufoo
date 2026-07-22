@@ -90,6 +90,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       hasPlan: false,
       visible: false,
       bandLines: [],
+      roadmapMarkdown: "",
       idleHint: "",
       statusLine: "",
       hash: "",
@@ -1248,18 +1249,30 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
           renderMergeText(activeMerge)
         ),
       ) : null,
-      planUi.visible && planUi.bandLines.length > 0
+      planUi.visible && (planUi.roadmapMarkdown || (planUi.bandLines && planUi.bandLines.length > 0))
         ? h(Box, {
           flexDirection: "column",
           width: "100%",
           marginTop: 1,
         },
-          ...planUi.bandLines.map((line, idx) => h(Text, {
-            key: `plan-band-${idx}`,
-            color: "magenta",
-            dimColor: idx > 0,
-            wrap: "truncate",
-          }, line || " ")),
+          ...(() => {
+            let lines = Array.isArray(planUi.bandLines) ? planUi.bandLines.slice() : [];
+            const md = String(planUi.roadmapMarkdown || "").trim();
+            if (md) {
+              try {
+                const rendered = fmt.renderLogLinesWithMarkdownAnsi(md, { inCodeBlock: false });
+                if (Array.isArray(rendered) && rendered.length > 0) lines = rendered;
+              } catch {
+                lines = md.split(/\r?\n/);
+              }
+            }
+            return lines.map((line, idx) => h(Text, {
+              key: `plan-band-${idx}`,
+              color: md ? undefined : "magenta",
+              dimColor: !md && idx > 0,
+              wrap: "truncate",
+            }, line || " "));
+          })(),
         )
         : null,
       interactionLines.length > 0

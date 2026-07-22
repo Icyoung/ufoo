@@ -31,6 +31,12 @@ const {
   buildPlanAutoContinueReminder,
 } = require("./context/userNudge");
 const {
+  drainAgentMailboxForTurn,
+  shouldAutoContinueForTaskWake,
+  buildTaskRunWakeReminder,
+  listTaskRunsAwaitingModel,
+} = require("./runtime/agentWakeup");
+const {
   runAskUserTool,
   syncInteractionFromPlanGraph,
   hasPendingUserInteraction,
@@ -1782,33 +1788,74 @@ async function runNativeLoop({
     messages.push({ role: "user", content });
   }
 
-  function tryInjectPlanAutoContinue() {
-    if (!shouldAutoContinuePlan(executionState)) return false;
-    if (planAutoContinues >= DEFAULT_MAX_PLAN_AUTO_CONTINUES) return false;
+  /** Deliver mid-loop TaskRun runtime events before the next model call. */
+  function injectRuntimeMailboxEvents() {
+    const drained = drainAgentMailboxForTurn(executionState);
+    if (!drained.text) return false;
+    messages.push({ role: "user", content: drained.text });
+    return true;
+  }
+
+  function nextAutoContinueKey() {
     const waitingId = String(
       (executionState.planGraph && executionState.planGraph.waitingFor
         && executionState.planGraph.waitingFor.id) || ""
     ).trim();
+    if (waitingId) return `plan:${waitingId}`;
+    const runs = listTaskRunsAwaitingModel(executionState);
+    if (runs.length > 0) {
+      return `task:${runs.map((run) => run.id).sort().join(",")}`;
+    }
+    return "mailbox";
+  }
+
+  function tryInjectAgentAutoContinue() {
+    if (planAutoContinues >= DEFAULT_MAX_PLAN_AUTO_CONTINUES) return false;
+    const continueKey = nextAutoContinueKey();
     if (
       consecutiveEmptyAutoContinues >= 2
-      && waitingId
-      && waitingId === lastAutoContinueWaitingId
+      && continueKey
+      && continueKey === lastAutoContinueWaitingId
     ) {
       return false;
     }
-    const reminder = buildPlanAutoContinueReminder(executionState);
-    if (!reminder) return false;
-    messages.push({ role: "user", content: reminder });
-    planAutoContinues += 1;
-    lastAutoContinueWaitingId = waitingId;
-    consecutiveEmptyAutoContinues += 1;
-    return true;
+
+    // Prefer draining fresh runtime mail (task_started, etc.) before nudges.
+    if (injectRuntimeMailboxEvents()) {
+      planAutoContinues += 1;
+      lastAutoContinueWaitingId = continueKey;
+      consecutiveEmptyAutoContinues += 1;
+      return true;
+    }
+
+    if (shouldAutoContinuePlan(executionState)) {
+      const reminder = buildPlanAutoContinueReminder(executionState);
+      if (!reminder) return false;
+      messages.push({ role: "user", content: reminder });
+      planAutoContinues += 1;
+      lastAutoContinueWaitingId = continueKey;
+      consecutiveEmptyAutoContinues += 1;
+      return true;
+    }
+
+    if (shouldAutoContinueForTaskWake(executionState)) {
+      const reminder = buildTaskRunWakeReminder(executionState);
+      if (!reminder) return false;
+      messages.push({ role: "user", content: reminder });
+      planAutoContinues += 1;
+      lastAutoContinueWaitingId = continueKey;
+      consecutiveEmptyAutoContinues += 1;
+      return true;
+    }
+
+    return false;
   }
 
   while (true) {
     guards.ensureActive();
 
     injectPendingUserReminders();
+    injectRuntimeMailboxEvents();
 
     if (activeLedger) {
       runProviderTurnGate(activeLedger);
@@ -1876,7 +1923,7 @@ async function runNativeLoop({
       if (!aggregated.trim() && text) {
         aggregated = text;
       }
-      if (tryInjectPlanAutoContinue()) {
+      if (tryInjectAgentAutoContinue()) {
         continue;
       }
       return {
