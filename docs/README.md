@@ -11,6 +11,7 @@ planning material in `docs/archive/`.
 | `agent-prompts-and-tools.md` | current | Agent bodies, prompts, bootstrap text, prompt profiles, and tool definitions. |
 | `agent-prompts-and-tools.zh.md` | current | Chinese prompt reference with original prompt text and Chinese translations. |
 | `agent-design-audit-and-optimization-plan.md` | confirmed findings + backlog | Agent-design audit with code-confirmed prompt/runtime findings and phased optimization plan. |
+| `ucode-agent-runtime-remediation-plan.md` | proposal | Native `ucode` Agent Runtime 整改方案：协议账本、状态所有权、恢复语义、TaskRun 与分阶段验收。 |
 | `daemon-mcp-integration-plan.md` | initial implementation + backlog | Local global MCP bridge shape, current `ufoo mcp` surface, and remaining convergence work. |
 | `bus-delivery-queue-refactor-plan.md` | design proposal | Refactor plan for one daemon-owned durable bus delivery queue and scheduler. |
 | `delivery-queue-developer-guide.md` | current | Developer guide for writing producers and consumers on the unified bus delivery queue. |

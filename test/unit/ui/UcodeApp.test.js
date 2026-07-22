@@ -290,7 +290,7 @@ describe("log line kinds", () => {
         engine: "ufoo-core",
         executionState,
       },
-      resumeAfterUserInteraction: async (_answer, _state, opts) => {
+      submitUserInteractionAnswer: async (_answer, _state, opts) => {
         if (opts && typeof opts.onDelta === "function") {
           opts.onDelta("Hello ");
           opts.onDelta("after resume");
@@ -301,6 +301,7 @@ describe("log line kinds", () => {
           summary: "should not appear when streamed",
           streamed: true,
           waitingUserInteraction: false,
+          shouldEchoSummary: false,
         };
       },
     });

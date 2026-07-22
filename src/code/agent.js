@@ -1124,6 +1124,7 @@ module.exports = {
   runSingleCommand,
   runNaturalLanguageTask,
   resumeAfterUserInteraction,
+  submitUserInteractionAnswer: (...args) => require("./protocol/suspension").submitUserInteractionAnswer(...args),
   formatNlResult,
   normalizeToolLogEvent,
   isProjectAnalysisTask,

@@ -1,0 +1,30 @@
+{
+  "name": "openai-ask-user-alone-reject",
+  "provider": "openai",
+  "assistantText": null,
+  "calls": [
+    { "callId": "call_ask", "name": "ask_user", "args": { "kind": "chat", "prompt": "Continue?" } },
+    { "callId": "call_read", "name": "read", "args": { "path": "x.txt" } }
+  ],
+  "results": [
+    {
+      "callId": "call_ask",
+      "content": {
+        "ok": false,
+        "status": "rejected",
+        "error": "ask_user must be the only tool call in the turn",
+        "code": "ASK_USER_MUST_BE_ALONE"
+      }
+    },
+    {
+      "callId": "call_read",
+      "content": {
+        "ok": false,
+        "status": "rejected",
+        "error": "ask_user must be the only tool call in the turn",
+        "code": "ASK_USER_MUST_BE_ALONE"
+      }
+    }
+  ],
+  "policyCode": "ASK_USER_MUST_BE_ALONE"
+}

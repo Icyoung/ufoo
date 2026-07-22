@@ -950,18 +950,8 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
 
       // Pending approval/choice/chat takes priority over nudge / new NL.
       try {
-        const {
-          hasPendingUserInteraction,
-          parseUserInteractionInput,
-          getPendingUserInteraction,
-        } = require("../../code/context/userInteraction");
+        const { hasPendingUserInteraction } = require("../../code/context/userInteraction");
         if (props.state && props.state.executionState && hasPendingUserInteraction(props.state.executionState)) {
-          const pending = getPendingUserInteraction(props.state.executionState);
-          const parsed = parseUserInteractionInput(pending, trimmed);
-          if (!parsed.ok) {
-            appendLogText(parsed.error || "Invalid reply", "error");
-            return;
-          }
           appendLogText(`› ${trimmed}`, "user");
           const startedAt = Date.now();
           setStatus({
@@ -972,14 +962,14 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
           });
           runChainRef.current = runChainRef.current
             .then(async () => {
-              const resume = typeof props.resumeAfterUserInteraction === "function"
-                ? props.resumeAfterUserInteraction
-                : require("../../code/agent").resumeAfterUserInteraction;
+              const submit = typeof props.submitUserInteractionAnswer === "function"
+                ? props.submitUserInteractionAnswer
+                : require("../../code/protocol").submitUserInteractionAnswer;
               let streamBuf = "";
               let sawStreamText = false;
               let streamStarted = false;
               let dropLeadingStreamBlank = false;
-              const result = await resume(trimmed, props.state, {
+              const result = await submit(trimmed, props.state, {
                 onDelta: (delta) => {
                   const text = String(delta || "");
                   if (!text) return;
@@ -1006,19 +996,12 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
               }
               flushTableBuffer();
               refreshPlanUi();
-              if (result && result.waitingUserInteraction) {
-                appendLogText("Still waiting for your reply.", "system");
-                setStatus({ message: "", type: "thinking", showTimer: false, startedAt: 0 });
-                return;
-              }
               if (!result || result.ok === false) {
                 appendLogText(`Error: ${(result && result.error) || "resume failed"}`, "error");
-              } else {
-                // Skip summary echo when deltas were already rendered (mirrors NL path).
-                const shouldSkipSummary = Boolean(result.streamed && result.ok && sawStreamText);
-                if (result.summary && !shouldSkipSummary) {
-                  appendLogText(result.summary);
-                }
+              } else if (result.shouldEchoSummary) {
+                appendLogText(result.echoSummaryText || result.summary || "", result.waitingUserInteraction ? "system" : "assistant");
+              } else if (result.waitingUserInteraction) {
+                appendLogText("Still waiting for your reply.", "system");
               }
               setStatus({ message: "", type: "thinking", showTimer: false, startedAt: 0 });
             })
@@ -1067,7 +1050,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       flushActiveMerge,
       flushTableBuffer,
       props.state,
-      props.resumeAfterUserInteraction,
+      props.submitUserInteractionAnswer,
       refreshPlanUi,
     ]);
 

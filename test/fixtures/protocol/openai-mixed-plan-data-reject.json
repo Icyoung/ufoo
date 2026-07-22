@@ -1,0 +1,34 @@
+{
+  "name": "openai-mixed-plan-data-reject",
+  "provider": "openai",
+  "assistantText": null,
+  "calls": [
+    {
+      "callId": "call_plan",
+      "name": "plan_graph",
+      "args": { "operations": [{ "op": "add_node", "node": { "id": "n1" } }] }
+    },
+    { "callId": "call_read", "name": "read", "args": { "path": "AGENTS.md" } }
+  ],
+  "results": [
+    {
+      "callId": "call_plan",
+      "content": {
+        "ok": false,
+        "status": "rejected",
+        "error": "Do not mix plan_graph with data-plane tools in the same turn",
+        "code": "MIXED_PLAN_AND_DATA_TOOLS"
+      }
+    },
+    {
+      "callId": "call_read",
+      "content": {
+        "ok": false,
+        "status": "rejected",
+        "error": "Do not mix plan_graph with data-plane tools in the same turn",
+        "code": "MIXED_PLAN_AND_DATA_TOOLS"
+      }
+    }
+  ],
+  "policyCode": "MIXED_PLAN_AND_DATA_TOOLS"
+}

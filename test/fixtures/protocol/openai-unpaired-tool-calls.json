@@ -1,0 +1,11 @@
+{
+  "name": "openai-unpaired-tool-calls",
+  "provider": "openai",
+  "assistantText": null,
+  "calls": [
+    { "callId": "call_orphan", "name": "read", "args": { "path": "missing.txt" } }
+  ],
+  "results": [],
+  "expectValidatorReady": false,
+  "expectValidatorCode": "UNRESOLVED_TOOL_CALL"
+}

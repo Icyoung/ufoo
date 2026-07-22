@@ -1,0 +1,19 @@
+{
+  "name": "openai-ask-user-deferred",
+  "provider": "openai",
+  "assistantText": null,
+  "calls": [
+    { "callId": "call_ask", "name": "ask_user", "args": { "kind": "chat", "prompt": "Approve?" } }
+  ],
+  "deferredCallIds": ["call_ask"],
+  "resultsAfterResume": [
+    {
+      "callId": "call_ask",
+      "content": {
+        "type": "user_answer",
+        "answerKind": "chat",
+        "text": "yes"
+      }
+    }
+  ]
+}

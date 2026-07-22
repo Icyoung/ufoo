@@ -34,6 +34,19 @@ const {
   getPendingUserInteraction,
 } = require("./context/userInteraction");
 const { checkWriteAllowed } = require("./runtime/workspaceLease");
+const {
+  createToolCallLedger,
+  declareCalls,
+  markExecuting,
+  deferCall,
+  resolveCall,
+  snapshotLedger,
+  runProviderTurnGate,
+  withFaultPoint,
+  checkFaultPoint,
+  materializeResolvedToolResults,
+  materializeAnswerToolResult,
+} = require("./protocol");
 const { stableStringify } = require("./context/stableJson");
 const { getReadToolDescription } = require("../agents/prompts/native/toolDescriptions/read");
 const { getWriteToolDescription } = require("../agents/prompts/native/toolDescriptions/write");
@@ -1460,140 +1473,76 @@ async function runAnthropicTurn({
   });
 }
 
-// Transport descriptors: everything the shared native loop needs that differs
-// between the OpenAI chat-completions and Anthropic messages protocols —
-// request URL resolution, initial message shaping, turn execution, and
-// assistant/tool-result message formatting.
+const {
+  createOpenAiChatTransport,
+  createAnthropicMessagesTransport,
+} = require("./providers");
+
+// Transport descriptors: wire-format only. Plan Mode / leases / policy live in the loop.
 const TRANSPORTS = {
-  "openai-chat": {
+  "openai-chat": createOpenAiChatTransport({
     resolveUrl: resolveCompletionUrl,
-    prepareMessages({ messages, systemPrompt, prompt }) {
-      const systemText = String(systemPrompt || "").trim();
-      const hasSystem = messages.some((entry) => String(entry.role || "").trim() === "system");
-      if (systemText && !hasSystem) {
-        messages.unshift({ role: "system", content: systemText });
-      }
-      messages.push({ role: "user", content: String(prompt || "") });
-    },
     runTurn: runOpenAiLikeTurn,
-    getToolCalls(turnResult) {
-      return Array.isArray(turnResult.toolCalls)
-        ? turnResult.toolCalls.filter((call) => call && call.function && typeof call.function === "object")
-        : [];
-    },
-    appendFinalAssistantMessage({ messages, turnResult }) {
-      const text = String(turnResult.text || "").trim();
-      if (text) {
-        messages.push({
-          role: "assistant",
-          content: text,
-        });
-      }
-    },
-    prepareToolCalls({ messages, toolCalls }) {
-      const assistantToolCalls = [];
-      for (const call of toolCalls) {
-        const callId = String(call.id || `call_${randomUUID()}`);
-        const name = normalizeToolName(call.function.name || "");
-        const args = normalizeToolCallArgs(call.function.arguments || "");
-
-        assistantToolCalls.push({
-          id: callId,
-          type: "function",
-          function: {
-            name: name || String(call.function.name || ""),
-            arguments: toJsonString(args),
-          },
-        });
-      }
-
-      if (assistantToolCalls.length === 0) return null;
-
-      messages.push({
-        role: "assistant",
-        content: null,
-        tool_calls: assistantToolCalls,
-      });
-
-      return assistantToolCalls.map((toolCall) => ({
-        name: toolCall.function.name,
-        args: normalizeToolCallArgs(toolCall.function.arguments),
-        source: toolCall,
-      }));
-    },
-    appendToolResult({ messages, call, toolResult }) {
-      messages.push({
-        role: "tool",
-        tool_call_id: call.source.id,
-        content: clipText(toJsonString(toolResult), 12000),
-      });
-    },
-  },
-  "anthropic-messages": {
+    normalizeToolName,
+    normalizeToolCallArgs,
+    toJsonString,
+    clipText,
+  }),
+  "anthropic-messages": createAnthropicMessagesTransport({
     resolveUrl: resolveAnthropicMessagesUrl,
-    prepareMessages({ messages, prompt }) {
-      messages.push({
-        role: "user",
-        content: String(prompt || ""),
-      });
-    },
     runTurn: runAnthropicTurn,
-    getToolCalls(turnResult) {
-      return Array.isArray(turnResult.toolCalls) ? turnResult.toolCalls : [];
-    },
-    appendFinalAssistantMessage({ messages, turnResult }) {
-      const assistantContent = Array.isArray(turnResult.assistantContent)
-        ? turnResult.assistantContent
-        : [];
-      if (assistantContent.length > 0) {
-        messages.push({
-          role: "assistant",
-          content: assistantContent,
-        });
-      } else if (String(turnResult.text || "").trim()) {
-        messages.push({
-          role: "assistant",
-          content: [
-            {
-              type: "text",
-              text: String(turnResult.text || ""),
-            },
-          ],
-        });
-      }
-    },
-    prepareToolCalls({ messages, turnResult, toolCalls }) {
-      const assistantContent = Array.isArray(turnResult.assistantContent)
-        ? turnResult.assistantContent
-        : [];
-
-      messages.push({
-        role: "assistant",
-        content: assistantContent,
-      });
-
-      return toolCalls.map((call) => ({
-        name: call.name,
-        args: call.args,
-        source: call,
-      }));
-    },
-    appendToolResult({ collected, call, toolResult }) {
-      collected.push({
-        type: "tool_result",
-        tool_use_id: String(call.source.id || ""),
-        content: clipText(toJsonString(toolResult), 12000),
-        is_error: Boolean(!toolResult || toolResult.ok === false),
-      });
-    },
-    flushToolResults({ messages, collected }) {
-      messages.push({
-        role: "user",
-        content: collected,
-      });
-    },
-  },
+    toJsonString,
+    clipText,
+  }),
 };
+
+function pendingToolCallId(pending = null) {
+  if (!pending || !pending.source) return "";
+  return String(pending.source.id || "").trim();
+}
+
+function shadowDeclarePendingCalls(ledger, pendingCalls = []) {
+  const entries = (Array.isArray(pendingCalls) ? pendingCalls : []).map((pending) => ({
+    callId: pendingToolCallId(pending) || `call_${randomUUID()}`,
+    name: String(pending && pending.name || "").trim().toLowerCase(),
+    args: pending && pending.args != null ? pending.args : {},
+  }));
+  // Keep source ids aligned when we had to synthesize.
+  for (let i = 0; i < entries.length; i += 1) {
+    const pending = pendingCalls[i];
+    if (pending && pending.source && !pending.source.id) {
+      pending.source.id = entries[i].callId;
+    }
+  }
+  return declareCalls(ledger, entries);
+}
+
+function shadowResolvePending(ledger, pending, toolResult) {
+  if (!ledger) return;
+  const callId = pendingToolCallId(pending);
+  if (!callId) return;
+  resolveCall(ledger, callId, {
+    result: toolResult,
+    isError: Boolean(!toolResult || toolResult.ok === false),
+  });
+}
+
+function pendingByIdMap(pendingCalls = []) {
+  const map = Object.create(null);
+  for (const pending of pendingCalls) {
+    const id = pendingToolCallId(pending);
+    if (id) map[id] = pending;
+  }
+  return map;
+}
+
+function flushLedgerToolResults(ledger, transport, messages, pendingCalls) {
+  return materializeResolvedToolResults(ledger, {
+    transport,
+    messages,
+    pendingById: pendingByIdMap(pendingCalls),
+  });
+}
 
 async function runNativeLoop({
   transport,
@@ -1644,6 +1593,14 @@ async function runNativeLoop({
   ensurePendingUserPrompts(executionState);
   const toolBudget = resolveNativeToolBudget();
   const usage = createUsageTotals();
+  // Shadow Tool Call Ledger (R1). Observes declare/defer/resolve; does not
+  // materialize Provider messages yet. STRICT via UFOO_UCODE_PROTOCOL_STRICT=1.
+  let activeLedger = null;
+  let lastProtocolLedger = null;
+
+  if (resume) {
+    await withFaultPoint("before_provider_resume", () => {});
+  }
 
   function injectPendingUserReminders() {
     const nudges = drainUserPrompts(executionState);
@@ -1660,6 +1617,10 @@ async function runNativeLoop({
     guards.ensureActive();
 
     injectPendingUserReminders();
+
+    if (activeLedger) {
+      runProviderTurnGate(activeLedger);
+    }
 
     const turnResult = await transport.runTurn({
       url: requestUrl,
@@ -1730,6 +1691,7 @@ async function runNativeLoop({
         messages,
         usage,
         executionState,
+        protocolLedger: lastProtocolLedger || snapshotLedger(activeLedger),
       };
     }
 
@@ -1742,8 +1704,15 @@ async function runNativeLoop({
         messages,
         usage,
         executionState,
+        protocolLedger: lastProtocolLedger || snapshotLedger(activeLedger),
       };
     }
+
+    activeLedger = createToolCallLedger({ provider, sessionId });
+    shadowDeclarePendingCalls(activeLedger, pendingCalls);
+    lastProtocolLedger = snapshotLedger(activeLedger);
+    await withFaultPoint("after_prepare_tool_calls", () => {});
+    await withFaultPoint("before_tool_exec", () => {});
 
     const callNames = pendingCalls.map((call) => String(call.name || "").trim().toLowerCase());
     const hasPlanGraph = callNames.includes("plan_graph");
@@ -1751,52 +1720,39 @@ async function runNativeLoop({
     const hasDataTool = callNames.some((name) => EXECUTABLE_GRAPH_TOOLS.has(name));
     if (hasPlanGraph && hasDataTool) {
       // prepareToolCalls already appended the assistant tool_calls / tool_use
-      // message; every declared call must get a contiguous tool result.
-      const collectedResults = [];
+      // message; every declared call must get a contiguous tool result via ledger.
+      const rejected = {
+        ok: false,
+        status: "rejected",
+        error: "Do not mix plan_graph with data-plane tools in the same turn",
+        code: "MIXED_PLAN_AND_DATA_TOOLS",
+      };
       for (const pending of pendingCalls) {
-        transport.appendToolResult({
-          messages,
-          collected: collectedResults,
-          call: pending,
-          toolResult: {
-            ok: false,
-            status: "rejected",
-            error: "Do not mix plan_graph with data-plane tools in the same turn",
-            code: "MIXED_PLAN_AND_DATA_TOOLS",
-          },
-        });
+        shadowResolvePending(activeLedger, pending, rejected);
         toolCallsExecuted += 1;
         toolErrors += 1;
       }
-      if (typeof transport.flushToolResults === "function") {
-        transport.flushToolResults({ messages, collected: collectedResults });
-      }
+      flushLedgerToolResults(activeLedger, transport, messages, pendingCalls);
+      lastProtocolLedger = snapshotLedger(activeLedger);
       continue;
     }
     if (hasAskUser && pendingCalls.length > 1) {
-      const collectedResults = [];
+      const rejected = {
+        ok: false,
+        status: "rejected",
+        error: "ask_user must be the only tool call in the turn",
+        code: "ASK_USER_MUST_BE_ALONE",
+      };
       for (const pending of pendingCalls) {
-        transport.appendToolResult({
-          messages,
-          collected: collectedResults,
-          call: pending,
-          toolResult: {
-            ok: false,
-            status: "rejected",
-            error: "ask_user must be the only tool call in the turn",
-            code: "ASK_USER_MUST_BE_ALONE",
-          },
-        });
+        shadowResolvePending(activeLedger, pending, rejected);
         toolCallsExecuted += 1;
         toolErrors += 1;
       }
-      if (typeof transport.flushToolResults === "function") {
-        transport.flushToolResults({ messages, collected: collectedResults });
-      }
+      flushLedgerToolResults(activeLedger, transport, messages, pendingCalls);
+      lastProtocolLedger = snapshotLedger(activeLedger);
       continue;
     }
 
-    const collectedResults = [];
     let deferredAskUser = null;
     for (const pending of pendingCalls) {
       const pendingName = String(pending.name || "").trim().toLowerCase();
@@ -1814,12 +1770,7 @@ async function runNativeLoop({
         };
         toolCallsExecuted += 1;
         toolErrors += 1;
-        transport.appendToolResult({
-          messages,
-          collected: collectedResults,
-          call: pending,
-          toolResult: blocked,
-        });
+        shadowResolvePending(activeLedger, pending, blocked);
         continue;
       }
       if (planModeBlocksDirectTool(pendingName, executionState)) {
@@ -1833,12 +1784,7 @@ async function runNativeLoop({
         };
         toolCallsExecuted += 1;
         toolErrors += 1;
-        transport.appendToolResult({
-          messages,
-          collected: collectedResults,
-          call: pending,
-          toolResult: blocked,
-        });
+        shadowResolvePending(activeLedger, pending, blocked);
         continue;
       }
       const leaseCheck = checkWriteAllowed(executionState, {
@@ -1858,12 +1804,7 @@ async function runNativeLoop({
         };
         toolCallsExecuted += 1;
         toolErrors += 1;
-        transport.appendToolResult({
-          messages,
-          collected: collectedResults,
-          call: pending,
-          toolResult: blocked,
-        });
+        shadowResolvePending(activeLedger, pending, blocked);
         continue;
       }
 
@@ -1882,6 +1823,7 @@ async function runNativeLoop({
         }
         : null;
 
+      markExecuting(activeLedger, pendingToolCallId(pending));
       const toolResult = runCoreTool({
         tool: pending.name,
         args: pending.args,
@@ -1911,6 +1853,7 @@ async function runNativeLoop({
             transport: provider === "anthropic" ? "anthropic-messages" : "openai-chat",
           };
         }
+        deferCall(activeLedger, pendingToolCallId(pending), { reason: "ask_user" });
         deferredAskUser = { call: pending, interactionId: toolResult.interactionId || "" };
         continue;
       }
@@ -1923,17 +1866,11 @@ async function runNativeLoop({
         lastTool: pending.name,
         lastError: toolResult && toolResult.error ? String(toolResult.error) : "",
       });
-      transport.appendToolResult({
-        messages,
-        collected: collectedResults,
-        call: pending,
-        toolResult,
-      });
+      shadowResolvePending(activeLedger, pending, toolResult);
     }
 
-    if (typeof transport.flushToolResults === "function") {
-      transport.flushToolResults({ messages, collected: collectedResults });
-    }
+    flushLedgerToolResults(activeLedger, transport, messages, pendingCalls);
+    lastProtocolLedger = snapshotLedger(activeLedger);
 
     if (deferredAskUser) {
       return {
@@ -1945,6 +1882,7 @@ async function runNativeLoop({
         executionState,
         waitingUserInteraction: true,
         interactionId: deferredAskUser.interactionId || "",
+        protocolLedger: lastProtocolLedger,
       };
     }
 
@@ -1959,33 +1897,30 @@ async function runNativeLoop({
         executionState,
         waitingUserInteraction: true,
         interactionId: (getPendingUserInteraction(executionState) || {}).id || "",
+        protocolLedger: lastProtocolLedger,
       };
     }
   }
 }
 
-function appendAnswerToolResult(messages = [], resume = null, answer = {}) {
-  const call = resume && resume.call ? resume.call : null;
-  if (!call || !call.source) return { ok: false, error: "missing deferred tool call" };
-  const transportName = String(resume.transport || "openai-chat");
-  const content = clipText(toJsonString(answer), 12000);
-  if (transportName === "anthropic-messages") {
-    messages.push({
-      role: "user",
-      content: [{
-        type: "tool_result",
-        tool_use_id: String(call.source.id || resume.toolCallId || ""),
-        content,
-        is_error: false,
-      }],
-    });
-  } else {
-    messages.push({
-      role: "tool",
-      tool_call_id: String(call.source.id || resume.toolCallId || ""),
-      content,
-    });
+function appendAnswerToolResult(messages = [], resume = null, answer = {}, options = {}) {
+  const materialized = materializeAnswerToolResult(messages, resume, answer);
+  if (!materialized.ok) return materialized;
+  const ledger = options && options.ledger ? options.ledger : null;
+  if (ledger) {
+    const call = resume && resume.call ? resume.call : null;
+    const callId = String(
+      (call && call.source && call.source.id) || (resume && resume.toolCallId) || ""
+    ).trim();
+    if (callId) {
+      resolveCall(ledger, callId, {
+        result: answer,
+        isError: false,
+        allowFromDeferred: true,
+      });
+    }
   }
+  checkFaultPoint("after_answer_commit");
   return { ok: true };
 }
 
@@ -2118,6 +2053,7 @@ async function runNativeAgentTask({
       streamed: Boolean(runResult.streamed) && typeof onStreamDelta === "function",
       waitingUserInteraction: Boolean(runResult.waitingUserInteraction),
       interactionId: runResult.interactionId || "",
+      protocolLedger: runResult.protocolLedger || null,
     };
   } catch (err) {
     const message = err && err.message ? err.message : "native runner failed";

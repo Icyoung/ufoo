@@ -1,0 +1,39 @@
+{
+  "name": "anthropic-parallel-tools",
+  "provider": "anthropic",
+  "assistantText": "",
+  "calls": [
+    { "callId": "toolu_1", "name": "read", "args": { "path": "a.txt" } },
+    { "callId": "toolu_2", "name": "bash", "args": { "command": "ls" } }
+  ],
+  "results": [
+    { "callId": "toolu_1", "content": { "ok": true, "content": "a" }, "isError": false },
+    { "callId": "toolu_2", "content": { "ok": true, "content": "ok" }, "isError": false }
+  ],
+  "expectedMessages": [
+    {
+      "role": "assistant",
+      "content": [
+        { "type": "tool_use", "id": "toolu_1", "name": "read", "input": { "path": "a.txt" } },
+        { "type": "tool_use", "id": "toolu_2", "name": "bash", "input": { "command": "ls" } }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_1",
+          "content": "{\"ok\":true,\"content\":\"a\"}",
+          "is_error": false
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_2",
+          "content": "{\"ok\":true,\"content\":\"ok\"}",
+          "is_error": false
+        }
+      ]
+    }
+  ]
+}

@@ -1576,5 +1576,10 @@ describe("ucode native runner", () => {
     }
     // Must not insert a plain user policy message between assistant tool_calls and tool results.
     expect(secondBody.messages[assistantIdx + 1].role).toBe("tool");
+    // Shadow ledger: every declared call resolved (no unresolved left).
+    expect(result.protocolLedger).toBeTruthy();
+    const callStates = Object.values(result.protocolLedger.calls || {}).map((c) => c.state);
+    expect(callStates.length).toBe(2);
+    expect(callStates.every((state) => state === "resolved")).toBe(true);
   });
 });

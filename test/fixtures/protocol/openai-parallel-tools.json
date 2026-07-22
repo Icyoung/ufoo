@@ -1,0 +1,41 @@
+{
+  "name": "openai-parallel-tools",
+  "provider": "openai",
+  "assistantText": null,
+  "calls": [
+    { "callId": "call_1", "name": "read", "args": { "path": "a.txt" } },
+    { "callId": "call_2", "name": "bash", "args": { "command": "ls" } }
+  ],
+  "results": [
+    { "callId": "call_1", "content": { "ok": true, "content": "a" } },
+    { "callId": "call_2", "content": { "ok": true, "content": "ok" } }
+  ],
+  "expectedMessages": [
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call_1",
+          "type": "function",
+          "function": { "name": "read", "arguments": "{\"path\":\"a.txt\"}" }
+        },
+        {
+          "id": "call_2",
+          "type": "function",
+          "function": { "name": "bash", "arguments": "{\"command\":\"ls\"}" }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_1",
+      "content": "{\"ok\":true,\"content\":\"a\"}"
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_2",
+      "content": "{\"ok\":true,\"content\":\"ok\"}"
+    }
+  ]
+}

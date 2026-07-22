@@ -283,6 +283,7 @@ async function runUcodeCoreAgent({
     resolveUcodeProviderModel,
     runNaturalLanguageTask,
     resumeAfterUserInteraction,
+    submitUserInteractionAnswer,
   } = require("./agent");
   const resolvedWorkspaceRoot = resolveUfooProjectRoot(workspaceRoot);
   const resolvedUcode = resolveUcodeProviderModel({
@@ -592,23 +593,12 @@ async function runUcodeCoreAgent({
 
       // Pending approval/choice/chat takes priority over nudge / new NL.
       try {
-        const {
-          hasPendingUserInteraction,
-          parseUserInteractionInput,
-          getPendingUserInteraction,
-        } = require("./context/userInteraction");
+        const { hasPendingUserInteraction } = require("./context/userInteraction");
         if (
           trimmed
           && state.executionState
           && hasPendingUserInteraction(state.executionState)
         ) {
-          const pending = getPendingUserInteraction(state.executionState);
-          const parsed = parseUserInteractionInput(pending, trimmed);
-          if (!parsed.ok) {
-            stdout.write(`${parsed.error || "Invalid reply"}\n`);
-            printPrompt(stdout);
-            return;
-          }
           chain = chain.then(async () => {
             let streamBuffer = null;
             let streamedVisible = false;
@@ -622,7 +612,7 @@ async function runUcodeCoreAgent({
             taskInFlight = true;
             let resumeResult;
             try {
-              resumeResult = await resumeAfterUserInteraction(trimmed, state, {
+              resumeResult = await submitUserInteractionAnswer(trimmed, state, {
                 onDelta: state.jsonOutput
                   ? null
                   : async (delta) => {
@@ -649,15 +639,12 @@ async function runUcodeCoreAgent({
             if (streamed && streamedVisible && resumeResult && resumeResult.streamLastChar !== "\n") {
               stdout.write("\n");
             }
-            if (resumeResult && resumeResult.waitingUserInteraction) {
-              stdout.write("Still waiting for your reply.\n");
-            } else if (!resumeResult || resumeResult.ok === false) {
+            if (!resumeResult || resumeResult.ok === false) {
               stdout.write(`Error: ${(resumeResult && resumeResult.error) || "resume failed"}\n`);
-            } else {
-              const shouldSkipSummary = Boolean(streamed && resumeResult.ok && streamedVisible);
-              if (!shouldSkipSummary && resumeResult.summary) {
-                stdout.write(`${resumeResult.summary}\n`);
-              }
+            } else if (resumeResult.shouldEchoSummary && resumeResult.echoSummaryText) {
+              stdout.write(`${resumeResult.echoSummaryText}\n`);
+            } else if (resumeResult.waitingUserInteraction) {
+              stdout.write("Still waiting for your reply.\n");
             }
             const persisted = persistSessionState(state);
             if (!state.jsonOutput && (!persisted || persisted.ok === false)) {

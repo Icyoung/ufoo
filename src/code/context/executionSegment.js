@@ -8,11 +8,16 @@ const {
 } = require("./planGraph");
 
 function emptyExecutionState() {
+  // Durable execution control plane. Field ownership: see
+  // src/code/protocol/ownership.js (STATE_OWNERSHIP / DURABLE_FIELDS).
   return {
     currentSegmentId: "",
     mode: "single_action",
     planMode: false,
     planModeSource: "",
+    // R5 orthognal fields (dual-written with planMode during migration)
+    planningPolicy: "direct_allowed",
+    executionOwner: { kind: "none", id: "" },
     steps: {},
     modifiedFiles: [],
     lastExitCodes: [],

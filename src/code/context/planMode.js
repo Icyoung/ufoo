@@ -63,6 +63,11 @@ function setPlanMode(executionState = null, enabled = true, {
   const next = Boolean(enabled);
   const wasOn = state.planMode === true;
   state.planMode = next;
+  // R5 dual-write: Plan Mode UI maps to planningPolicy only.
+  state.planningPolicy = next ? "graph_required" : "direct_allowed";
+  if (!state.executionOwner || typeof state.executionOwner !== "object") {
+    state.executionOwner = { kind: "none", id: "" };
+  }
   if (next) {
     if (!wasOn) state.planModeEnteredAt = new Date().toISOString();
     state.planModeReason = String(reason || state.planModeReason || "").trim();
@@ -101,7 +106,9 @@ function planHasNodes(executionState = null) {
 }
 
 function planModeBlocksDirectTool(tool = "", executionState = null) {
-  if (!isPlanModeEnabled(executionState)) return false;
+  const { getPlanningPolicy } = require("../protocol/controlPlane");
+  const policy = getPlanningPolicy(executionState);
+  if (policy !== "graph_required") return false;
   const name = String(tool || "").trim().toLowerCase();
   return name === "write" || name === "edit" || name === "bash";
 }

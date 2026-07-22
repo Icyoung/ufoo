@@ -68,6 +68,7 @@ function normalizeContextPolicy(value = {}) {
 }
 
 function buildSessionSnapshot(input = {}) {
+  // Durable session fields vs projections: src/code/protocol/ownership.js
   const source = input && typeof input === "object" ? input : {};
   const sessionId = resolveSessionId(source.sessionId);
   const createdAt = String(source.createdAt || "").trim() || toIsoNow();
