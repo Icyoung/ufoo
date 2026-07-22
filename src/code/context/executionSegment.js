@@ -27,6 +27,7 @@ function emptyExecutionState() {
     pendingUserPrompts: [],
     planGraph: require("./planGraphService").emptyPlanGraphState(),
     graphs: {},
+    archivedPlans: [],
     taskRuns: require("../runtime/taskRun").emptyTaskRunStore(),
     agentMailbox: require("../runtime/loopMailbox").emptyMailbox(),
     taskMailboxes: {},

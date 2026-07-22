@@ -48,6 +48,102 @@ function cloneJson(value) {
   }
 }
 
+const MAX_ARCHIVED_PLANS = 5;
+
+/**
+ * Snapshot a finished/replaced plan out of the live primary slot so the next
+ * create starts clean instead of overlaying the previous graph.
+ */
+function archivePlanGraph(executionState = null, planGraph = null, {
+  reason = "",
+} = {}) {
+  if (!executionState || typeof executionState !== "object") return null;
+  const live = planGraph && typeof planGraph === "object" ? planGraph : null;
+  const graphId = String((live && live.graphId) || "").trim();
+  if (!live || !graphId) return null;
+
+  if (!Array.isArray(executionState.archivedPlans)) {
+    executionState.archivedPlans = [];
+  }
+  const archived = {
+    ...cloneJson(live),
+    archivedAt: new Date().toISOString(),
+    archiveReason: String(reason || "").trim() || "archived",
+  };
+  executionState.archivedPlans.push(archived);
+  if (executionState.archivedPlans.length > MAX_ARCHIVED_PLANS) {
+    executionState.archivedPlans = executionState.archivedPlans.slice(-MAX_ARCHIVED_PLANS);
+  }
+  if (executionState.graphs && typeof executionState.graphs === "object") {
+    delete executionState.graphs[graphId];
+  }
+  return archived;
+}
+
+function buildPlanCompletionSummary(planGraph = null, advance = null) {
+  const pg = planGraph && typeof planGraph === "object" ? planGraph : {};
+  const nodes = Array.isArray(pg.nodes) ? pg.nodes : [];
+  const tasks = nodes.filter((node) => node && (node.type === "task" || !node.generated));
+  const succeeded = tasks.filter((n) => n.status === "succeeded").length;
+  const failed = tasks.filter((n) => (
+    n.status === "failed" || n.status === "blocked" || n.status === "cancelled"
+  )).length;
+  const lines = [
+    `Plan completed${pg.graphId ? ` (${pg.graphId})` : ""}.`,
+  ];
+  if (pg.objective) lines.push(`Objective: ${String(pg.objective).slice(0, 240)}`);
+  lines.push(`Tasks: ${succeeded} succeeded, ${failed} failed/blocked, ${tasks.length} total.`);
+  for (const node of tasks.slice(0, 12)) {
+    const bit = (node.result && node.result.summary)
+      || node.error
+      || node.status
+      || "";
+    lines.push(
+      `- ${node.id} [${node.status || "pending"}]`
+        + (bit ? `: ${String(bit).slice(0, 160)}` : ""),
+    );
+  }
+  const executed = advance && Array.isArray(advance.executedNodes) ? advance.executedNodes : [];
+  if (executed.length > 0 && tasks.length === 0) {
+    for (const entry of executed.slice(0, 8)) {
+      lines.push(`- ${entry.id}: ${entry.summary || entry.status || "done"}`);
+    }
+  }
+  lines.push("Summarize the outcome for the user. The active plan has been cleared; use plan_graph create for a new objective.");
+  return lines.join("\n");
+}
+
+/**
+ * On graph_terminal for the primary Agent Loop plan: archive, clear primary
+ * slot, and exit auto Plan Mode. Child TaskLoop graphs stay in graphs[].
+ */
+function finalizeTerminalPrimaryPlan(executionState = null, planGraph = null, advance = null) {
+  const pg = planGraph && typeof planGraph === "object" ? planGraph : null;
+  if (!pg || !pg.graphId) return null;
+  if (!advance || String(advance.yieldReason || "") !== "graph_terminal") return null;
+
+  const completionSummary = buildPlanCompletionSummary(pg, advance);
+  const archived = archivePlanGraph(executionState, pg, { reason: "graph_terminal" });
+  executionState.planGraph = emptyPlanGraphState();
+  executionState.mode = "single_action";
+
+  try {
+    const { getPlanModeSource, setPlanMode } = require("./planMode");
+    if (getPlanModeSource(executionState) === "auto") {
+      setPlanMode(executionState, false, { reason: "plan completed" });
+    }
+  } catch {
+    // planMode is optional for pure unit callers
+  }
+
+  return {
+    planCompleted: true,
+    archivedGraphId: (archived && archived.graphId) || pg.graphId,
+    completionSummary,
+    planMode: Boolean(executionState.planMode),
+  };
+}
+
 function ensurePlanGraphState(executionState = null) {
   const state = executionState && typeof executionState === "object"
     ? executionState
@@ -614,42 +710,73 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
       }
       if (advanced.advance) advance = advanced.advance;
     }
-    const live = executionState.planGraph;
-    const { readyNodes, waitingNodes } = summarizeReadyWaiting(live.nodes);
+    const completedGraph = executionState.planGraph;
+    const terminal = selected.isPrimary
+      ? finalizeTerminalPrimaryPlan(executionState, completedGraph, advance)
+      : null;
+    const live = terminal
+      ? completedGraph
+      : executionState.planGraph;
+    const { readyNodes, waitingNodes } = summarizeReadyWaiting(
+      terminal ? [] : (live.nodes || []),
+    );
     const payload = controlResult.ok
       ? accepted({
-        graphId: live.graphId || "",
-        commandRevision: Number(live.specRevision) || 0,
-        stateRevision: Number(live.stateRevision) || 0,
-        revision: Number(live.specRevision) || 0,
+        graphId: terminal ? "" : (live.graphId || ""),
+        commandRevision: terminal ? 0 : (Number(live.specRevision) || 0),
+        stateRevision: terminal ? 0 : (Number(live.stateRevision) || 0),
+        revision: terminal ? 0 : (Number(live.specRevision) || 0),
         control: controlResult,
-        summary: advance.waitingFor
-          ? `waiting on ${advance.waitingFor.type}:${advance.waitingFor.id || ""}`
-          : (advance.yieldReason || "control actions applied"),
-        changes: { nodesAdded: [], nodesUpdated: [] },
+        summary: terminal
+          ? terminal.completionSummary
+          : (advance.waitingFor
+            ? `waiting on ${advance.waitingFor.type}:${advance.waitingFor.id || ""}`
+            : (advance.yieldReason || "control actions applied")),
+        changes: {
+          nodesAdded: [],
+          nodesUpdated: [],
+          ...(terminal ? { archivedGraphId: terminal.archivedGraphId } : {}),
+        },
         nodesAdded: [],
         nodesUpdated: [],
         readyNodes,
         waitingNodes,
-        waitingFor: live.waitingFor || null,
+        waitingFor: terminal ? null : (live.waitingFor || null),
         advance,
-        planView: projectPlanView(live),
+        planView: terminal ? [] : projectPlanView(live),
         validationWarnings: [],
+        ...(terminal ? {
+          planCompleted: true,
+          archivedGraphId: terminal.archivedGraphId,
+          completionSummary: terminal.completionSummary,
+        } : {}),
       })
       : rejected(controlResult.errors || [{
         code: "CONTROL_REJECTED",
         message: "one or more control actions rejected",
       }], { control: controlResult });
-    if (commandId && payload.status === "accepted") {
+    if (commandId && payload.status === "accepted" && !terminal) {
       cacheCommand(executionState.planGraph, commandId, payload);
     }
+    restorePrimaryGraph();
     return { ...payload, executionState, modelPayload: payload, ok: payload.status === "accepted" };
   }
 
   if (operation === "cancel_graph" || operation === "clear") {
     const previousId = planGraph.graphId || "";
+    if (previousId) {
+      archivePlanGraph(executionState, planGraph, { reason: "cancel_graph" });
+    }
     executionState.planGraph = emptyPlanGraphState();
     executionState.mode = "single_action";
+    try {
+      const { getPlanModeSource, setPlanMode } = require("./planMode");
+      if (getPlanModeSource(executionState) === "auto") {
+        setPlanMode(executionState, false, { reason: "plan cancelled" });
+      }
+    } catch {
+      // ignore
+    }
     const payload = accepted({
       graphId: "",
       commandRevision: 0,
@@ -662,6 +789,9 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
       waitingNodes: [],
       advance: { status: "completed", yieldReason: "cancelled", executedNodes: [], failedNodes: [] },
       validationWarnings: [],
+      summary: previousId
+        ? `Plan ${previousId} cancelled and cleared.`
+        : "No active plan to cancel.",
     });
     restorePrimaryGraph();
     return { ...payload, executionState, modelPayload: payload };
@@ -697,15 +827,22 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
     return rejectWorking(payload);
   }
 
-  const beforeIds = new Set(listNodeIds(planGraph.nodes));
+  const beforeIds = operation === "create"
+    ? new Set()
+    : new Set(listNodeIds(planGraph.nodes));
   let nextPlan = {
     id: planGraph.graphId || createPlanId("plan"),
     objective: planGraph.objective || "",
     nodes: snapshotNodes(planGraph),
   };
   let nodesUpdated = [];
+  let replacedGraphId = "";
 
   if (operation === "create") {
+    if (selected.isPrimary && planGraph.graphId) {
+      replacedGraphId = String(planGraph.graphId);
+      archivePlanGraph(executionState, planGraph, { reason: "replaced_by_create" });
+    }
     const graphSource = command.graph || {};
     if (Array.isArray(graphSource.nodes)) {
       nextPlan = normalizePlanGraph({
@@ -717,6 +854,11 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
       nextPlan.nodes = stripModelStatuses(nextPlan.nodes);
     }
     if (!nextPlan.id) nextPlan.id = createPlanId("plan");
+    // Prefer a fresh id when replacing a live plan so the new graph does not
+    // collide with the archived one in graphs[].
+    if (replacedGraphId && nextPlan.id === replacedGraphId) {
+      nextPlan.id = createPlanId("plan");
+    }
     nodesUpdated = listNodeIds(nextPlan.nodes);
     // Parent graphs are owned by the agent loop.
     const { agentLoopOwner } = require("../runtime/graphOwner");
@@ -798,9 +940,10 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
   }
 
   // Prefer the patched node list (includes aggregate expand status).
+  // create starts clean — do not inherit statuses from a replaced graph.
   const preferredNodes = applyStatusesFromStore(
     (Array.isArray(nextPlan.nodes) ? nextPlan.nodes : []).map((node) => normalizePlanNode(node, node.id)),
-    planGraph.nodes,
+    operation === "create" ? [] : planGraph.nodes,
     { preferSourceStatus: operation === "patch" },
   );
 
@@ -831,28 +974,53 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
     }
   }
 
-  const specRevision = (Number(planGraph.specRevision) || 0) + 1;
-  executionState.planGraph = {
-    ...planGraph,
-    graphId: preferredCompile.planId || nextPlan.id,
-    specRevision,
-    stateRevision: Number(planGraph.stateRevision) || 0,
-    revision: specRevision,
-    objective: preferredCompile.objective || nextPlan.objective || "",
-    failurePolicy: preferredCompile.failurePolicy
-      || nextPlan.failurePolicy
-      || planGraph.failurePolicy
-      || "continue_independent",
-    nodes: mergedNodes,
-    outputs: operation === "create" ? {} : { ...(planGraph.outputs || {}) },
-    waitingFor: null,
-    lastStoppedAt: "",
-    lastYieldReason: "",
-    commandLog: planGraph.commandLog || {},
-    owner: nextPlan.owner || planGraph.owner || null,
-    parentGraphId: planGraph.parentGraphId || "",
-    parentNodeId: planGraph.parentNodeId || "",
-  };
+  const specRevision = operation === "create"
+    ? 1
+    : (Number(planGraph.specRevision) || 0) + 1;
+  if (operation === "create") {
+    executionState.planGraph = {
+      ...emptyPlanGraphState(),
+      graphId: preferredCompile.planId || nextPlan.id,
+      specRevision,
+      stateRevision: 0,
+      revision: specRevision,
+      objective: preferredCompile.objective || nextPlan.objective || "",
+      failurePolicy: preferredCompile.failurePolicy
+        || nextPlan.failurePolicy
+        || "continue_independent",
+      nodes: mergedNodes,
+      outputs: {},
+      waitingFor: null,
+      lastStoppedAt: "",
+      lastYieldReason: "",
+      commandLog: {},
+      owner: nextPlan.owner || null,
+      parentGraphId: "",
+      parentNodeId: "",
+    };
+  } else {
+    executionState.planGraph = {
+      ...planGraph,
+      graphId: preferredCompile.planId || nextPlan.id,
+      specRevision,
+      stateRevision: Number(planGraph.stateRevision) || 0,
+      revision: specRevision,
+      objective: preferredCompile.objective || nextPlan.objective || "",
+      failurePolicy: preferredCompile.failurePolicy
+        || nextPlan.failurePolicy
+        || planGraph.failurePolicy
+        || "continue_independent",
+      nodes: mergedNodes,
+      outputs: { ...(planGraph.outputs || {}) },
+      waitingFor: null,
+      lastStoppedAt: "",
+      lastYieldReason: "",
+      commandLog: planGraph.commandLog || {},
+      owner: nextPlan.owner || planGraph.owner || null,
+      parentGraphId: planGraph.parentGraphId || "",
+      parentNodeId: planGraph.parentNodeId || "",
+    };
+  }
   if (!executionState.graphs || typeof executionState.graphs !== "object") {
     executionState.graphs = {};
   }
@@ -890,45 +1058,80 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
         ...advanced.planGraph,
         specRevision,
         revision: specRevision,
-        commandLog: planGraph.commandLog || {},
-        owner: advanced.planGraph.owner || planGraph.owner || null,
-        parentGraphId: advanced.planGraph.parentGraphId || planGraph.parentGraphId || "",
-        parentNodeId: advanced.planGraph.parentNodeId || planGraph.parentNodeId || "",
+        commandLog: operation === "create" ? {} : (planGraph.commandLog || {}),
+        owner: advanced.planGraph.owner || (operation === "create" ? nextPlan.owner : planGraph.owner) || null,
+        parentGraphId: operation === "create"
+          ? ""
+          : (advanced.planGraph.parentGraphId || planGraph.parentGraphId || ""),
+        parentNodeId: operation === "create"
+          ? ""
+          : (advanced.planGraph.parentNodeId || planGraph.parentNodeId || ""),
       };
     }
     if (advanced.advance) advance = advanced.advance;
   }
 
-  const live = executionState.planGraph;
-  const { readyNodes, waitingNodes } = summarizeReadyWaiting(live.nodes);
+  const completedGraph = executionState.planGraph;
+  const terminal = selected.isPrimary
+    ? finalizeTerminalPrimaryPlan(executionState, completedGraph, advance)
+    : null;
+  if (!terminal && !selected.isPrimary && advance.yieldReason === "graph_terminal") {
+    // Child TaskLoop graph finished — keep snapshot; parent stays active.
+    const childId = String(completedGraph.graphId || "").trim();
+    if (childId) {
+      executionState.graphs[childId] = {
+        ...completedGraph,
+        completedAt: new Date().toISOString(),
+        lastYieldReason: "graph_terminal",
+      };
+    }
+  }
+
+  const live = terminal ? completedGraph : executionState.planGraph;
+  const { readyNodes, waitingNodes } = summarizeReadyWaiting(
+    terminal ? [] : (live.nodes || []),
+  );
   const payload = accepted({
-    graphId: live.graphId,
-    commandRevision: live.specRevision,
-    stateRevision: live.stateRevision,
-    revision: live.specRevision,
+    graphId: terminal ? "" : live.graphId,
+    commandRevision: terminal ? 0 : live.specRevision,
+    stateRevision: terminal ? 0 : live.stateRevision,
+    revision: terminal ? 0 : live.specRevision,
     changes: {
       nodesAdded,
       nodesUpdated: Array.from(new Set(nodesUpdated)),
+      ...(replacedGraphId ? { replacedGraphId } : {}),
+      ...(terminal ? { archivedGraphId: terminal.archivedGraphId } : {}),
     },
     nodesAdded,
     nodesUpdated: Array.from(new Set(nodesUpdated)),
     readyNodes,
     waitingNodes,
-    waitingFor: live.waitingFor || null,
-    stoppedAt: live.lastStoppedAt || "",
+    waitingFor: terminal ? null : (live.waitingFor || null),
+    stoppedAt: terminal ? "graph_terminal" : (live.lastStoppedAt || ""),
     advance,
-    planView: projectPlanView(live),
+    planView: terminal ? [] : projectPlanView(live),
     validationWarnings: preferredCompile.warnings || [],
-    summary: advance.waitingFor
-      ? `waiting on ${advance.waitingFor.type}:${advance.waitingFor.id || ""}`
-      : (advance.yieldReason || "graph updated"),
+    summary: terminal
+      ? terminal.completionSummary
+      : (advance.waitingFor
+        ? `waiting on ${advance.waitingFor.type}:${advance.waitingFor.id || ""}`
+        : (advance.yieldReason || "graph updated")),
+    ...(replacedGraphId ? { replacedGraphId } : {}),
+    ...(terminal ? {
+      planCompleted: true,
+      archivedGraphId: terminal.archivedGraphId,
+      completionSummary: terminal.completionSummary,
+    } : {}),
   });
 
-  cacheCommand(executionState.planGraph, commandId, payload);
+  if (!terminal) {
+    cacheCommand(executionState.planGraph, commandId, payload);
+  }
 
   // Agent Loop create enables Plan Mode; TaskLoop child graphs must not.
+  // Skip when create immediately ran to terminal (already exited Plan Mode).
   let planModeEntered = null;
-  if (operation === "create" && payload.status === "accepted") {
+  if (operation === "create" && payload.status === "accepted" && !terminal) {
     const ownerKind = String(
       (executionState.planGraph && executionState.planGraph.owner && executionState.planGraph.owner.kind)
       || "agent_loop",
@@ -968,6 +1171,9 @@ function activePlanRequiresExpansion(planGraph = {}) {
 module.exports = {
   emptyPlanGraphState,
   ensurePlanGraphState,
+  archivePlanGraph,
+  buildPlanCompletionSummary,
+  finalizeTerminalPrimaryPlan,
   normalizePlanGraphCommand,
   normalizeExpandOp,
   runPlanGraphCommand,

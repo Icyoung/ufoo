@@ -54,6 +54,7 @@ function buildImmutablePrefix() {
       "- Turning Plan Mode off does not cancel an existing graph or running TaskRuns. Cancel with task_run (standalone) or plan_graph operation=cancel_graph / control.cancel_task (graph-bound).",
       "- When the user enables Plan Mode and no active graph exists, create a plan_graph before performing side effects.",
       "- After an accepted plan_graph create or patch, Runtime automatically advances ready tool nodes. Never invent or request an execute_graph tool.",
+      "- When the last plan node finishes (graph_terminal), Runtime archives and clears the active plan, exits auto Plan Mode, and returns a completion summary — narrate that summary to the user. Start a new objective with plan_graph create (create replaces any leftover graph); do not patch a finished plan for a new goal.",
       "- Do not call plan_graph or task_run together with read, read_image, write, edit, bash, or artifact_read in the same assistant turn.",
       "- When an active graph is waiting on a task, advance that node through plan_graph instead of bypassing it with direct workspace tools: use patch.expand_node for execution.kind=expand, control.complete_task (nodeId) for execution.kind=inline_llm, or control.start_task for execution.kind=task_loop.",
       "- TaskLoop start returns childGraphId. While that TaskRun is waiting_model on child root, patch with graphId=<childGraphId> and expand_node nodeId=root (add tool children). Do not ask the user to /plan off.",

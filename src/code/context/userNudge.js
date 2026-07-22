@@ -131,7 +131,8 @@ function shouldAutoContinuePlan(executionState = null) {
 
 /**
  * Internal reminder injected by runtime when the model ends a turn while the
- * plan is still waiting on a task. Same shape as user nudges.
+ * plan is still waiting on a task. Must NOT reuse the User reminder label —
+ * that is reserved for real mid-run user text and pollutes transcript/TUI.
  */
 function buildPlanAutoContinueReminder(executionState = null) {
   const waiting = executionState
@@ -140,14 +141,17 @@ function buildPlanAutoContinueReminder(executionState = null) {
     ? executionState.planGraph.waitingFor
     : null;
   if (!waiting || !waiting.id) return "";
-  return formatUserReminderMessage(
-    [
-      "Continue the active plan. Serve the waiting task now via plan_graph "
-        + "(expand_node, control.start_task, or control.complete_task as appropriate). "
-        + "Do not end the turn with text only while this node is waiting.",
-    ],
-    { waitingFor: waiting },
-  );
+  const label = waiting.title || waiting.objective || waiting.reason || waiting.id;
+  const lines = [
+    "Runtime wake (not a user message): active plan is still waiting.",
+    "Continue serving it now via plan_graph "
+      + "(expand_node, control.start_task, or control.complete_task as appropriate). "
+      + "Do not end the turn with text only while this node is waiting.",
+    `Prefer serving the current waiting ${waiting.type || "node"}: ${waiting.id}`
+      + (label && label !== waiting.id ? ` — ${label}` : "")
+      + ".",
+  ];
+  return lines.join("\n");
 }
 
 module.exports = {

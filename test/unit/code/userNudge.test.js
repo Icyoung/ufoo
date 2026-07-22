@@ -139,10 +139,11 @@ describe("user nudge queue", () => {
     const text = buildPlanAutoContinueReminder({
       planGraph: { waitingFor: { id: "inspect", type: "task", title: "Inspect fonts" } },
     });
-    expect(text).toMatch(/User reminder \(additional prompt\):/);
-    expect(text).toMatch(/Continue the active plan/);
+    expect(text).toMatch(/Runtime wake \(not a user message\)/);
+    expect(text).toMatch(/Continue serving/);
     expect(text).toMatch(/waiting task: inspect/);
     expect(text).toContain("Inspect fonts");
+    expect(text).not.toMatch(/User reminder \(additional prompt\)/);
     expect(buildPlanAutoContinueReminder(emptyExecutionState())).toBe("");
   });
 });
@@ -269,10 +270,14 @@ describe("nativeRunner injects pending reminders before LLM turns", () => {
       }
       const reminder = (body.messages || []).find((m) => (
         m.role === "user"
-        && String(m.content || "").includes("Continue the active plan")
+        && (
+          String(m.content || "").includes("Continue serving")
+          || String(m.content || "").includes("Continue the active plan")
+        )
         && String(m.content || "").includes("waiting task: inspect")
       ));
       expect(reminder).toBeTruthy();
+      expect(String(reminder.content || "")).not.toMatch(/User reminder \(additional prompt\)/);
       executionState.planGraph.waitingFor = null;
       executionState.planGraph.lastYieldReason = "graph_terminal";
       return makeSseResponse([

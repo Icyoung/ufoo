@@ -338,6 +338,86 @@ describe("plan_graph control-plane tool", () => {
     });
   });
 
+  test("completing the last task archives and clears the active plan", () => {
+    const { advanceStoredGraph } = require("../../../src/code/context/planGraphService");
+    const executionState = emptyExecutionState();
+    const created = runPlanGraphCommand({
+      operation: "create",
+      graph: {
+        objective: "Ship login",
+        nodes: [{ id: "t1", type: "task", title: "Implement login" }],
+      },
+    }, { executionState, autoAdvance: false });
+    expect(created.status).toBe("accepted");
+    expect(executionState.planMode).toBe(true);
+    const oldId = created.graphId;
+
+    const advanced = advanceStoredGraph(executionState.planGraph, {
+      runTool: () => ({ ok: true }),
+    });
+    executionState.planGraph = advanced.planGraph;
+    expect(executionState.planGraph.nodes.find((n) => n.id === "t1").status).toBe("waiting_llm");
+
+    const done = runPlanGraphCommand({
+      operation: "control",
+      actions: [{
+        op: "complete_task",
+        nodeId: "t1",
+        summary: "Login works",
+        output: { ok: true },
+      }],
+    }, {
+      executionState,
+      autoAdvance: true,
+      runTool: () => ({ ok: true }),
+    });
+
+    expect(done.status).toBe("accepted");
+    expect(done.planCompleted).toBe(true);
+    expect(done.archivedGraphId).toBe(oldId);
+    expect(String(done.summary || "")).toMatch(/Plan completed/);
+    expect(String(done.summary || "")).toMatch(/Login works/);
+    expect(executionState.planGraph.graphId).toBe("");
+    expect(executionState.planGraph.nodes).toEqual([]);
+    expect(executionState.planMode).toBe(false);
+    expect(executionState.mode).toBe("single_action");
+    expect(executionState.archivedPlans).toHaveLength(1);
+    expect(executionState.archivedPlans[0].graphId).toBe(oldId);
+    expect(executionState.archivedPlans[0].archiveReason).toBe("graph_terminal");
+  });
+
+  test("create after an existing plan starts a fresh graph", () => {
+    const executionState = emptyExecutionState();
+    const first = runPlanGraphCommand({
+      operation: "create",
+      graph: {
+        id: "plan_old",
+        objective: "Old work",
+        nodes: [{ id: "a", type: "task", title: "Old" }],
+      },
+    }, { executionState, autoAdvance: false });
+    expect(first.graphId).toBeTruthy();
+
+    const second = runPlanGraphCommand({
+      operation: "create",
+      graph: {
+        objective: "New work",
+        nodes: [{ id: "b", type: "task", title: "New" }],
+      },
+    }, { executionState, autoAdvance: false });
+
+    expect(second.status).toBe("accepted");
+    expect(second.replacedGraphId).toBe(first.graphId);
+    expect(second.graphId).toBeTruthy();
+    expect(second.graphId).not.toBe(first.graphId);
+    expect(second.commandRevision).toBe(1);
+    expect(executionState.planGraph.objective).toBe("New work");
+    expect(executionState.planGraph.nodes.map((n) => n.id)).toEqual(["b"]);
+    expect(executionState.planGraph.commandLog).toEqual({});
+    expect(executionState.archivedPlans.some((p) => p.graphId === first.graphId)).toBe(true);
+    expect(executionState.graphs[first.graphId]).toBeUndefined();
+  });
+
   test("applyPlanOperations expand keeps downstream dependsOn inspect", () => {
     const plan = {
       id: "p1",

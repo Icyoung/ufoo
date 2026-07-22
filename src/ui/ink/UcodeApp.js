@@ -1131,7 +1131,19 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
 
       // While a native task is in flight, queue an additional user reminder
       // for the next LLM turn instead of starting a second NL task.
+      // Slash commands (/model, /plan, …) must still run immediately — same
+      // rule as the REPL path — otherwise they pollute the nudge queue.
       if (pendingTaskRef.current) {
+        if (/^\//.test(trimmed)) {
+          runChainRef.current = runChainRef.current
+            .then(() => executeLine(modelText, {
+              modelText,
+              logText,
+              preserveNewlines: attachments.length > 0,
+            }))
+            .catch((err) => appendLogText(`Error: ${err && err.message ? err.message : err}`, "error"));
+          return;
+        }
         const { enqueueUserPrompt } = require("../../code/context/userNudge");
         const { emptyExecutionState } = require("../../code/context/executionSegment");
         if (!props.state || typeof props.state !== "object") {
