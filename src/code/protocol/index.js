@@ -16,4 +16,5 @@ module.exports = {
   ...require("./materialize"),
   ...require("./suspension"),
   ...require("./controlPlane"),
+  ...require("./loopEvents"),
 };

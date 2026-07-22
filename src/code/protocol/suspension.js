@@ -151,10 +151,16 @@ async function submitUserInteractionAnswer(answerText = "", state = {}, options 
   });
 
   const streamedVisible = Boolean(result.streamed && (sawStreamText || options.streamVisible));
+  const { resolveSummaryDisplayPolicy } = require("./loopEvents");
+  const display = resolveSummaryDisplayPolicy({
+    streamed: Boolean(result.streamed),
+    sawVisibleText: streamedVisible,
+  });
   return {
     ...result,
-    shouldEchoSummary: Boolean(result.summary) && !streamedVisible,
+    shouldEchoSummary: Boolean(result.summary) && display.echoSummary,
     echoSummaryText: result.summary || "",
+    displayPolicy: display,
     events: ["interaction_resuming", "assistant_delta", "interaction_resolved"].filter(
       (name, index, all) => all.indexOf(name) === index
     ),
