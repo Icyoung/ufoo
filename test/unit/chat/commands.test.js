@@ -8,10 +8,13 @@ const {
 } = require("../../../src/app/chat/commands");
 
 describe("chat command helpers", () => {
-  test("COMMAND_REGISTRY keeps priority order for launch/bus/ctx", () => {
+  test("COMMAND_REGISTRY keeps priority order for launch/group/bus/ctx", () => {
     const cmds = COMMAND_REGISTRY.map((item) => item.cmd);
-    expect(cmds.indexOf("/launch")).toBeLessThan(cmds.indexOf("/bus"));
+    expect(cmds.indexOf("/launch")).toBeLessThan(cmds.indexOf("/group"));
+    expect(cmds.indexOf("/group")).toBeLessThan(cmds.indexOf("/bus"));
     expect(cmds.indexOf("/bus")).toBeLessThan(cmds.indexOf("/ctx"));
+    expect(COMMAND_REGISTRY.find((item) => item.cmd === "/launch").order).toBe(0);
+    expect(COMMAND_REGISTRY.find((item) => item.cmd === "/group").order).toBe(1);
   });
 
   test("buildCommandRegistry sorts subcommands alphabetically", () => {

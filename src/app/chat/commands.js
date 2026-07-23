@@ -190,7 +190,13 @@ function buildCommandRegistry(tree) {
     .sort(sortCommands)
     .map((cmd) => {
       const node = tree[cmd] || {};
-      return { cmd, ...mapNode(node) };
+      const entry = { cmd, ...mapNode(node) };
+      // Stamp priority so buildCompletions keeps launch → group → bus → ctx
+      // at the top of the `/` popup instead of falling back to A–Z.
+      if (COMMAND_ORDER_MAP.has(cmd)) {
+        entry.order = COMMAND_ORDER_MAP.get(cmd);
+      }
+      return entry;
     });
 }
 

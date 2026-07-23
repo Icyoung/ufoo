@@ -45,7 +45,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.138",
-    "@openai/codex-sdk": "^0.130.0",
+    "@openai/codex-sdk": "^0.145.0",
     "@xterm/addon-serialize": "^0.14.0",
     "@xterm/headless": "^6.0.0",
     "chalk": "^4.1.2",

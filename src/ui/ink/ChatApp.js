@@ -3852,13 +3852,24 @@ function createChatApp({ React, ink, props, interactive = true }) {
         const start = Math.min(completionWindowStart, Math.max(0, completions.length - POPUP_PAGE_SIZE));
         const end = Math.min(completions.length, start + POPUP_PAGE_SIZE);
         const visible = completions.slice(start, end);
-        return h(Box, { flexDirection: "column" },
-          h(Text, { color: "gray" }, "─".repeat(Math.max(8, size.cols || 80))),
+        const cols = Math.max(8, size.cols || 80);
+        return h(Box, { flexDirection: "column", width: "100%" },
+          h(Text, { color: "gray" }, "─".repeat(cols)),
           ...visible.map((s, idxInWindow) => {
             const idx = start + idxInWindow;
-            return h(Box, { key: `cmp-${idx}` },
-              h(Text, { color: idx === completionIndex ? "cyan" : "gray", inverse: idx === completionIndex }, s.label),
-              s.description ? h(Text, { color: "gray" }, `  ${s.description}`) : null,
+            const selected = idx === completionIndex;
+            // Keep label+description in one Text with wrap:"truncate".
+            // Sibling Text nodes let Yoga shrink the label mid-command
+            // (e.g. "/group run" / "build-lane" on two lines).
+            const line = s.description
+              ? `${s.label}  ${s.description}`
+              : String(s.label || "");
+            return h(Box, { key: `cmp-${idx}`, width: "100%" },
+              h(Text, {
+                color: selected ? "cyan" : "gray",
+                inverse: selected,
+                wrap: "truncate",
+              }, line),
             );
           }),
         );

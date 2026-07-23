@@ -21,6 +21,22 @@ describe("buildCompletions", () => {
     expect(out[0].kind).toBe("command");
   });
 
+  test("priority order stamps put launch then group ahead of A–Z", () => {
+    const { COMMAND_REGISTRY, COMMAND_TREE } = require("../../../src/app/chat/commands");
+    const out = buildCompletions({
+      text: "/",
+      commands: COMMAND_REGISTRY,
+      commandTree: COMMAND_TREE,
+      limit: 8,
+    });
+    expect(out.map((s) => s.label).slice(0, 4)).toEqual([
+      "/launch",
+      "/group",
+      "/bus",
+      "/ctx",
+    ]);
+  });
+
   test("exact top-level command returns no popup so Enter can submit", () => {
     expect(buildCompletions({
       text: "/status",
