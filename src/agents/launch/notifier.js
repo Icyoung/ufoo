@@ -315,7 +315,6 @@ class AgentNotifier {
     if (this.stopped) return;
 
     const currentCount = this.getMessageCount();
-    const nowMs = Date.now();
 
     // 有新消息
     if (currentCount > this.lastCount) {
@@ -330,14 +329,22 @@ class AgentNotifier {
     }
 
     this.lastCount = this.getMessageCount();
-    if (this._launcherReady && (!this.lastWorkingAt || nowMs - this.lastWorkingAt >= this.workingHoldMs)) {
+    // Delivery moved to the daemon scheduler. ActivityDetector owns
+    // working → idle / waiting_input. Never force-idle over working here:
+    // lastWorkingAt is only set by the legacy deliverPending path, so the
+    // old hold-window check stayed permanently true and stomped real
+    // working states every poll (~2s) — Codex injections then slipped mid-turn.
+    if (this._launcherReady) {
       const currentActivityState = this.getCurrentActivityState();
-      if (currentActivityState !== "waiting_input" && currentActivityState !== "blocked") {
-        if (currentActivityState === "working") {
-          this.updateActivityState("idle", { force: true });
-        } else {
-          this.updateActivityState("idle");
-        }
+      if (
+        currentActivityState
+        && currentActivityState !== "working"
+        && currentActivityState !== "waiting_input"
+        && currentActivityState !== "blocked"
+      ) {
+        // Soft fallback only (no force): ready/starting → idle for delivery,
+        // without overriding detector-owned busy states.
+        this.updateActivityState("idle");
       }
     }
     this.refreshTitle();

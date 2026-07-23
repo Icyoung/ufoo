@@ -5,6 +5,7 @@ const Injector = require("../../coordination/bus/inject");
 const { buildPromptInjectionText } = require("../../coordination/bus/promptEnvelope");
 const { createTerminalAdapterRouter } = require("../terminal/adapterRouter");
 const { normalizeQueueEnvelope } = require("../../coordination/bus/deliveryQueue");
+const { writeActivityState } = require("../../agents/activity/activityStateWriter");
 
 function asState(value = "") {
   return String(value || "").trim().toLowerCase();
@@ -58,6 +59,14 @@ class DeliveryScheduler {
     this.emitDelivery = typeof options.emitDelivery === "function"
       ? options.emitDelivery
       : async () => {};
+    this.markWorking = typeof options.markWorking === "function"
+      ? options.markWorking
+      : (subscriber) => {
+        writeActivityState(this.paths.agentsFile, subscriber, "working", {
+          force: true,
+          detail: "inject",
+        });
+      };
     this.log = typeof options.log === "function" ? options.log : () => {};
     this.now = typeof options.now === "function" ? options.now : () => Date.now();
     this.deferWarnAfterMs = positiveMs(options.deferWarnAfterMs, DEFAULT_DEFER_WARN_AFTER_MS);
@@ -224,6 +233,15 @@ class DeliveryScheduler {
       try {
         await this.injector.inject(subscriber, injectionText);
         queue.completeClaim(claim);
+        // Close the idle gate immediately. PTY ActivityDetector will refresh
+        // working from output, then quiet-window back to idle; without this
+        // stamp a second pending message can slip through on the next tick
+        // before any Codex stdout arrives.
+        try {
+          this.markWorking(subscriber);
+        } catch {
+          // activity stamp must never undo a successful inject
+        }
         await this.emitDelivery({
           subscriber,
           event: envelope,

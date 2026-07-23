@@ -17,6 +17,7 @@ const {
   createInkStreamState,
   createThrottledSender,
   decorateStaticLogEntry,
+  buildChatLogDisplayLines,
   bootstrapEnvironment,
   buildInternalLogRows,
   buildDirectBusSendRequest,
@@ -664,6 +665,44 @@ describe("daemon status request throttling", () => {
     jest.advanceTimersByTime(600);
     throttled();
     expect(send).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("buildChatLogDisplayLines", () => {
+  const { displayCellWidth } = require("../../../src/ui/format");
+
+  test("pre-wraps CJK user rows so each physical line fits the terminal", () => {
+    const row = buildChatLogLineModel({
+      text: "启动一个cron 每半个小时给architect注入一遍他的使命",
+      sourceType: "user",
+    });
+    const lines = buildChatLogDisplayLines(row, { cols: 24 });
+    expect(lines.length).toBeGreaterThan(1);
+    expect(lines[0].startsWith("› ")).toBe(true);
+    for (const line of lines) {
+      expect(displayCellWidth(line)).toBeLessThanOrEqual(24);
+    }
+  });
+
+  test("keeps agent speaker on the first physical line only", () => {
+    const row = buildChatLogLineModel({
+      text: "architect · acknowledged, current D1 registry return regression check continues",
+      sourceType: "bus",
+    });
+    const lines = buildChatLogDisplayLines(row, { cols: 36 });
+    expect(lines[0]).toMatch(/^◇\s+architect · /);
+    expect(lines.length).toBeGreaterThan(1);
+    expect(lines[1]).toMatch(/^\s+\S/);
+    for (const line of lines) {
+      expect(displayCellWidth(line)).toBeLessThanOrEqual(36);
+    }
+  });
+
+  test("continuation rows indent without a second speaker label", () => {
+    const row = buildChatLogLineModel({ text: "  more detail about the change", sourceType: "bus" });
+    const lines = buildChatLogDisplayLines(row, { continuation: true, groupKind: "agent", cols: 40 });
+    expect(lines[0].startsWith("   ")).toBe(true);
+    expect(lines[0]).not.toMatch(/·/);
   });
 });
 

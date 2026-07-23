@@ -30,6 +30,7 @@ describe("DeliveryScheduler", () => {
     const queue = makeQueue(event);
     const injector = { inject: jest.fn().mockResolvedValue(undefined) };
     const emitDelivery = jest.fn().mockResolvedValue(undefined);
+    const markWorking = jest.fn();
     const scheduler = new DeliveryScheduler("/tmp/project", {
       injector,
       queueFactory: () => queue,
@@ -39,6 +40,7 @@ describe("DeliveryScheduler", () => {
         },
       }),
       emitDelivery,
+      markWorking,
     });
 
     const result = await scheduler.deliverSubscriber("codex:one");
@@ -48,6 +50,7 @@ describe("DeliveryScheduler", () => {
     expect(injector.inject).toHaveBeenCalledWith("codex:one", "[ufoo]<from:ufoo-agent>\nhello");
     expect(queue.completeClaim).toHaveBeenCalledWith(queue.claim);
     expect(queue.restoreClaim).not.toHaveBeenCalled();
+    expect(markWorking).toHaveBeenCalledWith("codex:one");
     expect(emitDelivery).toHaveBeenCalledWith(expect.objectContaining({
       subscriber: "codex:one",
       status: "ok",

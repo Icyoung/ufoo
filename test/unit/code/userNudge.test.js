@@ -37,6 +37,7 @@ const {
   drainUserPrompts,
   clearUserPrompts,
   hasPendingUserPrompts,
+  listPendingUserPrompts,
   shouldFrameAsUserReminder,
   formatUserReminderMessage,
   buildContinuationUserPrompt,
@@ -68,9 +69,11 @@ describe("user nudge queue", () => {
     expect(enqueueUserPrompt(state, "second").enqueued).toBe(true);
     expect(enqueueUserPrompt(state, "  ").enqueued).toBe(false);
     expect(hasPendingUserPrompts(state)).toBe(true);
+    expect(listPendingUserPrompts(state)).toEqual(["first", "second"]);
     expect(drainUserPrompts(state)).toEqual(["first", "second"]);
     expect(drainUserPrompts(state)).toEqual([]);
     expect(hasPendingUserPrompts(state)).toBe(false);
+    expect(listPendingUserPrompts(state)).toEqual([]);
   });
 
   test("clear drops pending prompts", () => {

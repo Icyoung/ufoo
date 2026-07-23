@@ -58,6 +58,14 @@ function hasPendingUserPrompts(executionState = null) {
   return state.pendingUserPrompts.length > 0;
 }
 
+/** Peek pending nudge texts without draining (for TUI queue banner). */
+function listPendingUserPrompts(executionState = null) {
+  const state = ensurePendingUserPrompts(executionState);
+  return state.pendingUserPrompts
+    .map((entry) => String(entry && entry.text || "").trim())
+    .filter(Boolean);
+}
+
 function shouldFrameAsUserReminder(executionState = null) {
   if (!executionState || typeof executionState !== "object") return false;
   if (executionState.planMode === true) return true;
@@ -160,6 +168,7 @@ module.exports = {
   drainUserPrompts,
   clearUserPrompts,
   hasPendingUserPrompts,
+  listPendingUserPrompts,
   shouldFrameAsUserReminder,
   formatUserReminderMessage,
   buildContinuationUserPrompt,

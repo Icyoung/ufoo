@@ -362,7 +362,7 @@ describe("AgentNotifier delivery strategy", () => {
     expect(pendingRaw).not.toContain("task-a");
   });
 
-  test("poll keeps working state for hold window before downgrading to idle", async () => {
+  test("poll never force-idles over working (ActivityDetector owns that transition)", async () => {
     const subscriber = "codex:hold1";
     fs.writeFileSync(
       path.join(projectRoot, ".ufoo", "agent", "all-agents.json"),
@@ -377,9 +377,7 @@ describe("AgentNotifier delivery strategy", () => {
     );
 
     const notifier = new AgentNotifier(projectRoot, subscriber);
-    notifier.workingHoldMs = 1000;
-    notifier.lastWorkingAt = Date.now();
-    notifier._launcherReady = true; // simulate launcher ready
+    notifier._launcherReady = true;
     notifier.getMessageCount = jest.fn(() => 0);
     notifier.notify = jest.fn();
     notifier.refreshTitle = jest.fn();
@@ -387,15 +385,38 @@ describe("AgentNotifier delivery strategy", () => {
     const stateSpy = jest.spyOn(notifier, "updateActivityState");
 
     await notifier.poll();
-    expect(stateSpy).not.toHaveBeenCalledWith("idle");
-
-    notifier.lastWorkingAt = Date.now() - 1500;
-    await notifier.poll();
-    expect(stateSpy).toHaveBeenCalledWith("idle", { force: true });
+    expect(stateSpy).not.toHaveBeenCalled();
     const data = JSON.parse(fs.readFileSync(
       path.join(projectRoot, ".ufoo", "agent", "all-agents.json"), "utf8"
     ));
-    expect(data.agents[subscriber].activity_state).toBe("idle");
+    expect(data.agents[subscriber].activity_state).toBe("working");
+  });
+
+  test("poll soft-idles ready without force after launcher ready", async () => {
+    const subscriber = "codex:ready1";
+    fs.writeFileSync(
+      path.join(projectRoot, ".ufoo", "agent", "all-agents.json"),
+      JSON.stringify({
+        agents: {
+          [subscriber]: {
+            status: "active",
+            activity_state: "ready",
+          },
+        },
+      }, null, 2)
+    );
+
+    const notifier = new AgentNotifier(projectRoot, subscriber);
+    notifier._launcherReady = true;
+    notifier.getMessageCount = jest.fn(() => 0);
+    notifier.notify = jest.fn();
+    notifier.refreshTitle = jest.fn();
+    notifier.updateHeartbeat = jest.fn();
+    const stateSpy = jest.spyOn(notifier, "updateActivityState");
+
+    await notifier.poll();
+    expect(stateSpy).toHaveBeenCalledWith("idle");
+    expect(stateSpy).not.toHaveBeenCalledWith("idle", expect.objectContaining({ force: true }));
   });
 
   test("poll does not force idle over waiting input or blocked states", async () => {

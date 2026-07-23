@@ -732,6 +732,86 @@ function wrapInternalPlainLine(text = "", width = 80) {
   return rows;
 }
 
+// Ink's wrap:"wrap" + <Static> under-counts CJK row height on live appends,
+// so later log writes overpaint the previous line. Pre-wrap by display cells
+// and paint with wrap:"truncate" so each Static item occupies a known height.
+function expandChatLogPhysicalLines(text = "", width = 80) {
+  const limit = Math.max(1, Math.floor(Number(width) || 80));
+  const source = String(text || "").replace(/\r/g, "");
+  if (!source) return [""];
+  const out = [];
+  for (const line of source.split("\n")) {
+    out.push(...wrapInternalPlainLine(line, limit));
+  }
+  return out.length > 0 ? out : [""];
+}
+
+function padDisplayCells(cells = 0) {
+  return " ".repeat(Math.max(0, Math.floor(Number(cells) || 0)));
+}
+
+function splitUserLogAtMention(bodyText = "") {
+  const body = String(bodyText || "");
+  const atMatch = body.match(/^@([^\s]+)\s+(.*)$/);
+  if (atMatch) {
+    return { at: atMatch[1], rest: atMatch[2] || "" };
+  }
+  return { at: "", rest: body };
+}
+
+/**
+ * Flatten one chat log row into terminal-width physical lines. Each returned
+ * line is a single string (marker/speaker/body already merged) so Ink never
+ * has to wrap it — critical for <Static> append-only CJK safety.
+ */
+function buildChatLogDisplayLines(row = {}, options = {}) {
+  const cols = Math.max(8, Math.floor(Number(options.cols) || 80));
+  const continuation = Boolean(options.continuation);
+  const groupKind = options.groupKind || row.kind || "plain";
+  const kind = row.kind || "plain";
+
+  if (kind === "spacer") return [" "];
+  if (kind === "divider") {
+    return [fitPlainLine(`  ${compactDividerLabel(row.body || row.bodyText || "")}`, cols)];
+  }
+  if (kind === "banner") {
+    return expandChatLogPhysicalLines(stripInternalLogMarkup(row.bodyText || row.body || ""), cols)
+      .map((line) => fitPlainLine(line, cols));
+  }
+
+  const markerText = continuation
+    ? (groupKind === "assistant" || groupKind === "agent" || groupKind === "report" ? "   " : "  ")
+    : String(row.markerText != null ? row.markerText : "");
+
+  if (kind === "user") {
+    const userBody = splitUserLogAtMention(row.bodyText || row.body || "");
+    const atPrefix = userBody.at ? `@${userBody.at} ` : "";
+    const firstPrefix = `${markerText || "› "}${atPrefix}`;
+    const prefixCells = fmt.displayCellWidth(firstPrefix);
+    const budget = Math.max(1, cols - prefixCells);
+    const chunks = expandChatLogPhysicalLines(userBody.rest, budget);
+    const contPad = padDisplayCells(prefixCells);
+    return chunks.map((chunk, idx) => {
+      const line = idx === 0 ? `${firstPrefix}${chunk}` : `${contPad}${chunk}`;
+      return fitPlainLine(line, cols);
+    });
+  }
+
+  const speakerPrefix = (!continuation && row.speaker)
+    ? `${row.speaker} · `
+    : "";
+  const head = `${markerText}${speakerPrefix}`;
+  const headCells = fmt.displayCellWidth(head);
+  const budget = Math.max(1, cols - headCells);
+  const bodyPlain = stripInternalLogMarkup(row.bodyText != null ? row.bodyText : (row.body || ""));
+  const chunks = expandChatLogPhysicalLines(bodyPlain, budget);
+  const contPad = padDisplayCells(headCells);
+  return chunks.map((chunk, idx) => {
+    const line = idx === 0 ? `${head}${chunk}` : `${contPad}${chunk}`;
+    return fitPlainLine(line, cols);
+  });
+}
+
 function classifyInternalLogLine(line = "") {
   const raw = stripInternalLogMarkup(line).replace(/\r/g, "");
   if (!raw) return { kind: "spacer", text: "", markdown: false, bold: false };
@@ -3580,16 +3660,44 @@ function createChatApp({ React, ink, props, interactive = true }) {
       return null;
     }
 
-    const renderUserLogBody = (bodyText = "") => {
-      const body = String(bodyText || "");
-      const atMatch = body.match(/^@([^\s]+)\s+(.*)$/);
-      if (atMatch) {
-        return {
-          at: atMatch[1],
-          rest: atMatch[2] || "",
-        };
+    const renderChatLogLines = (row, { key, continuation = false, groupKind = "", marginTop = 0, marginBottom = 0 } = {}) => {
+      const colors = CHAT_LOG_ROW_PALETTE[row.kind] || CHAT_LOG_ROW_PALETTE.plain;
+      const cols = Math.max(20, size.cols || 80);
+      const lines = buildChatLogDisplayLines(row, {
+        continuation,
+        groupKind: groupKind || row.kind,
+        cols,
+      });
+      const textProps = {
+        color: row.kind === "user" ? "green" : colors.body,
+        bold: Boolean(
+          row.kind === "user"
+          || colors.bold
+          || row.kind === "error"
+          || row.kind === "assistant"
+          || row.kind === "banner"
+        ),
+        wrap: "truncate",
+      };
+      if (colors.dim) textProps.dimColor = true;
+      if (row.kind === "agent" || row.kind === "report") {
+        textProps.color = colors.speaker;
       }
-      return { at: "", rest: body };
+      if (lines.length <= 1) {
+        return h(Box, { key, width: "100%", marginTop, marginBottom },
+          h(Text, textProps, (lines[0] != null ? lines[0] : " ") || " "));
+      }
+      return h(Box, {
+        key,
+        flexDirection: "column",
+        width: "100%",
+        marginTop,
+        marginBottom,
+      },
+      ...lines.map((line, idx) => h(Text, {
+        key: `${key}-r${idx}`,
+        ...textProps,
+      }, line || " ")));
     };
 
     const renderChatLogEntry = (entry, group) => {
@@ -3598,53 +3706,12 @@ function createChatApp({ React, ink, props, interactive = true }) {
       if (row.kind === "spacer") {
         return h(Text, { key, color: "gray" }, " ");
       }
-      const colors = CHAT_LOG_ROW_PALETTE[row.kind] || CHAT_LOG_ROW_PALETTE.plain;
-      if (row.kind === "divider") {
-        return h(Box, { key, marginBottom: 1 },
-          h(Text, { color: colors.body, wrap: "truncate" }, `  ${compactDividerLabel(row.body)}`),
-        );
-      }
-      if (row.kind === "banner") {
-        return h(Box, { key },
-          h(Text, { color: colors.body, bold: true, wrap: "truncate" }, row.body),
-        );
-      }
-      if (row.kind === "user") {
-        const userBody = renderUserLogBody(row.bodyText);
-        return h(Box, { key, width: "100%", marginBottom: 1, alignItems: "flex-start" },
-          h(Text, { color: "green", bold: true }, row.markerText || "› "),
-          userBody.at
-            ? h(Text, { color: "magenta", bold: true }, `@${userBody.at} `)
-            : null,
-          h(Text, { color: "green", bold: true, wrap: "wrap" }, userBody.rest),
-        );
-      }
-      const markerText = entry && entry.continuation
-        ? (group && (group.kind === "assistant" || group.kind === "agent" || group.kind === "report") ? "   " : "  ")
-        : row.markerText;
-      const bodyProps = {
-        color: colors.body,
-        wrap: "wrap",
-      };
-      if (colors.dim) bodyProps.dimColor = true;
-      // Pin the gutter glyph to the first text line; default Yoga stretch/center
-      // floats markers above wrapped speaker · body rows.
-      return h(Box, { key, width: "100%", alignItems: "flex-start" },
-        h(Text, {
-          color: colors.marker,
-          bold: row.kind === "error" || row.kind === "assistant",
-          dimColor: Boolean(colors.dim),
-        }, markerText),
-        h(Text, bodyProps,
-          row.speaker && !(entry && entry.continuation)
-            ? h(Text, { color: colors.speaker, bold: colors.bold }, row.speaker)
-            : null,
-          row.speaker && !(entry && entry.continuation)
-            ? h(Text, { color: "gray" }, " · ")
-            : null,
-          row.bodyText,
-        ),
-      );
+      return renderChatLogLines(row, {
+        key,
+        continuation: Boolean(entry && entry.continuation),
+        groupKind: group && group.kind ? group.kind : row.kind,
+        marginBottom: row.kind === "user" || row.kind === "divider" ? 1 : 0,
+      });
     };
 
     const renderChatLogGroup = (group) => {
@@ -3664,64 +3731,23 @@ function createChatApp({ React, ink, props, interactive = true }) {
       ...entries.map((entry) => renderChatLogEntry(entry, group)));
     };
 
-    // Renderer for one finalized (append-only) <Static> log item. Mirrors
-    // renderChatLogEntry visually; spacing differs because per-item
-    // rendering can't wrap a group in one margin-bottom Box — instead the
-    // decoration pass flags `marginBefore` on whatever entry follows a
-    // transcript group.
+    // Renderer for one finalized (append-only) <Static> log item. Spacing
+    // uses decorateStaticLogEntry's marginBefore; body text is pre-wrapped to
+    // the terminal width so Ink never wrap:"wrap"s CJK inside Static.
     const renderStaticChatLogItem = (item) => {
       const { row, groupKind, continuation, marginBefore } = item;
       const key = item.entry && item.entry.id ? item.entry.id : `log-${row.body}`;
-      const marginTop = marginBefore ? 1 : 0;
       if (row.kind === "spacer") {
-        return h(Box, { key, marginTop },
+        return h(Box, { key, marginTop: marginBefore ? 1 : 0 },
           h(Text, { color: "gray" }, " "));
       }
-      const colors = CHAT_LOG_ROW_PALETTE[row.kind] || CHAT_LOG_ROW_PALETTE.plain;
-      if (row.kind === "divider") {
-        return h(Box, { key, marginTop, marginBottom: 1 },
-          h(Text, { color: colors.body, wrap: "truncate" }, `  ${compactDividerLabel(row.body)}`),
-        );
-      }
-      if (row.kind === "banner") {
-        return h(Box, { key, marginTop },
-          h(Text, { color: colors.body, bold: true, wrap: "truncate" }, row.body),
-        );
-      }
-      if (row.kind === "user") {
-        const userBody = renderUserLogBody(row.bodyText);
-        return h(Box, { key, width: "100%", marginTop, marginBottom: 1, alignItems: "flex-start" },
-          h(Text, { color: "green", bold: true }, row.markerText || "› "),
-          userBody.at
-            ? h(Text, { color: "magenta", bold: true }, `@${userBody.at} `)
-            : null,
-          h(Text, { color: "green", bold: true, wrap: "wrap" }, userBody.rest),
-        );
-      }
-      const markerText = continuation
-        ? (groupKind === "assistant" || groupKind === "agent" || groupKind === "report" ? "   " : "  ")
-        : row.markerText;
-      const bodyProps = {
-        color: colors.body,
-        wrap: "wrap",
-      };
-      if (colors.dim) bodyProps.dimColor = true;
-      return h(Box, { key, width: "100%", marginTop, alignItems: "flex-start" },
-        h(Text, {
-          color: colors.marker,
-          bold: row.kind === "error" || row.kind === "assistant",
-          dimColor: Boolean(colors.dim),
-        }, markerText),
-        h(Text, bodyProps,
-          row.speaker && !continuation
-            ? h(Text, { color: colors.speaker, bold: colors.bold }, row.speaker)
-            : null,
-          row.speaker && !continuation
-            ? h(Text, { color: "gray" }, " · ")
-            : null,
-          row.bodyText,
-        ),
-      );
+      return renderChatLogLines(row, {
+        key,
+        continuation,
+        groupKind,
+        marginTop: marginBefore ? 1 : 0,
+        marginBottom: row.kind === "user" || row.kind === "divider" ? 1 : 0,
+      });
     };
 
     if (state.viewingAgentId) {
@@ -4099,6 +4125,8 @@ module.exports = {
   createInkStreamState,
   createThrottledSender,
   decorateStaticLogEntry,
+  buildChatLogDisplayLines,
+  expandChatLogPhysicalLines,
   bootstrapEnvironment,
   buildDirectBusSendRequest,
   buildPromptIpcRequest,

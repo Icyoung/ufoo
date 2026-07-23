@@ -96,6 +96,10 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       hash: "",
     }));
     const [interactionLines, setInteractionLines] = useState([]);
+    // Bumps when pendingUserPrompts change so the near-input queue banner
+    // re-renders without dumping a chat-log system line.
+    const [queueTick, setQueueTick] = useState(0);
+    const bumpQueue = useCallback(() => setQueueTick((n) => n + 1), []);
     const [spinnerTick, setSpinnerTick] = useState(0);
     const [size, setSize] = useState({ cols: 0, rows: 0 });
     const [contextMeter, setContextMeter] = useState(() => {
@@ -903,6 +907,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
             cancelThinkingFlush();
             thinkingTailRef.current = "";
             refreshPlanUi();
+            bumpQueue();
             setStatus({ message: "", type: "thinking", showTimer: false, startedAt: 0 });
           }
           if (streamBuf) {
@@ -942,7 +947,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
         default:
           if (result.output) appendLogText(result.output);
       }
-    }, [appendLogLine, appendLogText, exit, props, logToolHint, flushActiveMerge, flushTableBuffer, refreshPlanUi]);
+    }, [appendLogLine, appendLogText, exit, props, logToolHint, flushActiveMerge, flushTableBuffer, refreshPlanUi, bumpQueue]);
     // ^ `props` is captured by the createUcodeApp closure on a single mount,
     // so its reference is stable across renders even though it looks like a
     // changing dep to React's exhaustive-deps lint.
@@ -1153,14 +1158,8 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
         if (!props.state.executionState || typeof props.state.executionState !== "object") {
           props.state.executionState = emptyExecutionState();
         }
-        const queued = enqueueUserPrompt(props.state.executionState, modelText);
-        const reminderPreview = logText.slice(0, 120) + (logText.length > 120 ? "…" : "");
-        appendLogText(
-          queued.enqueued
-            ? `Queued user reminder for next model turn: ${reminderPreview}`
-            : "Could not queue user reminder (empty).",
-          "system",
-        );
+        enqueueUserPrompt(props.state.executionState, modelText);
+        bumpQueue();
         return;
       }
 
@@ -1180,6 +1179,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
       appendLogLine,
       flushActiveMerge,
       flushTableBuffer,
+      bumpQueue,
       props.state,
       props.submitUserInteractionAnswer,
       refreshPlanUi,
@@ -1410,6 +1410,25 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
           ),
         )
         : null,
+      (() => {
+        void queueTick;
+        let pending = [];
+        try {
+          const { listPendingUserPrompts } = require("../../code/context/userNudge");
+          pending = listPendingUserPrompts(props.state && props.state.executionState);
+        } catch {
+          pending = [];
+        }
+        if (pending.length === 0) return null;
+        const latest = String(pending[pending.length - 1] || "");
+        const more = pending.length > 1 ? ` · +${pending.length - 1}` : "";
+        const preview = latest.length > 72 ? `${latest.slice(0, 72)}…` : latest;
+        return h(Box, { width: "100%" },
+          h(Text, { color: "yellow", wrap: "truncate" },
+            `排队中 · 未发出 · ${preview}${more}`,
+          ),
+        );
+      })(),
       h(Box, { width: "100%" },
         h(MultilineInput, {
           value: draft,
@@ -1469,6 +1488,7 @@ function createUcodeApp({ React, ink, props, interactive = true }) {
                 if (props.state && props.state.executionState) {
                   clearUserPrompts(props.state.executionState);
                 }
+                bumpQueue();
               } catch { /* ignore */ }
               appendLogLine("⚙ Cancellation requested. Stopping the current task...", "system");
               setStatus({
