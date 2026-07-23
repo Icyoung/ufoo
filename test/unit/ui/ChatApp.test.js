@@ -32,6 +32,7 @@ const {
   inferStatusType,
   isAnimatedStatusType,
   isInternalViewingAgent,
+  resolveInternalAgentBarIndex,
   resolveActiveAgentId,
   resolveInjectSockPathForAgent,
   resolveAgentEnterRequest,
@@ -40,6 +41,7 @@ const {
   resolveInternalKeyName,
   applyInternalAgentTermWrite,
   appendInternalErrorToView,
+  staticChatLogItemGapPlan,
 } = require("../../../src/ui/ink/ChatApp");
 
 describe("createChatApp", () => {
@@ -528,6 +530,28 @@ describe("internal agent view helpers", () => {
     expect(isInternalViewingAgent("codex:xyz", { nickname: "codex-7" }, view, "codex:7")).toBe(true);
     expect(isInternalViewingAgent("codex:8", { nickname: "codex-8" }, view, "codex:7")).toBe(false);
   });
+
+  test("down-arrow bar focus lands on the current agent, not ufoo", () => {
+    const agents = ["ufoo-agent", "codex:architect", "codex:builder"];
+    expect(resolveInternalAgentBarIndex(agents, {
+      viewingAgentId: "codex:architect",
+    })).toBe(2);
+    expect(resolveInternalAgentBarIndex(agents, {
+      viewingAgentId: "codex:builder",
+    })).toBe(3);
+    expect(resolveInternalAgentBarIndex(agents, {
+      viewingAgentId: "",
+    })).toBe(0);
+
+    const meta = new Map([
+      ["codex:xyz", { nickname: "architect" }],
+    ]);
+    expect(resolveInternalAgentBarIndex(["ufoo-agent", "codex:xyz"], {
+      viewingAgentId: "codex:architect",
+      view: { agentId: "codex:architect", aliases: ["architect"] },
+      displayAgentMeta: meta,
+    })).toBe(2);
+  });
 });
 
 describe("prompt submit helpers", () => {
@@ -737,5 +761,29 @@ describe("static log decoration", () => {
     const second = decorateStaticLogEntry(first, { id: "l-2", text: "  more" });
     const secondAgain = decorateStaticLogEntry(first, { id: "l-2", text: "  more" });
     expect(secondAgain).toEqual(second);
+  });
+
+  test("static gaps are content rows so live appends keep history spacing", () => {
+    const lines = [
+      { id: "l-1", text: "reviewer · Final independent review", sourceType: "bus" },
+      { id: "l-2", text: "architect · Reviewer wait state", sourceType: "bus" },
+      { id: "l-3", text: "› 通知三个人 上报的时候用中文上报", sourceType: "user" },
+      { id: "l-4", text: "architect · 已统一团队沟通语言", sourceType: "bus" },
+    ];
+    const decorated = [];
+    for (const entry of lines) {
+      decorated.push(decorateStaticLogEntry(decorated[decorated.length - 1] || null, entry));
+    }
+
+    expect(decorated.map((item) => item.groupKind)).toEqual([
+      "agent",
+      "agent",
+      "user",
+      "agent",
+    ]);
+    expect(staticChatLogItemGapPlan(decorated[0])).toEqual({ leading: false, trailing: false });
+    expect(staticChatLogItemGapPlan(decorated[1])).toEqual({ leading: true, trailing: false });
+    expect(staticChatLogItemGapPlan(decorated[2])).toEqual({ leading: true, trailing: true });
+    expect(staticChatLogItemGapPlan(decorated[3])).toEqual({ leading: true, trailing: false });
   });
 });

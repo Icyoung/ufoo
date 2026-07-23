@@ -529,6 +529,17 @@ function decorateStaticLogEntry(prev, entry) {
   return { entry: source, row, groupKind, continuation, marginBefore, markdownState };
 }
 
+// Static live-append path must encode gaps as content rows (see
+// renderStaticChatLogItem). Keep the plan pure so tests can pin spacing
+// without rendering Ink.
+function staticChatLogItemGapPlan(item = {}) {
+  const row = item && item.row && typeof item.row === "object" ? item.row : {};
+  return {
+    leading: Boolean(item && item.marginBefore),
+    trailing: row.kind === "user" || row.kind === "divider",
+  };
+}
+
 function createInkStreamState({
   dispatch,
   appendHistory,
@@ -961,6 +972,32 @@ function isInternalViewingAgent(agentId, meta, view = {}, viewingAgentId = "") {
     getAgentLabelFor(meta, id),
   ].filter(Boolean).map((value) => String(value).trim()).filter(Boolean);
   return metaIds.some((value) => candidates.has(value));
+}
+
+// Internal agent bar layout: index 0 is always "ufoo" (exit), then agents.
+// Down from the input should land on the currently viewed agent, not ufoo.
+function resolveInternalAgentBarIndex(displayAgents = [], options = {}) {
+  const agents = Array.isArray(displayAgents) ? displayAgents : [];
+  if (agents.length === 0) return 0;
+
+  const viewingAgentId = String(options.viewingAgentId || "").trim();
+  const view = options.view && typeof options.view === "object" ? options.view : {};
+  const metaMap = options.displayAgentMeta instanceof Map
+    ? options.displayAgentMeta
+    : (options.activeAgentMeta instanceof Map ? options.activeAgentMeta : new Map());
+
+  if (viewingAgentId) {
+    const exact = agents.indexOf(viewingAgentId);
+    if (exact >= 0) return exact + 1;
+  }
+
+  for (let index = 0; index < agents.length; index += 1) {
+    const agentId = agents[index];
+    if (isInternalViewingAgent(agentId, metaMap.get(agentId), view, viewingAgentId)) {
+      return index + 1;
+    }
+  }
+  return 0;
 }
 
 function compactDisplayProjectRoot(projectRoot = "") {
@@ -2975,7 +3012,12 @@ function createChatApp({ React, ink, props, interactive = true }) {
         return true;
       }
       if (keyName === "down") {
-        setInternalAgentView((prev) => ({ ...prev, barIndex: 0 }));
+        const nextBarIndex = resolveInternalAgentBarIndex(displayAgents, {
+          viewingAgentId: state.viewingAgentId,
+          view: internalAgentViewRef.current,
+          displayAgentMeta,
+        });
+        setInternalAgentView((prev) => ({ ...prev, barIndex: nextBarIndex }));
         dispatch({ type: "focus/set", mode: "dashboard" });
         return true;
       }
@@ -3731,23 +3773,42 @@ function createChatApp({ React, ink, props, interactive = true }) {
       ...entries.map((entry) => renderChatLogEntry(entry, group)));
     };
 
-    // Renderer for one finalized (append-only) <Static> log item. Spacing
-    // uses decorateStaticLogEntry's marginBefore; body text is pre-wrapped to
-    // the terminal width so Ink never wrap:"wrap"s CJK inside Static.
+    // Renderer for one finalized (append-only) <Static> log item.
+    //
+    // IMPORTANT: do NOT rely on Yoga marginTop/marginBottom inside <Static>.
+    // The initial history batch lays out margins correctly, but live appends
+    // often paint only the item body height and drop the gap — so streamed
+    // agent lines look flush while reloaded history has spacing. Encode gaps
+    // as real blank Text rows so Static measures them as content height.
+    // Body text is still pre-wrapped + wrap:"truncate" for CJK safety.
     const renderStaticChatLogItem = (item) => {
-      const { row, groupKind, continuation, marginBefore } = item;
+      const { row, groupKind, continuation } = item;
       const key = item.entry && item.entry.id ? item.entry.id : `log-${row.body}`;
-      if (row.kind === "spacer") {
-        return h(Box, { key, marginTop: marginBefore ? 1 : 0 },
-          h(Text, { color: "gray" }, " "));
+      const gaps = staticChatLogItemGapPlan(item);
+      const children = [];
+      if (gaps.leading) {
+        children.push(h(Text, { key: `${key}-gap-before`, color: "gray" }, " "));
       }
-      return renderChatLogLines(row, {
+      if (row.kind === "spacer") {
+        children.push(h(Text, { key: `${key}-spacer`, color: "gray" }, " "));
+      } else {
+        children.push(renderChatLogLines(row, {
+          key: `${key}-body`,
+          continuation,
+          groupKind,
+          marginTop: 0,
+          marginBottom: 0,
+        }));
+      }
+      if (gaps.trailing) {
+        children.push(h(Text, { key: `${key}-gap-after`, color: "gray" }, " "));
+      }
+      if (children.length === 1) return children[0];
+      return h(Box, {
         key,
-        continuation,
-        groupKind,
-        marginTop: marginBefore ? 1 : 0,
-        marginBottom: row.kind === "user" || row.kind === "divider" ? 1 : 0,
-      });
+        flexDirection: "column",
+        width: "100%",
+      }, ...children);
     };
 
     if (state.viewingAgentId) {
@@ -4136,6 +4197,7 @@ module.exports = {
   createInkStreamState,
   createThrottledSender,
   decorateStaticLogEntry,
+  staticChatLogItemGapPlan,
   buildChatLogDisplayLines,
   expandChatLogPhysicalLines,
   bootstrapEnvironment,
@@ -4158,6 +4220,7 @@ module.exports = {
   isAnimatedStatusType,
   resolveInternalKeyName,
   isInternalViewingAgent,
+  resolveInternalAgentBarIndex,
   applyInternalAgentTermWrite,
   appendInternalErrorToView,
 };
