@@ -4,6 +4,7 @@ const {
   resolveAgentId,
   resolveAgentDisplayName,
   clampAgentWindowWithSelection,
+  normalizeStatusToAgentsSnapshot,
 } = require("../../../src/app/chat/agentDirectory");
 
 describe("chat agentDirectory helpers", () => {
@@ -81,5 +82,18 @@ describe("chat agentDirectory helpers", () => {
       windowStart: 3,
       selectionIndex: 1,
     })).toBe(1);
+  });
+
+  test("normalizeStatusToAgentsSnapshot builds footer marks", () => {
+    const snapshot = normalizeStatusToAgentsSnapshot({
+      active: ["codex:a", "claude:b"],
+      active_meta: [
+        { id: "codex:a", display_nickname: "alpha", activity_state: "working" },
+        { id: "claude:b", display_nickname: "beta", activity_state: "waiting_input" },
+      ],
+    });
+    expect(snapshot.agents).toHaveLength(2);
+    expect(snapshot.agents[0].label).toBe("alpha");
+    expect(snapshot.footer).toBe("*alpha · ?beta");
   });
 });

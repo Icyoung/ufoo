@@ -139,7 +139,15 @@ function createPaneManager(options = {}) {
 
   function sendInput(data) {
     if (!focusedAgent) return;
-    const pane = panes.get(focusedAgent);
+    sendInputToPane(panes.get(focusedAgent), data);
+  }
+
+  function sendInputToAgent(agentId, data) {
+    if (!agentId) return;
+    sendInputToPane(panes.get(agentId), data);
+  }
+
+  function sendInputToPane(pane, data) {
     if (!pane) return;
     if (pane.mode === "internal") {
       handleInternalInput(pane, data);
@@ -284,6 +292,7 @@ function createPaneManager(options = {}) {
     addAgent,
     removeAgent,
     sendInput,
+    sendInputToAgent,
     sendResize,
     cycleFocus,
     getFocused,

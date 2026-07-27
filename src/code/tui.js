@@ -38,8 +38,19 @@ const {
 } = fmt;
 
 function runUcodeTui(props = {}) {
-  const { runUcodeInkTui } = require("../ui/ink/UcodeApp");
-  return runUcodeInkTui(props);
+  const { resolveTuiLaunchPlan } = require("../ui/tuiLauncher");
+  const plan = resolveTuiLaunchPlan({
+    mode: props.tuiMode || process.env.UFOO_TUI,
+    surface: "ucode",
+  });
+  if (plan.mode !== "rust") {
+    const err = new Error(`Rust TUI unavailable (${plan.reason})`);
+    err.code = "UFOO_TUI_UNAVAILABLE";
+    err.plan = plan;
+    throw err;
+  }
+  const { runUcodeRust } = require("../ui/rustUcodeHost");
+  return runUcodeRust({ ...props, tuiMode: "rust" });
 }
 
 module.exports = {

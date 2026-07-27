@@ -35,6 +35,27 @@ const COMMAND_TREE = {
       stop: { desc: "Stop cron task by id or all" },
     },
   },
+  "/mode": {
+    desc: "Set agent launch mode",
+    children: {
+      show: { desc: "Show current launch mode", order: 1 },
+      auto: { desc: "Auto-select launch mode", order: 2 },
+      host: { desc: "Launch via host inject", order: 3 },
+      terminal: { desc: "Launch in external terminal", order: 4 },
+      tmux: { desc: "Launch in tmux", order: 5 },
+      internal: { desc: "Launch as internal agent", order: 6 },
+    },
+  },
+  "/provider": {
+    desc: "Set ufoo-agent provider",
+    children: {
+      show: { desc: "Show current agent provider", order: 1 },
+      codex: { desc: "Use Codex", order: 2 },
+      claude: { desc: "Use Claude", order: 3 },
+      agy: { desc: "Use Antigravity (agy)", order: 4 },
+      kimi: { desc: "Use Kimi Code", order: 5 },
+    },
+  },
   "/clear": { desc: "Clear chat log on screen" },
   "/group": {
     desc: "Agent group orchestration",
@@ -313,6 +334,16 @@ function describeCommandForChat(text) {
     if (sub === "stop") return `Stopping cron task ${args[1] || ""}`.trim();
     if (sub === "list") return "Listing cron tasks";
     return "Managing cron tasks";
+  }
+
+  if (command === "mode") {
+    if (!sub || sub === "show" || sub === "status") return "Showing launch mode";
+    return `Setting launch mode to ${sub}`;
+  }
+
+  if (command === "provider") {
+    if (!sub || sub === "show" || sub === "status") return "Showing agent provider";
+    return `Setting agent provider to ${sub}`;
   }
 
   if (command === "mcp") {

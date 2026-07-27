@@ -20,6 +20,9 @@ function createInputSubmitHandler(options = {}) {
     enterAgentView = () => {},
     getAgentAdapter = () => null,
     activateAgent = async () => {},
+    // When /multi is on: focus the in-window TUI pane instead of OS activate.
+    // Return true if handled.
+    focusMultiPane = null,
     commitInputHistory = () => {},
     focusInput = () => {},
     renderScreen = () => {},  // Add renderScreen callback
@@ -39,6 +42,18 @@ function createInputSubmitHandler(options = {}) {
   }
 
   async function tryActivateTargetAgent(agentId) {
+    if (typeof focusMultiPane === "function") {
+      try {
+        const focused = await focusMultiPane(agentId);
+        if (focused) {
+          clearTargetAgent();
+          return true;
+        }
+      } catch {
+        // Fall through to OS activate / internal view.
+      }
+    }
+
     const adapter = getAgentAdapter(agentId);
     const capabilities = adapter && adapter.capabilities ? adapter.capabilities : null;
     const supportsActivate = Boolean(capabilities && capabilities.supportsActivate);
@@ -47,13 +62,12 @@ function createInputSubmitHandler(options = {}) {
     if (supportsActivate) {
       clearTargetAgent();
       try {
-        if (adapter && typeof adapter.activate === "function") {
-          adapter.activate(agentId);
-        } else {
-          const pendingActivation = activateAgent(agentId);
-          if (pendingActivation && typeof pendingActivation.catch === "function") {
-            pendingActivation.catch(() => {});
-          }
+        // Always use the host-wired activator. Bare adapterRouter adapters
+        // expose activate() that no-ops unless activateTerminal/activateTmux
+        // were injected — which chat hosts do not do.
+        const pendingActivation = activateAgent(agentId);
+        if (pendingActivation && typeof pendingActivation.catch === "function") {
+          pendingActivation.catch(() => {});
         }
       } catch {
         // Best-effort activation.

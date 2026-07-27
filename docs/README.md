@@ -20,6 +20,9 @@ planning material in `docs/archive/`.
 | `ufoo-prompt-envelope-and-tags-plan.md` | needs audit | Prompt envelope/tag core exists, but timeline/history details need a final implementation check. |
 | `implementation_plan.md` | stale/unverified | Older chat log copy plan; implementation was not found during this cleanup. |
 | `ucode-context-manager-plan.md` | **complete** (P3 optional) | Native `ucode` Context Manager：已落地能力、延后项、env/验证。 |
+| `tui-grok-build-migration-plan.md` | **Phase 0A in progress** | Ink→Grok 风格 TUI：Node host + Rust child；工作集见 `tui-migration/`。 |
+| `tui-migration/` | Phase 0A drafts | ADR-0001、feature matrix、baseline/release、gate checklist。 |
+| `rust-native-multi-plan.md` | **MVP implemented** | Rust 原生 `/multi`：有界 pane frames + `multi-frames-v1`；已去掉 rustChatHost 的 Ink suspend handoff。 |
 | `codebase-review-2026.md` | reference | Historical review notes. |
 | `ufoo-docs-implementation-audit.md` | reference | Audit used to classify plan documents before this archive pass. |
 

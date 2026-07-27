@@ -79,10 +79,73 @@ function clampAgentWindowWithSelection({
   return nextStart;
 }
 
+/**
+ * Normalize daemon STATUS payload into agents list + footer string.
+ * Shared by Ink dashboard and Rust `agents.snapshot`.
+ */
+function normalizeStatusToAgentsSnapshot(data = {}) {
+  const activeIds = Array.isArray(data.active) ? data.active : [];
+  const metaList = Array.isArray(data.active_meta) ? data.active_meta : [];
+  const { labelMap, metaMap } = buildAgentMaps(activeIds, metaList);
+  const agents = activeIds.map((id) => {
+    const meta = metaMap.get(id) || {};
+    const colon = String(id).indexOf(":");
+    const fallbackType = colon > 0 ? String(id).slice(0, colon) : String(id);
+    const fallbackId = colon > 0 ? String(id).slice(colon + 1) : "";
+    const label = labelMap.get(id) || id;
+    const activity = String(meta.activity_state || "").trim();
+    return {
+      ...meta,
+      id,
+      fullId: id,
+      label,
+      type: meta.type || fallbackType,
+      agentId: meta.id || fallbackId,
+      nickname: label,
+      activity_state: activity,
+      activity_detail: String(meta.activity_detail || ""),
+      launch_mode: meta.launch_mode || meta.launchMode || "",
+    };
+  });
+  const footer = agents.length === 0
+    ? "no agents"
+    : agents.map((agent) => {
+      const mark = agent.activity_state === "working" ? "*"
+        : agent.activity_state === "waiting_input" ? "?"
+          : agent.activity_state === "blocked" ? "!"
+            : "";
+      return mark ? `${mark}${agent.label}` : agent.label;
+    }).join(" · ");
+  return {
+    agents,
+    footer,
+    labelMap,
+    metaMap,
+    cron: data.cron || null,
+    loop: data.loop || null,
+  };
+}
+
+/**
+ * Ink chatReducer expects `id` as the short agent id and `fullId` as the key.
+ * Shared so ChatController and ChatApp stay aligned.
+ */
+function toInkAgentsDispatchList(snapshot = {}) {
+  const agents = Array.isArray(snapshot.agents) ? snapshot.agents : [];
+  return agents.map((row) => ({
+    ...row,
+    fullId: row.fullId || row.id,
+    id: row.agentId || row.id,
+    nickname: row.label || row.nickname,
+  }));
+}
+
 module.exports = {
   buildAgentMaps,
   getAgentLabel,
   resolveAgentId,
   resolveAgentDisplayName,
   clampAgentWindowWithSelection,
+  normalizeStatusToAgentsSnapshot,
+  toInkAgentsDispatchList,
 };

@@ -110,7 +110,7 @@ MCP bridge 会连接 home 级 global controller daemon，并通过全局项目 r
 
 ```text
 ufoo / ufoo chat
-  -> src/app/chat + src/ui/ink
+  -> src/app/chat + src/ui/rustChatHost + crates/ufoo-tui
   -> project daemon over .ufoo/run/ufoo.sock
   -> runtime daemon launch/resume/recover/reports/cron/groups
   -> orchestration router, group templates, solo roles
@@ -306,7 +306,8 @@ ufoo ucode build
 ```text
 src/
   app/            chat client state 和 CLI command entry
-  ui/             Ink components 和纯格式化 helper
+  ui/             Rust TUI hosts + 纯格式化 helper
+  crates/ufoo-tui Rust ratatui 子进程（chat/ucode 必需）
   runtime/        daemon、projects、terminal adapters、contracts、privacy、process helpers
   coordination/   bus、context、memory、history、reports、state、status
   orchestration/  router/controller logic、groups、solo roles
@@ -336,22 +337,34 @@ npm run test:coverage
 npm run bench:global-switch
 ```
 
-本仓库是 CommonJS，目标 Node.js 18+，没有 build step。
+本仓库是 CommonJS，目标 Node.js 18+，并通过 `dist/tui/` 附带 Rust TTY UI
+（`crates/ufoo-tui`）的平台二进制。
 
 ## 发布
 
-请在干净工作区按标准 npm 流程发布：
+发布由 GitHub Actions（`.github/workflows/release.yml`）完成：多平台编译
+`ufoo-tui`（`darwin-arm64` / `darwin-x64` / `linux-x64` / `linux-arm64`），
+写入 `dist/tui/<platform>/`，再执行 `npm publish`。
+
+1. 升版本并推送对应 tag：
 
 ```bash
 npm test
-npm pack --dry-run
-npm version patch
-npm publish --access public
+npm version patch   # 提交 package.json 并创建 tag vX.Y.Z
 git push --follow-tags
 ```
 
-发布前用 `npm pack --dry-run` 检查最终 tarball。发布需要有 `u-foo` 权限的
-npm 账号/token。
+2. 仓库需配置 secret `NPM_TOKEN`（对 `u-foo` 有发布权限的 npm automation token）。
+3. 推送 `v*` tag 后自动跑 `Release` workflow。也可在 Actions 里手动
+   **Run workflow**（`dry_run=true` 只打包不发布）。
+
+本地单平台预演：
+
+```bash
+npm run pack:tui
+npm pack --dry-run
+```
+
 
 ## 故障排查
 

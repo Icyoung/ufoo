@@ -13,8 +13,9 @@ treated as a repository source of truth.
 ## Source Boundaries
 
 - Chat client code lives in `src/app/chat/`; CLI command groups live in
-  `src/app/cli/`; Ink components live in `src/ui/ink/`; pure formatting helpers
-  live in `src/ui/format/`.
+  `src/app/cli/`; Rust TUI hosts live in `src/ui/` (`rustChatHost`,
+  `rustUcodeHost`, `tuiLauncher`); pure formatting helpers live in
+  `src/ui/format/`. The terminal renderer is `crates/ufoo-tui` (no Ink).
 - The project daemon, project registry, terminal adapters, and IPC contracts
   live in `src/runtime/`; routing/group/solo orchestration lives in
   `src/orchestration/`.
@@ -64,7 +65,8 @@ Keep these sources in sync:
 - `src/runtime/contracts/`
 - `src/app/chat/`
 - `src/app/cli/`
-- `src/ui/ink/`
+- `src/ui/` (`rustChatHost.js`, `rustUcodeHost.js`, `tuiLauncher.js`, `format/`)
+- `crates/ufoo-tui/`
 - `src/tools/schemaFixtures.js` and `src/tools/registry.js`
 - `src/code/nativeRunner.js` and `src/code/tools/`
 
@@ -79,10 +81,10 @@ Useful focused checks:
 
 ```sh
 npm test -- --runTestsByPath test/unit/code/ucodeTui.test.js
-npm test -- --runTestsByPath test/unit/ui/ChatApp.test.js
+npm test -- --runTestsByPath test/unit/ui/tuiLauncher.test.js
 npm test -- --runTestsByPath test/unit/tools/registry.test.js
 npm test -- --runTestsByPath test/unit/agent/internalRunner.test.js
-node -e "require('./src/app/chat'); require('./src/ui/ink/ChatApp'); require('./src/code/tui'); console.log('ok')"
+node -e "require('./src/app/chat'); require('./src/ui/rustChatHost'); require('./src/code/tui'); console.log('ok')"
 ```
 
 Run full `npm test` for broad agent, daemon, prompt, or package-move changes.

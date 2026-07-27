@@ -5,4 +5,5 @@ module.exports = {
   ...require("./activityStatePublisher"),
   ...require("./activityStateWriter"),
   ...require("./activityTracker"),
+  ...require("./activityReconcile"),
 };

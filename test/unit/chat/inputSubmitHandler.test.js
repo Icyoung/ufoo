@@ -67,6 +67,66 @@ describe("chat inputSubmitHandler", () => {
     expect(state.targetAgent).toBeNull();
   });
 
+  test("empty submit with terminal target activates via host activator", async () => {
+    const { state, options, handler } = createHarness({
+      targetAgent: "codex:1",
+      activeAgentMetaMap: new Map([["codex:1", { launch_mode: "terminal" }]]),
+    });
+
+    await handler.handleSubmit("");
+
+    expect(options.activateAgent).toHaveBeenCalledWith("codex:1");
+    expect(options.clearTargetAgent).toHaveBeenCalled();
+    expect(options.enterAgentView).not.toHaveBeenCalled();
+    expect(state.targetAgent).toBeNull();
+  });
+
+  test("empty submit with tmux target activates via host activator", async () => {
+    const { options, handler } = createHarness({
+      targetAgent: "codex:tmux",
+      activeAgentMetaMap: new Map([["codex:tmux", { launch_mode: "tmux" }]]),
+    });
+
+    await handler.handleSubmit("  ");
+
+    expect(options.activateAgent).toHaveBeenCalledWith("codex:tmux");
+    expect(options.enterAgentView).not.toHaveBeenCalled();
+  });
+
+  test("empty submit prefers multi pane focus over OS activate", async () => {
+    const focusMultiPane = jest.fn(async () => true);
+    const { options, handler } = createHarness(
+      {
+        targetAgent: "codex:1",
+        activeAgentMetaMap: new Map([["codex:1", { launch_mode: "terminal" }]]),
+      },
+      { focusMultiPane }
+    );
+
+    await handler.handleSubmit("");
+
+    expect(focusMultiPane).toHaveBeenCalledWith("codex:1");
+    expect(options.activateAgent).not.toHaveBeenCalled();
+    expect(options.clearTargetAgent).toHaveBeenCalled();
+  });
+
+  test("empty submit with internal target uses enterAgentView when focusMultiPane declines", async () => {
+    const focusMultiPane = jest.fn(async () => false);
+    const { options, handler } = createHarness(
+      {
+        targetAgent: "ufoo:1",
+        activeAgentMetaMap: new Map([["ufoo:1", { launch_mode: "internal" }]]),
+      },
+      { focusMultiPane }
+    );
+
+    await handler.handleSubmit("");
+
+    expect(focusMultiPane).toHaveBeenCalledWith("ufoo:1");
+    expect(options.enterAgentView).toHaveBeenCalledWith("ufoo:1", { useBus: true });
+    expect(options.activateAgent).not.toHaveBeenCalled();
+  });
+
   test("targeted text sends bus message and clears target", async () => {
     const { state, options, handler } = createHarness({ targetAgent: "codex:1" });
 

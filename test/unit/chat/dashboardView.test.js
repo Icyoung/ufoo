@@ -178,7 +178,7 @@ describe("chat dashboardView", () => {
     expect(out.content).toContain("{gray-fg}Agents:{/gray-fg} {cyan-fg}@codex:1, @claude:2{/cyan-fg}");
     expect(out.content).toContain("{gray-fg}Mode:{/gray-fg} {cyan-fg}terminal{/cyan-fg}");
     expect(out.content).toContain("{gray-fg}Agent:{/gray-fg} {cyan-fg}codex{/cyan-fg}");
-    expect(out.content).toContain("{gray-fg}Cron:{/gray-fg} {cyan-fg}0{/cyan-fg}");
+    expect(out.content).not.toContain("{gray-fg}Cron:{/gray-fg}");
   });
 
   test("global mode renders empty state when registry has no projects", () => {

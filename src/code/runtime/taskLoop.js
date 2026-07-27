@@ -263,10 +263,10 @@ function processTaskRun(executionState = null, taskRunId = "", options = {}) {
   live.lastFocusText = renderTaskFocusText(focus);
   putTaskRun(executionState, live);
 
-  // Advance child graph tools if runTool provided
+  // Advance child graph tools if runTool provided. Target via graphId so
+  // runPlanGraphCommand keeps the Agent Loop primary intact and does not
+  // treat the TaskLoop child as a terminal primary plan.
   if (typeof options.runTool === "function") {
-    const previousActive = executionState.planGraph;
-    executionState.planGraph = child;
     const wrappedRunTool = (toolInput = {}) => {
       const current = getTaskRun(executionState, taskRunId);
       if (!current || current.cancelRequested || current.status === "cancelling") {
@@ -296,62 +296,58 @@ function processTaskRun(executionState = null, taskRunId = "", options = {}) {
       });
       return options.runTool(toolInput);
     };
-    try {
-      const advanced = runPlanGraphCommand({
-        operation: "patch",
-        operations: [],
-        commandId: `advance_${live.id}_${Date.now()}`,
-      }, {
-        executionState,
-        runTool: wrappedRunTool,
-        autoAdvance: true,
-        knownTools: options.knownTools,
-      });
-      // Persist child back
-      if (executionState.planGraph) {
-        executionState.planGraph.owner = child.owner;
-        executionState.planGraph.parentGraphId = child.parentGraphId;
-        executionState.planGraph.parentNodeId = child.parentNodeId;
-        setGraph(executionState, executionState.planGraph);
-      }
-      const after = getGraph(executionState, live.childGraphId) || executionState.planGraph;
-      casTaskRunStatus(executionState, live.id, {
-        expectedStatus: "running",
-        nextStatus: "running",
-        phase: after && after.waitingFor ? "waiting_model" : "executing_tools",
-      });
-      syncParentNodeFromRun(executionState, getTaskRun(executionState, taskRunId));
+    const advanced = runPlanGraphCommand({
+      operation: "patch",
+      graphId: live.childGraphId,
+      operations: [],
+      commandId: `advance_${live.id}_${Date.now()}`,
+    }, {
+      executionState,
+      runTool: wrappedRunTool,
+      autoAdvance: true,
+      knownTools: options.knownTools,
+    });
+    const after = getGraph(executionState, live.childGraphId);
+    if (after) {
+      after.owner = child.owner || after.owner;
+      after.parentGraphId = child.parentGraphId || after.parentGraphId;
+      after.parentNodeId = child.parentNodeId || after.parentNodeId;
+      setGraph(executionState, after);
+    }
+    casTaskRunStatus(executionState, live.id, {
+      expectedStatus: "running",
+      nextStatus: "running",
+      phase: after && after.waitingFor ? "waiting_model" : "executing_tools",
+    });
+    syncParentNodeFromRun(executionState, getTaskRun(executionState, taskRunId));
 
-      if (after && after.waitingFor) {
-        routeGraphYield(executionState, {
-          graph: after,
-          reason: after.lastYieldReason || "llm_required",
-          waitingFor: after.waitingFor,
-        });
-        enqueueTaskEvent(executionState, live.id, {
-          kind: "model_turn",
-          waitingFor: after.waitingFor,
-          focusText: live.lastFocusText,
-        });
-        return {
-          ok: true,
-          status: "running",
-          yieldReason: "llm_required",
-          focusText: live.lastFocusText,
-          waitingFor: after.waitingFor,
-          advance: advanced.modelPayload || advanced,
-        };
-      }
+    if (after && after.waitingFor) {
+      routeGraphYield(executionState, {
+        graph: after,
+        reason: after.lastYieldReason || "llm_required",
+        waitingFor: after.waitingFor,
+      });
+      enqueueTaskEvent(executionState, live.id, {
+        kind: "model_turn",
+        waitingFor: after.waitingFor,
+        focusText: live.lastFocusText,
+      });
       return {
         ok: true,
         status: "running",
-        yieldReason: "awaiting_complete_task",
+        yieldReason: "llm_required",
         focusText: live.lastFocusText,
+        waitingFor: after.waitingFor,
         advance: advanced.modelPayload || advanced,
       };
-    } finally {
-      executionState.planGraph = previousActive;
     }
+    return {
+      ok: true,
+      status: "running",
+      yieldReason: "awaiting_complete_task",
+      focusText: live.lastFocusText,
+      advance: advanced.modelPayload || advanced,
+    };
   }
 
   enqueueTaskEvent(executionState, live.id, {

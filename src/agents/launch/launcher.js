@@ -10,6 +10,7 @@ const { showBanner } = require("../../ui/format/banner");
 const AgentNotifier = require("./notifier");
 const { ActivityDetector } = require("../activity/activityDetector");
 const { createActivityStatePublisher } = require("../activity/activityStatePublisher");
+const { reconcileDetectorOwnedActivity } = require("../activity/activityReconcile");
 const { detectLaunchEnvironment } = require("./launchEnvironment");
 const { getUfooPaths } = require("../../coordination/state/paths");
 const { createTerminalAdapterRouter } = require("../../runtime/terminal/adapterRouter");
@@ -697,6 +698,23 @@ class AgentLauncher {
               detail: snap.detail,
             });
           });
+          // Heal daemon inject-stamp desync (disk working, detector idle).
+          const agentsFilePath = getUfooPaths(this.cwd).agentsFile;
+          const activityReconcileTimer = setInterval(() => {
+            try {
+              reconcileDetectorOwnedActivity({
+                detector: launcherActivityDetector,
+                publisher: launcherPublisher,
+                agentsFile: agentsFilePath,
+                subscriber: subscriberId,
+              });
+            } catch {
+              // reconcile must never break the launcher
+            }
+          }, 2000);
+          if (typeof activityReconcileTimer.unref === "function") {
+            activityReconcileTimer.unref();
+          }
           // Tail buffer for agy: when the TUI exits, agy prints a single line
           // `Resume: agy --conversation=<UUID> (or -c)` to stdout. We keep
           // the trailing ~4KB of post-frame output around and grep it on exit
@@ -763,6 +781,7 @@ class AgentLauncher {
           wrapper.onExit = async ({ exitCode, signal }) => {
             // 清理 timers
             clearTimeout(forceReadyTimer);
+            clearInterval(activityReconcileTimer);
             launcherActivityDetector.destroy();
 
             // Agy: harvest conversation id from the trailing `Resume: agy

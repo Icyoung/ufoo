@@ -13,6 +13,27 @@ class RepoDoctor {
     this.failed = true;
   }
 
+  reportTui() {
+    try {
+      const { resolveTuiLaunchPlan, resolveUfooTuiBinary } = require("../../../ui/tuiLauncher");
+      const binary = resolveUfooTuiBinary();
+      const plan = resolveTuiLaunchPlan({ mode: process.env.UFOO_TUI || "auto" });
+      console.log("TUI:");
+      console.log(`- UFOO_TUI=${process.env.UFOO_TUI || "auto"} → ${plan.mode} (${plan.reason})`);
+      if (binary) {
+        console.log(`- binary: ${binary}${plan.version ? ` (${plan.version})` : ""}`);
+      } else {
+        console.log("- binary: missing (required; Ink TUI removed)");
+      }
+      console.log("- force: UFOO_TUI=rust | UFOO_TUI_BIN=/path/to/ufoo-tui");
+      if (plan.mode === "error") {
+        console.log(`- note: chat/ucode will fail until ufoo-tui is built (${plan.reason})`);
+      }
+    } catch (err) {
+      console.log(`TUI: unavailable (${err && err.message ? err.message : err})`);
+    }
+  }
+
   run() {
     const skillsDir = path.join(this.repoRoot, "SKILLS");
     const contextSkill = path.join(skillsDir, "uctx", "SKILL.md");
@@ -30,6 +51,7 @@ class RepoDoctor {
     console.log("Skills:");
     if (fs.existsSync(contextSkill)) console.log(`- uctx: ${contextSkill}`);
     if (fs.existsSync(busSkill)) console.log(`- ubus: ${busSkill}`);
+    this.reportTui();
 
     if (this.failed) {
       console.log("Status: FAILED");

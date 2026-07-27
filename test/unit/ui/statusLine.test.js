@@ -1,6 +1,6 @@
 "use strict";
 
-const { computeStatusText } = require("../../../src/ui/ink/UcodeApp");
+const { computeStatusText } = require("../../../src/ui/ucodeStatusLine");
 const fmt = require("../../../src/ui/format");
 
 describe("computeStatusText", () => {

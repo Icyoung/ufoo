@@ -48,8 +48,11 @@ function buildSummaryLine(options = {}) {
     : "none";
   let line = `{gray-fg}Agents:{/gray-fg} {cyan-fg}${agents}{/cyan-fg}`
     + `  {gray-fg}Mode:{/gray-fg} {cyan-fg}${launchMode}{/cyan-fg}`
-    + `  {gray-fg}Agent:{/gray-fg} {cyan-fg}${providerLabel(agentProvider)}{/cyan-fg}`
-    + `  {gray-fg}Cron:{/gray-fg} {cyan-fg}${Array.isArray(cronTasks) ? cronTasks.length : 0}{/cyan-fg}`;
+    + `  {gray-fg}Agent:{/gray-fg} {cyan-fg}${providerLabel(agentProvider)}{/cyan-fg}`;
+  const cronCount = Array.isArray(cronTasks) ? cronTasks.length : 0;
+  if (cronCount > 0) {
+    line += `  {gray-fg}Cron:{/gray-fg} {cyan-fg}${cronCount}{/cyan-fg}`;
+  }
   const loopPart = formatLoopSummary(loopSummary);
   if (loopPart) {
     line += `  {gray-fg}Loop:{/gray-fg} {cyan-fg}${loopPart}{/cyan-fg}`;
@@ -398,4 +401,5 @@ function computeDashboardContent(options = {}) {
 module.exports = {
   computeDashboardContent,
   providerLabel,
+  formatLoopSummary,
 };

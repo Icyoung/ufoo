@@ -1300,6 +1300,7 @@ describe("ucode native runner", () => {
       output: 42,
       cacheRead: 800,
       cacheCreation: 300,
+      lastContextTokens: 2300,
     });
 
     const requestBody = JSON.parse(global.fetch.mock.calls[0][1].body);
@@ -1404,6 +1405,7 @@ describe("ucode native runner", () => {
       output: 20,
       cacheRead: 40,
       cacheCreation: 0,
+      lastContextTokens: 100,
     });
     const requestBody = JSON.parse(global.fetch.mock.calls[0][1].body);
     expect(requestBody.stream_options).toEqual({ include_usage: true });
@@ -1437,6 +1439,7 @@ describe("ucode native runner", () => {
       output: 5,
       cacheRead: 4,
       cacheCreation: 0,
+      lastContextTokens: 12,
     });
   });
 
@@ -1489,6 +1492,7 @@ describe("ucode native runner", () => {
       output: 25,
       cacheRead: 30,
       cacheCreation: 0,
+      lastContextTokens: 80,
     });
 
     const usageFile = path.join(workspaceRoot, ".ufoo", "agent", "ucode", "usage.jsonl");

@@ -179,6 +179,9 @@ end tell`;
       if (adapter.capabilities.supportsInternalQueueLoop) {
         throw new Error("Internal mode agents cannot be activated (no terminal window)");
       }
+      if (info.launch_mode === "host") {
+        throw new Error("Host did not expose activate; add \"activate\" to host capabilities/commands");
+      }
       throw new Error("Cannot activate: missing tty or tmux_pane for agent");
     }
 

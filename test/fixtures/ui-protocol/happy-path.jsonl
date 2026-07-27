@@ -1,0 +1,9 @@
+{"protocol":"ufoo-ui/1","kind":"hello","name":"","payload":{"supported_protocols":["ufoo-ui/1"],"binary_version":"0.1.0","capabilities":["fullscreen"]}}
+{"protocol":"ufoo-ui/1","kind":"welcome","name":"","payload":{"selected_protocol":"ufoo-ui/1","package_version":"3.0.10","capabilities":["chat"]}}
+{"protocol":"ufoo-ui/1","kind":"command","name":"input.submit","request_id":"req-1","seq":1,"scope":{"surface":"chat","project_id":"demo","view_id":"main"},"payload":{"text":"hello"}}
+{"protocol":"ufoo-ui/1","kind":"event","name":"transcript.append","seq":2,"scope":{"surface":"chat","project_id":"demo","view_id":"main"},"payload":{"entry_id":"e1","kind":"user","text":"hello"}}
+{"protocol":"ufoo-ui/1","kind":"event","name":"stream.delta","seq":3,"scope":{"surface":"chat","project_id":"demo","view_id":"main"},"payload":{"stream_id":"s1","delta":"hi"}}
+{"protocol":"ufoo-ui/1","kind":"result","name":"input.submit","request_id":"req-1","seq":4,"payload":{"ok":true}}
+{"protocol":"ufoo-ui/1","kind":"event","name":"ui.suspend.prepare","seq":5,"payload":{"reason":"agent.open"}}
+{"protocol":"ufoo-ui/1","kind":"event","name":"interaction.request","seq":6,"payload":{"id":"q1","prompt":"ok?"}}
+{"protocol":"ufoo-ui/1","kind":"event","name":"tool.group","seq":7,"payload":{"id":"t1","summary":"Ran read"}}

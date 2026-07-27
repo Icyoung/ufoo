@@ -11,7 +11,7 @@ const { emptyExecutionState } = require("../../../src/code/context/executionSegm
 const { runPlanGraphCommand } = require("../../../src/code/context/planGraphService");
 const { applyUcodePlanCommand } = require("../../../src/code/context/planMode");
 const { runSingleCommand } = require("../../../src/code/repl");
-const { computeStatusText } = require("../../../src/ui/ink/UcodeApp");
+const { computeStatusText } = require("../../../src/ui/ucodeStatusLine");
 
 function seedPlan(executionState) {
   runPlanGraphCommand({

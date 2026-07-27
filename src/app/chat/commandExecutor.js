@@ -9,10 +9,19 @@ const {
   loadGlobalUcodeConfig,
   saveGlobalUcodeConfig,
   normalizeControllerMode,
+  normalizeLaunchMode,
   SETTINGS_MODEL_DEFAULTS,
   defaultAgentModelForProvider,
   defaultRouterModelForProvider,
 } = require("../../config");
+
+const LAUNCH_MODE_OPTIONS = Object.freeze(["auto", "host", "terminal", "tmux", "internal"]);
+const AGENT_PROVIDER_OPTIONS = Object.freeze([
+  { label: "codex", value: "codex-cli" },
+  { label: "claude", value: "claude-cli" },
+  { label: "agy", value: "agy-cli" },
+  { label: "kimi", value: "kimi-cli" },
+]);
 const { resolveTransport } = require("../../code/nativeRunner");
 const { resolveDisplayNickname } = require("../../runtime/daemon/nicknameScope");
 const { parseIntervalMs, formatIntervalMs } = require("./cronScheduler");
@@ -167,6 +176,7 @@ function createCommandExecutor(options = {}) {
     schedule = (fn, ms) => setTimeout(fn, ms),
     clearLog = null,
     fetchModelsImpl = null,
+    applyChatSettings = null,
   } = options;
 
   if (!projectRoot) {
@@ -996,6 +1006,96 @@ function createCommandExecutor(options = {}) {
     const d = new Date(ts);
     const pad = (v) => String(v).padStart(2, "0");
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  function clearUfooAgentIdentity() {
+    try {
+      const { getUfooPaths } = require("../../coordination/state/paths");
+      const agentDir = getUfooPaths(projectRoot).agentDir;
+      const fsModule = require("fs");
+      fsModule.rmSync(path.join(agentDir, "ufoo-agent.json"), { force: true });
+      fsModule.rmSync(path.join(agentDir, "ufoo-agent.history.jsonl"), { force: true });
+    } catch {
+      // Ignore cleanup failures.
+    }
+  }
+
+  async function notifyChatSettings(patch = {}) {
+    if (typeof applyChatSettings !== "function") return;
+    try {
+      await applyChatSettings(patch);
+    } catch {
+      // Host refresh is best-effort; config is already persisted.
+    }
+  }
+
+  async function handleModeCommand(args = []) {
+    const action = String(args[0] || "").trim().toLowerCase();
+    const config = loadConfig(projectRoot) || {};
+    const current = normalizeLaunchMode(config.launchMode || "auto");
+
+    if (!action || action === "show" || action === "status") {
+      logMessage("system", "{cyan-fg}launch mode:{/cyan-fg}");
+      logMessage("system", `  • current: ${current}`);
+      logMessage("system", `  • options: ${LAUNCH_MODE_OPTIONS.join(", ")}`);
+      logMessage("system", "  • use: /mode <auto|host|terminal|tmux|internal>");
+      return;
+    }
+
+    if (!LAUNCH_MODE_OPTIONS.includes(action)) {
+      logMessage(
+        "error",
+        `{white-fg}✗{/white-fg} Unknown mode: ${action}. Use: ${LAUNCH_MODE_OPTIONS.join("|")}`
+      );
+      return;
+    }
+
+    const next = normalizeLaunchMode(action);
+    if (next === current) {
+      logMessage("system", `{cyan-fg}launch mode:{/cyan-fg} already ${next}`);
+      return;
+    }
+
+    saveConfig(projectRoot, { launchMode: next });
+    logMessage("system", `{white-fg}✓{/white-fg} Launch mode: ${next}`);
+    await notifyChatSettings({ launchMode: next });
+    await restartDaemon(projectRoot);
+  }
+
+  async function handleProviderCommand(args = []) {
+    const action = String(args[0] || "").trim().toLowerCase();
+    const config = loadConfig(projectRoot) || {};
+    const current = normalizeSettingsProvider(config.agentProvider);
+    const labels = AGENT_PROVIDER_OPTIONS.map((opt) => opt.label).join(", ");
+
+    if (!action || action === "show" || action === "status") {
+      logMessage("system", "{cyan-fg}ufoo-agent provider:{/cyan-fg}");
+      logMessage("system", `  • current: ${agentProviderKey(current)}`);
+      logMessage("system", `  • options: ${labels}`);
+      logMessage("system", "  • use: /provider <codex|claude|agy|kimi>");
+      return;
+    }
+
+    const next = normalizeSettingsProvider(action, "");
+    const known = AGENT_PROVIDER_OPTIONS.some((opt) => opt.label === action || opt.value === next);
+    if (!next || !known) {
+      logMessage(
+        "error",
+        `{white-fg}✗{/white-fg} Unknown provider: ${action}. Use: ${AGENT_PROVIDER_OPTIONS.map((opt) => opt.label).join("|")}`
+      );
+      return;
+    }
+
+    if (next === current) {
+      logMessage("system", `{cyan-fg}ufoo-agent:{/cyan-fg} already ${agentProviderKey(next)}`);
+      return;
+    }
+
+    saveConfig(projectRoot, { agentProvider: next });
+    clearUfooAgentIdentity();
+    logMessage("system", `{white-fg}✓{/white-fg} ufoo-agent: ${agentProviderKey(next)}`);
+    await notifyChatSettings({ agentProvider: next });
+    await restartDaemon(projectRoot);
   }
 
   async function handleCronCommand(args = []) {
@@ -1861,6 +1961,12 @@ function createCommandExecutor(options = {}) {
       case "cron":
         await handleCronCommand(args);
         return true;
+      case "mode":
+        await handleModeCommand(args);
+        return true;
+      case "provider":
+        await handleProviderCommand(args);
+        return true;
       case "group":
         await handleGroupCommand(args);
         return true;
@@ -1893,6 +1999,8 @@ function createCommandExecutor(options = {}) {
     handleRoleCommand,
     handleSoloCommand,
     handleCronCommand,
+    handleModeCommand,
+    handleProviderCommand,
     handleGroupCommand,
     handleSettingsCommand,
     handleUcodeConfigCommand,

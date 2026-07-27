@@ -7,6 +7,7 @@ const { PTY_SOCKET_MESSAGE_TYPES, PTY_SOCKET_SUBSCRIBE_MODES } = require("../../
 const { getUfooPaths } = require("../../coordination/state/paths");
 const { ActivityDetector } = require("../activity/activityDetector");
 const { createActivityStatePublisher } = require("../activity/activityStatePublisher");
+const { reconcileDetectorOwnedActivity } = require("../activity/activityReconcile");
 const {
   parseStreamEnvelope,
   shouldAutoReplyFromPtyToPublisher,
@@ -734,7 +735,7 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
     activityPublisher.publish(snap.state, {
       since: snap.since,
       detail: snap.detail,
-    });
+    }, { reconcile: true, force: true });
   }
 
   activityDetector.onChange((newState, oldState) => {
@@ -765,6 +766,23 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
   // Ensure daemon/dashboard can read initial state immediately after runner boots,
   // instead of waiting for the next 30s heartbeat tick.
   writeActivityState();
+
+  // Heal daemon inject-stamp desync (disk working, detector idle/ready).
+  const activityReconcileTimer = setInterval(() => {
+    try {
+      reconcileDetectorOwnedActivity({
+        detector: activityDetector,
+        publisher: activityPublisher,
+        agentsFile: agentsFilePath,
+        subscriber,
+      });
+    } catch {
+      // reconcile must never break the runner
+    }
+  }, 2000);
+  if (typeof activityReconcileTimer.unref === "function") {
+    activityReconcileTimer.unref();
+  }
 
   function attachPty(proc) {
     proc.onData((data) => {
@@ -932,6 +950,7 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
 
   const stop = () => {
     running = false;
+    clearInterval(activityReconcileTimer);
     cleanupInjectServer(injectServer);
     if (process.stdin && outerInputHandler) {
       if (typeof process.stdin.off === "function") {

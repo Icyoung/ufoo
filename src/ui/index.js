@@ -1,9 +1,13 @@
 "use strict";
 
-const { runInk } = require("./runInk");
-const { createInkDemo } = require("./ink/InkDemo");
+/**
+ * UI helpers. Terminal rendering is Rust ufoo-tui only.
+ */
+
+const { PROTOCOL, resolveTuiLaunchPlan, resolveUfooTuiBinary } = require("./tuiLauncher");
 
 module.exports = {
-  runInk,
-  createInkDemo,
+  PROTOCOL,
+  resolveTuiLaunchPlan,
+  resolveUfooTuiBinary,
 };

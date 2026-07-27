@@ -80,6 +80,31 @@ describe("chat command helpers", () => {
     expect((cron.subcommands || []).some((sub) => sub.cmd === "stop")).toBe(true);
   });
 
+  test("mode command exposes launch-mode subcommands", () => {
+    const mode = COMMAND_REGISTRY.find((item) => item.cmd === "/mode");
+    expect(mode).toBeTruthy();
+    expect((mode.subcommands || []).map((sub) => sub.cmd)).toEqual([
+      "show",
+      "auto",
+      "host",
+      "terminal",
+      "tmux",
+      "internal",
+    ]);
+  });
+
+  test("provider command exposes agent-provider subcommands", () => {
+    const provider = COMMAND_REGISTRY.find((item) => item.cmd === "/provider");
+    expect(provider).toBeTruthy();
+    expect((provider.subcommands || []).map((sub) => sub.cmd)).toEqual([
+      "show",
+      "codex",
+      "claude",
+      "agy",
+      "kimi",
+    ]);
+  });
+
   test("group command is exposed", () => {
     const group = COMMAND_REGISTRY.find((item) => item.cmd === "/group");
     expect(group).toBeTruthy();

@@ -9,10 +9,14 @@
 .ufoo/
 node_modules
 coverage/
+target/
+dist/
+*.rs.bk
 
 landing.claude/commands/
 landing/
 scripts/*
 !scripts/postinstall.js
+!scripts/pack-tui.js
 docs/
 skills-lock.json

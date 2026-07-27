@@ -677,6 +677,58 @@ describe("chat commandExecutor", () => {
     expect(options.createCronTask).toHaveBeenCalled();
   });
 
+  test("handleModeCommand sets launch mode and notifies host", async () => {
+    const applyChatSettings = jest.fn();
+    const saveConfig = jest.fn();
+    const restartDaemon = jest.fn().mockResolvedValue(undefined);
+    const { executor, logs } = createHarness({
+      loadConfig: jest.fn(() => ({ launchMode: "auto" })),
+      saveConfig,
+      restartDaemon,
+      applyChatSettings,
+    });
+
+    await executor.handleModeCommand(["terminal"]);
+
+    expect(saveConfig).toHaveBeenCalledWith("/tmp/ufoo", { launchMode: "terminal" });
+    expect(applyChatSettings).toHaveBeenCalledWith({ launchMode: "terminal" });
+    expect(restartDaemon).toHaveBeenCalledWith("/tmp/ufoo");
+    expect(logs.some((entry) => entry.text.includes("Launch mode: terminal"))).toBe(true);
+  });
+
+  test("handleProviderCommand sets agent provider and notifies host", async () => {
+    const applyChatSettings = jest.fn();
+    const saveConfig = jest.fn();
+    const restartDaemon = jest.fn().mockResolvedValue(undefined);
+    const { executor, logs } = createHarness({
+      loadConfig: jest.fn(() => ({ agentProvider: "codex-cli" })),
+      saveConfig,
+      restartDaemon,
+      applyChatSettings,
+    });
+
+    await executor.handleProviderCommand(["claude"]);
+
+    expect(saveConfig).toHaveBeenCalledWith("/tmp/ufoo", { agentProvider: "claude-cli" });
+    expect(applyChatSettings).toHaveBeenCalledWith({ agentProvider: "claude-cli" });
+    expect(restartDaemon).toHaveBeenCalledWith("/tmp/ufoo");
+    expect(logs.some((entry) => entry.text.includes("ufoo-agent: claude"))).toBe(true);
+  });
+
+  test("executeCommand routes /mode and /provider", async () => {
+    const { executor } = createHarness({
+      parseCommand: jest.fn((text) => {
+        if (String(text).startsWith("/mode")) return { command: "mode", args: ["show"] };
+        if (String(text).startsWith("/provider")) return { command: "provider", args: ["show"] };
+        return null;
+      }),
+      loadConfig: jest.fn(() => ({ launchMode: "host", agentProvider: "agy-cli" })),
+    });
+
+    await expect(executor.executeCommand("/mode show")).resolves.toBe(true);
+    await expect(executor.executeCommand("/provider show")).resolves.toBe(true);
+  });
+
   test("handleCronCommand sends one-time request to daemon cron controller", async () => {
     const requestCron = jest.fn();
     const { executor, options } = createHarness({

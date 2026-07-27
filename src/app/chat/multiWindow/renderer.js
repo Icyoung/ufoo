@@ -3,7 +3,7 @@ const {
   classifyChatLogLine,
   compactContinuationIndent,
   compactDividerLabel,
-} = require("../../../ui/ink/chatLogModel");
+} = require("../../../ui/chatLogModel");
 
 function createRenderer(options = {}) {
   const {

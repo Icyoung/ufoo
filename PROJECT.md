@@ -30,7 +30,7 @@ Published binaries are defined in `package.json`.
 
 ```text
 ufoo / ufoo chat
-  -> src/app/chat + src/ui/ink
+  -> src/app/chat + src/ui/rustChatHost + crates/ufoo-tui
   -> project daemon over .ufoo/run/ufoo.sock
   -> src/runtime/daemon owns launch/resume/recover/reports/cron/groups
   -> src/orchestration routes controller, group, and solo behavior
@@ -51,7 +51,7 @@ Important boundaries:
 - UI code may render state and call injected callbacks; it should not directly
   write bus queues, launch processes, or own daemon state.
 - Runtime code may call orchestration, coordination, and agent launchers; it
-  should not import Ink components.
+  should not import TUI render components (`crates/ufoo-tui` is a separate process).
 - Prompt builders should not import UI or daemon implementations.
 - Provider adapters should not know about chat commands.
 - Runtime contracts should not import CLI features.
@@ -60,15 +60,22 @@ Important boundaries:
 
 | Package | Owner concept | Notes |
 |---|---|---|
-| `src/app/chat/` | Chat client | Slash commands, daemon connection, multi-window panes, agent selection, chat state. |
+| `src/app/chat/` | Chat client | Slash commands, daemon connection, multi-window panes, agent selection, `ChatController`, history/stream helpers. |
 | `src/app/cli/` | CLI entry | Main command runner and command groups. |
 | `src/app/cli/features/` | CLI features | Init, doctor, and skill installation logic used by CLI/chat/daemon entry paths. |
-| `src/ui/ink/` | Terminal UI components | Ink components for chat and `ucode`. |
 | `src/ui/format/` | Pure display helpers | Width, markdown, status, input, and banner formatting. |
+| `src/ui/tuiLauncher.js` | Rust TUI launch plan | `UFOO_TUI=auto\|rust`; binary resolve. |
+| `src/ui/uiHostServer.js` | UI socket host | Node side of `ufoo-ui/1` (hello/welcome/events/commands). |
+| `src/ui/rustChatHost.js` | Rust chat composition | Daemon + history + spawn `ufoo-tui --surface chat`. |
+| `src/ui/rustUcodeHost.js` | Rust ucode composition | Session/runner ports + spawn `ufoo-tui --surface ucode`. |
+| `src/ui/scrollbackReplay.js` | Scrollback replay harness | Fixture-driven cap/stream replay (Phase 2). |
+| `src/ui/toolMergeBridge.js` | Tool-merge → UI events | Collapsed `tool.*` publisher for Rust hosts. |
+| `src/ui/ptyHandoff.js` | Stdin restore helper | After any fullscreen handoff; PTY mirror removed. |
+| `crates/ufoo-tui/` | Rust TTY UI | Required `ufoo-ui/1` child process (ratatui). |
 | `src/runtime/daemon/` | Project daemon and MCP bridge | Global MCP bridge, IPC server, prompt routing, launch/resume/close, cron, reports, status, group orchestration. |
 | `src/runtime/projects/` | Project registry | Project identity and runtime registry. |
 | `src/runtime/terminal/` | Terminal adapters | Host, tmux, internal, external, Terminal.app, iTerm2. |
-| `src/runtime/contracts/` | Runtime contracts | IPC event, PTY socket, and MCP/JSON-RPC contracts. |
+| `src/runtime/contracts/` | Runtime contracts | Daemon IPC, PTY socket, MCP/JSON-RPC, and `ufoo-ui/1` host↔TUI protocol. |
 | `src/runtime/privacy/` | Privacy helpers | Secret redaction and shadow-diff helpers. |
 | `src/runtime/process/` | Process helpers | Node executable resolution and similar runtime process utilities. |
 | `src/coordination/bus/` | Event bus | Queues, envelopes, injection helpers, nicknames, and subscribers. |
@@ -87,7 +94,7 @@ Important boundaries:
 | `src/agents/internal/` | Internal agents | SDK/API-backed embedded internal runner. |
 | `src/agents/activity/` | Activity tracking | Ready/activity detectors and state publishing. |
 | `src/agents/controller/` | `ufoo-agent` | Controller loop runtime, observability, tool executor. |
-| `src/code/` | Native `ucode` | Native agent loop, provider runner, session store, skills, TUI, launcher helpers. |
+| `src/code/` | Native `ucode` | Native agent loop, provider runner, session store, skills, TUI, `UcodeController`, launcher helpers. |
 | `src/tools/` | Shared tool registry | Controller/worker tool definitions, schemas, handlers, tier permissions. |
 | `src/online/` | Online relay | Relay client/server/runner and token helpers. |
 | `src/config.js` | Config | Project/global config loading and normalization. |
@@ -147,7 +154,7 @@ npm run test:coverage
 Useful smoke checks after source moves:
 
 ```bash
-node -e "require('./src/app/chat'); require('./src/ui/ink/ChatApp'); require('./src/code/tui'); console.log('ok')"
+node -e "require('./src/app/chat'); require('./src/ui/rustChatHost'); require('./src/code/tui'); console.log('ok')"
 node -e "require('./src/app/cli/run'); require('./src/runtime/daemon'); require('./src/runtime/daemon/mcpServer'); require('./src/tools'); console.log('ok')"
 git diff --check
 ```
@@ -159,7 +166,7 @@ There is no build step. The package is CommonJS and targets Node.js 18+.
 | Change type | Minimum checks |
 |---|---|
 | Source package move | `npm test` |
-| Chat/UI behavior | `npm test -- --runTestsByPath test/unit/ui/ChatApp.test.js test/unit/chat/commandExecutor.test.js` |
+| Chat/UI behavior | `npm test -- --runTestsByPath test/unit/ui/tuiLauncher.test.js test/unit/chat/commandExecutor.test.js` |
 | Runtime daemon behavior | `npm test -- --runTestsByPath test/unit/daemon/run.test.js test/unit/daemon/promptRequest.test.js` |
 | MCP bridge behavior | `npm test -- --runTestsByPath test/unit/daemon/mcpServer.test.js test/unit/tools/registry.test.js test/unit/shared/eventContract.test.js` |
 | Agent launch/provider code | `npm test -- --runTestsByPath test/unit/agent/launcher.test.js test/unit/agent/internalRunner.test.js test/unit/agent/ufooAgent.test.js` |
@@ -174,14 +181,14 @@ There is no build step. The package is CommonJS and targets Node.js 18+.
 
 ## Release Flow
 
-Use the standard npm flow from a clean worktree:
+Releases go through GitHub Actions (`.github/workflows/release.yml`):
 
-```bash
-npm test
-npm pack --dry-run
-npm version patch
-npm publish --access public
-git push --follow-tags
-```
+1. `npm version patch` (or minor/major) and `git push --follow-tags`
+2. Tag `v*` triggers multi-platform `ufoo-tui` builds → `dist/tui/<plat>/`
+3. Workflow publishes `u-foo` to npm (`NPM_TOKEN` secret required)
 
-Publishing requires an npm account/token with permission for `u-foo`.
+Local staging helper: `npm run pack:tui` (current host only).
+`prepack` fails if `dist/tui/` has no binaries.
+
+CI (`.github/workflows/ci.yml`) runs `npm test` and a release `ufoo-tui` build
+on pushes/PRs to `master`.

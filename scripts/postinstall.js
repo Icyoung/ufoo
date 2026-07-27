@@ -30,6 +30,17 @@ for (const platform of platforms) {
   }
 }
 
+// Ensure the platform ufoo-tui binary from the npm pack is executable.
+try {
+  const plat = `${process.platform}-${process.arch}`;
+  const tuiBin = path.join(__dirname, "..", "dist", "tui", plat, "ufoo-tui");
+  if (fs.existsSync(tuiBin)) {
+    fs.chmodSync(tuiBin, 0o755);
+  }
+} catch {
+  // Non-fatal — doctor / launch will report missing binary.
+}
+
 // Collect all skill sources from the package-level SKILLS directory.
 function collectSkillSources(pkgRoot) {
   const sources = [];

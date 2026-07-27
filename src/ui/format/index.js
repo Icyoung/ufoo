@@ -1,8 +1,8 @@
 "use strict";
 
 /**
- * Pure formatting + input-math helpers for the ink-based TUIs under
- * src/ui/ink/. No terminal widget import is allowed in this module.
+ * Pure formatting helpers shared by hosts and tests.
+ * No terminal widget import is allowed in this module.
  */
 
 const chalk = require("chalk");

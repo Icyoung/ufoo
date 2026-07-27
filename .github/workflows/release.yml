@@ -1,0 +1,158 @@
+name: Release
+
+# Publish u-foo to npm with multi-platform ufoo-tui binaries under dist/tui/.
+#
+# Trigger:
+#   - Push tag vX.Y.Z (package.json version must match X.Y.Z)
+#   - workflow_dispatch (publishes current package.json version)
+#
+# Required secret: NPM_TOKEN (npm automation token with publish rights for u-foo)
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Pack only (skip npm publish)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build-tui:
+    name: Build ufoo-tui (${{ matrix.plat }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            plat: darwin-arm64
+            target: ""
+          - os: macos-14
+            plat: darwin-x64
+            target: x86_64-apple-darwin
+          - os: ubuntu-24.04
+            plat: linux-x64
+            target: ""
+          - os: ubuntu-24.04-arm
+            plat: linux-arm64
+            target: ""
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: |
+          if [ -n "${{ matrix.target }}" ]; then
+            cargo build -p ufoo-tui --release --target "${{ matrix.target }}"
+          else
+            cargo build -p ufoo-tui --release
+          fi
+
+      - name: Stage binary
+        run: |
+          set -euo pipefail
+          plat="${{ matrix.plat }}"
+          mkdir -p "dist/tui/${plat}"
+          if [ -n "${{ matrix.target }}" ]; then
+            src="target/${{ matrix.target }}/release/ufoo-tui"
+          else
+            src="target/release/ufoo-tui"
+          fi
+          if [ ! -f "$src" ] && [ -f "${src}.exe" ]; then
+            src="${src}.exe"
+          fi
+          cp "$src" "dist/tui/${plat}/ufoo-tui"
+          chmod +x "dist/tui/${plat}/ufoo-tui"
+          file "dist/tui/${plat}/ufoo-tui" || true
+          "./dist/tui/${plat}/ufoo-tui" --version
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tui-${{ matrix.plat }}
+          path: dist/tui/${{ matrix.plat }}/ufoo-tui
+          if-no-files-found: error
+
+  publish:
+    name: Publish npm
+    needs: build-tui
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+
+      - name: Download TUI artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: tui-*
+          path: dist/tui-artifacts
+
+      - name: Assemble dist/tui
+        run: |
+          set -euo pipefail
+          mkdir -p dist/tui
+          for dir in dist/tui-artifacts/tui-*; do
+            [ -d "$dir" ] || continue
+            plat="$(basename "$dir" | sed 's/^tui-//')"
+            mkdir -p "dist/tui/${plat}"
+            if [ -f "$dir/ufoo-tui" ]; then
+              cp "$dir/ufoo-tui" "dist/tui/${plat}/ufoo-tui"
+            elif [ -f "$dir/ufoo-tui.exe" ]; then
+              cp "$dir/ufoo-tui.exe" "dist/tui/${plat}/ufoo-tui"
+            else
+              echo "missing binary in $dir" >&2
+              ls -la "$dir" >&2
+              exit 1
+            fi
+            chmod +x "dist/tui/${plat}/ufoo-tui"
+          done
+          echo "Staged platforms:"
+          find dist/tui -type f -print
+          node scripts/pack-tui.js --check
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Verify tag matches package.json (tag pushes only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$version" ]; then
+            echo "Tag v$tag does not match package.json version $version" >&2
+            exit 1
+          fi
+
+      - name: Pack dry-run
+        run: npm pack --dry-run
+
+      - name: Publish
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.dry_run != true }}
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

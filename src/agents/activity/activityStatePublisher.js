@@ -1,5 +1,8 @@
+"use strict";
+
 const fs = require("fs");
 const path = require("path");
+const { readJSON } = require("../../coordination/bus/utils");
 const { writeActivityState } = require("./activityStateWriter");
 
 /**
@@ -16,7 +19,9 @@ const { writeActivityState } = require("./activityStateWriter");
  * @param {string} options.subscriber  - Subscriber ID (e.g. "claude-code:abc123")
  * @param {string} options.projectRoot - Project root (unused, kept for API compat)
  * @param {boolean} [options.force=true] - Force overwrite priority-protected states
- * publish(state, extra, { force }) can override this default for one transition.
+ * publish(state, extra, { force, reconcile }) can override defaults for one
+ * transition. `reconcile: true` skips in-memory dedupe when disk disagrees
+ * (daemon inject stamp / lost-update healing).
  */
 function createActivityStatePublisher(options = {}) {
   const {
@@ -28,9 +33,33 @@ function createActivityStatePublisher(options = {}) {
   let lastState = "";
   let lastDetail = "";
 
+  function readDiskActivity() {
+    try {
+      if (!agentsFile || !fs.existsSync(agentsFile)) return null;
+      const data = readJSON(agentsFile, null);
+      const meta = data && data.agents && data.agents[subscriber];
+      if (!meta || typeof meta !== "object") return null;
+      return {
+        state: typeof meta.activity_state === "string" ? meta.activity_state : "",
+        detail: typeof meta.activity_detail === "string" ? meta.activity_detail : "",
+      };
+    } catch {
+      return null;
+    }
+  }
+
   function publish(state, extra = {}, publishOptions = {}) {
     const detail = typeof extra.detail === "string" ? extra.detail : "";
-    if (state === lastState && detail === lastDetail) return false;
+    const reconcile = publishOptions.reconcile === true;
+    if (!reconcile && state === lastState && detail === lastDetail) return false;
+    if (reconcile) {
+      const disk = readDiskActivity();
+      if (disk && disk.state === state && disk.detail === detail) {
+        lastState = state;
+        lastDetail = detail;
+        return false;
+      }
+    }
     const since = extra.since || undefined;
     const effectiveForce = typeof publishOptions.force === "boolean"
       ? publishOptions.force

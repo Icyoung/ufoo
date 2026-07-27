@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ufoo.dev/schemas/ufoo-ui-v1/envelope.json",
+  "title": "ufoo-ui/1 envelope",
+  "type": "object",
+  "required": ["protocol", "kind", "payload"],
+  "additionalProperties": true,
+  "properties": {
+    "protocol": { "const": "ufoo-ui/1" },
+    "kind": {
+      "type": "string",
+      "enum": ["hello", "welcome", "command", "event", "snapshot", "result", "error"]
+    },
+    "name": { "type": "string" },
+    "request_id": { "type": "string" },
+    "seq": { "type": "integer", "minimum": 1 },
+    "scope": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "surface": { "type": "string" },
+        "project_id": { "type": "string" },
+        "view_id": { "type": "string" }
+      }
+    },
+    "payload": { "type": "object" }
+  }
+}

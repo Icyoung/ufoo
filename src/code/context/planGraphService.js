@@ -121,6 +121,10 @@ function finalizeTerminalPrimaryPlan(executionState = null, planGraph = null, ad
   const pg = planGraph && typeof planGraph === "object" ? planGraph : null;
   if (!pg || !pg.graphId) return null;
   if (!advance || String(advance.yieldReason || "") !== "graph_terminal") return null;
+  // TaskLoop children may briefly sit in planGraph during processTaskRun;
+  // never archive them as the Agent Loop primary (they stay in graphs[]).
+  const ownerKind = String((pg.owner && pg.owner.kind) || "agent_loop").trim();
+  if (ownerKind === "task_loop") return null;
 
   const completionSummary = buildPlanCompletionSummary(pg, advance);
   const archived = archivePlanGraph(executionState, pg, { reason: "graph_terminal" });

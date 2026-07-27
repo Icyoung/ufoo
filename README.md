@@ -113,7 +113,7 @@ per-project MCP server mode.
 
 ```text
 ufoo / ufoo chat
-  -> src/app/chat + src/ui/ink
+  -> src/app/chat + src/ui/rustChatHost + crates/ufoo-tui
   -> project daemon over .ufoo/run/ufoo.sock
   -> runtime daemon launch/resume/recover/reports/cron/groups
   -> orchestration router, group templates, solo roles
@@ -314,7 +314,8 @@ Global `ucode` settings:
 ```text
 src/
   app/            chat client state and CLI command entry
-  ui/             Ink components and pure formatting helpers
+  ui/             Rust TUI hosts + pure formatting helpers
+  crates/ufoo-tui Rust ratatui child (required for chat/ucode)
   runtime/        daemon, projects, terminal adapters, contracts, privacy, process helpers
   coordination/   bus, context, memory, history, reports, state, status
   orchestration/  router/controller logic, groups, solo roles
@@ -343,23 +344,38 @@ npm run test:watch
 npm run test:coverage
 ```
 
-The repository is CommonJS, targets Node.js 18+, and has no build step.
+The repository is CommonJS, targets Node.js 18+, and ships a Rust TTY UI
+(`crates/ufoo-tui`) as platform binaries under `dist/tui/`.
 
 ## Release
 
-Use the standard npm flow from a clean worktree:
+Releases are published by GitHub Actions (`.github/workflows/release.yml`).
+The workflow builds `ufoo-tui` for `darwin-arm64`, `darwin-x64`, `linux-x64`,
+and `linux-arm64`, stages them under `dist/tui/<platform>/`, then runs
+`npm publish`.
+
+1. Bump the version and push a matching tag:
 
 ```bash
 npm test
-npm pack --dry-run
-npm version patch
-npm publish --access public
+npm version patch   # commits package.json + creates tag vX.Y.Z
 git push --follow-tags
 ```
 
-`npm pack --dry-run` should be used to verify the final tarball. Publishing
-requires an npm account/token with permission for `u-foo`.
+2. Ensure the repo secret `NPM_TOKEN` is set (npm automation token with
+   publish rights for `u-foo`).
+3. The `Release` workflow runs on the `v*` tag. Use **Actions → Release →
+   Run workflow** for a manual dry-run (`dry_run=true` packs but does not publish).
 
+Local one-platform staging (dev only):
+
+```bash
+npm run pack:tui          # cargo build + copy into dist/tui/$PLATFORM
+npm pack --dry-run        # requires at least one staged binary (prepack check)
+```
+
+Publishing without the GitHub workflow still requires an npm account/token with
+permission for `u-foo`, plus staged `dist/tui/` binaries.
 ## Troubleshooting
 
 Run a local entry directly if the linked binary is not on `PATH`:
