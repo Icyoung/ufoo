@@ -4,6 +4,13 @@
   "description": "Multi-Agent Workspace Protocol. Just add u. claude → uclaude, codex → ucodex.",
   "license": "SEE LICENSE IN LICENSE",
   "homepage": "https://ufoo.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Icyoung/ufoo.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Icyoung/ufoo/issues"
+  },
   "author": "UFOO Team",
   "keywords": [
     "cli",
