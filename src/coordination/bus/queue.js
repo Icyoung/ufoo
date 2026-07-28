@@ -5,7 +5,11 @@ const {
   ensureDir,
   truncateFile,
 } = require("./utils");
-const { DeliveryQueue, stripQueueEnvelope } = require("./deliveryQueue");
+const {
+  DeliveryQueue,
+  positiveSeq,
+  stripQueueEnvelope,
+} = require("./deliveryQueue");
 
 /**
  * 队列管理器
@@ -88,6 +92,15 @@ class QueueManager {
   }
 
   /**
+   * Non-mutating pending read for opt-in background observers.
+   *
+   * Unlike readPending(), this deliberately does not recover stale claims.
+   */
+  async peekPending(subscriber) {
+    return this.getDeliveryQueue(subscriber).readPendingRaw().map(stripQueueEnvelope);
+  }
+
+  /**
    * 追加待处理消息
    */
   async appendPending(subscriber, event) {
@@ -116,6 +129,36 @@ class QueueManager {
     while (true) {
       const claim = deliveryQueue.claimNext();
       if (!claim) break;
+      deliveryQueue.completeClaim(claim);
+      count += 1;
+    }
+    return count;
+  }
+
+  /**
+   * Acknowledge only sequenced events up to and including throughSeq.
+   *
+   * Later arrivals remain pending, which prevents a background poll consumer
+   * from clearing messages that were not part of the emitted batch.
+   */
+  async ackPendingThrough(subscriber, throughSeq) {
+    const limit = Number(throughSeq);
+    if (!Number.isFinite(limit) || limit <= 0) {
+      throw new Error("ack --through requires a positive sequence");
+    }
+
+    const deliveryQueue = this.getDeliveryQueue(subscriber);
+    let count = 0;
+    while (true) {
+      const claim = deliveryQueue.claimNext();
+      if (!claim) break;
+
+      const seq = positiveSeq(claim.event);
+      if (seq === 0 || seq > limit) {
+        deliveryQueue.restoreClaim(claim);
+        break;
+      }
+
       deliveryQueue.completeClaim(claim);
       count += 1;
     }

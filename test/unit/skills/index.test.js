@@ -52,6 +52,18 @@ describe('SkillsManager', () => {
       expect(manager.skillRoots).toContain(rootSkills);
       expect(manager.skillRoots).not.toContain(moduleSkills);
     });
+
+    it('should keep OPTIONAL_SKILLS in a separate opt-in root', () => {
+      const skillsDir = path.join(testRepoRoot, 'SKILLS');
+      const optionalDir = path.join(testRepoRoot, 'OPTIONAL_SKILLS');
+      fs.mkdirSync(skillsDir);
+      fs.mkdirSync(optionalDir);
+
+      manager = new SkillsManager(testRepoRoot);
+
+      expect(manager.skillRoots).toEqual([skillsDir]);
+      expect(manager.optionalSkillRoots).toEqual([optionalDir]);
+    });
   });
 
   describe('list', () => {
@@ -124,6 +136,16 @@ describe('SkillsManager', () => {
 
       expect(skills).toEqual([]);
     });
+
+    it('should exclude optional skills from the default list', () => {
+      const optionalDir = path.join(testRepoRoot, 'OPTIONAL_SKILLS');
+      fs.mkdirSync(path.join(optionalDir, 'ubus-poll'), { recursive: true });
+      manager = new SkillsManager(testRepoRoot);
+
+      expect(manager.list()).toEqual([]);
+      expect(manager.list({ optionalOnly: true })).toEqual(['ubus-poll']);
+      expect(manager.list({ includeOptional: true })).toEqual(['ubus-poll']);
+    });
   });
 
   describe('findSkill', () => {
@@ -173,6 +195,15 @@ describe('SkillsManager', () => {
 
       expect(found).toBe(rootSkillPath);
       expect(found).not.toBe(moduleSkillPath);
+    });
+
+    it('should find an optional skill only when explicitly named', () => {
+      const optionalSkill = path.join(testRepoRoot, 'OPTIONAL_SKILLS', 'ubus-poll');
+      fs.mkdirSync(optionalSkill, { recursive: true });
+
+      manager = new SkillsManager(testRepoRoot);
+
+      expect(manager.findSkill('ubus-poll')).toBe(optionalSkill);
     });
   });
 
@@ -293,12 +324,29 @@ describe('SkillsManager', () => {
 
     it('should install all skills when name is "all"', async () => {
       const targetDir = path.join(testRepoRoot, 'target');
+      const optionalSkill = path.join(testRepoRoot, 'OPTIONAL_SKILLS', 'ubus-poll');
+      fs.mkdirSync(optionalSkill, { recursive: true });
+      fs.writeFileSync(path.join(optionalSkill, 'SKILL.md'), '# optional', 'utf8');
+      manager = new SkillsManager(testRepoRoot);
 
       await manager.install('all', { target: targetDir });
 
       expect(fs.existsSync(path.join(targetDir, 'skill1', 'file.txt'))).toBe(true);
       expect(fs.existsSync(path.join(targetDir, 'skill2', 'file.txt'))).toBe(true);
+      expect(fs.existsSync(path.join(targetDir, 'ubus-poll'))).toBe(false);
       expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('Installed 2 skills'));
+    });
+
+    it('should install an optional skill only by explicit name', async () => {
+      const optionalSkill = path.join(testRepoRoot, 'OPTIONAL_SKILLS', 'ubus-poll');
+      const targetDir = path.join(testRepoRoot, 'target');
+      fs.mkdirSync(optionalSkill, { recursive: true });
+      fs.writeFileSync(path.join(optionalSkill, 'SKILL.md'), '# optional', 'utf8');
+      manager = new SkillsManager(testRepoRoot);
+
+      await manager.install('ubus-poll', { target: targetDir });
+
+      expect(fs.existsSync(path.join(targetDir, 'ubus-poll', 'SKILL.md'))).toBe(true);
     });
 
     it('should use default claude target if no options', async () => {

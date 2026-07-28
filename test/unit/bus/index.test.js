@@ -174,6 +174,61 @@ describe("EventBus", () => {
     });
   });
 
+  describe("resident poll", () => {
+    test("emits pending work without acknowledging or claiming it", async () => {
+      const bus = initBus();
+      const sender = await bus.join("poll-sender", "codex", "sender");
+      const receiver = await bus.join("poll-receiver", "opencode", "receiver");
+      await bus.send(receiver, "background task", sender);
+
+      await bus.poll(receiver, {
+        intervalSeconds: 0.25,
+        maxIterations: 1,
+      });
+
+      const pending = await bus.queueManager.peekPending(receiver);
+      expect(pending).toHaveLength(1);
+      expect(pending[0].data.message).toBe("background task");
+      expect(consoleLogSpy).toHaveBeenCalledWith(
+        expect.stringContaining(`[ufoo]<from:${sender}`)
+      );
+      expect(consoleLogSpy).toHaveBeenCalledWith(
+        expect.stringMatching(
+          new RegExp(`^After handling, run: ufoo bus ack ${receiver} --through \\d+$`)
+        )
+      );
+    });
+
+    test.each(["codex", "claude-code", "agy", "kimi", "ufoo-code"])(
+      "refuses built-in delivery type %s",
+      async (agentType) => {
+        const bus = initBus();
+        const subscriber = await bus.join(`protected-${agentType}`, agentType);
+        const loadSpy = jest.spyOn(bus, "loadBusData");
+
+        await expect(bus.poll(subscriber, { maxIterations: 1 }))
+          .rejects.toThrow("disabled for built-in delivery agent type");
+        expect(loadSpy).not.toHaveBeenCalled();
+      }
+    );
+
+    test("ack through keeps messages that arrived after the emitted batch", async () => {
+      const bus = initBus();
+      const sender = await bus.join("through-sender", "codex");
+      const receiver = await bus.join("through-receiver", "opencode");
+      const first = await bus.send(receiver, "displayed", sender);
+      const later = await bus.send(receiver, "later", sender);
+
+      const count = await bus.ackThrough(receiver, first.seq);
+
+      expect(count).toBe(1);
+      const pending = await bus.queueManager.peekPending(receiver);
+      expect(pending).toHaveLength(1);
+      expect(pending[0].seq).toBe(later.seq);
+      expect(pending[0].data.message).toBe("later");
+    });
+  });
+
   describe("ack", () => {
     test("acknowledges pending messages", async () => {
       const bus = initBus();

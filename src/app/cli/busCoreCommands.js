@@ -40,15 +40,104 @@ function parseSendArgs(cmdArgs = []) {
 }
 
 function resolvePollSubscriber(cmdArgs = [], env = process.env) {
-  const positionals = cmdArgs.filter((arg) => typeof arg === "string" && !arg.startsWith("--"));
-  const subscriber = String(positionals[0] || env.UFOO_SUBSCRIBER_ID || "").trim();
+  let subscriber = "";
+  let autoAck = false;
+  let follow = false;
+  let intervalSeconds = 2;
+  let intervalWasSet = false;
+
+  for (let index = 0; index < cmdArgs.length; index += 1) {
+    const arg = String(cmdArgs[index] || "");
+    if (arg === "--ack" || arg === "--auto-ack") {
+      autoAck = true;
+      continue;
+    }
+    if (arg === "--follow") {
+      follow = true;
+      continue;
+    }
+    if (arg === "--interval") {
+      const value = cmdArgs[index + 1];
+      if (value === undefined || String(value).startsWith("--")) {
+        throw new Error("poll --interval requires <seconds>");
+      }
+      intervalSeconds = Number(value);
+      intervalWasSet = true;
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--interval=")) {
+      intervalSeconds = Number(arg.slice("--interval=".length));
+      intervalWasSet = true;
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      throw new Error(`Unknown poll option: ${arg}`);
+    }
+    if (subscriber) {
+      throw new Error("poll accepts at most one [subscriber]");
+    }
+    subscriber = arg.trim();
+  }
+
+  subscriber = String(subscriber || env.UFOO_SUBSCRIBER_ID || "").trim();
   if (!subscriber) {
     throw new Error("poll requires [subscriber] or UFOO_SUBSCRIBER_ID");
   }
+  if (follow && autoAck) {
+    throw new Error("poll --follow cannot be combined with --ack");
+  }
+  if (intervalWasSet && !follow) {
+    throw new Error("poll --interval requires --follow");
+  }
+  if (!Number.isFinite(intervalSeconds) || intervalSeconds < 0.25) {
+    throw new Error("poll --interval must be at least 0.25 seconds");
+  }
+
   return {
     subscriber,
-    autoAck: cmdArgs.includes("--ack") || cmdArgs.includes("--auto-ack"),
+    autoAck,
+    follow,
+    intervalSeconds,
   };
+}
+
+function resolveAckArgs(cmdArgs = []) {
+  let subscriber = "";
+  let throughSeq = null;
+
+  for (let index = 0; index < cmdArgs.length; index += 1) {
+    const arg = String(cmdArgs[index] || "");
+    if (arg === "--through") {
+      const value = cmdArgs[index + 1];
+      if (value === undefined || String(value).startsWith("--")) {
+        throw new Error("ack --through requires <seq>");
+      }
+      throughSeq = Number(value);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--through=")) {
+      throughSeq = Number(arg.slice("--through=".length));
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      throw new Error(`Unknown ack option: ${arg}`);
+    }
+    if (subscriber) {
+      throw new Error("ack accepts exactly one <subscriber>");
+    }
+    subscriber = arg.trim();
+  }
+
+  if (!subscriber) {
+    throw new Error("ack requires <subscriber>");
+  }
+  if (throughSeq !== null && (!Number.isInteger(throughSeq) || throughSeq <= 0)) {
+    throw new Error("ack --through requires a positive integer sequence");
+  }
+
+  return { subscriber, throughSeq };
 }
 
 async function runBusCoreCommand(eventBus, cmd, cmdArgs = []) {
@@ -91,11 +180,24 @@ async function runBusCoreCommand(eventBus, cmd, cmdArgs = []) {
     case "poll":
       {
         const parsed = resolvePollSubscriber(cmdArgs);
-        await eventBus.check(parsed.subscriber, parsed.autoAck);
+        if (parsed.follow) {
+          await eventBus.poll(parsed.subscriber, {
+            intervalSeconds: parsed.intervalSeconds,
+          });
+        } else {
+          await eventBus.check(parsed.subscriber, parsed.autoAck);
+        }
       }
       return {};
     case "ack":
-      await eventBus.ack(cmdArgs[0]);
+      {
+        const parsed = resolveAckArgs(cmdArgs);
+        if (parsed.throughSeq !== null) {
+          await eventBus.ackThrough(parsed.subscriber, parsed.throughSeq);
+        } else {
+          await eventBus.ack(parsed.subscriber);
+        }
+      }
       return {};
     case "consume":
       await eventBus.consume(cmdArgs[0], cmdArgs.includes("--from-beginning"));
@@ -117,4 +219,8 @@ async function runBusCoreCommand(eventBus, cmd, cmdArgs = []) {
   }
 }
 
-module.exports = { runBusCoreCommand, resolvePollSubscriber };
+module.exports = {
+  resolveAckArgs,
+  resolvePollSubscriber,
+  runBusCoreCommand,
+};

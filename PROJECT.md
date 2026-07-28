@@ -98,6 +98,8 @@ Important boundaries:
 | `src/tools/` | Shared tool registry | Controller/worker tool definitions, schemas, handlers, tier permissions. |
 | `src/online/` | Online relay | Relay client/server/runner and token helpers. |
 | `src/config.js` | Config | Project/global config loading and normalization. |
+| `SKILLS/` | Default agent skills | Installed by package postinstall and by `ufoo skills install all`. |
+| `OPTIONAL_SKILLS/` | Opt-in agent skills | Discoverable with `ufoo skills list --optional`; installed only by explicit name. |
 
 ## Dependency Direction
 

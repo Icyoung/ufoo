@@ -199,6 +199,23 @@ Use `/bus status` to find the real subscriber ID or resolvable nickname
 before sending. Agents should handle pending work, reply to the sender, and
 acknowledge their queue.
 
+Agent hosts that cannot receive ufoo prompt injection can opt into a resident,
+queue-read-only bus stream:
+
+```bash
+ufoo skills list --optional
+ufoo skills install ubus-poll --target /path/to/that/agent/skills
+ufoo bus poll "$UFOO_SUBSCRIBER_ID" --follow --interval 2
+```
+
+Run the final command through that host's streaming background-task facility.
+It prints newly observed pending events but never claims or acknowledges them;
+the agent runs the printed `ufoo bus ack --through <seq>` command only after
+handling the emitted batch, preserving later arrivals. The fallback is not
+installed by postinstall or `skills install all`, and follow mode refuses Codex
+CLI, Claude Code CLI, Agy, Kimi, and native ucode subscriber types so their
+existing delivery paths remain untouched.
+
 ### Context, Memory, History, Reports
 
 Inside chat:

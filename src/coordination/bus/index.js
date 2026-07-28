@@ -23,6 +23,12 @@ const MessageManager = require("./message");
 const NicknameManager = require("./nickname");
 const Injector = require("./inject");
 const { BusStore } = require("./store");
+const {
+  acquirePollLease,
+  assertFollowPollAllowed,
+  releasePollLease,
+  runPendingPoll,
+} = require("./poll");
 
 /**
  * Event Bus - 项目级 Agent 事件总线
@@ -412,6 +418,90 @@ class EventBus {
   }
 
   /**
+   * Observe pending messages continuously without claiming or acknowledging.
+   *
+   * This is an explicit fallback for agent hosts whose own background-task
+   * output is their delivery mechanism. Built-in ufoo agent families keep
+   * using their existing injection/internal-consumption paths.
+   */
+  async poll(subscriber, options = {}) {
+    this.ensureBus();
+
+    const target = String(subscriber || "").trim();
+    if (!target) {
+      throw new Error("poll --follow requires <subscriber-id>");
+    }
+
+    // Reject known built-in delivery IDs before loading or writing any shared
+    // bus state. This keeps accidental invocation side-effect free for them.
+    assertFollowPollAllowed(target);
+
+    this.loadBusData();
+    const meta = this.subscriberManager.getSubscriber(target);
+    if (!meta) {
+      throw new Error(`poll --follow requires a joined subscriber: ${target}`);
+    }
+    assertFollowPollAllowed(target, meta);
+
+    const intervalSeconds = Number(options.intervalSeconds);
+    const intervalMs = Math.max(
+      250,
+      Number.isFinite(intervalSeconds) ? intervalSeconds * 1000 : 2000
+    );
+    const pollPidFile = path.join(
+      this.busDir,
+      "pids",
+      `poll-${subscriberToSafeName(target)}.pid`
+    );
+    const lease = acquirePollLease(pollPidFile, { isAlive: isPidAlive });
+    const cleanupLease = () => releasePollLease(lease);
+    process.once("exit", cleanupLease);
+
+    try {
+      // The resident poll process owns liveness for this explicitly opted-in
+      // subscriber. No notifier/injector state is touched.
+      meta.status = "active";
+      meta.pid = process.pid;
+      this.subscriberManager.updateLastSeen(target);
+      this.saveBusData();
+
+      console.log(
+        `[ufoo-poll]<subscriber:${target}> following every ${intervalMs / 1000}s`
+      );
+
+      return await runPendingPoll({
+        intervalMs,
+        signal: options.signal,
+        sleep: options.sleep,
+        maxIterations: options.maxIterations,
+        readPending: () => this.queueManager.peekPending(target),
+        onEvents: async (events) => {
+          console.log(`[ufoo-poll] ${events.length} new pending event(s)`);
+          for (const event of events) {
+            const publisherMeta = this.busData.agents?.[event.publisher];
+            const nick = publisherMeta?.nickname;
+            const fromLabel = nick ? `${event.publisher}(${nick})` : event.publisher;
+            console.log(`[ufoo]<from:${fromLabel || "unknown"}>`);
+            console.log(`Type: ${event.type}/${event.event}`);
+            console.log(`Content: ${JSON.stringify(event.data)}`);
+          }
+          const sequenced = events
+            .map((event) => Number(event && event.seq))
+            .filter((seq) => Number.isFinite(seq) && seq > 0);
+          const throughSeq = sequenced.length === events.length
+            ? Math.max(...sequenced)
+            : 0;
+          const ackSuffix = throughSeq > 0 ? ` --through ${throughSeq}` : "";
+          console.log(`After handling, run: ufoo bus ack ${target}${ackSuffix}`);
+        },
+      });
+    } finally {
+      process.removeListener("exit", cleanupLease);
+      cleanupLease();
+    }
+  }
+
+  /**
    * 确认消息
    */
   async ack(subscriber) {
@@ -424,6 +514,24 @@ class EventBus {
       logOk(`Acknowledged and cleared ${count} message(s)`);
     } else {
       logOk("No pending messages to acknowledge");
+    }
+
+    return count;
+  }
+
+  /**
+   * Confirm only the displayed portion of a sequenced pending queue.
+   */
+  async ackThrough(subscriber, throughSeq) {
+    this.ensureBus();
+    this.loadBusData();
+
+    const count = await this.messageManager.ackThrough(subscriber, throughSeq);
+
+    if (count > 0) {
+      logOk(`Acknowledged ${count} message(s) through seq=${throughSeq}`);
+    } else {
+      logOk(`No pending messages through seq=${throughSeq}`);
     }
 
     return count;

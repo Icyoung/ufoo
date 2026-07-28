@@ -135,6 +135,21 @@ describe('QueueManager', () => {
         expect(pending[0]).toEqual(event1);
         expect(pending[1]).toEqual(event2);
       });
+
+      it('should peek without recovering or claiming processing files', async () => {
+        const subscriber = 'external:test';
+        const pendingFile = manager.getPendingPath(subscriber);
+        const processingFile = `${pendingFile}.processing.99999999.${Date.now() - 60000}.stale`;
+        fs.mkdirSync(path.dirname(pendingFile), { recursive: true });
+        fs.writeFileSync(pendingFile, `${JSON.stringify({ seq: 2, message: 'pending' })}\n`);
+        fs.writeFileSync(processingFile, `${JSON.stringify({ seq: 1, message: 'claimed' })}\n`);
+
+        const pending = await manager.peekPending(subscriber);
+
+        expect(pending).toEqual([{ seq: 2, message: 'pending' }]);
+        expect(fs.existsSync(processingFile)).toBe(true);
+        expect(fs.readFileSync(pendingFile, 'utf8')).toContain('"seq":2');
+      });
     });
 
     describe('appendPending', () => {
@@ -226,6 +241,20 @@ describe('QueueManager', () => {
 
         expect(count).toBe(1);
         expect(manager.getDeliveryQueue('claude-code:test').readPending()).toEqual([]);
+      });
+
+      it('should acknowledge only through the displayed sequence', async () => {
+        const subscriber = 'external:test';
+        await manager.appendPending(subscriber, { seq: 10, message: 'displayed-1' });
+        await manager.appendPending(subscriber, { seq: 11, message: 'displayed-2' });
+        await manager.appendPending(subscriber, { seq: 12, message: 'arrived-later' });
+
+        const count = await manager.ackPendingThrough(subscriber, 11);
+
+        expect(count).toBe(2);
+        expect(await manager.peekPending(subscriber)).toEqual([
+          { seq: 12, message: 'arrived-later' },
+        ]);
       });
     });
 

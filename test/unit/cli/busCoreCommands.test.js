@@ -120,6 +120,69 @@ describe("busCoreCommands", () => {
     expect(eventBus.check).toHaveBeenCalledWith("codex:test", true);
   });
 
+  test("poll follow mode routes to the resident read-only poll", async () => {
+    const eventBus = {
+      check: jest.fn().mockResolvedValue([]),
+      poll: jest.fn().mockResolvedValue({}),
+    };
+
+    await runBusCoreCommand(eventBus, "poll", [
+      "--follow",
+      "--interval",
+      "1.5",
+      "opencode:test",
+    ]);
+
+    expect(eventBus.poll).toHaveBeenCalledWith("opencode:test", {
+      intervalSeconds: 1.5,
+    });
+    expect(eventBus.check).not.toHaveBeenCalled();
+  });
+
+  test("poll follow mode rejects auto ack", async () => {
+    const eventBus = { poll: jest.fn() };
+    await expect(runBusCoreCommand(eventBus, "poll", [
+      "opencode:test",
+      "--follow",
+      "--ack",
+    ])).rejects.toThrow("cannot be combined");
+    expect(eventBus.poll).not.toHaveBeenCalled();
+  });
+
+  test("poll interval cannot be used without follow mode", async () => {
+    const eventBus = { check: jest.fn() };
+    await expect(runBusCoreCommand(eventBus, "poll", [
+      "opencode:test",
+      "--interval",
+      "2",
+    ])).rejects.toThrow("requires --follow");
+    expect(eventBus.check).not.toHaveBeenCalled();
+  });
+
+  test("poll interval value is not parsed as subscriber", async () => {
+    const previous = process.env.UFOO_SUBSCRIBER_ID;
+    process.env.UFOO_SUBSCRIBER_ID = "opencode:env";
+    const eventBus = { poll: jest.fn().mockResolvedValue({}) };
+    try {
+      await runBusCoreCommand(eventBus, "poll", ["--follow", "--interval", "3"]);
+    } finally {
+      if (previous === undefined) delete process.env.UFOO_SUBSCRIBER_ID;
+      else process.env.UFOO_SUBSCRIBER_ID = previous;
+    }
+    expect(eventBus.poll).toHaveBeenCalledWith("opencode:env", {
+      intervalSeconds: 3,
+    });
+  });
+
+  test("poll follow interval has a safe lower bound", async () => {
+    const eventBus = { poll: jest.fn() };
+    await expect(runBusCoreCommand(eventBus, "poll", [
+      "opencode:test",
+      "--follow",
+      "--interval=0.1",
+    ])).rejects.toThrow("at least 0.25");
+  });
+
   test("poll command requires subscriber context", async () => {
     const previous = process.env.UFOO_SUBSCRIBER_ID;
     delete process.env.UFOO_SUBSCRIBER_ID;
@@ -135,6 +198,29 @@ describe("busCoreCommands", () => {
     const eventBus = { ack: jest.fn().mockResolvedValue(0) };
     await runBusCoreCommand(eventBus, "ack", ["codex:test"]);
     expect(eventBus.ack).toHaveBeenCalledWith("codex:test");
+  });
+
+  test("ack command can preserve events after a displayed sequence", async () => {
+    const eventBus = {
+      ack: jest.fn(),
+      ackThrough: jest.fn().mockResolvedValue(2),
+    };
+    await runBusCoreCommand(eventBus, "ack", [
+      "opencode:test",
+      "--through",
+      "42",
+    ]);
+    expect(eventBus.ackThrough).toHaveBeenCalledWith("opencode:test", 42);
+    expect(eventBus.ack).not.toHaveBeenCalled();
+  });
+
+  test("ack through requires a positive integer sequence", async () => {
+    const eventBus = { ackThrough: jest.fn() };
+    await expect(runBusCoreCommand(eventBus, "ack", [
+      "opencode:test",
+      "--through=1.5",
+    ])).rejects.toThrow("positive integer");
+    expect(eventBus.ackThrough).not.toHaveBeenCalled();
   });
 
   test("consume command", async () => {

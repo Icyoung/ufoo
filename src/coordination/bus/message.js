@@ -529,6 +529,10 @@ class MessageManager {
     return this.queueManager.ackPending(subscriber);
   }
 
+  async ackThrough(subscriber, throughSeq) {
+    return this.queueManager.ackPendingThrough(subscriber, throughSeq);
+  }
+
   /**
    * 消费事件（从 offset 开始）
    */

@@ -8,6 +8,7 @@ class SkillsManager {
   constructor(repoRoot) {
     this.repoRoot = repoRoot;
     this.skillRoots = this.findSkillRoots();
+    this.optionalSkillRoots = this.findOptionalSkillRoots();
   }
 
   /**
@@ -23,12 +24,30 @@ class SkillsManager {
   }
 
   /**
+   * Optional skills are discoverable and explicitly installable, but are not
+   * included in default listings or `skills install all`.
+   */
+  findOptionalSkillRoots() {
+    const roots = [];
+    const optionalSkills = path.join(this.repoRoot, "OPTIONAL_SKILLS");
+    if (fs.existsSync(optionalSkills)) {
+      roots.push(optionalSkills);
+    }
+    return roots;
+  }
+
+  /**
    * 列出所有技能
    */
-  list() {
+  list(options = {}) {
     const skills = new Set();
+    const roots = options.optionalOnly
+      ? this.optionalSkillRoots
+      : (options.includeOptional
+        ? [...this.skillRoots, ...this.optionalSkillRoots]
+        : this.skillRoots);
 
-    for (const root of this.skillRoots) {
+    for (const root of roots) {
       if (!fs.existsSync(root)) {
         continue;
       }
@@ -48,7 +67,7 @@ class SkillsManager {
    * 查找技能路径
    */
   findSkill(name) {
-    for (const root of this.skillRoots) {
+    for (const root of [...this.skillRoots, ...this.optionalSkillRoots]) {
       const skillPath = path.join(root, name);
       if (fs.existsSync(skillPath)) {
         return skillPath;

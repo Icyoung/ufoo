@@ -193,6 +193,22 @@ ufoo -g
 发送消息前，先用 `/bus status` 查看真实 subscriber ID 或可解析昵称。
 Agent 应处理 pending work、回复发送方，并 ack 自己的队列。
 
+无法接收 ufoo prompt 注入的 Agent host 可以显式启用常驻、队列只读的
+bus 消息流：
+
+```bash
+ufoo skills list --optional
+ufoo skills install ubus-poll --target /path/to/that/agent/skills
+ufoo bus poll "$UFOO_SUBSCRIBER_ID" --follow --interval 2
+```
+
+最后一条命令必须由该 host 的流式后台任务能力托管。它只输出新观察到的
+pending event，不 claim、不 ack；Agent 处理完输出批次后，再执行输出中
+给出的 `ufoo bus ack --through <seq>`，以保留稍后到达的消息。
+这个 fallback 不会被 postinstall 或 `skills install all` 安装，而且
+follow 模式会拒绝 Codex CLI、Claude Code CLI、Agy、Kimi 和原生 ucode
+的 subscriber 类型，确保其现有投递链路不受影响。
+
 ### Context、Memory、History、Report
 
 在 chat 内：

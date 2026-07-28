@@ -1102,11 +1102,12 @@ async function runCli(argv) {
     skills
       .command("list")
       .description("List available skills")
-      .action(() => {
+      .option("--optional", "List opt-in skills that are not installed by default")
+      .action((opts) => {
         const SkillsManager = require("./features/skills");
         const repoRoot = getPackageRoot();
         const manager = new SkillsManager(repoRoot);
-        const skillsList = manager.list();
+        const skillsList = manager.list({ optionalOnly: Boolean(opts.optional) });
         skillsList.forEach((skill) => console.log(skill));
       });
     skills
@@ -1527,6 +1528,49 @@ async function runCli(argv) {
           });
       });
     bus
+      .command("poll")
+      .description("Check once, or stream pending messages for an opt-in background task")
+      .argument("[subscriber]", "Subscriber ID (defaults to UFOO_SUBSCRIBER_ID)")
+      .option("--ack", "Acknowledge after a one-shot check")
+      .option("--auto-ack", "Alias for --ack")
+      .option("--follow", "Continuously emit newly observed pending events")
+      .option("--interval <seconds>", "Follow interval in seconds")
+      .action(async (subscriber, opts) => {
+        const EventBus = require("../../coordination/bus");
+        const eventBus = new EventBus(process.cwd());
+        const args = [];
+        if (subscriber) args.push(subscriber);
+        if (opts.ack) args.push("--ack");
+        if (opts.autoAck) args.push("--auto-ack");
+        if (opts.follow) args.push("--follow");
+        if (opts.interval !== undefined) args.push("--interval", String(opts.interval));
+
+        try {
+          await runBusCoreCommand(eventBus, "poll", args);
+        } catch (err) {
+          console.error(err.message);
+          process.exitCode = 1;
+        }
+      });
+    bus
+      .command("ack")
+      .description("Acknowledge pending messages")
+      .argument("<subscriber>", "Subscriber ID")
+      .option("--through <seq>", "Acknowledge only through this displayed sequence")
+      .action(async (subscriber, opts) => {
+        const EventBus = require("../../coordination/bus");
+        const eventBus = new EventBus(process.cwd());
+        const args = [subscriber];
+        if (opts.through !== undefined) args.push("--through", String(opts.through));
+
+        try {
+          await runBusCoreCommand(eventBus, "ack", args);
+        } catch (err) {
+          console.error(err.message);
+          process.exitCode = 1;
+        }
+      });
+    bus
       .command("inject")
       .description("Inject /bus into a Terminal.app tab by subscriber ID")
       .argument("<subscriber>", "Subscriber ID to inject into")
@@ -1695,7 +1739,7 @@ async function runCli(argv) {
     console.log("  ufoo report <start|progress|done|error|list> [message] [--task <id>] [--agent <id>]");
     console.log("  ufoo ucode [doctor|prepare|build] [--skip-install]");
     console.log("  ufoo init [--targets <list>] [--project <dir>]");
-    console.log("  ufoo skills list");
+    console.log("  ufoo skills list [--optional]");
     console.log("  ufoo skills install <name|all> [--target <dir> | --codex | --agents]");
     console.log("  ufoo group templates [list|ls] [--json]");
     console.log("  ufoo group template <list|show|validate|new> [target] [--from <builtin>] [--global] [--force] [--json]");
@@ -1715,7 +1759,8 @@ async function runCli(argv) {
     console.log("  ufoo online send --nickname <name> --text <msg> [--channel <ch>] [--room <id>]");
     console.log("  ufoo online inbox <nickname> [--clear] [--unread]");
     console.log("  ufoo bus wake <target> [--reason <reason>] [--no-shake]");
-    console.log("  ufoo bus poll [subscriber] [--ack]");
+    console.log("  ufoo bus poll [subscriber] [--ack | --follow --interval <seconds>]");
+    console.log("  ufoo bus ack <subscriber> [--through <seq>]");
     console.log("  ufoo bus <args...>    (JS bus implementation)");
     console.log("  ufoo ctx <subcmd> ... (doctor|lint|decisions|sync)");
     console.log("  ufoo history <build|show|prompt> [limit]");
@@ -2056,7 +2101,7 @@ async function runCli(argv) {
     const sub = rest[0] || "";
 
     if (sub === "list") {
-      const skillsList = manager.list();
+      const skillsList = manager.list({ optionalOnly: rest.includes("--optional") });
       skillsList.forEach((skill) => console.log(skill));
       return;
     }
