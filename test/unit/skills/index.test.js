@@ -146,6 +146,17 @@ describe('SkillsManager', () => {
       expect(manager.list({ optionalOnly: true })).toEqual(['ubus-poll']);
       expect(manager.list({ includeOptional: true })).toEqual(['ubus-poll']);
     });
+
+    it('should expose only the focused package default skill set', () => {
+      const packageRoot = path.resolve(__dirname, '..', '..', '..');
+      const packageManager = new SkillsManager(packageRoot);
+
+      expect(packageManager.list()).toEqual(['ufoo', 'ufoo-bus', 'ufoo-context', 'ufoo-online']);
+      expect(packageManager.findSkill('ubus')).toBeNull();
+      expect(packageManager.findSkill('uctx')).toBeNull();
+      expect(packageManager.findSkill('uinit')).toBeNull();
+      expect(packageManager.findSkill('ustatus')).toBeNull();
+    });
   });
 
   describe('findSkill', () => {

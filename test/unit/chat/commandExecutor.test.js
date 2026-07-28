@@ -261,13 +261,13 @@ describe("chat commandExecutor", () => {
 
   test("handleSkillsCommand list labels skills as built-in ufoo capabilities", async () => {
     const { executor, logs, skills, options } = createHarness();
-    skills.list.mockReturnValue(["ubus", "uctx"]);
+    skills.list.mockReturnValue(["ufoo-bus", "ufoo-context"]);
 
     await executor.handleSkillsCommand(["list"]);
 
     expect(logs.some((entry) => entry.text.includes("Available built-in ufoo skills"))).toBe(true);
-    expect(logs.some((entry) => entry.text.includes("ubus"))).toBe(true);
-    expect(logs.some((entry) => entry.text.includes("uctx"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("ufoo-bus"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("ufoo-context"))).toBe(true);
     expect(options.renderScreen).toHaveBeenCalled();
   });
 

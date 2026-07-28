@@ -148,7 +148,7 @@ describe("ContextDoctor", () => {
     });
 
     test("succeeds with bundled context skill", () => {
-      const skillDir = path.join(projectRoot, "SKILLS", "uctx");
+      const skillDir = path.join(projectRoot, "SKILLS", "ufoo-context");
       fs.mkdirSync(skillDir, { recursive: true });
       fs.writeFileSync(path.join(skillDir, "SKILL.md"), "# Skill");
 

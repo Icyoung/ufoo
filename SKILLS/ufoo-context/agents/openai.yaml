@@ -1,0 +1,4 @@
+interface:
+  display_name: "ufoo context"
+  short_description: "Sync ufoo decisions and durable shared memory"
+  default_prompt: "Use $ufoo-context to review shared decisions and durable project memory."

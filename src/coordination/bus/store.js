@@ -95,7 +95,7 @@ class BusStore {
   ensure() {
     if (!fs.existsSync(this.busDir) || !fs.existsSync(this.paths.agentDir)) {
       throw new Error(
-        "Event bus not initialized. Please run: ufoo bus init or /uinit"
+        "Event bus not initialized. Please run: ufoo init --targets bus"
       );
     }
   }

@@ -1,0 +1,4 @@
+interface:
+  display_name: "ufoo online"
+  short_description: "Connect agents through ufoo online collaboration"
+  default_prompt: "Use $ufoo-online to connect this agent to an online collaboration room."

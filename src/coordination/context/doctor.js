@@ -86,7 +86,7 @@ class ContextDoctor {
    * Lint bundled context skill.
    */
   lintProtocol() {
-    const repoSkill = path.join(this.projectRoot, "SKILLS", "uctx", "SKILL.md");
+    const repoSkill = path.join(this.projectRoot, "SKILLS", "ufoo-context", "SKILL.md");
 
     if (!fs.existsSync(repoSkill)) {
       console.log("No bundled context skill found (skipping protocol lint)");
@@ -94,7 +94,7 @@ class ContextDoctor {
     }
 
     console.log(`Linting bundled context skill: ${repoSkill}`);
-    this.checkFile(repoSkill, "SKILLS/uctx/SKILL.md");
+    this.checkFile(repoSkill, "SKILLS/ufoo-context/SKILL.md");
 
     return !this.failed;
   }

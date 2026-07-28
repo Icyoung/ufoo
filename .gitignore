@@ -17,6 +17,7 @@ landing.claude/commands/
 landing/
 scripts/*
 !scripts/postinstall.js
+!scripts/postinstall-skills.js
 !scripts/pack-tui.js
 docs/
 skills-lock.json

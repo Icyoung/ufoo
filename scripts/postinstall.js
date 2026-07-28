@@ -2,6 +2,7 @@
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const { removeLegacySkillAndCommandLinks } = require("./postinstall-skills");
 
 // Fix node-pty spawn-helper permissions on macOS (both arm64 and x64)
 const platforms = ["darwin-arm64", "darwin-x64"];
@@ -50,7 +51,7 @@ function collectSkillSources(pkgRoot) {
       if (entry.isDirectory()) {
         const skillMd = path.join(topSkills, entry.name, "SKILL.md");
         if (fs.existsSync(skillMd)) {
-          sources.push({ name: entry.name, dir: path.join(topSkills, entry.name), md: skillMd });
+          sources.push({ name: entry.name, dir: path.join(topSkills, entry.name) });
         }
       }
     }
@@ -70,17 +71,6 @@ function forceSymlink(target, linkPath) {
   fs.symlinkSync(target, linkPath);
 }
 
-function installClaudeCommands(home, sources) {
-  const commandsDir = path.join(home, ".claude", "commands");
-  fs.mkdirSync(commandsDir, { recursive: true });
-
-  for (const { name, md } of sources) {
-    forceSymlink(md, path.join(commandsDir, `${name}.md`));
-  }
-
-  console.log(`[postinstall] Installed ${sources.length} ufoo command(s) to ${commandsDir}`);
-}
-
 function installSkillDirs(targetDir, sources, label) {
   fs.mkdirSync(targetDir, { recursive: true });
 
@@ -92,19 +82,22 @@ function installSkillDirs(targetDir, sources, label) {
 }
 
 // Install ufoo skills for Claude and Codex at npm install time.
-// - Claude slash commands: ~/.claude/commands/<name>.md -> SKILL.md
 // - Claude skills: ~/.claude/skills/<name> -> skill dir
 // - Codex skills: ${CODEX_HOME:-~/.codex}/skills/<name> -> skill dir
 try {
   const pkgRoot = path.resolve(__dirname, "..");
   const home = os.homedir();
   const sources = collectSkillSources(pkgRoot);
+  const codexHome = process.env.CODEX_HOME || path.join(home, ".codex");
+  const retiredLinks = removeLegacySkillAndCommandLinks({ pkgRoot, home, codexHome });
+
+  if (retiredLinks.length > 0) {
+    console.log(`[postinstall] Removed ${retiredLinks.length} legacy ufoo link(s)`);
+  }
 
   if (sources.length > 0) {
-    installClaudeCommands(home, sources);
     installSkillDirs(path.join(home, ".claude", "skills"), sources, "~/.claude/skills");
 
-    const codexHome = process.env.CODEX_HOME || path.join(home, ".codex");
     installSkillDirs(path.join(codexHome, "skills"), sources, `${codexHome}/skills`);
   }
 } catch (err) {

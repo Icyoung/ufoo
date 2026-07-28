@@ -1,0 +1,4 @@
+interface:
+  display_name: "ufoo"
+  short_description: "Coordinate ufoo workspace state and agent protocol"
+  default_prompt: "Use $ufoo to synchronize and coordinate this ufoo workspace."

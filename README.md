@@ -185,6 +185,11 @@ symlink; edit project instructions in `AGENTS.md`.
 Before a project has been initialized, the equivalent CLI form is also useful:
 `ufoo init --targets context,bus`.
 
+The default agent skill set is intentionally limited to `ufoo`, `ufoo-bus`,
+`ufoo-context`, and `ufoo-online`. They are installed only as skills, not as a
+second command catalog. Initialization and unified status are handled by
+`ufoo`.
+
 ### Event Bus
 
 ```text

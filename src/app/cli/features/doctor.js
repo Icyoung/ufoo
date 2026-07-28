@@ -36,8 +36,8 @@ class RepoDoctor {
 
   run() {
     const skillsDir = path.join(this.repoRoot, "SKILLS");
-    const contextSkill = path.join(skillsDir, "uctx", "SKILL.md");
-    const busSkill = path.join(skillsDir, "ubus", "SKILL.md");
+    const contextSkill = path.join(skillsDir, "ufoo-context", "SKILL.md");
+    const busSkill = path.join(skillsDir, "ufoo-bus", "SKILL.md");
 
     if (!fs.existsSync(contextSkill)) this.fail(`missing ${contextSkill}`);
     if (!fs.existsSync(busSkill)) this.fail(`missing ${busSkill}`);
@@ -49,8 +49,8 @@ class RepoDoctor {
     console.log("=== ufoo doctor ===");
     console.log(`Monorepo: ${this.repoRoot}`);
     console.log("Skills:");
-    if (fs.existsSync(contextSkill)) console.log(`- uctx: ${contextSkill}`);
-    if (fs.existsSync(busSkill)) console.log(`- ubus: ${busSkill}`);
+    if (fs.existsSync(contextSkill)) console.log(`- ufoo-context: ${contextSkill}`);
+    if (fs.existsSync(busSkill)) console.log(`- ufoo-bus: ${busSkill}`);
     this.reportTui();
 
     if (this.failed) {

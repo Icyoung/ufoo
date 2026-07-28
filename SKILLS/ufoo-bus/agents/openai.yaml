@@ -1,0 +1,4 @@
+interface:
+  display_name: "ufoo bus"
+  short_description: "Handle local ufoo bus messages and agent routing"
+  default_prompt: "Use $ufoo-bus to check and handle pending event-bus work."

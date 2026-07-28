@@ -180,6 +180,10 @@ ufoo -g
 
 项目尚未初始化时，也可以先在外部执行等价 CLI：`ufoo init --targets context,bus`。
 
+默认 Agent skill 有意精简为 `ufoo`、`ufoo-bus`、`ufoo-context` 和
+`ufoo-online`。它们只作为 skill 安装，不再生成一份 command 目录，
+避免宿主显示两个入口；初始化和统一状态统一由 `ufoo` 处理。
+
 ### 事件总线
 
 ```text
