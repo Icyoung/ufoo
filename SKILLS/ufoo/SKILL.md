@@ -117,11 +117,21 @@ ufoo memory audit mem-0001
 
 ## 3. Event Bus (ubus)
 
+### Delivery Rule
+
+After `ufoo bus send` or `ufoo bus broadcast`, do not run
+`ufoo bus check`, invoke `/ubus`, sleep, or wait for a reply. Continue the
+current task. Any follow-up message will be automatically injected into your
+prompt/session.
+
+When `/ubus` is explicitly requested, follow its pending-message flow
+immediately. Do not invoke it merely to wait for a reply to a message you sent.
+
 ### Commands
 
 ```bash
-ufoo bus check "$UFOO_SUBSCRIBER_ID"        # Check pending messages
-ufoo bus ack "$UFOO_SUBSCRIBER_ID"           # Acknowledge after handling
+ufoo bus check "$UFOO_SUBSCRIBER_ID"        # Used by an explicit /ubus request
+ufoo bus ack "$UFOO_SUBSCRIBER_ID"          # Acknowledge after handling
 ufoo bus send "<target>" "<message>"         # Send message
 ufoo bus broadcast "<message>"               # Broadcast to all
 ufoo bus status                              # Show bus status
@@ -149,13 +159,13 @@ Notes:
 - Type: `codex` (all codex agents)
 - Wildcard: `*` (broadcast)
 
-### CRITICAL: When you receive pending messages
+### CRITICAL: When a message is received
 
 **EXECUTE tasks immediately. Do NOT ask the user.**
 
-1. Check: `ufoo bus check $UFOO_SUBSCRIBER_ID`
-2. Execute each task
-3. **Always ack**: `ufoo bus ack $UFOO_SUBSCRIBER_ID`
+1. Read the available `[ufoo]<from:...>` message.
+2. Execute each task.
+3. **Always ack after handling**: `ufoo bus ack $UFOO_SUBSCRIBER_ID`
 4. Reply only when substantive — send `ufoo bus send "<publisher>" "<result>"` only if:
    - The sender asked a question → reply with the answer
    - The sender delegated a task → reply with the result / artifact
@@ -163,6 +173,10 @@ Notes:
    Do NOT reply with greetings, acknowledgments, or emoji alone — those create infinite reply loops.
 5. **Report** if the work arrived from `[manual]<to:...>` or `[ufoo]<from:...>`:
    `ufoo report progress|done|error "<short summary>"`
+
+If `/ubus` is explicitly requested, run
+`ufoo bus check "$UFOO_SUBSCRIBER_ID"` and then follow the same execute → ack
+flow.
 
 ---
 

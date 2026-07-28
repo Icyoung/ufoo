@@ -79,4 +79,12 @@ describe("native system prompt assembly", () => {
     expect(ufoo).toContain("OTHER agents");
     expect(ufoo).toContain("not your work history");
   });
+
+  test("ufoo section tells senders to continue without polling or waiting", () => {
+    const sections = getSystemPrompt({ workspaceRoot: "/repo" });
+    const ufoo = findSection(sections, "# ufoo integration");
+    expect(ufoo).toContain("After sending a bus message");
+    expect(ufoo).toContain("do not poll `ufoo bus check`, invoke `/ubus`, sleep, or wait");
+    expect(ufoo).toContain("automatically injected into your prompt/session");
+  });
 });

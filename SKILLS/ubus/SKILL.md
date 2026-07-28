@@ -1,18 +1,19 @@
 ---
 name: ubus
 description: |
-  Poll event bus, check pending messages.
-  Use when: (1) check if other Agents sent messages, (2) view bus status, (3) periodic polling.
+  Check and handle pending event-bus messages when /ubus is explicitly invoked.
+  Use when: (1) asked to check messages, (2) view bus status, (3) use watch/listen/auto modes.
   If not yet joined bus, will auto-join.
 ---
 
-# /ubus - Event Bus Polling
+# /ubus - Check Event Bus Messages
 
-Check pending messages on the event bus.
+Check and handle pending messages on the event bus when `/ubus` is explicitly
+invoked.
 
 ## Arguments
 
-- `/ubus` - Check messages and show status
+- `/ubus` - Pull pending messages and show status
 - `/ubus watch` - Start background auto-notification (title badge + bell + notification center)
 - `/ubus stop` - Stop background auto-notification
 - `/ubus listen` - Foreground continuous listener, print new messages (suitable for side terminal)
@@ -74,7 +75,7 @@ If argument is `listen`, foreground blocking listener (no background task tool n
 ufoo bus listen "$SUBSCRIBER" --from-beginning
 ```
 
-If argument is `auto`, unattended auto-execute:
+If argument is `auto`, use unattended auto-execute:
 
 ```bash
 # Start daemon (background resident), auto-inject /ubus + Enter on new message
@@ -118,7 +119,8 @@ After you have read and processed the messages, you MUST acknowledge them to pre
 ufoo bus ack "$SUBSCRIBER"
 ```
 
-**This is critical** - if you don't ack, the daemon will keep injecting `/ubus` commands.
+**This is critical** - if you don't ack, the runtime may retry delivery or keep
+the event pending.
 
 **Default behavior is ack-only, no reply.** If there's nothing to do (no actionable task, no question to answer, no follow-up the sender genuinely needs), just ack and stop. Silence is a valid response — see "Handling Received Messages" below for when a reply IS warranted.
 
@@ -196,10 +198,14 @@ and the two of you will ping-pong forever.
 | `这个 bug 的根因是什么？` (question) | ✅ reply with answer |
 | `我帮你找到了 X，需要你做 Y` (request) | ✅ reply with status |
 
-When in doubt: ack and wait. If the sender genuinely needs something
-from you, they will follow up with a concrete question or task.
+When in doubt: ack and stop. If the sender genuinely needs something from you,
+they will follow up with a concrete question or task.
 
 ## Sending Messages
+
+After sending a message, do not run `/ubus`, poll, sleep, or wait for a reply.
+Continue the current task. Any follow-up message will be automatically injected
+into your prompt/session.
 
 ### Smart Routing (when you don't know the target ID)
 
