@@ -139,12 +139,12 @@ describe('SkillsManager', () => {
 
     it('should exclude optional skills from the default list', () => {
       const optionalDir = path.join(testRepoRoot, 'OPTIONAL_SKILLS');
-      fs.mkdirSync(path.join(optionalDir, 'ubus-poll'), { recursive: true });
+      fs.mkdirSync(path.join(optionalDir, 'ufoo-bus-poll'), { recursive: true });
       manager = new SkillsManager(testRepoRoot);
 
       expect(manager.list()).toEqual([]);
-      expect(manager.list({ optionalOnly: true })).toEqual(['ubus-poll']);
-      expect(manager.list({ includeOptional: true })).toEqual(['ubus-poll']);
+      expect(manager.list({ optionalOnly: true })).toEqual(['ufoo-bus-poll']);
+      expect(manager.list({ includeOptional: true })).toEqual(['ufoo-bus-poll']);
     });
 
     it('should expose only the focused package default skill set', () => {
@@ -156,6 +156,12 @@ describe('SkillsManager', () => {
       expect(packageManager.findSkill('uctx')).toBeNull();
       expect(packageManager.findSkill('uinit')).toBeNull();
       expect(packageManager.findSkill('ustatus')).toBeNull();
+      expect(packageManager.list({ optionalOnly: true })).toEqual(['ufoo-bus-poll']);
+      expect(packageManager.findSkill('ubus-poll')).toBeNull();
+      const pollSkill = packageManager.findSkill('ufoo-bus-poll');
+      expect(fs.readFileSync(path.join(pollSkill, 'SKILL.md'), 'utf8'))
+        .toContain('name: ufoo-bus-poll');
+      expect(fs.existsSync(path.join(pollSkill, 'agents', 'openai.yaml'))).toBe(true);
     });
   });
 
@@ -209,12 +215,12 @@ describe('SkillsManager', () => {
     });
 
     it('should find an optional skill only when explicitly named', () => {
-      const optionalSkill = path.join(testRepoRoot, 'OPTIONAL_SKILLS', 'ubus-poll');
+      const optionalSkill = path.join(testRepoRoot, 'OPTIONAL_SKILLS', 'ufoo-bus-poll');
       fs.mkdirSync(optionalSkill, { recursive: true });
 
       manager = new SkillsManager(testRepoRoot);
 
-      expect(manager.findSkill('ubus-poll')).toBe(optionalSkill);
+      expect(manager.findSkill('ufoo-bus-poll')).toBe(optionalSkill);
     });
   });
 
@@ -335,7 +341,7 @@ describe('SkillsManager', () => {
 
     it('should install all skills when name is "all"', async () => {
       const targetDir = path.join(testRepoRoot, 'target');
-      const optionalSkill = path.join(testRepoRoot, 'OPTIONAL_SKILLS', 'ubus-poll');
+      const optionalSkill = path.join(testRepoRoot, 'OPTIONAL_SKILLS', 'ufoo-bus-poll');
       fs.mkdirSync(optionalSkill, { recursive: true });
       fs.writeFileSync(path.join(optionalSkill, 'SKILL.md'), '# optional', 'utf8');
       manager = new SkillsManager(testRepoRoot);
@@ -344,20 +350,20 @@ describe('SkillsManager', () => {
 
       expect(fs.existsSync(path.join(targetDir, 'skill1', 'file.txt'))).toBe(true);
       expect(fs.existsSync(path.join(targetDir, 'skill2', 'file.txt'))).toBe(true);
-      expect(fs.existsSync(path.join(targetDir, 'ubus-poll'))).toBe(false);
+      expect(fs.existsSync(path.join(targetDir, 'ufoo-bus-poll'))).toBe(false);
       expect(consoleLogSpy).toHaveBeenCalledWith(expect.stringContaining('Installed 2 skills'));
     });
 
     it('should install an optional skill only by explicit name', async () => {
-      const optionalSkill = path.join(testRepoRoot, 'OPTIONAL_SKILLS', 'ubus-poll');
+      const optionalSkill = path.join(testRepoRoot, 'OPTIONAL_SKILLS', 'ufoo-bus-poll');
       const targetDir = path.join(testRepoRoot, 'target');
       fs.mkdirSync(optionalSkill, { recursive: true });
       fs.writeFileSync(path.join(optionalSkill, 'SKILL.md'), '# optional', 'utf8');
       manager = new SkillsManager(testRepoRoot);
 
-      await manager.install('ubus-poll', { target: targetDir });
+      await manager.install('ufoo-bus-poll', { target: targetDir });
 
-      expect(fs.existsSync(path.join(targetDir, 'ubus-poll', 'SKILL.md'))).toBe(true);
+      expect(fs.existsSync(path.join(targetDir, 'ufoo-bus-poll', 'SKILL.md'))).toBe(true);
     });
 
     it('should use default claude target if no options', async () => {

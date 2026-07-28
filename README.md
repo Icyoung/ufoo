@@ -209,11 +209,12 @@ queue-read-only bus stream:
 
 ```bash
 ufoo skills list --optional
-ufoo skills install ubus-poll --target /path/to/that/agent/skills
-ufoo bus poll "$UFOO_SUBSCRIBER_ID" --follow --interval 2
+ufoo skills install ufoo-bus-poll --target /path/to/that/agent/skills
+ufoo bus poll "<subscriber-id>" --follow --interval 2
 ```
 
-Run the final command through that host's streaming background-task facility.
+Use the subscriber returned by MCP `register_agent` or provisioned by the host,
+then run the final command through that host's streaming background-task facility.
 It prints newly observed pending events but never claims or acknowledges them;
 the agent runs the printed `ufoo bus ack --through <seq>` command only after
 handling the emitted batch, preserving later arrivals. The fallback is not

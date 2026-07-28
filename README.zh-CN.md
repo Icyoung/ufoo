@@ -202,11 +202,12 @@ bus 消息流：
 
 ```bash
 ufoo skills list --optional
-ufoo skills install ubus-poll --target /path/to/that/agent/skills
-ufoo bus poll "$UFOO_SUBSCRIBER_ID" --follow --interval 2
+ufoo skills install ufoo-bus-poll --target /path/to/that/agent/skills
+ufoo bus poll "<subscriber-id>" --follow --interval 2
 ```
 
-最后一条命令必须由该 host 的流式后台任务能力托管。它只输出新观察到的
+使用 MCP `register_agent` 返回或由 host 预配的 subscriber，并由该 host 的
+流式后台任务能力托管最后一条命令。它只输出新观察到的
 pending event，不 claim、不 ack；Agent 处理完输出批次后，再执行输出中
 给出的 `ufoo bus ack --through <seq>`，以保留稍后到达的消息。
 这个 fallback 不会被 postinstall 或 `skills install all` 安装，而且

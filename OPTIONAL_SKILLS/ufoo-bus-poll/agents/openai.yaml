@@ -1,0 +1,4 @@
+interface:
+  display_name: "ufoo bus poll"
+  short_description: "Stream ufoo bus messages for non-injectable agents"
+  default_prompt: "Use $ufoo-bus-poll to attach this MCP-registered agent to its resident ufoo bus stream."
