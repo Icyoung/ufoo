@@ -92,7 +92,7 @@ pub fn run_surface(surface: Surface, ui_socket: Option<PathBuf>) -> io::Result<i
         if state.dirty || had_work {
             let mut cursor = None;
             terminal.draw(|frame| {
-                cursor = draw::draw(frame, &state);
+                cursor = draw::draw(frame, &mut state);
                 if let Some((x, y)) = cursor {
                     frame.set_cursor_position((x, y));
                 }

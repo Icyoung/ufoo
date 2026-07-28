@@ -13,7 +13,7 @@ use crate::model::{AppState, FocusPane, MultiFocus};
 const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 /// Draw UI and return hardware cursor position (x, y) for IME, if any.
-pub fn draw(frame: &mut Frame, state: &AppState) -> Option<(u16, u16)> {
+pub fn draw(frame: &mut Frame, state: &mut AppState) -> Option<(u16, u16)> {
     let area = frame.area();
     let project_h = if state.show_project_bar() { 1 } else { 0 };
     let completion_h = if state.focus == FocusPane::Completions && !state.completions.is_empty() {
@@ -173,8 +173,27 @@ fn draw_project_bar(frame: &mut Frame, area: Rect, state: &AppState) {
     frame.render_widget(paragraph, area);
 }
 
-fn draw_scrollback(frame: &mut Frame, area: Rect, state: &AppState) {
+fn draw_scrollback(frame: &mut Frame, area: Rect, state: &mut AppState) {
     let ufoo_hi = multi_ufoo_focused(state);
+    let inner = Block::default().borders(Borders::ALL).inner(area);
+    let content = Rect {
+        x: inner.x.saturating_add(1),
+        y: inner.y,
+        width: inner.width.saturating_sub(2).max(1),
+        height: inner.height,
+    };
+    let max_rows = content.height as usize;
+    let lines = build_scrollback_lines(state, content.width as usize);
+    let total = lines.len();
+    let max_off = total.saturating_sub(max_rows);
+    state.scroll_max_off = max_off;
+    if state.follow_tail {
+        state.scroll_offset = 0;
+    } else if state.scroll_offset > max_off {
+        // Stop ↑N from climbing past the oldest line (content already pinned).
+        state.scroll_offset = max_off;
+    }
+
     // Keep the same brand title as single-pane mode (🛸 UFOO); only the
     // border/title color changes when multi focuses the ufoo chat side.
     let title = if !state.viewing_agent_id.is_empty() {
@@ -202,26 +221,13 @@ fn draw_scrollback(frame: &mut Frame, area: Rect, state: &AppState) {
         .title(Span::styled(title, title_style))
         .borders(Borders::ALL)
         .border_style(border_style);
-    let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Grok-style content inset: leave 1 col for optional scrollbar + pad.
-    let content = Rect {
-        x: inner.x.saturating_add(1),
-        y: inner.y,
-        width: inner.width.saturating_sub(2).max(1),
-        height: inner.height,
-    };
-    let max_rows = content.height as usize;
-    let lines = build_scrollback_lines(state, content.width as usize);
-    let total = lines.len();
-    let max_off = total.saturating_sub(max_rows);
     let offset = state.scroll_offset.min(max_off);
     let end = total.saturating_sub(offset);
     let start = end.saturating_sub(max_rows);
     let visible = lines[start..end].to_vec();
-    let paragraph = Paragraph::new(visible);
-    frame.render_widget(paragraph, content);
+    frame.render_widget(Paragraph::new(visible), content);
 
     // Minimal scrollbar (bright when scrolled up, dim when following).
     // Cap thumb at 3 rows — a full-height ▐ strip looks like a dense sidebar.
@@ -255,12 +261,45 @@ fn draw_scrollback(frame: &mut Frame, area: Rect, state: &AppState) {
     }
 }
 
+fn strip_ansi_codes(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b {
+            i += 1;
+            if i < bytes.len() && bytes[i] == b'[' {
+                i += 1;
+                while i < bytes.len() {
+                    let b = bytes[i];
+                    i += 1;
+                    if (b'@'..=b'~').contains(&b) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        let ch = input[i..].chars().next().unwrap_or('\u{fffd}');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+fn is_speaker_stream_entry(entry: &crate::model::ScrollbackEntry) -> bool {
+    // Nearly all chat rows zebra; keep tools dim/unstriped so collapsed
+    // tool dumps don't dominate the stripe rhythm.
+    !matches!(entry.kind.as_str(), "tool" | "spacer")
+}
+
 fn build_scrollback_lines(state: &AppState, width: usize) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     let pad = " ";
+    let mut speaker_zebra = 0usize;
     for (entry_idx, entry) in state.entries.iter().enumerate() {
-        // Tighter than Grok's always-on gap: only separate user turns.
-        if entry_idx > 0 && entry.kind == "user" {
+        // Light gap between log rows (speaker chatter is dense otherwise).
+        if entry_idx > 0 {
             out.push(Line::from(""));
         }
         let mut body = if entry.kind == "tool" && entry.expanded && !entry.detail.is_empty() {
@@ -285,6 +324,25 @@ fn build_scrollback_lines(state: &AppState, width: usize) -> Vec<Line<'static>> 
             }
         }
 
+        let speaker_stream = is_speaker_stream_entry(entry);
+        // Markdown chalk (bold→whiteBright) punched random white holes into
+        // solid-colored speaker rows. Zebra rows strip ANSI and paint flat.
+        if speaker_stream && body.contains('\u{1b}') {
+            body = strip_ansi_codes(&body);
+        }
+        let zebra_style = if speaker_stream {
+            // Soft slate pair — white/gray zebra was too high-contrast.
+            let style = if speaker_zebra % 2 == 0 {
+                Style::default().fg(Color::Rgb(168, 172, 178))
+            } else {
+                Style::default().fg(Color::Rgb(138, 162, 188))
+            };
+            speaker_zebra = speaker_zebra.saturating_add(1);
+            Some(style)
+        } else {
+            None
+        };
+
         let (prefix, kind_style) = match entry.kind.as_str() {
             "user" => (
                 if entry.speaker.is_empty() {
@@ -292,7 +350,7 @@ fn build_scrollback_lines(state: &AppState, width: usize) -> Vec<Line<'static>> 
                 } else {
                     format!("❯ {} · ", entry.speaker)
                 },
-                Style::default().fg(Color::Cyan),
+                zebra_style.unwrap_or_else(|| Style::default().fg(Color::Cyan)),
             ),
             "error" => (
                 if entry.speaker.is_empty() {
@@ -300,24 +358,21 @@ fn build_scrollback_lines(state: &AppState, width: usize) -> Vec<Line<'static>> 
                 } else {
                     format!("{} · ", entry.speaker)
                 },
-                Style::default().fg(Color::Red),
+                zebra_style.unwrap_or_else(|| Style::default().fg(Color::Red)),
             ),
             "tool" => (String::new(), Style::default().fg(Color::DarkGray)),
-            "bus" => (
+            "bus" | "agent" | "report" | "assistant" | "success" | "system" | "meta" => (
                 if entry.speaker.is_empty() {
                     String::new()
                 } else {
                     format!("{} · ", entry.speaker)
                 },
-                Style::default().fg(Color::Yellow),
-            ),
-            "assistant" => (
-                if entry.speaker.is_empty() {
-                    String::new()
-                } else {
-                    format!("{} · ", entry.speaker)
-                },
-                Style::default().fg(Color::Gray),
+                zebra_style.unwrap_or_else(|| match entry.kind.as_str() {
+                    "bus" => Style::default().fg(Color::Yellow),
+                    "success" => Style::default().fg(Color::Green),
+                    "system" | "meta" => Style::default().fg(Color::Gray),
+                    _ => Style::default().fg(Color::White),
+                }),
             ),
             _ => (
                 if entry.speaker.is_empty() {
@@ -325,7 +380,7 @@ fn build_scrollback_lines(state: &AppState, width: usize) -> Vec<Line<'static>> 
                 } else {
                     format!("{} · ", entry.speaker)
                 },
-                Style::default().fg(Color::DarkGray),
+                zebra_style.unwrap_or_else(|| Style::default().fg(Color::White)),
             ),
         };
         let content_width = width.saturating_sub(pad.width()).max(1);
@@ -335,7 +390,8 @@ fn build_scrollback_lines(state: &AppState, width: usize) -> Vec<Line<'static>> 
             } else {
                 format!("{:width$}{line}", "", width = prefix.width())
             };
-            if head.contains('\u{1b}') {
+            // Speaker-stream rows always use zebra flat paint (no ANSI path).
+            if !speaker_stream && head.contains('\u{1b}') {
                 if let Ok(text) = head.into_text() {
                     for ansi_line in text.lines {
                         let mut spans = vec![Span::raw(pad.to_string())];
@@ -677,7 +733,7 @@ fn draw_status(frame: &mut Frame, area: Rect, state: &AppState) {
 /// Split the content area horizontally: ~1/3 chat scrollback on the left,
 /// agent panes grid on the right. Ports paneLayout.js::layoutAgentPanes so the
 /// Rust presentation and Node's `multi.viewport` calculation stay in sync.
-fn draw_multi_content(frame: &mut Frame, area: Rect, state: &AppState) {
+fn draw_multi_content(frame: &mut Frame, area: Rect, state: &mut AppState) {
     let chat_w = (area.width / 3).max(4);
     let right_left = area.x.saturating_add(chat_w).saturating_add(1);
     let right_w = area.width.saturating_sub(chat_w).saturating_sub(1);

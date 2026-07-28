@@ -2375,10 +2375,14 @@ fn scroll_down(state: &mut AppState) {
 fn scroll_by(state: &mut AppState, lines: isize) {
     if lines > 0 {
         state.follow_tail = false;
-        // Cap so we can't scroll past the oldest visible line.
         let next = state.scroll_offset.saturating_add(lines as usize);
-        // Soft cap: keep at least something sensible; exact max enforced at draw.
-        state.scroll_offset = next.min(10_000);
+        // Prefer the last-drawn max so we cannot overscroll the top edge.
+        // Before the first paint scroll_max_off is 0 — allow a soft climb.
+        state.scroll_offset = if state.scroll_max_off > 0 {
+            next.min(state.scroll_max_off)
+        } else {
+            next.min(10_000)
+        };
         return;
     }
     if lines == 0 {

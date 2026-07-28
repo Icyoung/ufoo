@@ -431,6 +431,9 @@ pub struct AppState {
     pub completion_index: usize,
     pub focus: FocusPane,
     pub scroll_offset: usize,
+    /// Max scroll_offset from the last draw (lines above the viewport).
+    /// Used to stop overscrolling past the oldest line.
+    pub scroll_max_off: usize,
     pub follow_tail: bool,
     pub connected: bool,
     pub busy: bool,
@@ -489,6 +492,7 @@ impl AppState {
             completion_index: 0,
             focus: FocusPane::Input,
             scroll_offset: 0,
+            scroll_max_off: 0,
             follow_tail: true,
             connected: false,
             busy: false,
@@ -564,6 +568,10 @@ impl AppState {
         self.evict_if_needed();
         if self.follow_tail {
             self.scroll_offset = 0;
+        } else if self.scroll_max_off > 0 && self.scroll_offset >= self.scroll_max_off {
+            // Pinned at the oldest edge: stay there as more lines arrive so
+            // the ↑N title and viewport don't silently drift.
+            self.scroll_offset = self.scroll_max_off.saturating_add(1);
         }
     }
 
