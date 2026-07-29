@@ -26,13 +26,14 @@ the host's maximum pending-call window ends.
 
 ## Attach the subscriber
 
-1. Inspect `UFOO_SUBSCRIBER_ID`. If it is nonempty, stop this workflow: the
+1. Inspect the host Agent's inherited `UFOO_SUBSCRIBER_ID` before starting or
+   mutating any helper terminal. If it is nonempty, stop this workflow: the
    ufoo wrapper already registered the Agent and direct injection is its receive
    path. Do not call MCP `register_agent` or arm a poll.
 2. When the variable is absent, reuse the exact subscriber already returned to
    this session by MCP `register_agent`, or call `register_agent` once. Do not
-   call bare `ufoo bus join`, borrow another subscriber, or export the MCP
-   result as `UFOO_SUBSCRIBER_ID`.
+   call bare `ufoo bus join` or borrow another subscriber. Keep the returned
+   value as the external Agent's identity.
 3. Select the receive mechanism from the host App's actual wake capability,
    never from Agent type:
 
@@ -44,8 +45,9 @@ the host's maximum pending-call window ends.
 
 Agent type and subscriber prefix are not capability signals. An externally
 hosted MCP subscriber named `codex:*`, `claude-code:*`, or any other type is
-eligible because the absent environment variable—not its name—selected this
-delivery mode.
+eligible because the Agent's inherited environment—not its name—selected this
+delivery mode. A variable exported later inside a dedicated helper terminal
+does not reclassify the host Agent as wrapper-managed.
 
 ## Use Codex App pending MCP wait
 
@@ -80,14 +82,21 @@ Never run two pending waits for the same subscriber.
 1. Check for an existing `ufoo bus poll ... --follow` process for the literal
    MCP subscriber. Keep one healthy process; the CLI rejects a duplicate
    receive lease.
-2. Start this command through Cursor's monitored background shell:
+2. Start this command through Cursor's monitored background shell. Bind the
+   MCP-returned subscriber inside that dedicated terminal, then launch the
+   resident poll:
 
    ```bash
-   ufoo bus poll "<mcp-subscriber-id>" --follow --interval 30
+   export UFOO_SUBSCRIBER_ID="<mcp-subscriber-id>"
+   exec ufoo bus poll "$UFOO_SUBSCRIBER_ID" --follow --interval 30
    ```
 
    Use `30` seconds by default; accept `15`–`120` when the user requests a
    different latency. Do not use `nohup`, shell `&`, or an OS-detached daemon.
+   This terminal-local export gives its CLI commands a stable sender/subscriber
+   identity. It must happen only after the host Agent was classified as
+   external and registered through MCP; it is not evidence of wrapper launch
+   or direct-injection support.
 3. Start the monitored task with
    `block_until_ms: 0`.
 4. Configure `notify_on_output` with:

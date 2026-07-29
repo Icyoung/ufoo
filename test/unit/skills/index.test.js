@@ -185,6 +185,10 @@ describe('SkillsManager', () => {
       expect(pollSkillText).toContain('AGENT_LOOP_TICK_*');
       expect(pollSkillText).toContain('MCP `register_agent`');
       expect(pollSkillText).toContain('UFOO_SUBSCRIBER_ID');
+      expect(pollSkillText).toContain('host Agent\'s inherited');
+      expect(pollSkillText).toContain('dedicated helper terminal');
+      expect(pollSkillText).toContain('export UFOO_SUBSCRIBER_ID="<mcp-subscriber-id>"');
+      expect(pollSkillText).toContain('does not reclassify');
       expect(pollSkillText).toContain('not capability signals');
       expect(pollSkillText).not.toContain('Built-in delivery agent types');
       expect(busSkillText).toContain('$ufoo-bus-poll');
@@ -195,7 +199,9 @@ describe('SkillsManager', () => {
       expect(ufooSkillText).toContain('UFOO_SUBSCRIBER_ID');
       expect(ufooSkillText).toContain('MCP `register_agent`');
       expect(ufooSkillText).toContain('$ufoo-bus-poll');
-      expect(ufooSkillText).toContain('do not export it as `UFOO_SUBSCRIBER_ID`');
+      expect(ufooSkillText).toContain('inherited launch environment');
+      expect(ufooSkillText).toContain('dedicated listener terminal may export');
+      expect(ufooSkillText).toContain('does not change the already selected');
       expect(fs.existsSync(path.join(pollSkill, 'agents', 'openai.yaml'))).toBe(true);
     });
   });

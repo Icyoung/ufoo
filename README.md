@@ -130,8 +130,8 @@ ufoo mcp
 
 ### Agent Delivery Modes
 
-ufoo supports two Agent delivery modes, selected only by the presence of
-`UFOO_SUBSCRIBER_ID`:
+ufoo supports two Agent delivery modes, selected only from the host Agent's
+inherited `UFOO_SUBSCRIBER_ID` before any helper terminal is started:
 
 - Wrapper-managed Agents start through `ucodex`, `uclaude`, `uagy`, `ukimi`, or
   `ucode`. The wrapper provides `UFOO_SUBSCRIBER_ID`; ufoo monitors the shell
@@ -145,9 +145,11 @@ ufoo supports two Agent delivery modes, selected only by the presence of
   `ufoo bus poll --follow` background output with `notify_on_output`.
 
 Agent type names and subscriber prefixes are routing metadata, not capability
-signals. External Agents must not export the MCP subscriber as
-`UFOO_SUBSCRIBER_ID`, because that variable specifically marks the
-wrapper-managed path.
+signals. After an external Cursor Agent registers through MCP, its dedicated
+listener terminal may export the returned subscriber as
+`UFOO_SUBSCRIBER_ID` so CLI operations share one identity. That child-shell
+binding does not alter the host Agent's already selected external mode and is
+not evidence of wrapper injection.
 
 Chat is a UI client. The daemon owns project runtime state. Agents communicate
 through bus queues, prompt injection, shared memory, reports, and tool handlers
@@ -235,8 +237,7 @@ ufoo skills list --optional
 ufoo skills install ufoo-bus-poll --target /path/to/that/agent/skills
 ```
 
-Register once through MCP `register_agent`, retain its returned subscriber, and
-do not export it as `UFOO_SUBSCRIBER_ID`.
+Register once through MCP `register_agent` and retain its returned subscriber.
 
 - **Codex App:** call MCP `wait_for_message` in the foreground with
   `after_seq: 0` and `timeout_seconds: 600`. The tool call stays pending inside
@@ -244,8 +245,9 @@ do not export it as `UFOO_SUBSCRIBER_ID`.
   On timeout, re-arm with the same cursor. After handling a message response,
   call MCP `ack_bus` with its `last_seq` as `through_seq`, then re-arm with that
   `last_seq` when the Agent is idle again.
-- **Cursor:** run
-  `ufoo bus poll "<subscriber-id>" --follow --interval 30` through the monitored
+- **Cursor:** bind the MCP subscriber and run
+  `export UFOO_SUBSCRIBER_ID="<subscriber-id>"; exec ufoo bus poll
+  "$UFOO_SUBSCRIBER_ID" --follow --interval 30` through the monitored
   background shell with `block_until_ms: 0`, and configure
   `notify_on_output` to match `\[ufoo\]`. Startup and empty intervals are
   silent; only ufoo-delivered messages wake the model.
@@ -254,10 +256,12 @@ Both paths keep idle queue checks outside the LLM. A background PTY alone is
 not a wake mechanism in Codex App.
 
 The poll skill is not installed by postinstall or `skills install all`.
-Wrapper-managed Agents skip MCP registration and external waiting whenever
-`UFOO_SUBSCRIBER_ID` is present. Receive-path selection depends on host App
-capabilities, never on whether the external Agent calls itself Codex, Claude,
-Cursor, or another type.
+Wrapper-managed Agents skip MCP registration and external waiting when
+`UFOO_SUBSCRIBER_ID` was present in the Agent's inherited launch environment.
+A value exported later inside a Cursor listener terminal does not rerun this
+classification. Receive-path selection depends on host App capabilities, never
+on whether the external Agent calls itself Codex, Claude, Cursor, or another
+type.
 
 ### Context, Memory, History, Reports
 

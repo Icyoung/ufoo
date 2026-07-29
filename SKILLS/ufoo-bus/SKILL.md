@@ -21,7 +21,8 @@ Verify `.ufoo/bus/` exists. If it does not, initialize it:
 ufoo init --targets bus --project "$(pwd)"
 ```
 
-Use `UFOO_SUBSCRIBER_ID` as the only delivery-mode signal:
+Use the host Agent's inherited `UFOO_SUBSCRIBER_ID` as the only delivery-mode
+signal. Evaluate it before creating or mutating helper terminals:
 
 - Nonempty: this is a wrapper-managed Agent. The wrapper already registered
   the subscriber and the daemon can inject into its monitored shell. Reuse the
@@ -29,9 +30,12 @@ Use `UFOO_SUBSCRIBER_ID` as the only delivery-mode signal:
   polling.
 - Absent: this is an externally hosted Agent. Reuse this session's
   MCP-registered subscriber or call MCP `register_agent` exactly once. Keep the
-  returned value as `<subscriber-id>` for later MCP and CLI operations; do not
-  export it as `UFOO_SUBSCRIBER_ID`. Invoke `$ufoo-bus-poll` once at session
-  start to select the receive path supported by the host App.
+  returned value as `<subscriber-id>` for later MCP and CLI operations. Invoke
+  `$ufoo-bus-poll` once at session start to select the receive path supported
+  by the host App. That skill may bind the subscriber as
+  `UFOO_SUBSCRIBER_ID` inside a dedicated Cursor listener terminal after MCP
+  registration. Never use that helper-local value to reclassify the host as
+  wrapper-managed.
 
 Never choose a delivery mode from an Agent type such as `codex`, `cursor`, or
 `claude-code`. Agents do not self-register with bare `ufoo bus join`.
@@ -101,11 +105,12 @@ keep their App-specific receive wait armed when idle.
 
 ## Delegate resident watching
 
-For an externally hosted Agent with no `UFOO_SUBSCRIBER_ID`, invoke
-`$ufoo-bus-poll` at session start and follow it end-to-end. This is its normal
-receive path, not an Agent-type fallback. That skill selects pending MCP
-`wait_for_message` for Codex App or monitored background stdout for Cursor.
-Never invoke it when the environment variable is present.
+For an externally hosted Agent whose inherited launch environment had no
+`UFOO_SUBSCRIBER_ID`, invoke `$ufoo-bus-poll` at session start and follow it
+end-to-end. This is its normal receive path, not an Agent-type fallback. That
+skill selects pending MCP `wait_for_message` for Codex App or monitored
+background stdout for Cursor. Never invoke it when the variable was already
+present before helper-terminal setup.
 
 Do not implement a timer, tick, sleep/check loop, or second resident mechanism
 in this skill. Do not arm resident watching merely because a message was sent

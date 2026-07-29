@@ -14,7 +14,8 @@ Apply the unified workspace protocol. Use `$ufoo-bus`, `$ufoo-context`, or
 
 ## Resolve the bus delivery mode
 
-Use the shell environment as the only delivery-mode signal. Do not infer
+Use the host Agent's inherited launch environment as the only delivery-mode
+signal. Evaluate it before creating or mutating helper terminals. Do not infer
 capabilities from the Agent type or subscriber prefix.
 
 - If `UFOO_SUBSCRIBER_ID` is nonempty, the Agent was started by a ufoo wrapper
@@ -24,9 +25,12 @@ capabilities from the Agent type or subscriber prefix.
 - If `UFOO_SUBSCRIBER_ID` is absent, the Agent is externally hosted. Reuse the
   subscriber already returned to this session by MCP `register_agent`, or call
   `register_agent` once if none exists. Keep that returned subscriber as the
-  session identity, do not export it as `UFOO_SUBSCRIBER_ID`, and invoke
-  `$ufoo-bus-poll` to establish the receive path using this host App's own
-  no-token wait and self-wake primitive.
+  session identity and invoke `$ufoo-bus-poll` to establish the receive path
+  using this host App's own no-token wait and self-wake primitive. A
+  Cursor-style dedicated listener terminal may export the returned value as
+  `UFOO_SUBSCRIBER_ID` after registration so its CLI commands share the
+  identity. That helper-local export does not change the already selected
+  external delivery mode and must not be treated as wrapper evidence.
 
 In the sections below, `<subscriber-id>` means the wrapper-provided
 `UFOO_SUBSCRIBER_ID` or the subscriber returned by MCP, according to this

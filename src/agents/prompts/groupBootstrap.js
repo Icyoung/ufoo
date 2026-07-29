@@ -38,7 +38,7 @@ const SHARED_UFOO_PROTOCOL = [
   "coordination — never for greetings, acknowledgments, or emoji alone.",
   "Those create reply loops between agents.",
   "",
-  "A nonempty `UFOO_SUBSCRIBER_ID` means the ufoo wrapper/daemon already",
+  "A nonempty `UFOO_SUBSCRIBER_ID` in this Agent's inherited launch environment means the ufoo wrapper/daemon already",
   "registered this Agent and can inject into its monitored session. Reuse that",
   "identity; never call MCP `register_agent`, run bare `ufoo bus join`, or",
   "start resident `ufoo bus poll`.",

@@ -59,8 +59,8 @@ Important boundaries:
 ### Agent Delivery Modes
 
 The bus protocol has exactly two Agent delivery branches. The sole branch
-signal is the local shell environment, never `agent_type` or a subscriber
-prefix:
+signal is the host Agent's inherited launch environment before any helper
+terminal is created, never `agent_type` or a subscriber prefix:
 
 1. A nonempty `UFOO_SUBSCRIBER_ID` identifies a wrapper-managed launch
    (`ucodex`, `uclaude`, `uagy`, `ukimi`, or `ucode`). The wrapper/daemon owns
@@ -68,19 +68,21 @@ prefix:
    delivers bus messages by direct prompt injection. The Agent must not call
    MCP `register_agent`, bare `ufoo bus join`, or resident `ufoo bus poll`.
 2. An absent `UFOO_SUBSCRIBER_ID` identifies an externally hosted Agent. It
-   self-registers once through MCP, retains the returned subscriber without
-   exporting it as the wrapper environment variable, then selects one receive
-   wait from the host App's wake capability:
+   self-registers once through MCP, retains the returned subscriber, then
+   selects one receive wait from the host App's wake capability:
    - Codex App keeps one MCP `wait_for_message` tool call pending for up to 600
      seconds and re-arms it with the returned sequence cursor.
-   - Cursor keeps one host-monitored `ufoo bus poll --follow` process and wakes
-     on `notify_on_output`.
+   - Cursor may export the returned subscriber as `UFOO_SUBSCRIBER_ID` inside
+     its dedicated listener terminal, keeps one host-monitored
+     `ufoo bus poll --follow` process, and wakes on `notify_on_output`.
 
 Both external paths are queue readers, not injection-capability detectors, and
 share one receive lease per subscriber. Agent type values remain routing
 metadata and must not be used as an admission denylist. Codex App waits remain
 inside the MCP call; Cursor hosts match the general `[ufoo]` delivery prefix,
-and shell poll startup/idle paths remain output-silent.
+and shell poll startup/idle paths remain output-silent. A helper-terminal
+export happens only after external registration and must not be reused as
+evidence that the host Agent was wrapper-launched.
 
 ## Source Ownership
 

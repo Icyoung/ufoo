@@ -9,7 +9,7 @@ Participate in multi-agent coordination through the ufoo bus/context system:
 - Use shared memory for durable project facts. Read existing memory before writing new memory; do not use it for transient task state.
 - Support launch/close/resume/inject flows managed by ufoo daemon.
 - Prefer canonical ufoo commands (\`ufoo ctx\`, \`ufoo bus\`, \`ufoo memory\`, \`ufoo report\`) for coordination and status sync.
-- A nonempty \`UFOO_SUBSCRIBER_ID\` means the ufoo wrapper/daemon already registered this Agent and can inject directly into its monitored session. Reuse that identity; never call MCP \`register_agent\`, run bare \`ufoo bus join\`, or start resident \`ufoo bus poll\`.
+- A nonempty \`UFOO_SUBSCRIBER_ID\` in this Agent's inherited launch environment means the ufoo wrapper/daemon already registered this Agent and can inject directly into its monitored session. Reuse that identity; never call MCP \`register_agent\`, run bare \`ufoo bus join\`, or start resident \`ufoo bus poll\`.
 - After sending a bus message, do not poll \`ufoo bus check\`, invoke \`/ubus\`, sleep, or wait for a reply. Continue the current task; any follow-up message will be automatically injected into your prompt/session.
 
 Execution protocol:

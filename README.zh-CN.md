@@ -127,7 +127,8 @@ ufoo mcp
 
 ### Agent 消息投递模式
 
-ufoo 支持两种 Agent 投递模式，只根据 `UFOO_SUBSCRIBER_ID` 是否存在来选择：
+ufoo 支持两种 Agent 投递模式，只根据启动辅助 terminal 之前，宿主 Agent
+继承的 `UFOO_SUBSCRIBER_ID` 是否存在来选择：
 
 - 包装器托管的 Agent 通过 `ucodex`、`uclaude`、`uagy`、`ukimi` 或 `ucode`
   启动。包装器会提供 `UFOO_SUBSCRIBER_ID`；ufoo 能监控其 shell 活动并定位
@@ -138,9 +139,10 @@ ufoo 支持两种 Agent 投递模式，只根据 `UFOO_SUBSCRIBER_ID` 是否存�
   无 token 等待方式：Codex App 挂起 MCP `wait_for_message`，Cursor 则用
   `notify_on_output` 监控 `ufoo bus poll --follow` 的后台输出。
 
-Agent 类型名和 subscriber 前缀只是路由元数据，不是能力判断条件。外部 Agent
-不要把 MCP 返回的 subscriber 导出成 `UFOO_SUBSCRIBER_ID`，因为该变量专门
-表示包装器托管链路。
+Agent 类型名和 subscriber 前缀只是路由元数据，不是能力判断条件。外部
+Cursor Agent 通过 MCP 注册后，可以在专用监听 terminal 内把返回的
+subscriber 导出为 `UFOO_SUBSCRIBER_ID`，让 CLI 操作复用同一身份。这个
+子 shell 绑定不会改变宿主 Agent 已选择的外部模式，也不代表支持包装器注入。
 
 Chat 是 UI client。daemon 拥有项目运行态。Agent 通过 bus queue、prompt
 injection、shared memory、report 和 tool handler 协作，而不是直接依赖
@@ -223,25 +225,26 @@ ufoo skills list --optional
 ufoo skills install ufoo-bus-poll --target /path/to/that/agent/skills
 ```
 
-先通过 MCP `register_agent` 注册一次并保留返回的 subscriber，不要将它
-导出成 `UFOO_SUBSCRIBER_ID`。
+先通过 MCP `register_agent` 注册一次并保留返回的 subscriber。
 
 - **Codex App：**前台调用 MCP `wait_for_message`，首次使用
   `after_seq: 0`、`timeout_seconds: 600`。工具调用在 ufoo 内保持 pending；
   有消息立即返回并唤醒当前任务，不依赖 shell stdout。超时后用相同游标续挂；
   处理消息后，用返回的 `last_seq` 作为 MCP `ack_bus.through_seq`，Agent
   再次空闲时以该 `last_seq` 续挂。
-- **Cursor：**通过 monitored background shell 运行
-  `ufoo bus poll "<subscriber-id>" --follow --interval 30`，设置
+- **Cursor：**在 monitored background shell 中绑定 MCP subscriber，再运行
+  `export UFOO_SUBSCRIBER_ID="<subscriber-id>"; exec ufoo bus poll
+  "$UFOO_SUBSCRIBER_ID" --follow --interval 30`，设置
   `block_until_ms: 0`，并让 `notify_on_output` 匹配 `\[ufoo\]`。启动和
   空轮询保持静默，只有 ufoo 投递消息会唤醒模型。
 
 两条路径都把空闲检查留在 LLM 之外。仅有后台 PTY 输出并不能唤醒 Codex App。
 
-poll skill 不会由 postinstall 或 `skills install all` 安装。只要环境中存在
-`UFOO_SUBSCRIBER_ID`，包装器托管的 Agent 就跳过 MCP 注册和外部等待。
-接收链路由宿主 App 的能力决定，与外部 Agent 叫 Codex、Claude、Cursor
-或其他类型无关。
+poll skill 不会由 postinstall 或 `skills install all` 安装。如果
+`UFOO_SUBSCRIBER_ID` 在 Agent 启动时的继承环境中已经存在，包装器托管的
+Agent 就跳过 MCP 注册和外部等待；之后在 Cursor 监听 terminal 中导出的值
+不会重新触发这次分类。接收链路由宿主 App 的能力决定，与外部 Agent 叫
+Codex、Claude、Cursor 或其他类型无关。
 
 ### Context、Memory、History、Report
 
