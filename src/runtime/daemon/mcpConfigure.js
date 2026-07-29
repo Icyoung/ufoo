@@ -97,7 +97,7 @@ function configureCodexMcp(options = {}) {
   const existing = fs.existsSync(target) ? fs.readFileSync(target, "utf8") : "";
   const next = renderCodexConfig(existing, connection);
   if (options.dryRun === true) {
-    const redacted = renderCodexConfig(existing, {
+    const managedBlock = buildCodexManagedBlock({
       ...connection,
       token: "<redacted>",
     });
@@ -108,7 +108,7 @@ function configureCodexMcp(options = {}) {
       transport: "streamable_http",
       endpoint: connection.endpoint,
       changed: next !== existing,
-      content: redacted,
+      managed_block: managedBlock,
     };
   }
 
@@ -151,7 +151,10 @@ function runMcpConfigureCli(host, options = {}) {
   }
   const result = configureCodexMcp(options);
   if (options.dryRun === true) {
-    process.stdout.write(result.content);
+    process.stdout.write(`Target: ${result.target}\n`);
+    process.stdout.write(`Changed: ${result.changed ? "yes" : "no"}\n`);
+    process.stdout.write(`Transport: Streamable HTTP ${result.endpoint}\n\n`);
+    process.stdout.write(`${result.managed_block}\n`);
   } else {
     process.stdout.write(`Configured Codex MCP at ${result.target}\n`);
     process.stdout.write(`Transport: Streamable HTTP ${result.endpoint}\n`);

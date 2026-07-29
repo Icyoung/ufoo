@@ -59,18 +59,29 @@ describe("MCP host configuration", () => {
     }
   });
 
-  test("redacts the bearer capability from dry-run output", () => {
+  test("dry-run returns only a redacted managed block, never existing config", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-mcp-config-dry-"));
     const configPath = path.join(root, "config.toml");
+    const unrelatedSecret = "third-party-secret-that-must-not-be-printed";
+    fs.writeFileSync(
+      configPath,
+      [
+        "[mcp_servers.other]",
+        `http_headers = { Authorization = "Bearer ${unrelatedSecret}" }`,
+        "",
+      ].join("\n")
+    );
     try {
       const result = configureCodexMcp({
         configPath,
         connection,
         dryRun: true,
       });
-      expect(result.content).toContain("Bearer <redacted>");
-      expect(result.content).not.toContain(connection.token);
-      expect(fs.existsSync(configPath)).toBe(false);
+      expect(result.managed_block).toContain("Bearer <redacted>");
+      expect(result.managed_block).not.toContain(connection.token);
+      expect(result.managed_block).not.toContain(unrelatedSecret);
+      expect(result).not.toHaveProperty("content");
+      expect(fs.readFileSync(configPath, "utf8")).toContain(unrelatedSecret);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

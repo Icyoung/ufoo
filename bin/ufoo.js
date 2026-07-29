@@ -21,7 +21,7 @@ function printMcpHelp() {
   console.log("Options:");
   console.log("  --no-auto-start  Do not auto-start the home-scoped global controller daemon");
   console.log("  --json           Print status or restart results as JSON");
-  console.log("  --dry-run        Print a Codex HTTP configuration without writing it");
+  console.log("  --dry-run        Print a sanitized Codex migration preview without writing it");
   console.log("  -h, --help       Display help for the MCP bridge command");
   console.log("");
   console.log("Notes:");
