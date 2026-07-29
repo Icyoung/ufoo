@@ -59,6 +59,36 @@ describe("MCP host configuration", () => {
     }
   });
 
+  test("removes only retired u-foo package skill config blocks", () => {
+    const existing = [
+      'model = "gpt-test"',
+      "",
+      "[[skills.config]]",
+      'path = "/opt/homebrew/lib/node_modules/u-foo/modules/bus/SKILLS/ubus/SKILL.md"',
+      "enabled = false",
+      "",
+      "[[skills.config]]",
+      'path = "/Users/test/.agents/skills/ubus/SKILL.md"',
+      "enabled = false",
+      "",
+      "[[skills.config]]",
+      'path = "/Users/test/.agents/skills/keep-me/SKILL.md"',
+      "enabled = true",
+      "",
+      "[features]",
+      "js_repl = true",
+      "",
+    ].join("\n");
+
+    const next = renderCodexConfig(existing, connection);
+    expect(next).not.toContain(
+      "/opt/homebrew/lib/node_modules/u-foo/modules/bus/SKILLS/ubus/SKILL.md"
+    );
+    expect(next).toContain("/Users/test/.agents/skills/ubus/SKILL.md");
+    expect(next).toContain("/Users/test/.agents/skills/keep-me/SKILL.md");
+    expect(next).toContain("[features]");
+  });
+
   test("dry-run returns only a redacted managed block, never existing config", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-mcp-config-dry-"));
     const configPath = path.join(root, "config.toml");

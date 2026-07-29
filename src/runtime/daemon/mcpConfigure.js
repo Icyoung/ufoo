@@ -13,6 +13,13 @@ const {
 
 const MANAGED_BLOCK_START = "# >>> ufoo MCP (managed)";
 const MANAGED_BLOCK_END = "# <<< ufoo MCP (managed)";
+const RETIRED_UFOO_SKILL_NAMES = new Set([
+  "ubus",
+  "uctx",
+  "uinit",
+  "ustatus",
+  "ufoo-poll",
+]);
 
 function tomlString(value = "") {
   return JSON.stringify(String(value || ""));
@@ -83,10 +90,45 @@ function removeLegacyUfooTransportSections(text = "") {
   return next;
 }
 
+function removeRetiredUfooSkillConfigBlocks(text = "") {
+  const source = String(text || "");
+  const tables = [];
+  const tablePattern = /^\s*(\[{1,2}[^\]\r\n]+\]{1,2})\s*(?:#.*)?$/gm;
+  let match;
+  while ((match = tablePattern.exec(source)) !== null) {
+    tables.push({
+      header: match[1],
+      start: match.index,
+    });
+  }
+  const ranges = [];
+  for (let index = 0; index < tables.length; index += 1) {
+    if (tables[index].header !== "[[skills.config]]") continue;
+    const start = tables[index].start;
+    const end = index + 1 < tables.length ? tables[index + 1].start : source.length;
+    const block = source.slice(start, end);
+    const pathMatch = block.match(/^\s*path\s*=\s*["']([^"']+)["']\s*(?:#.*)?$/m);
+    if (!pathMatch) continue;
+    const normalizedPath = pathMatch[1].replace(/\\/g, "/");
+    const skillMatch = normalizedPath.match(
+      /\/u-foo\/(?:modules\/[^/]+\/)?SKILLS\/([^/]+)\/SKILL\.md$/
+    );
+    if (skillMatch && RETIRED_UFOO_SKILL_NAMES.has(skillMatch[1])) {
+      ranges.push([start, end]);
+    }
+  }
+  let next = source;
+  for (const [start, end] of ranges.sort((a, b) => b[0] - a[0])) {
+    next = `${next.slice(0, start)}${next.slice(end)}`;
+  }
+  return next;
+}
+
 function renderCodexConfig(existing, connection) {
   const withoutManaged = removeManagedBlock(existing);
   const withoutLegacy = removeLegacyUfooTransportSections(withoutManaged);
-  const trimmed = withoutLegacy.trimEnd();
+  const withoutRetiredSkills = removeRetiredUfooSkillConfigBlocks(withoutLegacy);
+  const trimmed = withoutRetiredSkills.trimEnd();
   return `${trimmed ? `${trimmed}\n\n` : ""}${buildCodexManagedBlock(connection)}\n`;
 }
 
@@ -173,6 +215,7 @@ module.exports = {
   findTomlSections,
   removeLegacyUfooTransportSections,
   removeManagedBlock,
+  removeRetiredUfooSkillConfigBlocks,
   renderCodexConfig,
   runMcpConfigureCli,
 };
