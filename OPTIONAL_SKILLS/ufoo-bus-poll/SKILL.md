@@ -31,9 +31,11 @@ the host's maximum pending-call window ends.
    ufoo wrapper already registered the Agent and direct injection is its receive
    path. Do not call MCP `register_agent` or arm a poll.
 2. When the variable is absent, reuse the exact subscriber already returned to
-   this session by MCP `register_agent`, or call `register_agent` once. Do not
-   call bare `ufoo bus join` or borrow another subscriber. Keep the returned
-   value as the external Agent's identity.
+   this session by MCP `register_agent` together with its `agent_handle`, or
+   call `register_agent` once. Pass a stable `client_instance_id` when the host
+   exposes one. Do not call bare `ufoo bus join` or borrow another subscriber.
+   Keep the returned pair as the external Agent's identity. Never expose the
+   handle in messages, reports, logs, or the Cursor listener terminal.
 3. Select the receive mechanism from the host App's actual wake capability,
    never from Agent type:
 
@@ -59,6 +61,7 @@ prints stdout. Keep the wait inside one foreground MCP tool call instead:
 
    - `project_root`: the registered project root
    - `subscriber`: the caller-owned MCP subscriber
+   - `agent_handle`: the opaque handle returned with that registration
    - `after_seq`: `0` for the first wait, then the last returned `last_seq`
    - `timeout_seconds`: `600`
 2. Leave that tool call pending. Do not background it and do not start
@@ -66,7 +69,7 @@ prints stdout. Keep the wait inside one foreground MCP tool call instead:
    not invoke the model or consume model tokens.
 3. If it returns `status: "message"`, handle every returned message, then call
    MCP `ack_bus` with `through_seq: <last_seq>`. This preserves messages that
-   arrived after the returned batch.
+   arrived after the returned batch. Include the same `agent_handle`.
 4. If it returns `status: "timeout"`, no message was received. If monitoring is
    still required, immediately call `wait_for_message` again with the same
    `after_seq`. The timeout return is the only periodic model wake.
@@ -127,6 +130,7 @@ For Cursor, handle every `[ufoo]<from:...>` event in the emitted batch.
 2. Acknowledge only after handling:
 
    - Codex App: MCP `ack_bus` with the returned `last_seq` as `through_seq`.
+     Include the caller-owned `agent_handle`.
    - Cursor: run the exact command printed by the stream:
 
    ```bash
@@ -136,8 +140,8 @@ For Cursor, handle every `[ufoo]<from:...>` event in the emitted batch.
    Preserve the sequence boundary so later messages stay pending.
 3. Reply only with a requested result, answer, blocker, or fact the sender
    needs. Use MCP `dispatch_message` with the same `project_root`,
-   caller-owned subscriber, sender ID as `target`, and substantive result as
-   `message`.
+   caller-owned subscriber and `agent_handle`, sender ID as `target`, and
+   substantive result as `message`.
 
 Do not reply to greetings, thanks, or acknowledgement-only messages. After
 sending, continue the current task. Keep the existing Cursor stream running, or

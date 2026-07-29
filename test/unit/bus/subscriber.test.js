@@ -411,6 +411,36 @@ describe('SubscriberManager', () => {
   });
 
   describe('cleanupInactive', () => {
+    it('keeps live MCP leases and expires stale MCP registrations', () => {
+      busData.agents['codex:live-mcp'] = {
+        agent_type: 'codex',
+        status: 'active',
+        pid: 999999,
+        mcp_bridge: true,
+        mcp_agent_handle_hash: 'a'.repeat(64),
+        mcp_lease_expires_at: new Date(Date.now() + 60000).toISOString(),
+        last_seen: new Date(Date.now() - 60000).toISOString(),
+      };
+      busData.agents['codex:expired-mcp'] = {
+        agent_type: 'codex',
+        status: 'active',
+        pid: process.pid,
+        mcp_bridge: true,
+        mcp_agent_handle_hash: 'b'.repeat(64),
+        mcp_lease_expires_at: new Date(Date.now() - 60000).toISOString(),
+        last_seen: new Date(Date.now() - 60000).toISOString(),
+      };
+
+      manager.cleanupInactive();
+
+      expect(busData.agents['codex:live-mcp'].status).toBe('active');
+      expect(busData.agents['codex:expired-mcp']).toMatchObject({
+        status: 'inactive',
+        activity_state: '',
+      });
+      expect(busData.agents['codex:expired-mcp'].mcp_revoked_at).toBeDefined();
+    });
+
     it('should mark dead PIDs as inactive', async () => {
       await manager.join('abc1', 'claude-code');
       await manager.join('abc2', 'codex');

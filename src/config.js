@@ -36,6 +36,7 @@ const DEFAULT_CONFIG = {
   launchMode: "auto",
   agentProvider: "codex-cli",
   controllerMode: "main",
+  mcpPort: 47631,
   codexInternalThreadMode: "api",
   codexAuthPath: "",
   codexOauthRefreshWindowSec: 300,
@@ -125,6 +126,12 @@ function normalizeCodexInternalThreadMode(value) {
   return "legacy";
 }
 
+function normalizeMcpPort(value) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 1 || parsed > 65535) return DEFAULT_CONFIG.mcpPort;
+  return parsed;
+}
+
 function normalizeCodexAuthPath(value) {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -184,6 +191,7 @@ function loadConfig(projectRoot) {
       controllerMode: Object.prototype.hasOwnProperty.call(raw, "controllerMode")
         ? normalizeControllerMode(raw.controllerMode)
         : DEFAULT_CONFIG.controllerMode,
+      mcpPort: normalizeMcpPort(raw.mcpPort),
       codexInternalThreadMode: Object.prototype.hasOwnProperty.call(raw, "codexInternalThreadMode")
         ? normalizeCodexInternalThreadMode(raw.codexInternalThreadMode)
         : DEFAULT_CONFIG.codexInternalThreadMode,
@@ -240,6 +248,7 @@ function saveConfig(projectRoot, config) {
   merged.routerProvider = typeof merged.routerProvider === "string" ? merged.routerProvider.trim() : "";
   merged.routerModel = typeof merged.routerModel === "string" ? merged.routerModel.trim() : "";
   merged.controllerMode = normalizeControllerMode(merged.controllerMode);
+  merged.mcpPort = normalizeMcpPort(merged.mcpPort);
   merged.codexInternalThreadMode = normalizeCodexInternalThreadMode(merged.codexInternalThreadMode);
   merged.codexAuthPath = normalizeCodexAuthPath(merged.codexAuthPath);
   merged.codexOauthRefreshWindowSec = normalizeCodexOauthRefreshWindowSec(merged.codexOauthRefreshWindowSec);
@@ -291,6 +300,7 @@ module.exports = {
   defaultRouterProviderForAgentProvider,
   defaultRouterModelForProvider,
   normalizeControllerMode,
+  normalizeMcpPort,
   normalizeCodexInternalThreadMode,
   normalizeCodexAuthPath,
   normalizeCodexOauthRefreshWindowSec,

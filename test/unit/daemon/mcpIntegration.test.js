@@ -61,6 +61,7 @@ describe("MCP external integration (Phase 6)", () => {
     expect(a.ok).toBe(true);
     expect(a.agent_type).toBe("claude-code");
     const subA = a.subscriber;
+    const handleA = a.agent_handle;
 
     // Agent B registers (simulating raw codex)
     const regB = await call(server, 2, "register_agent", {
@@ -71,6 +72,7 @@ describe("MCP external integration (Phase 6)", () => {
     const b = regB.result.structuredContent;
     expect(b.ok).toBe(true);
     const subB = b.subscriber;
+    const handleB = b.agent_handle;
 
     // Both appear in bus summary
     const summary = await call(server, 3, "read_bus_summary", {
@@ -80,10 +82,20 @@ describe("MCP external integration (Phase 6)", () => {
     expect(agents.some((ag) => ag.id === subA)).toBe(true);
     expect(agents.some((ag) => ag.id === subB)).toBe(true);
 
+    const forged = await call(server, "forged-handle", "dispatch_message", {
+      project_root: projectRoot,
+      subscriber: subB,
+      agent_handle: handleA,
+      target: subA,
+      message: "forged",
+    });
+    expect(forged.error.data.code).toBe("invalid_agent_handle");
+
     // Agent A publishes activity
     const actRes = await call(server, 4, "publish_activity_state", {
       project_root: projectRoot,
       subscriber: subA,
+      agent_handle: handleA,
       activity_state: "working",
       detail: "reviewing auth module",
     });
@@ -93,6 +105,7 @@ describe("MCP external integration (Phase 6)", () => {
     const waiting = call(server, 5, "wait_for_message", {
       project_root: projectRoot,
       subscriber: subB,
+      agent_handle: handleB,
       after_seq: 0,
       timeout_seconds: 10,
     });
@@ -102,6 +115,7 @@ describe("MCP external integration (Phase 6)", () => {
     await call(server, 6, "dispatch_message", {
       project_root: projectRoot,
       subscriber: subA,
+      agent_handle: handleA,
       source: subA,
       target: subB,
       message: "Please review the auth module.",
@@ -119,6 +133,7 @@ describe("MCP external integration (Phase 6)", () => {
     const ack = await call(server, 7, "ack_bus", {
       project_root: projectRoot,
       subscriber: subB,
+      agent_handle: handleB,
       through_seq: inboxData.last_seq,
     });
     expect(ack.result.structuredContent.ok).toBe(true);
@@ -128,6 +143,7 @@ describe("MCP external integration (Phase 6)", () => {
     const inbox2 = await call(server, 8, "poll_inbox", {
       project_root: projectRoot,
       subscriber: subB,
+      agent_handle: handleB,
     });
     expect(inbox2.result.structuredContent.count).toBe(0);
 
@@ -135,6 +151,7 @@ describe("MCP external integration (Phase 6)", () => {
     const report = await call(server, 9, "report_agent_status", {
       project_root: projectRoot,
       subscriber: subB,
+      agent_handle: handleB,
       task_id: "review-auth",
       phase: "done",
       summary: "Auth module looks good",
@@ -145,6 +162,7 @@ describe("MCP external integration (Phase 6)", () => {
     const meta = await call(server, 10, "update_agent_metadata", {
       project_root: projectRoot,
       subscriber: subA,
+      agent_handle: handleA,
       nickname: "claude-reviewer",
       metadata: { role: "reviewer" },
     });
@@ -153,10 +171,10 @@ describe("MCP external integration (Phase 6)", () => {
 
     // Both unregister
     const unA = await call(server, 11, "unregister_agent", {
-      project_root: projectRoot, subscriber: subA,
+      project_root: projectRoot, subscriber: subA, agent_handle: handleA,
     });
     const unB = await call(server, 12, "unregister_agent", {
-      project_root: projectRoot, subscriber: subB,
+      project_root: projectRoot, subscriber: subB, agent_handle: handleB,
     });
     expect(unA.result.structuredContent.ok).toBe(true);
     expect(unB.result.structuredContent.ok).toBe(true);

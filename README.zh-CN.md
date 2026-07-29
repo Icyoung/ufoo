@@ -25,8 +25,8 @@ npm 包：[u-foo](https://www.npmjs.com/package/u-foo)
 - 支持 internal、tmux、host、Terminal.app、iTerm2 等启动模式。
 - 内置 group 模板，用于启动和编排多 Agent 工作流。
 - 提供原生 ufoo coding-agent 运行时 `ucode`。
-- 提供 `ufoo mcp` 本机 global MCP bridge，并用 pending tool call 唤醒支持
-  MCP 的外部 Agent。
+- home 级 global controller daemon 内提供唯一的本机 Streamable HTTP MCP
+  server；`ufoo mcp` 仅作为可随时销毁的 stdio 兼容代理。
 
 ## 环境要求
 
@@ -56,7 +56,7 @@ npm link
 
 | 命令 | 用途 |
 |---|---|
-| `ufoo` | 主 CLI、chat 仪表盘、daemon、本机 global MCP bridge、group、bus、context、memory、report 和 online helper。 |
+| `ufoo` | 主 CLI、chat 仪表盘、daemon、global MCP server/proxy、group、bus、context、memory、report 和 online helper。 |
 | `uclaude` | Claude Code 包装器，注入 ufoo bootstrap 和 bus 身份。 |
 | `ucodex` | Codex 包装器，注入 ufoo bootstrap 和 bus 身份。 |
 | `uagy` | Antigravity 包装器，注入 ufoo bootstrap 和 bus 身份。 |
@@ -98,14 +98,18 @@ ucode
 ufoo -g
 ```
 
-给支持 MCP 的客户端使用时，只需要配置一次全局 stdio bridge：
+Codex App、Codex CLI 和 Codex IDE extension 共用同一份配置。先启动一次
+global mode，再写入经过验证的直接 HTTP 配置：
 
 ```bash
-ufoo mcp
+ufoo -g
+ufoo mcp configure codex
 ```
 
-MCP bridge 会连接 home 级 global controller daemon，并通过全局项目 registry
-把项目级工具路由到对应项目 daemon。它不是每个项目单独部署一个 MCP server 的模式。
+重启 Codex surface 后即可使用。尚未验证直接 HTTP 的 host 继续配置
+`ufoo mcp`；该命令只是连接同一 global server 的无状态 stdio 代理，不拥有
+Agent 注册或项目状态。用 `ufoo mcp status` 检查唯一 listener，用
+`ufoo mcp restart` 只重启 listener。
 
 ## 运行模型
 
@@ -119,10 +123,13 @@ ufoo / ufoo chat
   -> coordination bus/context/memory/history/report/state/status
   -> shared controller/worker tools and native ucode tools
 
-ufoo mcp
-  -> home-scoped global controller daemon
+Codex App / CLI / IDE -> Streamable HTTP --+
+ufoo mcp stdio proxy ----------------------+
+                                           -> home-scoped global controller daemon
+  -> one MCP listener and tool router
   -> ~/.ufoo/projects/runtime
-  -> selected project daemon for bus/report/activity state
+  -> ProjectRuntimeGateway
+  -> selected project daemon for bus/report/activity/wait state
 ```
 
 ### Agent 消息投递模式
@@ -135,9 +142,10 @@ ufoo 支持两种 Agent 投递模式，只根据启动辅助 terminal 之前，�
   注入端点，因此可以直接注入 bus 消息。这类 Agent 复用环境中的身份，
   不通过 MCP 重复注册，也不运行常驻 bus poll。
 - 外部 host 托管的 Agent 没有包装器提供的 subscriber 环境变量。它通过 MCP
-  `register_agent` 注册一次，保留返回的 subscriber，再选择宿主 App 原生的
-  无 token 等待方式：Codex App 挂起 MCP `wait_for_message`，Cursor 则用
-  `notify_on_output` 监控 `ufoo bus poll --follow` 的后台输出。
+  `register_agent` 注册一次，保留返回的 subscriber 和不透明
+  `agent_handle`，再选择宿主 App 原生的无 token 等待方式：Codex App 挂起
+  MCP `wait_for_message`，Cursor 则用 `notify_on_output` 监控
+  `ufoo bus poll --follow` 的后台输出。
 
 Agent 类型名和 subscriber 前缀只是路由元数据，不是能力判断条件。外部
 Cursor Agent 通过 MCP 注册后，可以在专用监听 terminal 内把返回的
@@ -225,13 +233,16 @@ ufoo skills list --optional
 ufoo skills install ufoo-bus-poll --target /path/to/that/agent/skills
 ```
 
-先通过 MCP `register_agent` 注册一次并保留返回的 subscriber。
+先通过 MCP `register_agent` 注册一次并保留返回的 subscriber 与
+`agent_handle`。heartbeat、activity、send、receive、ack、report 和
+unregister 都带上该 handle；它是所有权凭证，不应发送给其他 Agent，也不应
+写进 report。
 
-- **Codex App：**前台调用 MCP `wait_for_message`，首次使用
-  `after_seq: 0`、`timeout_seconds: 600`。工具调用在 ufoo 内保持 pending；
-  有消息立即返回并唤醒当前任务，不依赖 shell stdout。超时后用相同游标续挂；
-  处理消息后，用返回的 `last_seq` 作为 MCP `ack_bus.through_seq`，Agent
-  再次空闲时以该 `last_seq` 续挂。
+- **Codex App：**前台调用 MCP `wait_for_message`，传入注册所得 subscriber
+  和 handle，首次使用 `after_seq: 0`、`timeout_seconds: 600`。工具调用在
+  ufoo 内保持 pending；有消息立即返回并唤醒当前任务，不依赖 shell stdout。
+  超时后用相同游标续挂；处理消息后，用同一 handle 和返回的 `last_seq`
+  调用 MCP `ack_bus`，Agent 再次空闲时以该 `last_seq` 续挂。
 - **Cursor：**在 monitored background shell 中绑定 MCP subscriber，再运行
   `export UFOO_SUBSCRIBER_ID="<subscriber-id>"; exec ufoo bus poll
   "$UFOO_SUBSCRIBER_ID" --follow --interval 30`，设置

@@ -100,6 +100,15 @@ function hasProviderSession(meta) {
   return typeof meta?.provider_session_id === "string" && meta.provider_session_id.trim() !== "";
 }
 
+function isManagedMcpRegistration(meta) {
+  return Boolean(meta && meta.mcp_bridge === true && meta.mcp_agent_handle_hash);
+}
+
+function isRecentMcpHeartbeat(meta, nowMs = Date.now()) {
+  const lastSeenMs = Date.parse(String(meta?.last_seen || ""));
+  return Number.isFinite(lastSeenMs) && nowMs - lastSeenMs <= 30 * 1000;
+}
+
 /**
  * 订阅者管理
  */
@@ -458,6 +467,29 @@ class SubscriberManager {
     if (!this.busData.agents) return;
 
     for (const [id, meta] of Object.entries(this.busData.agents)) {
+      if (isManagedMcpRegistration(meta)) {
+        const expiresAtMs = Date.parse(String(meta.mcp_lease_expires_at || ""));
+        const expired = !Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now();
+        if (!expired || isRecentMcpHeartbeat(meta)) {
+          continue;
+        }
+        if (meta.status === "active") {
+          this.logRegistry("cleanup_inactive_mark", {
+            source: "bus.subscriber.cleanupInactive",
+            subscriber: id,
+            reason: "mcp_agent_lease_expired",
+            status: meta.status || "",
+            launch_mode: meta.launch_mode || "",
+            last_seen: meta.last_seen || "",
+            lease_expires_at: meta.mcp_lease_expires_at || "",
+          });
+          meta.status = "inactive";
+          meta.activity_state = "";
+          meta.mcp_revoked_at = getTimestamp();
+          this.cleanupSubscriberArtifacts(id);
+        }
+        continue;
+      }
       if (isInternalLaunchMode(meta)) {
         const recoverable = hasProviderSession(meta);
         if (meta.status === "inactive") {

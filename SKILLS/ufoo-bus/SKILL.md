@@ -29,8 +29,11 @@ signal. Evaluate it before creating or mutating helper terminals:
   value. Do not call MCP `register_agent`, run `ufoo bus join`, or arm resident
   polling.
 - Absent: this is an externally hosted Agent. Reuse this session's
-  MCP-registered subscriber or call MCP `register_agent` exactly once. Keep the
-  returned value as `<subscriber-id>` for later MCP and CLI operations. Invoke
+  MCP-registered subscriber and `agent_handle`, or call MCP `register_agent`
+  exactly once. If the host exposes a stable local session id, pass it as
+  `client_instance_id`. Keep the returned pair as `<subscriber-id>` and
+  `<agent-handle>` for later MCP operations. Treat the handle as a private
+  capability: do not send, log, or report it. Invoke
   `$ufoo-bus-poll` once at session start to select the receive path supported
   by the host App. That skill may bind the subscriber as
   `UFOO_SUBSCRIBER_ID` inside a dedicated Cursor listener terminal after MCP
@@ -49,7 +52,8 @@ ufoo bus check "<subscriber-id>"
 ```
 
 For an external Agent, use MCP `poll_inbox` with its `project_root` and
-caller-owned `<subscriber-id>` only when an explicit manual check is required.
+caller-owned `<subscriber-id>` and `<agent-handle>` only when an explicit
+manual check is required.
 If `$ufoo-bus-poll` woke the session with an emitted pending batch, handle that
 batch directly. Do not run a second check for the same wake.
 
@@ -68,6 +72,7 @@ For every pending batch:
    pending. For a `$ufoo-bus-poll` wake, run the exact `ack --through <seq>`
    line printed by the Cursor stream. A Codex App wait returns `last_seq`; pass
    it to MCP `ack_bus` as `through_seq`.
+   Every external `ack_bus` call also includes the caller-owned `agent_handle`.
 4. Reply only when the sender requested an answer, delegated work whose result
    is needed, or needs a discovered blocker or fact.
 
@@ -92,9 +97,9 @@ ufoo bus broadcast "<substantive message>"
 ```
 
 For an external Agent, call MCP `dispatch_message` with its `project_root`,
-caller-owned `subscriber`, `target`, and `message`. Use target `*` for a
-broadcast. This preserves the registered sender identity instead of creating a
-CLI-side identity.
+caller-owned `subscriber`, `agent_handle`, `target`, and `message`. Use target
+`*` for a broadcast. This preserves the registered sender identity instead of
+creating a CLI-side identity.
 
 Target resolution order is exact ID, nickname, agent type, then `*`.
 
@@ -120,7 +125,8 @@ using the rules above and leave re-arming or stream lifecycle to
 
 ## Report delegated work
 
-Use the shared report contract when bus work represents a task:
+Use the shared report contract when bus work represents a task. A
+wrapper-managed Agent uses:
 
 ```bash
 ufoo report start "<task>" --task <id> --agent "<subscriber-id>"
@@ -130,3 +136,6 @@ ufoo report error "<reason>" --task <id> --agent "<subscriber-id>"
 ```
 
 Use `--scope private` only for helper-internal reports.
+
+An external Agent calls MCP `report_agent_status` with `project_root`,
+`subscriber`, `agent_handle`, the task id, phase, and summary.

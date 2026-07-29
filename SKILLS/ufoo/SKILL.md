@@ -23,18 +23,21 @@ capabilities from the Agent type or subscriber prefix.
   `register_agent`, run `ufoo bus join`, or start `ufoo bus poll`; the wrapper
   and daemon deliver follow-ups by direct prompt injection.
 - If `UFOO_SUBSCRIBER_ID` is absent, the Agent is externally hosted. Reuse the
-  subscriber already returned to this session by MCP `register_agent`, or call
-  `register_agent` once if none exists. Keep that returned subscriber as the
-  session identity and invoke `$ufoo-bus-poll` to establish the receive path
-  using this host App's own no-token wait and self-wake primitive. A
+  subscriber and `agent_handle` already returned to this session, or call
+  MCP `register_agent` once if none exists. When the host
+  exposes a stable local session identifier, pass it as `client_instance_id`
+  so a transport restart can recover the subscriber and rotate the handle.
+  Keep the returned pair as session-local identity; never send or report the
+  handle to another Agent. Invoke `$ufoo-bus-poll` to establish the receive
+  path using this host App's own no-token wait and self-wake primitive. A
   Cursor-style dedicated listener terminal may export the returned value as
   `UFOO_SUBSCRIBER_ID` after registration so its CLI commands share the
   identity. That helper-local export does not change the already selected
   external delivery mode and must not be treated as wrapper evidence.
 
 In the sections below, `<subscriber-id>` means the wrapper-provided
-`UFOO_SUBSCRIBER_ID` or the subscriber returned by MCP, according to this
-branch.
+`UFOO_SUBSCRIBER_ID` or the subscriber returned by MCP. `<agent-handle>` means
+the opaque capability returned with an external MCP registration.
 
 ## Synchronize workspace state
 
@@ -60,20 +63,25 @@ Treat these prompt prefixes as work inputs:
 For each received bus task:
 
 1. Execute it immediately within the current authority.
-2. Acknowledge it only after handling:
+2. Acknowledge it only after handling. A wrapper-managed Agent uses:
 
    ```bash
    ufoo bus ack "<subscriber-id>"
    ```
 
+   An external Agent calls MCP `ack_bus` with `project_root`, `subscriber`,
+   `agent_handle: "<agent-handle>"`, and the delivered sequence boundary.
 3. Reply only with a requested answer, delegated result, or fact the sender
    needs to continue. Do not reply with greetings or bare acknowledgements.
-4. Emit a concise runtime report for delegated work:
+4. Emit a concise runtime report for delegated work. A wrapper-managed Agent
+   uses:
 
    ```bash
    ufoo report done "<summary>" --agent "<subscriber-id>"
    ```
 
+   An external Agent calls MCP `report_agent_status` with the same subscriber
+   and handle.
 After sending or broadcasting, continue the current task. Do not start an
 ad-hoc check or poll, sleep, or wait for a reply. A wrapper-managed Agent
 receives follow-ups by direct injection; an external Agent leaves its existing

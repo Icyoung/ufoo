@@ -19,7 +19,7 @@ Published binaries are defined in `package.json`.
 
 | Binary | Main file | Responsibility |
 |---|---|---|
-| `ufoo` | `bin/ufoo.js` | Main CLI, chat dashboard, daemon, local global MCP bridge, project commands, bus/context/memory/report/group/online commands. |
+| `ufoo` | `bin/ufoo.js` | Main CLI, chat dashboard, daemons, global MCP server/proxy, project commands, bus/context/memory/report/group/online commands. |
 | `uclaude` | `bin/uclaude.js` | Claude Code wrapper with bootstrap, identity, bus registration, and resume metadata. |
 | `ucodex` | `bin/ucodex.js` | Codex wrapper with bootstrap, identity, bus registration, and resume metadata. |
 | `uagy` | `bin/uagy.js` | Antigravity wrapper with bootstrap, identity, and conversation resume capture. |
@@ -39,11 +39,13 @@ ufoo / ufoo chat
   -> src/coordination stores bus/context/memory/history/report/state/status
   -> src/tools exposes shared controller/worker tools
 
-ufoo mcp
-  -> stdio MCP bridge in src/runtime/daemon/mcpServer.js
-  -> home-scoped global controller daemon
+Codex App / CLI / IDE -> Streamable HTTP --+
+ufoo mcp stdio proxy ----------------------+
+                                           -> home-scoped global controller daemon
+  -> one MCP listener and tool router
   -> ~/.ufoo/projects/runtime registry
-  -> selected project daemon and project-local bus/report/activity state
+  -> ProjectRuntimeGateway over correlated daemon IPC
+  -> selected project daemon and project-local bus/report/activity/wait state
 ```
 
 Important boundaries:
@@ -68,7 +70,8 @@ terminal is created, never `agent_type` or a subscriber prefix:
    delivers bus messages by direct prompt injection. The Agent must not call
    MCP `register_agent`, bare `ufoo bus join`, or resident `ufoo bus poll`.
 2. An absent `UFOO_SUBSCRIBER_ID` identifies an externally hosted Agent. It
-   self-registers once through MCP, retains the returned subscriber, then
+   self-registers once through MCP, retains the returned subscriber and opaque
+   `agent_handle`, then
    selects one receive wait from the host App's wake capability:
    - Codex App keeps one MCP `wait_for_message` tool call pending for up to 600
      seconds and re-arms it with the returned sequence cursor.
@@ -100,7 +103,7 @@ evidence that the host Agent was wrapper-launched.
 | `src/ui/toolMergeBridge.js` | Tool-merge → UI events | Collapsed `tool.*` publisher for Rust hosts. |
 | `src/ui/ptyHandoff.js` | Stdin restore helper | After any fullscreen handoff; PTY mirror removed. |
 | `crates/ufoo-tui/` | Rust TTY UI | Required `ufoo-ui/1` child process (ratatui). |
-| `src/runtime/daemon/` | Project daemon and MCP bridge | Global MCP bridge, IPC server, prompt routing, launch/resume/close, cron, reports, status, group orchestration. |
+| `src/runtime/daemon/` | Project/global daemon and MCP control plane | Global Streamable HTTP listener, stateless stdio proxy, ProjectRuntime gateway/IPC, MCP leases/configuration, prompt routing, launch/resume/close, cron, reports, status, group orchestration. |
 | `src/runtime/projects/` | Project registry | Project identity and runtime registry. |
 | `src/runtime/terminal/` | Terminal adapters | Host, tmux, internal, external, Terminal.app, iTerm2. |
 | `src/runtime/contracts/` | Runtime contracts | Daemon IPC, PTY socket, MCP/JSON-RPC, and `ufoo-ui/1` host↔TUI protocol. |
@@ -198,7 +201,7 @@ There is no build step. The package is CommonJS and targets Node.js 18+.
 | Source package move | `npm test` |
 | Chat/UI behavior | `npm test -- --runTestsByPath test/unit/ui/tuiLauncher.test.js test/unit/chat/commandExecutor.test.js` |
 | Runtime daemon behavior | `npm test -- --runTestsByPath test/unit/daemon/run.test.js test/unit/daemon/promptRequest.test.js` |
-| MCP bridge behavior | `npm test -- --runTestsByPath test/unit/daemon/mcpServer.test.js test/unit/daemon/mcpIntegration.test.js test/unit/tools/registry.test.js test/unit/shared/eventContract.test.js` |
+| MCP control-plane behavior | `npm test -- --runTestsByPath test/unit/daemon/mcpHttpServer.test.js test/unit/daemon/mcpStdioProxy.test.js test/unit/daemon/mcpServer.test.js test/unit/daemon/mcpIntegration.test.js test/unit/daemon/projectRuntimeGateway.test.js test/unit/daemon/projectRuntimeControlPlane.test.js test/unit/tools/registry.test.js test/unit/shared/eventContract.test.js` |
 | Agent launch/provider code | `npm test -- --runTestsByPath test/unit/agent/launcher.test.js test/unit/agent/internalRunner.test.js test/unit/agent/ufooAgent.test.js` |
 | Tool registry/handlers | `npm test -- --runTestsByPath test/unit/tools/registry.test.js test/unit/tools/handlers.test.js` |
 | Native `ucode` | `npm test -- --runTestsByPath test/unit/code/ucodeTui.test.js test/unit/code/nativeRunner.test.js` |

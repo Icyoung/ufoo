@@ -22,6 +22,8 @@ const WAIT_FOR_MESSAGE_DEFAULT_TIMEOUT_SECONDS = 600;
 const WAIT_FOR_MESSAGE_MAX_TIMEOUT_SECONDS = 600;
 const WAIT_FOR_MESSAGE_POLL_INTERVAL_MS = 1000;
 const WAIT_FOR_MESSAGE_HEARTBEAT_INTERVAL_MS = 15000;
+const MCP_AGENT_LEASE_TTL_MS = 24 * 60 * 60 * 1000;
+const MCP_AGENT_RECENT_HEARTBEAT_MS = 30 * 1000;
 
 function nowIso() {
   return new Date().toISOString();
@@ -70,6 +72,61 @@ function createCryptoSessionId() {
   return crypto.randomBytes(4).toString("hex");
 }
 
+function createAgentHandle() {
+  return crypto.randomBytes(32).toString("base64url");
+}
+
+function hashAgentHandle(handle = "") {
+  return crypto.createHash("sha256").update(String(handle || ""), "utf8").digest("hex");
+}
+
+function leaseExpiryIso(nowMs = Date.now()) {
+  return new Date(nowMs + MCP_AGENT_LEASE_TTL_MS).toISOString();
+}
+
+function extendMcpAgentLease(meta, nowMs = Date.now()) {
+  meta.mcp_lease_expires_at = leaseExpiryIso(nowMs);
+  delete meta.mcp_revoked_at;
+  return meta.mcp_lease_expires_at;
+}
+
+function assertAgentHandle(bus, subscriber, args = {}, options = {}) {
+  const meta = assertSubscriberExists(bus, subscriber);
+  if (meta.mcp_bridge !== true || !meta.mcp_agent_handle_hash) {
+    const err = new Error(`subscriber is not an MCP-registered Agent: ${subscriber}`);
+    err.code = "agent_handle_not_available";
+    throw err;
+  }
+  const handle = String(args.agent_handle || args.agentHandle || "").trim();
+  if (!handle) {
+    const err = new Error("agent_handle is required");
+    err.code = "agent_handle_required";
+    throw err;
+  }
+  const actual = Buffer.from(hashAgentHandle(handle), "hex");
+  const expected = Buffer.from(String(meta.mcp_agent_handle_hash || ""), "hex");
+  if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) {
+    const err = new Error("agent_handle does not own this subscriber");
+    err.code = "invalid_agent_handle";
+    throw err;
+  }
+  if (options.allowInactive !== true && meta.status !== "active") {
+    const err = new Error(`Agent registration is inactive: ${subscriber}`);
+    err.code = "agent_lease_inactive";
+    throw err;
+  }
+  const expiresAtMs = Date.parse(String(meta.mcp_lease_expires_at || ""));
+  if (
+    options.allowExpired !== true
+    && (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now())
+  ) {
+    const err = new Error(`Agent lease expired: ${subscriber}`);
+    err.code = "agent_lease_expired";
+    throw err;
+  }
+  return meta;
+}
+
 function notifyDaemonRefresh(projectRoot) {
   if (!isRunning(projectRoot)) return;
   const sock = socketPath(projectRoot);
@@ -99,6 +156,10 @@ async function registerAgentFull(projectRoot, args = {}, options = {}) {
   const hostCapabilities = args.hostCapabilities && typeof args.hostCapabilities === "object"
     ? args.hostCapabilities
     : capabilities;
+  const clientInstanceId = String(
+    args.client_instance_id || args.clientInstanceId || ""
+  ).trim();
+  const bus = ensureBusLoaded(projectRoot);
 
   // Session ID: explicit > reuse > generate
   let sessionId;
@@ -113,7 +174,22 @@ async function registerAgentFull(projectRoot, args = {}, options = {}) {
   const reuseProviderSessionId = typeof reuseSession?.providerSessionId === "string"
     ? reuseSession.providerSessionId.trim() : "";
 
-  if (explicitSessionId) {
+  const recoveredEntry = !validateParentPid && clientInstanceId
+    ? Object.entries(bus.busData.agents || {}).find(([, meta]) => (
+      meta
+      && meta.mcp_bridge === true
+      && meta.agent_type === agentType
+      && meta.mcp_client_instance_id === clientInstanceId
+    ))
+    : null;
+  const recoveredSubscriber = recoveredEntry ? recoveredEntry[0] : "";
+  const recoveredSessionId = recoveredSubscriber.startsWith(`${agentType}:`)
+    ? recoveredSubscriber.slice(agentType.length + 1)
+    : "";
+
+  if (recoveredSessionId) {
+    sessionId = recoveredSessionId;
+  } else if (explicitSessionId) {
     sessionId = explicitSessionId;
   } else if (reuseSessionId && reuseSubscriberId === `${agentType}:${reuseSessionId}`) {
     sessionId = reuseSessionId;
@@ -165,7 +241,18 @@ async function registerAgentFull(projectRoot, args = {}, options = {}) {
   if (reuseSessionId) joinOptions.reuseSessionId = reuseSessionId;
   if (reuseProviderSessionId) joinOptions.reuseProviderSessionId = reuseProviderSessionId;
 
-  const bus = ensureBusLoaded(projectRoot);
+  const candidateSubscriber = `${agentType}:${sessionId}`;
+  const existingCandidate = bus.subscriberManager.getSubscriber(candidateSubscriber);
+  if (
+    !validateParentPid
+    && existingCandidate
+    && existingCandidate.mcp_agent_handle_hash
+    && (!clientInstanceId || existingCandidate.mcp_client_instance_id !== clientInstanceId)
+  ) {
+    const err = new Error(`subscriber is already registered: ${candidateSubscriber}`);
+    err.code = "subscriber_already_registered";
+    throw err;
+  }
   const result = await bus.subscriberManager.join(sessionId, agentType, finalNickname, joinOptions);
   const subscriber = result.subscriber;
   if (finalNickname) {
@@ -175,6 +262,14 @@ async function registerAgentFull(projectRoot, args = {}, options = {}) {
   meta.activity_state = String(args.activity_state || "ready");
   meta.activity_since = nowIso();
   meta.mcp_bridge = !validateParentPid;
+  let agentHandle = "";
+  if (!validateParentPid) {
+    agentHandle = createAgentHandle();
+    meta.mcp_agent_handle_hash = hashAgentHandle(agentHandle);
+    meta.mcp_client_instance_id = clientInstanceId;
+    meta.mcp_registered_at = meta.mcp_registered_at || nowIso();
+    extendMcpAgentLease(meta);
+  }
   if (hostCapabilities) meta.mcp_capabilities = hostCapabilities;
   bus.saveBusData();
   notifyDaemonRefresh(projectRoot);
@@ -188,6 +283,12 @@ async function registerAgentFull(projectRoot, args = {}, options = {}) {
     nickname: meta.nickname || result.nickname || finalNickname || "",
     scoped_nickname: meta.scoped_nickname || result.scopedNickname || scopedNickname || "",
     launch_mode: launchMode,
+    ...(agentHandle ? {
+      agent_handle: agentHandle,
+      lease_expires_at: meta.mcp_lease_expires_at,
+      client_instance_id: clientInstanceId,
+      recovered: Boolean(recoveredSubscriber),
+    } : {}),
     reuseProviderSessionId,
     skipSessionResolve: !!args.skipSessionResolve,
   };
@@ -203,9 +304,10 @@ async function registerAgent(projectRoot, args = {}) {
 async function heartbeatAgent(projectRoot, args = {}) {
   const subscriber = resolveSubscriberArg(args);
   const bus = ensureBusLoaded(projectRoot);
-  const meta = assertSubscriberExists(bus, subscriber);
+  const meta = assertAgentHandle(bus, subscriber, args);
   bus.subscriberManager.updateLastSeen(subscriber);
   meta.status = "active";
+  const leaseExpiresAt = extendMcpAgentLease(meta);
   bus.saveBusData();
   notifyDaemonRefresh(projectRoot);
   return {
@@ -213,6 +315,7 @@ async function heartbeatAgent(projectRoot, args = {}) {
     project_root: projectRoot,
     subscriber,
     last_seen: meta.last_seen,
+    lease_expires_at: leaseExpiresAt,
   };
 }
 
@@ -225,7 +328,7 @@ async function publishActivityState(projectRoot, args = {}) {
     throw err;
   }
   const bus = ensureBusLoaded(projectRoot);
-  const meta = assertSubscriberExists(bus, subscriber);
+  const meta = assertAgentHandle(bus, subscriber, args);
   bus.subscriberManager.updateLastSeen(subscriber);
   meta.status = "active";
   meta.activity_state = activityState;
@@ -246,7 +349,7 @@ async function publishActivityState(projectRoot, args = {}) {
 async function updateAgentMetadata(projectRoot, args = {}) {
   const subscriber = resolveSubscriberArg(args);
   const bus = ensureBusLoaded(projectRoot);
-  const meta = assertSubscriberExists(bus, subscriber);
+  const meta = assertAgentHandle(bus, subscriber, args);
   const nickname = String(args.nickname || "").trim();
   if (nickname) {
     await bus.subscriberManager.rename(subscriber, nickname);
@@ -278,7 +381,7 @@ async function pollInbox(projectRoot, args = {}) {
     ? Math.floor(Number(args.limit))
     : 50;
   const bus = ensureBusLoaded(projectRoot);
-  assertSubscriberExists(bus, subscriber);
+  assertAgentHandle(bus, subscriber, args);
   bus.subscriberManager.updateLastSeen(subscriber);
   bus.saveBusData();
   const pending = await bus.messageManager.check(subscriber);
@@ -365,14 +468,15 @@ function eventSeq(event = {}) {
   return Number.isInteger(seq) && seq > 0 ? seq : 0;
 }
 
-function touchWaitingSubscriber(bus, subscriber) {
+function touchWaitingSubscriber(bus, subscriber, args = {}) {
   // Long waits span concurrent metadata updates from other agents. Reload
   // before writing heartbeat state so a stale in-memory registry cannot
   // overwrite those updates.
   bus.loadBusData();
-  const meta = assertSubscriberExists(bus, subscriber);
+  const meta = assertAgentHandle(bus, subscriber, args);
   meta.status = "active";
   bus.subscriberManager.updateLastSeen(subscriber);
+  extendMcpAgentLease(meta);
   bus.saveBusData();
 }
 
@@ -393,7 +497,7 @@ async function waitForMessage(projectRoot, args = {}, options = {}) {
   const timeoutMs = timeoutSeconds * 1000;
 
   const bus = ensureBusLoaded(projectRoot);
-  touchWaitingSubscriber(bus, subscriber);
+  touchWaitingSubscriber(bus, subscriber, args);
   const lease = acquirePollLease(path.join(
     bus.busDir,
     "pids",
@@ -418,7 +522,7 @@ async function waitForMessage(projectRoot, args = {}, options = {}) {
       if (unseen.length > 0) {
         const messages = unseen.slice(0, limit);
         const lastSeq = Math.max(afterSeq, ...messages.map(eventSeq));
-        touchWaitingSubscriber(bus, subscriber);
+        touchWaitingSubscriber(bus, subscriber, args);
         return {
           ok: true,
           project_root: projectRoot,
@@ -436,7 +540,7 @@ async function waitForMessage(projectRoot, args = {}, options = {}) {
 
       const current = now();
       if (current >= deadline) {
-        touchWaitingSubscriber(bus, subscriber);
+        touchWaitingSubscriber(bus, subscriber, args);
         return {
           ok: true,
           project_root: projectRoot,
@@ -453,7 +557,7 @@ async function waitForMessage(projectRoot, args = {}, options = {}) {
       }
 
       if (current >= nextHeartbeatAt) {
-        touchWaitingSubscriber(bus, subscriber);
+        touchWaitingSubscriber(bus, subscriber, args);
         nextHeartbeatAt = current + heartbeatIntervalMs;
       }
 
@@ -469,6 +573,8 @@ async function waitForMessage(projectRoot, args = {}, options = {}) {
 
 async function reportAgentStatus(projectRoot, args = {}) {
   const subscriber = resolveSubscriberArg(args);
+  const bus = ensureBusLoaded(projectRoot);
+  assertAgentHandle(bus, subscriber, args);
   const report = normalizeReportInput({
     ...args,
     agent_id: subscriber,
@@ -488,6 +594,12 @@ async function reportAgentStatus(projectRoot, args = {}) {
 async function unregisterAgent(projectRoot, args = {}) {
   const subscriber = resolveSubscriberArg(args);
   const bus = ensureBusLoaded(projectRoot);
+  const meta = assertAgentHandle(bus, subscriber, args, {
+    allowExpired: true,
+    allowInactive: true,
+  });
+  meta.mcp_revoked_at = nowIso();
+  meta.mcp_lease_expires_at = meta.mcp_revoked_at;
   const ok = await bus.subscriberManager.leave(subscriber);
   bus.saveBusData();
   notifyDaemonRefresh(projectRoot);
@@ -504,6 +616,10 @@ module.exports = {
   assertSubscriberExists,
   resolveSubscriberArg,
   createSessionId,
+  createAgentHandle,
+  hashAgentHandle,
+  assertAgentHandle,
+  extendMcpAgentLease,
   notifyDaemonRefresh,
   registerAgentFull,
   registerAgent,
@@ -517,4 +633,6 @@ module.exports = {
   normalizeWaitForMessageArgs,
   WAIT_FOR_MESSAGE_DEFAULT_TIMEOUT_SECONDS,
   WAIT_FOR_MESSAGE_MAX_TIMEOUT_SECONDS,
+  MCP_AGENT_LEASE_TTL_MS,
+  MCP_AGENT_RECENT_HEARTBEAT_MS,
 };

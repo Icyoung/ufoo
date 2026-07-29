@@ -20,6 +20,10 @@ const IPC_REQUEST_TYPES = {
   AGENT_REPORT: "agent_report",
   ASSIGN_ROLE: "assign_role",
   REFRESH_STATUS: "refresh_status",
+  CONTROL_PLANE_CALL: "control_plane_call",
+  CONTROL_PLANE_CANCEL: "control_plane_cancel",
+  MCP_STATUS: "mcp_status",
+  MCP_RESTART: "mcp_restart",
 };
 
 const IPC_RESPONSE_TYPES = {
@@ -29,6 +33,7 @@ const IPC_RESPONSE_TYPES = {
   ERROR: "error",
   BUS_SEND_OK: "bus_send_ok",
   REGISTER_OK: "register_ok",
+  CONTROL_PLANE_RESULT: "control_plane_result",
 };
 
 const BUS_STATUS_PHASES = {

@@ -587,7 +587,7 @@ async function runCli(argv) {
       });
     program
       .command("mcp")
-      .description("Run the local global ufoo MCP bridge over stdio")
+      .description("Run the global MCP stdio proxy; use bin entry for listener status/configuration")
       .option("--no-auto-start", "Do not auto-start the home-scoped global controller daemon")
       .action((opts) => {
         const repoRoot = getPackageRoot();
@@ -1809,8 +1809,7 @@ async function runCli(argv) {
     return;
   }
   if (cmd === "mcp") {
-    const mcpArgs = ["mcp"];
-    if (rest.includes("--no-auto-start")) mcpArgs.push("--no-auto-start");
+    const mcpArgs = ["mcp", ...rest];
     run(resolveNodeExecutable(), [path.join(repoRoot, "bin", "ufoo.js"), ...mcpArgs]);
     return;
   }

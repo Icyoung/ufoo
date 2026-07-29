@@ -14,16 +14,21 @@ function hasGlobalModeFlag(args = []) {
 }
 
 function printMcpHelp() {
-  console.log("Usage: ufoo mcp [options]");
+  console.log("Usage: ufoo mcp [status|restart|configure codex] [options]");
   console.log("");
-  console.log("Run the local global ufoo MCP bridge over stdio.");
+  console.log("Run the stdio compatibility proxy or control the global MCP listener.");
   console.log("");
   console.log("Options:");
   console.log("  --no-auto-start  Do not auto-start the home-scoped global controller daemon");
+  console.log("  --json           Print status or restart results as JSON");
+  console.log("  --dry-run        Print a Codex HTTP configuration without writing it");
   console.log("  -h, --help       Display help for the MCP bridge command");
   console.log("");
   console.log("Notes:");
   console.log("  Configure MCP-capable clients with command: ufoo mcp");
+  console.log("  Inspect the singleton listener: ufoo mcp status");
+  console.log("  Restart only the listener: ufoo mcp restart");
+  console.log("  Configure Codex App/CLI/IDE: ufoo mcp configure codex");
   console.log("  Example without daemon auto-start: ufoo mcp --no-auto-start");
   console.log("  Human diagnostics are available in chat: /mcp status, /mcp tools, /mcp help");
 }
@@ -47,9 +52,18 @@ async function main() {
       printMcpHelp();
       return;
     }
-    await runMcpServer({
-      autoStart: !argv.includes("--no-auto-start"),
-    });
+    const operation = argv[1];
+    if (operation === "status" || operation === "restart") {
+      const { runMcpControlCli } = require("../src/runtime/daemon/mcpControl");
+      await runMcpControlCli(operation, { json: argv.includes("--json") });
+    } else if (operation === "configure") {
+      const { runMcpConfigureCli } = require("../src/runtime/daemon/mcpConfigure");
+      runMcpConfigureCli(argv[2], { dryRun: argv.includes("--dry-run") });
+    } else {
+      await runMcpServer({
+        autoStart: !argv.includes("--no-auto-start"),
+      });
+    }
     return;
   }
   if (cmd === "agent-runner") {

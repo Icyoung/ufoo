@@ -18,7 +18,7 @@ describe("bin group command contracts", () => {
     const result = runCli(["mcp", "--help"]);
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain("Usage: ufoo mcp [options]");
+    expect(result.stdout).toContain("Usage: ufoo mcp [status|restart|configure codex] [options]");
     expect(result.stdout).toContain("ufoo mcp --no-auto-start");
   });
 

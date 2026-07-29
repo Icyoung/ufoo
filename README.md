@@ -27,8 +27,8 @@ Package: [u-foo on npm](https://www.npmjs.com/package/u-foo)
 - Launch modes for internal, tmux, host, Terminal.app, and iTerm2 workflows.
 - Built-in group templates for launching and orchestrating multi-agent workflows.
 - `ucode`, a native ufoo coding-agent runtime.
-- `ufoo mcp`, a local global MCP bridge with pending-call bus wake for external
-  MCP-capable agents.
+- One loopback Streamable HTTP MCP server inside the home-scoped global
+  controller daemon, plus a disposable `ufoo mcp` stdio compatibility proxy.
 
 ## Requirements
 
@@ -58,7 +58,7 @@ Installed binaries:
 
 | Binary | Purpose |
 |---|---|
-| `ufoo` | Main CLI, chat dashboard, daemon, local global MCP bridge, groups, bus, context, memory, reports, and online helpers. |
+| `ufoo` | Main CLI, chat dashboard, daemons, global MCP server/proxy, groups, bus, context, memory, reports, and online helpers. |
 | `uclaude` | Claude Code wrapper with ufoo bootstrap and bus identity. |
 | `ucodex` | Codex wrapper with ufoo bootstrap and bus identity. |
 | `uagy` | Antigravity wrapper with ufoo bootstrap and bus identity. |
@@ -100,15 +100,27 @@ Use global chat mode to switch between registered projects:
 ufoo -g
 ```
 
-For MCP-capable clients, configure the global stdio bridge once:
+For Codex App, Codex CLI, and the Codex IDE extension, start global mode once
+and install the shared direct HTTP configuration:
+
+```bash
+ufoo -g
+ufoo mcp configure codex
+```
+
+The configuration points all three Codex surfaces at the same authenticated
+loopback endpoint. Restart the Codex surface after configuring it.
+
+For a host that has not been verified with direct HTTP, keep the compatible
+stdio configuration:
 
 ```bash
 ufoo mcp
 ```
 
-The MCP bridge connects to the home-scoped global controller daemon and routes
-project-scoped tools through the global project registry. It is not a separate
-per-project MCP server mode.
+This command is a stateless transport proxy into the same global server. It
+does not own Agent registrations or project state. Inspect or restart the
+singleton listener with `ufoo mcp status` and `ufoo mcp restart`.
 
 ## Runtime Model
 
@@ -122,10 +134,13 @@ ufoo / ufoo chat
   -> coordination bus/context/memory/history/report/state/status
   -> shared controller/worker tools and native ucode tools
 
-ufoo mcp
-  -> home-scoped global controller daemon
+Codex App / CLI / IDE -> Streamable HTTP --+
+ufoo mcp stdio proxy ----------------------+
+                                           -> home-scoped global controller daemon
+                                              (one MCP listener and tool router)
   -> ~/.ufoo/projects/runtime
-  -> selected project daemon for bus/report/activity state
+  -> ProjectRuntimeGateway
+  -> selected project daemon for bus/report/activity/wait state
 ```
 
 ### Agent Delivery Modes
@@ -140,7 +155,8 @@ inherited `UFOO_SUBSCRIBER_ID` before any helper terminal is started:
   or run a resident bus poll.
 - Externally hosted Agents have no wrapper-provided subscriber environment.
   They register themselves once through MCP `register_agent`, retain the
-  returned subscriber, and select the host App's native no-token wait:
+  returned subscriber plus opaque `agent_handle`, and select the host App's
+  native no-token wait:
   Codex App keeps MCP `wait_for_message` pending, while Cursor monitors
   `ufoo bus poll --follow` background output with `notify_on_output`.
 
@@ -237,14 +253,18 @@ ufoo skills list --optional
 ufoo skills install ufoo-bus-poll --target /path/to/that/agent/skills
 ```
 
-Register once through MCP `register_agent` and retain its returned subscriber.
+Register once through MCP `register_agent` and retain its returned subscriber
+and `agent_handle`. Include the handle in heartbeat, activity, send, receive,
+acknowledgement, report, and unregister calls. The handle is an ownership
+capability: do not send it to peers or print it in reports.
 
 - **Codex App:** call MCP `wait_for_message` in the foreground with
-  `after_seq: 0` and `timeout_seconds: 600`. The tool call stays pending inside
-  ufoo; a message returns immediately and wakes the task without shell stdout.
-  On timeout, re-arm with the same cursor. After handling a message response,
-  call MCP `ack_bus` with its `last_seq` as `through_seq`, then re-arm with that
-  `last_seq` when the Agent is idle again.
+  the registered subscriber and handle, `after_seq: 0`, and
+  `timeout_seconds: 600`. The tool call stays pending inside ufoo; a message
+  returns immediately and wakes the task without shell stdout. On timeout,
+  re-arm with the same cursor. After handling a message response, call MCP
+  `ack_bus` with the same handle and its `last_seq` as `through_seq`, then
+  re-arm with that `last_seq` when the Agent is idle again.
 - **Cursor:** bind the MCP subscriber and run
   `export UFOO_SUBSCRIBER_ID="<subscriber-id>"; exec ufoo bus poll
   "$UFOO_SUBSCRIBER_ID" --follow --interval 30` through the monitored

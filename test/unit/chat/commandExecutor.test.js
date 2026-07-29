@@ -1339,7 +1339,7 @@ describe("chat commandExecutor", () => {
       method: "tools/call",
       params: expect.objectContaining({ name: "ufoo_mcp_status" }),
     }));
-    expect(logs.some((entry) => entry.text.includes("MCP bridge"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("MCP server"))).toBe(true);
     expect(logs.some((entry) => entry.text.includes("ufoo mcp"))).toBe(true);
     expect(logs.some((entry) => entry.text.includes("registered projects: 1"))).toBe(true);
     expect(options.renderScreen).toHaveBeenCalled();
@@ -1369,7 +1369,7 @@ describe("chat commandExecutor", () => {
 
     await executor.executeCommand("/mcp help");
 
-    expect(logs.some((entry) => entry.text.includes("Configure client command: ufoo mcp"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("Configure Codex direct HTTP"))).toBe(true);
   });
 
   test("handleDaemonCommand stop path calls stopDaemon", async () => {

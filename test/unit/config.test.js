@@ -6,6 +6,7 @@ const {
   loadConfig,
   normalizeAgentProvider,
   normalizeControllerMode,
+  normalizeMcpPort,
   normalizeCodexInternalThreadMode,
   normalizeCodexAuthPath,
   normalizeCodexOauthRefreshWindowSec,
@@ -95,6 +96,19 @@ describe("config save/load", () => {
 
     saveConfig(projectRoot, { controllerMode: "invalid-mode" });
     expect(loadConfig(projectRoot).controllerMode).toBe("legacy");
+
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  test("saveConfig/loadConfig keeps the MCP listener on a valid stable port", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-config-mcp-port-"));
+    fs.mkdirSync(path.join(projectRoot, ".ufoo"), { recursive: true });
+
+    expect(loadConfig(projectRoot).mcpPort).toBe(47631);
+    saveConfig(projectRoot, { mcpPort: 48001 });
+    expect(loadConfig(projectRoot).mcpPort).toBe(48001);
+    expect(normalizeMcpPort(0)).toBe(47631);
+    expect(normalizeMcpPort(70000)).toBe(47631);
 
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });

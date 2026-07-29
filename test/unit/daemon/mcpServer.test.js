@@ -50,7 +50,7 @@ describe("ufoo global MCP server", () => {
       .toContain("no wrapper-provided UFOO_SUBSCRIBER_ID");
     expect(tools.find((tool) => tool.name === "wait_for_message").inputSchema)
       .toMatchObject({
-        required: ["project_root", "subscriber"],
+        required: ["project_root", "subscriber", "agent_handle"],
         properties: {
           after_seq: { minimum: 0 },
           timeout_seconds: { minimum: 1, maximum: 600 },
@@ -82,6 +82,46 @@ describe("ufoo global MCP server", () => {
     expect(listed.result.tools.some((tool) => tool.name === "register_agent")).toBe(true);
   });
 
+  test("routes project-scoped tools through the configured ProjectRuntimeGateway", async () => {
+    const call = jest.fn(async (projectRoot, operation, args) => ({
+      ok: true,
+      project_root: projectRoot,
+      operation,
+      subscriber: args.subscriber,
+    }));
+    const server = createUfooMcpServer({
+      autoStart: false,
+      validateProjectRoot: false,
+      projectRuntimeGateway: { call, cancel: () => false },
+    });
+
+    const response = await server.handleRequest({
+      jsonrpc: "2.0",
+      id: "gateway-call",
+      method: "tools/call",
+      params: {
+        name: "heartbeat_agent",
+        arguments: {
+          project_root: "/tmp/gateway-project",
+          subscriber: "codex:gateway",
+          agent_handle: "gateway-handle",
+        },
+      },
+    });
+
+    expect(response.result.structuredContent).toMatchObject({
+      ok: true,
+      operation: "heartbeat_agent",
+      subscriber: "codex:gateway",
+    });
+    expect(call).toHaveBeenCalledWith(
+      "/tmp/gateway-project",
+      "heartbeat_agent",
+      expect.objectContaining({ subscriber: "codex:gateway" }),
+      expect.objectContaining({ toolCallId: "gateway-call" })
+    );
+  });
+
   test("registers, heartbeats, polls, reports, and unregisters an MCP agent", async () => {
     const projectRoot = makeTempProject();
     const server = createUfooMcpServer({
@@ -107,6 +147,13 @@ describe("ufoo global MCP server", () => {
     expect(registerPayload.ok).toBe(true);
     expect(registerPayload.subscriber).toBe("codex:mcp123");
     expect(registerPayload.nickname).toBe("mcp-one");
+    expect(registerPayload.agent_handle).toEqual(expect.any(String));
+    expect(registerPayload.lease_expires_at).toEqual(expect.any(String));
+    const agentHandle = registerPayload.agent_handle;
+    const storedRegistry = JSON.parse(fs.readFileSync(getUfooPaths(projectRoot).agentsFile, "utf8"));
+    expect(storedRegistry.agents["codex:mcp123"].mcp_agent_handle_hash)
+      .toEqual(expect.any(String));
+    expect(JSON.stringify(storedRegistry)).not.toContain(agentHandle);
 
     const heartbeat = await server.handleRequest({
       jsonrpc: "2.0",
@@ -117,6 +164,7 @@ describe("ufoo global MCP server", () => {
         arguments: {
           project_root: projectRoot,
           subscriber: "codex:mcp123",
+          agent_handle: agentHandle,
         },
       },
     });
@@ -131,6 +179,7 @@ describe("ufoo global MCP server", () => {
         arguments: {
           project_root: projectRoot,
           subscriber: "codex:mcp123",
+          agent_handle: agentHandle,
         },
       },
     });
@@ -149,6 +198,7 @@ describe("ufoo global MCP server", () => {
         arguments: {
           project_root: projectRoot,
           subscriber: "codex:mcp123",
+          agent_handle: agentHandle,
           task_id: "task-a",
           phase: "done",
           summary: "done",
@@ -173,10 +223,72 @@ describe("ufoo global MCP server", () => {
         arguments: {
           project_root: projectRoot,
           subscriber: "codex:mcp123",
+          agent_handle: agentHandle,
         },
       },
     });
     expect(unregistered.result.structuredContent.ok).toBe(true);
+  });
+
+  test("recovers a client instance with the same subscriber and rotates its handle", async () => {
+    const projectRoot = makeTempProject();
+    const server = createUfooMcpServer({
+      autoStart: false,
+      validateProjectRoot: false,
+    });
+    const register = (id) => server.handleRequest({
+      jsonrpc: "2.0",
+      id,
+      method: "tools/call",
+      params: {
+        name: "register_agent",
+        arguments: {
+          project_root: projectRoot,
+          agent_type: "cursor",
+          client_instance_id: "cursor-window-1",
+        },
+      },
+    });
+
+    const first = (await register("register-first")).result.structuredContent;
+    const second = (await register("register-second")).result.structuredContent;
+    expect(second).toMatchObject({
+      subscriber: first.subscriber,
+      client_instance_id: "cursor-window-1",
+      recovered: true,
+    });
+    expect(second.agent_handle).not.toBe(first.agent_handle);
+
+    const staleHandle = await server.handleRequest({
+      jsonrpc: "2.0",
+      id: "stale-handle",
+      method: "tools/call",
+      params: {
+        name: "heartbeat_agent",
+        arguments: {
+          project_root: projectRoot,
+          subscriber: first.subscriber,
+          agent_handle: first.agent_handle,
+        },
+      },
+    });
+    expect(staleHandle.error.data.code).toBe("invalid_agent_handle");
+
+    const currentHandle = await server.handleRequest({
+      jsonrpc: "2.0",
+      id: "current-handle",
+      method: "tools/call",
+      params: {
+        name: "heartbeat_agent",
+        arguments: {
+          project_root: projectRoot,
+          subscriber: second.subscriber,
+          agent_handle: second.agent_handle,
+        },
+      },
+    });
+    expect(currentHandle.result.structuredContent.lease_expires_at)
+      .toEqual(expect.any(String));
   });
 
   test("wait_for_message returns a timeout cursor without periodic model work", async () => {
@@ -205,7 +317,9 @@ describe("ufoo global MCP server", () => {
         },
       },
     });
-    const subscriber = registered.result.structuredContent.subscriber;
+    const registration = registered.result.structuredContent;
+    const subscriber = registration.subscriber;
+    const agentHandle = registration.agent_handle;
 
     const waited = await server.handleRequest({
       jsonrpc: "2.0",
@@ -216,6 +330,7 @@ describe("ufoo global MCP server", () => {
         arguments: {
           project_root: projectRoot,
           subscriber,
+          agent_handle: agentHandle,
           after_seq: 7,
           timeout_seconds: 1,
         },
@@ -256,7 +371,9 @@ describe("ufoo global MCP server", () => {
         },
       },
     });
-    const subscriber = registered.result.structuredContent.subscriber;
+    const registration = registered.result.structuredContent;
+    const subscriber = registration.subscriber;
+    const agentHandle = registration.agent_handle;
 
     const pending = server.handleRequest({
       jsonrpc: "2.0",
@@ -267,6 +384,7 @@ describe("ufoo global MCP server", () => {
         arguments: {
           project_root: projectRoot,
           subscriber,
+          agent_handle: agentHandle,
           timeout_seconds: 600,
         },
       },
@@ -281,6 +399,7 @@ describe("ufoo global MCP server", () => {
         arguments: {
           project_root: projectRoot,
           subscriber,
+          agent_handle: agentHandle,
           timeout_seconds: 1,
         },
       },
@@ -308,6 +427,7 @@ describe("ufoo global MCP server", () => {
         arguments: {
           project_root: projectRoot,
           subscriber,
+          agent_handle: agentHandle,
           target: subscriber,
           message: "wake after cancellation",
         },
@@ -322,6 +442,7 @@ describe("ufoo global MCP server", () => {
         arguments: {
           project_root: projectRoot,
           subscriber,
+          agent_handle: agentHandle,
           timeout_seconds: 1,
         },
       },

@@ -45,6 +45,10 @@ const {
   checkAndCleanupNickname,
 } = require("./nicknameScope");
 const { resolveNodeExecutable } = require("../process/nodeExecutable");
+const {
+  createProjectRuntimeControlPlane,
+} = require("./projectRuntimeControlPlane");
+const { loadConfig, normalizeMcpPort } = require("../../config");
 
 let providerSessions = null;
 let sessionResolveHandles = new Map();
@@ -1351,9 +1355,63 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
     },
   });
   deliveryScheduler.start();
+  const runtimeControlPlane = createProjectRuntimeControlPlane({ projectRoot });
+  let mcpHttpServer = null;
+  if (isGlobalControllerProjectRoot(projectRoot) && process.env.UFOO_MCP_HTTP_DISABLED !== "1") {
+    const { createGlobalMcpHttpServer } = require("./mcpHttpServer");
+    const config = loadConfig(projectRoot);
+    const configuredPort = process.env.UFOO_MCP_PORT || config.mcpPort;
+    mcpHttpServer = createGlobalMcpHttpServer({
+      projectRoot,
+      port: normalizeMcpPort(configuredPort),
+      log,
+    });
+    mcpHttpServer.start().catch((err) => {
+      logSync(`MCP HTTP startup failed: ${formatFatalReason(err)}`);
+      setImmediate(() => {
+        throw err;
+      });
+    });
+  }
 
   handleIpcRequest = async (req, socket) => {
     if (!req || typeof req !== "object") return;
+    if (await runtimeControlPlane.handleRequest(req, socket)) return;
+    if (req.type === IPC_REQUEST_TYPES.MCP_STATUS || req.type === IPC_REQUEST_TYPES.MCP_RESTART) {
+      if (!isGlobalControllerProjectRoot(projectRoot)) {
+        socket.write(`${JSON.stringify({
+          type: IPC_RESPONSE_TYPES.ERROR,
+          error: "MCP control is owned by the global controller daemon",
+        })}\n`);
+        return;
+      }
+      try {
+        if (req.type === IPC_REQUEST_TYPES.MCP_RESTART) {
+          if (!mcpHttpServer) {
+            throw new Error("MCP HTTP listener is disabled");
+          }
+          await mcpHttpServer.stop();
+          await mcpHttpServer.start();
+        }
+        socket.write(`${JSON.stringify({
+          type: IPC_RESPONSE_TYPES.RESPONSE,
+          data: {
+            ok: true,
+            operation: req.type === IPC_REQUEST_TYPES.MCP_RESTART ? "restart" : "status",
+            mcp: mcpHttpServer
+              ? mcpHttpServer.getStatus()
+              : { running: false, disabled: true },
+          },
+        })}\n`);
+      } catch (err) {
+        socket.write(`${JSON.stringify({
+          type: IPC_RESPONSE_TYPES.ERROR,
+          error: err.message || String(err),
+          code: err.code || "mcp_control_error",
+        })}\n`);
+      }
+      return;
+    }
     if (req.type === IPC_REQUEST_TYPES.STATUS) {
       cleanupInactiveSubscribers();
       const status = buildRuntimeStatus();
@@ -2594,6 +2652,13 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
       daemonCronController = null;
     }
     daemonGroupOrchestrator = null;
+
+    runtimeControlPlane.stop();
+    if (mcpHttpServer) {
+      void mcpHttpServer.stop().catch((err) => {
+        writeLog(`MCP HTTP shutdown failed: ${formatFatalReason(err)}`);
+      });
+    }
 
     // 清理所有子进程
     processManager.cleanup();

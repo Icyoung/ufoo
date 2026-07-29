@@ -7,7 +7,10 @@ const { spawn } = require("child_process");
 
 const { getUfooPaths } = require("../../coordination/state/paths");
 const { isRunning, socketPath } = require("./index");
-const controlPlane = require("./controlPlaneService");
+const {
+  MCP_EXPOSED_SHARED_TOOLS,
+  createLocalProjectRuntimeGateway,
+} = require("./projectRuntimeGateway");
 const {
   normalizeProjectRoot,
   resolveGlobalControllerProjectRoot,
@@ -30,15 +33,8 @@ const {
 const PACKAGE_ROOT = path.resolve(__dirname, "..", "..", "..");
 const PACKAGE_JSON = require(path.join(PACKAGE_ROOT, "package.json"));
 
-const EXPOSED_SHARED_TOOLS = Object.freeze([
-  "read_project_registry",
-  "read_bus_summary",
-  "read_prompt_history",
-  "read_open_decisions",
-  "list_agents",
-  "dispatch_message",
-  "ack_bus",
-]);
+const EXPOSED_SHARED_TOOLS = MCP_EXPOSED_SHARED_TOOLS;
+const DEFAULT_PROJECT_RUNTIME_GATEWAY = createLocalProjectRuntimeGateway();
 
 const CUSTOM_TOOL_DEFINITIONS = Object.freeze([
   {
@@ -65,6 +61,10 @@ const CUSTOM_TOOL_DEFINITIONS = Object.freeze([
         scoped_nickname: { type: "string" },
         launch_mode: { type: "string" },
         capabilities: { type: "object", additionalProperties: true },
+        client_instance_id: {
+          type: "string",
+          description: "Stable host-local instance id used to recover the same registration after transport restarts.",
+        },
       },
       additionalProperties: false,
     },
@@ -75,10 +75,11 @@ const CUSTOM_TOOL_DEFINITIONS = Object.freeze([
     description: "Refresh a registered agent heartbeat in its project bus.",
     input_schema: {
       type: "object",
-      required: ["project_root", "subscriber"],
+      required: ["project_root", "subscriber", "agent_handle"],
       properties: {
         project_root: { type: "string" },
         subscriber: { type: "string" },
+        agent_handle: { type: "string" },
       },
       additionalProperties: false,
     },
@@ -89,10 +90,11 @@ const CUSTOM_TOOL_DEFINITIONS = Object.freeze([
     description: "Publish the caller agent activity state in its project bus metadata.",
     input_schema: {
       type: "object",
-      required: ["project_root", "subscriber", "activity_state"],
+      required: ["project_root", "subscriber", "agent_handle", "activity_state"],
       properties: {
         project_root: { type: "string" },
         subscriber: { type: "string" },
+        agent_handle: { type: "string" },
         activity_state: { type: "string" },
         detail: { type: "string" },
         since: { type: "string" },
@@ -106,10 +108,11 @@ const CUSTOM_TOOL_DEFINITIONS = Object.freeze([
     description: "Update the caller agent nickname or MCP metadata in its project bus.",
     input_schema: {
       type: "object",
-      required: ["project_root", "subscriber"],
+      required: ["project_root", "subscriber", "agent_handle"],
       properties: {
         project_root: { type: "string" },
         subscriber: { type: "string" },
+        agent_handle: { type: "string" },
         nickname: { type: "string" },
         metadata: { type: "object", additionalProperties: true },
       },
@@ -122,10 +125,11 @@ const CUSTOM_TOOL_DEFINITIONS = Object.freeze([
     description: "Read pending bus messages for the caller-owned subscriber queue without acknowledging them.",
     input_schema: {
       type: "object",
-      required: ["project_root", "subscriber"],
+      required: ["project_root", "subscriber", "agent_handle"],
       properties: {
         project_root: { type: "string" },
         subscriber: { type: "string" },
+        agent_handle: { type: "string" },
         limit: { type: "integer", minimum: 1 },
       },
       additionalProperties: false,
@@ -137,10 +141,11 @@ const CUSTOM_TOOL_DEFINITIONS = Object.freeze([
     description: "Keep a Codex App-compatible MCP tool call pending until the caller-owned bus queue receives messages after after_seq or the wait reaches its timeout.",
     input_schema: {
       type: "object",
-      required: ["project_root", "subscriber"],
+      required: ["project_root", "subscriber", "agent_handle"],
       properties: {
         project_root: { type: "string" },
         subscriber: { type: "string" },
+        agent_handle: { type: "string" },
         after_seq: {
           type: "integer",
           minimum: 0,
@@ -165,10 +170,11 @@ const CUSTOM_TOOL_DEFINITIONS = Object.freeze([
     description: "Queue an agent task status report through the project daemon report-control queue.",
     input_schema: {
       type: "object",
-      required: ["project_root", "subscriber", "task_id", "phase"],
+      required: ["project_root", "subscriber", "agent_handle", "task_id", "phase"],
       properties: {
         project_root: { type: "string" },
         subscriber: { type: "string" },
+        agent_handle: { type: "string" },
         task_id: { type: "string" },
         phase: { type: "string", enum: ["start", "progress", "done", "error"] },
         message: { type: "string" },
@@ -186,10 +192,11 @@ const CUSTOM_TOOL_DEFINITIONS = Object.freeze([
     description: "Mark an MCP-registered agent inactive in its project bus.",
     input_schema: {
       type: "object",
-      required: ["project_root", "subscriber"],
+      required: ["project_root", "subscriber", "agent_handle"],
       properties: {
         project_root: { type: "string" },
         subscriber: { type: "string" },
+        agent_handle: { type: "string" },
       },
       additionalProperties: false,
     },
@@ -212,11 +219,16 @@ function withProjectRootSchema(schema, options = {}) {
       type: "string",
       description: "Caller-owned subscriber id returned by register_agent.",
     },
+    agent_handle: {
+      type: "string",
+      description: "Opaque ownership capability returned by register_agent.",
+    },
     ...(cloned.properties || {}),
   };
   const required = Array.isArray(cloned.required) ? cloned.required.slice() : [];
   if (!required.includes("project_root")) required.unshift("project_root");
   if (options.requireSubscriber && !required.includes("subscriber")) required.push("subscriber");
+  if (options.requireAgentHandle && !required.includes("agent_handle")) required.push("agent_handle");
   cloned.properties = properties;
   cloned.required = required;
   cloned.additionalProperties = false;
@@ -227,6 +239,7 @@ function toMcpTool(definition, options = {}) {
   const inputSchema = options.projectScoped
     ? withProjectRootSchema(definition.input_schema, {
       requireSubscriber: options.requireSubscriber,
+      requireAgentHandle: options.requireAgentHandle,
     })
     : cloneJson(definition.input_schema);
   return {
@@ -243,6 +256,7 @@ function buildToolList() {
     .map((tool) => toMcpTool(tool, {
       projectScoped: tool.name !== "read_project_registry",
       requireSubscriber: tool.name === "dispatch_message" || tool.name === "ack_bus",
+      requireAgentHandle: tool.name === "dispatch_message" || tool.name === "ack_bus",
     }));
   const custom = CUSTOM_TOOL_DEFINITIONS.map((tool) => toMcpTool(tool));
   return [...custom, ...shared];
@@ -265,6 +279,8 @@ function stripMcpRoutingArgs(args = {}) {
   delete next.project_root;
   delete next.projectRoot;
   delete next.subscriber;
+  delete next.agent_handle;
+  delete next.agentHandle;
   return next;
 }
 
@@ -408,12 +424,50 @@ async function ensureGlobalControllerDaemon(options = {}) {
 async function handleMcpStatus(ctx = {}) {
   const root = resolveGlobalControllerProjectRoot();
   const projects = listRegisteredProjectRows();
+  let http = null;
+  if (typeof ctx.getMcpHttpStatus === "function") {
+    http = ctx.getMcpHttpStatus();
+  } else {
+    try {
+      const endpointPath = getUfooPaths(root).mcpEndpoint;
+      http = JSON.parse(fs.readFileSync(endpointPath, "utf8"));
+      const pidRunning = Number(http.pid) > 0 && (() => {
+        try {
+          process.kill(Number(http.pid), 0);
+          return true;
+        } catch {
+          return false;
+        }
+      })();
+      let healthRunning = false;
+      if (pidRunning && http.endpoint && typeof fetch === "function") {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 500);
+        if (typeof timer.unref === "function") timer.unref();
+        try {
+          const healthUrl = new URL(http.endpoint);
+          healthUrl.pathname = "/health";
+          healthUrl.search = "";
+          const response = await fetch(healthUrl, { signal: controller.signal });
+          healthRunning = response.ok;
+        } catch {
+          healthRunning = false;
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+      http.running = pidRunning && healthRunning;
+    } catch {
+      http = { running: false };
+    }
+  }
   return {
     ok: true,
     global_controller_root: root,
     global_controller_sock: socketPath(root),
     global_controller_running: isRunning(root),
     auto_start: ctx.autoStart !== false,
+    http,
     project_count: projects.length,
     projects,
   };
@@ -421,48 +475,42 @@ async function handleMcpStatus(ctx = {}) {
 
 async function handleRegisterAgent(ctx = {}, args = {}) {
   const projectRoot = resolveRegisteredProjectRoot(args, ctx);
-  return controlPlane.registerAgent(projectRoot, args);
+  return ctx.projectRuntimeGateway.call(projectRoot, "register_agent", args, ctx);
 }
 
 async function handleHeartbeatAgent(ctx = {}, args = {}) {
   const projectRoot = resolveRegisteredProjectRoot(args, ctx);
-  return controlPlane.heartbeatAgent(projectRoot, args);
+  return ctx.projectRuntimeGateway.call(projectRoot, "heartbeat_agent", args, ctx);
 }
 
 async function handlePublishActivityState(ctx = {}, args = {}) {
   const projectRoot = resolveRegisteredProjectRoot(args, ctx);
-  return controlPlane.publishActivityState(projectRoot, args);
+  return ctx.projectRuntimeGateway.call(projectRoot, "publish_activity_state", args, ctx);
 }
 
 async function handleUpdateAgentMetadata(ctx = {}, args = {}) {
   const projectRoot = resolveRegisteredProjectRoot(args, ctx);
-  return controlPlane.updateAgentMetadata(projectRoot, args);
+  return ctx.projectRuntimeGateway.call(projectRoot, "update_agent_metadata", args, ctx);
 }
 
 async function handlePollInbox(ctx = {}, args = {}) {
   const projectRoot = resolveRegisteredProjectRoot(args, ctx);
-  return controlPlane.pollInbox(projectRoot, args);
+  return ctx.projectRuntimeGateway.call(projectRoot, "poll_inbox", args, ctx);
 }
 
 async function handleWaitForMessage(ctx = {}, args = {}) {
   const projectRoot = resolveRegisteredProjectRoot(args, ctx);
-  return controlPlane.waitForMessage(projectRoot, args, {
-    signal: ctx.signal,
-    pollIntervalMs: ctx.waitPollIntervalMs,
-    heartbeatIntervalMs: ctx.waitHeartbeatIntervalMs,
-    now: ctx.waitNow,
-    sleep: ctx.waitSleep,
-  });
+  return ctx.projectRuntimeGateway.call(projectRoot, "wait_for_message", args, ctx);
 }
 
 async function handleReportAgentStatus(ctx = {}, args = {}) {
   const projectRoot = resolveRegisteredProjectRoot(args, ctx);
-  return controlPlane.reportAgentStatus(projectRoot, args);
+  return ctx.projectRuntimeGateway.call(projectRoot, "report_agent_status", args, ctx);
 }
 
 async function handleUnregisterAgent(ctx = {}, args = {}) {
   const projectRoot = resolveRegisteredProjectRoot(args, ctx);
-  return controlPlane.unregisterAgent(projectRoot, args);
+  return ctx.projectRuntimeGateway.call(projectRoot, "unregister_agent", args, ctx);
 }
 
 function findCustomTool(name) {
@@ -481,23 +529,19 @@ async function invokeTool(name, args = {}, ctx = {}) {
     throw err;
   }
 
+  if (name !== "read_project_registry") {
+    const projectRoot = resolveRegisteredProjectRoot(args, ctx);
+    return ctx.projectRuntimeGateway.call(projectRoot, name, args, ctx);
+  }
+
   const tool = assertToolAllowedForCallerTier(name, CALLER_TIERS.WORKER, {
     tool_call_id: ctx.toolCallId,
   });
-  const projectRoot = name === "read_project_registry"
-    ? resolveGlobalControllerProjectRoot()
-    : resolveRegisteredProjectRoot(args, ctx);
-  const subscriber = String(args.subscriber || args.source || "").trim();
-  const toolArgs = stripMcpRoutingArgs(args);
-  if (name === "dispatch_message" && !toolArgs.source && subscriber) {
-    toolArgs.source = subscriber;
-  }
-  const toolCtx = {
-    projectRoot,
-    subscriber,
+  return tool.handler({
+    projectRoot: resolveGlobalControllerProjectRoot(),
+    subscriber: "",
     caller_tier: CALLER_TIERS.WORKER,
-  };
-  return tool.handler(toolCtx, toolArgs);
+  }, stripMcpRoutingArgs(args));
 }
 
 class UfooMcpServer {
@@ -510,10 +554,10 @@ class UfooMcpServer {
       waitHeartbeatIntervalMs: options.waitHeartbeatIntervalMs,
       waitNow: options.waitNow,
       waitSleep: options.waitSleep,
+      projectRuntimeGateway: options.projectRuntimeGateway || DEFAULT_PROJECT_RUNTIME_GATEWAY,
     };
     this.initialized = false;
     this.startup = null;
-    this.registeredSubscribers = [];
     this.activeToolCalls = new Map();
   }
 
@@ -607,17 +651,6 @@ class UfooMcpServer {
         } finally {
           this.activeToolCalls.delete(id);
         }
-        if (name === "register_agent" && result && result.subscriber && result.project_root) {
-          this.registeredSubscribers.push({
-            subscriber: result.subscriber,
-            projectRoot: result.project_root,
-          });
-        }
-        if (name === "unregister_agent" && result && result.subscriber) {
-          this.registeredSubscribers = this.registeredSubscribers.filter(
-            (entry) => entry.subscriber !== result.subscriber
-          );
-        }
         return createJsonRpcResult(id, createMcpContent(result));
       }
 
@@ -636,14 +669,6 @@ class UfooMcpServer {
       active.abort();
     }
     this.activeToolCalls.clear();
-    for (const { subscriber, projectRoot } of this.registeredSubscribers) {
-      try {
-        controlPlane.unregisterAgent(projectRoot, { subscriber });
-      } catch {
-        // best-effort cleanup
-      }
-    }
-    this.registeredSubscribers = [];
   }
 }
 
@@ -652,52 +677,18 @@ function createUfooMcpServer(options = {}) {
 }
 
 async function runMcpServer(options = {}) {
-  const input = options.input || process.stdin;
-  const output = options.output || process.stdout;
-  const server = createUfooMcpServer(options);
-  let buffer = "";
-
-  const writeMessage = (message) => {
-    if (!message) return;
-    output.write(`${JSON.stringify(message)}\n`);
-  };
-
-  input.setEncoding("utf8");
-  input.on("data", (chunk) => {
-    buffer += chunk;
-    const lines = buffer.split(/\r?\n/);
-    buffer = lines.pop() || "";
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      let request;
-      try {
-        request = JSON.parse(line);
-      } catch (err) {
-        writeMessage(createJsonRpcError(null, MCP_ERROR_CODES.PARSE_ERROR, err.message || "Parse error"));
-        continue;
-      }
-      server.handleRequest(request)
-        .then(writeMessage)
-        .catch((err) => {
-          writeMessage(createJsonRpcError(
-            Object.prototype.hasOwnProperty.call(request, "id") ? request.id : null,
-            MCP_ERROR_CODES.INTERNAL_ERROR,
-            err.message || String(err)
-          ));
-        });
-    }
+  const { runMcpStdioProxy } = require("./mcpStdioProxy");
+  return runMcpStdioProxy({
+    ...options,
+    ensureDaemon: () => ensureGlobalControllerDaemon(options),
   });
-
-  input.on("end", () => server.cleanup());
-  input.on("close", () => server.cleanup());
-
-  return server;
 }
 
 module.exports = {
   EXPOSED_SHARED_TOOLS,
   CUSTOM_TOOL_DEFINITIONS,
   buildToolList,
+  createMcpContent,
   createUfooMcpServer,
   ensureGlobalControllerDaemon,
   invokeTool,

@@ -24,6 +24,10 @@ describe("shared eventContract", () => {
       AGENT_READY: "agent_ready",
       AGENT_REPORT: "agent_report",
       ASSIGN_ROLE: "assign_role",
+      CONTROL_PLANE_CALL: "control_plane_call",
+      CONTROL_PLANE_CANCEL: "control_plane_cancel",
+      MCP_STATUS: "mcp_status",
+      MCP_RESTART: "mcp_restart",
     });
   });
 
@@ -35,6 +39,7 @@ describe("shared eventContract", () => {
       ERROR: "error",
       BUS_SEND_OK: "bus_send_ok",
       REGISTER_OK: "register_ok",
+      CONTROL_PLANE_RESULT: "control_plane_result",
     });
   });
 

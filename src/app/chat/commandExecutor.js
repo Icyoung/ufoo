@@ -357,10 +357,12 @@ function createCommandExecutor(options = {}) {
   }
 
   function logMcpHelp() {
-    logMessage("system", "{cyan-fg}MCP bridge:{/cyan-fg} local stdio bridge for external MCP-capable agents");
-    logMessage("system", "  • Configure client command: ufoo mcp");
+    logMessage("system", "{cyan-fg}MCP server:{/cyan-fg} singleton listener in the global controller daemon");
+    logMessage("system", "  • Configure Codex direct HTTP: ufoo mcp configure codex");
+    logMessage("system", "  • Compatibility proxy command: ufoo mcp");
     logMessage("system", "  • Disable daemon auto-start: ufoo mcp --no-auto-start");
-    logMessage("system", "  • Topology: one global bridge, project tools route through registered project daemons");
+    logMessage("system", "  • Listener control: ufoo mcp status | ufoo mcp restart");
+    logMessage("system", "  • Topology: one global tool router; project calls use registered project runtimes");
     logMessage("system", "  • Chat diagnostics: /mcp status, /mcp tools, /mcp help");
   }
 
@@ -417,8 +419,12 @@ function createCommandExecutor(options = {}) {
           throw new Error("empty MCP status response");
         }
         const projects = Array.isArray(status.projects) ? status.projects : [];
-        logMessage("system", "{cyan-fg}MCP bridge:{/cyan-fg} local stdio server");
-        logMessage("system", "  • command: {cyan-fg}ufoo mcp{/cyan-fg}");
+        logMessage("system", "{cyan-fg}MCP server:{/cyan-fg} global Streamable HTTP listener");
+        logMessage("system", `  • listener: ${status.http?.running ? "{green-fg}running{/green-fg}" : "{yellow-fg}not running{/yellow-fg}"}`);
+        if (status.http?.endpoint) {
+          logMessage("system", `  • endpoint: ${escapeBlessed(status.http.endpoint)}`);
+        }
+        logMessage("system", "  • stdio fallback: {cyan-fg}ufoo mcp{/cyan-fg}");
         logMessage("system", `  • global controller: ${escapeBlessed(status.global_controller_root || "")}`);
         logMessage("system", `  • daemon: ${status.global_controller_running ? "{green-fg}running{/green-fg}" : "{yellow-fg}not running{/yellow-fg}"}`);
         logMessage("system", "  • client auto-start: enabled by default");

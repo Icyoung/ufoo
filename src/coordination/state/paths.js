@@ -24,6 +24,8 @@ function getUfooPaths(projectRoot) {
   const ufooDaemonPid = path.join(runDir, "ufoo-daemon.pid");
   const ufooDaemonLog = path.join(runDir, "ufoo-daemon.log");
   const ufooSock = path.join(runDir, "ufoo.sock");
+  const mcpToken = path.join(runDir, "mcp-token");
+  const mcpEndpoint = path.join(runDir, "mcp-endpoint.json");
 
   return {
     ufooDir,
@@ -46,6 +48,8 @@ function getUfooPaths(projectRoot) {
     ufooDaemonPid,
     ufooDaemonLog,
     ufooSock,
+    mcpToken,
+    mcpEndpoint,
   };
 }
 
