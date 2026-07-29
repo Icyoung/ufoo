@@ -53,7 +53,7 @@ const CUSTOM_TOOL_DEFINITIONS = Object.freeze([
   },
   {
     name: "register_agent",
-    description: "Register an externally launched agent into a registered project bus.",
+    description: "Register an externally launched Agent only when its shell has no wrapper-provided UFOO_SUBSCRIBER_ID.",
     input_schema: {
       type: "object",
       required: ["project_root"],
@@ -131,6 +131,34 @@ const CUSTOM_TOOL_DEFINITIONS = Object.freeze([
       additionalProperties: false,
     },
     handler: handlePollInbox,
+  },
+  {
+    name: "wait_for_message",
+    description: "Keep a Codex App-compatible MCP tool call pending until the caller-owned bus queue receives messages after after_seq or the wait reaches its timeout.",
+    input_schema: {
+      type: "object",
+      required: ["project_root", "subscriber"],
+      properties: {
+        project_root: { type: "string" },
+        subscriber: { type: "string" },
+        after_seq: {
+          type: "integer",
+          minimum: 0,
+          default: 0,
+          description: "Return only messages with a sequence greater than this cursor.",
+        },
+        timeout_seconds: {
+          type: "number",
+          minimum: 1,
+          maximum: 600,
+          default: 600,
+          description: "Keep the tool call pending for at most this many seconds.",
+        },
+        limit: { type: "integer", minimum: 1, maximum: 100, default: 50 },
+      },
+      additionalProperties: false,
+    },
+    handler: handleWaitForMessage,
   },
   {
     name: "report_agent_status",
@@ -416,6 +444,17 @@ async function handlePollInbox(ctx = {}, args = {}) {
   return controlPlane.pollInbox(projectRoot, args);
 }
 
+async function handleWaitForMessage(ctx = {}, args = {}) {
+  const projectRoot = resolveRegisteredProjectRoot(args, ctx);
+  return controlPlane.waitForMessage(projectRoot, args, {
+    signal: ctx.signal,
+    pollIntervalMs: ctx.waitPollIntervalMs,
+    heartbeatIntervalMs: ctx.waitHeartbeatIntervalMs,
+    now: ctx.waitNow,
+    sleep: ctx.waitSleep,
+  });
+}
+
 async function handleReportAgentStatus(ctx = {}, args = {}) {
   const projectRoot = resolveRegisteredProjectRoot(args, ctx);
   return controlPlane.reportAgentStatus(projectRoot, args);
@@ -467,10 +506,15 @@ class UfooMcpServer {
       autoStart: options.autoStart !== false,
       validateProjectRoot: options.validateProjectRoot !== false,
       startTimeoutMs: options.startTimeoutMs,
+      waitPollIntervalMs: options.waitPollIntervalMs,
+      waitHeartbeatIntervalMs: options.waitHeartbeatIntervalMs,
+      waitNow: options.waitNow,
+      waitSleep: options.waitSleep,
     };
     this.initialized = false;
     this.startup = null;
     this.registeredSubscribers = [];
+    this.activeToolCalls = new Map();
   }
 
   async ensureStarted() {
@@ -502,6 +546,11 @@ class UfooMcpServer {
     if (isNotification) {
       if (method === "notifications/initialized") {
         this.initialized = true;
+      }
+      if (method === "notifications/cancelled") {
+        const requestId = params.requestId;
+        const active = this.activeToolCalls.get(requestId);
+        if (active) active.abort();
       }
       return null;
     }
@@ -541,10 +590,23 @@ class UfooMcpServer {
         if (!name) {
           return createJsonRpcError(id, MCP_ERROR_CODES.INVALID_PARAMS, "tools/call requires params.name");
         }
-        const result = await suppressConsoleToStderr(() => invokeTool(name, args, {
-          ...this.options,
-          toolCallId: id,
-        }));
+        const abortController = new AbortController();
+        this.activeToolCalls.set(id, abortController);
+        let result;
+        try {
+          const runTool = () => invokeTool(name, args, {
+            ...this.options,
+            toolCallId: id,
+            signal: abortController.signal,
+          });
+          // A long-lived wait must not hold the process-global console shim for
+          // up to ten minutes while unrelated MCP calls continue concurrently.
+          result = name === "wait_for_message"
+            ? await runTool()
+            : await suppressConsoleToStderr(runTool);
+        } finally {
+          this.activeToolCalls.delete(id);
+        }
         if (name === "register_agent" && result && result.subscriber && result.project_root) {
           this.registeredSubscribers.push({
             subscriber: result.subscriber,
@@ -570,6 +632,10 @@ class UfooMcpServer {
   }
 
   cleanup() {
+    for (const active of this.activeToolCalls.values()) {
+      active.abort();
+    }
+    this.activeToolCalls.clear();
     for (const { subscriber, projectRoot } of this.registeredSubscribers) {
       try {
         controlPlane.unregisterAgent(projectRoot, { subscriber });

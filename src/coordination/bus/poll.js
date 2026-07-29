@@ -3,43 +3,6 @@
 const fs = require("fs");
 const path = require("path");
 
-const BUILTIN_DELIVERY_AGENT_TYPES = new Set([
-  "agy",
-  "antigravity",
-  "claude",
-  "claude-code",
-  "codex",
-  "kimi",
-  "kimi-cli",
-  "kimi-code",
-  "ucode",
-  "ufoo",
-  "ufoo-agent",
-  "ufoo-code",
-]);
-
-function normalizeAgentType(value = "") {
-  return String(value || "").trim().toLowerCase();
-}
-
-function resolveSubscriberAgentType(subscriber, meta = null) {
-  const explicit = normalizeAgentType(meta && meta.agent_type);
-  if (explicit) return explicit;
-  const id = String(subscriber || "").trim();
-  const separator = id.indexOf(":");
-  return normalizeAgentType(separator === -1 ? id : id.slice(0, separator));
-}
-
-function assertFollowPollAllowed(subscriber, meta = null) {
-  const agentType = resolveSubscriberAgentType(subscriber, meta);
-  if (BUILTIN_DELIVERY_AGENT_TYPES.has(agentType)) {
-    throw new Error(
-      `poll --follow is disabled for built-in delivery agent type "${agentType}"`
-    );
-  }
-  return agentType;
-}
-
 function eventIdentity(event = {}) {
   const seq = Number(event && event.seq);
   if (Number.isFinite(seq) && seq > 0) {
@@ -76,6 +39,7 @@ function defaultIsPidAlive(pid) {
 
 function acquirePollLease(pidFile, options = {}) {
   const pid = Number(options.pid) || process.pid;
+  const operation = String(options.operation || "poll --follow");
   const isAlive = typeof options.isAlive === "function"
     ? options.isAlive
     : defaultIsPidAlive;
@@ -90,7 +54,7 @@ function acquirePollLease(pidFile, options = {}) {
       existing = 0;
     }
     if (Number.isFinite(existing) && existing > 0 && isAlive(existing)) {
-      throw new Error(`poll --follow is already running (pid=${existing})`);
+      throw new Error(`${operation} is already running (pid=${existing})`);
     }
     fs.rmSync(pidFile, { force: true });
   }
@@ -101,7 +65,7 @@ function acquirePollLease(pidFile, options = {}) {
     fs.writeFileSync(fd, `${pid}\n`, "utf8");
   } catch (err) {
     if (err && err.code === "EEXIST") {
-      throw new Error("poll --follow is already starting for this subscriber");
+      throw new Error(`${operation} is already starting for this subscriber`);
     }
     throw err;
   } finally {
@@ -179,12 +143,9 @@ async function runPendingPoll(options = {}) {
 }
 
 module.exports = {
-  BUILTIN_DELIVERY_AGENT_TYPES,
   acquirePollLease,
-  assertFollowPollAllowed,
   enumerateEventKeys,
   eventIdentity,
   releasePollLease,
-  resolveSubscriberAgentType,
   runPendingPoll,
 };

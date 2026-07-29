@@ -83,6 +83,10 @@ describe("native system prompt assembly", () => {
   test("ufoo section tells senders to continue without polling or waiting", () => {
     const sections = getSystemPrompt({ workspaceRoot: "/repo" });
     const ufoo = findSection(sections, "# ufoo integration");
+    expect(ufoo).toContain("A nonempty `UFOO_SUBSCRIBER_ID`");
+    expect(ufoo).toContain("already registered this Agent");
+    expect(ufoo).toContain("never call MCP `register_agent`");
+    expect(ufoo).toContain("start resident `ufoo bus poll`");
     expect(ufoo).toContain("After sending a bus message");
     expect(ufoo).toContain("do not poll `ufoo bus check`, invoke `/ubus`, sleep, or wait");
     expect(ufoo).toContain("automatically injected into your prompt/session");

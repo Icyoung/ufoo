@@ -5,31 +5,12 @@ const os = require("os");
 const path = require("path");
 const {
   acquirePollLease,
-  assertFollowPollAllowed,
   enumerateEventKeys,
   releasePollLease,
   runPendingPoll,
 } = require("../../../src/coordination/bus/poll");
 
 describe("background pending poll", () => {
-  test.each([
-    ["codex:one", { agent_type: "codex" }],
-    ["claude-code:one", { agent_type: "claude-code" }],
-    ["agy:one", { agent_type: "agy" }],
-    ["kimi:one", { agent_type: "kimi" }],
-    ["ufoo-code:one", { agent_type: "ufoo-code" }],
-  ])("rejects built-in delivery subscriber %s", (subscriber, meta) => {
-    expect(() => assertFollowPollAllowed(subscriber, meta))
-      .toThrow("disabled for built-in delivery agent type");
-  });
-
-  test("allows an explicitly provisioned external agent type", () => {
-    expect(assertFollowPollAllowed(
-      "opencode:one",
-      { agent_type: "opencode" }
-    )).toBe("opencode");
-  });
-
   test("gives duplicate unsequenced events distinct stable keys", () => {
     const events = [{ data: { message: "same" } }, { data: { message: "same" } }];
     const first = enumerateEventKeys(events).map((entry) => entry.key);
@@ -75,6 +56,20 @@ describe("background pending poll", () => {
     });
 
     expect(onEvents).toHaveBeenCalledWith([{ seq: 7 }]);
+  });
+
+  test("emits no batch callback while the queue stays empty", async () => {
+    const onEvents = jest.fn().mockResolvedValue();
+
+    await runPendingPoll({
+      intervalMs: 250,
+      maxIterations: 3,
+      readPending: async () => [],
+      onEvents,
+      sleep: async () => {},
+    });
+
+    expect(onEvents).not.toHaveBeenCalled();
   });
 
   test("allows only one resident poll lease per subscriber", () => {

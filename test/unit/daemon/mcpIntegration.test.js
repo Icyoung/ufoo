@@ -48,6 +48,7 @@ describe("MCP external integration (Phase 6)", () => {
     const server = createUfooMcpServer({
       autoStart: false,
       validateProjectRoot: false,
+      waitPollIntervalMs: 50,
     });
 
     // Agent A registers (simulating raw claude)
@@ -88,8 +89,17 @@ describe("MCP external integration (Phase 6)", () => {
     });
     expect(actRes.result.structuredContent.activity_state).toBe("working");
 
-    // Agent A sends message to Agent B
-    await call(server, 5, "dispatch_message", {
+    // Agent B keeps one MCP tool call pending (Codex App receive path).
+    const waiting = call(server, 5, "wait_for_message", {
+      project_root: projectRoot,
+      subscriber: subB,
+      after_seq: 0,
+      timeout_seconds: 10,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // Agent A sends a message; the pending tool call returns and wakes Agent B.
+    await call(server, 6, "dispatch_message", {
       project_root: projectRoot,
       subscriber: subA,
       source: subA,
@@ -97,21 +107,22 @@ describe("MCP external integration (Phase 6)", () => {
       message: "Please review the auth module.",
     });
 
-    // Agent B polls inbox and sees the message
-    const inbox = await call(server, 6, "poll_inbox", {
-      project_root: projectRoot,
-      subscriber: subB,
-    });
+    const inbox = await waiting;
     const inboxData = inbox.result.structuredContent;
+    expect(inboxData.status).toBe("message");
+    expect(inboxData.timed_out).toBe(false);
     expect(inboxData.count).toBeGreaterThan(0);
     expect(inboxData.messages[0].data.message).toContain("auth module");
+    expect(inboxData.last_seq).toBeGreaterThan(0);
 
-    // Agent B acks
+    // Agent B acks only the returned batch, preserving later arrivals.
     const ack = await call(server, 7, "ack_bus", {
       project_root: projectRoot,
       subscriber: subB,
+      through_seq: inboxData.last_seq,
     });
     expect(ack.result.structuredContent.ok).toBe(true);
+    expect(ack.result.structuredContent.through_seq).toBe(inboxData.last_seq);
 
     // After ack, inbox is empty
     const inbox2 = await call(server, 8, "poll_inbox", {

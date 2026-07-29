@@ -25,7 +25,8 @@ npm 包：[u-foo](https://www.npmjs.com/package/u-foo)
 - 支持 internal、tmux、host、Terminal.app、iTerm2 等启动模式。
 - 内置 group 模板，用于启动和编排多 Agent 工作流。
 - 提供原生 ufoo coding-agent 运行时 `ucode`。
-- 提供 `ufoo mcp` 本机 global MCP bridge，供支持 MCP 的外部 Agent 接入。
+- 提供 `ufoo mcp` 本机 global MCP bridge，并用 pending tool call 唤醒支持
+  MCP 的外部 Agent。
 
 ## 环境要求
 
@@ -124,6 +125,23 @@ ufoo mcp
   -> selected project daemon for bus/report/activity state
 ```
 
+### Agent 消息投递模式
+
+ufoo 支持两种 Agent 投递模式，只根据 `UFOO_SUBSCRIBER_ID` 是否存在来选择：
+
+- 包装器托管的 Agent 通过 `ucodex`、`uclaude`、`uagy`、`ukimi` 或 `ucode`
+  启动。包装器会提供 `UFOO_SUBSCRIBER_ID`；ufoo 能监控其 shell 活动并定位
+  注入端点，因此可以直接注入 bus 消息。这类 Agent 复用环境中的身份，
+  不通过 MCP 重复注册，也不运行常驻 bus poll。
+- 外部 host 托管的 Agent 没有包装器提供的 subscriber 环境变量。它通过 MCP
+  `register_agent` 注册一次，保留返回的 subscriber，再选择宿主 App 原生的
+  无 token 等待方式：Codex App 挂起 MCP `wait_for_message`，Cursor 则用
+  `notify_on_output` 监控 `ufoo bus poll --follow` 的后台输出。
+
+Agent 类型名和 subscriber 前缀只是路由元数据，不是能力判断条件。外部 Agent
+不要把 MCP 返回的 subscriber 导出成 `UFOO_SUBSCRIBER_ID`，因为该变量专门
+表示包装器托管链路。
+
 Chat 是 UI client。daemon 拥有项目运行态。Agent 通过 bus queue、prompt
 injection、shared memory、report 和 tool handler 协作，而不是直接依赖
 chat UI 代码。
@@ -197,22 +215,33 @@ ufoo -g
 发送消息前，先用 `/bus status` 查看真实 subscriber ID 或可解析昵称。
 Agent 应处理 pending work、回复发送方，并 ack 自己的队列。
 
-无法接收 ufoo prompt 注入的 Agent host 可以显式启用常驻、队列只读的
-bus 消息流：
+没有 `UFOO_SUBSCRIBER_ID` 的外部 Agent 使用可选的 `ufoo-bus-poll` skill，
+由它选择宿主 App 对应的队列只读等待和自身唤醒方式：
 
 ```bash
 ufoo skills list --optional
 ufoo skills install ufoo-bus-poll --target /path/to/that/agent/skills
-ufoo bus poll "<subscriber-id>" --follow --interval 2
 ```
 
-使用 MCP `register_agent` 返回或由 host 预配的 subscriber，并由该 host 的
-流式后台任务能力托管最后一条命令。它只输出新观察到的
-pending event，不 claim、不 ack；Agent 处理完输出批次后，再执行输出中
-给出的 `ufoo bus ack --through <seq>`，以保留稍后到达的消息。
-这个 fallback 不会被 postinstall 或 `skills install all` 安装，而且
-follow 模式会拒绝 Codex CLI、Claude Code CLI、Agy、Kimi 和原生 ucode
-的 subscriber 类型，确保其现有投递链路不受影响。
+先通过 MCP `register_agent` 注册一次并保留返回的 subscriber，不要将它
+导出成 `UFOO_SUBSCRIBER_ID`。
+
+- **Codex App：**前台调用 MCP `wait_for_message`，首次使用
+  `after_seq: 0`、`timeout_seconds: 600`。工具调用在 ufoo 内保持 pending；
+  有消息立即返回并唤醒当前任务，不依赖 shell stdout。超时后用相同游标续挂；
+  处理消息后，用返回的 `last_seq` 作为 MCP `ack_bus.through_seq`，Agent
+  再次空闲时以该 `last_seq` 续挂。
+- **Cursor：**通过 monitored background shell 运行
+  `ufoo bus poll "<subscriber-id>" --follow --interval 30`，设置
+  `block_until_ms: 0`，并让 `notify_on_output` 匹配 `\[ufoo\]`。启动和
+  空轮询保持静默，只有 ufoo 投递消息会唤醒模型。
+
+两条路径都把空闲检查留在 LLM 之外。仅有后台 PTY 输出并不能唤醒 Codex App。
+
+poll skill 不会由 postinstall 或 `skills install all` 安装。只要环境中存在
+`UFOO_SUBSCRIBER_ID`，包装器托管的 Agent 就跳过 MCP 注册和外部等待。
+接收链路由宿主 App 的能力决定，与外部 Agent 叫 Codex、Claude、Cursor
+或其他类型无关。
 
 ### Context、Memory、History、Report
 

@@ -2,7 +2,13 @@
 
 const crypto = require("crypto");
 const net = require("net");
+const path = require("path");
 const EventBus = require("../../coordination/bus");
+const {
+  acquirePollLease,
+  releasePollLease,
+} = require("../../coordination/bus/poll");
+const { subscriberToSafeName } = require("../../coordination/bus/utils");
 const { normalizeReportInput } = require("../../coordination/report/store");
 const { enqueueAgentReport } = require("./reportControlBus");
 const { isRunning, socketPath } = require("./index");
@@ -11,6 +17,11 @@ const {
   applyProjectNicknamePrefix,
   checkAndCleanupNickname,
 } = require("./nicknameScope");
+
+const WAIT_FOR_MESSAGE_DEFAULT_TIMEOUT_SECONDS = 600;
+const WAIT_FOR_MESSAGE_MAX_TIMEOUT_SECONDS = 600;
+const WAIT_FOR_MESSAGE_POLL_INTERVAL_MS = 1000;
+const WAIT_FOR_MESSAGE_HEARTBEAT_INTERVAL_MS = 15000;
 
 function nowIso() {
   return new Date().toISOString();
@@ -281,6 +292,181 @@ async function pollInbox(projectRoot, args = {}) {
   };
 }
 
+function waitForMessageCancelledError() {
+  const err = new Error("wait_for_message was cancelled");
+  err.code = "request_cancelled";
+  return err;
+}
+
+function throwIfWaitCancelled(signal) {
+  if (signal && signal.aborted) {
+    throw waitForMessageCancelledError();
+  }
+}
+
+function waitWithSignal(ms, signal) {
+  return new Promise((resolve, reject) => {
+    let timer = null;
+    const onAbort = () => {
+      if (timer) clearTimeout(timer);
+      if (signal) signal.removeEventListener("abort", onAbort);
+      reject(waitForMessageCancelledError());
+    };
+    timer = setTimeout(() => {
+      if (signal) signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    if (signal) signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function normalizeWaitForMessageArgs(args = {}) {
+  const rawAfterSeq = args.after_seq ?? args.afterSeq ?? 0;
+  const afterSeq = Number(rawAfterSeq);
+  if (!Number.isInteger(afterSeq) || afterSeq < 0) {
+    const err = new Error("wait_for_message after_seq must be a non-negative integer");
+    err.code = "invalid_after_seq";
+    throw err;
+  }
+
+  const rawTimeout = args.timeout_seconds
+    ?? args.timeoutSeconds
+    ?? WAIT_FOR_MESSAGE_DEFAULT_TIMEOUT_SECONDS;
+  const timeoutSeconds = Number(rawTimeout);
+  if (
+    !Number.isFinite(timeoutSeconds)
+    || timeoutSeconds < 1
+    || timeoutSeconds > WAIT_FOR_MESSAGE_MAX_TIMEOUT_SECONDS
+  ) {
+    const err = new Error(
+      `wait_for_message timeout_seconds must be between 1 and ${WAIT_FOR_MESSAGE_MAX_TIMEOUT_SECONDS}`
+    );
+    err.code = "invalid_timeout";
+    throw err;
+  }
+
+  const rawLimit = args.limit ?? 50;
+  const limit = Number(rawLimit);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    const err = new Error("wait_for_message limit must be an integer between 1 and 100");
+    err.code = "invalid_limit";
+    throw err;
+  }
+
+  return {
+    afterSeq,
+    timeoutSeconds,
+    limit,
+  };
+}
+
+function eventSeq(event = {}) {
+  const seq = Number(event && event.seq);
+  return Number.isInteger(seq) && seq > 0 ? seq : 0;
+}
+
+function touchWaitingSubscriber(bus, subscriber) {
+  // Long waits span concurrent metadata updates from other agents. Reload
+  // before writing heartbeat state so a stale in-memory registry cannot
+  // overwrite those updates.
+  bus.loadBusData();
+  const meta = assertSubscriberExists(bus, subscriber);
+  meta.status = "active";
+  bus.subscriberManager.updateLastSeen(subscriber);
+  bus.saveBusData();
+}
+
+async function waitForMessage(projectRoot, args = {}, options = {}) {
+  const subscriber = resolveSubscriberArg(args);
+  const { afterSeq, timeoutSeconds, limit } = normalizeWaitForMessageArgs(args);
+  const signal = options.signal || null;
+  const now = typeof options.now === "function" ? options.now : Date.now;
+  const sleep = typeof options.sleep === "function" ? options.sleep : waitWithSignal;
+  const pollIntervalMs = Math.max(
+    50,
+    Number(options.pollIntervalMs) || WAIT_FOR_MESSAGE_POLL_INTERVAL_MS
+  );
+  const heartbeatIntervalMs = Math.max(
+    1000,
+    Number(options.heartbeatIntervalMs) || WAIT_FOR_MESSAGE_HEARTBEAT_INTERVAL_MS
+  );
+  const timeoutMs = timeoutSeconds * 1000;
+
+  const bus = ensureBusLoaded(projectRoot);
+  touchWaitingSubscriber(bus, subscriber);
+  const lease = acquirePollLease(path.join(
+    bus.busDir,
+    "pids",
+    `poll-${subscriberToSafeName(subscriber)}.pid`
+  ), { operation: "wait_for_message" });
+  const cleanupLease = () => releasePollLease(lease);
+  process.once("exit", cleanupLease);
+
+  const startedAt = now();
+  const deadline = startedAt + timeoutMs;
+  let nextHeartbeatAt = startedAt + heartbeatIntervalMs;
+
+  try {
+    while (true) {
+      throwIfWaitCancelled(signal);
+
+      // Queue reads are non-mutating: the Agent acknowledges only after work is
+      // handled, and after_seq suppresses re-delivery within a re-armed wait.
+      // eslint-disable-next-line no-await-in-loop
+      const pending = await bus.queueManager.peekPending(subscriber);
+      const unseen = pending.filter((event) => eventSeq(event) > afterSeq);
+      if (unseen.length > 0) {
+        const messages = unseen.slice(0, limit);
+        const lastSeq = Math.max(afterSeq, ...messages.map(eventSeq));
+        touchWaitingSubscriber(bus, subscriber);
+        return {
+          ok: true,
+          project_root: projectRoot,
+          subscriber,
+          status: "message",
+          timed_out: false,
+          count: messages.length,
+          messages,
+          truncated: unseen.length > messages.length,
+          after_seq: afterSeq,
+          last_seq: lastSeq,
+          waited_ms: Math.max(0, now() - startedAt),
+        };
+      }
+
+      const current = now();
+      if (current >= deadline) {
+        touchWaitingSubscriber(bus, subscriber);
+        return {
+          ok: true,
+          project_root: projectRoot,
+          subscriber,
+          status: "timeout",
+          timed_out: true,
+          count: 0,
+          messages: [],
+          truncated: false,
+          after_seq: afterSeq,
+          last_seq: afterSeq,
+          waited_ms: Math.max(0, current - startedAt),
+        };
+      }
+
+      if (current >= nextHeartbeatAt) {
+        touchWaitingSubscriber(bus, subscriber);
+        nextHeartbeatAt = current + heartbeatIntervalMs;
+      }
+
+      const delayMs = Math.max(1, Math.min(pollIntervalMs, deadline - current));
+      // eslint-disable-next-line no-await-in-loop
+      await sleep(delayMs, signal);
+    }
+  } finally {
+    process.removeListener("exit", cleanupLease);
+    cleanupLease();
+  }
+}
+
 async function reportAgentStatus(projectRoot, args = {}) {
   const subscriber = resolveSubscriberArg(args);
   const report = normalizeReportInput({
@@ -325,6 +511,10 @@ module.exports = {
   publishActivityState,
   updateAgentMetadata,
   pollInbox,
+  waitForMessage,
   reportAgentStatus,
   unregisterAgent,
+  normalizeWaitForMessageArgs,
+  WAIT_FOR_MESSAGE_DEFAULT_TIMEOUT_SECONDS,
+  WAIT_FOR_MESSAGE_MAX_TIMEOUT_SECONDS,
 };

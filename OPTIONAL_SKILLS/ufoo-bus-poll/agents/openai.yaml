@@ -1,4 +1,4 @@
 interface:
   display_name: "ufoo bus poll"
-  short_description: "Stream ufoo bus messages for non-injectable agents"
-  default_prompt: "Use $ufoo-bus-poll to attach this MCP-registered agent to its resident ufoo bus stream."
+  short_description: "Wake external Agents with App-native idle waits"
+  default_prompt: "Use $ufoo-bus-poll to arm this external Agent with Codex App's pending MCP wait or Cursor's monitored stdout wake path."

@@ -20,6 +20,9 @@ describe("group bootstrap", () => {
     expect(SHARED_UFOO_PROTOCOL).toContain("ufoo ctx decisions -l");
     expect(SHARED_UFOO_PROTOCOL).toContain("ufoo ctx decisions new");
     expect(SHARED_UFOO_PROTOCOL).toContain("ufoo bus send <target>");
+    expect(SHARED_UFOO_PROTOCOL).toContain("A nonempty `UFOO_SUBSCRIBER_ID`");
+    expect(SHARED_UFOO_PROTOCOL).toContain("never call MCP `register_agent`");
+    expect(SHARED_UFOO_PROTOCOL).toContain("start resident `ufoo bus poll`");
     expect(SHARED_UFOO_PROTOCOL).toContain("After sending, do not poll");
     expect(SHARED_UFOO_PROTOCOL).toContain("sleep, or wait");
     expect(SHARED_UFOO_PROTOCOL).toContain("automatically injected into your prompt/session");

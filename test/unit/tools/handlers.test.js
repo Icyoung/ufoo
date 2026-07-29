@@ -143,4 +143,25 @@ describe("tool handlers", () => {
       code: "forbidden_ack",
     });
   });
+
+  test("ack_bus through_seq preserves messages that arrived later", async () => {
+    const first = await eventBus.send(sender, "first", receiver, { silent: true });
+    const later = await eventBus.send(sender, "later", receiver, { silent: true });
+
+    const result = await ackBusHandler(
+      { projectRoot, subscriber: sender, eventBus },
+      { subscriber: sender, through_seq: first.seq }
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      subscriber: sender,
+      acknowledged: 1,
+      through_seq: first.seq,
+    });
+    eventBus.loadBusData();
+    const pending = await eventBus.messageManager.check(sender);
+    expect(pending).toHaveLength(1);
+    expect(pending[0].seq).toBe(later.seq);
+  });
 });

@@ -199,18 +199,26 @@ describe("EventBus", () => {
       );
     });
 
-    test.each(["codex", "claude-code", "agy", "kimi", "ufoo-code"])(
-      "refuses built-in delivery type %s",
+    test.each(["codex", "claude-code", "agy", "kimi", "ufoo-code", "cursor"])(
+      "does not use agent type %s as a resident-poll admission policy",
       async (agentType) => {
         const bus = initBus();
-        const subscriber = await bus.join(`protected-${agentType}`, agentType);
-        const loadSpy = jest.spyOn(bus, "loadBusData");
+        const subscriber = await bus.join(`poll-${agentType}`, agentType);
 
         await expect(bus.poll(subscriber, { maxIterations: 1 }))
-          .rejects.toThrow("disabled for built-in delivery agent type");
-        expect(loadSpy).not.toHaveBeenCalled();
+          .resolves.toEqual({ iterations: 1 });
       }
     );
+
+    test("keeps startup and an empty resident poll completely silent", async () => {
+      const bus = initBus();
+      const subscriber = await bus.join("poll-silent", "cursor");
+      consoleLogSpy.mockClear();
+
+      await bus.poll(subscriber, { maxIterations: 1 });
+
+      expect(consoleLogSpy).not.toHaveBeenCalled();
+    });
 
     test("ack through keeps messages that arrived after the emitted batch", async () => {
       const bus = initBus();

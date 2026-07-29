@@ -159,8 +159,43 @@ describe('SkillsManager', () => {
       expect(packageManager.list({ optionalOnly: true })).toEqual(['ufoo-bus-poll']);
       expect(packageManager.findSkill('ubus-poll')).toBeNull();
       const pollSkill = packageManager.findSkill('ufoo-bus-poll');
-      expect(fs.readFileSync(path.join(pollSkill, 'SKILL.md'), 'utf8'))
-        .toContain('name: ufoo-bus-poll');
+      const pollSkillText = fs.readFileSync(path.join(pollSkill, 'SKILL.md'), 'utf8');
+      const busSkillText = fs.readFileSync(
+        path.join(packageManager.findSkill('ufoo-bus'), 'SKILL.md'),
+        'utf8'
+      );
+      const ufooSkillText = fs.readFileSync(
+        path.join(packageManager.findSkill('ufoo'), 'SKILL.md'),
+        'utf8'
+      );
+      expect(pollSkillText).toContain('name: ufoo-bus-poll');
+      expect(pollSkillText).toContain('notify_on_output');
+      expect(pollSkillText).toContain('\\[ufoo\\]');
+      expect(pollSkillText).toContain('every message delivered by ufoo');
+      expect(pollSkillText).toContain('Codex App does not resume');
+      expect(pollSkillText).toContain('`wait_for_message`');
+      expect(pollSkillText).toContain('`timeout_seconds`: `600`');
+      expect(pollSkillText).toContain('Do not background it');
+      expect(pollSkillText).toContain('`through_seq: <last_seq>`');
+      const notifyPattern = pollSkillText.match(/pattern: `([^`]+)`/);
+      expect(notifyPattern).not.toBeNull();
+      const notifyRegex = new RegExp(notifyPattern[1]);
+      expect(notifyRegex.test('[ufoo]<from:codex:one>')).toBe(true);
+      expect(notifyRegex.test('[ufoo]<future-message-shape>')).toBe(true);
+      expect(pollSkillText).toContain('AGENT_LOOP_TICK_*');
+      expect(pollSkillText).toContain('MCP `register_agent`');
+      expect(pollSkillText).toContain('UFOO_SUBSCRIBER_ID');
+      expect(pollSkillText).toContain('not capability signals');
+      expect(pollSkillText).not.toContain('Built-in delivery agent types');
+      expect(busSkillText).toContain('$ufoo-bus-poll');
+      expect(busSkillText).toContain('`wait_for_message` for Codex App');
+      expect(busSkillText).toContain('Agents do not self-register with bare `ufoo bus join`');
+      expect(busSkillText).toContain('Never choose a delivery mode from an Agent type');
+      expect(busSkillText).not.toContain('AGENT_LOOP_TICK_');
+      expect(ufooSkillText).toContain('UFOO_SUBSCRIBER_ID');
+      expect(ufooSkillText).toContain('MCP `register_agent`');
+      expect(ufooSkillText).toContain('$ufoo-bus-poll');
+      expect(ufooSkillText).toContain('do not export it as `UFOO_SUBSCRIBER_ID`');
       expect(fs.existsSync(path.join(pollSkill, 'agents', 'openai.yaml'))).toBe(true);
     });
   });

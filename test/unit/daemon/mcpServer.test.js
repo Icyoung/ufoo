@@ -36,14 +36,26 @@ describe("ufoo global MCP server", () => {
   });
 
   test("lists only global bridge tools and selected shared tools", () => {
-    const names = buildToolList().map((tool) => tool.name);
+    const tools = buildToolList();
+    const names = tools.map((tool) => tool.name);
     expect(names).toContain("ufoo_mcp_status");
     expect(names).toContain("register_agent");
+    expect(names).toContain("wait_for_message");
     expect(names).toContain("read_project_registry");
     expect(names).toContain("dispatch_message");
     expect(names).not.toContain("launch_agent");
     expect(names).not.toContain("close_agent");
     expect(names).not.toContain("manage_cron");
+    expect(tools.find((tool) => tool.name === "register_agent").description)
+      .toContain("no wrapper-provided UFOO_SUBSCRIBER_ID");
+    expect(tools.find((tool) => tool.name === "wait_for_message").inputSchema)
+      .toMatchObject({
+        required: ["project_root", "subscriber"],
+        properties: {
+          after_seq: { minimum: 0 },
+          timeout_seconds: { minimum: 1, maximum: 600 },
+        },
+      });
   });
 
   test("handles initialize and tools/list JSON-RPC requests", async () => {
@@ -165,5 +177,158 @@ describe("ufoo global MCP server", () => {
       },
     });
     expect(unregistered.result.structuredContent.ok).toBe(true);
+  });
+
+  test("wait_for_message returns a timeout cursor without periodic model work", async () => {
+    const projectRoot = makeTempProject();
+    let now = 0;
+    const server = createUfooMcpServer({
+      autoStart: false,
+      validateProjectRoot: false,
+      waitPollIntervalMs: 100,
+      waitNow: () => now,
+      waitSleep: async (ms) => {
+        now += ms;
+      },
+    });
+
+    const registered = await server.handleRequest({
+      jsonrpc: "2.0",
+      id: "register-timeout",
+      method: "tools/call",
+      params: {
+        name: "register_agent",
+        arguments: {
+          project_root: projectRoot,
+          agent_type: "codex",
+          session_id: "wait-timeout",
+        },
+      },
+    });
+    const subscriber = registered.result.structuredContent.subscriber;
+
+    const waited = await server.handleRequest({
+      jsonrpc: "2.0",
+      id: "wait-timeout",
+      method: "tools/call",
+      params: {
+        name: "wait_for_message",
+        arguments: {
+          project_root: projectRoot,
+          subscriber,
+          after_seq: 7,
+          timeout_seconds: 1,
+        },
+      },
+    });
+
+    expect(waited.result.structuredContent).toMatchObject({
+      ok: true,
+      subscriber,
+      status: "timeout",
+      timed_out: true,
+      count: 0,
+      messages: [],
+      after_seq: 7,
+      last_seq: 7,
+      waited_ms: 1000,
+    });
+  });
+
+  test("cancels a pending wait_for_message tool call", async () => {
+    const projectRoot = makeTempProject();
+    const server = createUfooMcpServer({
+      autoStart: false,
+      validateProjectRoot: false,
+      waitPollIntervalMs: 5000,
+    });
+
+    const registered = await server.handleRequest({
+      jsonrpc: "2.0",
+      id: "register-cancel",
+      method: "tools/call",
+      params: {
+        name: "register_agent",
+        arguments: {
+          project_root: projectRoot,
+          agent_type: "codex",
+          session_id: "wait-cancel",
+        },
+      },
+    });
+    const subscriber = registered.result.structuredContent.subscriber;
+
+    const pending = server.handleRequest({
+      jsonrpc: "2.0",
+      id: "wait-cancel",
+      method: "tools/call",
+      params: {
+        name: "wait_for_message",
+        arguments: {
+          project_root: projectRoot,
+          subscriber,
+          timeout_seconds: 600,
+        },
+      },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    const duplicate = await server.handleRequest({
+      jsonrpc: "2.0",
+      id: "wait-duplicate",
+      method: "tools/call",
+      params: {
+        name: "wait_for_message",
+        arguments: {
+          project_root: projectRoot,
+          subscriber,
+          timeout_seconds: 1,
+        },
+      },
+    });
+    expect(duplicate.error.message).toContain("wait_for_message is already running");
+
+    await server.handleRequest({
+      jsonrpc: "2.0",
+      method: "notifications/cancelled",
+      params: { requestId: "wait-cancel" },
+    });
+
+    await expect(pending).resolves.toMatchObject({
+      error: {
+        data: { code: "request_cancelled" },
+      },
+    });
+
+    await server.handleRequest({
+      jsonrpc: "2.0",
+      id: "message-after-cancel",
+      method: "tools/call",
+      params: {
+        name: "dispatch_message",
+        arguments: {
+          project_root: projectRoot,
+          subscriber,
+          target: subscriber,
+          message: "wake after cancellation",
+        },
+      },
+    });
+    const rearmed = await server.handleRequest({
+      jsonrpc: "2.0",
+      id: "wait-after-cancel",
+      method: "tools/call",
+      params: {
+        name: "wait_for_message",
+        arguments: {
+          project_root: projectRoot,
+          subscriber,
+          timeout_seconds: 1,
+        },
+      },
+    });
+    expect(rearmed.result.structuredContent).toMatchObject({
+      status: "message",
+      count: 1,
+    });
   });
 });

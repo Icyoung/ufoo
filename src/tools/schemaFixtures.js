@@ -228,6 +228,11 @@ const ACK_BUS_SCHEMA = Object.freeze({
     type: "object",
     properties: Object.freeze({
       subscriber: Object.freeze({ type: "string" }),
+      through_seq: Object.freeze({
+        type: "integer",
+        minimum: 1,
+        description: "Acknowledge only messages up to this sequence, preserving later arrivals.",
+      }),
     }),
     additionalProperties: false,
   }),
@@ -238,6 +243,7 @@ const ACK_BUS_SCHEMA = Object.freeze({
       ok: Object.freeze({ type: "boolean" }),
       subscriber: Object.freeze({ type: "string" }),
       acknowledged: Object.freeze({ type: "integer" }),
+      through_seq: Object.freeze({ type: "integer" }),
     }),
     additionalProperties: false,
   }),

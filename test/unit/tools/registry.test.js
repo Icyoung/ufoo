@@ -209,6 +209,11 @@ describe("shared tool registry", () => {
     expect(PHASE0_TOOL_SCHEMAS.ack_bus).toMatchObject({
       name: "ack_bus",
       schema_version: "1.0",
+      input_schema: expect.objectContaining({
+        properties: expect.objectContaining({
+          through_seq: expect.objectContaining({ minimum: 1 }),
+        }),
+      }),
       output_schema: expect.objectContaining({
         required: ["ok", "subscriber", "acknowledged"],
       }),

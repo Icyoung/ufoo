@@ -25,7 +25,6 @@ const Injector = require("./inject");
 const { BusStore } = require("./store");
 const {
   acquirePollLease,
-  assertFollowPollAllowed,
   releasePollLease,
   runPendingPoll,
 } = require("./poll");
@@ -420,9 +419,10 @@ class EventBus {
   /**
    * Observe pending messages continuously without claiming or acknowledging.
    *
-   * This is an explicit fallback for agent hosts whose own background-task
-   * output is their delivery mechanism. Built-in ufoo agent families keep
-   * using their existing injection/internal-consumption paths.
+   * This is the resident receive path for external agent hosts whose
+   * background-task output wakes the model. The protocol selects wrapper-native
+   * delivery versus MCP registration from UFOO_SUBSCRIBER_ID; agent type names
+   * are not an admission policy for this queue reader.
    */
   async poll(subscriber, options = {}) {
     this.ensureBus();
@@ -432,16 +432,11 @@ class EventBus {
       throw new Error("poll --follow requires <subscriber-id>");
     }
 
-    // Reject known built-in delivery IDs before loading or writing any shared
-    // bus state. This keeps accidental invocation side-effect free for them.
-    assertFollowPollAllowed(target);
-
     this.loadBusData();
     const meta = this.subscriberManager.getSubscriber(target);
     if (!meta) {
       throw new Error(`poll --follow requires a joined subscriber: ${target}`);
     }
-    assertFollowPollAllowed(target, meta);
 
     const intervalSeconds = Number(options.intervalSeconds);
     const intervalMs = Math.max(
@@ -465,10 +460,6 @@ class EventBus {
       this.subscriberManager.updateLastSeen(target);
       this.saveBusData();
 
-      console.log(
-        `[ufoo-poll]<subscriber:${target}> following every ${intervalMs / 1000}s`
-      );
-
       return await runPendingPoll({
         intervalMs,
         signal: options.signal,
@@ -476,7 +467,6 @@ class EventBus {
         maxIterations: options.maxIterations,
         readPending: () => this.queueManager.peekPending(target),
         onEvents: async (events) => {
-          console.log(`[ufoo-poll] ${events.length} new pending event(s)`);
           for (const event of events) {
             const publisherMeta = this.busData.agents?.[event.publisher];
             const nick = publisherMeta?.nickname;

@@ -27,7 +27,8 @@ Package: [u-foo on npm](https://www.npmjs.com/package/u-foo)
 - Launch modes for internal, tmux, host, Terminal.app, and iTerm2 workflows.
 - Built-in group templates for launching and orchestrating multi-agent workflows.
 - `ucode`, a native ufoo coding-agent runtime.
-- `ufoo mcp`, a local global MCP bridge for external MCP-capable agents.
+- `ufoo mcp`, a local global MCP bridge with pending-call bus wake for external
+  MCP-capable agents.
 
 ## Requirements
 
@@ -127,6 +128,27 @@ ufoo mcp
   -> selected project daemon for bus/report/activity state
 ```
 
+### Agent Delivery Modes
+
+ufoo supports two Agent delivery modes, selected only by the presence of
+`UFOO_SUBSCRIBER_ID`:
+
+- Wrapper-managed Agents start through `ucodex`, `uclaude`, `uagy`, `ukimi`, or
+  `ucode`. The wrapper provides `UFOO_SUBSCRIBER_ID`; ufoo monitors the shell
+  activity and injection endpoint, so bus messages can be injected directly.
+  These Agents reuse the environment identity and do not register through MCP
+  or run a resident bus poll.
+- Externally hosted Agents have no wrapper-provided subscriber environment.
+  They register themselves once through MCP `register_agent`, retain the
+  returned subscriber, and select the host App's native no-token wait:
+  Codex App keeps MCP `wait_for_message` pending, while Cursor monitors
+  `ufoo bus poll --follow` background output with `notify_on_output`.
+
+Agent type names and subscriber prefixes are routing metadata, not capability
+signals. External Agents must not export the MCP subscriber as
+`UFOO_SUBSCRIBER_ID`, because that variable specifically marks the
+wrapper-managed path.
+
 Chat is a UI client. The daemon owns project runtime state. Agents communicate
 through bus queues, prompt injection, shared memory, reports, and tool handlers
 instead of importing chat UI code.
@@ -204,23 +226,38 @@ Use `/bus status` to find the real subscriber ID or resolvable nickname
 before sending. Agents should handle pending work, reply to the sender, and
 acknowledge their queue.
 
-Agent hosts that cannot receive ufoo prompt injection can opt into a resident,
-queue-read-only bus stream:
+Externally hosted Agents with no `UFOO_SUBSCRIBER_ID` use the opt-in
+`ufoo-bus-poll` skill to select their host App's queue-read-only wait and
+self-wake mechanism:
 
 ```bash
 ufoo skills list --optional
 ufoo skills install ufoo-bus-poll --target /path/to/that/agent/skills
-ufoo bus poll "<subscriber-id>" --follow --interval 2
 ```
 
-Use the subscriber returned by MCP `register_agent` or provisioned by the host,
-then run the final command through that host's streaming background-task facility.
-It prints newly observed pending events but never claims or acknowledges them;
-the agent runs the printed `ufoo bus ack --through <seq>` command only after
-handling the emitted batch, preserving later arrivals. The fallback is not
-installed by postinstall or `skills install all`, and follow mode refuses Codex
-CLI, Claude Code CLI, Agy, Kimi, and native ucode subscriber types so their
-existing delivery paths remain untouched.
+Register once through MCP `register_agent`, retain its returned subscriber, and
+do not export it as `UFOO_SUBSCRIBER_ID`.
+
+- **Codex App:** call MCP `wait_for_message` in the foreground with
+  `after_seq: 0` and `timeout_seconds: 600`. The tool call stays pending inside
+  ufoo; a message returns immediately and wakes the task without shell stdout.
+  On timeout, re-arm with the same cursor. After handling a message response,
+  call MCP `ack_bus` with its `last_seq` as `through_seq`, then re-arm with that
+  `last_seq` when the Agent is idle again.
+- **Cursor:** run
+  `ufoo bus poll "<subscriber-id>" --follow --interval 30` through the monitored
+  background shell with `block_until_ms: 0`, and configure
+  `notify_on_output` to match `\[ufoo\]`. Startup and empty intervals are
+  silent; only ufoo-delivered messages wake the model.
+
+Both paths keep idle queue checks outside the LLM. A background PTY alone is
+not a wake mechanism in Codex App.
+
+The poll skill is not installed by postinstall or `skills install all`.
+Wrapper-managed Agents skip MCP registration and external waiting whenever
+`UFOO_SUBSCRIBER_ID` is present. Receive-path selection depends on host App
+capabilities, never on whether the external Agent calls itself Codex, Claude,
+Cursor, or another type.
 
 ### Context, Memory, History, Reports
 
