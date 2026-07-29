@@ -7,10 +7,12 @@ function createDaemonConnection(options = {}) {
     queueStatusLine,
     resolveStatusLine,
     logMessage,
+    transformRequest: transformRequestOption = (request) => request,
     switchConnectionTimeoutMs = 18000,
   } = options;
 
   let connectClient = connectClientOption;
+  let transformRequest = transformRequestOption;
   let client = null;
   let reconnectPromise = null;
   let exitRequested = false;
@@ -59,7 +61,7 @@ function createDaemonConnection(options = {}) {
     if (!client || client.destroyed) return;
     while (pendingRequests.length > 0) {
       const req = pendingRequests.shift();
-      client.write(`${JSON.stringify(req)}\n`);
+      client.write(`${JSON.stringify(transformRequest(req))}\n`);
     }
   }
 
@@ -172,6 +174,9 @@ function createDaemonConnection(options = {}) {
         return { ok: false, error: "Failed to connect target daemon" };
       }
       connectClient = nextConnectClient;
+      if (typeof next.transformRequest === "function") {
+        transformRequest = next.transformRequest;
+      }
       attachClient(nextClient);
       if (next.callRequestStatus !== false) {
         requestStatus();
@@ -196,7 +201,7 @@ function createDaemonConnection(options = {}) {
       void ensureConnected();
       return;
     }
-    client.write(`${JSON.stringify(req)}\n`);
+    client.write(`${JSON.stringify(transformRequest(req))}\n`);
   }
 
   function requestStatus() {

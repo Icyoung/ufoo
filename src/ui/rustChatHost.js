@@ -35,6 +35,10 @@ const {
 } = require("../runtime/contracts/uiProtocol");
 const { IPC_REQUEST_TYPES, IPC_RESPONSE_TYPES } = require("../runtime/contracts/eventContract");
 const { createDaemonMessageRouter } = require("../app/chat/daemonMessageRouter");
+const {
+  resolveDaemonEndpoint,
+  routeDaemonRequest,
+} = require("../runtime/daemon/endpoint");
 
 function stripTags(value) {
   return String(value || "").replace(/\{[^}]+\}/g, "");
@@ -145,19 +149,23 @@ async function runChatRust(projectRoot, options = {}) {
     });
   }
   await ensureSubscriberId(projectRoot);
-  if (!env.isRunning(projectRoot)) {
+  const initialDaemonEndpoint = resolveDaemonEndpoint(projectRoot);
+  const initialDaemonRoot = initialDaemonEndpoint.scope === "global"
+    ? initialDaemonEndpoint.controllerRoot
+    : initialDaemonEndpoint.projectRoot;
+  if (!env.isRunning(initialDaemonRoot)) {
     env.startDaemon(projectRoot);
   }
 
-  const { socketPath } = require("../runtime/daemon");
   const { connectWithRetry } = require("../app/chat/transport");
   const { createDaemonTransport } = require("../app/chat/daemonTransport");
   const { createDaemonConnection } = require("../app/chat/daemonConnection");
 
-  const sock = socketPath(projectRoot);
+  const sock = initialDaemonEndpoint.socketPath;
   const daemonTransport = createDaemonTransport({
     projectRoot,
     sockPath: sock,
+    daemonRoot: initialDaemonRoot,
     isRunning: env.isRunning,
     startDaemon: env.startDaemon,
     connectWithRetry,
@@ -336,7 +344,16 @@ async function runChatRust(projectRoot, options = {}) {
         multiSession.stop();
       }
 
-      if (env.globalMode && typeof env.isRunning === "function" && !env.isRunning(root)) {
+      const targetEndpoint = resolveDaemonEndpoint(root);
+      const targetDaemonRoot = targetEndpoint.scope === "global"
+        ? targetEndpoint.controllerRoot
+        : targetEndpoint.projectRoot;
+      if (
+        env.globalMode
+        && targetEndpoint.scope === "project"
+        && typeof env.isRunning === "function"
+        && !env.isRunning(targetDaemonRoot)
+      ) {
         try {
           const { markProjectStopped } = require("../runtime/projects");
           markProjectStopped(root);
@@ -365,7 +382,9 @@ async function runChatRust(projectRoot, options = {}) {
       if (daemonCoordinator && typeof daemonCoordinator.switchProject === "function") {
         const res = await daemonCoordinator.switchProject({
           projectRoot: root,
-          sockPath: socketPath(root),
+          sockPath: targetEndpoint.socketPath,
+          daemonRoot: targetDaemonRoot,
+          transformRequest: (request) => routeDaemonRequest(targetEndpoint, request),
           autoStart: options.autoStart === true,
         });
         if (!res || res.ok !== true) {
@@ -399,9 +418,14 @@ async function runChatRust(projectRoot, options = {}) {
         return { ok: true, project_root: projectRoot, root: projectRoot };
       }
       if (daemonCoordinator && typeof daemonCoordinator.switchProject === "function") {
+        const controllerEndpoint = resolveDaemonEndpoint(projectRoot);
         const res = await daemonCoordinator.switchProject({
           projectRoot,
-          sockPath: socketPath(projectRoot),
+          sockPath: controllerEndpoint.socketPath,
+          daemonRoot: controllerEndpoint.scope === "global"
+            ? controllerEndpoint.controllerRoot
+            : controllerEndpoint.projectRoot,
+          transformRequest: (request) => routeDaemonRequest(controllerEndpoint, request),
         });
         if (!res || res.ok !== true) {
           appendLocal("error", `Switch to global failed: ${(res && res.error) || "switch failed"}`);
@@ -1151,7 +1175,7 @@ async function runChatRust(projectRoot, options = {}) {
         if (!root) return { ok: false, error: "missing project root" };
         try {
           const { createProjectCloseController } = require("../app/chat/projectCloseController");
-          const { stopDaemon } = require("../app/chat/transport");
+          const { requestDaemon, stopDaemon } = require("../app/chat/transport");
           const { isRunning } = require("../runtime/daemon");
           const projects = loadGlobalProjectRows(activeProjectRoot);
           const index = projects.findIndex((row) => String(row.root || "") === root);
@@ -1166,8 +1190,21 @@ async function runChatRust(projectRoot, options = {}) {
             })),
             getActiveProjectRoot: () => activeProjectRoot,
             resolveProjectRoot: (row) => String((row && (row.root || row.project_root)) || ""),
-            isRunning,
+            isRunning: (targetRoot) => {
+              const endpoint = resolveDaemonEndpoint(targetRoot);
+              return endpoint.scope === "global" ? true : isRunning(targetRoot);
+            },
             stopDaemon,
+            closeProject: async (targetRoot) => {
+              const endpoint = resolveDaemonEndpoint(targetRoot);
+              if (endpoint.scope === "global") {
+                return requestDaemon(targetRoot, {
+                  type: IPC_REQUEST_TYPES.CLOSE_PROJECT_RUNTIME,
+                  terminate_agents: true,
+                });
+              }
+              return stopDaemon(targetRoot, { source: `project-close:${targetRoot}` });
+            },
             switchProject: async (fallbackRoot) => hostApi.switchToProjectRoot(fallbackRoot),
             refreshProjects: () => publishProjects(),
             logMessage: (kind, text) => {
@@ -1408,6 +1445,7 @@ async function runChatRust(projectRoot, options = {}) {
 
   const daemonConnection = createDaemonConnection({
     connectClient: daemonTransport.connectClient.bind(daemonTransport),
+    transformRequest: (request) => routeDaemonRequest(initialDaemonEndpoint, request),
     handleMessage: (msg) => {
       if (typeof routedMessageHandler === "function" && routedMessageHandler(msg)) {
         return;

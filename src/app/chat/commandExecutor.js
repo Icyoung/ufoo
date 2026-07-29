@@ -110,6 +110,17 @@ function collectTerminalLaunchRequestContext(resolveTerminalApp = defaultResolve
   return {};
 }
 
+function collectTmuxLaunchRequestContext(env = process.env) {
+  const tmuxTarget = String(env.UFOO_TMUX_TARGET || "").trim();
+  const tmuxPane = String(env.UFOO_TMUX_PANE || env.TMUX_PANE || "").trim();
+  const tmuxSession = String(env.UFOO_TMUX_SESSION || "").trim();
+  const context = {};
+  if (tmuxTarget) context.tmux_target = tmuxTarget;
+  if (tmuxPane) context.tmux_pane = tmuxPane;
+  if (tmuxSession) context.tmux_session = tmuxSession;
+  return context;
+}
+
 async function withCapturedConsole(capture, fn) {
   const originalLog = console.log;
   const originalError = console.error;
@@ -707,6 +718,7 @@ function createCommandExecutor(options = {}) {
         launch_scope: launchScope,
         ...collectHostLaunchRequestContext(),
         ...collectTerminalLaunchRequestContext(resolveTerminalApp),
+        ...collectTmuxLaunchRequestContext(),
       };
       send(request);
       schedule(requestStatus, 1000);
@@ -849,6 +861,7 @@ function createCommandExecutor(options = {}) {
         launch_scope: launchScope,
         ...collectHostLaunchRequestContext(),
         ...collectTerminalLaunchRequestContext(resolveTerminalApp),
+        ...collectTmuxLaunchRequestContext(),
       });
       schedule(requestStatus, 1000);
     } catch (err) {
@@ -1350,6 +1363,7 @@ function createCommandExecutor(options = {}) {
         dry_run: dryRun,
         ...collectHostLaunchRequestContext(),
         ...collectTerminalLaunchRequestContext(resolveTerminalApp),
+        ...collectTmuxLaunchRequestContext(),
       });
       schedule(requestStatus, 1000);
       return;
@@ -2018,4 +2032,5 @@ module.exports = {
   createCommandExecutor,
   collectHostLaunchRequestContext,
   collectTerminalLaunchRequestContext,
+  collectTmuxLaunchRequestContext,
 };

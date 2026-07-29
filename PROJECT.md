@@ -5,10 +5,10 @@ user guide lives in [README.md](README.md).
 
 ## Purpose
 
-ufoo is a multi-agent workspace runtime. It gives a project one shared daemon,
-chat dashboard, event bus, memory/context system, reports, group orchestration,
-terminal launch layer, and tool registry for Claude Code, Codex, Antigravity,
-and native `ucode` agents.
+ufoo is a multi-agent workspace runtime. One user-scoped global daemon hosts
+isolated project runtimes for chat dashboards, event buses, memory/context,
+reports, group orchestration, terminal launch, and tool routing across Claude
+Code, Codex, Antigravity, and native `ucode` agents.
 
 The core design rule is simple: chat is a client, the daemon owns runtime state,
 and agents coordinate through `.ufoo/` state plus bus/tool contracts.
@@ -31,7 +31,8 @@ Published binaries are defined in `package.json`.
 ```text
 ufoo / ufoo chat
   -> src/app/chat + src/ui/rustChatHost + crates/ufoo-tui
-  -> project daemon over .ufoo/run/ufoo.sock
+  -> global daemon over ~/.ufoo/run/ufoo.sock
+  -> ProjectRuntimeManager selects an isolated project runtime
   -> src/runtime/daemon owns launch/resume/recover/reports/cron/groups
   -> src/orchestration routes controller, group, and solo behavior
   -> src/agents runs launchers, providers, prompts, internal runners, controller loop
@@ -44,9 +45,15 @@ ufoo mcp stdio proxy ----------------------+
                                            -> home-scoped global controller daemon
   -> one MCP listener and tool router
   -> ~/.ufoo/projects/runtime registry
-  -> ProjectRuntimeGateway over correlated daemon IPC
-  -> selected project daemon and project-local bus/report/activity/wait state
+  -> managed ProjectRuntimeGateway
+  -> selected in-process ProjectRuntime and project-local bus/report/activity/wait state
 ```
+
+`daemonTopology=global` is the default. `hybrid` temporarily exposes
+project-local compatibility sockets, while `project` retains the legacy
+per-project daemon path as a rollback mode. Global project runtimes never own
+project PID/lock files. Idle runtimes without clients, Agents, or cron work can
+be suspended and lazily reactivated.
 
 Important boundaries:
 
@@ -103,7 +110,7 @@ evidence that the host Agent was wrapper-launched.
 | `src/ui/toolMergeBridge.js` | Tool-merge → UI events | Collapsed `tool.*` publisher for Rust hosts. |
 | `src/ui/ptyHandoff.js` | Stdin restore helper | After any fullscreen handoff; PTY mirror removed. |
 | `crates/ufoo-tui/` | Rust TTY UI | Required `ufoo-ui/1` child process (ratatui). |
-| `src/runtime/daemon/` | Project/global daemon and MCP control plane | Global Streamable HTTP listener, stateless stdio proxy, ProjectRuntime gateway/IPC, MCP leases/configuration, prompt routing, launch/resume/close, cron, reports, status, group orchestration. |
+| `src/runtime/daemon/` | Global daemon and project runtime control plane | `GlobalDaemon`, immutable `ProjectContext`, `ProjectRuntimeManager`, global Streamable HTTP listener, stateless stdio proxy, endpoint routing, MCP leases/configuration, prompt routing, launch/resume/close, cron, reports, status, group orchestration. |
 | `src/runtime/projects/` | Project registry | Project identity and runtime registry. |
 | `src/runtime/terminal/` | Terminal adapters | Host, tmux, internal, external, Terminal.app, iTerm2. |
 | `src/runtime/contracts/` | Runtime contracts | Daemon IPC, PTY socket, MCP/JSON-RPC, and `ufoo-ui/1` host↔TUI protocol. |

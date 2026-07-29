@@ -17,8 +17,8 @@ npm 包：[u-foo](https://www.npmjs.com/package/u-foo)
 ## 亮点
 
 - 一个 TUI 仪表盘，用来启动、观察、消息通知和恢复多个 Agent。
-- 项目 daemon 通过 `.ufoo/run/ufoo.sock` 管理启动/恢复、report、group、
-  cron 和 controller 路由。
+- 唯一的用户级 daemon 通过 `~/.ufoo/run/ufoo.sock` 托管隔离的项目
+  runtime，管理启动/恢复、report、group、cron 和 controller 路由。
 - 项目内事件总线支持 Agent 间消息、唤醒、队列检查和终端激活。
 - 共享上下文能力：decision、durable memory、prompt history、report 和
   agent registry state。
@@ -116,8 +116,9 @@ Agent 注册或项目状态。用 `ufoo mcp status` 检查唯一 listener，用
 ```text
 ufoo / ufoo chat
   -> src/app/chat + src/ui/rustChatHost + crates/ufoo-tui
-  -> project daemon over .ufoo/run/ufoo.sock
-  -> runtime daemon launch/resume/recover/reports/cron/groups
+  -> global daemon over ~/.ufoo/run/ufoo.sock
+  -> isolated ProjectRuntime selected by project_root
+  -> runtime launch/resume/recover/reports/cron/groups
   -> orchestration router, group templates, solo roles
   -> agents launch/providers/internal/controller/activity
   -> coordination bus/context/memory/history/report/state/status
@@ -128,9 +129,12 @@ ufoo mcp stdio proxy ----------------------+
                                            -> home-scoped global controller daemon
   -> one MCP listener and tool router
   -> ~/.ufoo/projects/runtime
-  -> ProjectRuntimeGateway
-  -> selected project daemon for bus/report/activity/wait state
+  -> managed ProjectRuntimeGateway
+  -> selected in-process ProjectRuntime for bus/report/activity/wait state
 ```
+
+默认使用 global topology。`ufoo daemon --topology hybrid` 可临时启用项目
+兼容 socket，`--topology project` 则切回旧的逐项目 daemon 回滚路径。
 
 ### Agent 消息投递模式
 
@@ -166,7 +170,7 @@ ufoo -g
 ```
 
 `ufoo` 打开当前项目 chat。`ufoo -g` 打开全局 chat，用于在已注册项目之间
-切换。项目 daemon 会按需启动。
+切换。全局 daemon 只启动一次，各项目 runtime 按需激活。
 
 ### Chat 内命令
 

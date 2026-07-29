@@ -3,7 +3,11 @@ const os = require("os");
 const { spawnSync } = require("child_process");
 const net = require("net");
 const fs = require("fs");
-const { socketPath, isRunning } = require("../../runtime/daemon");
+const { isRunning } = require("../../runtime/daemon");
+const {
+  resolveDaemonEndpoint,
+  routeDaemonRequest,
+} = require("../../runtime/daemon/endpoint");
 const { runBusCoreCommand } = require("./busCoreCommands");
 const { runCtxCommand } = require("./ctxCoreCommands");
 const { runOnlineCommand } = require("./onlineCoreCommands");
@@ -59,10 +63,24 @@ async function connectWithRetry(sockPath, retries, delayMs) {
 }
 
 async function ensureDaemonRunning(projectRoot) {
-  if (isRunning(projectRoot)) return;
+  const endpoint = resolveDaemonEndpoint(projectRoot);
+  const daemonRoot = endpoint.scope === "global"
+    ? endpoint.controllerRoot
+    : endpoint.projectRoot;
+  if (isRunning(daemonRoot)) return;
   const repoRoot = getPackageRoot();
-  run(resolveNodeExecutable(), [path.join(repoRoot, "bin", "ufoo.js"), "daemon", "start"]);
-  const sock = socketPath(projectRoot);
+  run(
+    resolveNodeExecutable(),
+    [path.join(repoRoot, "bin", "ufoo.js"), "daemon", "start"],
+    {
+      cwd: daemonRoot,
+      env: {
+        ...process.env,
+        UFOO_DAEMON_TOPOLOGY: endpoint.topology,
+      },
+    }
+  );
+  const sock = endpoint.socketPath;
   for (let i = 0; i < 30; i += 1) {
     if (fs.existsSync(sock)) {
       return;
@@ -74,7 +92,8 @@ async function ensureDaemonRunning(projectRoot) {
 }
 
 async function sendDaemonRequest(projectRoot, payload) {
-  const sock = socketPath(projectRoot);
+  const endpoint = resolveDaemonEndpoint(projectRoot);
+  const sock = endpoint.socketPath;
   const client = await connectWithRetry(sock, 25, 200);
   if (!client) {
     throw new Error("Failed to connect to ufoo daemon");
@@ -125,7 +144,7 @@ async function sendDaemonRequest(projectRoot, payload) {
       cleanup();
       reject(err);
     });
-    client.write(`${JSON.stringify(payload)}\n`);
+    client.write(`${JSON.stringify(routeDaemonRequest(endpoint, payload))}\n`);
   });
 }
 
@@ -183,6 +202,17 @@ function collectHostLaunchRequestContext(env = process.env) {
   if (hostDaemonSock) context.host_daemon_sock = hostDaemonSock;
   if (hostName) context.host_name = hostName;
   if (hostSessionId) context.host_session_id = hostSessionId;
+  return context;
+}
+
+function collectTmuxLaunchRequestContext(env = process.env) {
+  const tmuxTarget = String(env.UFOO_TMUX_TARGET || "").trim();
+  const tmuxPane = String(env.UFOO_TMUX_PANE || env.TMUX_PANE || "").trim();
+  const tmuxSession = String(env.UFOO_TMUX_SESSION || "").trim();
+  const context = {};
+  if (tmuxTarget) context.tmux_target = tmuxTarget;
+  if (tmuxPane) context.tmux_pane = tmuxPane;
+  if (tmuxSession) context.tmux_session = tmuxSession;
   return context;
 }
 
@@ -567,10 +597,12 @@ async function runCli(argv) {
       .option("--start", "Start daemon")
       .option("--stop", "Stop daemon")
       .option("--status", "Check daemon status")
+      .option("--topology <mode>", "Set machine-wide daemon topology: project, hybrid, or global")
       .action((opts) => {
         const repoRoot = getPackageRoot();
         const args = ["daemon"];
-        if (opts.start) args.push("start");
+        if (opts.topology) args.push("topology", opts.topology);
+        else if (opts.start) args.push("start");
         else if (opts.stop) args.push("stop");
         else if (opts.status) args.push("status");
         run(process.execPath, [path.join(repoRoot, "bin", "ufoo.js"), ...args]);
@@ -769,6 +801,7 @@ async function runCli(argv) {
             prompt_profile: opts.profile || "",
             count: 1,
             ...collectHostLaunchRequestContext(),
+            ...collectTmuxLaunchRequestContext(),
           });
           const reply = resp?.data?.reply || `Launching ${normalizedAgent} agent...`;
           console.log(reply);
@@ -832,6 +865,7 @@ async function runCli(argv) {
             count: 1,
             launch_scope: scope,
             ...collectHostLaunchRequestContext(),
+            ...collectTmuxLaunchRequestContext(),
           });
           console.log(resp?.data?.reply || `Launched ${agent} role ${promptProfile}`);
         } catch (err) {
@@ -1200,6 +1234,7 @@ async function runCli(argv) {
             instance: opts.instance || "",
             dry_run: opts.dryRun === true,
             ...collectHostLaunchRequestContext(),
+            ...collectTmuxLaunchRequestContext(),
           });
           if (opts.json) {
             console.log(JSON.stringify(resp?.data || {}, null, 2));
@@ -2175,6 +2210,7 @@ async function runCli(argv) {
             instance,
             dry_run: dryRun,
             ...collectHostLaunchRequestContext(),
+            ...collectTmuxLaunchRequestContext(),
           });
           if (outputJson) {
             console.log(JSON.stringify(resp?.data || {}, null, 2));
@@ -2311,6 +2347,7 @@ async function runCli(argv) {
             count: 1,
             launch_scope: scope,
             ...collectHostLaunchRequestContext(),
+            ...collectTmuxLaunchRequestContext(),
           });
           console.log(resp?.data?.reply || `Launched ${agent} role ${profile}`);
           return;

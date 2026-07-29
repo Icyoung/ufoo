@@ -21,6 +21,8 @@ describe("daemon CLI runner", () => {
     jest.doMock("../../../src/config", () => ({
       loadConfig: jest.fn(() => ({})),
       defaultAgentModelForProvider: jest.fn(() => "default-model"),
+      normalizeDaemonTopology: jest.fn(() => "project"),
+      saveGlobalDaemonConfig: jest.fn(),
     }));
 
     const originalExecPath = process.execPath;
@@ -52,6 +54,31 @@ describe("daemon CLI runner", () => {
       } else {
         process.env.UFOO_DAEMON_CHILD = originalDaemonChild;
       }
+    }
+  });
+
+  test("daemon topology writes the machine-wide rollout mode", () => {
+    const saveGlobalDaemonConfig = jest.fn(() => ({ daemonTopology: "hybrid" }));
+    jest.doMock("../../../src/runtime/daemon/index", () => ({
+      startDaemon: jest.fn(),
+      stopDaemon: jest.fn(),
+      isRunning: jest.fn(() => false),
+    }));
+    jest.doMock("../../../src/config", () => ({
+      loadConfig: jest.fn(() => ({})),
+      defaultAgentModelForProvider: jest.fn(() => "default-model"),
+      normalizeDaemonTopology: jest.fn((value) => value),
+      saveGlobalDaemonConfig,
+    }));
+    const log = jest.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const { runDaemonCli } = require("../../../src/runtime/daemon/run");
+      runDaemonCli(["daemon", "--topology", "hybrid"]);
+      expect(saveGlobalDaemonConfig).toHaveBeenCalledWith({ daemonTopology: "hybrid" });
+      expect(log).toHaveBeenCalledWith("hybrid");
+    } finally {
+      log.mockRestore();
     }
   });
 });

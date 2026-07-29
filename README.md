@@ -18,8 +18,8 @@ Package: [u-foo on npm](https://www.npmjs.com/package/u-foo)
 ## Highlights
 
 - One TUI dashboard for launching, watching, messaging, and resuming agents.
-- Project daemon over `.ufoo/run/ufoo.sock` for launch/resume, reports, groups,
-  cron, and controller routing.
+- One user-scoped daemon over `~/.ufoo/run/ufoo.sock`, hosting isolated project
+  runtimes for launch/resume, reports, groups, cron, and controller routing.
 - Project-local event bus for agent-to-agent messages, wakeups, queue checks,
   and activation.
 - Shared context primitives: decisions, durable memory, prompt history, reports,
@@ -127,8 +127,9 @@ singleton listener with `ufoo mcp status` and `ufoo mcp restart`.
 ```text
 ufoo / ufoo chat
   -> src/app/chat + src/ui/rustChatHost + crates/ufoo-tui
-  -> project daemon over .ufoo/run/ufoo.sock
-  -> runtime daemon launch/resume/recover/reports/cron/groups
+  -> global daemon over ~/.ufoo/run/ufoo.sock
+  -> isolated ProjectRuntime selected by project_root
+  -> runtime launch/resume/recover/reports/cron/groups
   -> orchestration router, group templates, solo roles
   -> agents launch/providers/internal/controller/activity
   -> coordination bus/context/memory/history/report/state/status
@@ -139,9 +140,13 @@ ufoo mcp stdio proxy ----------------------+
                                            -> home-scoped global controller daemon
                                               (one MCP listener and tool router)
   -> ~/.ufoo/projects/runtime
-  -> ProjectRuntimeGateway
-  -> selected project daemon for bus/report/activity/wait state
+  -> managed ProjectRuntimeGateway
+  -> selected in-process ProjectRuntime for bus/report/activity/wait state
 ```
+
+Global topology is the default. `ufoo daemon --topology hybrid` temporarily
+enables project compatibility sockets, and `--topology project` selects the
+legacy per-project daemon rollback path.
 
 ### Agent Delivery Modes
 
@@ -182,7 +187,8 @@ ufoo -g
 ```
 
 `ufoo` opens the current project chat. `ufoo -g` opens global chat for switching
-between registered projects. The project daemon is started as needed.
+between registered projects. The global daemon starts once and project runtimes
+activate lazily.
 
 ### Chat Commands
 

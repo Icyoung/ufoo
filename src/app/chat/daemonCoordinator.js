@@ -62,6 +62,7 @@ function createDaemonCoordinator(options = {}) {
       const result = await connection.switchConnection({
         connectClient: () => daemonTransport.connectClientForTarget(target),
         callRequestStatus: false,
+        transformRequest: target.transformRequest,
       });
       if (!result || result.ok !== true) {
         return {

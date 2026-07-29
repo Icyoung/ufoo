@@ -246,12 +246,18 @@ function buildLaunchHostContext(params = {}) {
   const hostName = asTrimmedString(params.host_name || params.hostName);
   const hostSessionId = asTrimmedString(params.host_session_id || params.hostSessionId);
   const terminalApp = asTrimmedString(params.terminal_app || params.terminalApp);
+  const tmuxTarget = asTrimmedString(params.tmux_target || params.tmuxTarget);
+  const tmuxPane = asTrimmedString(params.tmux_pane || params.tmuxPane);
+  const tmuxSession = asTrimmedString(params.tmux_session || params.tmuxSession);
   const context = {};
   if (hostInjectSock) context.host_inject_sock = hostInjectSock;
   if (hostDaemonSock) context.host_daemon_sock = hostDaemonSock;
   if (hostName) context.host_name = hostName;
   if (hostSessionId) context.host_session_id = hostSessionId;
   if (terminalApp) context.terminal_app = terminalApp;
+  if (tmuxTarget) context.tmux_target = tmuxTarget;
+  if (tmuxPane) context.tmux_pane = tmuxPane;
+  if (tmuxSession) context.tmux_session = tmuxSession;
   if (params.host_capabilities && typeof params.host_capabilities === "object") {
     context.host_capabilities = { ...params.host_capabilities };
   } else if (params.hostCapabilities && typeof params.hostCapabilities === "object") {

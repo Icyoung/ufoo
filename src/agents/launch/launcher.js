@@ -13,6 +13,10 @@ const { createActivityStatePublisher } = require("../activity/activityStatePubli
 const { reconcileDetectorOwnedActivity } = require("../activity/activityReconcile");
 const { detectLaunchEnvironment } = require("./launchEnvironment");
 const { getUfooPaths } = require("../../coordination/state/paths");
+const {
+  resolveDaemonEndpoint,
+  routeDaemonRequest,
+} = require("../../runtime/daemon/endpoint");
 const { createTerminalAdapterRouter } = require("../../runtime/terminal/adapterRouter");
 const { probeHostCapabilities } = require("../../runtime/terminal/adapters/hostAdapter");
 const PtyWrapper = require("./ptyWrapper");
@@ -43,7 +47,10 @@ async function connectWithRetry(sockPath, retries, delayMs) {
   return null;
 }
 
-async function notifyDaemonAgentReady(daemonSockPath, subscriberId, agentPid) {
+async function notifyDaemonAgentReady(daemonEndpoint, subscriberId, agentPid) {
+  const daemonSockPath = typeof daemonEndpoint === "string"
+    ? daemonEndpoint
+    : daemonEndpoint && daemonEndpoint.socketPath;
   if (!daemonSockPath || !subscriberId) return false;
   const parsedAgentPid = Number.parseInt(agentPid, 10);
   if (!Number.isFinite(parsedAgentPid) || parsedAgentPid <= 0) return false;
@@ -58,11 +65,16 @@ async function notifyDaemonAgentReady(daemonSockPath, subscriberId, agentPid) {
       return false;
     }
 
-    daemonSock.write(`${JSON.stringify({
+    const request = {
       type: IPC_REQUEST_TYPES.AGENT_READY,
       subscriberId,
       agentPid: parsedAgentPid,
-    })}\n`);
+    };
+    daemonSock.write(`${JSON.stringify(
+      typeof daemonEndpoint === "string"
+        ? request
+        : routeDaemonRequest(daemonEndpoint, request)
+    )}\n`);
     daemonSock.end();
 
     if (process.env.UFOO_DEBUG) {
@@ -366,9 +378,13 @@ class AgentLauncher {
    * 确保 daemon 正在运行
    */
   async ensureDaemon() {
-    const paths = getUfooPaths(this.cwd);
+    const endpoint = resolveDaemonEndpoint(this.cwd);
+    const daemonRoot = endpoint.scope === "global"
+      ? endpoint.controllerRoot
+      : endpoint.projectRoot;
+    const paths = getUfooPaths(daemonRoot);
     const pidFile = paths.ufooDaemonPid;
-    const sockFile = paths.ufooSock;
+    const sockFile = endpoint.socketPath;
 
     const existingProbe = await probeDaemonSocket(sockFile);
     if (existingProbe.ok) return "running";
@@ -377,30 +393,36 @@ class AgentLauncher {
       return "running";
     }
 
-    // Stale daemon runtime markers can block restart with false-positive "running".
-    // Clean local runtime markers only when socket probe failed.
-    try {
-      if (fs.existsSync(pidFile)) fs.unlinkSync(pidFile);
-    } catch {
-      // ignore
-    }
-    try {
-      if (fs.existsSync(sockFile)) fs.unlinkSync(sockFile);
-    } catch {
-      // ignore
-    }
-    try {
-      const lockFile = path.join(paths.runDir, "daemon.lock");
-      if (fs.existsSync(lockFile)) fs.unlinkSync(lockFile);
-    } catch {
-      // ignore
+    if (endpoint.scope === "project") {
+      // Stale project-daemon markers can block the legacy fallback. A wrapper
+      // must never unlink the machine-wide global daemon's control files.
+      try {
+        if (fs.existsSync(pidFile)) fs.unlinkSync(pidFile);
+      } catch {
+        // ignore
+      }
+      try {
+        if (fs.existsSync(sockFile)) fs.unlinkSync(sockFile);
+      } catch {
+        // ignore
+      }
+      try {
+        const lockFile = path.join(paths.runDir, "daemon.lock");
+        if (fs.existsSync(lockFile)) fs.unlinkSync(lockFile);
+      } catch {
+        // ignore
+      }
     }
 
     // Start daemon using correct command
     spawnSync("ufoo", ["daemon", "start"], {
-      cwd: this.cwd,
+      cwd: daemonRoot,
       stdio: "ignore",
       detached: true,
+      env: {
+        ...process.env,
+        UFOO_DAEMON_TOPOLOGY: endpoint.topology,
+      },
     });
 
     // Wait for daemon socket to be ready and reachable
@@ -426,7 +448,8 @@ class AgentLauncher {
    * 通过 daemon socket 注册 agent
    */
   async registerWithDaemon(nickname) {
-    const sockFile = getUfooPaths(this.cwd).ufooSock;
+    const endpoint = resolveDaemonEndpoint(this.cwd);
+    const sockFile = endpoint.socketPath;
     const client = await connectWithRetry(sockFile, 25, 200);
     if (!client) {
       throw new Error("Failed to connect to ufoo daemon");
@@ -541,7 +564,7 @@ class AgentLauncher {
         }
       });
 
-      client.write(`${JSON.stringify(req)}\n`);
+      client.write(`${JSON.stringify(routeDaemonRequest(endpoint, req))}\n`);
     });
   }
 
@@ -560,8 +583,8 @@ class AgentLauncher {
     });
 
     if (resolveLaunchMode() === "host" && child.pid) {
-      const daemonSockPath = getUfooPaths(this.cwd).ufooSock;
-      notifyDaemonAgentReady(daemonSockPath, subscriberId, child.pid).catch(() => {});
+      const daemonEndpoint = resolveDaemonEndpoint(this.cwd);
+      notifyDaemonAgentReady(daemonEndpoint, subscriberId, child.pid).catch(() => {});
     }
 
     child.on("error", (err) => {
@@ -689,7 +712,7 @@ class AgentLauncher {
             subscriber: subscriberId,
             projectRoot: this.cwd,
           });
-          const daemonSockPath = getUfooPaths(this.cwd).ufooSock;
+          const daemonEndpoint = resolveDaemonEndpoint(this.cwd);
           launcherActivityDetector.onChange((newState, oldState) => {
             const snap = launcherActivityDetector.getState();
             launcherPublisher.publish(newState, {
@@ -769,7 +792,7 @@ class AgentLauncher {
               await injectPtyCommand(wrapper, this.agentType, startupBootstrapText, "startup-bootstrap");
             }
 
-            await notifyDaemonAgentReady(daemonSockPath, subscriberId, wrapper.pty ? wrapper.pty.pid : 0);
+            await notifyDaemonAgentReady(daemonEndpoint, subscriberId, wrapper.pty ? wrapper.pty.pid : 0);
           });
 
           // Fallback：如果10秒后还没检测到ready，强制标记为ready

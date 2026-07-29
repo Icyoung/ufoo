@@ -18,6 +18,7 @@ function createProjectCloseController(options = {}) {
     resolveProjectRoot = defaultResolveProjectRoot,
     isRunning = () => false,
     stopDaemon = () => false,
+    closeProject = null,
     switchProject = async () => ({ ok: false, error: "project switching unavailable" }),
     refreshProjects = () => {},
     renderDashboard = () => {},
@@ -86,7 +87,11 @@ function createProjectCloseController(options = {}) {
       }
 
       const wasRunning = Boolean(isRunning(projectRoot));
-      stopDaemon(projectRoot, { source: `project-close:${projectRoot}` });
+      if (typeof closeProject === "function") {
+        await Promise.resolve(closeProject(projectRoot));
+      } else {
+        stopDaemon(projectRoot, { source: `project-close:${projectRoot}` });
+      }
 
       refreshProjects();
       renderDashboard();

@@ -182,6 +182,11 @@ class GlobalMcpHttpServer {
       active_wait_count: activeWaits,
       http_request_count: this.httpRequestCount,
       started_at: this.startedAt || null,
+      project_runtime_manager:
+        this.projectRuntimeGateway
+        && typeof this.projectRuntimeGateway.status === "function"
+          ? this.projectRuntimeGateway.status()
+          : null,
     };
   }
 

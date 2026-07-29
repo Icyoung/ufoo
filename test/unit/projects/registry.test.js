@@ -5,6 +5,7 @@ const net = require("net");
 const { canonicalProjectRoot, buildProjectId } = require("../../../src/runtime/projects/projectId");
 const {
   upsertProjectRuntime,
+  markProjectDormant,
   markProjectStopped,
   listProjectRuntimes,
   getCurrentProjectRuntime,
@@ -66,6 +67,25 @@ describe("projects registry", () => {
 
     const current = getCurrentProjectRuntime(projectRoot, { runtimeDir, validate: false });
     expect(current.status).toBe("stopped");
+  });
+
+  test("dormant runtime remains registered without a compatibility socket", () => {
+    upsertProjectRuntime({
+      projectRoot,
+      daemonPid: process.pid,
+      socketPath: path.join(projectRoot, ".ufoo", "run", "ufoo.sock"),
+      status: "running",
+    }, { runtimeDir });
+
+    const dormant = markProjectDormant(projectRoot, { runtimeDir });
+    const validated = validateProjectRuntime(dormant, {
+      staleTtlMs: 1,
+      nowMs: Date.now() + 10000,
+    });
+
+    expect(validated.status).toBe("dormant");
+    expect(validated.validation.pid_alive).toBe(true);
+    expect(validated.validation.socket_alive).toBe(false);
   });
 
   test("upsert preserves existing fields when partial updates are provided", () => {

@@ -119,7 +119,13 @@ function isSocketAlive(socketPath) {
 
 function normalizeStatus(value, fallback = "running") {
   const raw = String(value || "").trim().toLowerCase();
-  if (raw === "running" || raw === "stale" || raw === "stopped") return raw;
+  if (
+    raw === "running"
+    || raw === "dormant"
+    || raw === "failed"
+    || raw === "stale"
+    || raw === "stopped"
+  ) return raw;
   return fallback;
 }
 
@@ -192,6 +198,21 @@ function markProjectStopped(projectRoot, options = {}) {
   }, options);
 }
 
+function markProjectDormant(projectRoot, options = {}) {
+  if (!projectRoot) return null;
+  const existing = readProjectRuntimeByRoot(projectRoot, options);
+  const paths = getUfooPaths(canonicalizeForRecord(projectRoot));
+  return upsertProjectRuntime({
+    projectRoot,
+    projectName: existing ? existing.project_name : path.basename(projectRoot),
+    daemonPid: existing ? existing.daemon_pid : process.pid,
+    socketPath: existing ? existing.socket_path : paths.ufooSock,
+    status: "dormant",
+    lastSeen: new Date().toISOString(),
+    lastSwitchAt: existing ? existing.last_switch_at : undefined,
+  }, options);
+}
+
 function validateProjectRuntime(entry = {}, options = {}) {
   if (!entry || typeof entry !== "object") return null;
   const staleTtlMs = Number.isFinite(options.staleTtlMs) ? options.staleTtlMs : DEFAULT_STALE_TTL_MS;
@@ -207,9 +228,9 @@ function validateProjectRuntime(entry = {}, options = {}) {
   let status = normalizeStatus(entry.status, "running");
   if (running) {
     status = "running";
-  } else if (status === "stopped") {
-    // Respect explicit stop state even if pid/socket checks are unavailable.
-    status = "stopped";
+  } else if (status === "stopped" || status === "dormant" || status === "failed") {
+    // Respect explicit lifecycle state even when the compatibility project
+    // socket is intentionally absent.
   } else if (ageMs === null || ageMs > staleTtlMs) {
     status = "stale";
   }
@@ -273,6 +294,7 @@ module.exports = {
   runtimeFilePathByProjectRoot,
   upsertProjectRuntime,
   markProjectStopped,
+  markProjectDormant,
   listProjectRuntimes,
   getCurrentProjectRuntime,
   validateProjectRuntime,

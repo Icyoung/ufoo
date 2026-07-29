@@ -19,11 +19,14 @@ function createDaemonTransport(options = {}) {
 
   let activeProjectRoot = projectRoot;
   let activeSockPath = sockPath;
+  let activeDaemonRoot = options.daemonRoot || projectRoot;
+  let daemonRootFollowsProject = !options.daemonRoot;
 
   function resolveTarget(override = {}) {
     return {
       projectRoot: override.projectRoot || activeProjectRoot,
       sockPath: override.sockPath || activeSockPath,
+      daemonRoot: override.daemonRoot || activeDaemonRoot,
     };
   }
 
@@ -39,9 +42,9 @@ function createDaemonTransport(options = {}) {
     if (!client) {
       // Retry once with a fresh daemon start and longer wait.
       // Check if a restart is already in progress via the explicit restart flow.
-      const isExplicitRestartInProgress = restartLocks.get(target.projectRoot);
-      if (autoStart && !isExplicitRestartInProgress && !isRunning(target.projectRoot)) {
-        startDaemon(target.projectRoot);
+      const isExplicitRestartInProgress = restartLocks.get(target.daemonRoot);
+      if (autoStart && !isExplicitRestartInProgress && !isRunning(target.daemonRoot)) {
+        startDaemon(target.daemonRoot);
         await new Promise((resolve) => setTimeout(resolve, restartDelayMs));
       }
       client = await connectWithRetry(
@@ -59,16 +62,29 @@ function createDaemonTransport(options = {}) {
   }
 
   function setTarget(next = {}) {
-    if (next.projectRoot) activeProjectRoot = next.projectRoot;
+    if (next.projectRoot) {
+      activeProjectRoot = next.projectRoot;
+      if (daemonRootFollowsProject && !next.daemonRoot) {
+        activeDaemonRoot = next.projectRoot;
+      }
+    }
     if (next.sockPath) activeSockPath = next.sockPath;
+    if (next.daemonRoot) {
+      activeDaemonRoot = next.daemonRoot;
+      daemonRootFollowsProject = false;
+    }
     return getTarget();
   }
 
   function getTarget() {
-    return {
+    const target = {
       projectRoot: activeProjectRoot,
       sockPath: activeSockPath,
     };
+    if (activeDaemonRoot !== activeProjectRoot) {
+      target.daemonRoot = activeDaemonRoot;
+    }
+    return target;
   }
 
   return {

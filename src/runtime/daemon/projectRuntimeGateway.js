@@ -11,6 +11,7 @@ const {
   assertToolAllowedForCallerTier,
 } = require("../../tools/registry");
 const { CALLER_TIERS } = require("../../tools/types");
+const { ProjectRuntimeManager } = require("./projectRuntimeManager");
 
 const MCP_EXPOSED_SHARED_TOOLS = Object.freeze([
   "read_project_registry",
@@ -137,6 +138,71 @@ class LocalProjectRuntimeGateway {
 
   cancel() {
     return false;
+  }
+}
+
+class ManagedProjectRuntimeGateway {
+  constructor(options = {}) {
+    this.options = options;
+    this.activeRequestProjects = new Map();
+    if (options.manager) {
+      this.manager = options.manager;
+    } else {
+      const managerOptions = options.managerOptions || {};
+      const callerConfigureRuntime = managerOptions.configureRuntime;
+      this.manager = new ProjectRuntimeManager({
+        ...managerOptions,
+        configureRuntime: (runtime, context) => {
+          for (const operation of [
+            ...CONTROL_PLANE_OPERATIONS,
+            ...MCP_EXPOSED_SHARED_TOOLS.filter((name) => name !== "read_project_registry"),
+          ]) {
+            runtime.registerOperation(operation, (args, callContext) =>
+              executeProjectRuntimeOperation(
+                context.projectRoot,
+                operation,
+                args,
+                {
+                  ...callContext.requestContext,
+                  signal: callContext.signal,
+                },
+                this.options
+              ));
+          }
+          if (typeof callerConfigureRuntime === "function") {
+            callerConfigureRuntime(runtime, context);
+          }
+        },
+      });
+    }
+  }
+
+  async call(projectRoot, operation, args = {}, context = {}) {
+    const requestId = String(context.requestId || context.toolCallId || crypto.randomUUID());
+    this.activeRequestProjects.set(requestId, projectRoot);
+    try {
+      return await this.manager.call(projectRoot, operation, args, {
+        ...context,
+        requestId,
+      });
+    } finally {
+      this.activeRequestProjects.delete(requestId);
+    }
+  }
+
+  cancel(requestId) {
+    const id = String(requestId || "");
+    const projectRoot = this.activeRequestProjects.get(id);
+    return projectRoot ? this.manager.cancel(projectRoot, id) : false;
+  }
+
+  status() {
+    return this.manager.status();
+  }
+
+  dispose() {
+    this.manager.dispose();
+    this.activeRequestProjects.clear();
   }
 }
 
@@ -344,14 +410,20 @@ function createSocketProjectRuntimeGateway(options = {}) {
   return new SocketProjectRuntimeGateway(options);
 }
 
+function createManagedProjectRuntimeGateway(options = {}) {
+  return new ManagedProjectRuntimeGateway(options);
+}
+
 module.exports = {
   MCP_EXPOSED_SHARED_TOOLS,
   CONTROL_PLANE_OPERATIONS,
   stripRoutingArgs,
   executeProjectRuntimeOperation,
   LocalProjectRuntimeGateway,
+  ManagedProjectRuntimeGateway,
   SocketProjectRuntimeGateway,
   createLocalProjectRuntimeGateway,
+  createManagedProjectRuntimeGateway,
   createSocketProjectRuntimeGateway,
   connectProjectRuntimeSocket,
   resolveCallTimeoutMs,

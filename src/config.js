@@ -34,6 +34,7 @@ const SETTINGS_MODEL_DEFAULTS = Object.freeze({
 
 const DEFAULT_CONFIG = {
   launchMode: "auto",
+  daemonTopology: "global",
   agentProvider: "codex-cli",
   controllerMode: "main",
   mcpPort: 47631,
@@ -65,6 +66,14 @@ function normalizeLaunchMode(value) {
   if (value === "terminal") return "terminal";
   if (value === "host") return "host";
   return "auto";
+}
+
+function normalizeDaemonTopology(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "project") return "project";
+  if (raw === "hybrid") return "hybrid";
+  if (raw === "global") return "global";
+  return DEFAULT_CONFIG.daemonTopology;
 }
 
 function normalizeAgentProvider(value) {
@@ -175,6 +184,7 @@ function loadJsonSafe(filePath) {
 function loadConfig(projectRoot) {
   try {
     const raw = loadJsonSafe(configPath(projectRoot));
+    const globalRaw = loadJsonSafe(globalConfigPath());
     const agentProvider = normalizeAgentProvider(raw.agentProvider);
     const routerProvider = normalizeModel(
       raw.routerProvider,
@@ -184,6 +194,11 @@ function loadConfig(projectRoot) {
       ...DEFAULT_CONFIG,
       ...raw,
       launchMode: normalizeLaunchMode(raw.launchMode),
+      daemonTopology: normalizeDaemonTopology(
+        Object.prototype.hasOwnProperty.call(raw, "daemonTopology")
+          ? raw.daemonTopology
+          : globalRaw.daemonTopology
+      ),
       agentProvider,
       agentModel: normalizeModel(raw.agentModel, defaultAgentModelForProvider(agentProvider)),
       routerProvider,
@@ -238,11 +253,22 @@ function saveConfig(projectRoot, config) {
     ...existing,
     ...projectUpdates,
   };
+  const hasProjectDaemonTopology =
+    Object.prototype.hasOwnProperty.call(existing, "daemonTopology")
+    || Object.prototype.hasOwnProperty.call(projectUpdates, "daemonTopology");
   // Remove any stale ucode fields from project config
   for (const f of UCODE_FIELDS) {
     delete merged[f];
   }
   merged.launchMode = normalizeLaunchMode(merged.launchMode);
+  if (hasProjectDaemonTopology) {
+    merged.daemonTopology = normalizeDaemonTopology(merged.daemonTopology);
+  } else {
+    // Topology is a machine-wide rollout setting unless a project explicitly
+    // opts into an override. Do not persist the default and accidentally pin
+    // this project to project-daemon mode forever.
+    delete merged.daemonTopology;
+  }
   merged.agentProvider = normalizeAgentProvider(merged.agentProvider);
   merged.agentModel = typeof merged.agentModel === "string" ? merged.agentModel.trim() : "";
   merged.routerProvider = typeof merged.routerProvider === "string" ? merged.routerProvider.trim() : "";
@@ -286,13 +312,35 @@ function saveGlobalUcodeConfig(updates = {}) {
   return merged;
 }
 
+function loadGlobalDaemonConfig() {
+  const raw = loadJsonSafe(globalConfigPath());
+  return {
+    daemonTopology: normalizeDaemonTopology(raw.daemonTopology),
+  };
+}
+
+function saveGlobalDaemonConfig(updates = {}) {
+  const target = globalConfigPath();
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const existing = loadJsonSafe(target);
+  const merged = { ...existing };
+  if (Object.prototype.hasOwnProperty.call(updates, "daemonTopology")) {
+    merged.daemonTopology = normalizeDaemonTopology(updates.daemonTopology);
+  }
+  fs.writeFileSync(target, JSON.stringify(merged, null, 2));
+  return loadGlobalDaemonConfig();
+}
+
 module.exports = {
   SETTINGS_MODEL_DEFAULTS,
   loadConfig,
   saveConfig,
   loadGlobalUcodeConfig,
   saveGlobalUcodeConfig,
+  loadGlobalDaemonConfig,
+  saveGlobalDaemonConfig,
   normalizeLaunchMode,
+  normalizeDaemonTopology,
   normalizeAgentProvider,
   providerKey,
   sameModelProvider,

@@ -11,7 +11,11 @@ const {
 const { subscriberToSafeName } = require("../../coordination/bus/utils");
 const { normalizeReportInput } = require("../../coordination/report/store");
 const { enqueueAgentReport } = require("./reportControlBus");
-const { isRunning, socketPath } = require("./index");
+const { isRunning } = require("./index");
+const {
+  resolveDaemonEndpoint,
+  routeDaemonRequest,
+} = require("./endpoint");
 const { IPC_REQUEST_TYPES } = require("../contracts/eventContract");
 const {
   applyProjectNicknamePrefix,
@@ -128,11 +132,16 @@ function assertAgentHandle(bus, subscriber, args = {}, options = {}) {
 }
 
 function notifyDaemonRefresh(projectRoot) {
-  if (!isRunning(projectRoot)) return;
-  const sock = socketPath(projectRoot);
+  const endpoint = resolveDaemonEndpoint(projectRoot);
+  const daemonRoot = endpoint.scope === "global"
+    ? endpoint.controllerRoot
+    : endpoint.projectRoot;
+  if (!isRunning(daemonRoot)) return;
   try {
-    const client = net.createConnection(sock, () => {
-      client.write(`${JSON.stringify({ type: IPC_REQUEST_TYPES.REFRESH_STATUS })}\n`);
+    const client = net.createConnection(endpoint.socketPath, () => {
+      client.write(`${JSON.stringify(routeDaemonRequest(endpoint, {
+        type: IPC_REQUEST_TYPES.REFRESH_STATUS,
+      }))}\n`);
       client.end();
     });
     client.on("error", () => {});

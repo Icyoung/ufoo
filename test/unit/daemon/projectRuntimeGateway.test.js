@@ -4,6 +4,7 @@ const { Duplex } = require("stream");
 
 const {
   createLocalProjectRuntimeGateway,
+  createManagedProjectRuntimeGateway,
   createSocketProjectRuntimeGateway,
 } = require("../../../src/runtime/daemon/projectRuntimeGateway");
 const {
@@ -30,6 +31,12 @@ function createRuntimeSocket(onRequest) {
 }
 
 describe("ProjectRuntimeGateway", () => {
+  const managedGateways = [];
+
+  afterEach(() => {
+    for (const gateway of managedGateways.splice(0)) gateway.dispose();
+  });
+
   test("local gateway delegates control-plane operations through one boundary", async () => {
     const registerAgent = jest.fn(async (projectRoot, args) => ({
       ok: true,
@@ -107,5 +114,40 @@ describe("ProjectRuntimeGateway", () => {
       code: "subscriber_not_found",
       message: "subscriber missing",
     });
+  });
+
+  test("managed gateway routes local operations through isolated runtime instances", async () => {
+    const fs = require("fs");
+    const os = require("os");
+    const path = require("path");
+    const roots = [
+      fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-managed-gateway-a-")),
+      fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-managed-gateway-b-")),
+    ];
+    roots.forEach((root) => fs.mkdirSync(path.join(root, ".ufoo"), { recursive: true }));
+    const registerAgent = jest.fn(async (projectRoot, args) => ({
+      ok: true,
+      project_root: projectRoot,
+      subscriber: `codex:${args.session_id}`,
+    }));
+    const gateway = createManagedProjectRuntimeGateway({
+      controlPlaneService: { registerAgent },
+      managerOptions: { sweepIntervalMs: 0 },
+    });
+    managedGateways.push(gateway);
+    try {
+      const [first, second] = await Promise.all([
+        gateway.call(roots[0], "register_agent", { session_id: "a" }, { requestId: "a" }),
+        gateway.call(roots[1], "register_agent", { session_id: "b" }, { requestId: "b" }),
+      ]);
+      expect(first.project_root).toBe(fs.realpathSync(roots[0]));
+      expect(second.project_root).toBe(fs.realpathSync(roots[1]));
+      expect(gateway.status()).toMatchObject({
+        runtime_count: 2,
+        active_runtime_count: 2,
+      });
+    } finally {
+      roots.forEach((root) => fs.rmSync(root, { recursive: true, force: true }));
+    }
   });
 });

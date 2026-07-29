@@ -280,6 +280,7 @@ describe("_spawnDirect host notification", () => {
       type: "agent_ready",
       subscriberId: "codex:test123",
       agentPid: 2468,
+      project_root: "/tmp/ufoo-host-project",
     });
   });
 });

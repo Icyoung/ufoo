@@ -13,7 +13,11 @@ const { generateInstanceId, subscriberToSafeName } = require("../../coordination
 const { createDaemonIpcServer } = require("./ipcServer");
 const { IPC_REQUEST_TYPES, IPC_RESPONSE_TYPES, BUS_STATUS_PHASES } = require("../contracts/eventContract");
 const { getUfooPaths } = require("../../coordination/state/paths");
-const { upsertProjectRuntime, markProjectStopped } = require("../projects");
+const {
+  upsertProjectRuntime,
+  markProjectDormant,
+  markProjectStopped,
+} = require("../projects");
 const { scheduleProviderSessionResolve, resolveSessionFromFile, persistProviderSession, loadProviderSessionCache } = require("./providerSessions");
 const { createTerminalAdapterRouter } = require("../terminal/adapterRouter");
 const { createDaemonCronController } = require("./cronOps");
@@ -48,12 +52,18 @@ const { resolveNodeExecutable } = require("../process/nodeExecutable");
 const {
   createProjectRuntimeControlPlane,
 } = require("./projectRuntimeControlPlane");
-const { loadConfig, normalizeMcpPort } = require("../../config");
+const { createProjectContext } = require("./projectContext");
+const { createProjectRuntime } = require("./projectRuntime");
+const { registerDaemonRuntimeLifecycle } = require("./processLifecycle");
+const {
+  createManagedProjectRuntimeGateway,
+} = require("./projectRuntimeGateway");
+const {
+  loadConfig,
+  normalizeDaemonTopology,
+  normalizeMcpPort,
+} = require("../../config");
 
-let providerSessions = null;
-let sessionResolveHandles = new Map();
-let daemonCronController = null;
-let daemonGroupOrchestrator = null;
 const PROJECT_RUNTIME_HEARTBEAT_MS = 10 * 1000;
 
 function sleep(ms) {
@@ -522,7 +532,10 @@ function resolveSubscriberNickname(projectRoot, subscriberId) {
   }
 }
 
-async function handleOps(projectRoot, ops = [], processManager = null) {
+async function handleOps(projectRoot, ops = [], processManager = null, runtimeServices = {}) {
+  const providerSessions = runtimeServices.providerSessions || null;
+  const sessionResolveHandles = runtimeServices.sessionResolveHandles || new Map();
+  const daemonCronController = runtimeServices.cronController || null;
   const results = [];
   for (const op of ops) {
     if (op.action === "launch") {
@@ -575,6 +588,9 @@ async function handleOps(projectRoot, ops = [], processManager = null) {
           scopedNickname,
           launchScope: op.launch_scope || "",
           terminalApp: op.terminal_app || "",
+          tmuxTarget: op.tmux_target || op.tmuxTarget || "",
+          tmuxPane: op.tmux_pane || op.tmuxPane || "",
+          tmuxSession: op.tmux_session || op.tmuxSession || "",
           tmuxLayoutContext:
             op.tmux_layout_context && typeof op.tmux_layout_context === "object"
               ? op.tmux_layout_context
@@ -1151,7 +1167,19 @@ function startBusBridge(projectRoot, provider, onEvent, onStatus, shouldDrain, o
   };
 }
 
-function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
+function startDaemon({
+  projectRoot,
+  provider,
+  model,
+  resumeMode = "auto",
+  daemonTopology = "project",
+  runtimeGeneration = 1,
+  globalRuntimeRouter = null,
+  beforeCleanup = null,
+  manageProcessState = true,
+  listenProjectSocket = true,
+  registrySocketPath = "",
+}) {
   const paths = getUfooPaths(projectRoot);
   if (!fs.existsSync(paths.ufooDir)) {
     throw new Error("Missing .ufoo. Run: ufoo init");
@@ -1160,57 +1188,59 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
   const runDir = paths.runDir;
   ensureDir(runDir);
 
-  // 文件锁机制：防止多个 daemon 同时启动
   const lockFile = path.join(runDir, "daemon.lock");
   let lockFd;
   let recoveredStaleLock = false;
-  try {
-    // 尝试独占方式打开锁文件（如果已存在且被锁定则失败）
-    lockFd = fs.openSync(lockFile, "wx");
-    fs.writeSync(lockFd, `${process.pid}\n`);
-  } catch (err) {
-    if (err.code === "EEXIST") {
-      // 锁文件已存在，检查是否仍有效
-      let existingPid = null;
-      try {
-        const raw = fs.readFileSync(lockFile, "utf8").trim();
-        const parsed = parseInt(raw, 10);
-        if (Number.isFinite(parsed) && parsed > 0) {
-          existingPid = parsed;
+  if (manageProcessState) {
+    // 文件锁机制：防止多个 daemon 同时启动
+    try {
+      // 尝试独占方式打开锁文件（如果已存在且被锁定则失败）
+      lockFd = fs.openSync(lockFile, "wx");
+      fs.writeSync(lockFd, `${process.pid}\n`);
+    } catch (err) {
+      if (err.code === "EEXIST") {
+        // 锁文件已存在，检查是否仍有效
+        let existingPid = null;
+        try {
+          const raw = fs.readFileSync(lockFile, "utf8").trim();
+          const parsed = parseInt(raw, 10);
+          if (Number.isFinite(parsed) && parsed > 0) {
+            existingPid = parsed;
+          }
+        } catch {
+          // ignore malformed lock file and treat as stale
         }
-      } catch {
-        // ignore malformed lock file and treat as stale
-      }
 
-      let lockHeld = false;
-      if (existingPid) {
-        lockHeld = looksLikeRunningDaemon(projectRoot, existingPid);
-      }
+        let lockHeld = false;
+        if (existingPid) {
+          lockHeld = looksLikeRunningDaemon(projectRoot, existingPid);
+        }
 
-      if (lockHeld) {
-        throw new Error(`Daemon already running with PID ${existingPid}`);
-      }
+        if (lockHeld) {
+          throw new Error(`Daemon already running with PID ${existingPid}`);
+        }
 
-      // 进程已死或锁文件损坏，清理旧锁后重试
-      try {
-        fs.unlinkSync(lockFile);
-        recoveredStaleLock = true;
-      } catch (unlinkErr) {
-        throw new Error(`Failed to remove stale daemon lock: ${unlinkErr.message}`);
+        // 进程已死或锁文件损坏，清理旧锁后重试
+        try {
+          fs.unlinkSync(lockFile);
+          recoveredStaleLock = true;
+        } catch (unlinkErr) {
+          throw new Error(`Failed to remove stale daemon lock: ${unlinkErr.message}`);
+        }
+        try {
+          lockFd = fs.openSync(lockFile, "wx");
+          fs.writeSync(lockFd, `${process.pid}\n`);
+        } catch (retryErr) {
+          throw new Error(`Failed to acquire daemon lock: ${retryErr.message}`);
+        }
+      } else {
+        throw err;
       }
-      try {
-        lockFd = fs.openSync(lockFile, "wx");
-        fs.writeSync(lockFd, `${process.pid}\n`);
-      } catch (retryErr) {
-        throw new Error(`Failed to acquire daemon lock: ${retryErr.message}`);
-      }
-    } else {
-      throw err;
     }
   }
 
-  removeSocket(projectRoot);
-  writePid(projectRoot);
+  if (listenProjectSocket) removeSocket(projectRoot);
+  if (manageProcessState) writePid(projectRoot);
 
   const logFile = fs.createWriteStream(logPath(projectRoot), { flags: "a" });
   const formatLogLine = (msg) => `[daemon] ${new Date().toISOString()} ${msg}\n`;
@@ -1229,6 +1259,21 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
       }
     }
   };
+  const runtimeConfig = loadConfig(projectRoot);
+  const runtimeContext = createProjectContext({
+    projectRoot,
+    config: {
+      ...runtimeConfig,
+      daemonTopology: normalizeDaemonTopology(
+        daemonTopology || process.env.UFOO_DAEMON_TOPOLOGY || runtimeConfig.daemonTopology
+      ),
+    },
+    provider,
+    model,
+    runtimeGeneration,
+  });
+  const projectRuntime = createProjectRuntime(runtimeContext);
+  void projectRuntime.activate();
   const formatFatalReason = (err) => {
     if (!err) return "unknown";
     if (err instanceof Error) return err.stack || err.message;
@@ -1242,7 +1287,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
       upsertProjectRuntime({
         projectRoot,
         daemonPid: process.pid,
-        socketPath: socketPath(projectRoot),
+        socketPath: registrySocketPath || socketPath(projectRoot),
         status,
         lastSeen: new Date().toISOString(),
       });
@@ -1252,30 +1297,54 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
   };
 
   // 创建进程管理器 - daemon 作为父进程监控所有 internal agents
-  const processManager = new AgentProcessManager(projectRoot);
+  const processManager = projectRuntime.own(
+    "processManager",
+    new AgentProcessManager(projectRoot)
+  );
   log(`Process manager initialized`);
 
   // Provider session cache (in-memory)
-  providerSessions = loadProviderSessionCache(projectRoot);
-  sessionResolveHandles = new Map();
-  daemonCronController = createDaemonCronController({
+  const providerSessions = projectRuntime.own(
+    "providerSessions",
+    loadProviderSessionCache(projectRoot)
+  );
+  const sessionResolveHandles = projectRuntime.own(
+    "sessionResolveHandles",
+    new Map()
+  );
+  const runtimeServices = {
+    providerSessions,
+    sessionResolveHandles,
+    cronController: null,
+    groupOrchestrator: null,
+  };
+  const handleRuntimeOps = (root, ops, manager = processManager) =>
+    handleOps(root, ops, manager, runtimeServices);
+  const daemonCronController = projectRuntime.own("cronController", createDaemonCronController({
     projectRoot,
     dispatch: async ({ taskId, target, message }) => {
       await dispatchMessages(projectRoot, [{ target, message }]);
       log(`cron:${taskId} -> ${target}`);
     },
     log,
-  });
-  daemonGroupOrchestrator = createGroupOrchestrator({
+  }));
+  runtimeServices.cronController = daemonCronController;
+  const daemonGroupOrchestrator = projectRuntime.own("groupOrchestrator", createGroupOrchestrator({
     projectRoot,
-    handleOps,
+    handleOps: handleRuntimeOps,
     processManager,
-  });
+  }));
+  runtimeServices.groupOrchestrator = daemonGroupOrchestrator;
 
-  const buildRuntimeStatus = () =>
-    buildStatus(projectRoot, {
+  const buildRuntimeStatus = () => ({
+    ...buildStatus(projectRoot, {
       cronTasks: daemonCronController ? daemonCronController.listTasks() : [],
-    });
+    }),
+    runtime: projectRuntime.status(),
+    ...(globalRuntimeRouter && typeof globalRuntimeRouter.status === "function"
+      ? { global_daemon: globalRuntimeRouter.status() }
+      : {}),
+  });
 
   const cleanupInactiveSubscribers = () => {
     try {
@@ -1298,6 +1367,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
     cleanupInactive: cleanupInactiveSubscribers,
     log,
   });
+  projectRuntime.own("ipcServer", ipcServer);
 
   const publishAgentReportResult = (entry) => {
     ipcServer.sendToSockets({
@@ -1346,6 +1416,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
       log(`report bus event failed request=${meta.requestId || ""} error=${err.message || String(err)}`);
     }
   });
+  projectRuntime.own("busBridge", busBridge);
   const deliveryScheduler = new DeliveryScheduler(projectRoot, {
     log,
     emitDelivery: async ({ subscriber, status, error } = {}) => {
@@ -1355,16 +1426,35 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
     },
   });
   deliveryScheduler.start();
+  projectRuntime.own("deliveryScheduler", deliveryScheduler);
   const runtimeControlPlane = createProjectRuntimeControlPlane({ projectRoot });
+  projectRuntime.own("runtimeControlPlane", runtimeControlPlane);
   let mcpHttpServer = null;
+  let globalProjectRuntimeGateway = null;
+  let ownsGlobalProjectRuntimeGateway = false;
   if (isGlobalControllerProjectRoot(projectRoot) && process.env.UFOO_MCP_HTTP_DISABLED !== "1") {
     const { createGlobalMcpHttpServer } = require("./mcpHttpServer");
     const config = loadConfig(projectRoot);
     const configuredPort = process.env.UFOO_MCP_PORT || config.mcpPort;
+    globalProjectRuntimeGateway =
+      globalRuntimeRouter
+      && globalRuntimeRouter.projectRuntimeGateway
+        ? globalRuntimeRouter.projectRuntimeGateway
+        : createManagedProjectRuntimeGateway({
+          managerOptions: {
+            authorizeProjectRoot: (targetRoot) =>
+              fs.existsSync(getUfooPaths(targetRoot).ufooDir),
+          },
+        });
+    ownsGlobalProjectRuntimeGateway =
+      globalProjectRuntimeGateway !== (
+        globalRuntimeRouter && globalRuntimeRouter.projectRuntimeGateway
+      );
     mcpHttpServer = createGlobalMcpHttpServer({
       projectRoot,
       port: normalizeMcpPort(configuredPort),
       log,
+      projectRuntimeGateway: globalProjectRuntimeGateway,
     });
     mcpHttpServer.start().catch((err) => {
       logSync(`MCP HTTP startup failed: ${formatFatalReason(err)}`);
@@ -1376,6 +1466,37 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
 
   handleIpcRequest = async (req, socket) => {
     if (!req || typeof req !== "object") return;
+    const routedProjectRoot = String(req.project_root || req.projectRoot || "").trim();
+    if (
+      globalRuntimeRouter
+      && req.type === IPC_REQUEST_TYPES.CLOSE_PROJECT_RUNTIME
+    ) {
+      try {
+        const result = globalRuntimeRouter.closeProject(routedProjectRoot, {
+          terminateAgents:
+            req.terminate_agents === true || req.terminateAgents === true,
+        });
+        socket.write(`${JSON.stringify({
+          type: IPC_RESPONSE_TYPES.RESPONSE,
+          data: result,
+        })}\n`);
+      } catch (err) {
+        socket.write(`${JSON.stringify({
+          type: IPC_RESPONSE_TYPES.ERROR,
+          error: err.message || String(err),
+          code: err.code || "close_project_runtime_failed",
+        })}\n`);
+      }
+      return;
+    }
+    if (
+      globalRuntimeRouter
+      && routedProjectRoot
+      && !sameProjectRoot(routedProjectRoot, projectRoot)
+    ) {
+      await globalRuntimeRouter.handleRequest(routedProjectRoot, req, socket);
+      return;
+    }
     if (await runtimeControlPlane.handleRequest(req, socket)) return;
     if (req.type === IPC_REQUEST_TYPES.MCP_STATUS || req.type === IPC_REQUEST_TYPES.MCP_RESTART) {
       if (!isGlobalControllerProjectRoot(projectRoot)) {
@@ -1431,7 +1552,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
         runUfooAgent,
         runUfooRouteAgent,
         dispatchMessages,
-        handleOps,
+        handleOps: handleRuntimeOps,
         markPending: (target) => busBridge.markPending(target),
         reportTaskStatus: async (report) => {
           await recordAgentReport({
@@ -1466,7 +1587,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
             const init = new (require("../../app/cli/features/init"))(repoRoot);
             await init.init({ targets: "context,bus", project: root });
           }
-          if (!isRunning(root)) {
+          if (!globalRuntimeRouter && !isRunning(root)) {
             cleanupStaleState(root);
             const daemonBin = path.join(__dirname, "..", "..", "..", "bin", "ufoo.js");
             const child = spawn(resolveNodeExecutable(), [daemonBin, "daemon", "--start"], {
@@ -1490,11 +1611,15 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
           delete nextMeta.force_project_root;
           delete nextMeta.force_project_name;
 
-          return sendPromptRequestToProject(root, {
+          const routedRequest = {
             type: IPC_REQUEST_TYPES.PROMPT,
             text: String(prompt || ""),
             request_meta: nextMeta,
-          });
+          };
+          if (globalRuntimeRouter && typeof globalRuntimeRouter.request === "function") {
+            return globalRuntimeRouter.request(root, routedRequest, { timeoutMs: 12000 });
+          }
+          return sendPromptRequestToProject(root, routedRequest);
         },
         log,
       });
@@ -1656,7 +1781,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
       }
       try {
         const op = { action: "close", agent_id };
-        const opsResults = await handleOps(projectRoot, [op], processManager);
+        const opsResults = await handleRuntimeOps(projectRoot, [op], processManager);
         const closeResult = opsResults.find((r) => r.action === "close");
         const ok = closeResult ? closeResult.ok !== false : true;
         const reply = ok
@@ -1697,6 +1822,9 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
         prompt_profile,
         launch_scope,
         terminal_app,
+        tmux_target,
+        tmux_pane,
+        tmux_session,
         host_inject_sock,
         host_daemon_sock,
         host_name,
@@ -1735,6 +1863,9 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
         nickname: explicitNickname,
         launch_scope: launch_scope || "",
         terminal_app: terminal_app || "",
+        tmux_target: tmux_target || req.tmuxTarget || "",
+        tmux_pane: tmux_pane || req.tmuxPane || "",
+        tmux_session: tmux_session || req.tmuxSession || "",
         host_inject_sock: host_inject_sock || "",
         host_daemon_sock: host_daemon_sock || "",
         host_name: host_name || "",
@@ -1830,7 +1961,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
         };
       }
       try {
-        const opsResults = await handleOps(projectRoot, [op], processManager);
+        const opsResults = await handleRuntimeOps(projectRoot, [op], processManager);
         const launchResult = opsResults.find((r) => r.action === "launch");
         if (soloLaunchBootstrap && launchResult && launchResult.ok !== false) {
           const subscriberId = pickLaunchSubscriber(projectRoot, launchResult, explicitNickname || "");
@@ -1862,7 +1993,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
               projectRoot,
               launchResult,
               roleTarget,
-              handleOps,
+              handleRuntimeOps,
               processManager
             );
             const roleError = roleResult.error || "role assignment failed";
@@ -1992,6 +2123,9 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
       const hostName = req.host_name || req.hostName || "";
       const hostSessionId = req.host_session_id || req.hostSessionId || "";
       const terminalApp = req.terminal_app || req.terminalApp || "";
+      const tmuxTarget = req.tmux_target || req.tmuxTarget || "";
+      const tmuxPane = req.tmux_pane || req.tmuxPane || "";
+      const tmuxSession = req.tmux_session || req.tmuxSession || "";
       const hostCapabilities =
         req.host_capabilities && typeof req.host_capabilities === "object"
           ? req.host_capabilities
@@ -2008,6 +2142,9 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
           host_name: hostName,
           host_session_id: hostSessionId,
           terminal_app: terminalApp,
+          tmux_target: tmuxTarget,
+          tmux_pane: tmuxPane,
+          tmux_session: tmuxSession,
           host_capabilities: hostCapabilities,
         });
         const ok = result && result.ok !== false;
@@ -2523,7 +2660,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
     }
   };
 
-  ipcServer.listen(socketPath(projectRoot));
+  if (listenProjectSocket) ipcServer.listen(socketPath(projectRoot));
   publishProjectRuntime("running");
   const runtimeHeartbeat = setInterval(() => {
     publishProjectRuntime("running");
@@ -2531,11 +2668,14 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
 
   log(`Started pid=${process.pid}`);
 
-  // 清理旧 daemon 留下的孤儿 internal agent 进程
-  const EventBus = require("../../coordination/bus");
-  const { spawnSync } = require("child_process");
-  const eventBus = new EventBus(projectRoot);
-  try {
+  // Legacy project daemons own internal runners as child processes. A
+  // global/hybrid runtime deliberately does not: runners must survive host
+  // replacement and keep consuming their durable queues.
+  if (runtimeContext.daemonTopology === "project") {
+    const EventBus = require("../../coordination/bus");
+    const { spawnSync } = require("child_process");
+    const eventBus = new EventBus(projectRoot);
+    try {
     eventBus.ensureBus();
     eventBus.loadBusData();
     const agents = eventBus.busData.agents || {};
@@ -2616,9 +2756,10 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
         }
       }
     }
-    eventBus.saveBusData();
-  } catch (err) {
-    log(`Failed to cleanup orphan agents: ${err.message}`);
+      eventBus.saveBusData();
+    } catch (err) {
+      log(`Failed to cleanup orphan agents: ${err.message}`);
+    }
   }
 
   const shouldResume = resumeMode === "force" || (resumeMode === "auto" && recoveredStaleLock);
@@ -2633,15 +2774,28 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
   }
 
   let cleanedUp = false;
+  let unregisterProcessLifecycle = () => {};
   const cleanup = (reason = "exit", options = {}) => {
     if (cleanedUp) return;
     cleanedUp = true;
+    unregisterProcessLifecycle();
     const writeLog = options.sync ? logSync : log;
     writeLog(`Shutting down daemon reason=${reason} (managed agents: ${processManager.count()})`);
+    if (typeof beforeCleanup === "function") {
+      try {
+        beforeCleanup({ reason, options, projectRoot, runtime: projectRuntime });
+      } catch (err) {
+        writeLog(`before cleanup hook failed: ${formatFatalReason(err)}`);
+      }
+    }
     clearInterval(runtimeHeartbeat);
     try {
       if (!isGlobalControllerProjectRoot(projectRoot)) {
-        markProjectStopped(projectRoot);
+        if (reason === "global-runtime-idle") {
+          markProjectDormant(projectRoot);
+        } else {
+          markProjectStopped(projectRoot);
+        }
       }
     } catch {
       // ignore cleanup errors
@@ -2649,9 +2803,7 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
 
     if (daemonCronController) {
       daemonCronController.stopAll();
-      daemonCronController = null;
     }
-    daemonGroupOrchestrator = null;
 
     runtimeControlPlane.stop();
     if (mcpHttpServer) {
@@ -2659,54 +2811,65 @@ function startDaemon({ projectRoot, provider, model, resumeMode = "auto" }) {
         writeLog(`MCP HTTP shutdown failed: ${formatFatalReason(err)}`);
       });
     }
+    if (globalProjectRuntimeGateway && ownsGlobalProjectRuntimeGateway) {
+      globalProjectRuntimeGateway.dispose();
+    }
+    globalProjectRuntimeGateway = null;
 
-    // 清理所有子进程
-    processManager.cleanup();
+    // Project topology preserves the legacy parent-owned runner contract.
+    // Global/hybrid runtimes detach so daemon restart does not terminate work.
+    processManager.cleanup({
+      terminate: runtimeContext.daemonTopology === "project",
+    });
 
     ipcServer.stop();
     deliveryScheduler.stop();
     busBridge.stop();
-    removeSocket(projectRoot);
-    removePidIfOwned(projectRoot);
+    projectRuntime.dispose();
+    if (listenProjectSocket) removeSocket(projectRoot);
+    if (manageProcessState) removePidIfOwned(projectRoot);
 
     // 释放锁文件
     try {
       if (lockFd !== undefined) {
         fs.closeSync(lockFd);
       }
-      const lockFile = path.join(getUfooPaths(projectRoot).runDir, "daemon.lock");
-      if (fs.existsSync(lockFile)) {
+      if (manageProcessState && fs.existsSync(lockFile)) {
         fs.unlinkSync(lockFile);
       }
     } catch {
       // ignore cleanup errors
     }
+    try {
+      logFile.end();
+    } catch {
+      // ignore log stream shutdown errors
+    }
   };
 
-  process.on("beforeExit", (code) => {
-    logSync(`beforeExit code=${code}`);
-  });
-  process.on("exit", (code) => {
-    cleanup(`exit code=${code}`, { sync: true });
-  });
-  process.on("SIGTERM", () => {
-    cleanup("SIGTERM", { sync: true });
-    process.exit(0);
-  });
-  process.on("SIGINT", () => {
-    cleanup("SIGINT", { sync: true });
-    process.exit(0);
-  });
-  process.on("uncaughtException", (err) => {
-    logSync(`uncaughtException: ${formatFatalReason(err)}`);
-    cleanup("uncaughtException", { sync: true });
-    process.exit(1);
-  });
-  process.on("unhandledRejection", (reason) => {
-    logSync(`unhandledRejection: ${formatFatalReason(reason)}`);
-    cleanup("unhandledRejection", { sync: true });
-    process.exit(1);
-  });
+  unregisterProcessLifecycle = registerDaemonRuntimeLifecycle(
+    `${runtimeContext.projectId}:${runtimeContext.runtimeGeneration}`,
+    {
+      onBeforeExit: (code) => {
+        logSync(`beforeExit code=${code}`);
+      },
+      onFatal: ({ kind, error }) => {
+        logSync(`${kind}: ${formatFatalReason(error)}`);
+      },
+      cleanup,
+    }
+  );
+
+  return {
+    context: runtimeContext,
+    runtime: projectRuntime,
+    cleanup,
+    status: buildRuntimeStatus,
+    handleRequest: handleIpcRequest,
+    socket_path: listenProjectSocket
+      ? socketPath(projectRoot)
+      : (registrySocketPath || ""),
+  };
 }
 
 function stopDaemon(projectRoot, options = {}) {

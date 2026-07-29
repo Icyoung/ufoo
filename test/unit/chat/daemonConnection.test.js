@@ -64,6 +64,27 @@ describe("chat daemonConnection", () => {
     expect(first.writes).toEqual(['{"type":"status"}\n']);
   });
 
+  test("applies project routing to initial and switched connections", async () => {
+    const first = new FakeClient();
+    const second = new FakeClient();
+    const { connection, connectClient } = createHarness({
+      transformRequest: (request) => ({ ...request, project_root: "/project/a" }),
+    });
+    connectClient.mockResolvedValueOnce(first);
+
+    await connection.connect();
+    connection.send({ type: "status" });
+    expect(first.writes).toContain('{"type":"status","project_root":"/project/a"}\n');
+
+    await connection.switchConnection({
+      connectClient: async () => second,
+      callRequestStatus: false,
+      transformRequest: (request) => ({ ...request, project_root: "/project/b" }),
+    });
+    connection.requestStatus();
+    expect(second.writes).toContain('{"type":"status","project_root":"/project/b"}\n');
+  });
+
   test("disconnect triggers reconnect with status bar only (no chat log)", async () => {
     const first = new FakeClient();
     const second = new FakeClient();

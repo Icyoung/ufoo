@@ -150,4 +150,31 @@ describe("chat daemonTransport", () => {
       sockPath: "/tmp/b.sock",
     });
   });
+
+  test("uses the global daemon root for lifecycle checks without changing project routing", async () => {
+    const connectWithRetry = jest.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: "global" });
+    const startDaemon = jest.fn();
+    const isRunning = jest.fn(() => false);
+    const transport = createDaemonTransport({
+      projectRoot: "/tmp/project-a",
+      daemonRoot: "/tmp/global-controller",
+      sockPath: "/tmp/global.sock",
+      isRunning,
+      startDaemon,
+      connectWithRetry,
+      restartDelayMs: 0,
+    });
+
+    await transport.connectClient();
+
+    expect(isRunning).toHaveBeenCalledWith("/tmp/global-controller");
+    expect(startDaemon).toHaveBeenCalledWith("/tmp/global-controller");
+    expect(transport.getTarget()).toEqual({
+      projectRoot: "/tmp/project-a",
+      daemonRoot: "/tmp/global-controller",
+      sockPath: "/tmp/global.sock",
+    });
+  });
 });

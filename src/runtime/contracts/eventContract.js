@@ -24,6 +24,7 @@ const IPC_REQUEST_TYPES = {
   CONTROL_PLANE_CANCEL: "control_plane_cancel",
   MCP_STATUS: "mcp_status",
   MCP_RESTART: "mcp_restart",
+  CLOSE_PROJECT_RUNTIME: "close_project_runtime",
 };
 
 const IPC_RESPONSE_TYPES = {

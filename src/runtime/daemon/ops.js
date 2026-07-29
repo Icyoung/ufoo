@@ -176,6 +176,13 @@ function resolveConfiguredLaunchMode(configuredMode = "", options = {}) {
   if (mode === "internal" || mode === "tmux" || mode === "terminal" || mode === "host") {
     return mode;
   }
+  if (
+    normalizeOptionalString(options.tmuxTarget)
+    || normalizeOptionalString(options.tmuxPane)
+    || normalizeOptionalString(options.tmuxSession)
+  ) {
+    return "tmux";
+  }
   // Auto mode: defer to the unified detector. Daemon ops differs from the
   // launcher in two ways: host context can also arrive via `options`, and
   // when running under a native terminal app we want to override a stale
@@ -704,7 +711,6 @@ async function spawnInternalAgent(
 
     // Daemon 预先在 bus 中注册
     bus.loadBusData();
-    process.env.UFOO_PARENT_PID = String(originalPid);
     const replaceAgentId = typeof options.replaceAgentId === "string" ? options.replaceAgentId.trim() : "";
     if (replaceAgentId && bus.busData.agents && bus.busData.agents[replaceAgentId]) {
       delete bus.busData.agents[replaceAgentId];
@@ -721,6 +727,7 @@ async function spawnInternalAgent(
       launchMode,
       parentPid: originalPid,
       providerSessionId,
+      scopedNickname: String(extraEnv.UFOO_SCOPED_NICKNAME || "").trim(),
     });
     const finalNickname = joinResult.nickname || requestedNickname || "";
     bus.saveBusData();
@@ -803,7 +810,14 @@ async function spawnInternalAgent(
   return { children, subscriberIds };
 }
 
-function spawnTmuxWindow(projectRoot, agent, nickname = "", extraArgs = [], extraEnv = "") {
+function spawnTmuxWindow(
+  projectRoot,
+  agent,
+  nickname = "",
+  extraArgs = [],
+  extraEnv = "",
+  targetSession = ""
+) {
   return new Promise((resolve, reject) => {
     const normalizedAgent = normalizeLaunchAgent(agent);
     const binary = toTmuxBinary(normalizedAgent);
@@ -826,11 +840,12 @@ function spawnTmuxWindow(projectRoot, agent, nickname = "", extraArgs = [], extr
 
     // Use detached mode (-d) to avoid stealing focus
     // Use -a flag to insert after current window, avoiding index conflicts
-    // Use target session from env or current session
-    const targetSession = process.env.UFOO_TMUX_SESSION || "";
+    // Use the request-scoped target session when available. The daemon may
+    // host multiple projects and must not mutate process.env to select one.
+    const normalizedTargetSession = String(targetSession || "").trim();
     const tmuxArgs = ["new-window", "-a", "-d", "-n", windowName];
-    if (targetSession) {
-      tmuxArgs.push("-t", targetSession);
+    if (normalizedTargetSession) {
+      tmuxArgs.push("-t", normalizedTargetSession);
     }
     tmuxArgs.push(runCmd);
 
@@ -846,10 +861,20 @@ function spawnTmuxWindow(projectRoot, agent, nickname = "", extraArgs = [], extr
   });
 }
 
-function resolveTmuxPaneTarget() {
-  const explicit = String(process.env.UFOO_TMUX_TARGET || "").trim();
+function resolveTmuxPaneTarget(options = {}) {
+  const explicit = String(
+    options.tmuxTarget
+    || options.tmux_target
+    || process.env.UFOO_TMUX_TARGET
+    || ""
+  ).trim();
   if (explicit) return explicit;
-  const preferredPane = String(process.env.UFOO_TMUX_PANE || "").trim();
+  const preferredPane = String(
+    options.tmuxPane
+    || options.tmux_pane
+    || process.env.UFOO_TMUX_PANE
+    || ""
+  ).trim();
   if (preferredPane) return preferredPane;
   const currentPane = String(process.env.TMUX_PANE || "").trim();
   if (currentPane) return currentPane;
@@ -982,15 +1007,21 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
     if (!tmuxAvailable) {
       throw new Error("tmux is not available or no tmux session is running");
     }
-    // If UFOO_TMUX_SESSION not set, use first available session
-    if (!process.env.UFOO_TMUX_SESSION && stdout) {
+    let tmuxSession = String(
+      options.tmuxSession
+      || options.tmux_session
+      || process.env.UFOO_TMUX_SESSION
+      || ""
+    ).trim();
+    // If no request-scoped or inherited session was supplied, use the first
+    // available session locally without changing the daemon environment.
+    if (!tmuxSession && stdout) {
       const sessions = stdout.trim().split("\n");
       if (sessions.length > 0) {
-        const firstSession = sessions[0].split(":")[0];
-        process.env.UFOO_TMUX_SESSION = firstSession;
+        tmuxSession = String(sessions[0].split(":")[0] || "").trim();
       }
     }
-    const paneTarget = resolveTmuxPaneTarget();
+    const paneTarget = resolveTmuxPaneTarget(options);
     const useSeparateWindow = launchScope === "window";
     const tmuxLayoutContext = options.tmuxLayoutContext && typeof options.tmuxLayoutContext === "object"
       ? options.tmuxLayoutContext
@@ -1004,7 +1035,7 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
       const nick = count > 1 ? `${nickname || defaultNick}-${i + 1}` : (nickname || "");
       if (useSeparateWindow) {
         // eslint-disable-next-line no-await-in-loop
-        await spawnTmuxWindow(projectRoot, normalizedAgent, nick, extraArgs, extraEnvPrefix);
+        await spawnTmuxWindow(projectRoot, normalizedAgent, nick, extraArgs, extraEnvPrefix, tmuxSession);
       } else if (useGroupRightColumnLayout && paneTarget) {
         const basePane = String(tmuxLayoutContext.basePane || paneTarget).trim() || paneTarget;
         tmuxLayoutContext.basePane = basePane;
@@ -1021,7 +1052,7 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
         } catch {
           // Fallback to new window when current pane target cannot be resolved.
           // eslint-disable-next-line no-await-in-loop
-          await spawnTmuxWindow(projectRoot, normalizedAgent, nick, extraArgs, extraEnvPrefix);
+          await spawnTmuxWindow(projectRoot, normalizedAgent, nick, extraArgs, extraEnvPrefix, tmuxSession);
           continue;
         }
         if (!rightColumnPane && splitResult && splitResult.paneId) {
@@ -1037,7 +1068,7 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
         } catch {
           // Fallback to new window when current pane target cannot be resolved.
           // eslint-disable-next-line no-await-in-loop
-          await spawnTmuxWindow(projectRoot, normalizedAgent, nick, extraArgs, extraEnvPrefix);
+          await spawnTmuxWindow(projectRoot, normalizedAgent, nick, extraArgs, extraEnvPrefix, tmuxSession);
         }
       }
     }

@@ -5,6 +5,7 @@ const {
   saveConfig,
   loadConfig,
   normalizeAgentProvider,
+  normalizeDaemonTopology,
   normalizeControllerMode,
   normalizeMcpPort,
   normalizeCodexInternalThreadMode,
@@ -15,9 +16,54 @@ const {
   normalizeClaudeOauthRefreshWindowSec,
   defaultAgentModelForProvider,
   defaultRouterModelForProvider,
+  loadGlobalDaemonConfig,
+  saveGlobalDaemonConfig,
 } = require("../../src/config");
 
 describe("config save/load", () => {
+  test("daemon topology defaults to global and accepts staged rollback modes", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-config-topology-"));
+    fs.mkdirSync(path.join(projectRoot, ".ufoo"), { recursive: true });
+
+    expect(loadConfig(projectRoot).daemonTopology).toBe("global");
+    saveConfig(projectRoot, { daemonTopology: "hybrid" });
+    expect(loadConfig(projectRoot).daemonTopology).toBe("hybrid");
+    saveConfig(projectRoot, { daemonTopology: "global" });
+    expect(loadConfig(projectRoot).daemonTopology).toBe("global");
+    saveConfig(projectRoot, { daemonTopology: "unsupported" });
+    expect(loadConfig(projectRoot).daemonTopology).toBe("global");
+    expect(normalizeDaemonTopology(" HYBRID ")).toBe("hybrid");
+
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  test("partial project saves do not pin the machine-wide daemon topology", () => {
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-config-global-topology-"));
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-config-project-topology-"));
+    const homedirSpy = jest.spyOn(os, "homedir").mockReturnValue(fakeHome);
+
+    try {
+      expect(saveGlobalDaemonConfig({ daemonTopology: "hybrid" })).toEqual({
+        daemonTopology: "hybrid",
+      });
+      expect(loadGlobalDaemonConfig()).toEqual({ daemonTopology: "hybrid" });
+
+      saveConfig(projectRoot, { launchMode: "internal" });
+      const rawProjectConfig = JSON.parse(
+        fs.readFileSync(path.join(projectRoot, ".ufoo", "config.json"), "utf8")
+      );
+      expect(rawProjectConfig).not.toHaveProperty("daemonTopology");
+      expect(loadConfig(projectRoot).daemonTopology).toBe("hybrid");
+
+      saveConfig(projectRoot, { daemonTopology: "global" });
+      expect(loadConfig(projectRoot).daemonTopology).toBe("global");
+    } finally {
+      homedirSpy.mockRestore();
+      fs.rmSync(fakeHome, { recursive: true, force: true });
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
   test("saveConfig preserves existing fields on partial updates", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-config-"));
     fs.mkdirSync(path.join(projectRoot, ".ufoo"), { recursive: true });

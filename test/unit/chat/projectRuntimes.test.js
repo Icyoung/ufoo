@@ -52,17 +52,19 @@ describe("chat projectRuntimes", () => {
     expect(sorted.map((row) => row.project_root)).toEqual(["/tmp/b", "/tmp/a"]);
   });
 
-  test("filterVisibleProjectRuntimes keeps only running projects", () => {
+  test("filterVisibleProjectRuntimes keeps running and lazily activatable dormant projects", () => {
     const rows = [
       { project_name: "alpha", project_root: "/tmp/alpha", status: "running" },
       { project_name: "beta", project_root: "/tmp/beta", status: "stopped" },
       { project_name: "gamma", project_root: "/tmp/gamma", status: "stale" },
       { project_name: "delta", project_root: "/tmp/delta", status: "STOPPED" },
+      { project_name: "epsilon", project_root: "/tmp/epsilon", status: "dormant" },
     ];
 
     const visible = filterVisibleProjectRuntimes(rows);
     expect(visible.map((row) => row.project_root)).toEqual([
       "/tmp/alpha",
+      "/tmp/epsilon",
     ]);
   });
 });

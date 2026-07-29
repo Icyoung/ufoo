@@ -235,6 +235,23 @@ describe("daemon ops internal launch", () => {
     expect(agents[subscriberId].launch_mode).toBe("internal");
   });
 
+  test("internal launch keeps daemon identity env request-scoped", async () => {
+    writeConfig({ launchMode: "internal" });
+    const originalParentPid = process.env.UFOO_PARENT_PID;
+
+    const result = await launchAgent(projectRoot, "codex", 1, "worker", null, {
+      scopedNickname: "project-a/worker",
+    });
+    const subscriberId = result.subscriberIds[0];
+    const agents = JSON.parse(fs.readFileSync(getUfooPaths(projectRoot).agentsFile, "utf8")).agents;
+    const childEnv = spawn.mock.calls[0][2].env;
+
+    expect(process.env.UFOO_PARENT_PID).toBe(originalParentPid);
+    expect(childEnv.UFOO_PARENT_PID).toBe(String(process.pid));
+    expect(childEnv.UFOO_SCOPED_NICKNAME).toBe("project-a/worker");
+    expect(agents[subscriberId].scoped_nickname).toBe("project-a/worker");
+  });
+
   test("uses bus-generated numbered nickname for default internal codex launch", async () => {
     writeConfig({ launchMode: "internal" });
 
@@ -286,6 +303,8 @@ describe("daemon ops internal launch", () => {
 describe("daemon ops launch scope (tmux)", () => {
   const projectRoot = "/tmp/ufoo-daemon-launchscope-test";
   let tmuxPaneOriginal;
+  let tmuxSessionOriginal;
+  let tmuxTargetOriginal;
 
   function writeConfig(config) {
     const configPath = path.join(projectRoot, ".ufoo", "config.json");
@@ -299,6 +318,8 @@ describe("daemon ops launch scope (tmux)", () => {
     }
     fs.mkdirSync(projectRoot, { recursive: true });
     tmuxPaneOriginal = process.env.TMUX_PANE;
+    tmuxSessionOriginal = process.env.UFOO_TMUX_SESSION;
+    tmuxTargetOriginal = process.env.UFOO_TMUX_TARGET;
     process.env.TMUX_PANE = "%9";
     spawn.mockClear();
   });
@@ -311,6 +332,16 @@ describe("daemon ops launch scope (tmux)", () => {
       delete process.env.TMUX_PANE;
     } else {
       process.env.TMUX_PANE = tmuxPaneOriginal;
+    }
+    if (tmuxSessionOriginal === undefined) {
+      delete process.env.UFOO_TMUX_SESSION;
+    } else {
+      process.env.UFOO_TMUX_SESSION = tmuxSessionOriginal;
+    }
+    if (tmuxTargetOriginal === undefined) {
+      delete process.env.UFOO_TMUX_TARGET;
+    } else {
+      process.env.UFOO_TMUX_TARGET = tmuxTargetOriginal;
     }
   });
 
@@ -332,6 +363,40 @@ describe("daemon ops launch scope (tmux)", () => {
 
     const tmuxCalls = spawn.mock.calls.filter((call) => call[0] === "tmux");
     expect(tmuxCalls.some(([, args]) => Array.isArray(args) && args[0] === "new-window")).toBe(true);
+  });
+
+  test("selects the first tmux session without mutating daemon process env", async () => {
+    writeConfig({ launchMode: "tmux" });
+    delete process.env.UFOO_TMUX_SESSION;
+    spawn.mockImplementation((command, args = []) => {
+      if (command === "tmux" && Array.isArray(args) && args[0] === "list-sessions") {
+        return createMockProcess({ stdout: "project-a: 1 windows\nproject-b: 1 windows\n" });
+      }
+      return createMockProcess();
+    });
+
+    await launchAgent(projectRoot, "codex", 1, "", null, { launchScope: "window" });
+
+    const newWindowCall = spawn.mock.calls.find(
+      ([command, args]) => command === "tmux" && Array.isArray(args) && args[0] === "new-window"
+    );
+    expect(newWindowCall[1]).toEqual(expect.arrayContaining(["-t", "project-a"]));
+    expect(process.env.UFOO_TMUX_SESSION).toBeUndefined();
+  });
+
+  test("uses request-scoped tmux target ahead of daemon environment", async () => {
+    writeConfig({ launchMode: "auto" });
+    process.env.UFOO_TMUX_TARGET = "%server";
+
+    await launchAgent(projectRoot, "codex", 1, "", null, {
+      tmuxTarget: "%caller",
+      tmuxSession: "caller-session",
+    });
+
+    const splitCall = spawn.mock.calls.find(
+      ([command, args]) => command === "tmux" && Array.isArray(args) && args[0] === "split-window"
+    );
+    expect(splitCall[1]).toEqual(expect.arrayContaining(["-t", "%caller"]));
   });
 
   test("group tmux layout keeps chat on left and stacks agents in right column", async () => {
