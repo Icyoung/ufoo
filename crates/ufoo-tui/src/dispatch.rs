@@ -162,6 +162,14 @@ fn dispatch_host(state: &mut AppState, env: Envelope) -> Vec<Effect> {
         "welcome" => {
             state.connected = true;
             state.status = "ready".into();
+            if let Some(version) = env
+                .payload
+                .get("package_version")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.trim().is_empty())
+            {
+                state.package_version = version.trim().to_string();
+            }
             Vec::new()
         }
         "snapshot" | "event" => apply_named_payload(state, &env.name, &env.payload),
@@ -245,10 +253,7 @@ fn apply_named_payload(
                 state.apply_projects_payload(payload);
                 state.rebuild_footer();
             }
-            if let Some(loop_text) = payload
-                .get("loop_summary")
-                .and_then(|v| v.as_str())
-            {
+            if let Some(loop_text) = payload.get("loop_summary").and_then(|v| v.as_str()) {
                 state.loop_summary = loop_text.to_string();
                 state.rebuild_footer();
             }
@@ -261,8 +266,8 @@ fn apply_named_payload(
         }
         "transcript.append" => {
             state.flush_pending_delta();
-            if let Some(entry) = entry_from_json(payload)
-                .or_else(|| payload.get("entry").and_then(entry_from_json))
+            if let Some(entry) =
+                entry_from_json(payload).or_else(|| payload.get("entry").and_then(entry_from_json))
             {
                 state.append_entry(entry);
             }
@@ -431,11 +436,7 @@ fn apply_named_payload(
             let display = if !detail.is_empty()
                 && !summary.contains("Ctrl+O")
                 && (detail.lines().count() > 1
-                    || payload
-                        .get("count")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0)
-                        >= 2)
+                    || payload.get("count").and_then(|v| v.as_u64()).unwrap_or(0) >= 2)
             {
                 format!("{summary} (Ctrl+O expand)")
             } else {
@@ -549,8 +550,8 @@ fn apply_named_payload(
             Vec::new()
         }
         "agent.view.append" => {
-            if let Some(entry) = entry_from_json(payload)
-                .or_else(|| payload.get("entry").and_then(entry_from_json))
+            if let Some(entry) =
+                entry_from_json(payload).or_else(|| payload.get("entry").and_then(entry_from_json))
             {
                 state.append_entry(entry);
             }
@@ -591,10 +592,7 @@ fn apply_named_payload(
             Vec::new()
         }
         "prompt.apply_paste" => {
-            let text = payload
-                .get("text")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let text = payload.get("text").and_then(|v| v.as_str()).unwrap_or("");
             for ch in text.chars() {
                 if ch == '\r' {
                     continue;
@@ -609,10 +607,8 @@ fn apply_named_payload(
             maybe_request_completions(state)
         }
         "attachments.set" => {
-            state.attachment_count = payload
-                .get("count")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as usize;
+            state.attachment_count =
+                payload.get("count").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
             state.attachment_labels = payload
                 .get("labels")
                 .and_then(|v| v.as_array())
@@ -985,8 +981,16 @@ fn multi_viewport_effects(state: &mut AppState) -> Vec<Effect> {
     if !state.multi.active || state.multi.panes.is_empty() {
         return Vec::new();
     }
-    let term_cols = if state.multi.term_cols == 0 { 100 } else { state.multi.term_cols };
-    let term_rows = if state.multi.term_rows == 0 { 30 } else { state.multi.term_rows };
+    let term_cols = if state.multi.term_cols == 0 {
+        100
+    } else {
+        state.multi.term_cols
+    };
+    let term_rows = if state.multi.term_rows == 0 {
+        30
+    } else {
+        state.multi.term_rows
+    };
     // Reserve rows for chrome (project bar + status + prompt + footer + gutters).
     let content_h = term_rows.saturating_sub(6).max(3);
     let sizes = multi_agent_layout(term_cols, content_h, state.multi.panes.len());
@@ -1150,7 +1154,9 @@ fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
     match key.code {
         KeyCode::Tab => {
             state.focus = next_tab_focus(state);
-            if state.focus == FocusPane::Agents && state.selected_agent < 0 && !state.agents.is_empty()
+            if state.focus == FocusPane::Agents
+                && state.selected_agent < 0
+                && !state.agents.is_empty()
             {
                 state.selected_agent = 0;
             }
@@ -1255,10 +1261,7 @@ fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
                 Vec::new()
             } else if state.wants_completion_query() && !state.completions.is_empty() {
                 state.focus = FocusPane::Completions;
-                dispatch_completions(
-                    state,
-                    KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
-                )
+                dispatch_completions(state, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
             } else if state.prompt.move_up_line() {
                 Vec::new()
             } else {
@@ -1276,10 +1279,7 @@ fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
                 Vec::new()
             } else if state.wants_completion_query() && !state.completions.is_empty() {
                 state.focus = FocusPane::Completions;
-                dispatch_completions(
-                    state,
-                    KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
-                )
+                dispatch_completions(state, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
             } else if state.prompt.move_down_line() {
                 Vec::new()
             } else if state.prompt.text.is_empty() {
@@ -1315,31 +1315,29 @@ fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             }
             Vec::new()
         }
-        KeyCode::Char(ch) if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            match ch {
-                'a' | 'A' => {
-                    state.prompt.move_line_start();
-                    Vec::new()
-                }
-                'e' | 'E' => {
-                    state.prompt.move_line_end();
-                    Vec::new()
-                }
-                'w' | 'W' => {
-                    state.prompt.kill_word_back();
-                    maybe_request_completions(state)
-                }
-                'u' | 'U' => {
-                    state.prompt.kill_to_line_start();
-                    maybe_request_completions(state)
-                }
-                'k' | 'K' => {
-                    state.prompt.kill_to_line_end();
-                    maybe_request_completions(state)
-                }
-                _ => Vec::new(),
+        KeyCode::Char(ch) if key.modifiers.contains(KeyModifiers::CONTROL) => match ch {
+            'a' | 'A' => {
+                state.prompt.move_line_start();
+                Vec::new()
             }
-        }
+            'e' | 'E' => {
+                state.prompt.move_line_end();
+                Vec::new()
+            }
+            'w' | 'W' => {
+                state.prompt.kill_word_back();
+                maybe_request_completions(state)
+            }
+            'u' | 'U' => {
+                state.prompt.kill_to_line_start();
+                maybe_request_completions(state)
+            }
+            'k' | 'K' => {
+                state.prompt.kill_to_line_end();
+                maybe_request_completions(state)
+            }
+            _ => Vec::new(),
+        },
         KeyCode::Char(ch) => {
             state.prompt.insert_char(ch);
             state.completion_suppressed = None;
@@ -1801,7 +1799,10 @@ fn dispatch_projects(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
         }
         KeyCode::Tab => {
             state.focus = next_tab_focus(state);
-            if state.focus == FocusPane::Agents && state.selected_agent < 0 && !state.agents.is_empty() {
+            if state.focus == FocusPane::Agents
+                && state.selected_agent < 0
+                && !state.agents.is_empty()
+            {
                 state.selected_agent = 0;
             }
             state.rebuild_footer();
@@ -1826,7 +1827,11 @@ fn dispatch_projects(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             Vec::new()
         }
         KeyCode::Enter => {
-            if let Some(project) = state.projects.get(state.selected_project.max(0) as usize).cloned() {
+            if let Some(project) = state
+                .projects
+                .get(state.selected_project.max(0) as usize)
+                .cloned()
+            {
                 state.focus = FocusPane::Input;
                 state.rebuild_footer();
                 return vec![Effect::SendCommand {
@@ -1838,7 +1843,11 @@ fn dispatch_projects(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             Vec::new()
         }
         KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            if let Some(project) = state.projects.get(state.selected_project.max(0) as usize).cloned() {
+            if let Some(project) = state
+                .projects
+                .get(state.selected_project.max(0) as usize)
+                .cloned()
+            {
                 return vec![Effect::SendCommand {
                     name: "project.close".into(),
                     request_id: state.alloc_request_id(),
@@ -2021,7 +2030,9 @@ fn dispatch_agent_view(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
                             request_id: state.alloc_request_id(),
                             payload: json!({ "agent_id": id }),
                         });
-                    } else if state.agent_bar_index >= bar_len.saturating_sub(1) && state.agent_bar_index > 0 {
+                    } else if state.agent_bar_index >= bar_len.saturating_sub(1)
+                        && state.agent_bar_index > 0
+                    {
                         state.agent_bar_index -= 1;
                         state.rebuild_footer();
                     }
@@ -2213,9 +2224,7 @@ fn dispatch_multi_key(state: &mut AppState, key: KeyEvent) -> Option<Vec<Effect>
     }
 
     // Agent-focused: encode as raw bytes and ship to Node.
-    if matches!(state.multi.focus, MultiFocus::Agent)
-        && !state.multi.focus_agent_id.is_empty()
-    {
+    if matches!(state.multi.focus, MultiFocus::Agent) && !state.multi.focus_agent_id.is_empty() {
         if let Some(bytes) = encode_key_to_raw(key) {
             let session_id = state.multi.session_id.clone();
             let agent_id = state.multi.focus_agent_id.clone();
@@ -2271,9 +2280,7 @@ fn cycle_multi_focus(state: &mut AppState) -> Vec<Effect> {
     }
 
     let (next_focus, next_agent) = match state.multi.focus {
-        MultiFocus::Chat if !panes.is_empty() => {
-            (MultiFocus::Agent, panes[0].agent_id.clone())
-        }
+        MultiFocus::Chat if !panes.is_empty() => (MultiFocus::Agent, panes[0].agent_id.clone()),
         MultiFocus::Agent => {
             // Unknown / stale agent id: jump back to chat instead of getting
             // stuck on panes[1] forever (unwrap_or(0) + next=1 with N>=2).
@@ -2293,8 +2300,7 @@ fn cycle_multi_focus(state: &mut AppState) -> Vec<Effect> {
     state.multi.focus_agent_id = next_agent.clone();
     if matches!(next_focus, MultiFocus::Chat) {
         state.focus = FocusPane::Input;
-        state.multi.suppress_agent_focus_until =
-            Some(Instant::now() + Duration::from_millis(200));
+        state.multi.suppress_agent_focus_until = Some(Instant::now() + Duration::from_millis(200));
     } else {
         state.multi.suppress_agent_focus_until = None;
     }
@@ -2397,5 +2403,30 @@ fn scroll_by(state: &mut AppState, lines: isize) {
     state.scroll_offset = state.scroll_offset.saturating_sub(down);
     if state.scroll_offset == 0 {
         state.follow_tail = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::PROTOCOL;
+
+    #[test]
+    fn welcome_uses_host_package_version_for_ui_chrome() {
+        let mut state = AppState::new("ufoo", "chat");
+        dispatch(
+            &mut state,
+            Action::Host(Envelope {
+                protocol: PROTOCOL.into(),
+                kind: "welcome".into(),
+                name: String::new(),
+                request_id: None,
+                seq: None,
+                payload: json!({ "package_version": "3.0.23" }),
+            }),
+        );
+
+        assert_eq!(state.package_version, "3.0.23");
+        assert!(state.connected);
     }
 }

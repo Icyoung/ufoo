@@ -420,6 +420,7 @@ pub struct PendingDelta {
 pub struct AppState {
     pub title: String,
     pub surface: String,
+    pub package_version: String,
     pub entries: VecDeque<ScrollbackEntry>,
     pub scrollback_cap: usize,
     pub prompt: PromptState,
@@ -481,6 +482,7 @@ impl AppState {
         Self {
             title: title.into(),
             surface: surface.into(),
+            package_version: crate::protocol::BINARY_VERSION.into(),
             entries: VecDeque::new(),
             scrollback_cap: DEFAULT_SCROLLBACK_CAP,
             prompt: PromptState::default(),
@@ -619,7 +621,8 @@ impl AppState {
         match self.pending_delta.as_mut() {
             Some(pending) if pending.id == id => {
                 pending.text.push_str(text);
-                if now.duration_since(pending.last_flush) >= Duration::from_millis(STREAM_COALESCE_MS)
+                if now.duration_since(pending.last_flush)
+                    >= Duration::from_millis(STREAM_COALESCE_MS)
                 {
                     let flush = pending.text.clone();
                     pending.text.clear();
@@ -677,7 +680,10 @@ impl AppState {
                     }
                 })
                 .collect();
-            self.footer = format!("Mode: {} · ←/→ · ↓ provider · ↑ cron · esc", parts.join(" · "));
+            self.footer = format!(
+                "Mode: {} · ←/→ · ↓ provider · ↑ cron · esc",
+                parts.join(" · ")
+            );
             return;
         }
         if self.focus == FocusPane::Provider {
@@ -824,10 +830,7 @@ impl AppState {
             .get("global_mode")
             .and_then(|v| v.as_bool())
             .unwrap_or(self.global_mode);
-        if let Some(root) = payload
-            .get("controller_root")
-            .and_then(|v| v.as_str())
-        {
+        if let Some(root) = payload.get("controller_root").and_then(|v| v.as_str()) {
             self.controller_root = root.to_string();
         }
         if let Some(root) = payload.get("active_root").and_then(|v| v.as_str()) {
@@ -872,9 +875,7 @@ impl AppState {
                     })
                 })
                 .collect();
-            if self.selected_project < 0
-                || self.selected_project >= self.projects.len() as isize
-            {
+            if self.selected_project < 0 || self.selected_project >= self.projects.len() as isize {
                 self.selected_project = self
                     .projects
                     .iter()
@@ -917,10 +918,7 @@ impl AppState {
                 self.selected_cron = if self.cron_tasks.is_empty() { -1 } else { 0 };
             }
         }
-        if let Some(loop_text) = payload
-            .get("loop_summary")
-            .and_then(|v| v.as_str())
-        {
+        if let Some(loop_text) = payload.get("loop_summary").and_then(|v| v.as_str()) {
             self.loop_summary = loop_text.to_string();
         } else if payload.get("loop").is_some() {
             // Host may send structured loop; prefer preformatted loop_summary.

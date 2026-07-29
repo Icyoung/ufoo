@@ -17,7 +17,9 @@ pub fn draw(frame: &mut Frame, state: &mut AppState) -> Option<(u16, u16)> {
     let area = frame.area();
     let project_h = if state.show_project_bar() { 1 } else { 0 };
     let completion_h = if state.focus == FocusPane::Completions && !state.completions.is_empty() {
-        (state.completions.len().min(8) as u16).saturating_add(2).max(3)
+        (state.completions.len().min(8) as u16)
+            .saturating_add(2)
+            .max(3)
     } else {
         0
     };
@@ -34,7 +36,11 @@ pub fn draw(frame: &mut Frame, state: &mut AppState) -> Option<(u16, u16)> {
             (n as u16).clamp(1, 6)
         })
         .unwrap_or(0);
-    let attach_h = if state.attachment_labels.is_empty() { 0 } else { 1 };
+    let attach_h = if state.attachment_labels.is_empty() {
+        0
+    } else {
+        1
+    };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -303,10 +309,7 @@ fn build_scrollback_lines(state: &AppState, width: usize) -> Vec<Line<'static>> 
             out.push(Line::from(""));
         }
         let mut body = if entry.kind == "tool" && entry.expanded && !entry.detail.is_empty() {
-            let summary = entry
-                .text
-                .trim_end_matches(" (Ctrl+O expand)")
-                .to_string();
+            let summary = entry.text.trim_end_matches(" (Ctrl+O expand)").to_string();
             format!("{summary}\n{}", entry.detail)
         } else {
             entry.text.clone()
@@ -471,10 +474,7 @@ fn draw_plan_band(frame: &mut Frame, area: Rect, state: &AppState) {
                     }
                 }
             }
-            Line::from(Span::styled(
-                painted,
-                Style::default().fg(Color::Magenta),
-            ))
+            Line::from(Span::styled(painted, Style::default().fg(Color::Magenta)))
         })
         .collect();
     let paragraph = Paragraph::new(lines);
@@ -486,11 +486,7 @@ fn draw_interaction_band(frame: &mut Frame, area: Rect, state: &AppState) {
         return;
     };
     let source: Vec<String> = if interaction.lines.is_empty() {
-        vec![format!(
-            "{}: {}",
-            interaction.kind,
-            interaction.prompt
-        )]
+        vec![format!("{}: {}", interaction.kind, interaction.prompt)]
     } else {
         interaction.lines.clone()
     };
@@ -669,7 +665,9 @@ fn draw_prompt(frame: &mut Frame, area: Rect, state: &AppState) -> Option<(u16, 
     let vis_row = caret_row.saturating_sub(start_row) as u16;
     let col = (caret_col as u16).min(inner.width.saturating_sub(1));
     let x = inner.x.saturating_add(col);
-    let y = inner.y.saturating_add(vis_row.min(inner.height.saturating_sub(1)));
+    let y = inner
+        .y
+        .saturating_add(vis_row.min(inner.height.saturating_sub(1)));
     // Keep IME preedit inside the prompt inner area — never past status/footer.
     let max_x = inner.x.saturating_add(inner.width.saturating_sub(1));
     let max_y = inner.y.saturating_add(inner.height.saturating_sub(1));
@@ -707,7 +705,7 @@ fn draw_status(frame: &mut Frame, area: Rect, state: &AppState) {
     } else {
         format!(" | {}", state.loop_summary)
     };
-    let version = format!("v{}", crate::protocol::BINARY_VERSION);
+    let version = display_version(state);
     let left = format!(
         "{spin}{status}{elapsed}{ask}{loop_bit}",
         status = if state.status.is_empty() {
@@ -717,7 +715,9 @@ fn draw_status(frame: &mut Frame, area: Rect, state: &AppState) {
         }
     );
     let version_w = version.width() as u16;
-    let gap = area.width.saturating_sub(1 + left.width() as u16 + version_w);
+    let gap = area
+        .width
+        .saturating_sub(1 + left.width() as u16 + version_w);
     let mut spans = vec![Span::styled(
         format!(" {left}"),
         Style::default().fg(Color::DarkGray),
@@ -728,6 +728,10 @@ fn draw_status(frame: &mut Frame, area: Rect, state: &AppState) {
     spans.push(Span::styled(version, Style::default().fg(Color::DarkGray)));
     let paragraph = Paragraph::new(Line::from(spans));
     frame.render_widget(paragraph, area);
+}
+
+fn display_version(state: &AppState) -> String {
+    format!("v{}", state.package_version)
 }
 
 /// Split the content area horizontally: ~1/3 chat scrollback on the left,
@@ -748,23 +752,27 @@ fn draw_multi_content(frame: &mut Frame, area: Rect, state: &mut AppState) {
     if right_w < 4 || area.height < 3 {
         return;
     }
-    let panes = layout_agent_panes(right_left, area.y, right_w, area.height, state.multi.panes.len());
+    let panes = layout_agent_panes(
+        right_left,
+        area.y,
+        right_w,
+        area.height,
+        state.multi.panes.len(),
+    );
     for (i, pane_area) in panes.iter().enumerate() {
-        let Some(desc) = state.multi.panes.get(i) else { continue };
+        let Some(desc) = state.multi.panes.get(i) else {
+            continue;
+        };
         let focused = matches!(state.multi.focus, MultiFocus::Agent)
             && state.multi.focus_agent_id == desc.agent_id;
         draw_multi_pane(frame, *pane_area, state, i, focused);
     }
 }
 
-fn draw_multi_pane(
-    frame: &mut Frame,
-    area: Rect,
-    state: &AppState,
-    idx: usize,
-    focused: bool,
-) {
-    let Some(desc) = state.multi.panes.get(idx) else { return };
+fn draw_multi_pane(frame: &mut Frame, area: Rect, state: &AppState, idx: usize, focused: bool) {
+    let Some(desc) = state.multi.panes.get(idx) else {
+        return;
+    };
     let title = format!(" {} ", desc.label);
     let border_style = if focused {
         Style::default()
@@ -810,19 +818,18 @@ fn draw_multi_pane(
             }
             if frame_state.mode == "internal" && !frame_state.input.is_empty() {
                 out.push(Line::from(vec![
-                    Span::styled(
-                        "› ".to_string(),
-                        Style::default().fg(Color::Magenta),
-                    ),
+                    Span::styled("› ".to_string(), Style::default().fg(Color::Magenta)),
                     Span::raw(frame_state.input.clone()),
                 ]));
             }
             out
         })
-        .unwrap_or_else(|| vec![Line::from(Span::styled(
-            "(waiting for frame…)",
-            Style::default().fg(Color::DarkGray),
-        ))]);
+        .unwrap_or_else(|| {
+            vec![Line::from(Span::styled(
+                "(waiting for frame…)",
+                Style::default().fg(Color::DarkGray),
+            ))]
+        });
 
     let take = (inner.height as usize).max(1);
     let visible = if lines.len() > take {
@@ -841,13 +848,28 @@ fn layout_agent_panes(left: u16, top: u16, width: u16, height: u16, count: usize
         return Vec::new();
     }
     if count == 1 {
-        return vec![Rect { x: left, y: top, width, height }];
+        return vec![Rect {
+            x: left,
+            y: top,
+            width,
+            height,
+        }];
     }
     if count == 2 {
         let h1 = height / 2;
         return vec![
-            Rect { x: left, y: top, width, height: h1 },
-            Rect { x: left, y: top + h1, width, height: height - h1 },
+            Rect {
+                x: left,
+                y: top,
+                width,
+                height: h1,
+            },
+            Rect {
+                x: left,
+                y: top + h1,
+                width,
+                height: height - h1,
+            },
         ];
     }
     let row_count = ((count as u16) + 1) / 2;
@@ -857,11 +879,20 @@ fn layout_agent_panes(left: u16, top: u16, width: u16, height: u16, count: usize
     for row in 0..row_count {
         let row_top = top + row * row_h;
         let last_row = row == row_count - 1;
-        let actual_h = if last_row { height - row * row_h } else { row_h };
+        let actual_h = if last_row {
+            height - row * row_h
+        } else {
+            row_h
+        };
         let remaining = count - placed;
         let is_odd = remaining % 2 == 1 && row == 0 && count % 2 == 1;
         if is_odd {
-            out.push(Rect { x: left, y: row_top, width, height: actual_h });
+            out.push(Rect {
+                x: left,
+                y: row_top,
+                width,
+                height: actual_h,
+            });
             placed += 1;
         } else {
             let half_w = width / 2;
@@ -914,4 +945,17 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &AppState) {
     };
     let paragraph = Paragraph::new(format!(" {text} ")).style(style);
     frame.render_widget(paragraph, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_version_uses_host_package_version() {
+        let mut state = AppState::new("ufoo", "chat");
+        state.package_version = "3.0.23".into();
+
+        assert_eq!(display_version(&state), "v3.0.23");
+    }
 }

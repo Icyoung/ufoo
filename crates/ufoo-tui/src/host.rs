@@ -44,8 +44,8 @@ impl HostClient {
         stream.set_read_timeout(Some(Duration::from_secs(5)))?;
         let mut reader = BufReader::new(stream);
 
-        match protocol::read_envelope_line(&mut reader)? {
-            Some(welcome) if welcome.protocol == PROTOCOL && welcome.kind == "welcome" => {}
+        let welcome = match protocol::read_envelope_line(&mut reader)? {
+            Some(welcome) if welcome.protocol == PROTOCOL && welcome.kind == "welcome" => welcome,
             Some(other) if other.kind == "error" => {
                 let msg = other
                     .payload
@@ -69,12 +69,15 @@ impl HostClient {
                     "empty welcome",
                 ));
             }
-        }
+        };
         // Clear handshake timeout on the underlying stream via writer clone;
         // reader owns the original fd.
         let _ = writer_stream.set_read_timeout(None);
 
         let (tx, rx) = mpsc::channel();
+        // The welcome envelope carries the npm package version. Preserve it
+        // for AppState instead of consuming it only as a transport handshake.
+        let _ = tx.send(HostEvent::Envelope(welcome));
         thread::Builder::new()
             .name("ufoo-ui-reader".into())
             .spawn(move || reader_loop(reader, tx))
