@@ -18,12 +18,16 @@ const {
 } = require("./endpoint");
 const { IPC_REQUEST_TYPES } = require("../contracts/eventContract");
 const {
+  MCP_WAIT_FOR_MESSAGE_DEFAULT_TIMEOUT_SECONDS,
+  MCP_WAIT_FOR_MESSAGE_MAX_TIMEOUT_SECONDS,
+} = require("../contracts/mcpContract");
+const {
   applyProjectNicknamePrefix,
   checkAndCleanupNickname,
 } = require("./nicknameScope");
 
-const WAIT_FOR_MESSAGE_DEFAULT_TIMEOUT_SECONDS = 600;
-const WAIT_FOR_MESSAGE_MAX_TIMEOUT_SECONDS = 600;
+const WAIT_FOR_MESSAGE_DEFAULT_TIMEOUT_SECONDS = MCP_WAIT_FOR_MESSAGE_DEFAULT_TIMEOUT_SECONDS;
+const WAIT_FOR_MESSAGE_MAX_TIMEOUT_SECONDS = MCP_WAIT_FOR_MESSAGE_MAX_TIMEOUT_SECONDS;
 const WAIT_FOR_MESSAGE_POLL_INTERVAL_MS = 1000;
 const WAIT_FOR_MESSAGE_HEARTBEAT_INTERVAL_MS = 15000;
 const MCP_AGENT_LEASE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -447,11 +451,12 @@ function normalizeWaitForMessageArgs(args = {}) {
   const timeoutSeconds = Number(rawTimeout);
   if (
     !Number.isFinite(timeoutSeconds)
-    || timeoutSeconds < 1
+    || timeoutSeconds < 0
+    || (timeoutSeconds > 0 && timeoutSeconds < 1)
     || timeoutSeconds > WAIT_FOR_MESSAGE_MAX_TIMEOUT_SECONDS
   ) {
     const err = new Error(
-      `wait_for_message timeout_seconds must be between 1 and ${WAIT_FOR_MESSAGE_MAX_TIMEOUT_SECONDS}`
+      `wait_for_message timeout_seconds must be 0 (until message) or between 1 and ${WAIT_FOR_MESSAGE_MAX_TIMEOUT_SECONDS}`
     );
     err.code = "invalid_timeout";
     throw err;
@@ -503,7 +508,7 @@ async function waitForMessage(projectRoot, args = {}, options = {}) {
     1000,
     Number(options.heartbeatIntervalMs) || WAIT_FOR_MESSAGE_HEARTBEAT_INTERVAL_MS
   );
-  const timeoutMs = timeoutSeconds * 1000;
+  const timeoutMs = timeoutSeconds > 0 ? timeoutSeconds * 1000 : null;
 
   const bus = ensureBusLoaded(projectRoot);
   touchWaitingSubscriber(bus, subscriber, args);
@@ -516,7 +521,7 @@ async function waitForMessage(projectRoot, args = {}, options = {}) {
   process.once("exit", cleanupLease);
 
   const startedAt = now();
-  const deadline = startedAt + timeoutMs;
+  const deadline = timeoutMs == null ? null : startedAt + timeoutMs;
   let nextHeartbeatAt = startedAt + heartbeatIntervalMs;
 
   try {
@@ -548,7 +553,7 @@ async function waitForMessage(projectRoot, args = {}, options = {}) {
       }
 
       const current = now();
-      if (current >= deadline) {
+      if (deadline != null && current >= deadline) {
         touchWaitingSubscriber(bus, subscriber, args);
         return {
           ok: true,
@@ -570,7 +575,9 @@ async function waitForMessage(projectRoot, args = {}, options = {}) {
         nextHeartbeatAt = current + heartbeatIntervalMs;
       }
 
-      const delayMs = Math.max(1, Math.min(pollIntervalMs, deadline - current));
+      const delayMs = deadline == null
+        ? pollIntervalMs
+        : Math.max(1, Math.min(pollIntervalMs, deadline - current));
       // eslint-disable-next-line no-await-in-loop
       await sleep(delayMs, signal);
     }

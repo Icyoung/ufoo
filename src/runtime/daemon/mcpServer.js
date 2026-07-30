@@ -25,6 +25,8 @@ const {
 const { CALLER_TIERS } = require("../../tools/types");
 const {
   MCP_PROTOCOL_VERSION,
+  MCP_WAIT_FOR_MESSAGE_DEFAULT_TIMEOUT_SECONDS,
+  MCP_WAIT_FOR_MESSAGE_MAX_TIMEOUT_SECONDS,
   MCP_ERROR_CODES,
   createJsonRpcResult,
   createJsonRpcError,
@@ -153,11 +155,16 @@ const CUSTOM_TOOL_DEFINITIONS = Object.freeze([
           description: "Return only messages with a sequence greater than this cursor.",
         },
         timeout_seconds: {
-          type: "number",
-          minimum: 1,
-          maximum: 600,
-          default: 600,
-          description: "Keep the tool call pending for at most this many seconds.",
+          anyOf: [
+            { const: 0 },
+            {
+              type: "number",
+              minimum: 1,
+              maximum: MCP_WAIT_FOR_MESSAGE_MAX_TIMEOUT_SECONDS,
+            },
+          ],
+          default: MCP_WAIT_FOR_MESSAGE_DEFAULT_TIMEOUT_SECONDS,
+          description: "Use 0 to wait until a message arrives or the call is cancelled. Positive values enable a bounded diagnostic wait.",
         },
         limit: { type: "integer", minimum: 1, maximum: 100, default: 50 },
       },
@@ -643,8 +650,8 @@ class UfooMcpServer {
             toolCallId: id,
             signal: abortController.signal,
           });
-          // A long-lived wait must not hold the process-global console shim for
-          // up to ten minutes while unrelated MCP calls continue concurrently.
+          // A long-lived wait must not hold the process-global console shim
+          // while unrelated MCP calls continue concurrently.
           result = name === "wait_for_message"
             ? await runTool()
             : await suppressConsoleToStderr(runTool);

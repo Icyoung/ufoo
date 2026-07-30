@@ -85,6 +85,207 @@ describe("DeliveryScheduler", () => {
     expect(queue.claimNext).not.toHaveBeenCalled();
   });
 
+  test("forces wrapper injection after the oldest message waits five minutes", async () => {
+    const now = Date.parse("2026-01-01T00:05:00.001Z");
+    const event = {
+      seq: 7,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      event: "message",
+      publisher: "ufoo-agent",
+      data: { message: "timeout fallback" },
+    };
+    const queue = makeQueue(event);
+    queue.readPending.mockReturnValue([event]);
+    const injector = { inject: jest.fn().mockResolvedValue(undefined) };
+    const log = jest.fn();
+    const scheduler = new DeliveryScheduler("/tmp/project", {
+      injector,
+      queueFactory: () => queue,
+      readAgents: () => ({
+        agents: {
+          "codex:stale": {
+            status: "active",
+            activity_state: "starting",
+            launch_mode: "terminal",
+          },
+        },
+      }),
+      log,
+      now: () => now,
+      forceDeliveryAfterMs: 5 * 60 * 1000,
+    });
+
+    const result = await scheduler.deliverSubscriber("codex:stale");
+
+    expect(result).toEqual(expect.objectContaining({ ok: true, delivered: 1 }));
+    expect(injector.inject).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining(
+      "delivery queue timeout override subscriber=codex:stale activity_state=starting seq=7"
+    ));
+    expect(scheduler.pendingSeen.size).toBe(0);
+    expect(scheduler.forceWarned.size).toBe(0);
+  });
+
+  test("does not force wrapper injection before the five-minute timeout", async () => {
+    const now = Date.parse("2026-01-01T00:04:59.999Z");
+    const event = {
+      seq: 8,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      event: "message",
+      data: { message: "still waiting" },
+    };
+    const queue = makeQueue(event);
+    queue.readPending.mockReturnValue([event]);
+    const injector = { inject: jest.fn() };
+    const scheduler = new DeliveryScheduler("/tmp/project", {
+      injector,
+      queueFactory: () => queue,
+      readAgents: () => ({
+        agents: {
+          "codex:busy": {
+            status: "active",
+            activity_state: "working",
+            launch_mode: "terminal",
+          },
+        },
+      }),
+      now: () => now,
+      forceDeliveryAfterMs: 5 * 60 * 1000,
+    });
+
+    const result = await scheduler.deliverSubscriber("codex:busy");
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: true,
+      delivered: 0,
+      deferred: true,
+      reason: "working",
+    }));
+    expect(injector.inject).not.toHaveBeenCalled();
+    expect(queue.claimNext).not.toHaveBeenCalled();
+  });
+
+  test("backs off after a forced injection fails instead of retrying every tick", async () => {
+    let now = Date.parse("2026-01-01T00:05:01.000Z");
+    const event = {
+      seq: 10,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      event: "message",
+      data: { message: "retry with backoff" },
+    };
+    const queue = makeQueue(event);
+    queue.readPending.mockReturnValue([event]);
+    const injector = { inject: jest.fn().mockRejectedValue(new Error("host unavailable")) };
+    const scheduler = new DeliveryScheduler("/tmp/project", {
+      injector,
+      queueFactory: () => queue,
+      readAgents: () => ({
+        agents: {
+          "codex:stale": {
+            status: "active",
+            activity_state: "starting",
+            launch_mode: "terminal",
+          },
+        },
+      }),
+      now: () => now,
+      forceDeliveryAfterMs: 5 * 60 * 1000,
+      forceRetryBaseMs: 5000,
+      forceRetryMaxMs: 60000,
+    });
+
+    const first = await scheduler.deliverSubscriber("codex:stale");
+    const deferred = await scheduler.deliverSubscriber("codex:stale");
+
+    expect(first).toEqual(expect.objectContaining({ ok: false, reason: "inject_failed" }));
+    expect(deferred).toEqual(expect.objectContaining({
+      ok: true,
+      deferred: true,
+      reason: "force_retry_backoff",
+    }));
+    expect(injector.inject).toHaveBeenCalledTimes(1);
+    expect(queue.claimNext).toHaveBeenCalledTimes(1);
+
+    now += 5000;
+    await scheduler.deliverSubscriber("codex:stale");
+    expect(injector.inject).toHaveBeenCalledTimes(2);
+  });
+
+  test("cleans timeout tracking when a queued event disappears", () => {
+    const event = {
+      seq: 11,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      event: "message",
+      data: { message: "removed" },
+    };
+    const queue = makeQueue(event);
+    queue.readPending.mockReturnValueOnce([event]).mockReturnValue([]);
+    const scheduler = new DeliveryScheduler("/tmp/project", {
+      queueFactory: () => queue,
+      readAgents: () => ({
+        agents: {
+          "codex:stale": {
+            status: "active",
+            activity_state: "starting",
+            launch_mode: "terminal",
+          },
+        },
+      }),
+      now: () => Date.parse("2026-01-01T00:10:00.000Z"),
+      forceDeliveryAfterMs: 5 * 60 * 1000,
+    });
+
+    scheduler.resolveGate("codex:stale", queue);
+    expect(scheduler.pendingSeen.size).toBe(1);
+    expect(scheduler.forceWarned.size).toBe(1);
+
+    expect(scheduler.listPendingSubscribers()).toEqual([]);
+    expect(scheduler.pendingSeen.size).toBe(0);
+    expect(scheduler.forceWarned.size).toBe(0);
+    expect(scheduler.forceRetries.size).toBe(0);
+  });
+
+  test("never direct-injects an MCP Agent even when its message is old", async () => {
+    const now = Date.parse("2026-01-01T01:00:00.000Z");
+    const event = {
+      seq: 9,
+      timestamp: "2026-01-01T00:00:00.000Z",
+      event: "message",
+      data: { message: "external receive" },
+    };
+    const queue = makeQueue(event);
+    queue.readPending.mockReturnValue([event]);
+    const injector = { inject: jest.fn() };
+    const scheduler = new DeliveryScheduler("/tmp/project", {
+      injector,
+      queueFactory: () => queue,
+      readAgents: () => ({
+        agents: {
+          "codex:external": {
+            status: "active",
+            activity_state: "ready",
+            launch_mode: "external-mcp",
+            mcp_bridge: true,
+          },
+        },
+      }),
+      now: () => now,
+      forceDeliveryAfterMs: 5 * 60 * 1000,
+    });
+
+    const result = await scheduler.deliverSubscriber("codex:external");
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: true,
+      delivered: 0,
+      deferred: true,
+      reason: "external_receive",
+    }));
+    expect(injector.inject).not.toHaveBeenCalled();
+    expect(queue.claimNext).not.toHaveBeenCalled();
+    expect(scheduler.listPendingSubscribers()).toEqual([]);
+  });
+
   test("missing launch mode leaves queue untouched", async () => {
     const queue = makeQueue({
       seq: 1,

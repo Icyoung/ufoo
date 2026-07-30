@@ -232,7 +232,6 @@ describe("global MCP Streamable HTTP server", () => {
               project_root: root,
               subscriber: "codex:cancel",
               agent_handle: "cancel-handle",
-              timeout_seconds: 600,
             },
           },
         }),

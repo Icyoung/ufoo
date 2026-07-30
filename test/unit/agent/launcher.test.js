@@ -231,9 +231,12 @@ describe("_injectPtyCommand", () => {
 
 describe("_spawnDirect host notification", () => {
   afterEach(() => {
+    jest.useRealTimers();
     jest.resetModules();
     jest.clearAllMocks();
     delete process.env.UFOO_HOST_SESSION_ID;
+    delete process.env.UFOO_HOST_INJECT_SOCK;
+    delete process.env.UFOO_LAUNCH_MODE;
   });
 
   it("notifies daemon when host launches without PTY", async () => {
@@ -282,5 +285,87 @@ describe("_spawnDirect host notification", () => {
       agentPid: 2468,
       project_root: "/tmp/ufoo-host-project",
     });
+  });
+
+  it("marks a direct-spawn notifier ready only after the host snapshot shows a prompt", async () => {
+    jest.useFakeTimers();
+    const child = new EventEmitter();
+    child.pid = 2468;
+    child.on = child.on.bind(child);
+    const spawnMock = jest.fn(() => child);
+    let TestAgentLauncher;
+
+    jest.isolateModules(() => {
+      jest.doMock("child_process", () => ({
+        spawn: spawnMock,
+        spawnSync: jest.fn(),
+      }));
+      TestAgentLauncher = require("../../../src/agents/launch/launcher");
+    });
+
+    const notifier = {
+      markLauncherReady: jest.fn(),
+      updateActivityState: jest.fn(),
+    };
+    const requestSnapshot = jest.fn()
+      .mockResolvedValueOnce({ lines: ["Codex is starting"] })
+      .mockResolvedValueOnce({ lines: ["\u001b[32m›\u001b[0m "] });
+    process.env.UFOO_HOST_SESSION_ID = "HS-1";
+    process.env.UFOO_HOST_INJECT_SOCK = "/tmp/horizon-inject.sock";
+    process.env.UFOO_LAUNCH_MODE = "host";
+    const launcher = new TestAgentLauncher("codex", "codex");
+    launcher.cwd = "/tmp/ufoo-direct-project";
+    launcher._spawnDirect(["--help"], "codex:test123", {
+      notifier,
+      requestSnapshot,
+      readyPollIntervalMs: 1000,
+    });
+
+    await jest.advanceTimersByTimeAsync(0);
+    expect(requestSnapshot).toHaveBeenCalledTimes(1);
+    expect(notifier.markLauncherReady).not.toHaveBeenCalled();
+    expect(notifier.updateActivityState).not.toHaveBeenCalled();
+
+    await jest.advanceTimersByTimeAsync(1000);
+    await Promise.resolve();
+    expect(requestSnapshot).toHaveBeenCalledTimes(2);
+    expect(notifier.markLauncherReady).toHaveBeenCalledTimes(1);
+    expect(notifier.updateActivityState).toHaveBeenCalledWith("ready");
+  });
+
+  it("does not manufacture readiness when host snapshots are unavailable", async () => {
+    jest.useFakeTimers();
+    const child = new EventEmitter();
+    child.pid = 2468;
+    child.on = child.on.bind(child);
+    let TestAgentLauncher;
+
+    jest.isolateModules(() => {
+      jest.doMock("child_process", () => ({
+        spawn: jest.fn(() => child),
+        spawnSync: jest.fn(),
+      }));
+      TestAgentLauncher = require("../../../src/agents/launch/launcher");
+    });
+
+    const notifier = {
+      markLauncherReady: jest.fn(),
+      updateActivityState: jest.fn(),
+    };
+    process.env.UFOO_HOST_SESSION_ID = "HS-1";
+    process.env.UFOO_HOST_INJECT_SOCK = "/tmp/horizon-inject.sock";
+    process.env.UFOO_LAUNCH_MODE = "host";
+    const launcher = new TestAgentLauncher("codex", "codex");
+    launcher.cwd = "/tmp/ufoo-direct-project";
+    launcher._spawnDirect([], "codex:test123", {
+      notifier,
+      requestSnapshot: jest.fn().mockRejectedValue(new Error("snapshot unavailable")),
+      readyPollIntervalMs: 1000,
+      readyMonitorMaxMs: 2000,
+    });
+
+    await jest.advanceTimersByTimeAsync(3000);
+    expect(notifier.markLauncherReady).not.toHaveBeenCalled();
+    expect(notifier.updateActivityState).not.toHaveBeenCalled();
   });
 });

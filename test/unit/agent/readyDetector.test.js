@@ -179,6 +179,16 @@ describe("ReadyDetector", () => {
       detector.processOutput("Ready\n> ");
       expect(readyCalled).toBe(true);
     });
+
+    test("should detect the current Codex TUI chevron prompt", () => {
+      const detector = new ReadyDetector("codex");
+      const onReady = jest.fn();
+      detector.onReady(onReady);
+
+      detector.processOutput("model: gpt-5\n› Explain this codebase");
+
+      expect(onReady).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("ufoo-code detection", () => {

@@ -53,7 +53,13 @@ describe("ufoo global MCP server", () => {
         required: ["project_root", "subscriber", "agent_handle"],
         properties: {
           after_seq: { minimum: 0 },
-          timeout_seconds: { minimum: 1, maximum: 600 },
+          timeout_seconds: {
+            anyOf: [
+              { const: 0 },
+              { type: "number", minimum: 1, maximum: 270 },
+            ],
+            default: 0,
+          },
         },
       });
   });
@@ -291,7 +297,7 @@ describe("ufoo global MCP server", () => {
       .toEqual(expect.any(String));
   });
 
-  test("wait_for_message returns a timeout cursor without periodic model work", async () => {
+  test("wait_for_message retains an explicit bounded compatibility mode", async () => {
     const projectRoot = makeTempProject();
     let now = 0;
     const server = createUfooMcpServer({
@@ -350,6 +356,74 @@ describe("ufoo global MCP server", () => {
     });
   });
 
+  test("wait_for_message defaults to until-message without a timeout result", async () => {
+    const projectRoot = makeTempProject();
+    const server = createUfooMcpServer({
+      autoStart: false,
+      validateProjectRoot: false,
+      waitPollIntervalMs: 10,
+    });
+
+    const registered = await server.handleRequest({
+      jsonrpc: "2.0",
+      id: "register-unbounded",
+      method: "tools/call",
+      params: {
+        name: "register_agent",
+        arguments: {
+          project_root: projectRoot,
+          agent_type: "codex",
+          session_id: "wait-unbounded",
+        },
+      },
+    });
+    const registration = registered.result.structuredContent;
+    const subscriber = registration.subscriber;
+    const agentHandle = registration.agent_handle;
+
+    const pending = server.handleRequest({
+      jsonrpc: "2.0",
+      id: "wait-unbounded",
+      method: "tools/call",
+      params: {
+        name: "wait_for_message",
+        arguments: {
+          project_root: projectRoot,
+          subscriber,
+          agent_handle: agentHandle,
+          after_seq: 0,
+        },
+      },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    await server.handleRequest({
+      jsonrpc: "2.0",
+      id: "message-unbounded",
+      method: "tools/call",
+      params: {
+        name: "dispatch_message",
+        arguments: {
+          project_root: projectRoot,
+          subscriber,
+          agent_handle: agentHandle,
+          target: subscriber,
+          message: "wake the unbounded wait",
+        },
+      },
+    });
+
+    await expect(pending).resolves.toMatchObject({
+      result: {
+        structuredContent: {
+          status: "message",
+          timed_out: false,
+          count: 1,
+        },
+      },
+    });
+  });
+
   test("cancels a pending wait_for_message tool call", async () => {
     const projectRoot = makeTempProject();
     const server = createUfooMcpServer({
@@ -385,7 +459,6 @@ describe("ufoo global MCP server", () => {
           project_root: projectRoot,
           subscriber,
           agent_handle: agentHandle,
-          timeout_seconds: 600,
         },
       },
     });

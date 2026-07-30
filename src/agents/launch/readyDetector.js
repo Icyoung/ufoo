@@ -80,8 +80,9 @@ class ReadyDetector {
     if (text.includes("codex>")) {
       return true;
     }
-    // 2. 行首或行尾的单独 ">" prompt（避免匹配JSON/HTML中的>）
-    if (/(?:^|\n)>\s*$/.test(text)) {
+    // 2. Codex TUI uses the single-chevron "›" prompt. Keep both markers
+    // anchored to a line start to avoid matching prose, JSON, or HTML.
+    if (/(?:^|\n)[ \t]*(?:>[ \t]*$|›(?:[ \t]+[^\n]*)?[ \t]*$)/m.test(text)) {
       return true;
     }
     return false;

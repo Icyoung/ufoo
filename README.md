@@ -266,11 +266,13 @@ capability: do not send it to peers or print it in reports.
 
 - **Codex App:** call MCP `wait_for_message` in the foreground with
   the registered subscriber and handle, `after_seq: 0`, and
-  `timeout_seconds: 600`. The tool call stays pending inside ufoo; a message
-  returns immediately and wakes the task without shell stdout. On timeout,
-  re-arm with the same cursor. After handling a message response, call MCP
-  `ack_bus` with the same handle and its `last_seq` as `through_seq`, then
-  re-arm with that `last_seq` when the Agent is idle again.
+  `timeout_seconds: 0`. The tool call stays pending inside the dedicated
+  `ufoo_wait` MCP connection until a message arrives or the caller cancels it;
+  idle time produces no periodic model wake or token consumption. A message
+  returns immediately and wakes the task without shell stdout. After handling
+  a message response, call MCP `ack_bus` with the same handle and its
+  `last_seq` as `through_seq`, then re-arm with that `last_seq` when the Agent
+  is idle again.
 - **Cursor:** bind the MCP subscriber and run
   `export UFOO_SUBSCRIBER_ID="<subscriber-id>"; exec ufoo bus poll
   "$UFOO_SUBSCRIBER_ID" --follow --interval 30` through the monitored

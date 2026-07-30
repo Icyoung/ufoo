@@ -6,6 +6,7 @@ const {
   createLocalProjectRuntimeGateway,
   createManagedProjectRuntimeGateway,
   createSocketProjectRuntimeGateway,
+  resolveCallTimeoutMs,
 } = require("../../../src/runtime/daemon/projectRuntimeGateway");
 const {
   IPC_REQUEST_TYPES,
@@ -35,6 +36,12 @@ describe("ProjectRuntimeGateway", () => {
 
   afterEach(() => {
     for (const gateway of managedGateways.splice(0)) gateway.dispose();
+  });
+
+  test("does not arm a gateway timer for the default until-message wait", () => {
+    expect(resolveCallTimeoutMs("wait_for_message", {})).toBeNull();
+    expect(resolveCallTimeoutMs("wait_for_message", { timeout_seconds: 0 })).toBeNull();
+    expect(resolveCallTimeoutMs("wait_for_message", { timeout_seconds: 12 })).toBe(17000);
   });
 
   test("local gateway delegates control-plane operations through one boundary", async () => {

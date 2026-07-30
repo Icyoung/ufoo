@@ -13,6 +13,12 @@ const {
 
 const MANAGED_BLOCK_START = "# >>> ufoo MCP (managed)";
 const MANAGED_BLOCK_END = "# <<< ufoo MCP (managed)";
+const CODEX_STANDARD_TOOL_TIMEOUT_SECONDS = 610;
+// Codex currently requires a finite server-level MCP timeout. One year is
+// effectively session-lifetime while avoiding periodic model wakeups. Keep the
+// long timeout isolated from normal ufoo tools so a broken short call cannot
+// hang for the same duration.
+const CODEX_WAIT_TOOL_TIMEOUT_SECONDS = 365 * 24 * 60 * 60;
 const RETIRED_UFOO_SKILL_NAMES = new Set([
   "ubus",
   "uctx",
@@ -32,13 +38,25 @@ function codexConfigPath(options = {}) {
 }
 
 function buildCodexManagedBlock(connection) {
+  const authorization = tomlString(`Bearer ${connection.token}`);
   return [
     MANAGED_BLOCK_START,
     "[mcp_servers.ufoo]",
     `url = ${tomlString(connection.endpoint)}`,
-    `http_headers = { Authorization = ${tomlString(`Bearer ${connection.token}`)} }`,
-    "tool_timeout_sec = 610",
+    `http_headers = { Authorization = ${authorization} }`,
+    `tool_timeout_sec = ${CODEX_STANDARD_TOOL_TIMEOUT_SECONDS}`,
+    'disabled_tools = ["wait_for_message"]',
     "enabled = true",
+    "",
+    "[mcp_servers.ufoo_wait]",
+    `url = ${tomlString(connection.endpoint)}`,
+    `http_headers = { Authorization = ${authorization} }`,
+    `tool_timeout_sec = ${CODEX_WAIT_TOOL_TIMEOUT_SECONDS}`,
+    'enabled_tools = ["wait_for_message"]',
+    "enabled = true",
+    "",
+    "[mcp_servers.ufoo_wait.tools.wait_for_message]",
+    'approval_mode = "approve"',
     MANAGED_BLOCK_END,
   ].join("\n");
 }
@@ -80,7 +98,12 @@ function isUfooStdioEnvSection(header = "") {
 function removeLegacyUfooTransportSections(text = "") {
   const sections = findTomlSections(text);
   const ranges = sections
-    .filter((section) => isUfooMainSection(section.header) || isUfooStdioEnvSection(section.header))
+    .filter((section) => (
+      isUfooMainSection(section.header)
+      || isUfooStdioEnvSection(section.header)
+      || /^(?:mcp_servers\.ufoo_wait|mcp_servers\."ufoo_wait")(?:\.|$)/
+        .test(String(section.header || ""))
+    ))
     .map((section) => [section.start, section.end])
     .sort((a, b) => b[0] - a[0]);
   let next = text;
@@ -207,6 +230,8 @@ function runMcpConfigureCli(host, options = {}) {
 }
 
 module.exports = {
+  CODEX_STANDARD_TOOL_TIMEOUT_SECONDS,
+  CODEX_WAIT_TOOL_TIMEOUT_SECONDS,
   MANAGED_BLOCK_END,
   MANAGED_BLOCK_START,
   buildCodexManagedBlock,

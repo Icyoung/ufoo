@@ -23,6 +23,12 @@ const DEFAULT_WARN_INTERVAL_MS = 60 * 1000;
 // After this long stuck in waiting_input/blocked, deliver anyway (better a
 // message in a stuck terminal than a lost one). Env UFOO_DELIVERY_BLOCKED_GRACE_MS overrides.
 const DEFAULT_BLOCKED_GRACE_MS = 15 * 60 * 1000;
+// A queued wrapper message must never be blocked indefinitely by stale
+// activity state. Once the oldest injectable message has waited this long,
+// bypass only the activity gate and attempt direct injection.
+const DEFAULT_FORCE_DELIVERY_AFTER_MS = 5 * 60 * 1000;
+const DEFAULT_FORCE_RETRY_BASE_MS = 5 * 1000;
+const DEFAULT_FORCE_RETRY_MAX_MS = 60 * 1000;
 // Warn when an inject lock is held longer than this (usually means a stuck inject).
 const DEFAULT_LOCKED_WARN_AFTER_MS = 60 * 1000;
 
@@ -75,6 +81,15 @@ class DeliveryScheduler {
       options.blockedGraceMs,
       positiveMs(Number(process.env.UFOO_DELIVERY_BLOCKED_GRACE_MS), DEFAULT_BLOCKED_GRACE_MS),
     );
+    this.forceDeliveryAfterMs = positiveMs(
+      options.forceDeliveryAfterMs,
+      positiveMs(
+        Number(process.env.UFOO_DELIVERY_FORCE_AFTER_MS),
+        DEFAULT_FORCE_DELIVERY_AFTER_MS,
+      ),
+    );
+    this.forceRetryBaseMs = positiveMs(options.forceRetryBaseMs, DEFAULT_FORCE_RETRY_BASE_MS);
+    this.forceRetryMaxMs = positiveMs(options.forceRetryMaxMs, DEFAULT_FORCE_RETRY_MAX_MS);
     this.lockedWarnAfterMs = positiveMs(options.lockedWarnAfterMs, DEFAULT_LOCKED_WARN_AFTER_MS);
     this.intervalMs = Number.isFinite(options.intervalMs) && options.intervalMs > 0
       ? options.intervalMs
@@ -84,6 +99,9 @@ class DeliveryScheduler {
     this.deferrals = new Map();
     this.blockedStateSeen = new Map();
     this.graceWarned = new Map();
+    this.pendingSeen = new Map();
+    this.forceWarned = new Set();
+    this.forceRetries = new Map();
     this.timer = null;
     this.running = false;
   }
@@ -123,6 +141,13 @@ class DeliveryScheduler {
     this.log(`WARN delivery grace override subscriber=${subscriber} activity_state=${activityState} pending=${this.pendingCount(subscriber)} grace_ms=${this.blockedGraceMs} - agent stuck, delivering anyway`);
   }
 
+  noteForceOverride(subscriber, activityState, pending) {
+    const key = `${subscriber}:${pending.key}`;
+    if (this.forceWarned.has(key)) return;
+    this.forceWarned.add(key);
+    this.log(`WARN delivery queue timeout override subscriber=${subscriber} activity_state=${activityState || "unknown"} seq=${pending.seq || 0} waited_ms=${pending.waitedMs} force_after_ms=${this.forceDeliveryAfterMs} - injecting despite stale activity gate`);
+  }
+
   noteLocked(subscriber, lock) {
     const now = this.now();
     const lockedMs = now - lock.sinceMs;
@@ -146,6 +171,9 @@ class DeliveryScheduler {
     if (!meta || meta.status === "inactive") {
       return { ok: false, reason: "missing_or_inactive" };
     }
+    if (meta.mcp_bridge === true) {
+      return { ok: false, reason: "external_receive" };
+    }
     const launchMode = String(meta.launch_mode || "").trim();
     const adapter = this.adapterRouter.getAdapter({ launchMode, agentId: subscriber, meta });
     if (!adapter.capabilities.supportsNotifierInjector) {
@@ -161,7 +189,11 @@ class DeliveryScheduler {
       } else {
         this.blockedStateSeen.delete(subscriber);
       }
-      return { ok: false, reason: activityState || "unknown_activity_state" };
+      return {
+        ok: false,
+        reason: activityState || "unknown_activity_state",
+        activityBlocked: true,
+      };
     }
     this.blockedStateSeen.delete(subscriber);
     return { ok: true, reason: "deliverable" };
@@ -179,6 +211,108 @@ class DeliveryScheduler {
     return now;
   }
 
+  pendingEventKey(event = {}) {
+    const seq = Number(event.seq);
+    if (Number.isFinite(seq) && seq > 0) return `seq:${seq}`;
+    return `event:${JSON.stringify(event)}`;
+  }
+
+  clearPendingTracking(subscriber, event = null) {
+    const tracked = this.pendingSeen.get(subscriber);
+    const key = event ? this.pendingEventKey(event) : tracked?.key;
+    if (key) {
+      const trackingKey = `${subscriber}:${key}`;
+      this.forceWarned.delete(trackingKey);
+      this.forceRetries.delete(trackingKey);
+    }
+    this.pendingSeen.delete(subscriber);
+  }
+
+  clearTrackedKey(subscriber, key) {
+    if (!key) return;
+    const trackingKey = `${subscriber}:${key}`;
+    this.forceWarned.delete(trackingKey);
+    this.forceRetries.delete(trackingKey);
+  }
+
+  noteForceFailure(subscriber, pending) {
+    if (!pending || !pending.key) return;
+    const key = `${subscriber}:${pending.key}`;
+    const previous = this.forceRetries.get(key);
+    const attempts = previous ? previous.attempts + 1 : 1;
+    const delayMs = Math.min(
+      this.forceRetryMaxMs,
+      this.forceRetryBaseMs * (2 ** Math.max(0, attempts - 1)),
+    );
+    this.forceRetries.set(key, {
+      attempts,
+      nextAtMs: this.now() + delayMs,
+    });
+    this.log(`WARN forced delivery inject failed subscriber=${subscriber} seq=${pending.seq || 0} retry_in_ms=${delayMs} attempt=${attempts}`);
+  }
+
+  resolvePendingWait(subscriber, queue, eventOverride = null) {
+    let event = eventOverride;
+    if (!event) {
+      try {
+        const pending = queue && typeof queue.readPending === "function"
+          ? queue.readPending()
+          : [];
+        event = pending.find((item) => {
+          const envelope = normalizeQueueEnvelope(item || {});
+          return envelope.event === "message"
+            && envelope.delivery
+            && envelope.delivery.mode === "inject";
+        }) || null;
+      } catch {
+        event = null;
+      }
+    }
+    if (!event) {
+      this.clearPendingTracking(subscriber);
+      return null;
+    }
+
+    const key = this.pendingEventKey(event);
+    const timestampMs = Date.parse(String(event.timestamp || ""));
+    const existing = this.pendingSeen.get(subscriber);
+    if (existing && existing.key !== key) {
+      this.clearTrackedKey(subscriber, existing.key);
+    }
+    const sinceMs = Number.isFinite(timestampMs) && timestampMs <= this.now()
+      ? timestampMs
+      : (existing && existing.key === key ? existing.sinceMs : this.now());
+    this.pendingSeen.set(subscriber, { key, sinceMs });
+    return {
+      key,
+      seq: Number.isFinite(Number(event.seq)) ? Number(event.seq) : 0,
+      sinceMs,
+      waitedMs: Math.max(0, this.now() - sinceMs),
+    };
+  }
+
+  resolveGate(subscriber, queue, eventOverride = null) {
+    const gate = this.shouldDeliver(subscriber);
+    if (gate.ok || !gate.activityBlocked) return gate;
+    const pending = this.resolvePendingWait(subscriber, queue, eventOverride);
+    if (!pending || pending.waitedMs < this.forceDeliveryAfterMs) return gate;
+    const retry = this.forceRetries.get(`${subscriber}:${pending.key}`);
+    if (retry && this.now() < retry.nextAtMs) {
+      return {
+        ok: false,
+        reason: "force_retry_backoff",
+        retryAtMs: retry.nextAtMs,
+      };
+    }
+    this.noteForceOverride(subscriber, gate.reason, pending);
+    return {
+      ok: true,
+      reason: "queue_timeout_override",
+      forceOverride: gate.reason,
+      pending,
+    };
+  }
+
   async deliverSubscriber(subscriber) {
     if (!subscriber) return { ok: false, delivered: 0, reason: "missing_subscriber" };
     if (this.locks.has(subscriber)) {
@@ -188,7 +322,8 @@ class DeliveryScheduler {
 
     this.locks.set(subscriber, { sinceMs: this.now(), lastWarnAtMs: 0 });
     try {
-      const gate = this.shouldDeliver(subscriber);
+      const queue = this.queueFactory(subscriber);
+      const gate = this.resolveGate(subscriber, queue);
       if (!gate.ok) {
         this.noteDeferral(subscriber, gate.reason);
         return { ok: true, delivered: 0, deferred: true, reason: gate.reason };
@@ -200,9 +335,9 @@ class DeliveryScheduler {
       }
       this.clearDeferral(subscriber);
 
-      const queue = this.queueFactory(subscriber);
       const claim = queue.claimNext();
       if (!claim) {
+        this.clearPendingTracking(subscriber);
         return { ok: true, delivered: 0, reason: "empty" };
       }
 
@@ -219,13 +354,17 @@ class DeliveryScheduler {
       }
 
       if (delivery.gate === "idle") {
-        const secondGate = this.shouldDeliver(subscriber);
+        const secondGate = this.resolveGate(subscriber, queue, evt);
         if (!secondGate.ok) {
           this.noteDeferral(subscriber, secondGate.reason);
           queue.restoreClaim(claim);
           return { ok: true, delivered: 0, deferred: true, reason: secondGate.reason };
         }
         if (secondGate.graceOverride) this.noteGraceOverride(subscriber, secondGate.graceOverride);
+        if (secondGate.forceOverride && !gate.forceOverride) {
+          gate.forceOverride = secondGate.forceOverride;
+          gate.pending = secondGate.pending;
+        }
       }
 
       const { agents } = this.getAgentMeta(subscriber);
@@ -233,6 +372,7 @@ class DeliveryScheduler {
       try {
         await this.injector.inject(subscriber, injectionText);
         queue.completeClaim(claim);
+        this.clearPendingTracking(subscriber, evt);
         // Close the idle gate immediately. PTY ActivityDetector will refresh
         // working from output, then quiet-window back to idle; without this
         // stamp a second pending message can slip through on the next tick
@@ -250,6 +390,7 @@ class DeliveryScheduler {
         return { ok: true, delivered: 1, event: envelope };
       } catch (err) {
         queue.restoreClaim(claim);
+        if (gate.forceOverride) this.noteForceFailure(subscriber, gate.pending);
         await this.emitDelivery({
           subscriber,
           event: envelope,
@@ -282,10 +423,29 @@ class DeliveryScheduler {
     const data = this.readAgents() || { agents: {} };
     const agents = data.agents && typeof data.agents === "object" ? data.agents : {};
     const subscribers = [];
+    const pendingSubscribers = new Set();
     for (const [subscriber, meta] of Object.entries(agents)) {
-      if (!meta || meta.status === "inactive") continue;
+      if (!meta || meta.status === "inactive") {
+        this.clearPendingTracking(subscriber);
+        continue;
+      }
+      // MCP-registered Agents own their receive path through wait_for_message
+      // or an explicitly armed CLI poll. They must never enter direct
+      // terminal-injection scheduling.
+      if (meta.mcp_bridge === true) {
+        this.clearPendingTracking(subscriber);
+        continue;
+      }
       const queue = this.queueFactory(subscriber);
-      if (queue.readPending().length > 0) subscribers.push(subscriber);
+      if (queue.readPending().length > 0) {
+        subscribers.push(subscriber);
+        pendingSubscribers.add(subscriber);
+      } else {
+        this.clearPendingTracking(subscriber);
+      }
+    }
+    for (const subscriber of this.pendingSeen.keys()) {
+      if (!pendingSubscribers.has(subscriber)) this.clearPendingTracking(subscriber);
     }
     return subscribers;
   }

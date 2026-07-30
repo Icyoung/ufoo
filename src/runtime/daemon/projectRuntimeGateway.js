@@ -8,6 +8,9 @@ const {
   IPC_RESPONSE_TYPES,
 } = require("../contracts/eventContract");
 const {
+  MCP_WAIT_FOR_MESSAGE_DEFAULT_TIMEOUT_SECONDS,
+} = require("../contracts/mcpContract");
+const {
   assertToolAllowedForCallerTier,
 } = require("../../tools/registry");
 const { CALLER_TIERS } = require("../../tools/types");
@@ -247,10 +250,16 @@ function connectProjectRuntimeSocket(sockPath, timeoutMs = 5000) {
 
 function resolveCallTimeoutMs(operation, args = {}, fallbackMs = 15000) {
   if (operation !== "wait_for_message") return fallbackMs;
-  const timeoutSeconds = Number(args.timeout_seconds ?? args.timeoutSeconds ?? 600);
+  const timeoutSeconds = Number(
+    args.timeout_seconds
+      ?? args.timeoutSeconds
+      ?? MCP_WAIT_FOR_MESSAGE_DEFAULT_TIMEOUT_SECONDS
+  );
+  if (timeoutSeconds === 0) return null;
   const waitMs = Number.isFinite(timeoutSeconds) && timeoutSeconds > 0
     ? timeoutSeconds * 1000
-    : 600000;
+    : 0;
+  if (waitMs === 0) return null;
   return waitMs + 5000;
 }
 
@@ -379,10 +388,12 @@ class SocketProjectRuntimeGateway {
         ));
       });
 
-      timer = setTimeout(() => {
-        onAbort();
-      }, timeoutMs);
-      if (typeof timer.unref === "function") timer.unref();
+      if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+        timer = setTimeout(() => {
+          onAbort();
+        }, timeoutMs);
+        if (typeof timer.unref === "function") timer.unref();
+      }
 
       socket.write(`${JSON.stringify({
         type: IPC_REQUEST_TYPES.CONTROL_PLANE_CALL,

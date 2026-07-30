@@ -174,7 +174,9 @@ describe('SkillsManager', () => {
       expect(pollSkillText).toContain('every message delivered by ufoo');
       expect(pollSkillText).toContain('Codex App does not resume');
       expect(pollSkillText).toContain('`wait_for_message`');
-      expect(pollSkillText).toContain('`timeout_seconds`: `600`');
+      expect(pollSkillText).toContain('`timeout_seconds`: `0`');
+      expect(pollSkillText).toContain('no periodic timeout result');
+      expect(pollSkillText).not.toContain('300 seconds');
       expect(pollSkillText).toContain('Do not background it');
       expect(pollSkillText).toContain('`through_seq: <last_seq>`');
       const notifyPattern = pollSkillText.match(/pattern: `([^`]+)`/);

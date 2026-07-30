@@ -18,7 +18,10 @@ const {
   routeDaemonRequest,
 } = require("../../runtime/daemon/endpoint");
 const { createTerminalAdapterRouter } = require("../../runtime/terminal/adapterRouter");
-const { probeHostCapabilities } = require("../../runtime/terminal/adapters/hostAdapter");
+const {
+  probeHostCapabilities,
+  requestSnapshot,
+} = require("../../runtime/terminal/adapters/hostAdapter");
 const PtyWrapper = require("./ptyWrapper");
 const ReadyDetector = require("./readyDetector");
 const {
@@ -110,6 +113,12 @@ function normalizeTty(ttyPath) {
   if (!trimmed || trimmed === "not a tty") return "";
   if (trimmed === "/dev/tty") return "";
   return trimmed;
+}
+
+function stripTerminalControl(text = "") {
+  return String(text)
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
 }
 
 function getEnvTtyOverride() {
@@ -572,7 +581,9 @@ class AgentLauncher {
    * 直接spawn启动（回退逻辑）
    * @private
    */
-  _spawnDirect(args, subscriberId) {
+  _spawnDirect(args, subscriberId, options = {}) {
+    const notifier = options.notifier || null;
+    const launchMode = resolveLaunchMode();
     const child = spawn(this.command, args, {
       cwd: this.cwd,
       stdio: "inherit",
@@ -582,17 +593,82 @@ class AgentLauncher {
       },
     });
 
-    if (resolveLaunchMode() === "host" && child.pid) {
+    if (launchMode === "host" && child.pid) {
       const daemonEndpoint = resolveDaemonEndpoint(this.cwd);
       notifyDaemonAgentReady(daemonEndpoint, subscriberId, child.pid).catch(() => {});
     }
 
+    // Host direct-spawn inherits stdio, so readiness cannot be observed from
+    // the child stream. Ask the host for its terminal snapshot and feed that
+    // through the same prompt detector as the PTY path. Never manufacture
+    // readiness from elapsed time; the daemon queue-age fallback is the safety
+    // net when snapshots are unavailable.
+    const hostInjectSock = process.env.UFOO_HOST_INJECT_SOCK
+      || process.env.HORIZON_INJECT_SOCK
+      || "";
+    const snapshotFn = typeof options.requestSnapshot === "function"
+      ? options.requestSnapshot
+      : requestSnapshot;
+    const readyPollIntervalMs = Number.isFinite(options.readyPollIntervalMs)
+      ? Math.max(1, options.readyPollIntervalMs)
+      : 1000;
+    const readyMonitorMaxMs = Number.isFinite(options.readyMonitorMaxMs)
+      ? Math.max(1, options.readyMonitorMaxMs)
+      : 5 * 60 * 1000;
+    let readyPollTimer = null;
+    let readyMonitorStopped = false;
+
+    const stopReadyMonitor = () => {
+      readyMonitorStopped = true;
+      if (readyPollTimer) {
+        clearTimeout(readyPollTimer);
+        readyPollTimer = null;
+      }
+    };
+
+    if (notifier && launchMode === "host" && hostInjectSock) {
+      const detector = new ReadyDetector(this.agentType);
+      const monitorStartedAt = Date.now();
+      detector.onReady(() => {
+        stopReadyMonitor();
+        notifier.markLauncherReady();
+        notifier.updateActivityState("ready");
+      });
+
+      const pollReady = async () => {
+        if (readyMonitorStopped) return;
+        try {
+          const snapshot = await snapshotFn(hostInjectSock);
+          const lines = snapshot && Array.isArray(snapshot.lines) ? snapshot.lines : [];
+          if (lines.length > 0) {
+            // A snapshot is a complete screen, not a stream continuation.
+            // Preserve a line boundary between polls so prompt anchors cannot
+            // be glued to the previous snapshot's final character.
+            detector.processOutput(`\n${stripTerminalControl(lines.join("\n"))}\n`);
+          }
+        } catch {
+          // A transient host snapshot failure must not manufacture readiness.
+        }
+        if (!readyMonitorStopped && Date.now() - monitorStartedAt < readyMonitorMaxMs) {
+          readyPollTimer = setTimeout(pollReady, readyPollIntervalMs);
+          if (readyPollTimer && typeof readyPollTimer.unref === "function") {
+            readyPollTimer.unref();
+          }
+        } else {
+          stopReadyMonitor();
+        }
+      };
+      pollReady();
+    }
+
     child.on("error", (err) => {
+      stopReadyMonitor();
       console.error(`[${this.command}] Failed to start:`, err.message);
       process.exit(1);
     });
 
     child.on("exit", async (code, signal) => {
+      stopReadyMonitor();
       // 清理 bus 状态
       try {
         const bus = new EventBus(this.cwd);
@@ -1010,11 +1086,11 @@ class AgentLauncher {
           process.on("SIGINT", () => handleTermSignal("SIGINT"));
         } catch (err) {
           console.error(`[PTY] Failed to start, falling back to spawn:`, err.message);
-          this._spawnDirect(args, subscriberId);
+          this._spawnDirect(args, subscriberId, { notifier });
         }
       } else {
         // 非PTY环境：tmux、internal、管道、显式禁用等
-        this._spawnDirect(args, subscriberId);
+        this._spawnDirect(args, subscriberId, { notifier });
       }
     } catch (err) {
       console.error(`[${this.command}] Error:`, err.message);

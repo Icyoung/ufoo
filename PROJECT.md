@@ -80,8 +80,10 @@ terminal is created, never `agent_type` or a subscriber prefix:
    self-registers once through MCP, retains the returned subscriber and opaque
    `agent_handle`, then
    selects one receive wait from the host App's wake capability:
-   - Codex App keeps one MCP `wait_for_message` tool call pending for up to 600
-     seconds and re-arms it with the returned sequence cursor.
+   - Codex App keeps one MCP `wait_for_message` tool call pending until a
+     message arrives or the caller cancels it. A dedicated `ufoo_wait` MCP
+     connection isolates the session-lifetime client timeout from normal ufoo
+     tools, so idle time produces no periodic model wake.
    - Cursor may export the returned subscriber as `UFOO_SUBSCRIBER_ID` inside
      its dedicated listener terminal, keeps one host-monitored
      `ufoo bus poll --follow` process, and wakes on `notify_on_output`.

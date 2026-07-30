@@ -22,7 +22,7 @@ one active receive wait per subscriber.
 Keep idle checks inside a pending tool call or host background task. Do not
 implement a model-driven timer, repeated chat turn, or fixed
 `AGENT_LOOP_TICK_*`. Waiting must not invoke the LLM until a message arrives or
-the host's maximum pending-call window ends.
+the caller cancels the wait.
 
 ## Attach the subscriber
 
@@ -63,16 +63,17 @@ prints stdout. Keep the wait inside one foreground MCP tool call instead:
    - `subscriber`: the caller-owned MCP subscriber
    - `agent_handle`: the opaque handle returned with that registration
    - `after_seq`: `0` for the first wait, then the last returned `last_seq`
-   - `timeout_seconds`: `600`
+   - `timeout_seconds`: `0` (wait until a message arrives or the call is cancelled)
 2. Leave that tool call pending. Do not background it and do not start
    `ufoo bus poll --follow`; while the tool is pending, internal queue checks do
    not invoke the model or consume model tokens.
 3. If it returns `status: "message"`, handle every returned message, then call
    MCP `ack_bus` with `through_seq: <last_seq>`. This preserves messages that
    arrived after the returned batch. Include the same `agent_handle`.
-4. If it returns `status: "timeout"`, no message was received. If monitoring is
-   still required, immediately call `wait_for_message` again with the same
-   `after_seq`. The timeout return is the only periodic model wake.
+4. The default wait has no periodic timeout result and therefore no periodic
+   model wake. If it ends with a cancellation or transport error, do not advance
+   `after_seq`; re-arm only when monitoring is still required and the receive
+   lease is healthy.
 5. After handling a message batch and completing any active work, re-arm one
    wait with the returned `last_seq`. Advance the cursor only after `ack_bus`
    succeeds; if acknowledgement fails, resolve that failure before re-arming.
