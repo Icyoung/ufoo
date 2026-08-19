@@ -295,8 +295,9 @@ fn strip_ansi_codes(input: &str) -> String {
 
 fn is_speaker_stream_entry(entry: &crate::model::ScrollbackEntry) -> bool {
     // Nearly all chat rows zebra; keep tools dim/unstriped so collapsed
-    // tool dumps don't dominate the stripe rhythm.
-    !matches!(entry.kind.as_str(), "tool" | "spacer")
+    // tool dumps don't dominate the stripe rhythm. Banners are preformatted
+    // presentation content and must not inherit transcript row styling.
+    !matches!(entry.kind.as_str(), "tool" | "spacer" | "banner")
 }
 
 fn build_scrollback_lines(state: &AppState, width: usize) -> Vec<Line<'static>> {
@@ -364,6 +365,7 @@ fn build_scrollback_lines(state: &AppState, width: usize) -> Vec<Line<'static>> 
                 zebra_style.unwrap_or_else(|| Style::default().fg(Color::Red)),
             ),
             "tool" => (String::new(), Style::default().fg(Color::DarkGray)),
+            "banner" => (String::new(), Style::default()),
             "bus" | "agent" | "report" | "assistant" | "success" | "system" | "meta" => (
                 if entry.speaker.is_empty() {
                     String::new()
@@ -957,5 +959,19 @@ mod tests {
         state.package_version = "3.0.23".into();
 
         assert_eq!(display_version(&state), "v3.0.23");
+    }
+
+    #[test]
+    fn banner_entries_do_not_join_the_transcript_zebra_stream() {
+        let entry = crate::model::ScrollbackEntry {
+            id: "banner-0".into(),
+            kind: "banner".into(),
+            text: "UCODE".into(),
+            speaker: String::new(),
+            expanded: false,
+            detail: String::new(),
+        };
+
+        assert!(!is_speaker_stream_entry(&entry));
     }
 }

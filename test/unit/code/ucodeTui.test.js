@@ -85,6 +85,16 @@ describe("ucode tui switch", () => {
     expect(lines[0]).toContain("█ █ █▀▀");
   });
 
+  test("banner is emitted as plain text without ANSI styling", () => {
+    const lines = buildUcodeBannerLines({
+      model: "gpt-5.2-codex",
+      workspaceRoot: "/tmp/repo",
+      sessionId: "sess-abc123",
+    });
+
+    expect(lines.join("\n")).not.toMatch(/\x1B\[/);
+  });
+
   test("banner places session under dictionary with aligned metadata column", () => {
     const lines = buildUcodeBannerLines({
       model: "gpt-5.2-codex",

@@ -154,17 +154,19 @@ function buildUcodeBannerLines({
   }
   shortPath = path.normalize(shortPath);
 
-  const logoLines = UCODE_BANNER_LINES.map((line) => chalk.cyan(line));
+  // The banner is content, not a log message. Keep it free of ANSI styling so
+  // every terminal renderer can display it as a stable, unformatted block.
+  const logoLines = UCODE_BANNER_LINES;
   const infoLines = [];
-  infoLines.push(`${chalk.dim("Version:")} ${chalk.cyan.bold(UCODE_VERSION)}`);
-  infoLines.push(`${chalk.dim("Model:")} ${chalk.yellow(modelLabel)}`);
+  infoLines.push(`Version: ${UCODE_VERSION}`);
+  infoLines.push(`Model: ${modelLabel}`);
   if (planMode) {
-    infoLines.push(`${chalk.dim("Mode:")} ${chalk.magenta.bold("PLAN")}`);
+    infoLines.push("Mode: PLAN");
   }
-  infoLines.push(`${chalk.dim("Dictionary:")} ${chalk.gray(shortPath)}`);
+  infoLines.push(`Dictionary: ${shortPath}`);
   const normalizedSessionId = String(sessionId || "").trim();
   if (normalizedSessionId) {
-    infoLines.push(`${chalk.dim("Session:")} ${chalk.gray(normalizedSessionId)}`);
+    infoLines.push(`Session: ${normalizedSessionId}`);
   }
   const logoPadding = " ".repeat(
     UCODE_BANNER_LINES.reduce((max, line) => Math.max(max, String(line || "").length), 0)

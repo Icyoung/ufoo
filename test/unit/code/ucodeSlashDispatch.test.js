@@ -45,6 +45,23 @@ describe("dispatchUcodeSlashCommand", () => {
     expect(seen).toEqual(["do thing"]);
   });
 
+  test("resume restores the banner with its dedicated unformatted entry kind", async () => {
+    let entries = [];
+    await dispatchUcodeSlashCommand(
+      { kind: "resume", sessionId: "s1" },
+      {
+        state: { nlMessages: [] },
+        appendLog: () => {},
+        bannerLines: ["UCODE", "Version: 3.0.24"],
+        resumeSession: () => ({ ok: true, sessionId: "s1", restoredMessages: 0 }),
+        replaceTranscript: (next) => { entries = next; },
+      },
+    );
+
+    expect(entries.slice(0, 2).map((entry) => entry.kind)).toEqual(["banner", "banner"]);
+    expect(entries[2].kind).toBe("spacer");
+  });
+
   test("unknown without output is not handled", async () => {
     const result = await dispatchUcodeSlashCommand(
       { kind: "mystery" },

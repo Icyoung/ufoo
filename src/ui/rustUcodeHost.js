@@ -464,7 +464,7 @@ async function runUcodeRust(props = {}) {
       footer: agentsSnap.footer,
       entries: banner.concat([""]).map((line, idx) => ({
         id: `b-${idx}`,
-        kind: "system",
+        kind: idx < banner.length ? "banner" : "spacer",
         text: stripTags(line),
         speaker: "",
       })),

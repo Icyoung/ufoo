@@ -175,7 +175,7 @@ async function dispatchUcodeSlashCommand(result, ports = {}) {
       const banner = Array.isArray(ports.bannerLines) ? ports.bannerLines : [];
       const bannerEntries = banner.concat([""]).map((line, idx) => ({
         id: `b-${idx}`,
-        kind: "system",
+        kind: idx < banner.length ? "banner" : "spacer",
         text: String(line || ""),
         speaker: "",
       }));
