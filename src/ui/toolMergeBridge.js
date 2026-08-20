@@ -43,9 +43,13 @@ function createToolMergePublisher(publish) {
     if (merge && merge.id) mergeId = Math.max(mergeId, Number(merge.id) + 1);
     // Live collapsed summary while group grows.
     if (merge) {
+      const detail = fmt.buildMergedToolExpandedLines(merge.entries).join("\n");
       publish("tool.start", {
         id: `tool-merge-${merge.id}`,
         summary: fmt.buildUcodeToolRowText(merge.entries),
+        detail,
+        expanded_text: detail,
+        count: merge.entries.length,
       });
     }
   }

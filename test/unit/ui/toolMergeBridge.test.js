@@ -12,10 +12,13 @@ describe("toolMergeBridge", () => {
     tools.flush();
     expect(EXIT_SUSPEND).toBe(75);
     expect(events.some((e) => e.name === "tool.start")).toBe(true);
+    const live = events.filter((e) => e.name === "tool.start").at(-1);
+    expect(live.payload.count).toBe(2);
+    expect(live.payload.detail).toBe("Read a.js\nBash ls");
     const group = events.find((e) => e.name === "tool.group");
     expect(group).toBeTruthy();
     expect(group.payload.summary).toMatch(/^• /);
-    expect(group.payload.detail).toContain("read");
-    expect(group.payload.detail).toContain("bash");
+    expect(group.payload.detail).toContain("Read");
+    expect(group.payload.detail).toContain("Bash");
   });
 });

@@ -376,6 +376,54 @@ fn truncate_single_visual_line(text: &str, content_width: usize) -> String {
     out
 }
 
+fn tool_tree_line(
+    raw: &str,
+    branch: &str,
+    omitted: bool,
+    hint: &str,
+    content_width: usize,
+    style: Style,
+) -> Line<'static> {
+    let clean = raw.trim().strip_prefix("• ").unwrap_or(raw.trim());
+    let omission = if omitted { "... " } else { "" };
+    let decorated = format!("{branch}{omission}{clean}{hint}");
+    let truncated = truncate_single_visual_line(&decorated, content_width);
+    let mut spans = vec![Span::raw(" ".to_string())];
+    let rest = truncated.strip_prefix(branch).unwrap_or(truncated.as_str());
+    spans.push(Span::styled(branch.to_string(), style));
+    let rest = if omitted {
+        if let Some(value) = rest.strip_prefix("... ") {
+            spans.push(Span::styled("... ".to_string(), style));
+            value
+        } else {
+            rest
+        }
+    } else {
+        rest
+    };
+    let (action, command) = rest.split_once(' ').unwrap_or((rest, ""));
+    spans.push(Span::styled(
+        action.to_string(),
+        style.add_modifier(Modifier::BOLD),
+    ));
+    if !command.is_empty() {
+        spans.push(Span::styled(format!(" {command}"), style));
+    }
+    Line::from(spans)
+}
+
+fn collapsed_tool_tree_rows<'a>(lines: &'a [&'a str]) -> Vec<(&'a str, bool)> {
+    match lines.len() {
+        0 => Vec::new(),
+        1..=3 => lines.iter().map(|line| (*line, false)).collect(),
+        count => vec![
+            (lines[0], false),
+            (lines[count - 2], true),
+            (lines[count - 1], false),
+        ],
+    }
+}
+
 fn build_scrollback_lines(state: &AppState, width: usize) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     let pad = " ";
@@ -394,12 +442,7 @@ fn build_scrollback_lines(state: &AppState, width: usize) -> Vec<Line<'static>> 
                 .entries
                 .get(entry_idx + 1)
                 .is_none_or(|next| next.kind != "spacer");
-        let mut body = if entry.kind == "tool" && entry.expanded && !entry.detail.is_empty() {
-            let summary = entry.text.trim_end_matches(" (Ctrl+O expand)").to_string();
-            format!("{summary}\n{}", entry.detail)
-        } else {
-            entry.text.clone()
-        };
+        let mut body = entry.text.clone();
 
         // Host already echoes user lines as "› …" / "> …". Strip that and
         // paint a single Grok-style ❯ so we don't get "❯ ›" / "> >".
@@ -521,6 +564,46 @@ fn build_scrollback_lines(state: &AppState, width: usize) -> Vec<Line<'static>> 
                 out.push(Line::from(spans));
             }
             continue;
+        }
+        if entry.kind == "tool" && !entry.detail.is_empty() {
+            let detail_lines: Vec<&str> = entry
+                .detail
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .collect();
+            if detail_lines.len() >= 2 {
+                let visible = if entry.expanded {
+                    detail_lines.iter().map(|line| (*line, false)).collect()
+                } else {
+                    collapsed_tool_tree_rows(&detail_lines)
+                };
+                let visible_len = visible.len();
+                for (index, (line, omitted)) in visible.into_iter().enumerate() {
+                    let branch = if index + 1 == visible_len {
+                        "└─ "
+                    } else {
+                        "├─ "
+                    };
+                    let hint = if !entry.expanded && index == 0 {
+                        " (Ctrl+O expand)"
+                    } else {
+                        ""
+                    };
+                    out.push(tool_tree_line(
+                        line,
+                        branch,
+                        omitted,
+                        hint,
+                        content_width,
+                        kind_style,
+                    ));
+                }
+                if append_block_gap {
+                    out.push(Line::from(""));
+                }
+                continue;
+            }
         }
         if entry.kind == "tool" && !entry.expanded {
             let line = truncate_single_visual_line(&body, content_width);
@@ -1281,6 +1364,74 @@ mod tests {
             .expect("plain command span");
         assert!(!command.style.add_modifier.contains(Modifier::BOLD));
         assert!(lines[1].spans.is_empty());
+    }
+
+    #[test]
+    fn collapsed_tool_group_keeps_first_and_live_tail_as_three_tree_rows() {
+        let mut state = AppState::new("ufoo", "ucode");
+        state.append_entry(crate::model::ScrollbackEntry {
+            id: "tools".into(),
+            kind: "tool".into(),
+            text: "• Read first.rs · +4 calls (Ctrl+O expand)".into(),
+            speaker: String::new(),
+            expanded: false,
+            detail: "Read first.rs\nBash second\nEdit third.rs\nRead fourth.rs\nWrite fifth.rs"
+                .into(),
+        });
+
+        let lines = build_scrollback_lines(&state, 100);
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(
+            rendered,
+            vec![
+                " ├─ Read first.rs (Ctrl+O expand)",
+                " ├─ ... Read fourth.rs",
+                " └─ Write fifth.rs",
+                "",
+            ]
+        );
+    }
+
+    #[test]
+    fn expanded_tool_group_shows_every_tree_row() {
+        let mut state = AppState::new("ufoo", "ucode");
+        state.append_entry(crate::model::ScrollbackEntry {
+            id: "tools".into(),
+            kind: "tool".into(),
+            text: "• Read first.rs · +3 calls (Ctrl+O expand)".into(),
+            speaker: String::new(),
+            expanded: true,
+            detail: "Read first.rs\nBash second\nEdit third.rs\nWrite fourth.rs".into(),
+        });
+
+        let lines = build_scrollback_lines(&state, 100);
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(
+            rendered,
+            vec![
+                " ├─ Read first.rs",
+                " ├─ Bash second",
+                " ├─ Edit third.rs",
+                " └─ Write fourth.rs",
+                "",
+            ]
+        );
     }
 
     #[test]

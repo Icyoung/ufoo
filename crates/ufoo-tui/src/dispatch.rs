@@ -2652,4 +2652,52 @@ mod tests {
         assert!(!state.entries[0].expanded);
         assert!(state.entries[1].expanded);
     }
+
+    #[test]
+    fn live_tool_group_replaces_detail_so_collapsed_tail_can_keep_moving() {
+        let mut state = AppState::new("ufoo", "ucode");
+        let event = |name: &str, payload: serde_json::Value| {
+            Action::Host(Envelope {
+                protocol: PROTOCOL.into(),
+                kind: "event".into(),
+                name: name.into(),
+                request_id: None,
+                seq: None,
+                payload,
+            })
+        };
+        dispatch(
+            &mut state,
+            event(
+                "tool.start",
+                json!({
+                    "id": "tools",
+                    "summary": "• Read first.rs · +1 calls",
+                    "detail": "Read first.rs\nBash second",
+                    "count": 2,
+                }),
+            ),
+        );
+        dispatch(
+            &mut state,
+            event(
+                "tool.start",
+                json!({
+                    "id": "tools",
+                    "summary": "• Read first.rs · +4 calls",
+                    "detail": "Read first.rs\nBash second\nEdit third.rs\nRead fourth.rs\nWrite fifth.rs",
+                    "count": 5,
+                }),
+            ),
+        );
+
+        assert_eq!(state.entries.len(), 1);
+        let entry = state.entries.front().expect("tool entry");
+        assert_eq!(
+            entry.detail,
+            "Read first.rs\nBash second\nEdit third.rs\nRead fourth.rs\nWrite fifth.rs"
+        );
+        assert!(entry.text.ends_with("(Ctrl+O expand)"));
+        assert!(!entry.expanded);
+    }
 }

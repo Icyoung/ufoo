@@ -667,8 +667,8 @@ describe("ucode tui switch", () => {
       { tool: "read", detail: "AGENTS.md" },
       { tool: "bash", detail: "ls -la", isError: true, errorText: "exit 1" },
     ])).toEqual([
-      "read · AGENTS.md",
-      "bash · ls -la · error: exit 1",
+      "Read AGENTS.md",
+      "Bash ls -la · error: exit 1",
     ]);
   });
 
