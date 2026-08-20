@@ -1780,6 +1780,27 @@ async function runNativeLoop({
   if (!resume) {
     transport.prepareMessages({ messages, systemPrompt, prompt });
   }
+  // Request history is provider-local. Capture the boundary only after the
+  // provider has prepared system/user input, then expose new model/tool items
+  // as an explicit current-turn delta. Durable history never infers a delta
+  // by comparing this mutable wire array with a persisted transcript.
+  const turnOutputStart = messages.length;
+  const isProviderToolResultUserMessage = (message) => (
+    String(message && message.role || "").toLowerCase() === "user"
+    && Array.isArray(message.content)
+    && message.content.some((block) => {
+      const type = String(block && block.type || "").toLowerCase();
+      return type === "tool_result" || type === "image" || type === "image_url";
+    })
+  );
+  const currentTurnItems = () => cloneMessageList(messages.slice(turnOutputStart))
+    // External user input is committed by the turn coordinator before this
+    // loop starts. Any later user-role messages are runtime nudges/mailbox
+    // controls for the provider and must not appear as user chat history.
+    .filter((message) => (
+      String(message && message.role || "").toLowerCase() !== "user"
+      || isProviderToolResultUserMessage(message)
+    ));
 
   let aggregated = "";
   let streamed = false;
@@ -2002,6 +2023,7 @@ async function runNativeLoop({
         streamed,
         toolCallsExecuted,
         messages,
+        turnItems: currentTurnItems(),
         usage,
         executionState,
         protocolLedger: lastProtocolLedger || snapshotLedger(activeLedger),
@@ -2023,6 +2045,7 @@ async function runNativeLoop({
         streamed,
         toolCallsExecuted,
         messages,
+        turnItems: currentTurnItems(),
         usage,
         executionState,
         protocolLedger: lastProtocolLedger || snapshotLedger(activeLedger),
@@ -2202,6 +2225,7 @@ async function runNativeLoop({
         streamed,
         toolCallsExecuted,
         messages,
+        turnItems: currentTurnItems(),
         usage,
         executionState,
         waitingUserInteraction: true,
@@ -2217,6 +2241,7 @@ async function runNativeLoop({
         streamed,
         toolCallsExecuted,
         messages,
+        turnItems: currentTurnItems(),
         usage,
         executionState,
         waitingUserInteraction: true,
@@ -2376,6 +2401,7 @@ async function runNativeAgentTask({
       error: "",
       output: outputText,
       messages: cloneMessageList(runResult.messages),
+      turnItems: cloneMessageList(runResult.turnItems),
       sessionId: nextSessionId,
       usage,
       contextMeter,

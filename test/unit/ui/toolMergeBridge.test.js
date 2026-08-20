@@ -14,7 +14,7 @@ describe("toolMergeBridge", () => {
     expect(events.some((e) => e.name === "tool.start")).toBe(true);
     const group = events.find((e) => e.name === "tool.group");
     expect(group).toBeTruthy();
-    expect(group.payload.summary).toMatch(/Ran /);
+    expect(group.payload.summary).toMatch(/^• /);
     expect(group.payload.detail).toContain("read");
     expect(group.payload.detail).toContain("bash");
   });

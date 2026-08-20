@@ -169,6 +169,9 @@ describe("ucode native runner", () => {
       { role: "user", content: "first question" },
       { role: "assistant", content: "first answer" },
     ]));
+    expect(first.turnItems).toEqual([
+      { role: "assistant", content: "first answer" },
+    ]);
 
     const secondRequestPayload = JSON.parse(global.fetch.mock.calls[1][1].body);
     expect(secondRequestPayload.messages).toEqual(expect.arrayContaining([
@@ -179,6 +182,9 @@ describe("ucode native runner", () => {
     expect(second.messages).toEqual(expect.arrayContaining([
       { role: "assistant", content: "second answer" },
     ]));
+    expect(second.turnItems).toEqual([
+      { role: "assistant", content: "second answer" },
+    ]);
   });
 
   test("executes core tool call from model and emits start event immediately", async () => {

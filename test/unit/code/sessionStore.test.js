@@ -9,6 +9,7 @@ const {
   loadSessionSnapshot,
   getSessionFilePath,
 } = require("../../../src/code/sessionStore");
+const { appendTurnMessages } = require("../../../src/code/conversation/sessionJournal");
 
 describe("ucode session store", () => {
   let workspaceRoot = "";
@@ -34,6 +35,10 @@ describe("ucode session store", () => {
   });
 
   test("save and load snapshot roundtrip", () => {
+    appendTurnMessages(workspaceRoot, "sess-roundtrip", "turn-seed", [
+      { role: "user", content: "hello" },
+      { role: "assistant", content: "hi" },
+    ], { scope: "seed" });
     const saved = saveSessionSnapshot(workspaceRoot, {
       sessionId: "sess-roundtrip",
       workspaceRoot,
@@ -64,7 +69,10 @@ describe("ucode session store", () => {
     }));
   });
 
-  test("snapshot externalizes transcript on disk", () => {
+  test("snapshot references the external session journal", () => {
+    appendTurnMessages(workspaceRoot, "sess-v2-local", "turn-seed", [
+      { role: "user", content: "hello" },
+    ], { scope: "seed" });
     const saved = saveSessionSnapshot(workspaceRoot, {
       sessionId: "sess-v2-local",
       workspaceRoot,
@@ -72,7 +80,8 @@ describe("ucode session store", () => {
     });
     expect(saved.ok).toBe(true);
     const raw = JSON.parse(fs.readFileSync(saved.filePath, "utf8"));
-    expect(raw.version).toBe(2);
+    expect(raw.version).toBe(3);
+    expect(raw.journal.path).toContain("journal/sess-v2-local.jsonl");
     expect(raw.transcript.path).toContain("sess-v2-local.jsonl");
   });
 
@@ -83,6 +92,9 @@ describe("ucode session store", () => {
   });
 
   test("save writes atomically without leaving temp files behind", () => {
+    appendTurnMessages(workspaceRoot, "sess-atomic", "turn-seed", [
+      { role: "user", content: "hello" },
+    ], { scope: "seed" });
     const saved = saveSessionSnapshot(workspaceRoot, {
       sessionId: "sess-atomic",
       workspaceRoot,

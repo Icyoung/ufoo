@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const { randomUUID } = require("crypto");
 const { runToolCall } = require("./dispatch");
 const { runNativeAgentTask } = require("./nativeRunner");
 const { runDecomposedTask } = require("./taskDecomposer");
@@ -13,13 +14,13 @@ const {
 const { buildSkillInjections } = require("./skills");
 const {
   assembleModelContext,
-  syncMessagesToTranscript,
   applyContextSideEffects,
   ensureProjectSnapshot,
   recordToolCallInSession,
   commitAfterSegmentEnd,
-  sanitizeModelMessages,
 } = require("./context/assembler");
+const { appendTurnMessages } = require("./conversation/sessionJournal");
+const { loadTranscript, transcriptEventsToMessages } = require("./context/transcript");
 const { buildLayeredSystemPrompt } = require("./context/promptLayers");
 const {
   createProjectPreflightContextV2,
@@ -539,6 +540,7 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
   const analysisTask = isProjectAnalysisTask(taskText);
   const workspaceRoot = String(state.workspaceRoot || process.cwd());
   ensureContextSessionState(state);
+  state.sessionId = resolveSessionId(state.sessionId);
 
   let projectSnapshot = state.projectSnapshot || null;
   if (analysisTask) {
@@ -591,6 +593,26 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
   });
   const systemContext = assembled.systemPrompt;
   state.summary = assembled.summary || state.summary;
+  const turnId = `turn_${Date.now().toString(36)}_${randomUUID().slice(0, 8)}`;
+  const inputAppend = appendTurnMessages(
+    workspaceRoot,
+    String(state.sessionId || ""),
+    turnId,
+    [{ role: "user", content: taskText }],
+    { scope: "input" },
+  );
+  if (!inputAppend.ok) {
+    return {
+      ok: false,
+      summary: "",
+      artifacts: [],
+      logs: logs.slice(),
+      error: `failed to persist conversation input: ${inputAppend.error}`,
+      metrics: {},
+      streamed: false,
+      streamLastChar: "",
+    };
+  }
 
   const onStream = onDelta
     ? (delta) => {
@@ -625,13 +647,9 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
     }
     return state.contextMeter;
   };
-  let lastTranscriptBaseline = 0;
   const invokeNative = (sessionIdValue = "", timeoutOverrideMs = timeoutMs) => {
     toolEventsThisAttempt = 0;
     const historyMessages = assembled.messages;
-    // Sanitized length matches what nativeRunner clones before appending this
-    // turn's user/tool/assistant messages — used as the transcript sync baseline.
-    lastTranscriptBaseline = sanitizeModelMessages(historyMessages).length;
     return runNativeAgentImpl({
       workspaceRoot,
       provider,
@@ -706,12 +724,13 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
           ok: true,
           output: decomposedResult.summary,
           sessionId: state.sessionId,
-          messages: state.nlMessages,
+          turnItems: decomposedResult.turnItems,
         };
       } else {
         cliRes = {
           ok: false,
           error: decomposedResult.error,
+          turnItems: decomposedResult.turnItems,
         };
       }
     } else {
@@ -728,6 +747,34 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
         }
       }
     }
+
+    const outputItems = cliRes && Array.isArray(cliRes.turnItems) ? cliRes.turnItems : [];
+    if (outputItems.length > 0) {
+      const outputAppend = appendTurnMessages(
+        workspaceRoot,
+        String(state.sessionId || ""),
+        turnId,
+        outputItems,
+        { scope: "output" },
+      );
+      if (!outputAppend.ok) {
+        return {
+          ok: false,
+          summary: "",
+          artifacts: [],
+          logs: logs.slice(),
+          error: `failed to persist conversation output: ${outputAppend.error}`,
+          metrics: {},
+          streamed: Boolean(streamed || (cliRes && cliRes.streamed)),
+          streamLastChar,
+        };
+      }
+    }
+    const transcript = loadTranscript(workspaceRoot, String(state.sessionId || ""));
+    state.transcriptEvents = transcript.events;
+    state.nlMessages = stripSkillBlocksFromMessages(
+      transcriptEventsToMessages(transcript.events, { preferArtifact: true }),
+    );
 
     if (!cliRes || cliRes.ok === false) {
       const errMsg = String((cliRes && cliRes.error) || "");
@@ -746,9 +793,8 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
         streamLastChar,
       };
     }
-    if (cliRes && typeof cliRes.sessionId === "string" && cliRes.sessionId.trim()) {
-      state.sessionId = cliRes.sessionId.trim();
-    }
+    // The turn coordinator owns session identity. Providers/runners receive it
+    // as correlation metadata but cannot redirect durable writes mid-turn.
     if (cliRes && cliRes.executionState && typeof cliRes.executionState === "object") {
       // Preserve planMode if the runner returned a fresh empty state without it.
       const priorPlanMode = Boolean(state.executionState && state.executionState.planMode);
@@ -762,18 +808,6 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
       if (!state.executionState.planModeSource && priorSource) {
         state.executionState.planModeSource = priorSource;
       }
-    }
-    if (cliRes && Array.isArray(cliRes.messages)) {
-      // Sync first so ensureTranscript does not migrate the just-assigned
-      // nlMessages and then append the same delta again.
-      syncMessagesToTranscript(state, cliRes.messages, workspaceRoot, {
-        baselineCount: lastTranscriptBaseline,
-      });
-      state.nlMessages = stripSkillBlocksFromMessages(
-        Array.isArray(state.nlMessages) && state.nlMessages.length > 0
-          ? state.nlMessages
-          : cliRes.messages,
-      );
     }
     const normalized = String(cliRes.output || "").trim();
     const sideEffects = parseStructuredSideEffects(normalized);
@@ -1028,6 +1062,9 @@ function resumeSessionState(state = {}, sessionId = "", workspaceRoot = process.
   state.contextMeter = snapshot.contextMeter && typeof snapshot.contextMeter === "object"
     ? snapshot.contextMeter
     : null;
+  // A resume is a pure projection rebuild. Never reuse events belonging to
+  // the session that happened to be active before /resume.
+  state.transcriptEvents = [];
   ensureContextSessionState(state);
   const { ensureTranscript } = require("./context/assembler");
   ensureTranscript(state, state.workspaceRoot);
@@ -1051,6 +1088,7 @@ function resumeSessionState(state = {}, sessionId = "", workspaceRoot = process.
  */
 async function resumeAfterUserInteraction(answerText = "", state = {}, options = {}) {
   ensureContextSessionState(state);
+  state.sessionId = resolveSessionId(state.sessionId);
   const { resolveUserInteraction } = require("./context/userInteraction");
   const { appendAnswerToolResult } = require("./nativeRunner");
   const resolved = resolveUserInteraction(state.executionState, answerText);
@@ -1071,6 +1109,7 @@ async function resumeAfterUserInteraction(answerText = "", state = {}, options =
   };
 
   let messages = Array.isArray(state.nlMessages) ? state.nlMessages.slice() : [];
+  const inputStart = messages.length;
   if (resolved.continueMode === "tool_result" && resolved.resume && resolved.resume.call) {
     const appended = appendAnswerToolResult(messages, resolved.resume, resolved.answer);
     if (!appended.ok) {
@@ -1083,9 +1122,28 @@ async function resumeAfterUserInteraction(answerText = "", state = {}, options =
       content: JSON.stringify(resolved.answer),
     });
   }
-  state.nlMessages = messages;
-
   const workspaceRoot = state.workspaceRoot || process.cwd();
+  const turnId = `turn_${Date.now().toString(36)}_${randomUUID().slice(0, 8)}`;
+  const interactionItems = messages.slice(inputStart);
+  const interactionAppend = appendTurnMessages(
+    workspaceRoot,
+    String(state.sessionId || ""),
+    turnId,
+    interactionItems,
+    { scope: "interaction" },
+  );
+  if (!interactionAppend.ok) {
+    return {
+      ok: false,
+      error: `failed to persist interaction answer: ${interactionAppend.error}`,
+    };
+  }
+  let transcript = loadTranscript(workspaceRoot, String(state.sessionId || ""));
+  state.transcriptEvents = transcript.events;
+  state.nlMessages = stripSkillBlocksFromMessages(
+    transcriptEventsToMessages(transcript.events, { preferArtifact: true }),
+  );
+
   const assembled = assembleModelContext(state, {
     workspaceRoot,
     provider: state.provider,
@@ -1131,9 +1189,30 @@ async function resumeAfterUserInteraction(answerText = "", state = {}, options =
   if (cliRes && cliRes.executionState) {
     state.executionState = cliRes.executionState;
   }
-  if (cliRes && Array.isArray(cliRes.messages)) {
-    state.nlMessages = stripSkillBlocksFromMessages(cliRes.messages);
+  if (cliRes && Array.isArray(cliRes.turnItems) && cliRes.turnItems.length > 0) {
+    const outputAppend = appendTurnMessages(
+      workspaceRoot,
+      String(state.sessionId || ""),
+      turnId,
+      cliRes.turnItems,
+      { scope: "output" },
+    );
+    if (!outputAppend.ok) {
+      return {
+        ok: false,
+        error: `failed to persist interaction output: ${outputAppend.error}`,
+        logs,
+        waitingUserInteraction: false,
+        streamed: Boolean(cliRes.streamed),
+        streamLastChar,
+      };
+    }
   }
+  transcript = loadTranscript(workspaceRoot, String(state.sessionId || ""));
+  state.transcriptEvents = transcript.events;
+  state.nlMessages = stripSkillBlocksFromMessages(
+    transcriptEventsToMessages(transcript.events, { preferArtifact: true }),
+  );
   if (cliRes && cliRes.contextMeter) {
     state.contextMeter = cliRes.contextMeter;
   }

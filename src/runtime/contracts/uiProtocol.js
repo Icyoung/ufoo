@@ -58,6 +58,8 @@ const EVENT_NAMES = Object.freeze([
   "stream.start",
   "stream.delta",
   "stream.done",
+  "thinking.start",
+  "thinking.delta",
   "status.set",
   "agents.snapshot",
   "agents.patch",

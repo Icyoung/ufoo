@@ -154,11 +154,10 @@ function buildUcodeBannerLines({
   }
   shortPath = path.normalize(shortPath);
 
-  // The banner is content, not a log message. Keep it free of ANSI styling so
-  // every terminal renderer can display it as a stable, unformatted block.
+  // The logo is literal content. The renderer receives the completed banner
+  // row as a dedicated raw entry, so the logo never goes through log styling.
   const logoLines = UCODE_BANNER_LINES;
   const infoLines = [];
-  infoLines.push(`Version: ${UCODE_VERSION}`);
   infoLines.push(`Model: ${modelLabel}`);
   if (planMode) {
     infoLines.push("Mode: PLAN");
@@ -176,7 +175,7 @@ function buildUcodeBannerLines({
   return Array.from({ length: rows }, (_, index) => {
     const logoLine = logoLines[index] || logoPadding;
     const info = infoLines[index] || "";
-    return `  ${logoLine}  ${info}`;
+    return `${logoLine}  ${info}`;
   });
 }
 
@@ -325,6 +324,66 @@ function toolMessagePreview(message = {}) {
   return raw;
 }
 
+function parseToolCallArguments(call = {}) {
+  const raw = call && call.function && call.function.arguments != null
+    ? call.function.arguments
+    : (call && call.arguments != null ? call.arguments : call && call.input);
+  if (raw && typeof raw === "object") return raw;
+  if (typeof raw !== "string" || !raw.trim()) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function formatToolDisplayName(tool = "") {
+  const words = String(tool || "tool")
+    .trim()
+    .split(/[_\-\s]+/)
+    .filter(Boolean);
+  return words.map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ") || "Tool";
+}
+
+function formatUcodeToolLine(tool = "", args = {}, payload = {}) {
+  const name = String(tool || "tool").trim().toLowerCase() || "tool";
+  const detail = normalizeToolLogDetail(name, args, payload);
+  return `• ${formatToolDisplayName(name)}${detail ? ` ${detail}` : ""}`;
+}
+
+function collapseConsecutiveUcodeToolEntries(entries = []) {
+  const source = Array.isArray(entries) ? entries : [];
+  const collapsed = [];
+  for (let index = 0; index < source.length;) {
+    const entry = source[index];
+    if (!entry || entry.kind !== "tool") {
+      collapsed.push(entry);
+      index += 1;
+      continue;
+    }
+
+    let end = index + 1;
+    while (end < source.length && source[end] && source[end].kind === "tool") end += 1;
+    const group = source.slice(index, end);
+    if (group.length === 1) {
+      collapsed.push(entry);
+    } else {
+      const detail = group
+        .map((item) => String(item.text || "").replace(/^•\s*/, ""))
+        .join("\n");
+      collapsed.push({
+        ...entry,
+        text: `${String(entry.text || "• Tool")} · +${group.length - 1} calls (Ctrl+O expand)`,
+        detail,
+        expanded: false,
+      });
+    }
+    index = end;
+  }
+  return collapsed;
+}
+
 /**
  * Collapse attached-image prompt prefixes / base64 blobs for TUI log display.
  */
@@ -357,9 +416,6 @@ function buildUcodeSessionLogEntries(messages = [], options = {}) {
     : { inCodeBlock: false };
   const idPrefix = String(options.idPrefix || "h");
   let seq = Number.isFinite(options.startSeq) ? Math.max(0, Math.floor(options.startSeq)) : 0;
-  const maxToolPreviewLines = Number.isFinite(options.maxToolPreviewLines)
-    ? Math.max(1, Math.floor(options.maxToolPreviewLines))
-    : 4;
   const entries = [];
 
   const pushLines = (text, kind) => {
@@ -375,14 +431,12 @@ function buildUcodeSessionLogEntries(messages = [], options = {}) {
     } else {
       lines = source.split(/\r?\n/);
     }
-    for (const line of lines) {
-      entries.push({
-        id: `${idPrefix}-${seq}`,
-        text: String(line || ""),
-        kind,
-      });
-      seq += 1;
-    }
+    entries.push({
+      id: `${idPrefix}-${seq}`,
+      text: lines.map((line) => String(line || "")).join("\n"),
+      kind,
+    });
+    seq += 1;
   };
 
   for (const message of list) {
@@ -392,37 +446,35 @@ function buildUcodeSessionLogEntries(messages = [], options = {}) {
       const text = redactUserMessageForLog(messageContentText(message));
       if (!text.trim()) continue;
       const lines = text.split(/\r?\n/);
-      lines.forEach((line, index) => {
-        pushLines(index === 0 ? `› ${line}` : line, "user");
-      });
+      pushLines(lines.map((line, index) => (index === 0 ? `› ${line}` : line)).join("\n"), "user");
       continue;
     }
     if (role === "assistant") {
       const text = messageContentText(message);
       if (text) pushLines(text, "assistant");
       const calls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
-      if (calls.length > 0) {
-        const names = calls
-          .map((call) => {
-            if (!call || typeof call !== "object") return "";
-            if (call.function && call.function.name) return String(call.function.name);
-            return String(call.name || "");
-          })
-          .map((name) => name.trim())
-          .filter(Boolean);
-        if (names.length > 0) pushLines(`⚙ ${names.join(" · ")}`, "system");
+      for (const call of calls) {
+        if (!call || typeof call !== "object") continue;
+        const name = String(
+          (call.function && call.function.name) || call.name || "tool"
+        ).trim();
+        pushLines(formatUcodeToolLine(name, parseToolCallArguments(call)), "tool");
       }
       continue;
     }
     if (role === "tool") {
-      const preview = toolMessagePreview(message);
-      if (!preview.trim()) continue;
-      const clipped = preview.split(/\r?\n/).slice(0, maxToolPreviewLines).join("\n");
-      pushLines(clipped, "toolDetail");
+      // The corresponding assistant tool_call already carries the command or
+      // path. Tool-result artifacts are internal storage references and do
+      // not belong in the restored transcript presentation.
+      continue;
     }
   }
 
-  return { entries, nextSeq: seq, markdownState };
+  return {
+    entries: collapseConsecutiveUcodeToolEntries(entries),
+    nextSeq: seq,
+    markdownState,
+  };
 }
 
 function shouldEnterAgentSelection(inputValue = "") {
@@ -826,6 +878,19 @@ function buildToolMergeRowText(entries = []) {
   const summary = buildMergedToolSummaryText(list);
   if (list.length >= 2) return `· ${summary} (Ctrl+O expand)`;
   return `· ${summary}`;
+}
+
+function buildUcodeToolRowText(entries = []) {
+  const list = Array.isArray(entries)
+    ? entries.map((item) => normalizeToolMergeEntry(item))
+    : [];
+  if (list.length === 0) return "• Tool";
+  const first = list[0];
+  const firstLine = `• ${formatToolDisplayName(first.tool)}${first.detail ? ` ${first.detail}` : ""}`;
+  if (list.length === 1) return firstLine;
+  const errorCount = list.filter((item) => item.isError).length;
+  const errorSuffix = errorCount > 0 ? ` · ${errorCount} error${errorCount === 1 ? "" : "s"}` : "";
+  return `${firstLine} · +${list.length - 1} calls${errorSuffix}`;
 }
 
 /**
@@ -1318,6 +1383,8 @@ module.exports = {
   buildMergedToolExpandedLines,
   buildMergedToolSummaryText,
   buildToolMergeRowText,
+  buildUcodeToolRowText,
+  collapseConsecutiveUcodeToolEntries,
   buildCompletions,
   buildUcodeBannerLines,
   buildUcodeSessionLogEntries,

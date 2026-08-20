@@ -17,6 +17,7 @@ const {
 } = require("../code/UcodeController");
 const { createEnvelope, encodeMessage } = require("../runtime/contracts/uiProtocol");
 const fmt = require("./format");
+const PACKAGE_VERSION = require("../../package.json").version;
 
 function stripTags(value) {
   return String(value || "").replace(/\{[^}]+\}/g, "");
@@ -160,6 +161,46 @@ function normalizeToolLogEntry(entry = {}) {
   const detail = fmt.normalizeToolLogDetail(tool, entry.args, resObj);
   const errorText = String(entry.error || resObj.error || "").trim();
   return fmt.normalizeToolMergeEntry({ tool, detail, isError, errorText });
+}
+
+function splitUcodeBannerRow(line, index) {
+  const row = String(line || "");
+  const logo = String((fmt.UCODE_BANNER_LINES || [])[index] || "");
+  if (logo && row.startsWith(logo)) {
+    return { logo, metadata: row.slice(logo.length).trimStart() };
+  }
+  return { logo: "", metadata: row.trimStart() };
+}
+
+/**
+ * Keep a model's reasoning in one mutable scrollback entry. The TUI owns the
+ * collapsed/expanded presentation; the host only sends an initial row plus
+ * append-only deltas for that row.
+ */
+function createThinkingLogPublisher(publish, thinkingStatus, streamId) {
+  const id = `${String(streamId || "stream")}-thinking`;
+  let started = false;
+
+  function onThinkingDelta(delta) {
+    const text = String(delta || "");
+    if (!text) return;
+    if (!started) {
+      started = true;
+      publish("thinking.start", { id });
+    }
+    publish("thinking.delta", { id, text });
+    if (thinkingStatus && typeof thinkingStatus.onThinkingDelta === "function") {
+      thinkingStatus.onThinkingDelta(text);
+    }
+  }
+
+  function stop() {
+    if (thinkingStatus && typeof thinkingStatus.reset === "function") {
+      thinkingStatus.reset();
+    }
+  }
+
+  return { id, onThinkingDelta, stop };
 }
 
 async function runUcodeRust(props = {}) {
@@ -321,25 +362,22 @@ async function runUcodeRust(props = {}) {
     } else {
       lines = raw.split(/\r?\n/);
     }
-    let last = null;
-    for (const line of lines) {
-      entrySeq += 1;
-      last = {
-        id: `u-${entrySeq}`,
-        kind,
-        text: stripTags(line),
-        // Keep ANSI in a parallel field if strip removes styling; prefer raw
-        // ANSI line for Rust when it contains escape sequences.
-        ansi: line,
-        speaker: "",
-      };
-      // Prefer ANSI when present so Rust can paint spans; otherwise plain.
-      if (/\x1b\[/.test(line)) {
-        last.text = line;
-      }
-      publish("transcript.append", last);
+    const block = lines.map((line) => String(line || "")).join("\n");
+    entrySeq += 1;
+    const entry = {
+      id: `u-${entrySeq}`,
+      kind,
+      text: stripTags(block),
+      // Keep ANSI in a parallel field if strip removes styling; prefer the
+      // rendered block for Rust when it contains escape sequences.
+      ansi: block,
+      speaker: "",
+    };
+    if (/\x1b\[/.test(block)) {
+      entry.text = block;
     }
-    return last;
+    publish("transcript.append", entry);
+    return entry;
   }
 
   function replaceTranscript(entries = []) {
@@ -351,6 +389,8 @@ async function runUcodeRust(props = {}) {
         kind: String((entry && entry.kind) || "system"),
         text,
         speaker: String((entry && entry.speaker) || ""),
+        detail: String((entry && entry.detail) || ""),
+        expanded: Boolean(entry && entry.expanded),
       };
     });
     entrySeq = Math.max(entrySeq, normalized.length);
@@ -461,13 +501,25 @@ async function runUcodeRust(props = {}) {
     );
     return {
       status: "ready",
+      package_version: PACKAGE_VERSION,
       footer: agentsSnap.footer,
-      entries: banner.concat([""]).map((line, idx) => ({
-        id: `b-${idx}`,
-        kind: idx < banner.length ? "banner" : "spacer",
-        text: stripTags(line),
+      entries: banner.map((line, idx) => {
+        const { logo, metadata } = splitUcodeBannerRow(line, idx);
+        return {
+          id: `b-${idx}`,
+          kind: "banner",
+          // Logo and metadata are separate raw renderer segments. Neither
+          // ever passes through the ordinary log formatter.
+          text: logo,
+          detail: metadata,
+          speaker: "",
+        };
+      }).concat([{
+        id: `b-${banner.length}`,
+        kind: "spacer",
+        text: "",
         speaker: "",
-      })),
+      }]),
       input_history: [],
       agents: agentsSnap.agents,
       attachment_count: pendingAttachments.length,
@@ -509,17 +561,28 @@ async function runUcodeRust(props = {}) {
       tools.beginScope();
       thinking.reset();
       publish("stream.start", { id: streamId });
+      const thinkingLog = createThinkingLogPublisher(publish, thinking, streamId);
+      let responseStarted = false;
+      const beginResponse = () => {
+        if (responseStarted) return;
+        responseStarted = true;
+        thinkingLog.stop();
+        publish("status.set", { text: "Generating response…", busy: true });
+      };
       try {
         const result = await submit(answerText, props.state, {
           signal: abort.signal,
           onDelta: (delta) => {
+            beginResponse();
             publish("stream.delta", { id: streamId, text: String(delta || "") });
           },
-          onThinkingDelta: thinking.onThinkingDelta,
+          onThinkingDelta: (delta) => {
+            if (!responseStarted) thinkingLog.onThinkingDelta(delta);
+          },
           onToolLog: ingestToolLog,
         });
         tools.flush();
-        thinking.reset();
+        thinkingLog.stop();
         publish("stream.done", { id: streamId });
         if (!result || result.ok === false) {
           appendLog(`Error: ${(result && result.error) || "resume failed"}`, "error");
@@ -535,7 +598,7 @@ async function runUcodeRust(props = {}) {
         return { ok: true, waiting: false };
       } catch (err) {
         tools.flush();
-        thinking.reset();
+        thinkingLog.stop();
         publish("stream.done", { id: streamId });
         if (abort.signal.aborted) {
           appendLog("Task cancelled.", "system");
@@ -557,20 +620,31 @@ async function runUcodeRust(props = {}) {
       tools.beginScope();
       thinking.reset();
       publish("stream.start", { id: streamId });
+      const thinkingLog = createThinkingLogPublisher(publish, thinking, streamId);
+      let responseStarted = false;
+      const beginResponse = () => {
+        if (responseStarted) return;
+        responseStarted = true;
+        thinkingLog.stop();
+        publish("status.set", { text: "Generating response…", busy: true });
+      };
       try {
         const nlResult = await props.runNaturalLanguageTask(text, props.state, {
           signal: abort.signal,
           onDelta: (delta) => {
+            beginResponse();
             publish("stream.delta", { id: streamId, text: String(delta || "") });
           },
-          onThinkingDelta: thinking.onThinkingDelta,
+          onThinkingDelta: (delta) => {
+            if (!responseStarted) thinkingLog.onThinkingDelta(delta);
+          },
           onToolLog: ingestToolLog,
           onPhase: (event) => {
             if (!event || typeof event !== "object") return;
             if (event.type === "request_start") {
               publish("status.set", { text: "Waiting for model…", busy: true });
             } else if (event.type === "text_delta") {
-              publish("status.set", { text: "Generating response…", busy: true });
+              beginResponse();
             } else if (event.type === "tool_request") {
               const tool = String(event.name || "tool").trim() || "tool";
               const label = (fmt.TOOL_LABELS && fmt.TOOL_LABELS[tool.toLowerCase()])
@@ -580,7 +654,7 @@ async function runUcodeRust(props = {}) {
           },
         });
         tools.flush();
-        thinking.reset();
+        thinkingLog.stop();
         publish("stream.done", { id: streamId });
         if (nlResult && nlResult.summary) appendLog(nlResult.summary, "system");
         if (typeof props.formatNlResult === "function" && nlResult) {
@@ -596,7 +670,7 @@ async function runUcodeRust(props = {}) {
         return { ok: true, waiting: false, result: nlResult };
       } catch (err) {
         tools.flush();
-        thinking.reset();
+        thinkingLog.stop();
         publish("stream.done", { id: streamId });
         if (abort.signal.aborted) {
           appendLog("Task cancelled.", "system");
@@ -994,6 +1068,8 @@ module.exports = {
   runUcodeRust,
   buildPlanSetPayload,
   normalizeToolLogEntry,
+  splitUcodeBannerRow,
+  createThinkingLogPublisher,
   buildUcodeAgentsSnapshot,
   buildUcodeCompletionItems,
 };

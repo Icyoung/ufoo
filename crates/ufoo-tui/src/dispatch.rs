@@ -209,6 +209,13 @@ fn apply_named_payload(
 ) -> Vec<Effect> {
     match name {
         "app.snapshot" => {
+            if let Some(version) = payload
+                .get("package_version")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.trim().is_empty())
+            {
+                state.package_version = version.trim().to_string();
+            }
             if let Some(status) = payload.get("status").and_then(|v| v.as_str()) {
                 state.status = status.to_string();
             }
@@ -261,7 +268,12 @@ fn apply_named_payload(
         }
         "transcript.reset" => {
             state.flush_pending_delta();
-            state.reset_entries(Vec::new());
+            let entries = payload
+                .get("entries")
+                .and_then(|value| value.as_array())
+                .map(|values| values.iter().filter_map(entry_from_json).collect())
+                .unwrap_or_default();
+            state.reset_entries(entries);
             Vec::new()
         }
         "transcript.append" => {
@@ -299,29 +311,67 @@ fn apply_named_payload(
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             state.push_stream_delta(id, speaker, text);
+            if !state.busy || state.status_started.is_none() {
+                state.status_started = Some(Instant::now());
+            }
             state.busy = true;
             Vec::new()
         }
         "stream.start" => {
             state.flush_pending_delta();
+            if !state.busy || state.status_started.is_none() {
+                state.status_started = Some(Instant::now());
+            }
+            state.busy = true;
+            Vec::new()
+        }
+        "thinking.start" => {
             let id = payload
                 .get("id")
                 .and_then(|v| v.as_str())
-                .unwrap_or("stream")
+                .unwrap_or("thinking")
                 .to_string();
-            state.append_entry(ScrollbackEntry {
-                id,
-                kind: "assistant".into(),
-                text: String::new(),
-                speaker: payload
-                    .get("speaker")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                expanded: false,
-                detail: String::new(),
-            });
-            state.busy = true;
+            if !state.entries.iter().any(|entry| entry.id == id) {
+                state.append_entry(ScrollbackEntry {
+                    id,
+                    kind: "thinking".into(),
+                    text: String::new(),
+                    speaker: String::new(),
+                    expanded: false,
+                    detail: String::new(),
+                });
+            }
+            Vec::new()
+        }
+        "thinking.delta" => {
+            let id = payload
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("thinking");
+            let text = payload
+                .get("text")
+                .or_else(|| payload.get("delta"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if text.is_empty() {
+                return Vec::new();
+            }
+            if let Some(entry) = state
+                .entries
+                .iter_mut()
+                .find(|entry| entry.id == id && entry.kind == "thinking")
+            {
+                entry.text.push_str(text);
+            } else {
+                state.append_entry(ScrollbackEntry {
+                    id: id.to_string(),
+                    kind: "thinking".into(),
+                    text: text.to_string(),
+                    speaker: String::new(),
+                    expanded: false,
+                    detail: String::new(),
+                });
+            }
             Vec::new()
         }
         "stream.done" => {
@@ -341,8 +391,13 @@ fn apply_named_payload(
                 state.status = status.to_string();
             }
             if let Some(busy) = payload.get("busy").and_then(|v| v.as_bool()) {
+                let was_busy = state.busy;
                 state.busy = busy;
-                state.status_started = if busy { Some(Instant::now()) } else { None };
+                if busy && (!was_busy || state.status_started.is_none()) {
+                    state.status_started = Some(Instant::now());
+                } else if !busy {
+                    state.status_started = None;
+                }
             }
             let lower = state.status.to_lowercase();
             let terminal = !state.busy
@@ -1128,12 +1183,12 @@ fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
     }
 
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('o') {
-        if let Some(entry) = state
-            .entries
-            .iter_mut()
-            .rev()
-            .find(|e| e.kind == "tool" && !e.detail.is_empty())
-        {
+        // There is no row focus in scrollback, so toggle the newest foldable
+        // block. This keeps a recent tool group reachable even when an older
+        // thinking block exists earlier in the same turn.
+        if let Some(entry) = state.entries.iter_mut().rev().find(|entry| {
+            entry.kind == "thinking" || (entry.kind == "tool" && !entry.detail.is_empty())
+        }) {
             entry.expanded = !entry.expanded;
         }
         return Vec::new();
@@ -2428,5 +2483,173 @@ mod tests {
 
         assert_eq!(state.package_version, "3.0.23");
         assert!(state.connected);
+    }
+
+    #[test]
+    fn snapshot_refreshes_host_package_version_for_ui_chrome() {
+        let mut state = AppState::new("ufoo", "ucode");
+        dispatch(
+            &mut state,
+            Action::Host(Envelope {
+                protocol: PROTOCOL.into(),
+                kind: "snapshot".into(),
+                name: "app.snapshot".into(),
+                request_id: None,
+                seq: None,
+                payload: json!({ "package_version": "3.0.25" }),
+            }),
+        );
+
+        assert_eq!(state.package_version, "3.0.25");
+    }
+
+    #[test]
+    fn transcript_reset_restores_entries_from_resume_payload() {
+        let mut state = AppState::new("ufoo", "ucode");
+        state.append_entry(ScrollbackEntry {
+            id: "stale".into(),
+            kind: "system".into(),
+            text: "stale transcript".into(),
+            speaker: String::new(),
+            expanded: false,
+            detail: String::new(),
+        });
+
+        dispatch(
+            &mut state,
+            Action::Host(Envelope {
+                protocol: PROTOCOL.into(),
+                kind: "event".into(),
+                name: "transcript.reset".into(),
+                request_id: None,
+                seq: None,
+                payload: json!({
+                    "entries": [
+                        { "id": "h-0", "kind": "user", "text": "› previous question" },
+                        { "id": "h-1", "kind": "assistant", "text": "previous answer" }
+                    ]
+                }),
+            }),
+        );
+
+        assert_eq!(state.entries.len(), 2);
+        assert_eq!(state.entries[0].id, "h-0");
+        assert_eq!(state.entries[0].kind, "user");
+        assert_eq!(state.entries[0].text, "› previous question");
+        assert_eq!(state.entries[1].id, "h-1");
+        assert_eq!(state.entries[1].kind, "assistant");
+        assert_eq!(state.entries[1].text, "previous answer");
+        assert!(state.follow_tail);
+        assert_eq!(state.scroll_offset, 0);
+    }
+
+    #[test]
+    fn repeated_busy_status_updates_preserve_the_elapsed_timer() {
+        let mut state = AppState::new("ufoo", "ucode");
+        let first = Envelope {
+            protocol: PROTOCOL.into(),
+            kind: "event".into(),
+            name: "status.set".into(),
+            request_id: None,
+            seq: None,
+            payload: json!({ "text": "Thinking…", "busy": true }),
+        };
+        dispatch(&mut state, Action::Host(first));
+        let started = state.status_started.expect("busy status starts timer");
+
+        dispatch(
+            &mut state,
+            Action::Host(Envelope {
+                protocol: PROTOCOL.into(),
+                kind: "event".into(),
+                name: "status.set".into(),
+                request_id: None,
+                seq: None,
+                payload: json!({ "text": "Generating response…", "busy": true }),
+            }),
+        );
+
+        assert_eq!(state.status_started, Some(started));
+    }
+
+    #[test]
+    fn thinking_deltas_update_one_entry_and_ctrl_o_expands_it() {
+        let mut state = AppState::new("ufoo", "ucode");
+        let start = |name: &str, payload: serde_json::Value| {
+            Action::Host(Envelope {
+                protocol: PROTOCOL.into(),
+                kind: "event".into(),
+                name: name.into(),
+                request_id: None,
+                seq: None,
+                payload,
+            })
+        };
+
+        dispatch(
+            &mut state,
+            start("thinking.start", json!({ "id": "turn-thinking" })),
+        );
+        dispatch(
+            &mut state,
+            start(
+                "thinking.delta",
+                json!({ "id": "turn-thinking", "text": "first " }),
+            ),
+        );
+        dispatch(
+            &mut state,
+            start(
+                "thinking.delta",
+                json!({ "id": "turn-thinking", "text": "second" }),
+            ),
+        );
+
+        assert_eq!(state.entries.len(), 1);
+        let entry = state.entries.front().expect("thinking entry");
+        assert_eq!(entry.kind, "thinking");
+        assert_eq!(entry.text, "first second");
+        assert!(!entry.expanded);
+
+        dispatch(
+            &mut state,
+            Action::Key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL)),
+        );
+        assert!(state.entries.front().expect("thinking entry").expanded);
+
+        dispatch(
+            &mut state,
+            Action::Key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL)),
+        );
+        assert!(!state.entries.front().expect("thinking entry").expanded);
+    }
+
+    #[test]
+    fn ctrl_o_toggles_newer_tool_group_instead_of_older_thinking_block() {
+        let mut state = AppState::new("ufoo", "ucode");
+        state.append_entry(ScrollbackEntry {
+            id: "thinking".into(),
+            kind: "thinking".into(),
+            text: "reasoning".into(),
+            speaker: String::new(),
+            expanded: false,
+            detail: String::new(),
+        });
+        state.append_entry(ScrollbackEntry {
+            id: "tools".into(),
+            kind: "tool".into(),
+            text: "• Read a.js · +2 calls (Ctrl+O expand)".into(),
+            speaker: String::new(),
+            expanded: false,
+            detail: "Read a.js\nBash pwd\nEdit a.js".into(),
+        });
+
+        dispatch(
+            &mut state,
+            Action::Key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL)),
+        );
+
+        assert!(!state.entries[0].expanded);
+        assert!(state.entries[1].expanded);
     }
 }

@@ -134,7 +134,7 @@ evidence that the host Agent was wrapper-launched.
 | `src/agents/internal/` | Internal agents | SDK/API-backed embedded internal runner. |
 | `src/agents/activity/` | Activity tracking | Ready/activity detectors and state publishing. |
 | `src/agents/controller/` | `ufoo-agent` | Controller loop runtime, observability, tool executor. |
-| `src/code/` | Native `ucode` | Native agent loop, provider runner, session store, skills, TUI, `UcodeController`, launcher helpers. |
+| `src/code/` | Native `ucode` | Native agent loop, provider runner, append-only conversation journal/projections, session metadata store, skills, TUI, `UcodeController`, launcher helpers. |
 | `src/tools/` | Shared tool registry | Controller/worker tool definitions, schemas, handlers, tier permissions. |
 | `src/online/` | Online relay | Relay client/server/runner and token helpers. |
 | `src/config.js` | Config | Project/global config loading and normalization. |
@@ -176,6 +176,9 @@ Do not recreate compatibility directories for old paths.
     offsets/
   agent/
     all-agents.json
+    ucode/
+      journal/       # append-only native ucode conversation events
+      sessions/      # metadata/projection checkpoints, not message truth
   daemon/
   run/
 ```

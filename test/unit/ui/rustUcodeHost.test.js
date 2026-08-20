@@ -3,6 +3,8 @@
 const {
   buildPlanSetPayload,
   normalizeToolLogEntry,
+  splitUcodeBannerRow,
+  createThinkingLogPublisher,
   buildUcodeAgentsSnapshot,
   buildUcodeCompletionItems,
 } = require("../../../src/ui/rustUcodeHost");
@@ -23,6 +25,38 @@ describe("rustUcodeHost helpers", () => {
 
   test("normalizeToolLogEntry returns null without tool", () => {
     expect(normalizeToolLogEntry({})).toBeNull();
+  });
+
+  test("splitUcodeBannerRow preserves the literal logo for native styling", () => {
+    expect(splitUcodeBannerRow(
+      "█ █ █▀▀ █▀█ █▀▄ █▀▀  Model: test",
+      0
+    )).toEqual({
+      logo: "█ █ █▀▀ █▀█ █▀▄ █▀▀",
+      metadata: "Model: test",
+    });
+  });
+
+  test("thinking publisher keeps deltas in one mutable log entry", () => {
+    const events = [];
+    const status = { onThinkingDelta: jest.fn(), reset: jest.fn() };
+    const thinking = createThinkingLogPublisher(
+      (name, payload) => events.push({ name, payload }),
+      status,
+      "stream-1"
+    );
+
+    thinking.onThinkingDelta("first ");
+    thinking.onThinkingDelta("second");
+    thinking.stop();
+
+    expect(events).toEqual([
+      { name: "thinking.start", payload: { id: "stream-1-thinking" } },
+      { name: "thinking.delta", payload: { id: "stream-1-thinking", text: "first " } },
+      { name: "thinking.delta", payload: { id: "stream-1-thinking", text: "second" } },
+    ]);
+    expect(status.onThinkingDelta).toHaveBeenCalledTimes(2);
+    expect(status.reset).toHaveBeenCalledTimes(1);
   });
 
   test("buildPlanSetPayload tolerates empty execution state", () => {

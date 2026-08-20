@@ -39,6 +39,7 @@ const {
   resolveDaemonEndpoint,
   routeDaemonRequest,
 } = require("../runtime/daemon/endpoint");
+const PACKAGE_VERSION = require("../../package.json").version;
 
 function stripTags(value) {
   return String(value || "").replace(/\{[^}]+\}/g, "");
@@ -979,6 +980,7 @@ async function runChatRust(projectRoot, options = {}) {
     const projects = env.globalMode ? loadGlobalProjectRows(activeProjectRoot) : [];
     return {
       status: "ready",
+      package_version: PACKAGE_VERSION,
       footer: agents.footer || "",
       entries: historyToEntries(history),
       input_history: Array.isArray(inputHistory) ? inputHistory.filter(Boolean) : [],

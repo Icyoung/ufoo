@@ -106,27 +106,20 @@ function createUcodeController({
  */
 function createThinkingStatusPublisher(publish, options = {}) {
   const intervalMs = Number(options.intervalMs) > 0 ? Number(options.intervalMs) : 120;
-  let tail = "";
   let timer = null;
   let lastFlush = 0;
-
-  function collapse(text) {
-    const raw = String(text || "").replace(/\s+/g, " ").trim();
-    if (!raw) return "Thinking…";
-    return raw.length > 72 ? `${raw.slice(-72)}` : raw;
-  }
 
   function flush() {
     timer = null;
     lastFlush = Date.now();
     publish("status.set", {
-      text: collapse(tail),
+      text: "Thinking…",
       busy: true,
     });
   }
 
   function onThinkingDelta(chunk) {
-    tail += String(chunk || "");
+    if (!String(chunk || "")) return;
     const elapsed = Date.now() - lastFlush;
     if (elapsed >= intervalMs) {
       flush();
@@ -143,7 +136,6 @@ function createThinkingStatusPublisher(publish, options = {}) {
       clearTimeout(timer);
       timer = null;
     }
-    tail = "";
     lastFlush = 0;
   }
 

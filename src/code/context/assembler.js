@@ -5,7 +5,6 @@ const {
   transcriptEventsToMessages,
   migrateNlMessagesToTranscript,
 } = require("./transcript");
-const { appendTranscriptMessagesForStorage } = require("./transcriptSync");
 const { reduceToolResult } = require("./reducers");
 const { saveArtifact } = require("./artifacts");
 const { buildLayeredSystemPrompt } = require("./promptLayers");
@@ -551,104 +550,6 @@ function recordToolCallInSession(session = {}, persisted = {}, workspaceRoot = p
   }
 }
 
-function syncMessagesToTranscript(session = {}, messages = [], workspaceRoot = process.cwd(), options = {}) {
-  const sessionId = String(session.sessionId || "").trim();
-  if (!sessionId) return [];
-  const prior = ensureTranscript(session, workspaceRoot);
-  const full = Array.isArray(messages) ? messages : [];
-  if (full.length === 0) return prior;
-
-  // `messages` is often a WINDOWED model view (plus this turn's delta), not the
-  // full transcript. Comparing lengths to prior transcript events dropped every
-  // new user turn once the transcript grew past the window — resume then lost
-  // green › user rows. Prefer an explicit baseline, else suffix/prefix match.
-  let baseline = Number.isFinite(options.baselineCount)
-    ? Math.max(0, Math.floor(options.baselineCount))
-    : null;
-  if (baseline == null) {
-    const existingMessages = transcriptEventsToMessages(prior, {
-      preferArtifact: true,
-    });
-    baseline = matchTranscriptBaseline(existingMessages, full);
-  }
-  baseline = Math.max(0, Math.min(full.length, baseline));
-
-  if (full.length <= baseline) {
-    session.nlMessages = transcriptEventsToMessages(session.transcriptEvents, {
-      preferArtifact: true,
-    });
-    return session.transcriptEvents || prior;
-  }
-
-  const delta = full.slice(baseline);
-  const extra = {
-    segmentId: session.executionState && session.executionState.currentSegmentId
-      ? session.executionState.currentSegmentId
-      : "",
-  };
-  appendTranscriptMessagesForStorage(workspaceRoot, sessionId, delta, extra);
-  session.transcriptEvents = loadTranscript(workspaceRoot, sessionId).events;
-  session.nlMessages = transcriptEventsToMessages(session.transcriptEvents, {
-    preferArtifact: true,
-  });
-  session.summary = buildRollingSummary(session.transcriptEvents, session.summary, session);
-  return session.transcriptEvents;
-}
-
-/**
- * Fingerprint a chat message for transcript alignment. Tool payloads are
- * compared by call id (content is often artifact-compressed on disk).
- */
-function messageSyncFingerprint(message = {}) {
-  if (!message || typeof message !== "object") return "";
-  const role = String(message.role || "").trim().toLowerCase();
-  if (role === "tool") {
-    return `tool|${String(message.tool_call_id || "").trim()}`;
-  }
-  if (role === "assistant" && Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
-    const ids = message.tool_calls
-      .map((call) => String((call && call.id) || "").trim())
-      .filter(Boolean)
-      .join(",");
-    return `assistant_tools|${ids}`;
-  }
-  let content = "";
-  if (typeof message.content === "string") content = message.content;
-  else if (message.content != null) {
-    try {
-      content = JSON.stringify(message.content);
-    } catch {
-      content = String(message.content);
-    }
-  }
-  const compact = content.replace(/\s+/g, " ").trim();
-  return `${role}|${compact.length}|${compact.slice(0, 240)}`;
-}
-
-/**
- * How much of `next` is already covered by the end of `existing`.
- * Returns the length of the matched prefix of `next` (baseline for slicing).
- */
-function matchTranscriptBaseline(existing = [], next = []) {
-  const prior = Array.isArray(existing) ? existing : [];
-  const incoming = Array.isArray(next) ? next : [];
-  if (incoming.length === 0) return 0;
-  const priorFingerprints = prior.map(messageSyncFingerprint);
-  const nextFingerprints = incoming.map(messageSyncFingerprint);
-  const max = Math.min(priorFingerprints.length, nextFingerprints.length);
-  for (let k = max; k >= 0; k -= 1) {
-    let matched = true;
-    for (let i = 0; i < k; i += 1) {
-      if (priorFingerprints[priorFingerprints.length - k + i] !== nextFingerprints[i]) {
-        matched = false;
-        break;
-      }
-    }
-    if (matched) return k;
-  }
-  return 0;
-}
-
 function applyContextSideEffects(session = {}, sideEffects = {}, workspaceRoot = process.cwd()) {
   const effects = sideEffects && typeof sideEffects === "object" ? sideEffects : {};
   if (effects.stateCommit) {
@@ -710,10 +611,7 @@ module.exports = {
   assembleModelContext,
   persistToolResultToContext,
   recordToolCallInSession,
-  syncMessagesToTranscript,
   applyContextSideEffects,
   commitAfterSegmentEnd,
   ensureProjectSnapshot,
-  messageSyncFingerprint,
-  matchTranscriptBaseline,
 };

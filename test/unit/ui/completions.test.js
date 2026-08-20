@@ -308,7 +308,11 @@ describe("buildUcodeSessionLogEntries", () => {
       {
         role: "assistant",
         content: null,
-        tool_calls: [{ id: "c1", type: "function", function: { name: "read", arguments: "{}" } }],
+        tool_calls: [{
+          id: "c1",
+          type: "function",
+          function: { name: "bash", arguments: JSON.stringify({ command: "ls -la" }) },
+        }],
       },
       {
         role: "tool",
@@ -318,7 +322,52 @@ describe("buildUcodeSessionLogEntries", () => {
     ]);
     expect(entries.some((row) => row.kind === "user" && row.text.includes("fix resume"))).toBe(true);
     expect(entries.some((row) => row.kind === "assistant" && row.text.includes("ready"))).toBe(true);
-    expect(entries.some((row) => row.kind === "system" && /read/.test(row.text))).toBe(true);
-    expect(entries.some((row) => row.kind === "toolDetail" && row.text.includes("file contents"))).toBe(true);
+    expect(entries.some((row) => row.kind === "tool" && row.text === "• Bash ls -la")).toBe(true);
+    expect(entries.some((row) => row.text.includes("artifact_1"))).toBe(false);
+    expect(entries.some((row) => row.kind === "toolDetail")).toBe(false);
+  });
+
+  test("keeps multiline messages and markdown tables in one transcript block", () => {
+    const { entries } = buildUcodeSessionLogEntries([
+      { role: "user", content: "first line\nsecond line" },
+      {
+        role: "assistant",
+        content: "| File | Size |\n| --- | ---: |\n| session.jsonl | 152K |",
+      },
+    ]);
+
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({ kind: "user" });
+    expect(entries[0].text).toBe("› first line\nsecond line");
+    expect(entries[1]).toMatchObject({ kind: "assistant" });
+    expect(entries[1].text.split("\n").length).toBeGreaterThanOrEqual(3);
+    expect(entries[1].text).toContain("session.jsonl");
+  });
+
+  test("collapses consecutive restored tool calls into one expandable block", () => {
+    const toolMessage = (id, name, args) => ({
+      role: "assistant",
+      content: null,
+      tool_calls: [{
+        id,
+        type: "function",
+        function: { name, arguments: JSON.stringify(args) },
+      }],
+    });
+    const { entries } = buildUcodeSessionLogEntries([
+      toolMessage("c1", "read", { path: "/tmp/a.js" }),
+      { role: "tool", tool_call_id: "c1", content: "ok" },
+      toolMessage("c2", "bash", { command: "pwd" }),
+      { role: "tool", tool_call_id: "c2", content: "ok" },
+      toolMessage("c3", "edit", { path: "/tmp/a.js" }),
+      { role: "tool", tool_call_id: "c3", content: "ok" },
+    ]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: "tool", expanded: false });
+    expect(entries[0].text).toContain("+2 calls");
+    expect(entries[0].text).toContain("Ctrl+O expand");
+    expect(entries[0].detail.split("\n")).toHaveLength(3);
+    expect(entries[0].detail).toContain("Bash pwd");
   });
 });

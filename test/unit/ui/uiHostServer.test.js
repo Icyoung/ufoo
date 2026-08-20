@@ -130,6 +130,40 @@ describe("uiHostServer", () => {
     }
   });
 
+  test("includes the host package version in welcome", async () => {
+    const socketPath = path.join(
+      os.tmpdir(),
+      `ufoo-ui-version-${process.pid}-${Date.now()}.sock`
+    );
+    const authToken = createAuthToken();
+    const host = createUiHostServer({
+      socketPath,
+      authToken,
+      packageVersion: "3.0.25",
+    });
+    await host.listen();
+    try {
+      const socket = net.createConnection(socketPath);
+      await new Promise((resolve, reject) => {
+        socket.once("connect", resolve);
+        socket.once("error", reject);
+      });
+      socket.write(encodeMessage(createEnvelope({
+        kind: "hello",
+        payload: {
+          supported_protocols: ["ufoo-ui/1"],
+          auth_token: authToken,
+        },
+      })));
+      const decoded = decodeMessage(await readLine(socket));
+      expect(decoded.ok).toBe(true);
+      expect(decoded.envelope.payload.package_version).toBe("3.0.25");
+      socket.destroy();
+    } finally {
+      await host.close();
+    }
+  });
+
   test("protocol-probe completes hello/welcome against Node host", async () => {
     if (!BINARY) {
       // eslint-disable-next-line no-console

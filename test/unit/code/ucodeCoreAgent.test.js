@@ -27,6 +27,7 @@ jest.mock("../../../src/code/nativeRunner", () => {
       ok: true,
       output: "implemented",
       sessionId: "sess-1",
+      turnItems: [{ role: "assistant", content: "implemented" }],
     })),
   };
 });
@@ -262,7 +263,7 @@ describe("ucode core agent nl path", () => {
     }));
     expect(result.ok).toBe(true);
     expect(result.summary).toBe("implemented");
-    expect(state.sessionId).toBe("sess-1");
+    expect(state.sessionId).toMatch(/^ucode-/);
   });
 
   test("plan-mode idle message is framed as user reminder without overwriting contract", async () => {
@@ -601,7 +602,7 @@ describe("ucode core agent nl path", () => {
     expect(result.ok).toBe(true);
     expect(result.streamed).toBe(true);
     expect(result.streamLastChar).toBe("2");
-    expect(state.sessionId).toBe("sess-stream");
+    expect(state.sessionId).toMatch(/^ucode-/);
   });
 
   test("runNaturalLanguageTask persists native message history across turns", async () => {
@@ -612,6 +613,7 @@ describe("ucode core agent nl path", () => {
         ok: true,
         output: `ack:${params.prompt}`,
         sessionId: "sess-history",
+        turnItems: [{ role: "assistant", content: `ack:${params.prompt}` }],
         messages: [
           ...prior,
           { role: "user", content: params.prompt },
@@ -823,6 +825,10 @@ describe("ucode core agent nl path", () => {
       ],
     };
     try {
+      const { appendTurnMessages } = require("../../../src/code/conversation/sessionJournal");
+      appendTurnMessages(projectRoot, "sess-roundtrip", "turn-seed", state.nlMessages, {
+        scope: "seed",
+      });
       const persisted = persistSessionState(state);
       expect(persisted.ok).toBe(true);
 
@@ -1209,7 +1215,7 @@ describe("ucode core agent nl path", () => {
     }));
     expect(result.ok).toBe(true);
     expect(result.summary).toBe("done after retry");
-    expect(state.sessionId).toBe("sess-timeout-2");
+    expect(state.sessionId).toMatch(/^ucode-/);
   });
 
   test("runNaturalLanguageTask does not replay a timed-out attempt that already ran tools", async () => {

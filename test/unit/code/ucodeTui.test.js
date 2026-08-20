@@ -28,7 +28,6 @@ const {
   buildMergedToolExpandedLines,
   splitStreamingLogChunk,
   UCODE_BANNER_LINES,
-  UCODE_VERSION,
 } = require("../../../src/code/tui");
 
 describe("ucode tui switch", () => {
@@ -71,17 +70,19 @@ describe("ucode tui switch", () => {
     expect(useTui).toBe(false);
   });
 
-  test("banner includes version, model, and dictionary", () => {
+  test("banner keeps raw logo rows beside metadata without duplicating footer version", () => {
     const lines = buildUcodeBannerLines({
       model: "gpt-5.2-codex",
       engine: "ufoo-core",
       width: 120,
     });
-    expect(lines[0]).toContain("Version:");
-    expect(lines[0]).toContain(UCODE_VERSION);
-    expect(lines[1]).toContain("Model:");
-    expect(lines[1]).toContain("gpt-5.2-codex");
-    expect(lines[2]).toContain("Dictionary:");
+    expect(lines[0]).toContain(UCODE_BANNER_LINES[0]);
+    expect(lines[1]).toContain(UCODE_BANNER_LINES[1]);
+    expect(lines[2]).toContain(UCODE_BANNER_LINES[2]);
+    expect(lines.every((line) => !line.startsWith(" "))).toBe(true);
+    expect(lines[0]).toContain("Model: gpt-5.2-codex");
+    expect(lines[1]).toContain("Dictionary:");
+    expect(lines.join("\n")).not.toContain("Version:");
     expect(lines[0]).toContain("█ █ █▀▀");
   });
 
@@ -95,7 +96,7 @@ describe("ucode tui switch", () => {
     expect(lines.join("\n")).not.toMatch(/\x1B\[/);
   });
 
-  test("banner places session under dictionary with aligned metadata column", () => {
+  test("banner places session under dictionary in the metadata column", () => {
     const lines = buildUcodeBannerLines({
       model: "gpt-5.2-codex",
       workspaceRoot: "/tmp/repo",
@@ -112,7 +113,7 @@ describe("ucode tui switch", () => {
     expect(sessionLine.indexOf("Session:")).toBe(dictionaryLine.indexOf("Dictionary:"));
   });
 
-  test("banner keeps metadata area to version/model/dictionary only", () => {
+  test("banner keeps metadata area to model/dictionary only", () => {
     const lines = buildUcodeBannerLines({
       model: "gpt-5.2-codex",
       nickname: "icy",
@@ -120,7 +121,6 @@ describe("ucode tui switch", () => {
       width: 120,
     });
     const all = lines.join("\n");
-    expect(all).toContain("Version:");
     expect(all).toContain("Model:");
     expect(all).toContain("Dictionary:");
     expect(all).not.toContain("Nickname:");
@@ -242,7 +242,7 @@ describe("ucode tui switch", () => {
 
     expect(lines).toEqual([
       "{cyan-fg}{bold}Title{/bold}{/cyan-fg}",
-      "{gray-fg}•{/gray-fg} item {yellow-fg}x{/yellow-fg}",
+      "{gray-fg}-{/gray-fg} item {yellow-fg}x{/yellow-fg}",
       "{gray-fg}1.{/gray-fg} step",
       "{gray-fg}│{/gray-fg} quote",
     ]);

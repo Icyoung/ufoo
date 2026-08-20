@@ -140,7 +140,7 @@ function createBlessedAdapters(escapeFn = (value) => String(value || "")) {
       return `{bold}${value}{/bold}`;
     },
     quoteMarker: () => "{gray-fg}│{/gray-fg}",
-    bulletMarker: () => "{gray-fg}•{/gray-fg}",
+    bulletMarker: () => "{gray-fg}-{/gray-fg}",
     orderedMarker: (value) => `{gray-fg}${escape(value)}.{/gray-fg}`,
     rule: () => "{gray-fg}────────────────────────{/gray-fg}",
     fenceOpen: (language) => (
@@ -181,7 +181,7 @@ function createAnsiAdapters() {
       return paint.bold(text);
     },
     quoteMarker: () => paint.gray("│"),
-    bulletMarker: () => paint.gray("•"),
+    bulletMarker: () => paint.gray("-"),
     orderedMarker: (value) => paint.gray(`${value}.`),
     rule: () => paint.gray("────────────────────────"),
     fenceOpen: (language) => (

@@ -165,6 +165,7 @@ async function runDecomposedTask({
 }) {
   const steps = decomposeBugFixTask(task);
   const results = [];
+  const turnItems = [];
   let aborted = false;
 
   // Check if already aborted
@@ -227,9 +228,8 @@ async function runDecomposedTask({
           : null,
       });
 
-      if (state && stepResult && Array.isArray(stepResult.messages)) {
-        const { syncMessagesToTranscript } = require("./context/assembler");
-        syncMessagesToTranscript(state, stepResult.messages, workspaceRoot);
+      if (stepResult && Array.isArray(stepResult.turnItems)) {
+        turnItems.push(...stepResult.turnItems);
       }
 
       results.push({
@@ -258,6 +258,7 @@ async function runDecomposedTask({
           ok: false,
           error: `Failed at ${step.name}: ${stepResult.error}`,
           results,
+          turnItems,
         };
       }
 
@@ -274,6 +275,7 @@ async function runDecomposedTask({
         ok: false,
         error: `Error at ${step.name}: ${err.message}`,
         results,
+        turnItems,
       };
     }
   }
@@ -283,6 +285,7 @@ async function runDecomposedTask({
       ok: false,
       error: "Task aborted by user",
       results,
+      turnItems,
     };
   }
 
@@ -293,6 +296,7 @@ async function runDecomposedTask({
     ok: true,
     summary,
     results,
+    turnItems,
   };
 }
 

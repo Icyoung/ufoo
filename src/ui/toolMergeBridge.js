@@ -23,13 +23,11 @@ function createToolMergePublisher(publish) {
       merge = null;
       return;
     }
-    const summary = fmt.buildMergedToolSummaryText(merge.entries);
+    const summary = fmt.buildUcodeToolRowText(merge.entries);
     const detail = fmt.buildMergedToolExpandedLines(merge.entries).join("\n");
-    const row = typeof fmt.buildToolMergeRowText === "function"
-      ? fmt.buildToolMergeRowText(merge.entries)
-      : (merge.entries.length >= 2
-        ? `· ${summary} (Ctrl+O expand)`
-        : summary);
+    const row = merge.entries.length >= 2
+      ? `${summary} (Ctrl+O expand)`
+      : summary;
     publish("tool.group", {
       id: `tool-merge-${merge.id}`,
       summary: row || summary,
@@ -47,7 +45,7 @@ function createToolMergePublisher(publish) {
     if (merge) {
       publish("tool.start", {
         id: `tool-merge-${merge.id}`,
-        summary: fmt.buildMergedToolSummaryText(merge.entries),
+        summary: fmt.buildUcodeToolRowText(merge.entries),
       });
     }
   }

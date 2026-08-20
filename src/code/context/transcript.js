@@ -74,6 +74,11 @@ function readTranscriptFile(filePath = "") {
 }
 
 function loadTranscript(workspaceRoot = process.cwd(), sessionId = "") {
+  const { loadTranscriptProjection } = require("../conversation/sessionJournal");
+  const projected = loadTranscriptProjection(workspaceRoot, sessionId);
+  if (projected.source === "journal-v3" || projected.events.length > 0) {
+    return projected;
+  }
   const filePath = getTranscriptFilePath(workspaceRoot, sessionId);
   return {
     filePath,

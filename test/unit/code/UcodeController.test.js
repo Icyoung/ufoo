@@ -44,7 +44,7 @@ describe("UcodeController", () => {
 });
 
 describe("createThinkingStatusPublisher", () => {
-  test("throttles thinking deltas into status.set", async () => {
+  test("throttles thinking deltas into a stable Thinking status", async () => {
     const events = [];
     const thinking = createThinkingStatusPublisher(
       (name, payload) => events.push({ name, payload }),
@@ -53,7 +53,10 @@ describe("createThinkingStatusPublisher", () => {
     thinking.onThinkingDelta("hello ");
     thinking.onThinkingDelta("world");
     await new Promise((r) => setTimeout(r, 50));
-    expect(events.some((e) => e.name === "status.set" && /hello|Thinking/.test(e.payload.text))).toBe(true);
+    expect(events).toContainEqual({
+      name: "status.set",
+      payload: { text: "Thinking…", busy: true },
+    });
     thinking.reset();
   });
 });

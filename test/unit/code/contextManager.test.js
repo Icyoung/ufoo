@@ -168,7 +168,7 @@ describe("ucode context manager", () => {
     expect(started.segmentId).toMatch(/^seg_/);
   });
 
-  test("session v2 save/load keeps transcript external", () => {
+  test("session v3 save/load keeps journal external", () => {
     migrateNlMessagesToTranscript(workspaceRoot, "sess-v2", [
       { role: "user", content: "hello" },
     ]);
@@ -183,7 +183,8 @@ describe("ucode context manager", () => {
     });
     expect(saved.ok).toBe(true);
     const raw = JSON.parse(fs.readFileSync(saved.filePath, "utf8"));
-    expect(raw.version).toBe(2);
+    expect(raw.version).toBe(3);
+    expect(raw.journal.path).toContain("journal/sess-v2.jsonl");
     expect(raw.nlMessages).toBeUndefined();
     const loaded = loadSessionSnapshot(workspaceRoot, "sess-v2");
     expect(loaded.ok).toBe(true);
@@ -669,38 +670,26 @@ describe("ucode context manager", () => {
     expect(text).toContain("artifact_read");
   });
 
-  test("syncMessagesToTranscript appends windowed turn deltas past full transcript", () => {
-    const {
-      syncMessagesToTranscript,
-      ensureTranscript,
-      matchTranscriptBaseline,
-    } = require("../../../src/code/context/assembler");
-    const { appendTranscriptMessages, loadTranscript } = require("../../../src/code/context/transcript");
+  test("journal appends explicit turn items without model-window alignment", () => {
+    const { ensureTranscript } = require("../../../src/code/context/assembler");
+    const { loadTranscript } = require("../../../src/code/context/transcript");
+    const { appendTurnMessages } = require("../../../src/code/conversation/sessionJournal");
     const { buildUcodeSessionLogEntries } = require("../../../src/ui/format");
 
     const session = { sessionId: "sess-sync-window", workspaceRoot };
-    // Seed a long transcript (larger than a typical model window).
-    const prior = [];
     for (let i = 0; i < 12; i += 1) {
-      prior.push({ role: "user", content: `old-user-${i}` });
-      prior.push({ role: "assistant", content: `old-asst-${i}` });
+      appendTurnMessages(workspaceRoot, session.sessionId, `turn-${i}`, [
+        { role: "user", content: `old-user-${i}` },
+        { role: "assistant", content: `old-asst-${i}` },
+      ], { scope: "seed" });
     }
-    appendTranscriptMessages(workspaceRoot, session.sessionId, prior);
     ensureTranscript(session, workspaceRoot);
     expect(session.transcriptEvents.length).toBe(24);
 
-    // Model window = last 4 messages, plus this turn's new user/assistant.
-    const windowed = prior.slice(-4).concat([
+    appendTurnMessages(workspaceRoot, session.sessionId, "turn-new", [
       { role: "user", content: "brand new question" },
       { role: "assistant", content: "brand new answer" },
-    ]);
-    expect(windowed.length).toBeLessThan(session.transcriptEvents.length);
-    expect(matchTranscriptBaseline(
-      require("../../../src/code/context/transcript").transcriptEventsToMessages(session.transcriptEvents),
-      windowed,
-    )).toBe(4);
-
-    syncMessagesToTranscript(session, windowed, workspaceRoot, { baselineCount: 4 });
+    ], { scope: "current" });
     const loaded = loadTranscript(workspaceRoot, session.sessionId);
     const userContents = loaded.events
       .filter((event) => event.role === "user")

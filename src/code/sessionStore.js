@@ -6,10 +6,9 @@ const {
   getTranscriptFilePath,
   loadTranscript,
   migrateNlMessagesToTranscript,
-  appendTranscriptMessages,
-  transcriptEventsToMessages,
   deleteTranscript,
 } = require("./context/transcript");
+const { getJournalPath, deleteSessionJournal } = require("./conversation/sessionJournal");
 const { deleteSessionArtifacts } = require("./context/artifacts");
 const { deleteSessionCommitLog, maybeGcSessionArtifacts } = require("./context/artifactGc");
 const { defaultContextPolicy } = require("./context/assembler");
@@ -84,8 +83,11 @@ function buildSessionSnapshot(input = {}) {
   };
 
   return {
-    version: 2,
+    version: 3,
     ...base,
+    journal: {
+      path: getJournalPath(base.workspaceRoot, sessionId),
+    },
     transcript: {
       path: getTranscriptFilePath(base.workspaceRoot, sessionId),
     },
@@ -148,22 +150,6 @@ function hydrateSessionFromDisk(snapshot = {}, workspaceRoot = process.cwd()) {
   }
 
   return payload;
-}
-
-function syncTranscriptFromNlMessages(workspaceRoot = process.cwd(), sessionId = "", nlMessages = []) {
-  const messages = Array.isArray(nlMessages) ? nlMessages : [];
-  if (!sessionId || messages.length === 0) return;
-  const existing = loadTranscript(workspaceRoot, sessionId);
-  if (existing.events.length === 0) {
-    migrateNlMessagesToTranscript(workspaceRoot, sessionId, messages);
-    return;
-  }
-  const { matchTranscriptBaseline } = require("./context/assembler");
-  const priorMessages = transcriptEventsToMessages(existing.events);
-  const baseline = matchTranscriptBaseline(priorMessages, messages);
-  if (messages.length > baseline) {
-    appendTranscriptMessages(workspaceRoot, sessionId, messages.slice(baseline));
-  }
 }
 
 function listSessionSummaries(workspaceRoot = process.cwd(), { limit = 40 } = {}) {
@@ -250,8 +236,9 @@ function saveSessionSnapshot(workspaceRoot = process.cwd(), snapshot = {}) {
 
   const toWrite = { ...payload };
   if (toWrite.version >= 2) {
-    syncTranscriptFromNlMessages(normalizedRoot, payload.sessionId, payload.nlMessages);
-    // nlMessages live in transcript.jsonl; keep session.json light
+    // Conversation content is committed explicitly by the turn coordinator.
+    // Session snapshot saves projections/metadata only and never tries to infer
+    // missing events from a mutable provider message array.
     delete toWrite.nlMessages;
   }
 
@@ -349,6 +336,7 @@ function deleteSessionData(workspaceRoot = process.cwd(), sessionId = "") {
   const filePath = getSessionFilePath(workspaceRoot, normalizedId);
   try {
     if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    deleteSessionJournal(workspaceRoot, normalizedId);
     deleteTranscript(workspaceRoot, normalizedId);
     deleteSessionArtifacts(workspaceRoot, normalizedId);
     deleteSessionCommitLog(workspaceRoot, normalizedId);
