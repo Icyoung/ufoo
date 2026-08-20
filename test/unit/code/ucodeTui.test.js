@@ -672,6 +672,14 @@ describe("ucode tui switch", () => {
     ]);
   });
 
+  test("buildMergedToolExpandedLines keeps multiline commands on one row", () => {
+    expect(buildMergedToolExpandedLines([
+      { tool: "bash", detail: "grep first\ntry { second }\n\"quoted\"" },
+    ])).toEqual([
+      "Bash grep first try { second } \"quoted\"",
+    ]);
+  });
+
   test("splitStreamingLogChunk drops tool-call leading blank line only", () => {
     expect(splitStreamingLogChunk("", "\nanalysis done", {
       dropLeadingBlank: true,

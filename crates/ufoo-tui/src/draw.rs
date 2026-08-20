@@ -580,7 +580,9 @@ fn build_scrollback_lines(state: &AppState, width: usize) -> Vec<Line<'static>> 
                 };
                 let visible_len = visible.len();
                 for (index, (line, omitted)) in visible.into_iter().enumerate() {
-                    let branch = if index + 1 == visible_len {
+                    let branch = if index == 0 {
+                        ""
+                    } else if index + 1 == visible_len {
                         "└─ "
                     } else {
                         "├─ "
@@ -1392,7 +1394,7 @@ mod tests {
         assert_eq!(
             rendered,
             vec![
-                " ├─ Read first.rs (Ctrl+O expand)",
+                " Read first.rs (Ctrl+O expand)",
                 " ├─ ... Read fourth.rs",
                 " └─ Write fifth.rs",
                 "",
@@ -1425,7 +1427,7 @@ mod tests {
         assert_eq!(
             rendered,
             vec![
-                " ├─ Read first.rs",
+                " Read first.rs",
                 " ├─ Bash second",
                 " ├─ Edit third.rs",
                 " └─ Write fourth.rs",

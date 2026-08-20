@@ -835,7 +835,9 @@ function buildMergedToolExpandedLines(entries = []) {
     : [];
   const maxLength = 120;
   return list.map((item) => {
-    const base = `${formatToolDisplayName(item.tool)}${item.detail ? ` ${item.detail}` : ""}`;
+    const base = `${formatToolDisplayName(item.tool)}${item.detail ? ` ${item.detail}` : ""}`
+      .replace(/\s+/g, " ")
+      .trim();
     let line;
     if (!item.isError) {
       line = base;
