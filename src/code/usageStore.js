@@ -59,7 +59,20 @@ function createUsageSummary() {
     output: 0,
     cacheRead: 0,
     cacheCreation: 0,
+    cacheInput: 0,
   };
+}
+
+function promptTokenTotal(row = {}) {
+  const input = toUsageCount(row.input);
+  const provider = String(row.provider || "").trim().toLowerCase();
+  // OpenAI-compatible usage.prompt_tokens already includes cached tokens.
+  // Anthropic reports uncached, cache-read, and cache-creation tokens as
+  // disjoint counters, so reconstruct the total prompt-token denominator.
+  if (provider === "anthropic") {
+    return input + toUsageCount(row.cacheRead) + toUsageCount(row.cacheCreation);
+  }
+  return input;
 }
 
 function summarizeSessionUsage({ workspaceRoot = process.cwd(), sessionId = "" } = {}) {
@@ -88,6 +101,7 @@ function summarizeSessionUsage({ workspaceRoot = process.cwd(), sessionId = "" }
     summary.output += toUsageCount(row.output);
     summary.cacheRead += toUsageCount(row.cacheRead);
     summary.cacheCreation += toUsageCount(row.cacheCreation);
+    summary.cacheInput += promptTokenTotal(row);
   }
   return summary;
 }
@@ -98,11 +112,14 @@ function formatSessionUsageStatus(summary = {}) {
   const output = Number(source.output) || 0;
   const cacheRead = Number(source.cacheRead) || 0;
   const cacheCreation = Number(source.cacheCreation) || 0;
-  const denominator = cacheRead + input;
+  const reportedCacheInput = Number(source.cacheInput);
+  const denominator = Number.isFinite(reportedCacheInput) && reportedCacheInput > 0
+    ? reportedCacheInput
+    : input;
   const hitRate = denominator > 0 ? (cacheRead / denominator) * 100 : 0;
   return [
     `Session tokens: input=${input} output=${output} cache_read=${cacheRead} cache_creation=${cacheCreation}`,
-    `Cache hit rate: ${hitRate.toFixed(1)}% (cache_read/(cache_read+input))`,
+    `Cache hit rate: ${hitRate.toFixed(1)}% (cache_read/prompt_input)`,
   ].join("\n");
 }
 

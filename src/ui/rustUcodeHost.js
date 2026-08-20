@@ -203,6 +203,31 @@ function createThinkingLogPublisher(publish, thinkingStatus, streamId) {
   return { id, onThinkingDelta, stop };
 }
 
+function createLeadingWhitespaceNormalizer() {
+  let hasVisibleText = false;
+  return (delta) => {
+    const text = String(delta || "");
+    if (hasVisibleText || !text) return text;
+    const visible = text.replace(/^\s+/u, "");
+    if (!visible) return "";
+    hasVisibleText = true;
+    return visible;
+  };
+}
+
+function appendNaturalLanguageResult(nlResult, formatNlResult, appendLog) {
+  if (typeof formatNlResult !== "function" || typeof appendLog !== "function" || !nlResult) {
+    return false;
+  }
+  // Successful streamed text is already present in the mutable stream entry.
+  // Appending summary + formatted summary here duplicated the same answer.
+  if (nlResult.ok !== false && nlResult.streamed) return false;
+  const formatted = String(formatNlResult(nlResult) || "").trim();
+  if (!formatted) return false;
+  appendLog(formatted, nlResult.ok === false ? "error" : "assistant");
+  return true;
+}
+
 async function runUcodeRust(props = {}) {
   const plan = resolveTuiLaunchPlan({
     mode: props.tuiMode || process.env.UFOO_TUI || "rust",
@@ -562,6 +587,7 @@ async function runUcodeRust(props = {}) {
       thinking.reset();
       publish("stream.start", { id: streamId });
       const thinkingLog = createThinkingLogPublisher(publish, thinking, streamId);
+      const normalizeStreamDelta = createLeadingWhitespaceNormalizer();
       let responseStarted = false;
       const beginResponse = () => {
         if (responseStarted) return;
@@ -573,8 +599,10 @@ async function runUcodeRust(props = {}) {
         const result = await submit(answerText, props.state, {
           signal: abort.signal,
           onDelta: (delta) => {
+            const visibleDelta = normalizeStreamDelta(delta);
+            if (!visibleDelta) return;
             beginResponse();
-            publish("stream.delta", { id: streamId, text: String(delta || "") });
+            publish("stream.delta", { id: streamId, text: visibleDelta });
           },
           onThinkingDelta: (delta) => {
             if (!responseStarted) thinkingLog.onThinkingDelta(delta);
@@ -621,6 +649,7 @@ async function runUcodeRust(props = {}) {
       thinking.reset();
       publish("stream.start", { id: streamId });
       const thinkingLog = createThinkingLogPublisher(publish, thinking, streamId);
+      const normalizeStreamDelta = createLeadingWhitespaceNormalizer();
       let responseStarted = false;
       const beginResponse = () => {
         if (responseStarted) return;
@@ -632,8 +661,10 @@ async function runUcodeRust(props = {}) {
         const nlResult = await props.runNaturalLanguageTask(text, props.state, {
           signal: abort.signal,
           onDelta: (delta) => {
+            const visibleDelta = normalizeStreamDelta(delta);
+            if (!visibleDelta) return;
             beginResponse();
-            publish("stream.delta", { id: streamId, text: String(delta || "") });
+            publish("stream.delta", { id: streamId, text: visibleDelta });
           },
           onThinkingDelta: (delta) => {
             if (!responseStarted) thinkingLog.onThinkingDelta(delta);
@@ -656,11 +687,7 @@ async function runUcodeRust(props = {}) {
         tools.flush();
         thinkingLog.stop();
         publish("stream.done", { id: streamId });
-        if (nlResult && nlResult.summary) appendLog(nlResult.summary, "system");
-        if (typeof props.formatNlResult === "function" && nlResult) {
-          const formatted = props.formatNlResult(nlResult);
-          if (formatted) appendLog(formatted, "assistant");
-        }
+        appendNaturalLanguageResult(nlResult, props.formatNlResult, appendLog);
         persistIfNeeded();
         publishPlan();
         publishUsageFromResult(nlResult);
@@ -782,7 +809,7 @@ async function runUcodeRust(props = {}) {
       if (name === "task.cancel") {
         controller.cancelTask();
         publish("status.set", { text: "cancelling…", busy: true });
-        appendLog("⚙ Cancellation requested. Stopping the current task...", "system");
+        appendLog("• Cancellation requested. Stopping the current task...", "system");
         return { ok: true };
       }
       if (name === "completion.request") {
@@ -1070,6 +1097,8 @@ module.exports = {
   normalizeToolLogEntry,
   splitUcodeBannerRow,
   createThinkingLogPublisher,
+  createLeadingWhitespaceNormalizer,
+  appendNaturalLanguageResult,
   buildUcodeAgentsSnapshot,
   buildUcodeCompletionItems,
 };

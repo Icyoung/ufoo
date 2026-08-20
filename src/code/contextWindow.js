@@ -24,6 +24,8 @@ function contextTokensFromUsage(usage = null) {
   const input = toTokenCount(usage.input);
   const cacheRead = toTokenCount(usage.cacheRead);
   const cacheCreation = toTokenCount(usage.cacheCreation);
+  if (usage.inputIncludesCache === true) return input;
+  if (usage.inputIncludesCache === false) return input + cacheRead + cacheCreation;
   if (cacheCreation > 0) return input + cacheRead + cacheCreation;
   // Anthropic exclusive split: input can be smaller than cache_read alone.
   if (cacheRead > 0 && input < cacheRead) return input + cacheRead + cacheCreation;

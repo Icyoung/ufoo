@@ -108,6 +108,7 @@ describe("ucode usage store", () => {
       output: 40,
       cacheRead: 80,
       cacheCreation: 20,
+      cacheInput: 300,
     });
 
     const empty = summarizeSessionUsage({ workspaceRoot, sessionId: "sess-missing" });
@@ -142,17 +143,40 @@ describe("ucode repl status command", () => {
 
   test("formatSessionUsageStatus shows totals and the cache hit rate", () => {
     const output = formatSessionUsageStatus({
-      input: 100,
+      input: 400,
       output: 25,
       cacheRead: 300,
       cacheCreation: 50,
     });
-    expect(output).toContain("input=100");
+    expect(output).toContain("input=400");
     expect(output).toContain("output=25");
     expect(output).toContain("cache_read=300");
     expect(output).toContain("cache_creation=50");
-    // 300 / (300 + 100) = 75%
+    // OpenAI-compatible input already includes cache reads: 300 / 400 = 75%.
     expect(output).toContain("75.0%");
+    expect(output).toContain("cache_read/prompt_input");
+  });
+
+  test("summarizeSessionUsage reconstructs Anthropic total prompt tokens", () => {
+    const usageRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-usage-anthropic-"));
+    try {
+      appendUsageRecord(usageRoot, {
+        sessionId: "sess-anthropic",
+        provider: "anthropic",
+        input: 100,
+        cacheRead: 300,
+        cacheCreation: 50,
+      });
+
+      const summary = summarizeSessionUsage({
+        workspaceRoot: usageRoot,
+        sessionId: "sess-anthropic",
+      });
+      expect(summary.cacheInput).toBe(450);
+      expect(formatSessionUsageStatus(summary)).toContain("66.7%");
+    } finally {
+      fs.rmSync(usageRoot, { recursive: true, force: true });
+    }
   });
 
   test("formatSessionUsageStatus handles an empty summary", () => {

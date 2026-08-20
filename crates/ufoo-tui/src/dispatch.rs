@@ -1115,7 +1115,13 @@ fn apply_agents(state: &mut AppState, payload: &serde_json::Value) {
             };
         }
     }
-    if let Some(footer) = payload.get("footer").and_then(|v| v.as_str()) {
+    if state.surface == "ucode" {
+        // The ucode footer is composed from independent state (agents, usage,
+        // attachments, loop status). A periodic agents.snapshot must not
+        // replace the whole row with its agents-only fallback and erase the
+        // context meter that usage.set already installed.
+        state.rebuild_footer();
+    } else if let Some(footer) = payload.get("footer").and_then(|v| v.as_str()) {
         state.footer = footer.to_string();
     } else {
         state.rebuild_footer();
@@ -2501,6 +2507,32 @@ mod tests {
         );
 
         assert_eq!(state.package_version, "3.0.25");
+    }
+
+    #[test]
+    fn ucode_agent_refresh_preserves_context_usage_in_footer() {
+        let mut state = AppState::new("ufoo", "ucode");
+        state.usage_summary = "126K / 200K".into();
+        state.rebuild_footer();
+
+        dispatch(
+            &mut state,
+            Action::Host(Envelope {
+                protocol: PROTOCOL.into(),
+                kind: "event".into(),
+                name: "agents.snapshot".into(),
+                request_id: None,
+                seq: None,
+                payload: json!({
+                    "agents": [],
+                    "footer": "Agents: none"
+                }),
+            }),
+        );
+
+        assert_eq!(state.usage_summary, "126K / 200K");
+        assert!(state.footer.contains("Agents: none"));
+        assert!(state.footer.contains("126K / 200K"));
     }
 
     #[test]

@@ -5,6 +5,8 @@ const {
   normalizeToolLogEntry,
   splitUcodeBannerRow,
   createThinkingLogPublisher,
+  createLeadingWhitespaceNormalizer,
+  appendNaturalLanguageResult,
   buildUcodeAgentsSnapshot,
   buildUcodeCompletionItems,
 } = require("../../../src/ui/rustUcodeHost");
@@ -57,6 +59,32 @@ describe("rustUcodeHost helpers", () => {
     ]);
     expect(status.onThinkingDelta).toHaveBeenCalledTimes(2);
     expect(status.reset).toHaveBeenCalledTimes(1);
+  });
+
+  test("leading whitespace normalizer suppresses blank stream rows", () => {
+    const normalize = createLeadingWhitespaceNormalizer();
+    expect(normalize("\n\n  ")).toBe("");
+    expect(normalize("\n  hello")).toBe("hello");
+    expect(normalize("\nworld")).toBe("\nworld");
+  });
+
+  test("streamed natural-language results are not appended a second time", () => {
+    const appendLog = jest.fn();
+    const format = jest.fn(() => "same streamed answer");
+    expect(appendNaturalLanguageResult(
+      { ok: true, streamed: true, summary: "same streamed answer" },
+      format,
+      appendLog
+    )).toBe(false);
+    expect(format).not.toHaveBeenCalled();
+    expect(appendLog).not.toHaveBeenCalled();
+
+    expect(appendNaturalLanguageResult(
+      { ok: true, streamed: false, summary: "one answer" },
+      () => "one answer",
+      appendLog
+    )).toBe(true);
+    expect(appendLog).toHaveBeenCalledWith("one answer", "assistant");
   });
 
   test("buildPlanSetPayload tolerates empty execution state", () => {

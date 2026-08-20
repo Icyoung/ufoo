@@ -96,6 +96,7 @@ const DEFAULT_KIMI_MODEL = "k3";
 // for non-trivial tasks while still catching runaway loops. Override via env.
 const DEFAULT_MAX_NATIVE_TOOL_CALLS = 100;
 const DEFAULT_MAX_NATIVE_TOOL_ERRORS = 20;
+const MAX_EMPTY_TERMINAL_RETRIES = 2;
 const DEFAULT_NATIVE_TIMEOUT_MS = 43200000; // 12 hours
 /** Max text-only auto-continues while a plan is waiting on a task (per user submit). */
 const DEFAULT_MAX_PLAN_AUTO_CONTINUES = 24;
@@ -213,7 +214,8 @@ function readOpenAiUsage(raw) {
     input: toUsageInt(raw.prompt_tokens),
     output: toUsageInt(raw.completion_tokens),
     cacheRead: toUsageInt(details.cached_tokens),
-    cacheCreation: 0,
+    cacheCreation: toUsageInt(details.created_cache_tokens),
+    inputIncludesCache: true,
   };
 }
 
@@ -226,6 +228,7 @@ function readAnthropicUsage(raw, { includeOutput = false } = {}) {
     output: includeOutput ? toUsageInt(raw.output_tokens) : 0,
     cacheRead: toUsageInt(raw.cache_read_input_tokens),
     cacheCreation: toUsageInt(raw.cache_creation_input_tokens),
+    inputIncludesCache: false,
   };
 }
 
@@ -1431,7 +1434,13 @@ async function runAnthropicTurn({
   let responseText = "";
   let nextSyntheticBlockIndex = 0;
   let lastBlockIndex = -1;
-  const turnUsage = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
+  const turnUsage = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheCreation: 0,
+    inputIncludesCache: false,
+  };
 
   return runSseRequest({
     url,
@@ -1806,6 +1815,7 @@ async function runNativeLoop({
   let streamed = false;
   let toolCallsExecuted = 0;
   let toolErrors = 0;
+  let emptyTerminalRetries = 0;
   let executionState = initialExecutionState && typeof initialExecutionState === "object"
     ? initialExecutionState
     : emptyExecutionState();
@@ -1979,6 +1989,22 @@ async function runNativeLoop({
 
     if (toolCalls.length === 0) {
       const text = String(turnResult.text || "").trim();
+      if (!text && toolCallsExecuted > 0) {
+        if (emptyTerminalRetries >= MAX_EMPTY_TERMINAL_RETRIES) {
+          throw new Error("model returned an empty response after tool execution");
+        }
+        emptyTerminalRetries += 1;
+        providerMessages.push({
+          role: "user",
+          content: [
+            "Continue the current task after the tool results.",
+            "Call any remaining tools, or provide a concrete final answer to the user.",
+            "Do not end the turn with an empty response.",
+          ].join(" "),
+        });
+        continue;
+      }
+      emptyTerminalRetries = 0;
       const sideEffects = parseStructuredSideEffects(text);
       const planCommand = sideEffects ? normalizePlanGraphCommand(sideEffects) : null;
       if (planCommand) {
@@ -2032,6 +2058,7 @@ async function runNativeLoop({
 
     // A tool-using turn resets the empty auto-continue streak (progress possible).
     consecutiveEmptyAutoContinues = 0;
+    emptyTerminalRetries = 0;
 
     const pendingCalls = transport.prepareToolCalls({
       messages: providerMessages,

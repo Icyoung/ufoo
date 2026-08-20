@@ -21,7 +21,8 @@ describe("contextWindow", () => {
     expect(contextTokensFromUsage({
       input: 5000,
       cacheRead: 2000,
-      cacheCreation: 0,
+      cacheCreation: 1000,
+      inputIncludesCache: true,
     })).toBe(5000);
   });
 

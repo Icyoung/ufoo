@@ -1392,7 +1392,7 @@ describe("ucode native runner", () => {
         usage: {
           prompt_tokens: 100,
           completion_tokens: 20,
-          prompt_tokens_details: { cached_tokens: 40 },
+          prompt_tokens_details: { cached_tokens: 40, created_cache_tokens: 60 },
         },
       },
     ]));
@@ -1410,7 +1410,7 @@ describe("ucode native runner", () => {
       input: 100,
       output: 20,
       cacheRead: 40,
-      cacheCreation: 0,
+      cacheCreation: 60,
       lastContextTokens: 100,
     });
     const requestBody = JSON.parse(global.fetch.mock.calls[0][1].body);
@@ -1518,6 +1518,84 @@ describe("ucode native runner", () => {
       cacheCreation: 0,
     });
     expect(typeof rows[0].ts).toBe("string");
+  });
+
+  test("auto-continues an empty terminal response after tool execution", async () => {
+    global.fetch
+      .mockResolvedValueOnce(makeSseResponse([
+        {
+          choices: [{
+            delta: {
+              tool_calls: [{
+                index: 0,
+                id: "call_empty_retry",
+                type: "function",
+                function: { name: "read", arguments: '{"path":"a.txt"}' },
+              }],
+            },
+          }],
+        },
+      ]))
+      .mockResolvedValueOnce(makeSseResponse([
+        { choices: [{ delta: {} }] },
+      ]))
+      .mockResolvedValueOnce(makeSseResponse([
+        { choices: [{ delta: { content: "finished after retry" } }] },
+      ]));
+    runToolCall.mockReturnValue({ ok: true, content: "ok" });
+
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "finish the task",
+      provider: "openai",
+      model: "gpt-test",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.output).toBe("finished after retry");
+    expect(global.fetch).toHaveBeenCalledTimes(3);
+    const retryRequest = JSON.parse(global.fetch.mock.calls[2][1].body);
+    expect(retryRequest.messages.some((message) => (
+      message.role === "user"
+      && String(message.content || "").includes("Do not end the turn with an empty response")
+    ))).toBe(true);
+    expect(result.turnItems.some((message) => (
+      message.role === "user"
+      && String(message.content || "").includes("Do not end the turn with an empty response")
+    ))).toBe(false);
+  });
+
+  test("reports an error instead of false completion after repeated empty terminal responses", async () => {
+    global.fetch
+      .mockResolvedValueOnce(makeSseResponse([
+        {
+          choices: [{
+            delta: {
+              tool_calls: [{
+                index: 0,
+                id: "call_empty_failure",
+                type: "function",
+                function: { name: "read", arguments: '{"path":"a.txt"}' },
+              }],
+            },
+          }],
+        },
+      ]))
+      .mockResolvedValueOnce(makeSseResponse([{ choices: [{ delta: {} }] }]))
+      .mockResolvedValueOnce(makeSseResponse([{ choices: [{ delta: {} }] }]))
+      .mockResolvedValueOnce(makeSseResponse([{ choices: [{ delta: {} }] }]));
+    runToolCall.mockReturnValue({ ok: true, content: "ok" });
+
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "finish the task",
+      provider: "openai",
+      model: "gpt-test",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("empty response after tool execution");
+    expect(result.output).not.toContain("Completed");
   });
 
   test("rejects mixed plan_graph and data tools with contiguous tool results", async () => {
