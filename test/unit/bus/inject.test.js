@@ -246,12 +246,12 @@ describe("Injector", () => {
       );
     });
 
-    test("agy subscriber routes through bare 'ubus' (not '/ubus')", async () => {
-      // agy's `/` is reserved for its own slash-command namespace, so
+    test.each(["agy", "grok"])("%s subscriber routes through bare 'ubus' (not '/ubus')", async (agentType) => {
+      // agy/grok `/` is reserved for their own slash-command namespace, so
       // sending `/ubus xxx` would be interpreted as an unknown slash
-      // command. The injector must default to bare `ubus` for agy:* IDs
+      // command. The injector must default to bare `ubus` for these IDs
       // — same convention as codex.
-      const sockPath = path.join(busDir, "queues", "agy_test", "inject.sock");
+      const sockPath = path.join(busDir, "queues", `${agentType}_test`, "inject.sock");
       fs.mkdirSync(path.dirname(sockPath), { recursive: true });
 
       const received = [];
@@ -266,12 +266,12 @@ describe("Injector", () => {
       const agentsFile = path.join(busDir, "agents.json");
       fs.writeFileSync(
         agentsFile,
-        JSON.stringify({ agents: { "agy:test": {} } })
+        JSON.stringify({ agents: { [`${agentType}:test`]: {} } })
       );
 
       try {
         const injector = new Injector(busDir, agentsFile);
-        await injector.inject("agy:test");
+        await injector.inject(`${agentType}:test`);
       } finally {
         server.close();
       }

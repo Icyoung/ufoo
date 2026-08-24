@@ -230,10 +230,13 @@ function shouldShowLaunchBanner(agentType = "") {
 function computeInjectedSubmitDelayMs(agentType, text) {
   const normalizedAgent = String(agentType || "").trim().toLowerCase();
   const input = typeof text === "string" ? text : "";
-  // Agy uses an ink-style TUI like claude-code, so it needs a similar grace
-  // window before the input handler picks up injected text. Kimi Code is an
-  // Ink TUI as well and gets the same treatment.
-  const isInkStyle = normalizedAgent === "claude-code" || normalizedAgent === "agy" || normalizedAgent === "kimi";
+  // Agy, Grok Build, and Kimi Code use ink-style TUIs like claude-code, so
+  // they need a similar grace window before the input handler picks up
+  // injected text.
+  const isInkStyle = normalizedAgent === "claude-code"
+    || normalizedAgent === "agy"
+    || normalizedAgent === "grok"
+    || normalizedAgent === "kimi";
   let delayMs = isInkStyle ? 350 : 200;
   if (input.includes("\n")) {
     delayMs += isInkStyle ? 250 : 120;
@@ -267,10 +270,13 @@ async function injectPtyCommand(wrapper, agentType, commandText, source = "injec
   const normalizedAgentType = String(agentType || "").trim().toLowerCase();
   const submitDelayMs = computeInjectedSubmitDelayMs(agentType, text);
   wrapper.write(text);
-  // claude-code, agy and kimi all run ink-style TUIs that accept a bare CR
+  // claude-code, agy, grok and kimi all run ink-style TUIs that accept a bare CR
   // to submit. codex needs the Esc-prefix trick to flush its multi-byte input
   // handler before the CR.
-  const isInkStyle = normalizedAgentType === "claude-code" || normalizedAgentType === "agy" || normalizedAgentType === "kimi";
+  const isInkStyle = normalizedAgentType === "claude-code"
+    || normalizedAgentType === "agy"
+    || normalizedAgentType === "grok"
+    || normalizedAgentType === "kimi";
   if (isInkStyle) {
     await sleep(submitDelayMs);
     wrapper.write("\r");
@@ -838,18 +844,18 @@ class AgentLauncher {
             // Claude Code's Ink TUI renders ❯ prompt before the input handler
             // is fully mounted. Wait a short period for the TUI to be ready to
             // accept injected text, otherwise only the trailing CR is processed
-            // and the injected slash command is lost. Agy uses the same ink-style TUI
-            // so it gets the same grace window.
-            if (this.agentType === "claude-code" || this.agentType === "agy") {
+            // and the injected slash command is lost. Agy and Grok use the
+            // same ink-style TUI pattern, so they get the same grace window.
+            if (this.agentType === "claude-code" || this.agentType === "agy" || this.agentType === "grok") {
               await new Promise((r) => setTimeout(r, 800));
             }
 
             // Inject /rename to set the session label (before AGENT_READY/bootstrap).
             // /rename is a slash command, completes instantly, doesn't hit the LLM.
             // Only when an explicit nickname was supplied (UFOO_NICKNAME from group
-            // launch or user). Both claude-code and agy support /rename.
+            // launch or user). claude-code, agy, and grok support /rename.
             const explicitNickname = this._originalNickname || "";
-            const supportsRenameSlash = this.agentType === "claude-code" || this.agentType === "agy";
+            const supportsRenameSlash = this.agentType === "claude-code" || this.agentType === "agy" || this.agentType === "grok";
             if (supportsRenameSlash && explicitNickname && wrapper.pty) {
               try {
                 const safeNick = AgentLauncher._sanitizeNickname(explicitNickname);

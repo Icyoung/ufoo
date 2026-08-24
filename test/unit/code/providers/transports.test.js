@@ -2,14 +2,85 @@
 
 const {
   createOpenAiChatTransport,
+  createOpenAiResponsesTransport,
   createAnthropicMessagesTransport,
   TRANSPORT_NAMES,
   assertTransport,
 } = require("../../../../src/code/providers");
+const {
+  getResponsesReasoningItems,
+  messagesToResponsesInput,
+} = require("../../../../src/code/providers/responsesProtocol");
 
 describe("providers transports", () => {
-  test("TRANSPORT_NAMES lists openai and anthropic", () => {
-    expect(TRANSPORT_NAMES).toEqual(["openai-chat", "anthropic-messages"]);
+  test("TRANSPORT_NAMES lists chat, responses, and anthropic", () => {
+    expect(TRANSPORT_NAMES).toEqual(["openai-chat", "openai-responses", "anthropic-messages"]);
+  });
+
+  test("responses transport keeps tool continuation in the public message projection", () => {
+    const transport = createOpenAiResponsesTransport({
+      resolveUrl: () => "https://example.test/v1/responses",
+      runTurn: async () => ({ text: "", toolCalls: [] }),
+      normalizeToolName: (n) => String(n || "").toLowerCase(),
+      normalizeToolCallArgs: (raw) => (typeof raw === "string" ? JSON.parse(raw || "{}") : raw),
+      toJsonString: (v) => JSON.stringify(v),
+      clipText: (v) => String(v),
+    });
+    assertTransport(transport, "openai-responses");
+    const messages = [];
+    const pending = transport.prepareToolCalls({
+      messages,
+      turnResult: {
+        response: {
+          output: [{
+            id: "rs_1",
+            type: "reasoning",
+            summary: [],
+            encrypted_content: "encrypted-reasoning-1",
+          }],
+        },
+      },
+      toolCalls: [{ id: "call_1", function: { name: "read", arguments: '{"path":"README.md"}' } }],
+    });
+    transport.appendToolResult({ messages, call: pending[0], toolResult: { ok: true, content: "ok" } });
+    expect(messages).toEqual([
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "call_1",
+          type: "function",
+          function: { name: "read", arguments: '{"path":"README.md"}' },
+        }],
+      },
+      { role: "tool", tool_call_id: "call_1", content: '{"ok":true,"content":"ok"}' },
+    ]);
+    expect(getResponsesReasoningItems(messages[0])).toEqual([{
+      id: "rs_1",
+      type: "reasoning",
+      summary: [],
+      encrypted_content: "encrypted-reasoning-1",
+    }]);
+    expect(messagesToResponsesInput(messages)).toEqual([
+      {
+        id: "rs_1",
+        type: "reasoning",
+        summary: [],
+        encrypted_content: "encrypted-reasoning-1",
+      },
+      {
+        type: "function_call",
+        call_id: "call_1",
+        name: "read",
+        arguments: '{"path":"README.md"}',
+      },
+      {
+        type: "function_call_output",
+        call_id: "call_1",
+        output: '{"ok":true,"content":"ok"}',
+      },
+    ]);
+    expect(JSON.stringify(messages)).not.toContain("encrypted-reasoning-1");
   });
 
   test("openai transport prepares tool_calls and appends tool results", () => {

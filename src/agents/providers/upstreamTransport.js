@@ -1,5 +1,6 @@
 "use strict";
 
+const os = require("os");
 const { randomUUID } = require("crypto");
 const {
   loadConfig,
@@ -12,6 +13,11 @@ const {
   resolveCompletionUrl,
   resolveAnthropicMessagesUrl,
 } = require("../../code/nativeRunner");
+const {
+  buildResponsesPayload,
+  parseResponsesEvents,
+  resolveResponsesUrl,
+} = require("../../code/providers/responsesProtocol");
 const { resolveClaudeUpstreamCredentials } = require("./credentials/claude");
 const { resolveCodexUpstreamCredentials } = require("./credentials/codex");
 const { buildUpstreamAuthFromCredential } = require("./credentials");
@@ -21,6 +27,7 @@ function normalizeProvider(value = "") {
   if (!text) return "ucode";
   if (text === "codex-cli" || text === "codex-code" || text === "codex" || text === "openai") return "codex";
   if (text === "claude-cli" || text === "claude-code" || text === "claude" || text === "anthropic") return "claude";
+  if (text === "grok" || text === "grok-cli" || text === "grok-build" || text === "grok-shell" || text === "grok-api" || text === "xai") return "grok";
   if (text === "ucode" || text === "ufoo" || text === "ufoo-code") return "ucode";
   return text;
 }
@@ -34,6 +41,71 @@ function clipText(value = "", maxChars = 500) {
 const CODEX_DEFAULT_BASE_URL = "https://chatgpt.com/backend-api/codex";
 const CODEX_DEFAULT_USER_AGENT = "codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)";
 const CODEX_DEFAULT_ORIGINATOR = "codex-tui";
+const GROK_DEFAULT_CLIENT_VERSION = "0.2.120";
+const KIMI_DEFAULT_CLIENT_VERSION = (() => {
+  try {
+    return String(require("../../../package.json").version || "dev").trim() || "dev";
+  } catch {
+    return "dev";
+  }
+})();
+
+function normalizeKimiUpstreamModel(value = "") {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const suffix = raw.match(/^(.*?)(\([^)]*\))$/);
+  const base = String(suffix ? suffix[1] : raw).trim().replace(/\[1m\]$/i, "");
+  const lower = base.toLowerCase();
+  let normalized = lower;
+  if (["kimi-k2.7-code", "k2.7-code", "kimi-for-coding", "for-coding"].includes(lower)) {
+    normalized = "kimi-for-coding";
+  } else if (["kimi-k2.7-code-highspeed", "k2.7-code-highspeed", "kimi-for-coding-highspeed", "for-coding-highspeed"].includes(lower)) {
+    normalized = "kimi-for-coding-highspeed";
+  } else if (normalized.startsWith("kimi-")) {
+    normalized = normalized.slice("kimi-".length);
+  }
+  return `${normalized}${suffix ? suffix[2] : ""}`;
+}
+
+function applyKimiHeaders(headers, { apiKey = "", stream = false } = {}) {
+  const version = String(process.env.UFOO_KIMI_CLIENT_VERSION || KIMI_DEFAULT_CLIENT_VERSION).trim()
+    || KIMI_DEFAULT_CLIENT_VERSION;
+  if (apiKey) headers.authorization = `Bearer ${apiKey}`;
+  headers["User-Agent"] = `ufoo/${version}`;
+  headers["X-Msh-Platform"] = "ufoo";
+  headers["X-Msh-Version"] = version;
+  headers["X-Msh-Device-Name"] = os.hostname();
+  headers["X-Msh-Device-Model"] = `${process.platform} ${process.arch}`;
+  headers["X-Msh-Device-Id"] = String(process.env.KIMI_DEVICE_ID || "ufoo-kimi-device").trim() || "ufoo-kimi-device";
+  headers.Accept = stream ? "text/event-stream" : "application/json";
+  return headers;
+}
+
+function isGrokCliProxyUrl(url = "") {
+  try {
+    return new URL(String(url || "")).hostname.toLowerCase() === "cli-chat-proxy.grok.com";
+  } catch {
+    return false;
+  }
+}
+
+function applyGrokResponsesHeaders(headers, { provider = "", baseUrl = "", sessionId = "" } = {}) {
+  const normalizedProvider = normalizeProvider(provider);
+  if (normalizedProvider !== "grok" && normalizedProvider !== "xai") return headers;
+  const version = String(process.env.UFOO_GROK_CLIENT_VERSION || GROK_DEFAULT_CLIENT_VERSION).trim()
+    || GROK_DEFAULT_CLIENT_VERSION;
+  if (sessionId) headers["x-grok-conv-id"] = String(sessionId);
+  if (isGrokCliProxyUrl(baseUrl)) {
+    headers["X-XAI-Token-Auth"] = "xai-grok-cli";
+    headers["x-grok-client-version"] = version;
+    headers["x-grok-client-identifier"] = "grok-shell";
+    headers["x-authenticateresponse"] = "authenticate-response";
+    headers["User-Agent"] = `xai-grok-workspace/${version}`;
+  } else if (normalizedProvider === "grok") {
+    headers["User-Agent"] = `grok-shell/${version}`;
+  }
+  return headers;
+}
 
 function resolveConfiguredModelForProvider(config = {}, provider = "") {
   if (config.routerProvider && sameModelProvider(config.routerProvider, provider)) {
@@ -145,38 +217,23 @@ function buildCodexResponsesRequest({
   systemPrompt = "",
   prompt = "",
   messages = [],
+  tools = [],
+  maxTokens = 131072,
+  reasoningEffort = "",
 } = {}) {
-  const input = [];
-  const history = Array.isArray(messages) ? messages : [];
-  for (const message of history) {
-    if (!message || typeof message !== "object") continue;
-    const role = String(message.role || "user").trim() || "user";
-    let content = message.content;
-    if (Array.isArray(content)) {
-      content = content
-        .map((item) => {
-          if (!item || typeof item !== "object") return "";
-          return String(item.text || item.content || "");
-        })
-        .join("");
-    }
-    input.push(normalizeCodexMessage(role, content));
+  const inputMessages = Array.isArray(messages) ? messages.slice() : [];
+  if (String(prompt || "").trim()) {
+    inputMessages.push({ role: "user", content: String(prompt || "") });
   }
-  input.push(normalizeCodexMessage("user", prompt));
-
-  return {
-    model: String(model || "").trim(),
-    instructions: String(systemPrompt || ""),
-    stream: true,
-    store: false,
-    parallel_tool_calls: true,
-    include: ["reasoning.encrypted_content"],
-    reasoning: {
-      effort: "medium",
-      summary: "auto",
-    },
-    input,
-  };
+  return buildResponsesPayload({
+    model,
+    instructions: systemPrompt,
+    messages: inputMessages,
+    tools,
+    maxOutputTokens: maxTokens,
+    reasoningEffort,
+    provider: "codex",
+  });
 }
 
 function resolveCodexResponseOutput(response = {}) {
@@ -191,52 +248,55 @@ function resolveCodexResponseOutput(response = {}) {
 
 function parseCodexSsePayload(payload = "") {
   const lines = String(payload || "").split(/\r?\n/);
-  const chunks = [];
-  let text = "";
-  let responseObject = null;
-  let usage = null;
-
+  const frames = [];
+  let currentEvent = "";
   for (const line of lines) {
     const trimmed = line.trim();
+    if (trimmed.startsWith("event:")) {
+      currentEvent = trimmed.slice(6).trim();
+      continue;
+    }
     if (!trimmed.startsWith("data:")) continue;
     const dataText = trimmed.slice(5).trim();
     if (!dataText || dataText === "[DONE]") continue;
-    let event;
     try {
-      event = JSON.parse(dataText);
+      const data = JSON.parse(dataText);
+      frames.push({ event: currentEvent || data.type || "", data });
+      currentEvent = "";
     } catch {
       continue;
     }
-    chunks.push(event);
-    const type = String(event.type || "");
-    if (type === "response.output_text.delta" && typeof event.delta === "string") {
-      text += event.delta;
-      continue;
-    }
-    if (type === "response.output_item.done" && event.item && event.item.type === "message" && !text) {
-      const content = Array.isArray(event.item.content) ? event.item.content : [];
-      text += content
-        .filter((part) => part && part.type === "output_text")
-        .map((part) => String(part.text || ""))
-        .join("");
-      continue;
-    }
-    if (type === "response.completed" && event.response && typeof event.response === "object") {
-      responseObject = event.response;
-      usage = event.response.usage && typeof event.response.usage === "object"
-        ? event.response.usage
-        : null;
-      if (!text) {
-        text = resolveCodexResponseOutput(event.response);
-      }
-    }
   }
 
+  const parsed = parseResponsesEvents(frames);
+  const rawUsage = parsed.response && parsed.response.usage && typeof parsed.response.usage === "object"
+    ? parsed.response.usage
+    : null;
+
   return {
-    text: String(text || "").trim(),
-    response: responseObject,
-    usage,
-    events: chunks,
+    text: String(parsed.text || "").trim(),
+    response: parsed.response,
+    usage: rawUsage,
+    normalizedUsage: parsed.usage,
+    toolCalls: parsed.toolCalls,
+    terminal: parsed.terminal,
+    incompleteDetails: parsed.incompleteDetails,
+    events: parsed.events,
+  };
+}
+
+function resolveUpstreamResponsesUsage(parsed = {}) {
+  const raw = parsed.response && parsed.response.usage && typeof parsed.response.usage === "object"
+    ? parsed.response.usage
+    : null;
+  if (raw) return raw;
+  const normalized = parsed.usage && typeof parsed.usage === "object" ? parsed.usage : null;
+  if (!normalized) return null;
+  return {
+    input_tokens: Number(normalized.input || 0) || 0,
+    output_tokens: Number(normalized.output || 0) || 0,
+    cache_read_input_tokens: Number(normalized.cacheRead || 0) || 0,
+    cache_creation_input_tokens: Number(normalized.cacheCreation || 0) || 0,
   };
 }
 
@@ -258,8 +318,8 @@ async function resolveUpstreamRuntime({
       fetchImpl,
       env,
     });
-    const useCodexResponses = credential.credentialKind === "oauth" && Boolean(credential.accessToken);
-    const baseUrl = useCodexResponses
+    const useCodexOAuth = credential.credentialKind === "oauth" && Boolean(credential.accessToken);
+    const baseUrl = useCodexOAuth
       ? String(env.UFOO_CODEX_BASE_URL || "").trim() || CODEX_DEFAULT_BASE_URL
       : String(env.OPENAI_BASE_URL || "").trim() || "https://api.openai.com/v1";
     const resolvedModel = String(
@@ -269,7 +329,7 @@ async function resolveUpstreamRuntime({
     ).trim();
     return {
       provider: "codex",
-      transport: useCodexResponses ? "codex-responses" : "openai-chat",
+      transport: "codex-responses",
       model: resolvedModel,
       baseUrl,
       credential,
@@ -302,6 +362,24 @@ async function resolveUpstreamRuntime({
     };
   }
 
+  if (normalizedProvider === "grok") {
+    const runtime = resolveRuntimeConfig({
+      workspaceRoot: projectRoot,
+      provider: "grok-build",
+      model: model || resolveConfiguredModelForProvider(config, "grok-build") || defaultRouterModelForProvider("grok-build"),
+    });
+    const auth = runtime.apiKey ? { apiKey: String(runtime.apiKey).trim() } : { headers: {} };
+    return {
+      provider: "grok-build",
+      transport: "openai-responses",
+      model: String(runtime.model || model || "").trim(),
+      baseUrl: String(runtime.baseUrl || "").trim(),
+      credential: null,
+      auth,
+      credentialSource: runtime.apiKey ? "runtime-api-key" : "",
+    };
+  }
+
   const runtime = resolveRuntimeConfig({
     workspaceRoot: projectRoot,
     provider: normalizedProvider === "ucode" ? "" : normalizedProvider,
@@ -322,6 +400,7 @@ async function resolveUpstreamRuntime({
 async function sendUpstreamRequest({
   runtime,
   request,
+  sessionId = "",
   timeoutMs = 120000,
   fetchImpl = global.fetch,
 } = {}) {
@@ -329,17 +408,20 @@ async function sendUpstreamRequest({
     return { ok: false, error: "fetch is unavailable" };
   }
   const resolvedRuntime = runtime && typeof runtime === "object" ? runtime : {};
-  const requestModel = String((request && request.model) || resolvedRuntime.model || "").trim();
+  const rawRequestModel = String((request && request.model) || resolvedRuntime.model || "").trim();
+  const isKimi = normalizeProvider(resolvedRuntime.provider) === "kimi";
+  const requestModel = isKimi ? normalizeKimiUpstreamModel(rawRequestModel) : rawRequestModel;
   if (!requestModel) {
     return { ok: false, error: `${resolvedRuntime.provider || "provider"} model is not configured` };
   }
 
   const isAnthropic = resolvedRuntime.transport === "anthropic-messages";
   const isCodexResponses = resolvedRuntime.transport === "codex-responses";
+  const isResponses = isCodexResponses || resolvedRuntime.transport === "openai-responses";
   const url = isAnthropic
     ? resolveAnthropicMessagesUrl(resolvedRuntime.baseUrl)
-    : isCodexResponses
-      ? `${String(resolvedRuntime.baseUrl || "").replace(/\/+$/, "")}/responses`
+    : isResponses
+      ? resolveResponsesUrl(resolvedRuntime.baseUrl)
       : resolveCompletionUrl(resolvedRuntime.baseUrl);
 
   if (!url) {
@@ -353,19 +435,45 @@ async function sendUpstreamRequest({
   if (isAnthropic) {
     headers["anthropic-version"] = "2023-06-01";
     if (resolvedRuntime.auth && resolvedRuntime.auth.apiKey) headers["x-api-key"] = resolvedRuntime.auth.apiKey;
-  } else if (isCodexResponses) {
+  } else if (isResponses) {
     headers.Accept = "text/event-stream";
     headers.Connection = "Keep-Alive";
-    headers["User-Agent"] = CODEX_DEFAULT_USER_AGENT;
-    headers.Originator = CODEX_DEFAULT_ORIGINATOR;
-    if (resolvedRuntime.credential && resolvedRuntime.credential.accountId) {
-      headers["Chatgpt-Account-Id"] = String(resolvedRuntime.credential.accountId);
+    if (resolvedRuntime.auth && resolvedRuntime.auth.apiKey) {
+      headers.authorization = `Bearer ${resolvedRuntime.auth.apiKey}`;
     }
-    headers.Session_id = randomUUID();
+    const resolvedSessionId = String(
+      sessionId
+        || (request && (request.sessionId || request.session_id))
+        || resolvedRuntime.sessionId
+        || ""
+    ).trim() || randomUUID();
+    if (isCodexResponses) {
+      headers["User-Agent"] = CODEX_DEFAULT_USER_AGENT;
+      headers.Originator = CODEX_DEFAULT_ORIGINATOR;
+      if (resolvedRuntime.credential && resolvedRuntime.credential.accountId) {
+        headers["Chatgpt-Account-Id"] = String(resolvedRuntime.credential.accountId);
+      }
+      headers["Session-Id"] = resolvedSessionId;
+    } else {
+      applyGrokResponsesHeaders(headers, {
+        provider: resolvedRuntime.provider,
+        baseUrl: resolvedRuntime.baseUrl,
+        sessionId: resolvedSessionId,
+      });
+    }
   } else {
-    if (resolvedRuntime.auth && resolvedRuntime.auth.apiKey) headers.authorization = `Bearer ${resolvedRuntime.auth.apiKey}`;
+    if (isKimi) {
+      applyKimiHeaders(headers, {
+        apiKey: resolvedRuntime.auth && resolvedRuntime.auth.apiKey,
+        stream: Boolean(request && request.stream),
+      });
+    } else if (resolvedRuntime.auth && resolvedRuntime.auth.apiKey) {
+      headers.authorization = `Bearer ${resolvedRuntime.auth.apiKey}`;
+    }
   }
-  const body = JSON.stringify(request || {});
+  const requestBody = request && typeof request === "object" ? { ...request } : {};
+  if (isKimi) requestBody.model = requestModel;
+  const body = JSON.stringify(requestBody);
 
   const controller = new AbortController();
   const timer = setTimeout(() => {
@@ -392,9 +500,34 @@ async function sendUpstreamRequest({
       };
     }
 
-    if (isCodexResponses) {
-      const raw = await response.text();
-      const parsed = parseCodexSsePayload(raw);
+    if (isResponses) {
+      // Responses supports both the normal streaming form and a complete JSON
+      // response. The provider contract is still Responses-only here; the
+      // JSON branch is useful for non-streaming gateways and test doubles.
+      let parsed;
+      let rawData = null;
+      if (typeof response.text === "function") {
+        const raw = await response.text();
+        parsed = parseCodexSsePayload(raw);
+        if (!parsed.response && !parsed.text && parsed.toolCalls.length === 0) {
+          try {
+            rawData = JSON.parse(raw);
+            parsed = parseResponsesEvents([
+              { event: rawData && rawData.type ? rawData.type : "response", data: rawData },
+            ], { assumeCompleted: true });
+          } catch {
+            // Keep the SSE parse result; the caller will receive an empty
+            // completed response rather than falling back to Chat Completions.
+          }
+        }
+      } else if (typeof response.json === "function") {
+        rawData = await response.json();
+        parsed = parseResponsesEvents([
+          { event: rawData && rawData.type ? rawData.type : "response", data: rawData },
+        ], { assumeCompleted: true });
+      } else {
+        parsed = parseResponsesEvents([], { assumeCompleted: true });
+      }
       return {
         ok: true,
         output: parsed.text,
@@ -402,8 +535,10 @@ async function sendUpstreamRequest({
         model: requestModel,
         transport: resolvedRuntime.transport,
         credentialSource: resolvedRuntime.credentialSource,
-        data: parsed.response,
-        usage: parsed.usage,
+        data: parsed.response || rawData,
+        usage: resolveUpstreamResponsesUsage(parsed),
+        toolCalls: parsed.toolCalls,
+        incompleteDetails: parsed.incompleteDetails,
       };
     }
 
@@ -459,6 +594,7 @@ async function sendUpstreamPrompt({
   tools = [],
   maxTokens = 4096,
   temperature = 0,
+  sessionId = "",
   timeoutMs = 120000,
   fetchImpl = global.fetch,
   env = process.env,
@@ -501,8 +637,19 @@ async function sendUpstreamPrompt({
         systemPrompt,
         prompt,
         messages,
-      })
-    : buildOpenAiChatRequest({
+        tools,
+        maxTokens,
+        })
+      : runtime.transport === "openai-responses"
+        ? buildCodexResponsesRequest({
+          model: requestModel,
+          systemPrompt,
+          prompt,
+          messages,
+          tools,
+          maxTokens,
+        })
+      : buildOpenAiChatRequest({
       model: requestModel,
       systemPrompt,
       prompt,
@@ -514,6 +661,7 @@ async function sendUpstreamPrompt({
   return sendUpstreamRequest({
     runtime,
     request,
+    sessionId,
     timeoutMs,
     fetchImpl,
   });
@@ -524,6 +672,7 @@ module.exports = {
   buildCodexResponsesRequest,
   buildOpenAiChatRequest,
   normalizeProvider,
+  normalizeKimiUpstreamModel,
   parseCodexSsePayload,
   resolveCodexResponseOutput,
   resolveUpstreamRuntime,

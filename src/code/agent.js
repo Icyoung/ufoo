@@ -280,7 +280,10 @@ function resolvePlannerProvider(value = "") {
   const text = String(value || "").trim().toLowerCase();
   if (!text) return "";
   if (text === "claude" || text === "claude-cli" || text === "claude-code" || text === "anthropic") return "anthropic";
-  if (text === "codex" || text === "codex-cli" || text === "codex-code" || text === "openai") return "openai";
+  if (text === "codex" || text === "codex-cli" || text === "codex-code") return "codex";
+  if (text === "grok" || text === "grok-cli" || text === "grok-build" || text === "grok-shell" || text === "grok-api") return "grok-build";
+  if (text === "xai") return "xai";
+  if (text === "openai") return "openai";
   return text;
 }
 

@@ -60,7 +60,9 @@ function buildDefaultStartupBootstrapPrompt({ agentType = "", projectRoot = "" }
         ? "ucode"
         : (normalizedAgent === "agy"
           ? "Agy"
-          : (normalizedAgent === "kimi" ? "Kimi" : "agent"))));
+          : (normalizedAgent === "grok"
+            ? "Grok"
+            : (normalizedAgent === "kimi" ? "Kimi" : "agent")))));
 
   const segments = [
     `Session bootstrap for ${displayAgent}.`,
@@ -246,6 +248,112 @@ function mergeAgyPromptArgs({ args = [], bootstrapText = "" } = {}) {
   return null;
 }
 
+function mergeGrokRulesArgs({ args = [], bootstrapText = "" } = {}) {
+  const currentArgs = Array.isArray(args) ? args.slice() : [];
+  for (let index = 0; index < currentArgs.length; index += 1) {
+    const item = asTrimmedString(currentArgs[index]);
+    if (!item) continue;
+    if (item === "--rules") {
+      const existing = String(currentArgs[index + 1] || "");
+      currentArgs[index + 1] = mergePromptSegments(existing, bootstrapText);
+      return { args: currentArgs, promptText: String(currentArgs[index + 1] || "") };
+    }
+    if (item.startsWith("--rules=")) {
+      const existing = item.slice("--rules=".length);
+      const merged = mergePromptSegments(existing, bootstrapText);
+      currentArgs[index] = `--rules=${merged}`;
+      return { args: currentArgs, promptText: merged };
+    }
+  }
+  return {
+    args: ["--rules", bootstrapText, ...currentArgs],
+    promptText: bootstrapText,
+  };
+}
+
+const GROK_OPTIONS_WITH_VALUE = new Set([
+  "--agent",
+  "--agents",
+  "--allow",
+  "--allowedTools",
+  "--cwd",
+  "--debug-file",
+  "--deny",
+  "--disallowed-tools",
+  "--json-schema",
+  "--leader-socket",
+  "-m",
+  "--model",
+  "--max-turns",
+  "--output-format",
+  "-p",
+  "--single",
+  "--permission-mode",
+  "--prompt-file",
+  "--prompt-json",
+  "-r",
+  "--resume",
+  "--reasoning-effort",
+  "--effort",
+  "--rules",
+  "-s",
+  "--session-id",
+  "--sandbox",
+  "--system-prompt-override",
+  "--system-prompt",
+  "--tools",
+  "-w",
+  "--worktree",
+  "--worktree-ref",
+  "--ref",
+]);
+
+const GROK_META_COMMANDS = new Set([
+  "agent",
+  "completions",
+  "dashboard",
+  "doctor",
+  "du",
+  "disk-usage",
+  "export",
+  "help",
+  "inspect",
+  "leader",
+  "login",
+  "logout",
+  "mcp",
+  "memory",
+  "models",
+  "plugin",
+  "sessions",
+  "setup",
+  "trace",
+  "update",
+  "version",
+  "v",
+  "worktree",
+  "wrap",
+]);
+
+function hasGrokMetaCommandArgs(args = []) {
+  if (!Array.isArray(args) || args.length === 0) return false;
+  for (let index = 0; index < args.length; index += 1) {
+    const item = asTrimmedString(args[index]);
+    if (!item) continue;
+    if (GROK_OPTIONS_WITH_VALUE.has(item)) {
+      index += 1;
+      continue;
+    }
+    const eqIndex = item.indexOf("=");
+    if (eqIndex > 0 && GROK_OPTIONS_WITH_VALUE.has(item.slice(0, eqIndex))) {
+      continue;
+    }
+    if (item.startsWith("-")) continue;
+    return GROK_META_COMMANDS.has(item);
+  }
+  return false;
+}
+
 function resolveDefaultManualBootstrap({
   projectRoot,
   agentType = "",
@@ -261,6 +369,7 @@ function resolveDefaultManualBootstrap({
     currentEnv.UFOO_SKIP_DEFAULT_BOOTSTRAP === "1"
     || hasStartupBootstrap
     || hasMetaCommandArgs(currentArgs)
+    || (normalizedAgent === "grok" && hasGrokMetaCommandArgs(currentArgs))
   ) {
     return { args: currentArgs, env: {}, mode: "skip" };
   }
@@ -370,6 +479,20 @@ function resolveDefaultManualBootstrap({
     };
   }
 
+  if (normalizedAgent === "grok") {
+    const promptText = buildDefaultStartupBootstrapPrompt({ agentType: normalizedAgent, projectRoot });
+    const merged = mergeGrokRulesArgs({
+      args: currentArgs,
+      bootstrapText: promptText,
+    });
+    return {
+      args: merged.args,
+      env: {},
+      mode: "rules-arg",
+      promptText: merged.promptText,
+    };
+  }
+
   return { args: currentArgs, env: {}, mode: "skip" };
 }
 
@@ -382,4 +505,6 @@ module.exports = {
   prepareDefaultBootstrapFile,
   resolveDefaultManualBootstrap,
   mergeAgyPromptArgs,
+  mergeGrokRulesArgs,
+  hasGrokMetaCommandArgs,
 };

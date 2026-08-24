@@ -1,6 +1,6 @@
 {
   "name": "u-foo",
-  "version": "3.0.29",
+  "version": "3.0.30",
   "description": "Multi-Agent Workspace Protocol. Just add u. claude → uclaude, codex → ucodex.",
   "license": "SEE LICENSE IN LICENSE",
   "homepage": "https://ufoo.dev",
@@ -27,6 +27,7 @@
     "uclaude": "bin/uclaude.js",
     "ucodex": "bin/ucodex.js",
     "uagy": "bin/uagy.js",
+    "ugrok": "bin/ugrok.js",
     "ukimi": "bin/ukimi.js",
     "ucode": "bin/ucode.js"
   },

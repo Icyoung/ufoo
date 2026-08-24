@@ -8,6 +8,7 @@ function resolveSoloAgentType(config = {}, requestedAgent = "") {
   const requested = asTrimmedString(requestedAgent).toLowerCase();
   if (requested === "claude" || requested === "uclaude" || requested === "claude-code") return "claude";
   if (requested === "codex" || requested === "ucodex" || requested === "openai") return "codex";
+  if (requested === "grok" || requested === "ugrok" || requested === "grok-build" || requested === "xai") return "grok";
   if (requested === "ucode" || requested === "ufoo" || requested === "ufoo-code") return "ucode";
 
   const provider = asTrimmedString(config && config.agentProvider).toLowerCase();

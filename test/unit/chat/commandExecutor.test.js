@@ -353,6 +353,21 @@ describe("chat commandExecutor", () => {
     }
   });
 
+  test("handleLaunchCommand accepts grok and grok-build / ugrok aliases", async () => {
+    for (const alias of ["grok", "grok-build", "ugrok", "xai"]) {
+      const { executor, options } = createHarness();
+      await executor.handleLaunchCommand([alias, "nickname=lead"]);
+      expect(options.send).toHaveBeenCalledWith({
+        type: "launch_agent",
+        agent: "grok",
+        count: 1,
+        nickname: "lead",
+        prompt_profile: "",
+        launch_scope: "inplace",
+      });
+    }
+  });
+
   test("handleLaunchCommand accepts kimi and kimi-cli / ukimi aliases", async () => {
     for (const alias of ["kimi", "kimi-cli", "kimi-code", "ukimi"]) {
       const { executor, options } = createHarness();
@@ -368,12 +383,12 @@ describe("chat commandExecutor", () => {
     }
   });
 
-  test("handleLaunchCommand rejects unknown agent types but accepts agy in the error hint", async () => {
+  test("handleLaunchCommand rejects unknown agent types but includes supported agents in the error hint", async () => {
     const { executor, options, logs } = createHarness();
     await executor.handleLaunchCommand(["mystery"]);
     expect(options.send).not.toHaveBeenCalled();
     expect(logs.some((entry) => /Unknown agent type/.test(entry.text))).toBe(true);
-    expect(logs.some((entry) => /claude.*codex.*agy.*ucode/.test(entry.text))).toBe(true);
+    expect(logs.some((entry) => /claude.*codex.*agy.*grok.*kimi.*ucode/.test(entry.text))).toBe(true);
   });
 
   test("handleLaunchCommand supports separate window scope", async () => {
@@ -470,7 +485,7 @@ describe("chat commandExecutor", () => {
     await executor.handleLaunchCommand(["ufoo", "nickname=core2"]);
 
     expect(options.send).not.toHaveBeenCalled();
-    expect(logs.some((entry) => entry.text.includes("Unknown agent type. Use: claude, codex, agy, kimi, or ucode"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("Unknown agent type. Use: claude, codex, agy, grok, kimi, or ucode"))).toBe(true);
   });
 
   test("handleLaunchCommand forwards prompt profile", async () => {

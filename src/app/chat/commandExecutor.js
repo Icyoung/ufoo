@@ -21,6 +21,7 @@ const AGENT_PROVIDER_OPTIONS = Object.freeze([
   { label: "claude", value: "claude-cli" },
   { label: "agy", value: "agy-cli" },
   { label: "kimi", value: "kimi-cli" },
+  { label: "grok", value: "grok-cli" },
 ]);
 const { resolveTransport } = require("../../code/nativeRunner");
 const { resolveDisplayNickname } = require("../../runtime/daemon/nicknameScope");
@@ -71,6 +72,9 @@ function normalizeSettingsProvider(value = "", fallback = "codex-cli") {
   if (text === "kimi" || text === "kimi-cli" || text === "kimi-code" || text === "ukimi") {
     return "kimi-cli";
   }
+  if (text === "grok" || text === "grok-cli" || text === "grok-build" || text === "grok-shell" || text === "xai") {
+    return "grok-cli";
+  }
   if (text === "codex" || text === "codex-cli" || text === "codex-code" || text === "openai") {
     return "codex-cli";
   }
@@ -82,6 +86,7 @@ function agentProviderKey(value = "") {
   if (provider === "claude-cli") return "claude";
   if (provider === "agy-cli") return "agy";
   if (provider === "kimi-cli") return "kimi";
+  if (provider === "grok-cli") return "grok";
   return "codex";
 }
 
@@ -629,7 +634,7 @@ function createCommandExecutor(options = {}) {
     if (args.length === 0) {
       logMessage(
         "error",
-        "{white-fg}✗{/white-fg} Usage: /launch <claude|codex|agy|kimi|ucode> [nickname=<name>] [profile=<id>] [count=<n>] [scope=inplace|window]"
+        "{white-fg}✗{/white-fg} Usage: /launch <claude|codex|agy|grok|kimi|ucode> [nickname=<name>] [profile=<id>] [count=<n>] [scope=inplace|window]"
       );
       return;
     }
@@ -638,9 +643,10 @@ function createCommandExecutor(options = {}) {
     // Accept friendly aliases the same way `ufoo launch` does in cli.js.
     let agentType = agentTypeInput;
     if (agentTypeInput === "antigravity" || agentTypeInput === "uagy") agentType = "agy";
+    if (agentTypeInput === "grok-build" || agentTypeInput === "ugrok" || agentTypeInput === "xai") agentType = "grok";
     if (agentTypeInput === "kimi-cli" || agentTypeInput === "kimi-code" || agentTypeInput === "ukimi") agentType = "kimi";
-    if (agentType !== "claude" && agentType !== "codex" && agentType !== "agy" && agentType !== "kimi" && agentType !== "ucode") {
-      logMessage("error", "{white-fg}✗{/white-fg} Unknown agent type. Use: claude, codex, agy, kimi, or ucode");
+    if (agentType !== "claude" && agentType !== "codex" && agentType !== "agy" && agentType !== "grok" && agentType !== "kimi" && agentType !== "ucode") {
+      logMessage("error", "{white-fg}✗{/white-fg} Unknown agent type. Use: claude, codex, agy, grok, kimi, or ucode");
       return;
     }
     const normalizedAgent = agentType === "ucode" ? "ufoo" : agentType;
@@ -816,7 +822,7 @@ function createCommandExecutor(options = {}) {
 
     const profile = String(args[1] || "").trim();
     if (!profile) {
-      logMessage("error", "{white-fg}✗{/white-fg} Usage: /solo run <prompt-profile> [agent=codex|claude|agy|ucode] [nickname=<name>] [scope=inplace|window]");
+      logMessage("error", "{white-fg}✗{/white-fg} Usage: /solo run <prompt-profile> [agent=codex|claude|agy|grok|ucode] [nickname=<name>] [scope=inplace|window]");
       return;
     }
 
@@ -1091,7 +1097,7 @@ function createCommandExecutor(options = {}) {
       logMessage("system", "{cyan-fg}ufoo-agent provider:{/cyan-fg}");
       logMessage("system", `  • current: ${agentProviderKey(current)}`);
       logMessage("system", `  • options: ${labels}`);
-      logMessage("system", "  • use: /provider <codex|claude|agy|kimi>");
+      logMessage("system", "  • use: /provider <codex|claude|agy|kimi|grok>");
       return;
     }
 
@@ -1506,11 +1512,13 @@ function createCommandExecutor(options = {}) {
       return;
     }
 
-    if (action === "codex" || action === "claude" || action === "agy" || action === "kimi") {
+    if (action === "codex" || action === "claude" || action === "agy" || action === "kimi" || action === "grok") {
       const kv = parseKeyValueArgs(args.slice(1));
       const provider = action === "claude"
         ? "claude-cli"
-        : (action === "agy" ? "agy-cli" : (action === "kimi" ? "kimi-cli" : "codex-cli"));
+        : (action === "agy"
+          ? "agy-cli"
+          : (action === "kimi" ? "kimi-cli" : (action === "grok" ? "grok-cli" : "codex-cli")));
       const model = String(kv.model || defaultAgentModelForProvider(provider)).trim();
       saveConfig(projectRoot, {
         agentProvider: provider,
@@ -1532,7 +1540,7 @@ function createCommandExecutor(options = {}) {
       if (Object.prototype.hasOwnProperty.call(kv, "provider")) {
         nextProvider = normalizeSettingsProvider(kv.provider, "");
         if (!nextProvider) {
-          logMessage("error", "{white-fg}✗{/white-fg} Usage: /settings agent set provider=<codex|claude> model=<id>");
+          logMessage("error", "{white-fg}✗{/white-fg} Usage: /settings agent set provider=<codex|claude|agy|kimi|grok> model=<id>");
           return;
         }
         updates.agentProvider = nextProvider;
@@ -1544,7 +1552,7 @@ function createCommandExecutor(options = {}) {
       }
 
       if (Object.keys(updates).length === 0) {
-        logMessage("error", "{white-fg}✗{/white-fg} Usage: /settings agent set provider=<codex|claude> model=<id>");
+        logMessage("error", "{white-fg}✗{/white-fg} Usage: /settings agent set provider=<codex|claude|agy|kimi|grok> model=<id>");
         return;
       }
 
@@ -1577,7 +1585,7 @@ function createCommandExecutor(options = {}) {
       return;
     }
 
-    logMessage("error", "{white-fg}✗{/white-fg} Unknown settings agent action. Use: show, set, clear, codex, claude");
+    logMessage("error", "{white-fg}✗{/white-fg} Unknown settings agent action. Use: show, set, clear, codex, claude, agy, kimi, grok");
   }
 
   async function handleRouterSettingsCommand(args = []) {

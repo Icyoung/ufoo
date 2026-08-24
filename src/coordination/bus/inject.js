@@ -462,13 +462,13 @@ class Injector {
 
     // 确定注入命令：
     // - codex: 裸 "ubus"（codex 没有 slash-command 命名空间）
-    // - agy: 裸 "ubus"（agy 的 `/` 是它自己的 slash-command 命名空间，
+    // - agy/grok: 裸 "ubus"（它们的 `/` 是自己的 slash-command 命名空间，
     //   "/ubus" 会被识别为 unknown slash command 而不是 prompt）
     // - claude-code 及其他: "/ubus"
     const command = commandOverride
       ? String(commandOverride)
       : (
-        subscriber.startsWith("codex:") || subscriber.startsWith("agy:")
+        subscriber.startsWith("codex:") || subscriber.startsWith("agy:") || subscriber.startsWith("grok:")
           ? "ubus"
           : "/ubus"
       );

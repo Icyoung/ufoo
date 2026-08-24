@@ -76,6 +76,7 @@ function normalizeBusAgentType(agentType = "") {
   if (value === "codex") return "codex";
   if (value === "claude" || value === "claude-code") return "claude-code";
   if (value === "agy" || value === "antigravity") return "agy";
+  if (value === "grok" || value === "ugrok" || value === "grok-build" || value === "xai") return "grok";
   if (value === "kimi" || value === "kimi-cli" || value === "kimi-code") return "kimi";
   if (value === "ufoo" || value === "ucode" || value === "ufoo-code") return "ufoo-code";
   return value;
@@ -86,6 +87,7 @@ function normalizeLaunchAgent(agent = "") {
   if (value === "codex") return "codex";
   if (value === "claude" || value === "claude-code") return "claude";
   if (value === "agy" || value === "antigravity") return "agy";
+  if (value === "grok" || value === "ugrok" || value === "grok-build" || value === "xai") return "grok";
   if (value === "kimi" || value === "kimi-cli" || value === "kimi-code") return "kimi";
   if (value === "ufoo" || value === "ucode" || value === "ufoo-code") return "ufoo";
   return "";
@@ -1836,7 +1838,7 @@ function startDaemon({
         socket.write(
           `${JSON.stringify({
             type: IPC_RESPONSE_TYPES.ERROR,
-            error: "launch_agent requires agent=codex|claude|agy|ucode",
+            error: "launch_agent requires agent=codex|claude|agy|grok|kimi|ucode",
           })}
 `,
         );
@@ -1876,9 +1878,9 @@ function startDaemon({
             : null,
       };
       let soloLaunchBootstrap = null;
-      if (requestedProfile && (normalizedAgent === "ufoo" || normalizedAgent === "claude" || normalizedAgent === "codex" || normalizedAgent === "agy" || normalizedAgent === "kimi")) {
-        const agentTypeMap = { ufoo: "ufoo-code", claude: "claude-code", codex: "codex", agy: "agy", kimi: "kimi" };
-        const defaultNickMap = { ufoo: "ucode", claude: "claude", codex: "codex", agy: "agy", kimi: "kimi" };
+      if (requestedProfile && (normalizedAgent === "ufoo" || normalizedAgent === "claude" || normalizedAgent === "codex" || normalizedAgent === "agy" || normalizedAgent === "grok" || normalizedAgent === "kimi")) {
+        const agentTypeMap = { ufoo: "ufoo-code", claude: "claude-code", codex: "codex", agy: "agy", grok: "grok", kimi: "kimi" };
+        const defaultNickMap = { ufoo: "ucode", claude: "claude", codex: "codex", agy: "agy", grok: "grok", kimi: "kimi" };
         const agentTypeForBootstrap = agentTypeMap[normalizedAgent];
         const soloNickname = explicitNickname || defaultNickMap[normalizedAgent];
         const profileResult = resolveSoloPromptProfile(projectRoot, requestedProfile);
@@ -1928,6 +1930,12 @@ function startDaemon({
               op.extra_args = [
                 ...(Array.isArray(op.extra_args) ? op.extra_args : []),
                 "-i", built.promptText,
+              ];
+            } else if (normalizedAgent === "grok") {
+              // grok: bootstrap via --rules.
+              op.extra_args = [
+                ...(Array.isArray(op.extra_args) ? op.extra_args : []),
+                "--rules", built.promptText,
               ];
             } else if (normalizedAgent === "kimi") {
               // kimi: no initial-prompt flag — deliver the bootstrap through

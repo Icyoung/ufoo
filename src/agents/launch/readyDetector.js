@@ -110,6 +110,31 @@ class ReadyDetector {
   }
 
   /**
+   * Detect Grok Build CLI ready markers.
+   *
+   * grok renders an ink-style TUI whose mounted prompt footer includes
+   * `grok-build` plus key hints such as `Enter:run`, `Esc:reset`, and
+   * `Type:custom command`. Require the product marker to avoid treating
+   * generic chevrons or unrelated key-hint text as readiness.
+   */
+  _detectGrokReady(text) {
+    if (
+      text.includes("grok-build")
+      && (
+        text.includes("Enter:run")
+        || text.includes("Type:custom command")
+        || text.includes("Type:change task")
+      )
+    ) {
+      return true;
+    }
+    if (text.includes("grok-build") && /(?:^|\n)[ \t]*❯(?:[ \t]+[^\n]*)?[ \t]*$/m.test(text)) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * Detect kimi (Kimi Code CLI) ready markers.
    *
    * kimi renders an ink-style TUI (verified against 0.27.0 via PTY capture):
@@ -178,6 +203,8 @@ class ReadyDetector {
       isReady = this._detectCodexReady(this.buffer);
     } else if (this.agentType === "agy") {
       isReady = this._detectAgyReady(this.buffer);
+    } else if (this.agentType === "grok") {
+      isReady = this._detectGrokReady(this.buffer);
     } else if (this.agentType === "kimi") {
       isReady = this._detectKimiReady(this.buffer);
     } else if (this.agentType === "ufoo" || this.agentType === "ucode" || this.agentType === "ufoo-code") {

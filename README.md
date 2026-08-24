@@ -3,9 +3,9 @@
 [中文](README.zh-CN.md)
 
 ufoo is a project-scoped multi-agent workspace runtime. It wraps Claude Code,
-OpenAI Codex, Antigravity, and ufoo's native `ucode` agent with a shared chat
-dashboard, daemon, event bus, memory, reports, group orchestration, and terminal
-launch modes.
+OpenAI Codex, Antigravity, Grok Build, Kimi Code, and ufoo's native `ucode`
+agent with a shared chat dashboard, daemon, event bus, memory, reports, group
+orchestration, and terminal launch modes.
 
 Package: [u-foo on npm](https://www.npmjs.com/package/u-foo)
 
@@ -34,8 +34,9 @@ Package: [u-foo on npm](https://www.npmjs.com/package/u-foo)
 
 - Node.js 18 or newer.
 - macOS for Terminal.app/iTerm2 integration.
-- Claude Code, Codex CLI, or Antigravity CLI installed when using the matching
-  wrappers: `uclaude`, `ucodex`, or `uagy`.
+- Claude Code, Codex CLI, Antigravity CLI, Grok Build, or Kimi Code installed
+  when using the matching wrappers: `uclaude`, `ucodex`, `uagy`, `ugrok`, or
+  `ukimi`.
 
 ## Installation
 
@@ -62,6 +63,7 @@ Installed binaries:
 | `uclaude` | Claude Code wrapper with ufoo bootstrap and bus identity. |
 | `ucodex` | Codex wrapper with ufoo bootstrap and bus identity. |
 | `uagy` | Antigravity wrapper with ufoo bootstrap and bus identity. |
+| `ugrok` | Grok Build wrapper with ufoo bootstrap and bus identity. |
 | `ukimi` | Kimi Code wrapper with ufoo bootstrap and bus identity. |
 | `ucode` | Native ufoo coding-agent CLI/TUI. |
 
@@ -80,6 +82,7 @@ Launch agents from chat:
 ```text
 > /launch codex reviewer
 > /launch claude builder
+> /launch grok explorer
 > /launch ucode fixer
 > @reviewer inspect the current diff and list release risks
 ```
@@ -90,6 +93,7 @@ Or launch wrappers directly inside a project:
 uclaude
 ucodex
 uagy
+ugrok
 ukimi
 ucode
 ```
@@ -153,7 +157,7 @@ legacy per-project daemon rollback path.
 ufoo supports two Agent delivery modes, selected only from the host Agent's
 inherited `UFOO_SUBSCRIBER_ID` before any helper terminal is started:
 
-- Wrapper-managed Agents start through `ucodex`, `uclaude`, `uagy`, `ukimi`, or
+- Wrapper-managed Agents start through `ucodex`, `uclaude`, `uagy`, `ugrok`, `ukimi`, or
   `ucode`. The wrapper provides `UFOO_SUBSCRIBER_ID`; ufoo monitors the shell
   activity and injection endpoint, so bus messages can be injected directly.
   These Agents reuse the environment identity and do not register through MCP
@@ -195,6 +199,7 @@ activate lazily.
 ```text
 /launch codex reviewer
 /launch claude builder
+/launch grok explorer
 /launch ucode fixer
 @reviewer inspect the current diff and list release risks
 
@@ -207,8 +212,8 @@ activate lazily.
 /open /path/to/project
 ```
 
-Direct wrapper commands such as `uclaude`, `ucodex`, `uagy`, and `ucode` are
-still available, but the normal ufoo workflow is to work from chat.
+Direct wrapper commands such as `uclaude`, `ucodex`, `uagy`, `ugrok`, `ukimi`, and
+`ucode` are still available, but the normal ufoo workflow is to work from chat.
 
 ### Initialization And Maintenance
 

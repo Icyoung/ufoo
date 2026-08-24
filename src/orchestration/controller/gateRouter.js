@@ -21,7 +21,7 @@ const ROUTING_PATTERNS = [
   /\bassign (?:this|it|that)\b/i,
   /\bforward (?:this|it|that)\b/i,
   /\bshould (?:i|we) ask\b/i,
-  /\bnew (?:codex|claude|ucode)\b/i,
+  /\bnew (?:codex|claude|agy|grok|kimi|ucode)\b/i,
   /交给谁/,
   /继续给/,
   /发送(?:这个|它|这条|这个任务)?给/,
@@ -29,7 +29,7 @@ const ROUTING_PATTERNS = [
   /发给/,
   /转给/,
   /应该找谁/,
-  /需要新开.*(?:codex|claude|ucode)/i,
+  /需要新开.*(?:codex|claude|agy|grok|kimi|ucode)/i,
 ];
 
 const NON_ROUTING_PATTERNS = [

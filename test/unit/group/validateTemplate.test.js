@@ -91,6 +91,13 @@ describe("group validateTemplate", () => {
     expect(result.ok).toBe(true);
   });
 
+  test("accepts grok as an agent type", () => {
+    const sample = buildValidTemplate();
+    sample.agents[0].type = "grok";
+    const result = validateTemplate(sample);
+    expect(result.ok).toBe(true);
+  });
+
   test("rejects unresolved depends_on/accept_from/report_to refs", () => {
     const sample = buildValidTemplate();
     sample.agents[1].depends_on = ["missing-a"];

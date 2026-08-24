@@ -22,6 +22,7 @@ function normalizeLaunchAgent(agent = "") {
   if (value === "codex") return "codex";
   if (value === "claude" || value === "claude-code") return "claude";
   if (value === "agy" || value === "antigravity") return "agy";
+  if (value === "grok" || value === "ugrok" || value === "grok-build" || value === "xai") return "grok";
   if (value === "kimi" || value === "kimi-cli" || value === "kimi-code") return "kimi";
   if (value === "ufoo" || value === "ucode" || value === "ufoo-code") return "ufoo";
   return "";
@@ -31,6 +32,7 @@ function toBusAgentType(agent = "") {
   if (agent === "codex") return "codex";
   if (agent === "claude") return "claude-code";
   if (agent === "agy") return "agy";
+  if (agent === "grok") return "grok";
   if (agent === "kimi") return "kimi";
   if (agent === "ufoo") return "ufoo-code";
   return "";
@@ -40,6 +42,7 @@ function toTerminalBinary(agent = "") {
   if (agent === "codex") return "ucodex";
   if (agent === "claude") return "uclaude";
   if (agent === "agy") return "uagy";
+  if (agent === "grok") return "ugrok";
   if (agent === "kimi") return "ukimi";
   if (agent === "ufoo") return "ucode";
   return "";
@@ -49,6 +52,7 @@ function toTmuxBinary(agent = "") {
   if (agent === "codex") return "ucodex";
   if (agent === "claude") return "uclaude";
   if (agent === "agy") return "uagy";
+  if (agent === "grok") return "ugrok";
   if (agent === "kimi") return "ukimi";
   if (agent === "ufoo") return "ucode";
   return "";
@@ -1110,7 +1114,7 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
       normalizedAgent,
       nick,
       processManager,
-      [],
+      extraArgs,
       extraEnvPrefix,
       launchScope,
       terminalApp
@@ -1124,6 +1128,7 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
 function normalizeAgentType(agentType) {
   if (agentType === "claude-code") return "claude";
   if (agentType === "codex") return "codex";
+  if (agentType === "grok") return "grok";
   if (agentType === "ufoo-code") return "ufoo";
   return agentType;
 }
@@ -1135,6 +1140,7 @@ function buildResumeArgs(agent, sessionId) {
   // Agy resumes by conversation UUID; bin/uagy.js de-duplicates if the same
   // flag is already injected via provider_session_id readback.
   if (agent === "agy") return [`--conversation=${sessionId}`];
+  if (agent === "grok") return ["--resume", sessionId];
   // kimi resumes a session by id via `-S, --session <id>`.
   if (agent === "kimi") return ["--session", sessionId];
   return [];
@@ -1189,7 +1195,7 @@ function collectRecoverableAgents(projectRoot, target = "") {
       continue;
     }
     const agent = normalizeAgentType(meta.agent_type);
-    if (agent !== "codex" && agent !== "claude" && agent !== "agy" && agent !== "kimi") {
+    if (agent !== "codex" && agent !== "claude" && agent !== "agy" && agent !== "grok" && agent !== "kimi") {
       skipped.push({ id, reason: "unsupported agent type" });
       continue;
     }

@@ -50,10 +50,27 @@ function makeSseResponse(chunks = []) {
   });
 }
 
+function makeResponsesSseResponse(events = []) {
+  const lines = [];
+  for (const event of events) {
+    lines.push(`event: ${event.type}`);
+    lines.push(`data: ${JSON.stringify(event)}`);
+    lines.push("");
+  }
+  return new Response(lines.join("\n"), {
+    status: 200,
+    headers: { "content-type": "text/event-stream" },
+  });
+}
+
 describe("ucode native runner", () => {
   const originalFetch = global.fetch;
+  const originalOpenAiKey = process.env.OPENAI_API_KEY;
   const originalOpenAiBase = process.env.OPENAI_BASE_URL;
   const originalAnthropicBase = process.env.ANTHROPIC_BASE_URL;
+  const originalUfooBase = process.env.UFOO_UCODE_BASE_URL;
+  const originalUfooKey = process.env.UFOO_UCODE_API_KEY;
+  const originalCodexBase = process.env.UFOO_CODEX_BASE_URL;
   const originalUcodeProvider = process.env.UFOO_UCODE_PROVIDER;
   const originalUcodeModel = process.env.UFOO_UCODE_MODEL;
   const originalMaxToolCalls = process.env.UFOO_UCODE_MAX_TOOL_CALLS;
@@ -65,8 +82,12 @@ describe("ucode native runner", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     global.fetch = jest.fn();
+    delete process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_BASE_URL;
     delete process.env.ANTHROPIC_BASE_URL;
+    delete process.env.UFOO_UCODE_BASE_URL;
+    delete process.env.UFOO_UCODE_API_KEY;
+    delete process.env.UFOO_CODEX_BASE_URL;
     delete process.env.UFOO_UCODE_PROVIDER;
     delete process.env.UFOO_UCODE_MODEL;
     delete process.env.UFOO_UCODE_MAX_TOOL_CALLS;
@@ -95,10 +116,18 @@ describe("ucode native runner", () => {
 
   afterAll(() => {
     global.fetch = originalFetch;
+    if (typeof originalOpenAiKey === "string") process.env.OPENAI_API_KEY = originalOpenAiKey;
+    else delete process.env.OPENAI_API_KEY;
     if (typeof originalOpenAiBase === "string") process.env.OPENAI_BASE_URL = originalOpenAiBase;
     else delete process.env.OPENAI_BASE_URL;
     if (typeof originalAnthropicBase === "string") process.env.ANTHROPIC_BASE_URL = originalAnthropicBase;
     else delete process.env.ANTHROPIC_BASE_URL;
+    if (typeof originalUfooBase === "string") process.env.UFOO_UCODE_BASE_URL = originalUfooBase;
+    else delete process.env.UFOO_UCODE_BASE_URL;
+    if (typeof originalUfooKey === "string") process.env.UFOO_UCODE_API_KEY = originalUfooKey;
+    else delete process.env.UFOO_UCODE_API_KEY;
+    if (typeof originalCodexBase === "string") process.env.UFOO_CODEX_BASE_URL = originalCodexBase;
+    else delete process.env.UFOO_CODEX_BASE_URL;
     if (typeof originalUcodeProvider === "string") process.env.UFOO_UCODE_PROVIDER = originalUcodeProvider;
     else delete process.env.UFOO_UCODE_PROVIDER;
     if (typeof originalUcodeModel === "string") process.env.UFOO_UCODE_MODEL = originalUcodeModel;
@@ -134,6 +163,126 @@ describe("ucode native runner", () => {
     expect(deltas).toEqual(["Hello", " world"]);
     expect(global.fetch).toHaveBeenCalledTimes(1);
     expect(global.fetch.mock.calls[0][0]).toBe("https://api.openai.com/v1/chat/completions");
+  });
+
+  test("streams Grok Build through Responses with CLIProxyAPI identity and session id", async () => {
+    global.fetch.mockResolvedValueOnce(makeResponsesSseResponse([
+      { type: "response.output_text.delta", delta: "hello" },
+      {
+        type: "response.completed",
+        response: {
+          id: "resp_1",
+          status: "completed",
+          usage: { input_tokens: 4, output_tokens: 1 },
+          output: [],
+        },
+      },
+    ]));
+
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "say hello",
+      provider: "grok-build",
+      model: "grok-4.6",
+      sessionId: "grok-session-1",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.output).toBe("hello");
+    const [url, init] = global.fetch.mock.calls[0];
+    expect(url).toContain("/v1/responses");
+    expect(init.headers["x-grok-conv-id"]).toBe("grok-session-1");
+    expect(init.headers["User-Agent"]).toContain("grok-shell/");
+    const body = JSON.parse(init.body);
+    expect(body.stream).toBe(true);
+    expect(body.input).toEqual([{
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: "say hello" }],
+    }]);
+  });
+
+  test("replays encrypted Responses reasoning only in the next provider tool request", async () => {
+    global.fetch
+      .mockResolvedValueOnce(makeResponsesSseResponse([
+        {
+          type: "response.output_item.done",
+          output_index: 0,
+          item: {
+            id: "rs_1",
+            type: "reasoning",
+            summary: [],
+            encrypted_content: "encrypted-reasoning-tool-turn",
+          },
+        },
+        {
+          type: "response.output_item.done",
+          output_index: 1,
+          item: {
+            id: "fc_1",
+            type: "function_call",
+            call_id: "call_read_1",
+            name: "read",
+            arguments: '{"path":"README.md"}',
+          },
+        },
+        {
+          type: "response.completed",
+          response: {
+            id: "resp_tool_1",
+            status: "completed",
+            output: [],
+          },
+        },
+      ]))
+      .mockResolvedValueOnce(makeResponsesSseResponse([{
+        type: "response.completed",
+        response: {
+          id: "resp_tool_2",
+          status: "completed",
+          output: [{
+            id: "msg_1",
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "done" }],
+          }],
+        },
+      }]));
+    runToolCall.mockReturnValue({ ok: true, content: "file content" });
+
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "read the file",
+      provider: "grok-build",
+      model: "grok-4.6",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.output).toBe("done");
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    const secondBody = JSON.parse(global.fetch.mock.calls[1][1].body);
+    expect(secondBody.input.map((item) => item.type)).toEqual([
+      "message",
+      "reasoning",
+      "function_call",
+      "function_call_output",
+    ]);
+    expect(secondBody.input[1]).toMatchObject({
+      id: "rs_1",
+      type: "reasoning",
+      encrypted_content: "encrypted-reasoning-tool-turn",
+    });
+    expect(secondBody.input[2]).toMatchObject({
+      type: "function_call",
+      call_id: "call_read_1",
+      name: "read",
+    });
+    expect(secondBody.input[3]).toMatchObject({
+      type: "function_call_output",
+      call_id: "call_read_1",
+    });
+    expect(JSON.stringify(result.messages)).not.toContain("encrypted-reasoning-tool-turn");
+    expect(JSON.stringify(result.turnItems)).not.toContain("encrypted-reasoning-tool-turn");
   });
 
   test("preserves multi-turn message history between openai-native turns", async () => {
@@ -638,8 +787,9 @@ describe("ucode native runner", () => {
       provider: "codex-cli",
       model: "gpt-5",
     });
-    expect(openaiConfig.provider).toBe("openai");
-    expect(openaiConfig.baseUrl).toBe("https://api.openai.com/v1");
+    expect(openaiConfig.provider).toBe("codex");
+    expect(openaiConfig.baseUrl).toBe("https://chatgpt.com/backend-api/codex");
+    expect(openaiConfig.transport).toBe("openai-responses");
 
     const anthropicConfig = resolveRuntimeConfig({
       workspaceRoot,
@@ -649,6 +799,69 @@ describe("ucode native runner", () => {
     expect(anthropicConfig.provider).toBe("anthropic");
     expect(anthropicConfig.baseUrl).toBe("https://api.anthropic.com/v1");
     expect(anthropicConfig.transport).toBe("anthropic-messages");
+  });
+
+  test("runtime config routes Codex API keys to the public OpenAI Responses API", () => {
+    process.env.OPENAI_API_KEY = "sk-openai-test";
+    process.env.UFOO_CODEX_BASE_URL = "https://chatgpt.example/backend-api/codex";
+    const config = resolveRuntimeConfig({
+      workspaceRoot,
+      provider: "codex",
+      model: "gpt-5",
+    });
+    expect(config.apiKey).toBe("sk-openai-test");
+    expect(config.baseUrl).toBe("https://api.openai.com/v1");
+    expect(config.transport).toBe("openai-responses");
+  });
+
+  test("native Codex routes an API-key auth file to the public OpenAI API", async () => {
+    const authPath = path.join(workspaceRoot, "codex-auth.json");
+    fs.writeFileSync(authPath, JSON.stringify({ OPENAI_API_KEY: "sk-auth-file-test" }));
+    fs.writeFileSync(path.join(workspaceRoot, ".ufoo", "config.json"), JSON.stringify({
+      ucodeProvider: "",
+      ucodeModel: "",
+      ucodeBaseUrl: "",
+      ucodeApiKey: "",
+      agentProvider: "codex-cli",
+      agentModel: "",
+      codexAuthPath: authPath,
+    }, null, 2));
+    global.fetch.mockResolvedValueOnce(makeResponsesSseResponse([{
+      type: "response.completed",
+      response: {
+        id: "resp_codex_key",
+        status: "completed",
+        output: [{
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "api key ok" }],
+        }],
+      },
+    }]));
+
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "hello",
+      provider: "codex",
+      model: "gpt-5",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.output).toBe("api key ok");
+    expect(global.fetch.mock.calls[0][0]).toBe("https://api.openai.com/v1/responses");
+    expect(global.fetch.mock.calls[0][1].headers.authorization).toBe("Bearer sk-auth-file-test");
+    expect(global.fetch.mock.calls[0][1].headers["Chatgpt-Account-Id"]).toBeUndefined();
+  });
+
+  test("runtime config maps Grok Build to the latest Responses transport", () => {
+    const config = resolveRuntimeConfig({
+      workspaceRoot,
+      provider: "grok-build",
+    });
+    expect(config.provider).toBe("grok-build");
+    expect(config.model).toBe("grok-4.6");
+    expect(config.baseUrl).toBe("https://api.x.ai/v1");
+    expect(config.transport).toBe("openai-responses");
   });
 
   test("completion url resolver appends chat endpoint", () => {
@@ -668,7 +881,7 @@ describe("ucode native runner", () => {
   });
 
   test("resolveTransport handles various provider/url combos", () => {
-    expect(resolveTransport({ provider: "codex-cli" })).toBe("openai-chat");
+    expect(resolveTransport({ provider: "codex-cli" })).toBe("openai-responses");
     expect(resolveTransport({ provider: "claude-cli" })).toBe("anthropic-messages");
     expect(resolveTransport({ provider: "", baseUrl: "" })).toBe("openai-chat");
     expect(resolveTransport({ provider: "", baseUrl: "https://api.anthropic.com/v1" })).toBe("anthropic-messages");

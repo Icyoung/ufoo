@@ -46,6 +46,32 @@ describe("modelsCatalog", () => {
     expect(listed.models).toEqual(["alpha", "beta"]);
   });
 
+  test("listProviderModels uses the Grok Shell catalog shape and client identity", async () => {
+    const fetchImpl = jest.fn(async (url, init) => {
+      expect(url).toBe("https://proxy.example.test/v1/models?client_version=0.2.120");
+      expect(init.headers.Authorization).toBe("Bearer sk-grok");
+      expect(init.headers["User-Agent"]).toBe("grok-shell/0.2.120");
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({
+          object: "list",
+          data: [{ id: "grok-4.6", model: "grok-4.6", api_backend: "responses" }],
+        }),
+      };
+    });
+
+    const listed = await listProviderModels({
+      provider: "grok-build",
+      transport: "openai-responses",
+      baseUrl: "https://proxy.example.test/v1",
+      apiKey: "sk-grok",
+      fetchImpl,
+      skipCache: true,
+    });
+    expect(listed.models).toEqual(["grok-4.6"]);
+  });
+
   test("listProviderModels reads anthropic catalog headers", async () => {
     const fetchImpl = jest.fn(async (_url, init) => {
       expect(init.headers["x-api-key"]).toBe("sk-ant");

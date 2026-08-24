@@ -34,6 +34,7 @@ function normalizeLaunchAgentForNickname(agent = "") {
   const raw = asTrimmedString(agent).toLowerCase();
   if (raw === "claude" || raw === "claude-code" || raw === "uclaude") return "claude";
   if (raw === "codex" || raw === "ucodex") return "codex";
+  if (raw === "grok" || raw === "ugrok" || raw === "grok-build" || raw === "xai") return "grok";
   if (raw === "ufoo" || raw === "ucode" || raw === "ufoo-code") return "ucode";
   return "";
 }
@@ -57,7 +58,7 @@ function extractRequestedLaunchNickname(prompt = "") {
   const value = nicknameCapturePattern();
   const patterns = [
     new RegExp(`(?:launch|start|create|spawn|open|new|启动|新建|创建|拉起)[\\s\\S]{0,80}(?:named|name|nickname|叫做|叫|名为|昵称|取名|为)\\s*${value}`, "i"),
-    new RegExp(`(?:named|name|nickname|叫做|叫|名为|昵称|取名)\\s*${value}[\\s\\S]{0,80}(?:agent|worker|codex|claude|ucode|ufoo|代理|智能体)`, "i"),
+    new RegExp(`(?:named|name|nickname|叫做|叫|名为|昵称|取名)\\s*${value}[\\s\\S]{0,80}(?:agent|worker|codex|claude|agy|grok|kimi|ucode|ufoo|代理|智能体)`, "i"),
   ];
   for (const re of patterns) {
     const nickname = pickNicknameCapture(text.match(re));

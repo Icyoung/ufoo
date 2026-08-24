@@ -25,6 +25,7 @@ const {
   buildAnthropicMessagesRequest,
   buildCodexResponsesRequest,
   normalizeProvider,
+  normalizeKimiUpstreamModel,
   parseCodexSsePayload,
   resolveUpstreamRuntime,
   sendUpstreamPrompt,
@@ -42,6 +43,13 @@ describe("agent upstreamTransport", () => {
     expect(normalizeProvider("anthropic")).toBe("claude");
     expect(normalizeProvider("ucode")).toBe("ucode");
     expect(normalizeProvider("ufoo")).toBe("ucode");
+    expect(normalizeProvider("grok-build")).toBe("grok");
+    expect(normalizeProvider("xai")).toBe("grok");
+  });
+
+  test("normalizes latest Kimi Code model aliases", () => {
+    expect(normalizeKimiUpstreamModel("kimi-k2.7-code[1m](high)")).toBe("kimi-for-coding(high)");
+    expect(normalizeKimiUpstreamModel("kimi-k3")).toBe("k3");
   });
 
   test("builds codex responses request with developer and user input items", () => {
@@ -53,6 +61,7 @@ describe("agent upstreamTransport", () => {
     })).toEqual({
       model: "gpt-5.3-codex-spark",
       instructions: "system rules",
+      max_output_tokens: 131072,
       stream: true,
       store: false,
       parallel_tool_calls: true,
@@ -192,7 +201,7 @@ describe("agent upstreamTransport", () => {
     }));
   });
 
-  test("resolves codex runtime from api-key credential bridge to openai transport", async () => {
+  test("resolves codex runtime from api-key credential bridge to Responses transport", async () => {
     resolveCodexUpstreamCredentials.mockResolvedValue({
       provider: "codex",
       credentialKind: "api-key",
@@ -209,7 +218,7 @@ describe("agent upstreamTransport", () => {
       loadConfigImpl: () => ({ codexAuthPath: "" }),
     })).resolves.toMatchObject({
       provider: "codex",
-      transport: "openai-chat",
+      transport: "codex-responses",
       baseUrl: "https://openai.example/v1",
       auth: { apiKey: "sk-test" },
     });
@@ -388,6 +397,44 @@ describe("agent upstreamTransport", () => {
         headers: expect.objectContaining({
           authorization: "Bearer claude-access",
           "anthropic-version": "2023-06-01",
+        }),
+      }),
+    );
+  });
+
+  test("sends Grok Build upstream prompt through Responses with shell identity", async () => {
+    const fetchImpl = jest.fn().mockResolvedValue({
+      ok: true,
+      text: async () => [
+        'data: {"type":"response.output_text.delta","delta":"ok"}',
+        'data: {"type":"response.completed","response":{"id":"resp_grok","status":"completed","usage":{"input_tokens":2,"output_tokens":1},"output":[]}}',
+      ].join("\n"),
+    });
+
+    const result = await sendUpstreamPrompt({
+      projectRoot: "/tmp/project",
+      provider: "grok-build",
+      model: "grok-4.6",
+      prompt: "hello",
+      systemPrompt: "system",
+      sessionId: "grok-session",
+      fetchImpl,
+      env: {},
+      loadConfigImpl: () => ({}),
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      provider: "grok-build",
+      transport: "openai-responses",
+      output: "ok",
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://api.openai.com/v1/responses",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          "User-Agent": expect.stringContaining("grok-shell/"),
+          "x-grok-conv-id": "grok-session",
         }),
       }),
     );

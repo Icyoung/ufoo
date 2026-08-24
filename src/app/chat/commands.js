@@ -85,8 +85,9 @@ const COMMAND_TREE = {
       claude: { desc: "Launch Claude agent", order: 1 },
       codex: { desc: "Launch Codex agent", order: 2 },
       agy: { desc: "Launch Antigravity (agy) agent", order: 3 },
-      ucode: { desc: "Launch ucode core agent", order: 4 },
-      kimi: { desc: "Launch Kimi Code agent", order: 5 },
+      grok: { desc: "Launch Grok Build agent", order: 4 },
+      ucode: { desc: "Launch ucode core agent", order: 5 },
+      kimi: { desc: "Launch Kimi Code agent", order: 6 },
     },
   },
   "/project": {
@@ -257,6 +258,7 @@ function normalizeAgentLabel(value = "") {
   if (raw === "claude" || raw === "uclaude") return "claude";
   if (raw === "codex" || raw === "ucodex") return "codex";
   if (raw === "agy" || raw === "antigravity" || raw === "uagy") return "agy";
+  if (raw === "grok" || raw === "ugrok" || raw === "grok-build" || raw === "xai") return "grok";
   if (raw === "kimi" || raw === "kimi-cli" || raw === "kimi-code" || raw === "ukimi") return "kimi";
   if (raw === "ucode" || raw === "ufoo") return "ufoo";
   return raw || "agent";

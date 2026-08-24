@@ -77,6 +77,18 @@ describe("daemon ops auto launch mode resolution", () => {
   });
 });
 
+describe("daemon ops grok mappings", () => {
+  test("normalizes grok aliases and maps wrappers/resume args", () => {
+    for (const alias of ["grok", "ugrok", "grok-build", "xai"]) {
+      expect(__private.normalizeLaunchAgent(alias)).toBe("grok");
+    }
+    expect(__private.toBusAgentType("grok")).toBe("grok");
+    expect(__private.toTerminalBinary("grok")).toBe("ugrok");
+    expect(__private.toTmuxBinary("grok")).toBe("ugrok");
+    expect(__private.buildResumeArgs("grok", "grok-session-1")).toEqual(["--resume", "grok-session-1"]);
+  });
+});
+
 function createMockProcess({ stdout = "", stderr = "", code = 0 } = {}) {
   const { EventEmitter } = require("events");
   const proc = new EventEmitter();
@@ -296,6 +308,26 @@ describe("daemon ops internal launch", () => {
       expect.stringContaining(path.join("claude-code", "default-bootstrap.md")),
     ]);
     expect(spawn.mock.calls[0][2].env.UFOO_NICKNAME).toBe("claude-1");
+    expect(spawn.mock.calls[0][2].env.UFOO_SKIP_DEFAULT_BOOTSTRAP).toBe("1");
+  });
+
+  test("internal grok launch registers grok and applies --rules bootstrap", async () => {
+    writeConfig({ launchMode: "internal" });
+
+    const result = await launchAgent(projectRoot, "grok", 1, "");
+    const agents = JSON.parse(fs.readFileSync(getUfooPaths(projectRoot).agentsFile, "utf8")).agents;
+    const subscriberId = result.subscriberIds[0];
+
+    expect(subscriberId).toMatch(/^grok:/);
+    expect(agents[subscriberId].agent_type).toBe("grok");
+    expect(agents[subscriberId].nickname).toBe("grok-1");
+    expect(spawn.mock.calls[0][1]).toEqual([
+      path.resolve(__dirname, "../../../bin/ufoo.js"),
+      "agent-runner",
+      "grok",
+      "--rules",
+      expect.stringContaining("Session bootstrap for Grok."),
+    ]);
     expect(spawn.mock.calls[0][2].env.UFOO_SKIP_DEFAULT_BOOTSTRAP).toBe("1");
   });
 });

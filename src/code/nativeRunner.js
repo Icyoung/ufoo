@@ -1,9 +1,11 @@
+const os = require("os");
 const { randomUUID } = require("crypto");
 const { loadConfig, defaultAgentModelForProvider, sameModelProvider } = require("../config");
 const {
   readKimiAccessToken,
   resolveKimiUpstreamCredentials,
 } = require("../agents/providers/credentials/kimi");
+const { resolveCodexUpstreamCredentials } = require("../agents/providers/credentials/codex");
 const { runToolCall } = require("./dispatch");
 const { runTaskRunTool } = require("./tools/taskRun");
 const { appendUsageRecord } = require("./usageStore");
@@ -66,6 +68,13 @@ const { getReadImageToolDescription } = require("../agents/prompts/native/toolDe
 const { getWriteToolDescription } = require("../agents/prompts/native/toolDescriptions/write");
 const { getEditToolDescription } = require("../agents/prompts/native/toolDescriptions/edit");
 const { getBashToolDescription } = require("../agents/prompts/native/toolDescriptions/bash");
+const {
+  buildResponsesPayload,
+  isResponsesKeepalive,
+  responseEventDelta,
+  parseResponsesEvents,
+  parseResponsesSsePayload,
+} = require("./providers/responsesProtocol");
 
 const CORE_TOOL_NAMES = new Set([
   "read",
@@ -90,6 +99,10 @@ const CONTROL_PLANE_TOOLS = new Set(["plan_graph", "task_run"]);
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1";
 const DEFAULT_KIMI_BASE_URL = "https://api.kimi.com/coding/v1";
+const DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex";
+const DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1";
+const DEFAULT_GROK_BUILD_BASE_URL = DEFAULT_XAI_BASE_URL;
+const DEFAULT_GROK_BUILD_MODEL = "grok-4.6";
 const DEFAULT_KIMI_MODEL = "k3";
 // Claude Code SDK defaults to no turn limit; built-in agents cap at 30 (DreamTask)
 // to 200 (fork). We count individual tool calls (not turns), so 100 leaves headroom
@@ -292,19 +305,42 @@ function clipText(value = "", maxChars = 6000) {
 function normalizeProvider(value = "") {
   const text = String(value || "").trim().toLowerCase();
   if (!text) return "";
-  if (text === "codex" || text === "codex-cli" || text === "codex-code") return "openai";
+  if (text === "codex" || text === "codex-cli" || text === "codex-code") return "codex";
   if (text === "claude" || text === "claude-cli" || text === "claude-code") return "anthropic";
   if (text === "kimi" || text === "kimi-code" || text === "moonshot") return "kimi";
+  if (text === "grok" || text === "grok-build" || text === "grok-shell" || text === "grok-api") return "grok-build";
+  if (text === "xai") return "xai";
   if (text === "openai" || text === "anthropic") return text;
   return text;
+}
+
+function normalizeKimiModel(value = "") {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const suffix = raw.match(/^(.*?)(\([^)]*\))$/);
+  const base = String(suffix ? suffix[1] : raw).trim().replace(/\[1m\]$/i, "");
+  const lower = base.toLowerCase();
+  let normalized = lower;
+  if (["kimi-k2.7-code", "k2.7-code", "kimi-for-coding", "for-coding"].includes(lower)) {
+    normalized = "kimi-for-coding";
+  } else if (["kimi-k2.7-code-highspeed", "k2.7-code-highspeed", "kimi-for-coding-highspeed", "for-coding-highspeed"].includes(lower)) {
+    normalized = "kimi-for-coding-highspeed";
+  } else if (normalized.startsWith("kimi-")) {
+    normalized = normalized.slice("kimi-".length);
+  }
+  return `${normalized}${suffix ? suffix[2] : ""}`;
 }
 
 function resolveTransport({ provider = "", baseUrl = "" } = {}) {
   const normalizedProvider = normalizeProvider(provider);
   const url = String(baseUrl || "").trim().toLowerCase();
 
+  if (normalizedProvider === "codex" || normalizedProvider === "grok-build" || normalizedProvider === "xai") {
+    return "openai-responses";
+  }
   if (normalizedProvider === "anthropic") return "anthropic-messages";
   if (normalizedProvider === "kimi") return "openai-chat";
+  if (/\/responses(?:$|[/?#])/.test(url)) return "openai-responses";
   if (url.includes("anthropic.com")) return "anthropic-messages";
   if (/\/messages(?:$|[/?#])/.test(url) && !/\/chat\/completions(?:$|[/?#])/.test(url)) {
     return "anthropic-messages";
@@ -330,16 +366,28 @@ function resolveRuntimeConfig({ workspaceRoot = process.cwd(), provider = "", mo
     model
       || process.env.UFOO_UCODE_MODEL
       || configuredModel
-      || (selectedProvider === "kimi" ? DEFAULT_KIMI_MODEL : defaultAgentModelForProvider(selectedProvider))
+      || (selectedProvider === "kimi"
+        ? DEFAULT_KIMI_MODEL
+        : (selectedProvider === "grok-build" ? DEFAULT_GROK_BUILD_MODEL : defaultAgentModelForProvider(selectedProvider)))
   ).trim();
 
   const defaultBaseUrl = selectedProvider === "anthropic"
     ? String(process.env.ANTHROPIC_BASE_URL || DEFAULT_ANTHROPIC_BASE_URL)
     : selectedProvider === "kimi"
-      ? DEFAULT_KIMI_BASE_URL
-      : String(process.env.OPENAI_BASE_URL || DEFAULT_OPENAI_BASE_URL);
+      ? String(process.env.KIMI_BASE_URL || DEFAULT_KIMI_BASE_URL)
+      : selectedProvider === "codex"
+        ? String(process.env.UFOO_CODEX_BASE_URL || DEFAULT_CODEX_BASE_URL)
+        : selectedProvider === "grok-build"
+          ? String(
+            process.env.UFOO_GROK_BUILD_BASE_URL
+              || process.env.GROK_BUILD_BASE_URL
+              || DEFAULT_GROK_BUILD_BASE_URL
+          )
+          : selectedProvider === "xai"
+            ? String(process.env.XAI_BASE_URL || DEFAULT_XAI_BASE_URL)
+            : String(process.env.OPENAI_BASE_URL || DEFAULT_OPENAI_BASE_URL);
 
-  const baseUrl = String(
+  let baseUrl = String(
     process.env.UFOO_UCODE_BASE_URL
       || config.ucodeBaseUrl
       || defaultBaseUrl
@@ -365,9 +413,24 @@ function resolveRuntimeConfig({ workspaceRoot = process.cwd(), provider = "", mo
     apiKey = String(
       (selectedProvider === "openai" ? process.env.OPENAI_API_KEY : "")
         || (selectedProvider === "anthropic" ? process.env.ANTHROPIC_API_KEY : "")
+        || (selectedProvider === "codex" ? process.env.OPENAI_API_KEY : "")
+        || (selectedProvider === "grok-build" ? (process.env.GROK_BUILD_API_KEY || process.env.XAI_API_KEY) : "")
+        || (selectedProvider === "xai" ? process.env.XAI_API_KEY : "")
         || ""
     ).trim();
     if (apiKey) apiKeySource = "env";
+  }
+
+  // ChatGPT's Codex backend accepts Codex OAuth credentials, while standard
+  // OpenAI API keys belong on the public OpenAI API. Generic ucode base URL
+  // overrides remain authoritative for an explicitly configured gateway.
+  if (
+    selectedProvider === "codex"
+    && apiKey
+    && !String(process.env.UFOO_UCODE_BASE_URL || "").trim()
+    && !String(config.ucodeBaseUrl || "").trim()
+  ) {
+    baseUrl = String(process.env.OPENAI_BASE_URL || DEFAULT_OPENAI_BASE_URL).trim();
   }
 
   return {
@@ -389,6 +452,16 @@ function resolveCompletionUrl(baseUrl = "") {
   if (/\/v1$/i.test(normalized)) return `${normalized}/chat/completions`;
   if (/\/api$/i.test(normalized)) return `${normalized}/v1/chat/completions`;
   return `${normalized}/chat/completions`;
+}
+
+function resolveResponsesUrl(baseUrl = "") {
+  const raw = String(baseUrl || "").trim();
+  if (!raw) return "";
+  const normalized = raw.replace(/\/+$/, "");
+  if (/\/responses$/i.test(normalized)) return normalized;
+  if (/\/v1$/i.test(normalized)) return `${normalized}/responses`;
+  if (/\/api$/i.test(normalized)) return `${normalized}/v1/responses`;
+  return `${normalized}/responses`;
 }
 
 function resolveAnthropicMessagesUrl(baseUrl = "") {
@@ -1134,8 +1207,9 @@ async function runOpenAiLikeTurn({
   signal = null,
   timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
 } = {}) {
+  const normalizedProvider = normalizeProvider(provider);
   const payload = {
-    model,
+    model: normalizedProvider === "kimi" ? normalizeKimiModel(model) : model,
     max_tokens: resolveMaxTokens(DEFAULT_OPENAI_MAX_TOKENS),
     messages,
     tools: buildCoreToolSpecs(),
@@ -1144,7 +1218,7 @@ async function runOpenAiLikeTurn({
     // Ask for the terminal usage chunk so token/cache accounting works.
     stream_options: { include_usage: true },
     // Kimi k3 rejects any temperature other than 1.
-    temperature: normalizeProvider(provider) === "kimi" ? 1 : 0,
+    temperature: normalizedProvider === "kimi" ? 1 : 0,
   };
   const reasoningEffort = resolveReasoningEffort();
   if (reasoningEffort) {
@@ -1153,12 +1227,9 @@ async function runOpenAiLikeTurn({
     payload.reasoning_effort = reasoningEffort;
   }
 
-  const headers = {
-    "content-type": "application/json",
-  };
-  if (apiKey) {
-    headers.authorization = `Bearer ${apiKey}`;
-  }
+  const headers = normalizedProvider === "kimi"
+    ? buildKimiHeaders({ apiKey, stream: true })
+    : { "content-type": "application/json", ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) };
 
   const toolCallMap = new Map();
   const announcedToolNames = new Set();
@@ -1293,6 +1364,180 @@ async function runOpenAiLikeTurn({
         .map((entry) => entry[1]),
       usage: streamUsage,
     }),
+  });
+}
+
+function currentGrokClientVersion() {
+  return String(process.env.UFOO_GROK_CLIENT_VERSION || "0.2.120").trim() || "0.2.120";
+}
+
+function isGrokCliProxyUrl(url = "") {
+  try {
+    return new URL(String(url || "")).hostname.toLowerCase() === "cli-chat-proxy.grok.com";
+  } catch {
+    return false;
+  }
+}
+
+function currentKimiClientVersion() {
+  try {
+    return String(process.env.UFOO_KIMI_CLIENT_VERSION || require("../../package.json").version || "dev").trim() || "dev";
+  } catch {
+    return "dev";
+  }
+}
+
+function buildKimiHeaders({ apiKey = "", stream = true } = {}) {
+  const version = currentKimiClientVersion();
+  const headers = {
+    "content-type": "application/json",
+    "User-Agent": `ufoo/${version}`,
+    "X-Msh-Platform": "ufoo",
+    "X-Msh-Version": version,
+    "X-Msh-Device-Name": os.hostname(),
+    "X-Msh-Device-Model": `${process.platform} ${process.arch}`,
+    "X-Msh-Device-Id": String(process.env.KIMI_DEVICE_ID || "ufoo-kimi-device").trim() || "ufoo-kimi-device",
+    Accept: stream ? "text/event-stream" : "application/json",
+  };
+  if (apiKey) headers.authorization = `Bearer ${apiKey}`;
+  return headers;
+}
+
+function buildResponsesHeaders({ provider = "", apiKey = "", sessionId = "", accountId = "", url = "" } = {}) {
+  const normalizedProvider = normalizeProvider(provider);
+  const headers = {
+    "content-type": "application/json",
+    Accept: "text/event-stream",
+    Connection: "Keep-Alive",
+  };
+  if (apiKey) headers.authorization = `Bearer ${apiKey}`;
+
+  if (normalizedProvider === "codex") {
+    headers["User-Agent"] = String(
+      process.env.UFOO_CODEX_USER_AGENT
+        || "codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)"
+    );
+    headers.Originator = "codex-tui";
+    headers["Session-Id"] = String(sessionId || randomUUID());
+    if (accountId) headers["Chatgpt-Account-Id"] = String(accountId);
+  }
+
+  if (normalizedProvider === "grok-build" || normalizedProvider === "xai") {
+    const version = currentGrokClientVersion();
+    if (sessionId) headers["x-grok-conv-id"] = String(sessionId);
+    if (isGrokCliProxyUrl(url)) {
+      headers["X-XAI-Token-Auth"] = "xai-grok-cli";
+      headers["x-grok-client-version"] = version;
+      headers["x-grok-client-identifier"] = "grok-shell";
+      headers["x-authenticateresponse"] = "authenticate-response";
+      headers["User-Agent"] = `xai-grok-workspace/${version}`;
+    } else if (normalizedProvider === "grok-build") {
+      // CLIProxyAPI selects the Grok Build route from this identity.
+      headers["User-Agent"] = `grok-shell/${version}`;
+    }
+  }
+
+  return headers;
+}
+
+async function runResponsesTurn({
+  url = "",
+  apiKey = "",
+  model = "",
+  provider = "",
+  systemPrompt = "",
+  messages = [],
+  sessionId = "",
+  accountId = "",
+  onTextDelta = null,
+  onThinkingDelta = null,
+  onPhase = null,
+  signal = null,
+  timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
+} = {}) {
+  const payload = buildResponsesPayload({
+    model,
+    instructions: systemPrompt,
+    messages,
+    tools: buildCoreToolSpecs(),
+    maxOutputTokens: resolveMaxTokens(DEFAULT_OPENAI_MAX_TOKENS),
+    reasoningEffort: resolveReasoningEffort(),
+    provider: normalizeProvider(provider),
+  });
+  const headers = buildResponsesHeaders({ provider, apiKey, sessionId, accountId, url });
+  const frames = [];
+
+  const consumeFrame = (frame = {}) => {
+    const data = frame && frame.data && typeof frame.data === "object"
+      ? frame.data
+      : parseJsonSafe(frame && frame.data, null);
+    if (!data || isResponsesKeepalive(frame && frame.event, data)) return;
+    frames.push({ event: String(frame.event || data.type || ""), data });
+
+    const delta = responseEventDelta({ event: data.type || frame.event, data });
+    if (delta.reasoning) {
+      emitPhase(onPhase, { type: "thinking_delta", text: delta.reasoning });
+      if (typeof onThinkingDelta === "function") onThinkingDelta(delta.reasoning);
+    }
+    if (delta.text) {
+      emitPhase(onPhase, { type: "text_delta", text: delta.text });
+      if (typeof onTextDelta === "function") onTextDelta(delta.text);
+    }
+
+    const item = data.item && typeof data.item === "object" ? data.item : null;
+    if (
+      item
+      && item.type === "function_call"
+      && item.name
+      && (data.type === "response.output_item.added" || data.type === "response.output_item.done")
+    ) {
+      emitPhase(onPhase, { type: "tool_request", name: String(item.name) });
+    }
+  };
+
+  return runSseRequest({
+    url,
+    headers,
+    payload,
+    signal,
+    timeoutMs,
+    onPhase,
+    onNonStream: (data) => {
+      const parsed = parseResponsesEvents([{ event: data && data.type ? data.type : "response", data }], {
+        assumeCompleted: true,
+      });
+      if (parsed.reasoning && typeof onThinkingDelta === "function") onThinkingDelta(parsed.reasoning);
+      if (parsed.text && typeof onTextDelta === "function") onTextDelta(parsed.text);
+      return {
+        text: parsed.text,
+        toolCalls: parsed.toolCalls,
+        outputItems: parsed.outputItems,
+        usage: parsed.usage,
+        response: parsed.response,
+        responseId: parsed.responseId,
+      };
+    },
+    onEvent: consumeFrame,
+    onTail: (rawBuffer) => {
+      if (!String(rawBuffer || "").trim()) return;
+      const tail = parseResponsesSsePayload(rawBuffer);
+      for (const data of tail.events || []) consumeFrame({ event: data.type, data });
+    },
+    buildResult: () => {
+      const parsed = parseResponsesEvents(frames);
+      if (!parsed.terminal) {
+        throw new Error("Responses stream ended before response.completed or response.incomplete");
+      }
+      return {
+        text: parsed.text,
+        toolCalls: parsed.toolCalls,
+        outputItems: parsed.outputItems,
+        usage: parsed.usage,
+        response: parsed.response,
+        responseId: parsed.responseId,
+        incompleteDetails: parsed.incompleteDetails,
+      };
+    },
   });
 }
 
@@ -1663,6 +1908,7 @@ async function runAnthropicTurn({
 
 const {
   createOpenAiChatTransport,
+  createOpenAiResponsesTransport,
   createAnthropicMessagesTransport,
 } = require("./providers");
 
@@ -1671,6 +1917,14 @@ const TRANSPORTS = {
   "openai-chat": createOpenAiChatTransport({
     resolveUrl: resolveCompletionUrl,
     runTurn: runOpenAiLikeTurn,
+    normalizeToolName,
+    normalizeToolCallArgs,
+    toJsonString,
+    clipText,
+  }),
+  "openai-responses": createOpenAiResponsesTransport({
+    resolveUrl: resolveResponsesUrl,
+    runTurn: runResponsesTurn,
     normalizeToolName,
     normalizeToolCallArgs,
     toJsonString,
@@ -1743,6 +1997,7 @@ async function runNativeLoop({
   baseUrl = "",
   apiKey = "",
   provider = "",
+  accountId = "",
   timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
   onStreamDelta = null,
   onThinkingDelta = null,
@@ -1963,9 +2218,11 @@ async function runNativeLoop({
       apiKey,
       model: requestModel,
       provider,
+      accountId,
       systemPrompt,
       systemBlocks,
       messages: providerMessages,
+      sessionId,
       signal,
       timeoutMs,
       onPhase,
@@ -2354,6 +2611,37 @@ async function runNativeAgentTask({
       model,
     });
 
+    let accountId = "";
+    if (runtime.provider === "codex" && !runtime.apiKey) {
+      try {
+        const config = loadConfig(workspaceRoot) || {};
+        const credential = await resolveCodexUpstreamCredentials({
+          authPath: config.codexAuthPath,
+          refreshWindowMs: Number(config.codexOauthRefreshWindowSec || 300) * 1000,
+          env: process.env,
+        });
+        const token = String(credential && (credential.accessToken || credential.apiKey) || "").trim();
+        if (token) {
+          runtime.apiKey = token;
+          runtime.apiKeySource = String(credential.source || "codex-credential");
+        }
+        const credentialKind = String(credential && credential.credentialKind || "").trim();
+        if (
+          credentialKind === "api-key"
+          && !String(process.env.UFOO_UCODE_BASE_URL || "").trim()
+          && !String(config.ucodeBaseUrl || "").trim()
+        ) {
+          runtime.baseUrl = String(process.env.OPENAI_BASE_URL || DEFAULT_OPENAI_BASE_URL).trim();
+        }
+        if (credentialKind === "oauth") {
+          accountId = String(credential && credential.accountId || "").trim();
+        }
+      } catch {
+        // The request will report the provider's auth error when no Codex
+        // credential is available; keep runtime resolution non-throwing.
+      }
+    }
+
     // Kimi tokens expire; resolveRuntimeConfig reads the credential file
     // synchronously, so refresh it here (async) when the key came from that
     // file and the token is outside the fresh window.
@@ -2384,6 +2672,7 @@ async function runNativeAgentTask({
       baseUrl: runtime.baseUrl,
       apiKey: runtime.apiKey,
       provider: runtime.provider,
+      accountId,
       timeoutMs,
       onStreamDelta: trackingStreamDelta,
       onThinkingDelta,
@@ -2461,6 +2750,7 @@ module.exports = {
   appendAnswerToolResult,
   resolveRuntimeConfig,
   resolveCompletionUrl,
+  resolveResponsesUrl,
   resolveAnthropicMessagesUrl,
   resolveTransport,
   resolveThinkingBudgetTokens,

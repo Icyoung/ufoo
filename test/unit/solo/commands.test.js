@@ -9,6 +9,8 @@ describe("solo commands helpers", () => {
   test("resolveSoloAgentType respects explicit aliases", () => {
     expect(resolveSoloAgentType({}, "uclaude")).toBe("claude");
     expect(resolveSoloAgentType({}, "openai")).toBe("codex");
+    expect(resolveSoloAgentType({}, "ugrok")).toBe("grok");
+    expect(resolveSoloAgentType({}, "xai")).toBe("grok");
     expect(resolveSoloAgentType({}, "ufoo")).toBe("ucode");
   });
 

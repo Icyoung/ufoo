@@ -1297,7 +1297,7 @@ describe("ucode core agent nl path", () => {
     expect(resolvePlannerProvider("anthropic")).toBe("anthropic");
     expect(resolvePlannerProvider("claude-code")).toBe("anthropic");
     expect(resolvePlannerProvider("openai")).toBe("openai");
-    expect(resolvePlannerProvider("codex-cli")).toBe("openai");
+    expect(resolvePlannerProvider("codex-cli")).toBe("codex");
   });
 
   test("extractJsonSummary prefers summary/reply fields in trailing json", () => {
@@ -1499,7 +1499,7 @@ describe("ucode core agent nl path", () => {
         provider: "",
         model: "",
       });
-      expect(result.provider).toBe("openai");
+      expect(result.provider).toBe("codex");
       expect(result.model).toBe("gpt-5.2-codex");
     } finally {
       if (savedProvider !== undefined) process.env.UFOO_UCODE_PROVIDER = savedProvider;

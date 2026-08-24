@@ -29,12 +29,31 @@ const { listProjectRuntimes } = require("../../../src/runtime/projects/registry"
 describe("ufooAgent prompt schema", () => {
   const projectRoot = "/tmp/ufoo-agent-schema-test";
 
-  function defaultDirectResponse(content = "{\"reply\":\"ok\",\"dispatch\":[],\"ops\":[]}") {
+  function responsesDocument(content, usage = null) {
+    return {
+      id: "resp_test",
+      object: "response",
+      status: "completed",
+      output: [{
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: content }],
+      }],
+      ...(usage ? { usage } : {}),
+    };
+  }
+
+  function chatDocument(content, usage = null) {
+    return {
+      choices: [{ message: { content } }],
+      ...(usage ? { usage } : {}),
+    };
+  }
+
+  function defaultDirectResponse(content = "{\"reply\":\"ok\",\"dispatch\":[],\"ops\":[]}", usage = null) {
     return {
       ok: true,
-      json: async () => ({
-        choices: [{ message: { content } }],
-      }),
+      json: async () => responsesDocument(content, usage),
     };
   }
 
@@ -44,6 +63,7 @@ describe("ufooAgent prompt schema", () => {
       : [];
     const [, opts] = calls[calls.length - 1] || [];
     const body = JSON.parse((opts && opts.body) || "{}");
+    if (typeof body.instructions === "string") return body.instructions;
     const systemMsg = (body.messages || []).find((message) => message.role === "system");
     return systemMsg ? systemMsg.content : "";
   }
@@ -54,6 +74,16 @@ describe("ufooAgent prompt schema", () => {
       : [];
     const [, opts] = calls[calls.length - 1] || [];
     const body = JSON.parse((opts && opts.body) || "{}");
+    const input = Array.isArray(body.input) ? body.input : [];
+    const responseUser = input.slice().reverse().find((message) => (
+      message && message.type === "message" && message.role === "user"
+    ));
+    if (responseUser) {
+      if (typeof responseUser.content === "string") return responseUser.content;
+      return (Array.isArray(responseUser.content) ? responseUser.content : [])
+        .map((part) => part && (part.text || part.content) || "")
+        .join("");
+    }
     const messages = body.messages || [];
     const userMsg = messages.slice().reverse().find((message) => message.role === "user");
     return userMsg ? userMsg.content : "";
@@ -102,10 +132,10 @@ describe("ufooAgent prompt schema", () => {
   test("maps upstream usage fields into result meta", async () => {
     global.fetch.mockResolvedValue({
       ok: true,
-      json: async () => ({
-        choices: [{ message: { content: "{\"reply\":\"ok\",\"dispatch\":[],\"ops\":[]}" } }],
-        usage: { prompt_tokens: 120, completion_tokens: 30 },
-      }),
+      json: async () => responsesDocument(
+        "{\"reply\":\"ok\",\"dispatch\":[],\"ops\":[]}",
+        { input_tokens: 120, output_tokens: 30 },
+      ),
     });
 
     const res = await runUfooAgent({
@@ -126,15 +156,15 @@ describe("ufooAgent prompt schema", () => {
   test("maps anthropic-style cache usage fields into result meta", async () => {
     global.fetch.mockResolvedValue({
       ok: true,
-      json: async () => ({
-        choices: [{ message: { content: "{\"reply\":\"ok\",\"dispatch\":[],\"ops\":[]}" } }],
-        usage: {
+      json: async () => responsesDocument(
+        "{\"reply\":\"ok\",\"dispatch\":[],\"ops\":[]}",
+        {
           input_tokens: 64,
           output_tokens: 12,
           cache_read_input_tokens: 40,
           cache_creation_input_tokens: 8,
         },
-      }),
+      ),
     });
 
     const res = await runUfooAgent({
@@ -200,13 +230,9 @@ describe("ufooAgent prompt schema", () => {
     });
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({
-        choices: [{
-          message: {
-            content: "{\"reply\":\"direct ok\",\"dispatch\":[],\"ops\":[]}",
-          },
-        }],
-      }),
+      json: async () => responsesDocument(
+        "{\"reply\":\"direct ok\",\"dispatch\":[],\"ops\":[]}",
+      ),
     });
 
     const res = await runUfooAgent({
@@ -220,11 +246,14 @@ describe("ufooAgent prompt schema", () => {
     expect(res.ok).toBe(true);
     expect(res.payload.reply).toBe("direct ok");
     expect(global.fetch).toHaveBeenCalledWith(
-      "https://api.openai.com/v1/chat/completions",
+      "https://api.openai.com/v1/responses",
       expect.objectContaining({
         method: "POST",
         headers: expect.objectContaining({
           authorization: "Bearer sk-test",
+          Accept: "text/event-stream",
+          Originator: "codex-tui",
+          "Session-Id": expect.any(String),
         }),
       })
     );
@@ -528,9 +557,7 @@ describe("ufooAgent prompt schema", () => {
     const responsePayload = { reply: "native ok", dispatch: [], ops: [] };
     const mockResponse = {
       ok: true,
-      json: async () => ({
-        choices: [{ message: { content: JSON.stringify(responsePayload) } }],
-      }),
+      json: async () => chatDocument(JSON.stringify(responsePayload)),
     };
     global.fetch = jest.fn().mockResolvedValue(mockResponse);
 
@@ -560,9 +587,7 @@ describe("ufooAgent prompt schema", () => {
     const fenced = "```json\n" + JSON.stringify(responsePayload, null, 2) + "\n```";
     const mockResponse = {
       ok: true,
-      json: async () => ({
-        choices: [{ message: { content: fenced } }],
-      }),
+      json: async () => chatDocument(fenced),
     };
     global.fetch = jest.fn().mockResolvedValue(mockResponse);
 
@@ -593,17 +618,11 @@ describe("ufooAgent prompt schema", () => {
   test("runUfooRouteAgent uses the native gate-router path and normalizes the route result", async () => {
     const mockResponse = {
       ok: true,
-      json: async () => ({
-        choices: [{
-          message: {
-            content: JSON.stringify({
-              target: "reviewer",
-              confidence: 0.85,
-              reason: "continuity",
-            }),
-          },
-        }],
-      }),
+      json: async () => chatDocument(JSON.stringify({
+        target: "reviewer",
+        confidence: 0.85,
+        reason: "continuity",
+      })),
     };
     global.fetch = jest.fn().mockResolvedValue(mockResponse);
 

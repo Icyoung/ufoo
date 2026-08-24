@@ -23,12 +23,14 @@ const SETTINGS_MODEL_DEFAULTS = Object.freeze({
     // kimi reads its model from its own config.toml (default_model); ufoo
     // never injects -m/--model, so keep the placeholder empty like agy.
     kimi: "",
+    "grok-build": "grok-4.6",
   }),
   router: Object.freeze({
     codex: "gpt-5.3-codex-spark",
     claude: "sonnet-4.7",
     agy: "",
     kimi: "",
+    "grok-build": "grok-4.6",
   }),
 });
 
@@ -80,6 +82,7 @@ function normalizeAgentProvider(value) {
   if (value === "claude-cli") return "claude-cli";
   if (value === "agy-cli" || value === "agy" || value === "antigravity") return "agy-cli";
   if (value === "kimi-cli" || value === "kimi") return "kimi-cli";
+  if (value === "grok-cli" || value === "grok" || value === "grok-build" || value === "xai") return "grok-cli";
   return "codex-cli";
 }
 
@@ -88,6 +91,9 @@ function providerKey(value = "") {
   if (text === "claude" || text === "claude-cli" || text === "claude-code" || text === "anthropic") return "claude";
   if (text === "agy" || text === "agy-cli" || text === "antigravity") return "agy";
   if (text === "kimi" || text === "kimi-cli" || text === "kimi-code") return "kimi";
+  if (text === "grok" || text === "grok-cli" || text === "grok-build" || text === "grok-shell" || text === "xai") {
+    return "grok-build";
+  }
   return "codex";
 }
 

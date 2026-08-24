@@ -6,6 +6,7 @@ const path = require("path");
 
 const {
   hasMetaCommandArgs,
+  hasGrokMetaCommandArgs,
   buildDefaultStartupBootstrapPrompt,
   prepareDefaultBootstrapFile,
   resolveDefaultManualBootstrap,
@@ -255,5 +256,63 @@ describe("default bootstrap", () => {
     });
     expect(resolved.mode).toBe("skip");
     expect(resolved.args).toEqual(["--help"]);
+  });
+
+  test("grok: prepends --rules <bootstrap> on a blank launch", () => {
+    const resolved = resolveDefaultManualBootstrap({
+      projectRoot: "/tmp/ufoo",
+      agentType: "grok",
+      args: [],
+      env: {},
+    });
+    expect(resolved.mode).toBe("rules-arg");
+    expect(resolved.args[0]).toBe("--rules");
+    expect(resolved.args[1]).toContain("Session bootstrap for Grok.");
+    expect(resolved.args[1]).toContain("ufoo ctx decisions -l");
+  });
+
+  test("grok: preserves user prompt after --rules bootstrap", () => {
+    const resolved = resolveDefaultManualBootstrap({
+      projectRoot: "/tmp/ufoo",
+      agentType: "grok",
+      args: ["fix the flaky test"],
+      env: {},
+    });
+    expect(resolved.mode).toBe("rules-arg");
+    expect(resolved.args[0]).toBe("--rules");
+    expect(resolved.args[1]).toContain("Session bootstrap for Grok.");
+    expect(resolved.args[2]).toBe("fix the flaky test");
+  });
+
+  test("grok: merges bootstrap into existing --rules value", () => {
+    const resolved = resolveDefaultManualBootstrap({
+      projectRoot: "/tmp/ufoo",
+      agentType: "grok",
+      args: ["--rules", "project-specific rules", "review the diff"],
+      env: {},
+    });
+    expect(resolved.mode).toBe("rules-arg");
+    expect(resolved.args).toHaveLength(3);
+    expect(resolved.args[0]).toBe("--rules");
+    expect(resolved.args[1]).toContain("project-specific rules");
+    expect(resolved.args[1]).toContain("Session bootstrap for Grok.");
+    expect(resolved.args[2]).toBe("review the diff");
+  });
+
+  test("grok: detects meta commands even after options with values", () => {
+    expect(hasGrokMetaCommandArgs(["--model", "grok-4.6", "inspect"])).toBe(true);
+    expect(hasGrokMetaCommandArgs(["--model=grok-4.6", "doctor"])).toBe(true);
+    expect(hasGrokMetaCommandArgs(["--model", "grok-4.6", "fix the bug"])).toBe(false);
+  });
+
+  test("grok: skips bootstrap for CLI meta commands", () => {
+    const resolved = resolveDefaultManualBootstrap({
+      projectRoot: "/tmp/ufoo",
+      agentType: "grok",
+      args: ["--no-auto-update", "inspect"],
+      env: {},
+    });
+    expect(resolved.mode).toBe("skip");
+    expect(resolved.args).toEqual(["--no-auto-update", "inspect"]);
   });
 });

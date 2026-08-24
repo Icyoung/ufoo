@@ -125,14 +125,26 @@ function getOuterTerminalSize() {
 function computeInjectedSubmitDelayMs(agentType, text) {
   const normalizedAgent = String(agentType || "").trim().toLowerCase();
   const input = typeof text === "string" ? text : "";
-  let delayMs = normalizedAgent === "claude-code" ? 350 : 200;
+  const directSubmit = normalizedAgent === "claude-code"
+    || normalizedAgent === "agy"
+    || normalizedAgent === "grok"
+    || normalizedAgent === "kimi";
+  let delayMs = directSubmit ? 350 : 200;
   if (input.includes("\n")) {
-    delayMs += normalizedAgent === "claude-code" ? 250 : 120;
+    delayMs += directSubmit ? 250 : 120;
   }
   if (input.length > 512) {
     delayMs += Math.min(1200, Math.ceil(input.length / 512) * 90);
   }
   return delayMs;
+}
+
+function isDirectSubmitAgent(agentType) {
+  const normalizedAgent = String(agentType || "").trim().toLowerCase();
+  return normalizedAgent === "claude-code"
+    || normalizedAgent === "agy"
+    || normalizedAgent === "grok"
+    || normalizedAgent === "kimi";
 }
 
 function hasPromptArg(args = []) {
@@ -159,11 +171,18 @@ function resolvePtyBootstrapArgs(agentType, extraArgs = [], {
 } = {}) {
   const normalizedAgent = String(agentType || "").trim().toLowerCase();
   const args = Array.isArray(extraArgs) ? extraArgs.slice() : [];
-  if (normalizedAgent !== "codex" && normalizedAgent !== "claude" && normalizedAgent !== "claude-code") {
+  if (
+    normalizedAgent !== "codex"
+    && normalizedAgent !== "claude"
+    && normalizedAgent !== "claude-code"
+    && normalizedAgent !== "grok"
+  ) {
     return { args, env: {} };
   }
 
-  const bootstrapAgentType = normalizedAgent === "codex" ? "codex" : "claude-code";
+  const bootstrapAgentType = normalizedAgent === "codex"
+    ? "codex"
+    : (normalizedAgent === "grok" ? "grok" : "claude-code");
   const resolved = resolveDefaultManualBootstrap({
     projectRoot,
     agentType: bootstrapAgentType,
@@ -194,6 +213,9 @@ function resolveCommand(agentType, extraArgs = [], options = {}) {
   }
   if (normalizedAgent === "claude" || normalizedAgent === "claude-code") {
     return { command: "claude", args: [...extra], env: bootstrap.env };
+  }
+  if (normalizedAgent === "grok") {
+    return { command: "grok", args: ["--no-alt-screen", ...extra], env: bootstrap.env };
   }
   if (normalizedAgent === "ufoo" || normalizedAgent === "ucode" || normalizedAgent === "ufoo-code") {
     return { command: "ucode", args: [...extra], env: bootstrap.env };
@@ -493,13 +515,13 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
             const req = JSON.parse(line);
             if (req.type === "inject" && req.command) {
               if (ptyProcess && ptyAlive) {
-                const isClaude = agentType === "claude-code";
+                const directSubmit = isDirectSubmitAgent(agentType);
                 const commandText = String(req.command);
                 const submitDelayMs = computeInjectedSubmitDelayMs(agentType, commandText);
                 ptyProcess.write(commandText);
-                if (isClaude) {
-                  // Claude Code: send CR directly without ESC.
-                  // ESC before CR is interpreted as Alt+Enter (newline).
+                if (directSubmit) {
+                  // Ink-style CLIs: send CR directly without ESC. ESC before
+                  // CR can be interpreted as Alt+Enter or clear/reset.
                   setTimeout(() => {
                     if (ptyProcess && ptyAlive) {
                       ptyProcess.write("\r");
@@ -1011,10 +1033,10 @@ async function runPtyRunner({ projectRoot, agentType = "codex", extraArgs = [] }
           if (ptyProcess && ptyAlive) {
             // Drop the local TUI input echo from any forwarded stream output.
             outputBuffer = "";
-            const isClaude = agentType === "claude-code";
-            if (isClaude) {
-              // Claude Code: send CR directly without ESC.
-              // ESC before CR is interpreted as Alt+Enter (newline).
+            const directSubmit = isDirectSubmitAgent(agentType);
+            if (directSubmit) {
+              // Ink-style CLIs: send CR directly without ESC. ESC before CR
+              // can be interpreted as Alt+Enter or clear/reset.
               ptyProcess.write("\r");
             } else {
               // Codex/others: ESC dismisses autocomplete, then CR submits.

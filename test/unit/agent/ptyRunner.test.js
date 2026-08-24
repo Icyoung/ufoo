@@ -176,4 +176,31 @@ describe("agent ptyRunner input parsing", () => {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
   });
+
+  test("resolvePtyBootstrapArgs prepares grok --rules bootstrap", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-pty-grok-bootstrap-"));
+    try {
+      const resolved = resolvePtyBootstrapArgs("grok", ["fix the bug"], { projectRoot, env: {} });
+      expect(resolved.args[0]).toBe("--rules");
+      expect(resolved.args[1]).toContain("Session bootstrap for Grok.");
+      expect(resolved.args[1]).toContain("ufoo ctx decisions -l");
+      expect(resolved.args[2]).toBe("fix the bug");
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("resolveCommand maps grok to grok --no-alt-screen", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-pty-grok-command-"));
+    try {
+      const resolved = resolveCommand("grok", ["review the diff"], { projectRoot, env: {} });
+      expect(resolved.command).toBe("grok");
+      expect(resolved.args[0]).toBe("--no-alt-screen");
+      expect(resolved.args[1]).toBe("--rules");
+      expect(resolved.args[2]).toContain("Session bootstrap for Grok.");
+      expect(resolved.args[3]).toBe("review the diff");
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
 });

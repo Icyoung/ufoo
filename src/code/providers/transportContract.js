@@ -17,7 +17,11 @@
  * - flushToolResults?({ messages, collected })  // Anthropic-style batch
  */
 
-const TRANSPORT_NAMES = Object.freeze(["openai-chat", "anthropic-messages"]);
+const TRANSPORT_NAMES = Object.freeze([
+  "openai-chat",
+  "openai-responses",
+  "anthropic-messages",
+]);
 
 function assertTransport(transport = null, name = "") {
   if (!transport || typeof transport !== "object") {

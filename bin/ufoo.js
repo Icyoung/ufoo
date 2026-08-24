@@ -82,7 +82,7 @@ async function main() {
     const target = argv[1];
     if (!target) {
       console.error("Error: resume requires an agent type or nickname");
-      console.error("Usage: ufoo resume <ucode|uclaude|ucodex|nickname>");
+      console.error("Usage: ufoo resume <ucode|uclaude|ucodex|ugrok|nickname>");
       console.error("");
       console.error("Examples:");
       console.error("  ufoo resume ucode      # Start new ucode agent");
@@ -157,6 +157,9 @@ async function main() {
       } else if (agentType === "codex") {
         scriptName = "ucodex.js";
         displayName = "ucodex";
+      } else if (agentType === "grok") {
+        scriptName = "ugrok.js";
+        displayName = "ugrok";
       } else if (agentType === "kimi") {
         scriptName = "ukimi.js";
         displayName = "ukimi";
@@ -199,13 +202,15 @@ async function main() {
       scriptName = "uclaude.js";
     } else if (targetLower === "ucodex" || targetLower === "codex" || targetLower === "openai") {
       scriptName = "ucodex.js";
+    } else if (targetLower === "ugrok" || targetLower === "grok" || targetLower === "grok-build" || targetLower === "xai") {
+      scriptName = "ugrok.js";
     } else if (targetLower === "ukimi" || targetLower === "kimi" || targetLower === "kimi-cli" || targetLower === "kimi-code") {
       scriptName = "ukimi.js";
     } else {
       // Not a valid agent type - might be an offline agent nickname
       console.error(`Error: Agent '${target}' is not online and is not a valid agent type`);
       console.error("");
-      console.error("Valid agent types: ucode, uclaude, ucodex, ukimi");
+      console.error("Valid agent types: ucode, uclaude, ucodex, ugrok, ukimi");
       console.error("");
       console.error("To see online agents, run: ufoo bus status");
       process.exitCode = 1;

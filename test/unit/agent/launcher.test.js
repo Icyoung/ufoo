@@ -227,6 +227,21 @@ describe("_injectPtyCommand", () => {
     expect(wrapper.write).toHaveBeenNthCalledWith(2, "\u001b");
     expect(wrapper.write).toHaveBeenNthCalledWith(3, "\r");
   });
+
+  it("submits injected text directly for grok", async () => {
+    const wrapper = {
+      write: jest.fn(),
+      logger: { write: jest.fn() },
+    };
+
+    const promise = AgentLauncher._injectPtyCommand(wrapper, "grok", "bootstrap text", "startup-bootstrap");
+    jest.runAllTimers();
+    await promise;
+
+    expect(wrapper.write).toHaveBeenNthCalledWith(1, "bootstrap text");
+    expect(wrapper.write).toHaveBeenNthCalledWith(2, "\r");
+    expect(wrapper.write).not.toHaveBeenCalledWith("\u001b");
+  });
 });
 
 describe("_spawnDirect host notification", () => {

@@ -347,6 +347,13 @@ describe('Bus Utils', () => {
       expect(normalizeAgentTypeAlias("claude-code")).toBe("claude-code");
     });
 
+    it('normalizes grok variants', () => {
+      expect(normalizeAgentTypeAlias("grok")).toBe("grok");
+      expect(normalizeAgentTypeAlias("ugrok")).toBe("grok");
+      expect(normalizeAgentTypeAlias("grok-build")).toBe("grok");
+      expect(normalizeAgentTypeAlias("xai")).toBe("grok");
+    });
+
     it('normalizes ufoo variants', () => {
       expect(normalizeAgentTypeAlias("ufoo")).toBe("ufoo-code");
       expect(normalizeAgentTypeAlias("ucode")).toBe("ufoo-code");

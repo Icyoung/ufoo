@@ -257,6 +257,37 @@ describe("ReadyDetector", () => {
     });
   });
 
+  describe("grok detection", () => {
+    const GROK_BOOT_CAPTURE = [
+      "~/Documents/GitHub/xai",
+      "|",
+      "4.2%|",
+      "◆ Thought for 0s",
+      "❯",
+      "[Input: add tests for the wrapper]",
+      "grok-build",
+      "Enter:run│Esc:reset│Tab:next example│Type:custom command",
+    ].join("\n");
+
+    test("triggers ready on the grok-build prompt footer", () => {
+      const detector = new ReadyDetector("grok");
+      let readyCalled = false;
+      detector.onReady(() => { readyCalled = true; });
+      detector.processOutput(GROK_BOOT_CAPTURE);
+      expect(readyCalled).toBe(true);
+      expect(detector.ready).toBe(true);
+    });
+
+    test("does not fire ready before the grok prompt footer mounts", () => {
+      const detector = new ReadyDetector("grok");
+      let readyCalled = false;
+      detector.onReady(() => { readyCalled = true; });
+      detector.processOutput("Loading Grok Build...\n");
+      detector.processOutput("◆ Thought for 0s\n");
+      expect(readyCalled).toBe(false);
+    });
+  });
+
   describe("kimi detection", () => {
     // Fixtures below are trimmed from a real kimi 0.27.0 PTY boot capture.
     const KIMI_BOOT_CAPTURE = [

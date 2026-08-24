@@ -765,8 +765,8 @@ async function runCli(argv) {
 
     program
       .command("launch")
-      .description("Launch an agent (uclaude, ucodex, uagy, ukimi, ucode)")
-      .argument("<agent>", "Agent type: uclaude|ucodex|uagy|ukimi|ucode|claude|codex|agy|kimi")
+      .description("Launch an agent (uclaude, ucodex, uagy, ugrok, ukimi, ucode)")
+      .argument("<agent>", "Agent type: uclaude|ucodex|uagy|ugrok|ukimi|ucode|claude|codex|agy|grok|kimi")
       .argument("[nickname]", "Optional nickname for the agent")
       .option("--profile <id>", "Prompt profile to assign after launch")
       .action(async (agent, nickname, opts) => {
@@ -783,13 +783,15 @@ async function runCli(argv) {
             normalizedAgent = "codex";
           } else if (agentLower === "uagy" || agentLower === "agy" || agentLower === "antigravity") {
             normalizedAgent = "agy";
+          } else if (agentLower === "ugrok" || agentLower === "grok" || agentLower === "grok-build" || agentLower === "xai") {
+            normalizedAgent = "grok";
           } else if (agentLower === "ukimi" || agentLower === "kimi" || agentLower === "kimi-cli" || agentLower === "kimi-code") {
             normalizedAgent = "kimi";
           } else if (agentLower === "ucode" || agentLower === "ufoo-code" || agentLower === "ufoo") {
             normalizedAgent = "ucode";
           } else {
             console.error(`Unknown agent type: ${agent}`);
-            console.error("Valid types: uclaude, ucodex, uagy, ukimi, ucode, claude, codex, agy, kimi");
+            console.error("Valid types: uclaude, ucodex, uagy, ugrok, ukimi, ucode, claude, codex, agy, grok, kimi");
             process.exitCode = 1;
             return;
           }
@@ -815,7 +817,7 @@ async function runCli(argv) {
       .description("Solo role agent operations")
       .argument("<action>", "run|list")
       .argument("[profile]", "Prompt profile id or alias")
-      .option("--agent <type>", "Agent type: codex|claude|ucode|agy")
+      .option("--agent <type>", "Agent type: codex|claude|ucode|agy|grok")
       .option("--nickname <name>", "Optional nickname")
       .option("--scope <scope>", "Launch scope: inplace|window", "inplace")
       .option("--json", "Output role list as JSON")
@@ -1783,7 +1785,7 @@ async function runCli(argv) {
     console.log("  ufoo group diagram <alias|groupId> [--ascii|--mermaid] [--json]");
     console.log("  ufoo group stop <groupId> [--json]");
     console.log("  ufoo solo list [--json]");
-    console.log("  ufoo solo run <profile> [--agent <codex|claude|ucode|agy>] [--nickname <name>] [--scope <inplace|window>]");
+    console.log("  ufoo solo run <profile> [--agent <codex|claude|ucode|agy|grok>] [--nickname <name>] [--scope <inplace|window>]");
     console.log("  ufoo online server [--port 8787] [--host 127.0.0.1] [--token-file <path>]");
     console.log("  ufoo online token <subscriber> [--nickname <name>] [--server <url>] [--file <path>]");
     console.log("  ufoo online room create [--name <room>] --type public|private [--password <pwd>] [--created-by <name>] [--server <url>]");

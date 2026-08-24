@@ -53,6 +53,25 @@ const INPUT_PATTERNS = {
     /Yes, and run (?:in|without) sandbox/i, // Terminal command approval (sandbox toggle)
     /\bn\b\s*-\s*Don't run/i,          // y/n/edit confirmation
   ],
+  // grok (Grok Build CLI) parks blocking reverse-requests for permission,
+  // ask_user_question, and exit_plan_mode plan approval. Source references:
+  // xai-grok-shell/src/session/pending_interaction.rs
+  // xai-grok-pager/src/views/{permission_view,question_view,plan_approval_view}.rs
+  grok: [
+    /Waiting on plan approval/i,        // Plan approval status line
+    /No plan written\s*[\u2014-]\s*approve or request changes/i, // Empty-plan approval status
+    /# No plan written yet[\s\S]*Request changes[\s\S]*Quit/i, // Empty-plan approval preview
+    /Approve plan[\s\S]{0,120}Reject plan/i, // Legacy/alternate plan approval labels
+    /\bApprove\b[\s\S]{0,160}\bRequest changes\b[\s\S]{0,160}\bQuit\b/i, // Plan preview actions
+    /Plan approval requested/i,         // Shell notification hook detail
+    /User question requested/i,         // ask_user_question notification hook detail
+    /Tool permission requested/i,       // Permission notification hook detail
+    /\bAllow once\b[\s\S]{0,180}\bNo, reject \(type to add feedback\)/i, // Permission rows
+    /\bAlways allow:[\s\S]{0,180}\bNo, reject \(type to add feedback\)/i, // Scoped permission rows
+    /\bUse\s+\u2190\s+\u2192\s+to choose permission scope\b/i, // Permission scope selector
+    /\bChat about this\b[\s\S]{0,180}\bSkip interview\b/i, // Plan-mode question bottom panel
+    /\bz\s+(?:\(\u25cb\)|\[ \])\s+Type your answer here\b/i, // Default question freeform row
+  ],
   // kimi (Kimi Code CLI) ink-style approval menus (verified against 0.27.0).
   kimi: [
     /Run this command\?/,              // Bash command approval question
@@ -74,7 +93,41 @@ const FATAL_PATTERNS = {
     /Account ineligible/,              // Generic account-state failure
     /FAILED_PRECONDITION/,             // gRPC backend precondition reject
   ],
+  grok: [
+    /Run [`'"]?grok login[`'"]? first/i,
+    /set XAI_API_KEY/i,
+    /not authenticated/i,
+    /reached your free Grok Build usage limit/i,
+    /subscription:free-usage-exhausted/i,
+    /SuperGrok subscription required/i,
+  ],
 };
+
+// Grok Build continuously redraws its welcome screen/logo while it is waiting
+// for a prompt. Those redraws are PTY output, but they do not represent model
+// work. Keep the screen markers narrow enough that normal model output cannot
+// accidentally acquire the idle-screen latch.
+const GROK_IDLE_MENU_LABELS = [
+  /\bGrok Build\b/i,
+  /\bNew worktree\b/i,
+  /\bResume session\b/i,
+  /\bChangelog\b/i,
+  /\bQuit\b/i,
+];
+
+const GROK_IDLE_FOOTER_PATTERN = /\bgrok-build\b[\s\S]{0,240}(?:Enter:run|Type:(?:custom command|change task))/i;
+
+const GROK_DECORATIVE_CHARACTERS = /[\s\u00b7\u2500-\u259f\u2800-\u28ff\u2b00-\u2bff]/gu;
+
+function stripGrokTerminalFragments(text = "") {
+  return String(text)
+    // PTY chunks can split CSI sequences, leaving fragments such as
+    // `20;20;20m` or `54;7H` after the normal ANSI pass.
+    .replace(/(?:\d{1,3};)*\d{1,3}[A-Za-z]/g, "")
+    .replace(/\?[0-9;]*[A-Za-z]/g, "")
+    // A lone final CSI byte can arrive in its own chunk.
+    .replace(/(^|[\s;])[A-Za-z](?=$|[\s;])/g, "$1");
+}
 
 const COMMON_PATTERNS = [
   /Continue\?\s*$/m,                   // Line-ending "Continue?"
@@ -138,6 +191,7 @@ class ActivityDetector {
     this.blockedTimer = null;
     this.quietTimer = null;
     this.quietToken = 0;
+    this.grokIdleScreenActive = false;
   }
 
   /**
@@ -187,6 +241,7 @@ class ActivityDetector {
    * - resets buffer by default when coming from non-WORKING states
    */
   markWorking(options = {}) {
+    this.grokIdleScreenActive = false;
     const hasResetFlag = Object.prototype.hasOwnProperty.call(options, "resetBuffer");
     const resetBuffer = hasResetFlag ? Boolean(options.resetBuffer) : this.state !== ACTIVITY_STATES.working;
     this._clearBlockedTimer();
@@ -221,6 +276,19 @@ class ActivityDetector {
     const normalized = this._normalizeOutput(text);
     if (!normalized) return;
     if (!this._hasMeaningfulOutput(normalized)) return;
+
+    // Once Grok's welcome screen has been identified, ignore its decorative
+    // logo redraws. A real prompt/output clears the latch; the scheduler's
+    // markWorking() also clears it immediately before a bus injection.
+    if (this.agentType === "grok" && this.grokIdleScreenActive) {
+      const candidate = `${this.buffer}\n${normalized}`;
+      if (this._isGrokIdleScreen(candidate) || this._isGrokDecorativeOutput(normalized)) {
+        this._clearQuietTimer();
+        return;
+      }
+      this.grokIdleScreenActive = false;
+    }
+
     if (this.state === ACTIVITY_STATES.starting) {
       if (!this.startOnOutput) return;
       this._setState(ACTIVITY_STATES.working, "output");
@@ -230,6 +298,14 @@ class ActivityDetector {
     // Rolling buffer: keep last N chars
     if (this.buffer.length > this.bufferSize) {
       this.buffer = this.buffer.slice(-this.bufferSize);
+    }
+
+    if (this.agentType === "grok" && this._isGrokIdleScreen(this.buffer)) {
+      this._clearBlockedTimer();
+      this._clearQuietTimer();
+      this.grokIdleScreenActive = true;
+      this._setState(ACTIVITY_STATES.idle, "grok:idle-screen");
+      return;
     }
 
     if (this.state !== ACTIVITY_STATES.working) {
@@ -252,6 +328,25 @@ class ActivityDetector {
     if (!text) return false;
     const visible = String(text).replace(/[\s\u0000-\u001F\u007F]+/g, "");
     return visible.length > 0;
+  }
+
+  _isGrokIdleScreen(text) {
+    const value = String(text || "");
+    if (GROK_IDLE_FOOTER_PATTERN.test(value)) return true;
+
+    const menuMatches = GROK_IDLE_MENU_LABELS.reduce(
+      (count, pattern) => count + (pattern.test(value) ? 1 : 0),
+      0
+    );
+    return menuMatches >= 3;
+  }
+
+  _isGrokDecorativeOutput(text) {
+    const residual = stripGrokTerminalFragments(text)
+      .replace(GROK_DECORATIVE_CHARACTERS, "")
+      .trim();
+    if (!residual) return true;
+    return !/[\p{L}\p{N}]/u.test(residual);
   }
 
   _scheduleQuietClassification() {

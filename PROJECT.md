@@ -8,7 +8,7 @@ user guide lives in [README.md](README.md).
 ufoo is a multi-agent workspace runtime. One user-scoped global daemon hosts
 isolated project runtimes for chat dashboards, event buses, memory/context,
 reports, group orchestration, terminal launch, and tool routing across Claude
-Code, Codex, Antigravity, and native `ucode` agents.
+Code, Codex, Antigravity, Grok Build, Kimi Code, and native `ucode` agents.
 
 The core design rule is simple: chat is a client, the daemon owns runtime state,
 and agents coordinate through `.ufoo/` state plus bus/tool contracts.
@@ -23,8 +23,12 @@ Published binaries are defined in `package.json`.
 | `uclaude` | `bin/uclaude.js` | Claude Code wrapper with bootstrap, identity, bus registration, and resume metadata. |
 | `ucodex` | `bin/ucodex.js` | Codex wrapper with bootstrap, identity, bus registration, and resume metadata. |
 | `uagy` | `bin/uagy.js` | Antigravity wrapper with bootstrap, identity, and conversation resume capture. |
+| `ugrok` | `bin/ugrok.js` | Grok Build wrapper with bootstrap, identity, and bus registration. |
 | `ukimi` | `bin/ukimi.js` | Kimi Code wrapper with bootstrap, identity, bus registration, and resume metadata. |
 | `ucode` | `bin/ucode.js` | Native ufoo coding-agent CLI/TUI. |
+
+Grok/xAI provider work beyond the CLI wrapper is tracked in
+[GROK_PROVIDER_V2.md](GROK_PROVIDER_V2.md).
 
 ## Runtime Shape
 
@@ -72,7 +76,7 @@ signal is the host Agent's inherited launch environment before any helper
 terminal is created, never `agent_type` or a subscriber prefix:
 
 1. A nonempty `UFOO_SUBSCRIBER_ID` identifies a wrapper-managed launch
-   (`ucodex`, `uclaude`, `uagy`, `ukimi`, or `ucode`). The wrapper/daemon owns
+   (`ucodex`, `uclaude`, `uagy`, `ugrok`, `ukimi`, or `ucode`). The wrapper/daemon owns
    registration, monitors shell activity, retains the injection endpoint, and
    delivers bus messages by direct prompt injection. The Agent must not call
    MCP `register_agent`, bare `ufoo bus join`, or resident `ufoo bus poll`.

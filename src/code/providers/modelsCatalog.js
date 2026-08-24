@@ -10,6 +10,7 @@
 const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1";
 const DEFAULT_TIMEOUT_MS = 8000;
 const CACHE_TTL_MS = 60_000;
+const DEFAULT_GROK_CLIENT_VERSION = "0.2.120";
 
 /** @type {Map<string, { at: number, result: object }>} */
 const modelsCache = new Map();
@@ -45,11 +46,20 @@ function resolveAnthropicModelsUrl(baseUrl = "") {
   return `${normalized}/models`;
 }
 
-function resolveModelsUrl({ transport = "", baseUrl = "" } = {}) {
+function resolveModelsUrl({ transport = "", baseUrl = "", provider = "" } = {}) {
+  let url;
   if (String(transport || "") === "anthropic-messages") {
-    return resolveAnthropicModelsUrl(baseUrl);
+    url = resolveAnthropicModelsUrl(baseUrl);
+  } else {
+    url = resolveOpenAiModelsUrl(baseUrl);
   }
-  return resolveOpenAiModelsUrl(baseUrl);
+  const normalizedProvider = String(provider || "").trim().toLowerCase();
+  if (normalizedProvider === "grok" || normalizedProvider === "grok-build" || normalizedProvider === "grok-shell") {
+    const separator = url.includes("?") ? "&" : "?";
+    const version = String(process.env.UFOO_GROK_CLIENT_VERSION || DEFAULT_GROK_CLIENT_VERSION).trim();
+    return `${url}${separator}client_version=${encodeURIComponent(version || DEFAULT_GROK_CLIENT_VERSION)}`;
+  }
+  return url;
 }
 
 function cacheKey({ transport = "", baseUrl = "", apiKey = "", provider = "" } = {}) {
@@ -88,10 +98,15 @@ function extractModelIds(payload) {
   return ids;
 }
 
-function buildListHeaders({ transport = "", apiKey = "" } = {}) {
+function buildListHeaders({ transport = "", apiKey = "", provider = "" } = {}) {
   const headers = {
     Accept: "application/json",
   };
+  const normalizedProvider = String(provider || "").trim().toLowerCase();
+  if (normalizedProvider === "grok" || normalizedProvider === "grok-build" || normalizedProvider === "grok-shell") {
+    const version = String(process.env.UFOO_GROK_CLIENT_VERSION || DEFAULT_GROK_CLIENT_VERSION).trim();
+    headers["User-Agent"] = `grok-shell/${version || DEFAULT_GROK_CLIENT_VERSION}`;
+  }
   const key = String(apiKey || "").trim();
   if (!key) return headers;
 
@@ -123,7 +138,7 @@ async function listProviderModels(options = {}) {
   const timeoutMs = Math.max(1000, Number(options.timeoutMs) || DEFAULT_TIMEOUT_MS);
   const fetchImpl = typeof options.fetchImpl === "function" ? options.fetchImpl : fetch;
   const skipCache = options.skipCache === true;
-  const url = resolveModelsUrl({ transport, baseUrl });
+  const url = resolveModelsUrl({ transport, baseUrl, provider });
 
   if (!url) {
     return {
@@ -155,7 +170,7 @@ async function listProviderModels(options = {}) {
   try {
     const response = await fetchImpl(url, {
       method: "GET",
-      headers: buildListHeaders({ transport, apiKey }),
+      headers: buildListHeaders({ transport, apiKey, provider }),
       signal: controller ? controller.signal : undefined,
     });
     const status = Number(response && response.status) || 0;

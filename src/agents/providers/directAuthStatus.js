@@ -32,6 +32,7 @@ function normalizeDirectAuthProvider(value = "") {
   if (text === "claude" || text === "claude-cli" || text === "claude-code" || text === "anthropic") return "claude";
   if (text === "agy" || text === "agy-cli" || text === "antigravity") return "agy";
   if (text === "kimi" || text === "kimi-code" || text === "moonshot") return "kimi";
+  if (text === "grok" || text === "grok-cli" || text === "grok-build" || text === "grok-shell" || text === "xai") return "grok";
   return "codex";
 }
 
@@ -312,6 +313,52 @@ async function inspectKimiDirectAuth({
   }
 }
 
+async function inspectGrokDirectAuth({
+  projectRoot,
+  env = process.env,
+  loadConfigImpl = loadConfig,
+} = {}) {
+  const config = loadConfigImpl(projectRoot) || {};
+  const apiKey = String(
+    env.GROK_BUILD_API_KEY
+      || env.XAI_API_KEY
+      || config.ucodeApiKey
+      || ""
+  ).trim();
+  const baseUrl = String(
+    env.UFOO_GROK_BUILD_BASE_URL
+      || env.GROK_BUILD_BASE_URL
+      || config.ucodeBaseUrl
+      || "https://api.x.ai/v1"
+  ).trim();
+  if (!apiKey) {
+    return {
+      ok: false,
+      provider: "grok",
+      transport: "openai-responses",
+      baseUrl,
+      error: "Grok Build/xAI API key is unavailable",
+      errorCode: "GROK_AUTH_MISSING",
+      hint: "Set XAI_API_KEY (or GROK_BUILD_API_KEY), or configure a CLIProxyAPI base URL with its credential.",
+    };
+  }
+  return {
+    ok: true,
+    provider: "grok",
+    transport: "openai-responses",
+    credentialKind: "api-key",
+    source: env.GROK_BUILD_API_KEY ? "env:GROK_BUILD_API_KEY" : "env:XAI_API_KEY",
+    state: "present",
+    refreshable: false,
+    baseUrl,
+    account: "",
+    accountId: "",
+    accountEmail: "",
+    expiresAt: "",
+    credentialPath: "",
+  };
+}
+
 async function inspectDirectAuthStatus(options = {}) {
   const { projectRoot, loadConfigImpl = loadConfig, provider = "" } = options;
   const config = loadConfigImpl(projectRoot) || {};
@@ -328,6 +375,9 @@ async function inspectDirectAuthStatus(options = {}) {
   }
   if (selected === "kimi") {
     return inspectKimiDirectAuth(nextOptions);
+  }
+  if (selected === "grok") {
+    return inspectGrokDirectAuth(nextOptions);
   }
   return inspectCodexDirectAuth(nextOptions);
 }
@@ -512,6 +562,30 @@ function formatKimiDirectAuthStatus(status = {}, options = {}) {
   return lines;
 }
 
+function formatGrokDirectAuthStatus(status = {}, options = {}) {
+  if (options.compact === true) {
+    if (status.ok) {
+      return [`Grok API: OK · ${status.credentialKind || "credential"}/${status.transport || "openai-responses"} · ${status.state || "present"}`];
+    }
+    return [
+      `Grok API: FAIL · ${status.errorCode || "GROK_AUTH_STATUS_FAILED"}`,
+      `  ${status.error || "Grok Build/xAI API credentials are unavailable"} · ${status.hint || "Set XAI_API_KEY."}`,
+    ];
+  }
+  if (status.ok) {
+    return [
+      `Grok Build direct API: OK (${status.transport || "openai-responses"}, ${status.credentialKind || "credential"})`,
+      `  - source: ${status.source || "(unknown)"}`,
+      `  - base url: ${status.baseUrl || "(default)"}`,
+    ];
+  }
+  return [
+    `Grok Build direct API: FAIL (${status.errorCode || "GROK_AUTH_STATUS_FAILED"})`,
+    `  - ${status.error || "Grok Build/xAI API credentials are unavailable"}`,
+    `  - ${status.hint || "Set XAI_API_KEY."}`,
+  ];
+}
+
 function formatDirectAuthStatus(status = {}, options = {}) {
   if (status.provider === "claude") {
     return formatClaudeDirectAuthStatus(status, options);
@@ -522,6 +596,9 @@ function formatDirectAuthStatus(status = {}, options = {}) {
   if (status.provider === "kimi") {
     return formatKimiDirectAuthStatus(status, options);
   }
+  if (status.provider === "grok") {
+    return formatGrokDirectAuthStatus(status, options);
+  }
   return formatCodexDirectAuthStatus(status, options);
 }
 
@@ -531,11 +608,13 @@ module.exports = {
   inspectClaudeDirectAuth,
   inspectAgyDirectAuth,
   inspectKimiDirectAuth,
+  inspectGrokDirectAuth,
   formatDirectAuthStatus,
   formatCodexDirectAuthStatus,
   formatClaudeDirectAuthStatus,
   formatAgyDirectAuthStatus,
   formatKimiDirectAuthStatus,
+  formatGrokDirectAuthStatus,
   normalizeDirectAuthProvider,
   classifyAgyLogTail,
 };

@@ -88,7 +88,7 @@ function isAgentPidAlive(pid) {
   if (!isPidAlive(pid)) return false;
   const cmd = getPidCommand(pid);
   if (!cmd) return true;
-  return /(claude|codex|node|pi-mono|ufoo|ucode)/i.test(cmd);
+  return /(claude|codex|agy|grok|kimi|node|pi-mono|ufoo|ucode)/i.test(cmd);
 }
 
 /**
@@ -364,6 +364,9 @@ function normalizeAgentTypeAlias(value = "") {
   if (!text) return "";
   if (text === "codex") return "codex";
   if (text === "claude" || text === "claude-code") return "claude-code";
+  if (text === "agy") return "agy";
+  if (text === "grok" || text === "ugrok" || text === "grok-build" || text === "xai") return "grok";
+  if (text === "kimi" || text === "ukimi" || text === "kimi-cli" || text === "kimi-code") return "kimi";
   if (text === "ufoo" || text === "ucode" || text === "ufoo-code") return "ufoo-code";
   return text;
 }

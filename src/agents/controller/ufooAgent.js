@@ -488,7 +488,7 @@ function buildSystemPrompt(context, options = {}) {
       '  "reply": "string",',
       '  "done": true,',
       '  "dispatch": [{"target":"broadcast|<agent-id>|<nickname>","message":"string","injection_mode":"immediate|queued (optional)","source":"optional"}],',
-      '  "ops": [{"action":"launch|close|rename|role|cron","agent":"codex|claude|ucode","count":1,"agent_id":"id","nickname":"optional"}],',
+      '  "ops": [{"action":"launch|close|rename|role|cron","agent":"codex|claude|agy|grok|kimi|ucode","count":1,"agent_id":"id","nickname":"optional"}],',
       `  "tool_call": {"id":"optional","name":"${loopToolNameList}","arguments":{}}`,
       "}",
       `Available controller tools: ${loopToolNames.join(", ") || "dispatch_message, ack_bus, launch_agent"}.`,
@@ -516,7 +516,7 @@ function buildSystemPrompt(context, options = {}) {
     '  "reply": "string",',
   ];
   schemaLines.push('  "dispatch": [{"target":"broadcast|<agent-id>|<nickname>","message":"string","injection_mode":"immediate|queued (optional)","source":"optional"}],');
-  schemaLines.push('  "ops": [{"action":"launch|close|rename|role|cron","agent":"codex|claude|ucode","count":1,"agent_id":"id","nickname":"optional","prompt_profile":"profile-id (for role)","operation":"start|list|stop","every":"30m","interval_ms":1800000,"at":"YYYY-MM-DD HH:mm","once_at_ms":1700000000000,"target":"agent-id|nickname|csv","targets":["agent-id"],"title":"optional short title","prompt":"message","id":"task-id|all"}],');
+  schemaLines.push('  "ops": [{"action":"launch|close|rename|role|cron","agent":"codex|claude|agy|grok|kimi|ucode","count":1,"agent_id":"id","nickname":"optional","prompt_profile":"profile-id (for role)","operation":"start|list|stop","every":"30m","interval_ms":1800000,"at":"YYYY-MM-DD HH:mm","once_at_ms":1700000000000,"target":"agent-id|nickname|csv","targets":["agent-id"],"title":"optional short title","prompt":"message","id":"task-id|all"}],');
   schemaLines.push('  "disambiguate": {"prompt":"string","candidates":[{"agent_id":"id","reason":"string"}]}');
   if (controllerMode === CONTROLLER_MODES.LOOP) {
     schemaLines.push('  "upgrade_to_loop_router": true');
@@ -630,7 +630,7 @@ function buildRouteAgentSystemPrompt(context, options = {}) {
 
 function shouldUseDirectProvider(value = "") {
   const provider = normalizeProvider(value);
-  return provider === "ucode" || provider === "codex" || provider === "claude";
+  return provider === "ucode" || provider === "codex" || provider === "claude" || provider === "grok";
 }
 
 function stripMarkdownFence(text = "") {

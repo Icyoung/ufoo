@@ -180,6 +180,140 @@ describe("ActivityDetector", () => {
       expect(detector.getState().state).toBe("blocked");
     });
 
+    test("grok: approval dialog is waiting_input", () => {
+      jest.useFakeTimers();
+      const detector = createDetector("grok");
+      detector.markReady();
+      detector.processOutput("The agent wants to run a shell command\nApprove plan    Reject plan\n");
+      jest.advanceTimersByTime(51);
+      expect(detector.getState().state).toBe("waiting_input");
+    });
+
+    test("grok: plan approval status line is waiting_input", () => {
+      jest.useFakeTimers();
+      const detector = createDetector("grok");
+      detector.markReady();
+      detector.processOutput("plan.md\nWaiting on plan approval\n");
+      jest.advanceTimersByTime(51);
+      expect(detector.getState().state).toBe("waiting_input");
+    });
+
+    test("grok: empty plan approval preview is waiting_input", () => {
+      jest.useFakeTimers();
+      const detector = createDetector("grok");
+      detector.markReady();
+      detector.processOutput([
+        "# No plan written yet",
+        "",
+        "- **Approve** — leave plan mode and start implementing",
+        "- **Request changes** — send the agent back to planning",
+        "- **Quit** — abandon and turn plan mode off",
+      ].join("\n"));
+      jest.advanceTimersByTime(51);
+      expect(detector.getState().state).toBe("waiting_input");
+    });
+
+    test("grok: permission overlay is waiting_input", () => {
+      jest.useFakeTimers();
+      const detector = createDetector("grok");
+      detector.markReady();
+      detector.processOutput([
+        "Allow command?",
+        "$ npm test",
+        "1 (●) Allow once",
+        "2 (○) Always allow: npm test",
+        "3 (○) No, reject (type to add feedback)",
+      ].join("\n"));
+      jest.advanceTimersByTime(51);
+      expect(detector.getState().state).toBe("waiting_input");
+    });
+
+    test("grok: ask_user_question freeform row is waiting_input", () => {
+      jest.useFakeTimers();
+      const detector = createDetector("grok");
+      detector.markReady();
+      detector.processOutput([
+        "Which implementation should I use?",
+        "1 (○) Minimal",
+        "2 (○) Full provider",
+        "z (○) Type your answer here",
+      ].join("\n"));
+      jest.advanceTimersByTime(51);
+      expect(detector.getState().state).toBe("waiting_input");
+    });
+
+    test("grok: idle footer is idle, not waiting_input", () => {
+      jest.useFakeTimers();
+      const detector = createDetector("grok");
+      detector.markReady();
+      detector.processOutput("grok-build\nEnter:run│Esc:reset│Tab:next example│Type:custom command\n");
+      jest.advanceTimersByTime(51);
+      expect(detector.getState().state).toBe("idle");
+    });
+
+    test("grok: welcome menu is idle and logo redraws do not reopen working", () => {
+      const detector = createDetector("grok");
+      detector.markReady();
+      detector.processOutput([
+        "Grok Build 1.0.5",
+        "New worktree",
+        "Resume session",
+        "Changelog",
+        "Quit",
+      ].join("\n"));
+
+      expect(detector.getState().state).toBe("idle");
+
+      detector.processOutput("\u001b[38;2;120;120;120m⠙\u001b[?2026l");
+      detector.processOutput("20;20;20m⠀⠀⢀⠞⠁");
+      expect(detector.getState().state).toBe("idle");
+    });
+
+    test("grok: markWorking clears the idle welcome-screen latch", () => {
+      const detector = createDetector("grok");
+      detector.markReady();
+      detector.processOutput([
+        "Grok Build 1.0.5",
+        "New worktree",
+        "Resume session",
+        "Changelog",
+        "Quit",
+      ].join("\n"));
+
+      detector.markWorking();
+      detector.processOutput("Thinking about the requested task...");
+      expect(detector.getState().state).toBe("working");
+    });
+
+    test("grok: auth error goes directly to BLOCKED", () => {
+      jest.useFakeTimers();
+      const detector = createDetector("grok");
+      detector.markReady();
+      detector.processOutput("Run `grok login` first, or set XAI_API_KEY.\n");
+      jest.advanceTimersByTime(51);
+      expect(detector.getState().state).toBe("blocked");
+      expect(detector.getState().detail).toContain("fatal");
+    });
+
+    test("grok: free usage paywall goes directly to BLOCKED", () => {
+      jest.useFakeTimers();
+      const detector = createDetector("grok");
+      detector.markReady();
+      detector.processOutput("You have reached your free Grok Build usage limit.\n");
+      jest.advanceTimersByTime(51);
+      expect(detector.getState().state).toBe("blocked");
+      expect(detector.getState().detail).toContain("fatal");
+    });
+
+    test("grok: subscription gate goes directly to BLOCKED", () => {
+      jest.useFakeTimers();
+      const detector = createDetector("grok");
+      detector.markReady();
+      detector.processOutput("SuperGrok subscription required\n");
+      jest.advanceTimersByTime(51);
+      expect(detector.getState().state).toBe("blocked");
+    });
+
     // Fixture trimmed from a real kimi 0.27.0 PTY capture of the bash
     // approval dialog (default permission mode, prompt "运行 ls 命令").
     const KIMI_APPROVAL_DIALOG = [
