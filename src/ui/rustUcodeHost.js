@@ -266,7 +266,12 @@ async function runUcodeRust(props = {}) {
   let backgroundSeq = 0;
   let requestExit = false;
   const MARKDOWN_LOG_KINDS = new Set(["assistant", "error"]);
-  const controller = createUcodeController({ projectRoot: workspaceRoot });
+  const controller = createUcodeController({
+    projectRoot: workspaceRoot,
+    ports: {
+      onQueueChange: (snapshot) => publish("task.queue", snapshot),
+    },
+  });
 
   function publish(name, payload) {
     if (!hostRef) return;
@@ -349,6 +354,20 @@ async function runUcodeRust(props = {}) {
       text: `${base}${getBackgroundSuffix()}`,
       busy: Boolean(busy),
     });
+  }
+
+  function formatQueueSnapshot(snapshot = controller.getQueueSnapshot()) {
+    const active = snapshot && snapshot.active;
+    const queued = Array.isArray(snapshot && snapshot.queued) ? snapshot.queued : [];
+    const activeText = active
+      ? `active #${active.id} ${active.label || active.kind || "task"}`
+      : "active none";
+    const lines = [`Queue: ${activeText} · pending ${queued.length}`];
+    for (const task of queued.slice(0, 8)) {
+      lines.push(`  ${task.position}. #${task.id} ${task.label || task.kind || "task"}`);
+    }
+    if (queued.length > 8) lines.push(`  … ${queued.length - 8} more`);
+    return lines.join("\n");
   }
 
   function publishPlan(activityMessage = "") {
@@ -549,6 +568,7 @@ async function runUcodeRust(props = {}) {
       agents: agentsSnap.agents,
       attachment_count: pendingAttachments.length,
       usage: String((meter && meter.label) || ""),
+      task_queue: controller.getQueueSnapshot(),
     };
   }
 
@@ -577,7 +597,7 @@ async function runUcodeRust(props = {}) {
     }
   }
 
-  async function resumeInteraction(answerText) {
+  async function resumeInteraction(answerText, meta = {}) {
     return controller.runExclusive(async (abort) => {
       const submit = typeof props.submitUserInteractionAnswer === "function"
         ? props.submitUserInteractionAnswer
@@ -621,8 +641,10 @@ async function runUcodeRust(props = {}) {
         publishPlan();
         publishUsageFromResult(result);
         if (publishPendingInteraction()) {
+          controller.pauseQueue("waiting for reply");
           return { ok: true, waiting: true };
         }
+        controller.resumeQueue();
         return { ok: true, waiting: false };
       } catch (err) {
         tools.flush();
@@ -635,10 +657,15 @@ async function runUcodeRust(props = {}) {
         appendLog(`Error: ${err && err.message ? err.message : err}`, "error");
         return { ok: false };
       }
+    }, {
+      kind: "interaction",
+      label: "reply",
+      priority: meta.priority === true,
     });
   }
 
-  async function runNaturalLanguage(text) {
+  async function runNaturalLanguage(text, meta = {}) {
+    const label = String(meta.label || text || "prompt").trim().replace(/\s+/g, " ");
     return controller.runExclusive(async (abort) => {
       if (typeof props.runNaturalLanguageTask !== "function") {
         appendLog("runNaturalLanguageTask unavailable", "error");
@@ -692,8 +719,10 @@ async function runUcodeRust(props = {}) {
         publishPlan();
         publishUsageFromResult(nlResult);
         if (publishPendingInteraction()) {
+          controller.pauseQueue("waiting for reply");
           return { ok: true, waiting: true };
         }
+        controller.resumeQueue();
         return { ok: true, waiting: false, result: nlResult };
       } catch (err) {
         tools.flush();
@@ -706,6 +735,9 @@ async function runUcodeRust(props = {}) {
         appendLog(`Error: ${err && err.message ? err.message : err}`, "error");
         return { ok: false };
       }
+    }, {
+      kind: String(meta.kind || "prompt").trim() || "prompt",
+      label: label.length > 80 ? `${label.slice(0, 77)}…` : label,
     });
   }
 
@@ -760,7 +792,7 @@ async function runUcodeRust(props = {}) {
           publish("status.set", { text: "ready", busy: false });
         }
       }
-    });
+    }, { kind: "bus", label: "bus messages" });
   }
 
   function scheduleAutoBus() {
@@ -803,11 +835,11 @@ async function runUcodeRust(props = {}) {
 
       if (name === "app.exit") {
         closing = true;
-        controller.cancelTask();
+        controller.stop();
         return { ok: true };
       }
       if (name === "task.cancel") {
-        controller.cancelTask();
+        controller.cancelTask("user");
         publish("status.set", { text: "cancelling…", busy: true });
         appendLog("• Cancellation requested. Stopping the current task...", "system");
         return { ok: true };
@@ -861,12 +893,15 @@ async function runUcodeRust(props = {}) {
         if (payload.cancelled) {
           appendLog("interaction cancelled", "system");
           publish("interaction.clear", {});
+          controller.resumeQueue();
           publish("status.set", { text: "ready", busy: false });
           return { ok: true, cancelled: true };
         }
         publish("interaction.clear", {});
         publish("status.set", { text: "applying reply…", busy: true });
-        const result = await resumeInteraction(String(payload.text || ""));
+        const resume = resumeInteraction(String(payload.text || ""), { priority: true });
+        controller.resumeQueue();
+        const result = await resume;
         if (!result.waiting) {
           publish("status.set", { text: "ready", busy: false });
         }
@@ -877,14 +912,15 @@ async function runUcodeRust(props = {}) {
         const { modelText, logText, attachments } = composeSubmitText(rawText);
         if (!modelText && attachments.length === 0) return { ok: true, empty: true };
         clearAttachments();
-        tools.beginScope();
 
         try {
           const { hasPendingUserInteraction } = require("../code/context/userInteraction");
           if (props.state && hasPendingUserInteraction(props.state.executionState)) {
             appendLog(`› ${logText || rawText}`, "user");
             publishStatus("applying reply…", true);
-            const result = await resumeInteraction(modelText || rawText);
+            const resume = resumeInteraction(modelText || rawText, { priority: true });
+            controller.resumeQueue();
+            const result = await resume;
             if (!result.waiting) publishStatus("ready", false);
             return { ok: true, routed: "interaction" };
           }
@@ -910,6 +946,7 @@ async function runUcodeRust(props = {}) {
                 parsed = null;
               }
               if (parsed) {
+                if (parsed.kind === "tool") tools.beginScope();
                 const dispatched = await dispatchUcodeSlashCommand(parsed, {
                   state: props.state,
                   workspaceRoot,
@@ -1004,6 +1041,42 @@ async function runUcodeRust(props = {}) {
                       });
                   },
                   onNaturalLanguage: async (task) => runNaturalLanguage(task),
+                  onQueueCommand: (action) => {
+                    const normalized = String(action || "status").trim().toLowerCase();
+                    if (normalized === "status") {
+                      return { ok: true, output: formatQueueSnapshot() };
+                    }
+                    if (normalized === "cancel") {
+                      const snapshot = controller.getQueueSnapshot();
+                      if (!snapshot.active) {
+                        return { ok: true, output: "Queue: no active task." };
+                      }
+                      controller.cancelTask("queue cancel");
+                      publishStatus("cancelling…", true);
+                      return { ok: true, output: `Cancellation requested for #${snapshot.active.id}.` };
+                    }
+                    if (normalized === "clear") {
+                      const count = controller.clearQueue();
+                      if (!controller.isBusy()) publishStatus("ready", false);
+                      return { ok: true, output: count
+                        ? `Cleared ${count} pending task${count === 1 ? "" : "s"}.`
+                        : "Queue: no pending tasks." };
+                    }
+                    if (normalized === "stop") {
+                      const snapshot = controller.getQueueSnapshot();
+                      const cancelled = controller.cancelTask("queue stop");
+                      const cleared = controller.clearQueue();
+                      if (cancelled) publishStatus("cancelling…", true);
+                      else if (!controller.isBusy()) publishStatus("ready", false);
+                      return {
+                        ok: true,
+                        output: `Queue stopped: ${cancelled ? "active cancellation requested" : "no active task"}; cleared ${cleared} pending.`,
+                        active: snapshot.active,
+                        cleared,
+                      };
+                    }
+                    return { ok: false, output: "usage: /queue [status|clear|cancel|stop]" };
+                  },
                   runUbus: typeof props.runUbusCommand === "function"
                     ? (state, opts) => props.runUbusCommand(state, opts)
                     : null,
@@ -1027,7 +1100,10 @@ async function runUcodeRust(props = {}) {
         } finally {
           try {
             const { hasPendingUserInteraction } = require("../code/context/userInteraction");
-            if (!(props.state && hasPendingUserInteraction(props.state.executionState))) {
+            if (
+              !(props.state && hasPendingUserInteraction(props.state.executionState))
+              && !controller.isBusy()
+            ) {
               publishStatus("ready", false);
             }
           } catch {

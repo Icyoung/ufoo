@@ -15,75 +15,232 @@ function createUcodeController({
     setStatus: typeof ports.setStatus === "function" ? ports.setStatus : () => {},
     appendLog: typeof ports.appendLog === "function" ? ports.appendLog : () => {},
   };
+  const onQueueChange = typeof ports.onQueueChange === "function"
+    ? ports.onQueueChange
+    : () => {};
 
   let started = false;
-  let abortController = null;
-  let chain = Promise.resolve();
-  let queueDepth = 0;
+  let activeTask = null;
+  let pendingTasks = [];
+  let taskSeq = 0;
+  let draining = false;
+  let legacyAbortController = null;
+  let pauseReason = "";
+
+  function taskLabel(meta = {}, id = 0) {
+    const label = String(meta.label || "").trim();
+    if (label) return label;
+    const kind = String(meta.kind || "task").trim();
+    return `${kind} #${id}`;
+  }
+
+  function taskView(task, position = 0) {
+    if (!task) return null;
+    return {
+      id: task.id,
+      kind: task.kind,
+      label: task.label,
+      status: task.status,
+      enqueuedAt: task.enqueuedAt,
+      startedAt: task.startedAt || 0,
+      position,
+    };
+  }
+
+  function queueSnapshot(event = "") {
+    const queued = pendingTasks.map((task, index) => taskView(task, index + 1));
+    return {
+      event: String(event || ""),
+      busy: Boolean(activeTask || queued.length),
+      activeBusy: Boolean(activeTask),
+      queueDepth: (activeTask ? 1 : 0) + queued.length,
+      queuedCount: queued.length,
+      active: taskView(activeTask, 0),
+      queued,
+      cancelRequested: Boolean(activeTask && activeTask.cancelRequested),
+      paused: Boolean(pauseReason),
+      pausedReason: pauseReason,
+    };
+  }
+
+  function notifyQueueChange(event = "") {
+    try {
+      onQueueChange(queueSnapshot(event));
+    } catch {
+      // Queue telemetry must never affect task execution.
+    }
+  }
+
+  function settleCancelled(task, reason = "cancelled") {
+    if (!task || task.settled) return;
+    task.settled = true;
+    // A task that never entered the executor has no partial work to report.
+    // Resolve it as a no-op so callers do not create unhandled cancellation
+    // rejections while the active task continues to drain the queue.
+    task.resolve(null);
+    task.status = "cancelled";
+    task.cancelReason = String(reason || "cancelled");
+  }
+
+  function clearPending(reason = "cleared") {
+    const cleared = pendingTasks.splice(0);
+    for (const task of cleared) settleCancelled(task, reason);
+    if (cleared.length > 0) notifyQueueChange("cleared");
+    return cleared.length;
+  }
+
+  async function drain() {
+    if (draining) return;
+    draining = true;
+    try {
+      while (started && !pauseReason && !activeTask && pendingTasks.length > 0) {
+        const task = pendingTasks.shift();
+        if (!task) continue;
+        if (task.controller.signal.aborted) {
+          settleCancelled(task, task.cancelReason || "cancelled");
+          notifyQueueChange("cancelled");
+          continue;
+        }
+
+        activeTask = task;
+        task.status = "running";
+        task.startedAt = Date.now();
+        notifyQueueChange("started");
+        try {
+          const value = await task.fn(task.controller, task);
+          if (!task.settled) {
+            task.settled = true;
+            task.resolve(value);
+          }
+        } catch (err) {
+          if (!task.settled) {
+            task.settled = true;
+            task.reject(err);
+          }
+        } finally {
+          activeTask = null;
+          notifyQueueChange(task.controller.signal.aborted ? "cancelled" : "completed");
+        }
+      }
+    } finally {
+      draining = false;
+      notifyQueueChange("idle");
+    }
+  }
 
   function start() {
     started = true;
+    void drain();
+    notifyQueueChange("started");
   }
 
   function stop() {
-    if (abortController) {
+    started = false;
+    pauseReason = "";
+    if (activeTask) {
+      activeTask.cancelRequested = true;
       try {
-        abortController.abort();
+        activeTask.controller.abort();
       } catch {
         // ignore
       }
-      abortController = null;
     }
-    queueDepth = 0;
-    started = false;
+    clearPending("stopped");
+    if (legacyAbortController) {
+      try {
+        legacyAbortController.abort();
+      } catch {
+        // ignore
+      }
+      legacyAbortController = null;
+    }
+    notifyQueueChange("stopped");
   }
 
   function beginTask() {
-    abortController = new AbortController();
-    queueDepth = Math.max(1, queueDepth);
-    return abortController;
+    legacyAbortController = new AbortController();
+    return legacyAbortController;
   }
 
   function endTask() {
-    if (queueDepth > 0) queueDepth -= 1;
-    if (queueDepth === 0) abortController = null;
+    legacyAbortController = null;
   }
 
-  function cancelTask() {
-    if (abortController) abortController.abort();
+  function cancelTask(reason = "user") {
+    if (activeTask) {
+      activeTask.cancelRequested = true;
+      activeTask.cancelReason = String(reason || "user");
+      try {
+        activeTask.controller.abort();
+      } catch {
+        // ignore
+      }
+      notifyQueueChange("cancel_requested");
+      return true;
+    }
+    if (legacyAbortController) {
+      legacyAbortController.abort();
+      return true;
+    }
+    return false;
   }
 
   function isBusy() {
-    return queueDepth > 0;
+    return Boolean(activeTask || pendingTasks.length > 0);
+  }
+
+  function pauseQueue(reason = "paused") {
+    pauseReason = String(reason || "paused");
+    notifyQueueChange("paused");
+  }
+
+  function resumeQueue() {
+    if (!pauseReason) return;
+    pauseReason = "";
+    notifyQueueChange("resumed");
+    void drain();
   }
 
   /**
    * Serialize async work so NL / auto-bus / resume never overlap.
-   * AbortController is allocated synchronously so cancel works before the slot starts.
+   * The active controller is kept separate from queued controllers so Esc
+   * always targets the request that is actually executing.
    */
-  function runExclusive(fn) {
-    const abort = new AbortController();
-    queueDepth += 1;
-    abortController = abort;
-    const run = chain.then(async () => {
-      if (!started) {
-        return null;
-      }
-      abortController = abort;
-      try {
-        if (abort.signal.aborted) {
-          const err = new Error("aborted");
-          err.name = "AbortError";
-          throw err;
-        }
-        return await fn(abort);
-      } finally {
-        queueDepth = Math.max(0, queueDepth - 1);
-        if (abortController === abort) abortController = null;
-      }
+  function runExclusive(fn, meta = {}) {
+    if (typeof fn !== "function") {
+      return Promise.reject(new TypeError("exclusive task must be a function"));
+    }
+    const taskMeta = meta && typeof meta === "object" ? meta : {};
+    const id = ++taskSeq;
+    const controller = new AbortController();
+    let resolveTask;
+    let rejectTask;
+    const promise = new Promise((resolve, reject) => {
+      resolveTask = resolve;
+      rejectTask = reject;
     });
-    chain = run.catch(() => {});
-    return run;
+    const task = {
+      id,
+      kind: String(taskMeta.kind || "task").trim() || "task",
+      label: taskLabel(taskMeta, id),
+      enqueuedAt: Date.now(),
+      startedAt: 0,
+      status: "queued",
+      cancelRequested: false,
+      cancelReason: "",
+      controller,
+      fn,
+      resolve: resolveTask,
+      reject: rejectTask,
+      settled: false,
+    };
+    // Expose the id without changing the promise's value contract.
+    promise.taskId = id;
+    if (taskMeta.priority === true) pendingTasks.unshift(task);
+    else pendingTasks.push(task);
+    notifyQueueChange("enqueued");
+    void drain();
+    return promise;
   }
 
   return {
@@ -97,7 +254,11 @@ function createUcodeController({
     endTask,
     cancelTask,
     runExclusive,
-    getAbortSignal: () => (abortController ? abortController.signal : null),
+    clearQueue: () => clearPending("cleared"),
+    pauseQueue,
+    resumeQueue,
+    getQueueSnapshot: () => queueSnapshot("snapshot"),
+    getAbortSignal: () => (activeTask ? activeTask.controller.signal : null),
   };
 }
 

@@ -111,6 +111,24 @@ function runSingleCommand(line = "", workspaceRoot = process.cwd()) {
       kind: "status",
     };
   }
+  const queueMatch = text.match(/^(?:\/queue|queue)(?:\s+(.*))?$/i);
+  if (queueMatch) {
+    const action = String(queueMatch[1] || "status").trim().toLowerCase();
+    if (action === "status" || action === "show" || action === "") {
+      return { kind: "queue", action: "status" };
+    }
+    if (action === "clear") return { kind: "queue", action: "clear" };
+    if (action === "cancel" || action === "current") {
+      return { kind: "queue", action: "cancel" };
+    }
+    if (action === "stop" || action === "all") {
+      return { kind: "queue", action: "stop" };
+    }
+    return {
+      kind: "error",
+      output: "usage: /queue [status|clear|cancel|stop]",
+    };
+  }
   const modelMatch = text.match(/^(?:\/model|model)(?:\s+(.*))?$/i);
   if (modelMatch) {
     const rest = String(modelMatch[1] || "").trim();
@@ -387,6 +405,54 @@ async function runUcodeCoreAgent({
     let autoBusError = "";
     let closing = false;
     let taskInFlight = false;
+    let queuedWork = 0;
+    let queueGeneration = 0;
+    let activeAbortController = null;
+
+    function formatCoreQueueStatus() {
+      return `Queue: ${taskInFlight ? "active" : "idle"} · pending ${queuedWork}`;
+    }
+
+    function handleCoreQueueCommand(action = "status") {
+      const normalized = String(action || "status").trim().toLowerCase();
+      if (normalized === "status") {
+        stdout.write(`${formatCoreQueueStatus()}\n`);
+        printPrompt(stdout);
+        return true;
+      }
+      if (normalized === "cancel") {
+        if (!activeAbortController) {
+          stdout.write("Queue: no active task.\n");
+        } else {
+          activeAbortController.abort();
+          stdout.write("Cancellation requested for the active task.\n");
+        }
+        printPrompt(stdout);
+        return true;
+      }
+      if (normalized === "clear") {
+        const count = queuedWork;
+        queueGeneration += 1;
+        queuedWork = 0;
+        stdout.write(count
+          ? `Cleared ${count} pending task${count === 1 ? "" : "s"}.\n`
+          : "Queue: no pending tasks.\n");
+        printPrompt(stdout);
+        return true;
+      }
+      if (normalized === "stop") {
+        const count = queuedWork;
+        queueGeneration += 1;
+        queuedWork = 0;
+        if (activeAbortController) activeAbortController.abort();
+        stdout.write(`Queue stopped: ${activeAbortController ? "active cancellation requested" : "no active task"}; cleared ${count} pending.\n`);
+        printPrompt(stdout);
+        return true;
+      }
+      stdout.write("usage: /queue [status|clear|cancel|stop]\n");
+      printPrompt(stdout);
+      return true;
+    }
 
     const runAutoBusOnce = async () => {
       if (!autoBusEnabled || closing) return;
@@ -554,9 +620,12 @@ async function runUcodeCoreAgent({
         }
 
         taskInFlight = true;
+        const taskAbortController = new AbortController();
+        activeAbortController = taskAbortController;
         let nlResult;
         try {
           nlResult = await runNaturalLanguageTask(result.task, state, {
+            signal: taskAbortController.signal,
             onDelta: state.jsonOutput
               ? null
               : async (delta) => {
@@ -575,6 +644,7 @@ async function runUcodeCoreAgent({
           });
         } finally {
           taskInFlight = false;
+          if (activeAbortController === taskAbortController) activeAbortController = null;
         }
 
         if (!state.jsonOutput) {
@@ -620,6 +690,14 @@ async function runUcodeCoreAgent({
     rl.on("line", (line) => {
       const trimmed = normalizeLine(line);
 
+      if (/^(?:\/queue|queue)(?:\s|$)/i.test(trimmed)) {
+        const queueResult = runSingleCommand(trimmed, state.workspaceRoot || workspaceRoot);
+        if (queueResult.kind === "queue") {
+          handleCoreQueueCommand(queueResult.action);
+          return;
+        }
+      }
+
       // Pending approval/choice/chat takes priority over nudge / new NL.
       try {
         const { hasPendingUserInteraction } = require("./context/userInteraction");
@@ -628,7 +706,11 @@ async function runUcodeCoreAgent({
           && state.executionState
           && hasPendingUserInteraction(state.executionState)
         ) {
+          const generation = queueGeneration;
+          queuedWork += 1;
           chain = chain.then(async () => {
+            queuedWork = Math.max(0, queuedWork - 1);
+            if (generation !== queueGeneration) return;
             let streamBuffer = null;
             let streamedVisible = false;
             const escapeStripper = createEscapeTagStripper();
@@ -639,9 +721,12 @@ async function runUcodeCoreAgent({
               });
             }
             taskInFlight = true;
+            const taskAbortController = new AbortController();
+            activeAbortController = taskAbortController;
             let resumeResult;
             try {
               resumeResult = await submitUserInteractionAnswer(trimmed, state, {
+                signal: taskAbortController.signal,
                 onDelta: state.jsonOutput
                   ? null
                   : async (delta) => {
@@ -660,6 +745,7 @@ async function runUcodeCoreAgent({
               });
             } finally {
               taskInFlight = false;
+              if (activeAbortController === taskAbortController) activeAbortController = null;
             }
             if (streamBuffer) {
               await streamBuffer.finish();
@@ -704,7 +790,13 @@ async function runUcodeCoreAgent({
         printPrompt(stdout);
         return;
       }
-      chain = chain.then(() => handleLine(line)).catch((err) => {
+      const generation = queueGeneration;
+      queuedWork += 1;
+      chain = chain.then(() => {
+        queuedWork = Math.max(0, queuedWork - 1);
+        if (generation !== queueGeneration) return;
+        return handleLine(line);
+      }).catch((err) => {
         stdout.write(`${JSON.stringify({ ok: false, error: err && err.message ? err.message : "agent loop failed" })}\n`);
         printPrompt(stdout);
       });
@@ -712,6 +804,7 @@ async function runUcodeCoreAgent({
 
     rl.on("close", () => {
       closing = true;
+      if (activeAbortController) activeAbortController.abort();
       if (autoBusTimer) {
         clearInterval(autoBusTimer);
         autoBusTimer = null;

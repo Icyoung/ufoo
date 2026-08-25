@@ -438,6 +438,11 @@ pub struct AppState {
     pub follow_tail: bool,
     pub connected: bool,
     pub busy: bool,
+    pub queue_depth: usize,
+    pub queued_count: usize,
+    pub active_task_id: String,
+    pub active_task_label: String,
+    pub queue_cancel_requested: bool,
     pub exit_requested: bool,
     pub next_request: u64,
     pub pending_delta: Option<PendingDelta>,
@@ -498,6 +503,11 @@ impl AppState {
             follow_tail: true,
             connected: false,
             busy: false,
+            queue_depth: 0,
+            queued_count: 0,
+            active_task_id: String::new(),
+            active_task_label: String::new(),
+            queue_cancel_requested: false,
             exit_requested: false,
             next_request: 1,
             pending_delta: None,
@@ -796,6 +806,9 @@ impl AppState {
         };
         if self.attachment_count > 0 {
             base = format!("{base} · 📎{}", self.attachment_count);
+        }
+        if self.surface == "ucode" && self.queued_count > 0 {
+            base = format!("{base} · queued {} · /queue", self.queued_count);
         }
         if !self.usage_summary.is_empty() {
             base = format!("{base} · {}", self.usage_summary);

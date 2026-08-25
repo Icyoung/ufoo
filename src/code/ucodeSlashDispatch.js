@@ -28,6 +28,7 @@ const fmt = require("../ui/format");
  * @param {(state: object, opts: object) => Promise<object>} [ports.runUbus]
  * @param {(msg: string) => void} [ports.setBusyStatus]
  * @param {() => void} [ports.clearBusyStatus]
+ * @param {(action: string) => Promise<object>|object} [ports.onQueueCommand]
  * @param {string[]} [ports.bannerLines]
  * @returns {Promise<{ handled: boolean, waiting?: boolean }>}
  */
@@ -85,6 +86,18 @@ async function dispatchUcodeSlashCommand(result, ports = {}) {
         appendLog(`Error: ${err && err.message ? err.message : "status failed"}`, "error");
       }
       return { handled: true };
+    }
+
+    case "queue": {
+      if (typeof ports.onQueueCommand !== "function") {
+        appendLog("Error: queue control unavailable", "error");
+        return { handled: true };
+      }
+      const outcome = await ports.onQueueCommand(result.action || "status");
+      if (outcome && outcome.output) {
+        appendLog(outcome.output, outcome.ok === false ? "error" : "system");
+      }
+      return { handled: true, queue: outcome || null };
     }
 
     case "model": {

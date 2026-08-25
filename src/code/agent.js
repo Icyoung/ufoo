@@ -323,7 +323,11 @@ function isCliTimeoutError(message = "") {
 
 function isCliCancelledError(message = "") {
   const text = String(message || "").toLowerCase();
-  return text.includes("cli cancelled") || text.includes("canceled");
+  return text.includes("cli cancelled")
+    || text.includes("cancelled")
+    || text.includes("canceled")
+    || text.includes("aborted")
+    || text.includes("cancellation");
 }
 
 function computeExtendedTimeout(baseTimeoutMs) {

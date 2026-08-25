@@ -6,6 +6,7 @@ const {
   runWriteTool,
   runEditTool,
   runBashTool,
+  runBashToolAsync,
   runToolCall,
 } = require("../../../src/code");
 const { MAX_FULL_READ_BYTES } = require("../../../src/code/tools/read");
@@ -220,6 +221,23 @@ describe("ucode-core tool kernel", () => {
     expect(result.ok).toBe(false);
     expect(result.signal).toBe("SIGTERM");
     expect(result.error).toBeTruthy();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test("async bash terminates when its AbortSignal is cancelled", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-core-async-cancel-"));
+    const controller = new AbortController();
+    const run = runBashToolAsync({
+      command: "node -e \"setTimeout(() => {}, 5000)\"",
+    }, {
+      workspaceRoot: root,
+      signal: controller.signal,
+    });
+    setTimeout(() => controller.abort(), 50);
+    const result = await run;
+    expect(result.ok).toBe(false);
+    expect(result.cancelled).toBe(true);
+    expect(result.error).toContain("cancelled");
     fs.rmSync(root, { recursive: true, force: true });
   });
 

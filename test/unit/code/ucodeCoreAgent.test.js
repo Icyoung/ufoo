@@ -132,6 +132,14 @@ describe("ucode core agent nl path", () => {
     expect(runSingleCommand("/ubus", process.cwd())).toEqual({ kind: "ubus" });
   });
 
+  test("runSingleCommand parses queue control commands", () => {
+    expect(runSingleCommand("/queue", process.cwd())).toEqual({ kind: "queue", action: "status" });
+    expect(runSingleCommand("/queue clear", process.cwd())).toEqual({ kind: "queue", action: "clear" });
+    expect(runSingleCommand("queue cancel", process.cwd())).toEqual({ kind: "queue", action: "cancel" });
+    expect(runSingleCommand("/queue stop", process.cwd())).toEqual({ kind: "queue", action: "stop" });
+    expect(runSingleCommand("/queue nope", process.cwd()).output).toContain("usage: /queue");
+  });
+
   test("runSingleCommand parses /model show and set", () => {
     expect(runSingleCommand("/model", process.cwd())).toEqual({
       kind: "model",

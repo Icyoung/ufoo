@@ -264,6 +264,13 @@ fn apply_named_payload(
                 state.loop_summary = loop_text.to_string();
                 state.rebuild_footer();
             }
+            if let Some(queue) = payload.get("task_queue") {
+                apply_task_queue_payload(state, queue);
+            }
+            Vec::new()
+        }
+        "task.queue" => {
+            apply_task_queue_payload(state, payload);
             Vec::new()
         }
         "transcript.reset" => {
@@ -765,6 +772,61 @@ fn apply_named_payload(
         }
         _ => Vec::new(),
     }
+}
+
+fn apply_task_queue_payload(state: &mut AppState, payload: &serde_json::Value) {
+    state.queue_depth = payload
+        .get("queueDepth")
+        .or_else(|| payload.get("queue_depth"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(state.queue_depth as u64) as usize;
+    state.queued_count = payload
+        .get("queuedCount")
+        .or_else(|| payload.get("queued_count"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(state.queued_count as u64) as usize;
+    state.queue_cancel_requested = payload
+        .get("cancelRequested")
+        .or_else(|| payload.get("cancel_requested"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if let Some(active) = payload.get("active") {
+        state.active_task_id = active
+            .get("id")
+            .and_then(|v| v.as_u64())
+            .map(|id| id.to_string())
+            .or_else(|| active.get("id").and_then(|v| v.as_str()).map(str::to_string))
+            .unwrap_or_default();
+        state.active_task_label = active
+            .get("label")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+    } else {
+        state.active_task_id.clear();
+        state.active_task_label.clear();
+    }
+    let queue_busy = payload
+        .get("activeBusy")
+        .or_else(|| payload.get("active_busy"))
+        .or_else(|| payload.get("running"))
+        .or_else(|| payload.get("busy"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(state.queue_depth > 0 || !state.active_task_id.is_empty());
+    let was_busy = state.busy;
+    state.busy = queue_busy;
+    if queue_busy && (!was_busy || state.status_started.is_none()) {
+        state.status_started = Some(Instant::now());
+    } else if !queue_busy {
+        state.status_started = None;
+        if state.status == "sending…"
+            || state.status == "working…"
+            || state.status == "cancelling…"
+        {
+            state.status = "ready".into();
+        }
+    }
+    state.rebuild_footer();
 }
 
 fn apply_multi_set(state: &mut AppState, payload: &serde_json::Value) -> Vec<Effect> {
@@ -2239,8 +2301,9 @@ fn submit_prompt(state: &mut AppState) -> Vec<Effect> {
     } else {
         "sending…".into()
     };
+    let was_busy = state.busy;
     state.busy = !text.trim().is_empty() || state.attachment_count > 0;
-    if state.busy {
+    if state.busy && (!was_busy || state.status_started.is_none()) {
         state.status_started = Some(Instant::now());
     }
     state.status_clear_at = None;
@@ -2507,6 +2570,49 @@ mod tests {
         );
 
         assert_eq!(state.package_version, "3.0.25");
+    }
+
+    #[test]
+    fn task_queue_event_updates_busy_state_and_pending_footer() {
+        let mut state = AppState::new("ufoo", "ucode");
+        dispatch(
+            &mut state,
+            Action::Host(Envelope {
+                protocol: PROTOCOL.into(),
+                kind: "event".into(),
+                name: "task.queue".into(),
+                request_id: None,
+                seq: None,
+                payload: json!({
+                    "busy": true,
+                    "queueDepth": 3,
+                    "queuedCount": 2,
+                    "active": { "id": 7, "label": "first prompt" },
+                    "cancelRequested": false
+                }),
+            }),
+        );
+
+        assert!(state.busy);
+        assert_eq!(state.queue_depth, 3);
+        assert_eq!(state.queued_count, 2);
+        assert_eq!(state.active_task_id, "7");
+        assert!(state.footer.contains("queued 2"));
+
+        dispatch(
+            &mut state,
+            Action::Host(Envelope {
+                protocol: PROTOCOL.into(),
+                kind: "event".into(),
+                name: "task.queue".into(),
+                request_id: None,
+                seq: None,
+                payload: json!({ "busy": false, "queueDepth": 0, "queuedCount": 0, "active": null }),
+            }),
+        );
+        assert!(!state.busy);
+        assert_eq!(state.queued_count, 0);
+        assert!(state.active_task_id.is_empty());
     }
 
     #[test]

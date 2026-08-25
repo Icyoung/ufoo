@@ -209,6 +209,7 @@ describe("buildCompletions", () => {
     expect(out.map((s) => s.label)).toEqual([
       "/help",
       "/status",
+      "/queue",
       "/model",
       "/plan",
       "/ubus",

@@ -6,7 +6,11 @@ const {
   resolveKimiUpstreamCredentials,
 } = require("../agents/providers/credentials/kimi");
 const { resolveCodexUpstreamCredentials } = require("../agents/providers/credentials/codex");
-const { runToolCall } = require("./dispatch");
+const dispatchTools = require("./dispatch");
+const runToolCall = dispatchTools.runToolCall;
+const runToolCallAsync = typeof dispatchTools.runToolCallAsync === "function"
+  ? dispatchTools.runToolCallAsync
+  : async (...args) => runToolCall(...args);
 const { runTaskRunTool } = require("./tools/taskRun");
 const { appendUsageRecord } = require("./usageStore");
 const {
@@ -1054,6 +1058,88 @@ function runCoreTool({
     toolOptions.sessionId = sessionId;
   }
   const result = runToolCall(
+    { tool: normalizedTool, args: safeArgs },
+    toolOptions,
+  );
+
+  if (!result || result.ok === false) {
+    emitToolEvent(onToolEvent, {
+      tool: normalizedTool,
+      phase: "error",
+      args: safeArgs,
+      error: String((result && result.error) || `${normalizedTool} failed`),
+      origin,
+    });
+    return result;
+  }
+
+  if (normalizedTool !== "artifact_read" && EXECUTABLE_GRAPH_TOOLS.has(normalizedTool)) {
+    const persisted = persistToolResultToContext({
+      workspaceRoot,
+      sessionId,
+      tool: normalizedTool,
+      args: safeArgs,
+      rawResult: result,
+    });
+    if (typeof onArtifactPersisted === "function") {
+      try {
+        onArtifactPersisted(persisted);
+      } catch {
+        // ignore
+      }
+    }
+    const payload = persisted.modelPayload || result;
+    if (origin) payload.origin = origin;
+    return payload;
+  }
+
+  if (origin && result && typeof result === "object") {
+    return { ...result, origin };
+  }
+  return result;
+}
+
+/**
+ * Async companion for the native loop. Control-plane tools intentionally keep
+ * their synchronous scheduler for now; data-plane tools use the async
+ * dispatcher so bash can terminate on the caller's AbortSignal.
+ */
+async function runCoreToolAsync(options = {}) {
+  const normalizedTool = normalizeToolName(options.tool);
+  if (!normalizedTool || CONTROL_PLANE_TOOLS.has(normalizedTool) || normalizedTool === "ask_user") {
+    return runCoreTool(options);
+  }
+
+  const {
+    args = {},
+    workspaceRoot = process.cwd(),
+    onToolEvent = null,
+    sessionId = "",
+    onArtifactPersisted = null,
+    origin = null,
+    signal = null,
+  } = options;
+  const safeArgs = args && typeof args === "object" ? { ...args } : {};
+  if (normalizedTool === "artifact_read" && sessionId && !safeArgs.sessionId) {
+    safeArgs.sessionId = sessionId;
+  }
+  emitToolEvent(onToolEvent, {
+    tool: normalizedTool,
+    phase: "start",
+    args: safeArgs,
+    error: "",
+    origin,
+  });
+
+  const toolOptions = {
+    workspaceRoot,
+    cwd: workspaceRoot,
+  };
+  if (signal) toolOptions.signal = signal;
+  if (normalizedTool === "artifact_read" && sessionId) {
+    toolOptions.sessionId = sessionId;
+  }
+  const result = await runToolCallAsync(
     { tool: normalizedTool, args: safeArgs },
     toolOptions,
   );
@@ -2265,6 +2351,7 @@ async function runNativeLoop({
       const sideEffects = parseStructuredSideEffects(text);
       const planCommand = sideEffects ? normalizePlanGraphCommand(sideEffects) : null;
       if (planCommand) {
+          guards.ensureActive();
           transport.appendFinalAssistantMessage({ messages: providerMessages, turnResult });
           const planResult = runCoreTool({
             tool: "plan_graph",
@@ -2276,6 +2363,7 @@ async function runNativeLoop({
             executionState,
             origin: { kind: "legacy_side_effect", source: planCommand.source || "legacy" },
           });
+          guards.ensureActive();
           if (planResult && planResult.executionState) {
             executionState = planResult.executionState;
           }
@@ -2454,7 +2542,8 @@ async function runNativeLoop({
         : null;
 
       markExecuting(activeLedger, pendingToolCallId(pending));
-      const toolResult = runCoreTool({
+      guards.ensureActive();
+      const toolResult = await runCoreToolAsync({
         tool: pending.name,
         args: pending.args,
         workspaceRoot,
@@ -2463,7 +2552,9 @@ async function runNativeLoop({
         onArtifactPersisted,
         executionState,
         resume: resumeForAsk,
+        signal,
       });
+      guards.ensureActive();
       if (toolResult && toolResult.executionState) {
         executionState = toolResult.executionState;
       }
@@ -2747,6 +2838,7 @@ async function runNativeAgentTask({
 
 module.exports = {
   runNativeAgentTask,
+  runCoreToolAsync,
   appendAnswerToolResult,
   resolveRuntimeConfig,
   resolveCompletionUrl,

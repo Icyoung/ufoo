@@ -33,6 +33,23 @@ describe("dispatchUcodeSlashCommand", () => {
     expect(logs[0][0]).toBe("system");
   });
 
+  test("queue delegates control to the host and logs its result", async () => {
+    const logs = [];
+    const result = await dispatchUcodeSlashCommand(
+      { kind: "queue", action: "clear" },
+      {
+        appendLog: (text, kind) => logs.push({ text, kind }),
+        onQueueCommand: async (action) => ({
+          ok: true,
+          output: `handled ${action}`,
+        }),
+      },
+    );
+    expect(result.handled).toBe(true);
+    expect(result.queue.output).toBe("handled clear");
+    expect(logs).toEqual([{ text: "handled clear", kind: "system" }]);
+  });
+
   test("nl_bg delegates to onBackground", async () => {
     const seen = [];
     await dispatchUcodeSlashCommand(

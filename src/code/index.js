@@ -1,8 +1,13 @@
-const { TOOL_NAMES, normalizeToolName, runToolCall } = require("./dispatch");
+const {
+  TOOL_NAMES,
+  normalizeToolName,
+  runToolCall,
+  runToolCallAsync,
+} = require("./dispatch");
 const { runReadTool } = require("./tools/read");
 const { runWriteTool } = require("./tools/write");
 const { runEditTool } = require("./tools/edit");
-const { runBashTool } = require("./tools/bash");
+const { runBashTool, runBashToolAsync } = require("./tools/bash");
 const {
   getRuntimePaths,
   ensureRuntimeDir,
@@ -43,10 +48,12 @@ module.exports = {
   TOOL_NAMES,
   normalizeToolName,
   runToolCall,
+  runToolCallAsync,
   runReadTool,
   runWriteTool,
   runEditTool,
   runBashTool,
+  runBashToolAsync,
   getRuntimePaths,
   ensureRuntimeDir,
   parseJsonLines,

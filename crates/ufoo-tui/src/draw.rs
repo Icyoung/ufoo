@@ -958,9 +958,16 @@ fn draw_status(frame: &mut Frame, area: Rect, state: &AppState) {
     } else {
         format!(" | {}", state.loop_summary)
     };
+    let queue_bit = if state.queued_count > 0 {
+        format!(" · queued {}", state.queued_count)
+    } else if state.queue_cancel_requested {
+        " · stopping…".to_string()
+    } else {
+        String::new()
+    };
     let version = display_version(state);
     let left = format!(
-        "{spin}{status}{elapsed}{ask}{loop_bit}",
+        "{spin}{status}{elapsed}{ask}{loop_bit}{queue_bit}",
         status = if state.status.is_empty() {
             "ready"
         } else {

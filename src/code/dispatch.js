@@ -4,7 +4,7 @@ const { runReadTool } = require("./tools/read");
 const { runReadImageTool } = require("./tools/readImage");
 const { runWriteTool } = require("./tools/write");
 const { runEditTool } = require("./tools/edit");
-const { runBashTool } = require("./tools/bash");
+const { runBashTool, runBashToolAsync } = require("./tools/bash");
 const { runArtifactReadTool } = require("./tools/artifactRead");
 const { runPlanGraphTool } = require("./tools/planGraph");
 const { runTaskRunTool } = require("./tools/taskRun");
@@ -57,8 +57,16 @@ function runToolCall(input = {}, options = {}) {
   return runBashTool(args, options);
 }
 
+async function runToolCallAsync(input = {}, options = {}) {
+  const tool = normalizeToolName(input.tool || input.name);
+  const args = input.args && typeof input.args === "object" ? input.args : {};
+  if (tool === "bash") return runBashToolAsync(args, options);
+  return runToolCall(input, options);
+}
+
 module.exports = {
   TOOL_NAMES,
   normalizeToolName,
   runToolCall,
+  runToolCallAsync,
 };
