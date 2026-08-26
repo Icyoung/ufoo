@@ -449,7 +449,7 @@ class MessageManager {
     };
     const queueEvent = normalizeQueueEnvelope(event, {
       queueType: QUEUE_TYPES.AGENT_MESSAGE,
-      delivery: { mode: "inject", gate: "idle", max_inflight: 1 },
+      delivery: { mode: "inject", max_inflight: 1 },
       ack: { policy: "on_delivery" },
     });
 

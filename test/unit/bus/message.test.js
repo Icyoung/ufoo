@@ -277,6 +277,7 @@ describe('MessageManager', () => {
           type: 'message/targeted',
           publisher: 'sender:123',
           data: { message: 'Hello', injection_mode: 'immediate' },
+          delivery: expect.objectContaining({ mode: 'inject', gate: 'none' }),
         })
       );
     });
@@ -295,6 +296,7 @@ describe('MessageManager', () => {
             injection_mode: 'queued',
             source: 'chat-agent',
           },
+          delivery: expect.objectContaining({ mode: 'inject', gate: 'idle' }),
         })
       );
     });

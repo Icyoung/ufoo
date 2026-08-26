@@ -1,6 +1,10 @@
 const fs = require("fs");
 const path = require("path");
 const {
+  INJECTION_MODES,
+  getInjectionModeFromEvent,
+} = require("./messageMeta");
+const {
   ensureDir,
   appendJSONL,
   generateInstanceId,
@@ -61,7 +65,9 @@ function inferQueueType(event = {}) {
 
 function defaultDeliveryForType(queueType) {
   if (queueType === QUEUE_TYPES.AGENT_MESSAGE) {
-    return { mode: "inject", gate: "idle", max_inflight: 1 };
+    // Agent messages default to immediate delivery; explicit queued messages
+    // are assigned the idle gate in normalizeQueueEnvelope below.
+    return { mode: "inject", gate: "none", max_inflight: 1 };
   }
   if (queueType === QUEUE_TYPES.WAKE) {
     return { mode: "notify_only", gate: "none", max_inflight: 1 };
@@ -84,14 +90,21 @@ function normalizeQueueEnvelope(event = {}, overrides = {}) {
   const overrideDelivery = overrides.delivery && typeof overrides.delivery === "object" ? overrides.delivery : {};
   const existingAck = event.ack && typeof event.ack === "object" ? event.ack : {};
   const overrideAck = overrides.ack && typeof overrides.ack === "object" ? overrides.ack : {};
+  const delivery = {
+    ...defaultDeliveryForType(queueType),
+    ...existingDelivery,
+    ...overrideDelivery,
+  };
+  if (queueType === QUEUE_TYPES.AGENT_MESSAGE && delivery.mode === "inject") {
+    // injection_mode is the public contract and must override stale persisted
+    // gate metadata from releases that wrote every agent message as idle-gated.
+    const injectionMode = getInjectionModeFromEvent(event, INJECTION_MODES.IMMEDIATE);
+    delivery.gate = injectionMode === INJECTION_MODES.QUEUED ? "idle" : "none";
+  }
   return {
     ...event,
     queue_type: queueType,
-    delivery: {
-      ...defaultDeliveryForType(queueType),
-      ...existingDelivery,
-      ...overrideDelivery,
-    },
+    delivery,
     ack: {
       ...defaultAckForType(queueType),
       ...existingAck,
@@ -247,13 +260,21 @@ class DeliveryQueue {
     return { recovered: merged.length, files };
   }
 
-  claimNext() {
+  claimNext(predicate = null) {
     this.recover();
     const pending = this.readPendingRaw();
     if (pending.length === 0) return null;
 
-    const event = pending[0];
-    const remaining = pending.slice(1);
+    const index = typeof predicate === "function"
+      ? pending.findIndex((event, eventIndex) => predicate(event, eventIndex, pending))
+      : 0;
+    if (index < 0) return null;
+
+    const event = pending[index];
+    const remaining = [
+      ...pending.slice(0, index),
+      ...pending.slice(index + 1),
+    ];
     const processingFile = `${this.pendingFile}.processing.${process.pid}.${Date.now()}.${generateInstanceId()}`;
     this.ensureQueueDir();
     writeFileAtomic(processingFile, eventToJsonl([event]));

@@ -1,12 +1,19 @@
 const { DeliveryScheduler, isDeliverableActivityState } = require("../../../src/runtime/daemon/deliveryScheduler");
 
 function makeQueue(event) {
+  const events = Array.isArray(event) ? event : (event ? [event] : []);
   const queue = {
-    claim: event ? { event, processingFile: "/tmp/claim" } : null,
-    claimNext: jest.fn(() => queue.claim),
+    claim: events[0] ? { event: events[0], processingFile: "/tmp/claim" } : null,
+    claimNext: jest.fn((predicate) => {
+      const selected = typeof predicate === "function"
+        ? events.find((item, index) => predicate(item, index, events))
+        : events[0];
+      queue.claim = selected ? { event: selected, processingFile: "/tmp/claim" } : null;
+      return queue.claim;
+    }),
     completeClaim: jest.fn(),
     restoreClaim: jest.fn(),
-    readPending: jest.fn(() => []),
+    readPending: jest.fn(() => events.slice()),
   };
   return queue;
 }
@@ -57,7 +64,7 @@ describe("DeliveryScheduler", () => {
       event: expect.objectContaining({
         seq: event.seq,
         queue_type: "agent_message",
-        delivery: expect.objectContaining({ mode: "inject", gate: "idle" }),
+        delivery: expect.objectContaining({ mode: "inject", gate: "none" }),
       }),
     }));
   });
@@ -66,7 +73,7 @@ describe("DeliveryScheduler", () => {
     const queue = makeQueue({
       seq: 1,
       event: "message",
-      data: { message: "hello" },
+      data: { message: "hello", injection_mode: "queued" },
     });
     const scheduler = new DeliveryScheduler("/tmp/project", {
       injector: { inject: jest.fn() },
@@ -85,6 +92,70 @@ describe("DeliveryScheduler", () => {
     expect(queue.claimNext).not.toHaveBeenCalled();
   });
 
+  test("busy Grok subscriber receives an immediate message despite stale idle-gate metadata", async () => {
+    const event = {
+      seq: 2,
+      event: "message",
+      publisher: "ufoo-agent",
+      data: { message: "interrupt now", injection_mode: "immediate" },
+      delivery: { mode: "inject", gate: "idle", max_inflight: 1 },
+    };
+    const queue = makeQueue(event);
+    const injector = { inject: jest.fn().mockResolvedValue(undefined) };
+    const scheduler = new DeliveryScheduler("/tmp/project", {
+      injector,
+      queueFactory: () => queue,
+      readAgents: () => ({
+        agents: {
+          "grok:busy": { status: "active", activity_state: "working", launch_mode: "terminal" },
+        },
+      }),
+    });
+
+    const result = await scheduler.deliverSubscriber("grok:busy");
+
+    expect(result).toEqual(expect.objectContaining({ ok: true, delivered: 1 }));
+    expect(injector.inject).toHaveBeenCalledWith(
+      "grok:busy",
+      "[ufoo]<from:ufoo-agent>\ninterrupt now"
+    );
+  });
+
+  test("busy Grok subscriber can receive immediate work behind a queued message", async () => {
+    const queued = {
+      seq: 3,
+      event: "message",
+      publisher: "ufoo-agent",
+      data: { message: "wait for idle", injection_mode: "queued" },
+    };
+    const immediate = {
+      seq: 4,
+      event: "message",
+      publisher: "ufoo-agent",
+      data: { message: "deliver first", injection_mode: "immediate" },
+    };
+    const queue = makeQueue([queued, immediate]);
+    const injector = { inject: jest.fn().mockResolvedValue(undefined) };
+    const scheduler = new DeliveryScheduler("/tmp/project", {
+      injector,
+      queueFactory: () => queue,
+      readAgents: () => ({
+        agents: {
+          "grok:busy": { status: "active", activity_state: "working", launch_mode: "terminal" },
+        },
+      }),
+    });
+
+    const result = await scheduler.deliverSubscriber("grok:busy");
+
+    expect(result).toEqual(expect.objectContaining({ ok: true, delivered: 1 }));
+    expect(queue.claim.event.seq).toBe(4);
+    expect(injector.inject).toHaveBeenCalledWith(
+      "grok:busy",
+      "[ufoo]<from:ufoo-agent>\ndeliver first"
+    );
+  });
+
   test("forces wrapper injection after the oldest message waits five minutes", async () => {
     const now = Date.parse("2026-01-01T00:05:00.001Z");
     const event = {
@@ -92,7 +163,7 @@ describe("DeliveryScheduler", () => {
       timestamp: "2026-01-01T00:00:00.000Z",
       event: "message",
       publisher: "ufoo-agent",
-      data: { message: "timeout fallback" },
+      data: { message: "timeout fallback", injection_mode: "queued" },
     };
     const queue = makeQueue(event);
     queue.readPending.mockReturnValue([event]);
@@ -132,7 +203,7 @@ describe("DeliveryScheduler", () => {
       seq: 8,
       timestamp: "2026-01-01T00:00:00.000Z",
       event: "message",
-      data: { message: "still waiting" },
+      data: { message: "still waiting", injection_mode: "queued" },
     };
     const queue = makeQueue(event);
     queue.readPending.mockReturnValue([event]);
@@ -171,7 +242,7 @@ describe("DeliveryScheduler", () => {
       seq: 10,
       timestamp: "2026-01-01T00:00:00.000Z",
       event: "message",
-      data: { message: "retry with backoff" },
+      data: { message: "retry with backoff", injection_mode: "queued" },
     };
     const queue = makeQueue(event);
     queue.readPending.mockReturnValue([event]);
@@ -216,7 +287,7 @@ describe("DeliveryScheduler", () => {
       seq: 11,
       timestamp: "2026-01-01T00:00:00.000Z",
       event: "message",
-      data: { message: "removed" },
+      data: { message: "removed", injection_mode: "queued" },
     };
     const queue = makeQueue(event);
     queue.readPending.mockReturnValueOnce([event]).mockReturnValue([]);
@@ -290,7 +361,7 @@ describe("DeliveryScheduler", () => {
     const queue = makeQueue({
       seq: 1,
       event: "message",
-      data: { message: "hello" },
+      data: { message: "hello", injection_mode: "queued" },
     });
     const scheduler = new DeliveryScheduler("/tmp/project", {
       injector: { inject: jest.fn() },
@@ -340,7 +411,7 @@ describe("DeliveryScheduler", () => {
     const queue = makeQueue({
       seq: 1,
       event: "message",
-      data: { message: "hello" },
+      data: { message: "hello", injection_mode: "queued" },
     });
     let calls = 0;
     const scheduler = new DeliveryScheduler("/tmp/project", {
@@ -353,7 +424,7 @@ describe("DeliveryScheduler", () => {
             "codex:race": {
               status: "active",
               launch_mode: "terminal",
-              activity_state: calls <= 1 ? "idle" : "working",
+              activity_state: calls <= 2 ? "idle" : "working",
             },
           },
         };
@@ -402,7 +473,7 @@ describe("DeliveryScheduler", () => {
       event: expect.objectContaining({
         seq: event.seq,
         queue_type: "agent_message",
-        delivery: expect.objectContaining({ mode: "inject", gate: "idle" }),
+        delivery: expect.objectContaining({ mode: "inject", gate: "none" }),
       }),
     }));
   });
@@ -412,7 +483,10 @@ describe("DeliveryScheduler", () => {
     let activityState = "working";
     const log = jest.fn();
     const queue = makeQueue(null);
-    queue.readPending.mockReturnValue([{ seq: 1 }, { seq: 2 }]);
+    queue.readPending.mockReturnValue([
+      { seq: 1, event: "message", data: { message: "first", injection_mode: "queued" } },
+      { seq: 2, event: "message", data: { message: "second", injection_mode: "queued" } },
+    ]);
     const scheduler = new DeliveryScheduler("/tmp/project", {
       injector: { inject: jest.fn() },
       queueFactory: () => queue,
@@ -452,7 +526,11 @@ describe("DeliveryScheduler", () => {
 
   test("delivers after blocked state exceeds the grace period", async () => {
     const now = Date.parse("2026-01-01T00:20:00.000Z");
-    const event = { seq: 1, event: "message", data: { message: "hello" } };
+    const event = {
+      seq: 1,
+      event: "message",
+      data: { message: "hello", injection_mode: "queued" },
+    };
     const queue = makeQueue(event);
     const injector = { inject: jest.fn().mockResolvedValue(undefined) };
     const log = jest.fn();
@@ -488,7 +566,11 @@ describe("DeliveryScheduler", () => {
 
   test("uses first-observed time for the grace period when activity_since is missing", async () => {
     let now = 1000000;
-    const event = { seq: 1, event: "message", data: { message: "hello" } };
+    const event = {
+      seq: 1,
+      event: "message",
+      data: { message: "hello", injection_mode: "queued" },
+    };
     const queue = makeQueue(event);
     const injector = { inject: jest.fn().mockResolvedValue(undefined) };
     const scheduler = new DeliveryScheduler("/tmp/project", {

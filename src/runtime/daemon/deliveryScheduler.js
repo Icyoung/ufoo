@@ -166,7 +166,24 @@ class DeliveryScheduler {
     };
   }
 
-  shouldDeliver(subscriber) {
+  readPendingEvents(queue) {
+    try {
+      return queue && typeof queue.readPending === "function"
+        ? queue.readPending().filter(Boolean)
+        : [];
+    } catch {
+      return [];
+    }
+  }
+
+  eventNeedsIdleGate(event) {
+    if (!event) return true;
+    const envelope = normalizeQueueEnvelope(event);
+    const delivery = envelope.delivery || {};
+    return delivery.mode === "inject" && delivery.gate === "idle";
+  }
+
+  shouldDeliver(subscriber, options = {}) {
     const { meta } = this.getAgentMeta(subscriber);
     if (!meta || meta.status === "inactive") {
       return { ok: false, reason: "missing_or_inactive" };
@@ -178,6 +195,9 @@ class DeliveryScheduler {
     const adapter = this.adapterRouter.getAdapter({ launchMode, agentId: subscriber, meta });
     if (!adapter.capabilities.supportsNotifierInjector) {
       return { ok: false, reason: launchMode ? "unsupported_launch_mode" : "missing_launch_mode" };
+    }
+    if (options.requireIdle === false) {
+      return { ok: true, reason: "deliverable" };
     }
     const activityState = asState(meta.activity_state);
     if (!isDeliverableActivityState(activityState)) {
@@ -225,7 +245,9 @@ class DeliveryScheduler {
       this.forceWarned.delete(trackingKey);
       this.forceRetries.delete(trackingKey);
     }
-    this.pendingSeen.delete(subscriber);
+    if (!event || !tracked || tracked.key === key) {
+      this.pendingSeen.delete(subscriber);
+    }
   }
 
   clearTrackedKey(subscriber, key) {
@@ -292,9 +314,12 @@ class DeliveryScheduler {
   }
 
   resolveGate(subscriber, queue, eventOverride = null) {
-    const gate = this.shouldDeliver(subscriber);
+    const event = eventOverride || this.readPendingEvents(queue)[0] || null;
+    const gate = this.shouldDeliver(subscriber, {
+      requireIdle: this.eventNeedsIdleGate(event),
+    });
     if (gate.ok || !gate.activityBlocked) return gate;
-    const pending = this.resolvePendingWait(subscriber, queue, eventOverride);
+    const pending = this.resolvePendingWait(subscriber, queue, event);
     if (!pending || pending.waitedMs < this.forceDeliveryAfterMs) return gate;
     const retry = this.forceRetries.get(`${subscriber}:${pending.key}`);
     if (retry && this.now() < retry.nextAtMs) {
@@ -323,7 +348,25 @@ class DeliveryScheduler {
     this.locks.set(subscriber, { sinceMs: this.now(), lastWarnAtMs: 0 });
     try {
       const queue = this.queueFactory(subscriber);
-      const gate = this.resolveGate(subscriber, queue);
+      const transportGate = this.shouldDeliver(subscriber, { requireIdle: false });
+      if (!transportGate.ok) {
+        this.noteDeferral(subscriber, transportGate.reason);
+        return { ok: true, delivered: 0, deferred: true, reason: transportGate.reason };
+      }
+
+      const pendingEvents = this.readPendingEvents(queue);
+      let selectedEvent = pendingEvents[0] || null;
+      let gate = this.resolveGate(subscriber, queue, selectedEvent);
+      if (!gate.ok) {
+        // A queued item must not head-of-line block a later immediate message.
+        // This also lets explicit immediate delivery ignore stale/incorrect
+        // activity snapshots, notably Grok Build's current working state.
+        const bypassEvent = pendingEvents.find((event) => !this.eventNeedsIdleGate(event));
+        if (bypassEvent && bypassEvent !== selectedEvent) {
+          selectedEvent = bypassEvent;
+          gate = this.resolveGate(subscriber, queue, selectedEvent);
+        }
+      }
       if (!gate.ok) {
         this.noteDeferral(subscriber, gate.reason);
         return { ok: true, delivered: 0, deferred: true, reason: gate.reason };
@@ -335,9 +378,12 @@ class DeliveryScheduler {
       }
       this.clearDeferral(subscriber);
 
-      const claim = queue.claimNext();
+      const selectedKey = selectedEvent ? this.pendingEventKey(selectedEvent) : "";
+      const claim = queue.claimNext(selectedKey
+        ? (event) => this.pendingEventKey(event) === selectedKey
+        : undefined);
       if (!claim) {
-        this.clearPendingTracking(subscriber);
+        if (pendingEvents.length === 0) this.clearPendingTracking(subscriber);
         return { ok: true, delivered: 0, reason: "empty" };
       }
 

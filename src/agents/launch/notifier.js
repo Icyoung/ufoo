@@ -11,6 +11,10 @@ const iterm2 = require("../../runtime/terminal/iterm2");
 const { createActivityStatePublisher } = require("../activity/activityStatePublisher");
 const { buildPromptInjectionText } = require("../../coordination/bus/promptEnvelope");
 const { DeliveryQueue } = require("../../coordination/bus/deliveryQueue");
+const {
+  INJECTION_MODES,
+  getInjectionModeFromEvent,
+} = require("../../coordination/bus/messageMeta");
 
 /**
  * Agent 消息通知监听器
@@ -182,6 +186,16 @@ class AgentNotifier {
       || value === "blocked";
   }
 
+  isImmediateEvent(event) {
+    return getInjectionModeFromEvent(event, INJECTION_MODES.IMMEDIATE) === INJECTION_MODES.IMMEDIATE;
+  }
+
+  pendingEventKey(event = {}) {
+    const seq = Number(event.seq);
+    if (Number.isFinite(seq) && seq > 0) return `seq:${seq}`;
+    return `event:${JSON.stringify(event)}`;
+  }
+
   /**
    * 获取当前队列中的消息数量
    */
@@ -242,11 +256,19 @@ class AgentNotifier {
       return 0;
     }
 
+    const pending = this.deliveryQueue.readPending();
+    if (pending.length === 0) return 0;
+
+    let selectedEvent = pending[0];
     if (this.isBusyState(this.getCurrentActivityState())) {
-      return 0;
+      selectedEvent = pending.find((event) => this.isImmediateEvent(event));
+      if (!selectedEvent) return 0;
     }
 
-    const claim = this.deliveryQueue.claimNext();
+    const selectedKey = this.pendingEventKey(selectedEvent);
+    const claim = this.deliveryQueue.claimNext(
+      (event) => this.pendingEventKey(event) === selectedKey
+    );
     if (!claim) return 0;
 
     const evt = claim.event;
@@ -256,7 +278,7 @@ class AgentNotifier {
     }
 
     const activityState = this.getCurrentActivityState();
-    if (this.isBusyState(activityState)) {
+    if (!this.isImmediateEvent(evt) && this.isBusyState(activityState)) {
       this.deliveryQueue.restoreClaim(claim);
       return 0;
     }

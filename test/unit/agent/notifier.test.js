@@ -116,7 +116,7 @@ describe("AgentNotifier delivery strategy", () => {
     expect(fs.existsSync(pendingFile)).toBe(false);
   });
 
-  test("busy agent leaves immediate message pending instead of injecting", async () => {
+  test("busy agent receives an immediate message without waiting for idle", async () => {
     const subscriber = "codex:busy123";
     fs.writeFileSync(
       path.join(projectRoot, ".ufoo", "agent", "all-agents.json"),
@@ -150,9 +150,12 @@ describe("AgentNotifier delivery strategy", () => {
 
     const delivered = await notifier.deliverPending();
 
-    expect(delivered).toBe(0);
-    expect(notifier.injector.inject).not.toHaveBeenCalled();
-    expect(fs.readFileSync(pendingFile, "utf8")).toContain("do not interrupt");
+    expect(delivered).toBe(1);
+    expect(notifier.injector.inject).toHaveBeenCalledWith(
+      subscriber,
+      "[ufoo]<from:ufoo-agent>\ndo not interrupt"
+    );
+    expect(fs.existsSync(pendingFile)).toBe(false);
   });
 
   test("chat-direct delivery injects manual target envelope", async () => {
@@ -235,8 +238,8 @@ describe("AgentNotifier delivery strategy", () => {
     expect(notifier.injector.inject).toHaveBeenCalledWith(subscriber, "raw payload");
   });
 
-  test("busy activity state defers immediate delivery and keeps queue intact", async () => {
-    const subscriber = "codex:busy1";
+  test("incorrect busy activity state does not block immediate Grok delivery", async () => {
+    const subscriber = "grok:busy1";
     fs.writeFileSync(
       path.join(projectRoot, ".ufoo", "agent", "all-agents.json"),
       JSON.stringify({
@@ -269,9 +272,12 @@ describe("AgentNotifier delivery strategy", () => {
 
     const delivered = await notifier.deliverPending();
 
-    expect(delivered).toBe(0);
-    expect(notifier.injector.inject).not.toHaveBeenCalled();
-    expect(fs.readFileSync(pendingFile, "utf8")).toContain("task-a");
+    expect(delivered).toBe(1);
+    expect(notifier.injector.inject).toHaveBeenCalledWith(
+      subscriber,
+      "[ufoo]<from:ufoo-agent>\ntask-a"
+    );
+    expect(fs.existsSync(pendingFile)).toBe(false);
   });
 
   test("busy activity state defers queued delivery and keeps queue intact", async () => {
@@ -308,6 +314,57 @@ describe("AgentNotifier delivery strategy", () => {
     expect(delivered).toBe(0);
     expect(notifier.injector.inject).not.toHaveBeenCalled();
     expect(fs.readFileSync(pendingFile, "utf8")).toContain("task-b");
+  });
+
+  test("queued work at the head does not block a later immediate message", async () => {
+    const subscriber = "grok:busy3";
+    fs.writeFileSync(
+      path.join(projectRoot, ".ufoo", "agent", "all-agents.json"),
+      JSON.stringify({
+        agents: {
+          [subscriber]: {
+            status: "active",
+            activity_state: "working",
+          },
+        },
+      }, null, 2)
+    );
+    const pendingFile = writePending(projectRoot, subscriber, [
+      {
+        seq: 1,
+        event: "message",
+        publisher: "ufoo-agent",
+        target: subscriber,
+        data: { message: "queued first", injection_mode: "queued" },
+      },
+      {
+        seq: 2,
+        event: "message",
+        publisher: "ufoo-agent",
+        target: subscriber,
+        data: { message: "immediate second", injection_mode: "immediate" },
+      },
+    ]);
+
+    const notifier = new AgentNotifier(projectRoot, subscriber);
+    notifier.injector = {
+      inject: jest.fn().mockResolvedValue(undefined),
+      readTty: jest.fn(() => ""),
+    };
+    notifier.eventBus = {
+      send: jest.fn().mockResolvedValue({ ok: true }),
+    };
+
+    const delivered = await notifier.deliverPending();
+
+    expect(delivered).toBe(1);
+    expect(notifier.injector.inject).toHaveBeenCalledWith(
+      subscriber,
+      "[ufoo]<from:ufoo-agent>\nimmediate second"
+    );
+    const remaining = fs.readFileSync(pendingFile, "utf8");
+    expect(remaining).toContain("queued first");
+    expect(remaining).not.toContain("immediate second");
   });
 
   test("deliverPending injects only one message and requeues the rest", async () => {

@@ -51,6 +51,19 @@ describe("DeliveryQueue", () => {
     ]);
   });
 
+  test("claimNext can select a later deliverable event without removing earlier queued work", () => {
+    writeJsonl(pendingFile, [
+      { seq: 1, data: { message: "queued", injection_mode: "queued" } },
+      { seq: 2, data: { message: "immediate", injection_mode: "immediate" } },
+      { seq: 3, data: { message: "later", injection_mode: "queued" } },
+    ]);
+
+    const claim = queue.claimNext((event) => event.data?.injection_mode === "immediate");
+
+    expect(claim.event.seq).toBe(2);
+    expect(readJsonl(pendingFile).map((event) => event.seq)).toEqual([1, 3]);
+  });
+
   test("claimNext can claim multiple events before completing without recovering active claims", () => {
     writeJsonl(pendingFile, [
       { seq: 1, data: { message: "first" } },
@@ -163,10 +176,25 @@ describe("DeliveryQueue", () => {
       seq: 1,
       event: "message",
       queue_type: QUEUE_TYPES.AGENT_MESSAGE,
-      delivery: expect.objectContaining({ mode: "inject", gate: "idle" }),
+      delivery: expect.objectContaining({ mode: "inject", gate: "none" }),
       ack: expect.objectContaining({ policy: "on_delivery" }),
     }));
     expect(event.data.message).toBe("hello");
+  });
+
+  test("queued mode uses the idle activity gate while immediate overrides stale gate metadata", () => {
+    const queued = normalizeQueueEnvelope({
+      event: "message",
+      data: { message: "later", injection_mode: "queued" },
+    });
+    const immediate = normalizeQueueEnvelope({
+      event: "message",
+      data: { message: "now", injection_mode: "immediate" },
+      delivery: { mode: "inject", gate: "idle" },
+    });
+
+    expect(queued.delivery.gate).toBe("idle");
+    expect(immediate.delivery.gate).toBe("none");
   });
 
   test("normalizeQueueEnvelope classifies daemon control events", () => {
