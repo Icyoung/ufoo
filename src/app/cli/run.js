@@ -1609,14 +1609,15 @@ async function runCli(argv) {
       });
     bus
       .command("inject")
-      .description("Inject /bus into a Terminal.app tab by subscriber ID")
+      .description("Inject explicit raw prompt text into an agent terminal")
       .argument("<subscriber>", "Subscriber ID to inject into")
-      .action((subscriber) => {
+      .argument("<text...>", "Prompt text to inject")
+      .action((subscriber, text) => {
         const EventBus = require("../../coordination/bus");
         const eventBus = new EventBus(process.cwd());
         (async () => {
           try {
-            await eventBus.inject(subscriber);
+            await eventBus.inject(subscriber, text.join(" "));
           } catch (err) {
             console.error(err.message);
             process.exitCode = 1;
@@ -1625,7 +1626,7 @@ async function runCli(argv) {
       });
     bus
       .command("wake")
-      .description("Wake an agent (inject /ubus into its terminal)")
+      .description("Send a notify-only wake event without injecting prompt text")
       .argument("<target>", "Subscriber ID or nickname")
       .option("--reason <reason>", "Wake reason")
       .option("--no-shake", "Disable window shake")
@@ -2448,7 +2449,11 @@ async function runCli(argv) {
           if (!subscriber) {
             throw new Error("inject requires <subscriber-id>");
           }
-          await eventBus.inject(subscriber);
+          const text = rest.slice(2).join(" ").trim();
+          if (!text) {
+            throw new Error("inject requires <subscriber-id> <text>");
+          }
+          await eventBus.inject(subscriber, text);
         } catch (err) {
           console.error(err.message);
           process.exitCode = 1;

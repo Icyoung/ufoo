@@ -440,10 +440,36 @@ describe("EventBus", () => {
   });
 
   describe("inject", () => {
-    test("inject creates injector and delegates", async () => {
+    test("inject rejects an empty prompt before selecting a transport", async () => {
       const bus = initBus();
-      // Will fail because no socket, but tests the path
-      await expect(bus.inject("codex:test")).rejects.toThrow();
+      await expect(bus.inject("codex:test")).rejects.toThrow(
+        "Inject requires non-empty prompt text for codex:test"
+      );
+    });
+
+    test("wake emits notify-only state without injecting prompt text", async () => {
+      const bus = initBus();
+      const sender = await bus.join("wake-sender", "codex", "sender");
+      const target = await bus.join("wake-target", "grok", "target");
+      const injectSpy = jest.fn();
+      bus.injector = { inject: injectSpy, readTty: jest.fn(() => "") };
+
+      await expect(bus.wake(target, {
+        publisher: sender,
+        shake: false,
+        command: "must not become a prompt",
+      }))
+        .resolves.toEqual({ ok: true, targets: [target] });
+
+      expect(injectSpy).not.toHaveBeenCalled();
+      const pending = bus.queueManager.getDeliveryQueue(target).readPendingRaw();
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toMatchObject({
+        event: "wake",
+        queue_type: "wake",
+        delivery: { mode: "notify_only" },
+        ack: { policy: "fire_and_forget" },
+      });
     });
   });
 

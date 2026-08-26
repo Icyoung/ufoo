@@ -829,7 +829,7 @@ class EventBus {
   }
 
   /**
-   * 远程唤醒本地 agent（触发 /ubus 注入）
+   * Notify a local agent without injecting a synthetic prompt.
    */
   async wake(subscriber, options = {}) {
     this.ensureBus();
@@ -847,6 +847,7 @@ class EventBus {
       throw new Error(`Target "${subscriber}" not found`);
     }
 
+    const injector = new Injector(this.busDir, this.agentsFile);
     for (const target of targets) {
       const safeName = subscriberToSafeName(target);
       const queueDir = path.join(this.busDir, "queues", safeName);
@@ -860,10 +861,8 @@ class EventBus {
       const countAfter = after.trim() ? after.trim().split(/\r?\n/).length : 0;
 
       if (countAfter > countBefore) {
-        await sleep(50);
-        await this.injector.inject(target, options.command || "");
         if (options.shake !== false) {
-          const tty = this.injector.readTty(target);
+          const tty = injector.readTty(target);
           if (tty) shakeTerminalByTty(tty, { skipFrontmost: true });
         }
       }
@@ -956,7 +955,7 @@ class EventBus {
   /**
    * 注入命令到订阅者终端
    */
-  async inject(subscriber, commandOverride = "") {
+  async inject(subscriber, commandOverride) {
     this.ensureBus();
     const injector = new Injector(this.busDir, this.agentsFile);
     await injector.inject(subscriber, commandOverride);

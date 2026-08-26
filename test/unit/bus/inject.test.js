@@ -217,41 +217,24 @@ describe("Injector", () => {
       ).rejects.toThrow("Inject disabled for ufoo-code:abc123");
     });
 
-    test("throws when no inject method available", async () => {
-      // No socket, no tmux, no tty
-      const agentsFile = path.join(busDir, "agents.json");
-      fs.writeFileSync(
-        agentsFile,
-        JSON.stringify({ agents: { "codex:test": {} } })
-      );
+    test.each(["codex", "claude-code", "agy", "grok"])(
+      "rejects empty prompt text for %s subscribers",
+      async (agentType) => {
+        const agentsFile = path.join(busDir, "agents.json");
+        fs.writeFileSync(
+          agentsFile,
+          JSON.stringify({ agents: { [`${agentType}:test`]: {} } })
+        );
 
-      const injector = new Injector(busDir, agentsFile);
-      await expect(injector.inject("codex:test")).rejects.toThrow(
-        "No inject method available"
-      );
-    });
+        const injector = new Injector(busDir, agentsFile);
+        await expect(injector.inject(`${agentType}:test`)).rejects.toThrow(
+          `Inject requires non-empty prompt text for ${agentType}:test`
+        );
+      }
+    );
 
-    test("uses default command /ubus for claude-code", async () => {
-      // We test that inject resolves command correctly - it will still fail
-      // because no socket/tmux available, but the error message confirms it got past the guard
-      const agentsFile = path.join(busDir, "agents.json");
-      fs.writeFileSync(
-        agentsFile,
-        JSON.stringify({ agents: { "claude-code:test": {} } })
-      );
-
-      const injector = new Injector(busDir, agentsFile);
-      await expect(injector.inject("claude-code:test")).rejects.toThrow(
-        "No inject method available"
-      );
-    });
-
-    test.each(["agy", "grok"])("%s subscriber routes through bare 'ubus' (not '/ubus')", async (agentType) => {
-      // agy/grok `/` is reserved for their own slash-command namespace, so
-      // sending `/ubus xxx` would be interpreted as an unknown slash
-      // command. The injector must default to bare `ubus` for these IDs
-      // — same convention as codex.
-      const sockPath = path.join(busDir, "queues", `${agentType}_test`, "inject.sock");
+    test("Grok injection forwards only the explicit prompt text", async () => {
+      const sockPath = path.join(busDir, "queues", "grok_test", "inject.sock");
       fs.mkdirSync(path.dirname(sockPath), { recursive: true });
 
       const received = [];
@@ -266,18 +249,20 @@ describe("Injector", () => {
       const agentsFile = path.join(busDir, "agents.json");
       fs.writeFileSync(
         agentsFile,
-        JSON.stringify({ agents: { [`${agentType}:test`]: {} } })
+        JSON.stringify({ agents: { "grok:test": {} } })
       );
 
+      const prompt = "[ufoo]<from:codex:test>\nreview complete";
       try {
         const injector = new Injector(busDir, agentsFile);
-        await injector.inject(`${agentType}:test`);
+        await injector.inject("grok:test", prompt);
       } finally {
         server.close();
       }
 
       const sent = received.join("");
-      expect(sent).toContain('"ubus"');
+      expect(sent).toContain(JSON.stringify(prompt));
+      expect(sent).not.toContain('"ubus"');
       expect(sent).not.toContain('"/ubus"');
     });
 
@@ -306,7 +291,7 @@ describe("Injector", () => {
 
       try {
         const injector = new Injector(busDir, agentsFile);
-        await injector.inject("codex:test", "ubus");
+        await injector.inject("codex:test", "hello");
       } finally {
         server.close();
       }
@@ -332,7 +317,7 @@ describe("Injector", () => {
 
       try {
         const injector = new Injector(busDir, agentsFile);
-        await injector.inject("codex:test", "ubus");
+        await injector.inject("codex:test", "hello");
       } finally {
         server.close();
       }

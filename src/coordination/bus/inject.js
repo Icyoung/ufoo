@@ -455,23 +455,20 @@ class Injector {
    * 2. tmux send-keys（无需权限）
    * 3. Terminal.app/iTerm2 tty lookup（terminal mode fallback）
    */
-  async inject(subscriber, commandOverride = "") {
+  async inject(subscriber, commandOverride) {
     if (String(subscriber || "").startsWith("ufoo-code:")) {
       throw new Error(`Inject disabled for ${subscriber}. ufoo-code consumes bus internally.`);
     }
 
-    // 确定注入命令：
-    // - codex: 裸 "ubus"（codex 没有 slash-command 命名空间）
-    // - agy/grok: 裸 "ubus"（它们的 `/` 是自己的 slash-command 命名空间，
-    //   "/ubus" 会被识别为 unknown slash command 而不是 prompt）
-    // - claude-code 及其他: "/ubus"
-    const command = commandOverride
-      ? String(commandOverride)
-      : (
-        subscriber.startsWith("codex:") || subscriber.startsWith("agy:") || subscriber.startsWith("grok:")
-          ? "ubus"
-          : "/ubus"
-      );
+    // Terminal injection is a delivery adapter for explicit prompt text.
+    // Never synthesize a command for an empty payload: doing so turns wake or
+    // acknowledgement-adjacent lifecycle activity into a visible user turn.
+    const command = commandOverride === undefined || commandOverride === null
+      ? ""
+      : String(commandOverride);
+    if (!command.trim()) {
+      throw new Error(`Inject requires non-empty prompt text for ${subscriber}`);
+    }
 
     const meta = this.getAgentMeta(subscriber) || {};
     const launchMode = meta.launch_mode || "";
