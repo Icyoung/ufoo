@@ -186,6 +186,45 @@ describe('SubscriberManager', () => {
       expect(busData.agents['codex:old']).toBeUndefined();
       expect(busData.agents['codex:newcodex'].nickname).toBe('builder');
     });
+
+    it('should not inherit an auto nickname owned by another agent type', async () => {
+      busData.agents['ufoo-code:old'] = {
+        agent_type: 'ufoo-code',
+        nickname: 'grok-1',
+        scoped_nickname: 'grok-1',
+        status: 'active',
+        tty: '/dev/ttys779',
+      };
+
+      const result = await manager.join('newucode', 'ufoo-code', '', {
+        tty: '/dev/ttys779',
+      });
+
+      expect(result.subscriber).toBe('ufoo-code:newucode');
+      expect(result.nickname).toBe('ucode-1');
+      expect(busData.agents['ufoo-code:old']).toBeUndefined();
+      expect(busData.agents['ufoo-code:newucode'].nickname).toBe('ucode-1');
+      expect(busData.agents['ufoo-code:newucode'].scoped_nickname).toBe('ucode-1');
+    });
+
+    it('should replace a mismatched auto nickname when rejoining the same subscriber', async () => {
+      busData.agents['ufoo-code:sameucode'] = {
+        agent_type: 'ufoo-code',
+        nickname: 'grok-1',
+        scoped_nickname: 'grok-1',
+        status: 'inactive',
+        tty: '/dev/ttys780',
+      };
+
+      const result = await manager.join('sameucode', 'ufoo-code', '', {
+        tty: '/dev/ttys780',
+      });
+
+      expect(result.subscriber).toBe('ufoo-code:sameucode');
+      expect(result.nickname).toBe('ucode-1');
+      expect(busData.agents['ufoo-code:sameucode'].nickname).toBe('ucode-1');
+      expect(busData.agents['ufoo-code:sameucode'].scoped_nickname).toBe('ucode-1');
+    });
   });
 
   describe('leave', () => {

@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { getTimestamp, isAgentPidAlive, isMetaActive, isValidTty, getTtyProcessInfo } = require("./utils");
 const NicknameManager = require("./nickname");
+const { isMismatchedAutoNickname } = require("./nickname");
 const { spawnSync } = require("child_process");
 const { appendAgentRegistryDiagnostic } = require("../state/agentRegistryDiagnostics");
 
@@ -185,7 +186,12 @@ class SubscriberManager {
       if (metaTty === ttyPath) {
         const sameAgentType = !currentAgentType || meta?.agent_type === currentAgentType;
         // Inherit user-set nickname only when replacing the same agent type.
-        if (sameAgentType && meta.nickname && !inheritedNickname) {
+        if (
+          sameAgentType
+          && meta.nickname
+          && !inheritedNickname
+          && !isMismatchedAutoNickname(meta.nickname, currentAgentType)
+        ) {
           inheritedNickname = meta.nickname;
         }
         // Remove stale subscriber using same tty
@@ -236,6 +242,11 @@ class SubscriberManager {
 
     // 检查是否是重新加入（rejoin）
     const existingMeta = this.busData.agents[subscriber];
+    const existingNicknameMismatched = Boolean(
+      existingMeta
+      && existingMeta.nickname
+      && isMismatchedAutoNickname(existingMeta.nickname, agentType)
+    );
     let finalNickname = nickname;
     let finalScopedNickname = typeof options.scopedNickname === "string"
       ? options.scopedNickname.trim()
@@ -248,7 +259,11 @@ class SubscriberManager {
         throw new Error(`Nickname "${nickname}" already exists`);
       }
       finalNickname = nickname;
-    } else if (existingMeta && existingMeta.nickname) {
+    } else if (
+      existingMeta
+      && existingMeta.nickname
+      && !existingNicknameMismatched
+    ) {
       // 重新加入，保留原昵称
       finalNickname = existingMeta.nickname;
       finalScopedNickname = existingMeta.scoped_nickname || finalScopedNickname || finalNickname;
@@ -259,7 +274,9 @@ class SubscriberManager {
     }
 
     if (!finalScopedNickname) {
-      finalScopedNickname = existingMeta?.scoped_nickname || finalNickname;
+      finalScopedNickname = existingNicknameMismatched
+        ? finalNickname
+        : (existingMeta?.scoped_nickname || finalNickname);
     }
 
     const explicitLaunchMode = typeof options.launchMode === "string"

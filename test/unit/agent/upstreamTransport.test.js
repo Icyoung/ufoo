@@ -166,6 +166,7 @@ describe("agent upstreamTransport", () => {
     })).resolves.toMatchObject({
       provider: "codex",
       transport: "codex-responses",
+      requestProfile: "codex-subscription",
       model: "gpt-5.3-codex-spark",
       baseUrl: "https://chatgpt.com/backend-api/codex",
       credentialSource: "auth-file",
@@ -219,6 +220,7 @@ describe("agent upstreamTransport", () => {
     })).resolves.toMatchObject({
       provider: "codex",
       transport: "codex-responses",
+      requestProfile: "openai-responses",
       baseUrl: "https://openai.example/v1",
       auth: { apiKey: "sk-test" },
     });
@@ -350,6 +352,38 @@ describe("agent upstreamTransport", () => {
         }),
       }),
     );
+    const requestBody = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(requestBody).not.toHaveProperty("max_output_tokens");
+  });
+
+  test("keeps max_output_tokens for API-key Codex Responses requests", async () => {
+    resolveCodexUpstreamCredentials.mockResolvedValue({
+      provider: "codex",
+      credentialKind: "api-key",
+      apiKey: "sk-test",
+      tokenType: "Bearer",
+      source: "env:OPENAI_API_KEY",
+    });
+    const fetchImpl = jest.fn().mockResolvedValue({
+      ok: true,
+      text: async () => 'data: {"type":"response.completed","response":{"output":[]}}',
+    });
+
+    const result = await sendUpstreamPrompt({
+      projectRoot: "/tmp/project",
+      provider: "codex",
+      model: "gpt-5.3-codex-spark",
+      prompt: "hello",
+      maxTokens: 8192,
+      fetchImpl,
+      env: { OPENAI_BASE_URL: "https://api.openai.com/v1" },
+      loadConfigImpl: () => ({ codexAuthPath: "" }),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(fetchImpl.mock.calls[0][0]).toBe("https://api.openai.com/v1/responses");
+    const requestBody = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(requestBody.max_output_tokens).toBe(8192);
   });
 
   test("sends claude upstream prompt through anthropic transport", async () => {

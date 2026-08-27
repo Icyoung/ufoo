@@ -5,6 +5,7 @@ const fs = require("fs");
 const net = require("net");
 const path = require("path");
 const EventBus = require("../../coordination/bus");
+const { isMismatchedAutoNickname } = require("../../coordination/bus/nickname");
 const { isAgentPidAlive } = require("../../coordination/bus/utils");
 const { showBanner } = require("../../ui/format/banner");
 const AgentNotifier = require("./notifier");
@@ -206,7 +207,9 @@ function findPreviousSession(cwd, agentType, tty, tmuxPane) {
       return {
         sessionId: parts[1],
         subscriberId: id,
-        nickname: meta.nickname || "",
+        nickname: isMismatchedAutoNickname(meta.nickname, agentType)
+          ? ""
+          : (meta.nickname || ""),
         providerSessionId: meta.provider_session_id || "",
       };
     }

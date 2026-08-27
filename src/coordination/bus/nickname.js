@@ -1,6 +1,29 @@
 /**
  * 昵称管理和解析
  */
+const AUTO_NICKNAME_PREFIXES = new Set([
+  "claude",
+  "codex",
+  "agy",
+  "grok",
+  "kimi",
+  "ucode",
+]);
+
+function resolveAutoNicknamePrefix(agentType = "") {
+  const normalized = String(agentType || "").trim().toLowerCase();
+  if (normalized === "claude" || normalized === "claude-code") return "claude";
+  if (normalized === "ufoo" || normalized === "ucode" || normalized === "ufoo-code") return "ucode";
+  return normalized;
+}
+
+function isMismatchedAutoNickname(nickname = "", agentType = "") {
+  const match = String(nickname || "").trim().toLowerCase().match(/^([a-z][a-z0-9]*)-(\d+)$/);
+  if (!match || !AUTO_NICKNAME_PREFIXES.has(match[1])) return false;
+  const expectedPrefix = resolveAutoNicknamePrefix(agentType);
+  return Boolean(expectedPrefix && match[1] !== expectedPrefix);
+}
+
 class NicknameManager {
   constructor(busData) {
     this.busData = busData;
@@ -47,9 +70,7 @@ class NicknameManager {
    */
   generateAutoNickname(agentType) {
     const subscribers = this.busData.agents || {};
-    const prefix = agentType === "claude-code" ? "claude"
-                 : agentType === "ufoo-code" ? "ucode"
-                 : agentType;
+    const prefix = resolveAutoNicknamePrefix(agentType);
 
     // 找出所有相同前缀的昵称
     const existing = Object.values(subscribers)
@@ -97,3 +118,5 @@ class NicknameManager {
 }
 
 module.exports = NicknameManager;
+module.exports.isMismatchedAutoNickname = isMismatchedAutoNickname;
+module.exports.resolveAutoNicknamePrefix = resolveAutoNicknamePrefix;

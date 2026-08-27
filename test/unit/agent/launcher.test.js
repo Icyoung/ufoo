@@ -135,6 +135,32 @@ describe("_findPreviousSession tty_shell_pid guard", () => {
       providerSessionId: "",
     });
   });
+
+  it("reuses the session without inheriting another agent type's auto nickname", () => {
+    writeAgents({
+      "ufoo-code:legacyucode": {
+        agent_type: "ufoo-code",
+        tty: "/dev/ttys999",
+        pid: null,
+        tty_shell_pid: process.pid,
+        nickname: "grok-1",
+        provider_session_id: "ucode-session",
+      },
+    });
+
+    const result = AgentLauncher._findPreviousSession(
+      tmpDir,
+      "ufoo-code",
+      "/dev/ttys999",
+      null,
+    );
+    expect(result).toEqual({
+      sessionId: "legacyucode",
+      subscriberId: "ufoo-code:legacyucode",
+      nickname: "",
+      providerSessionId: "ucode-session",
+    });
+  });
 });
 
 describe("_notifyDaemonAgentReady", () => {

@@ -330,6 +330,7 @@ async function resolveUpstreamRuntime({
     return {
       provider: "codex",
       transport: "codex-responses",
+      requestProfile: useCodexOAuth ? "codex-subscription" : "openai-responses",
       model: resolvedModel,
       baseUrl,
       credential,
@@ -472,6 +473,13 @@ async function sendUpstreamRequest({
     }
   }
   const requestBody = request && typeof request === "object" ? { ...request } : {};
+  // The ChatGPT subscription Codex endpoint is Responses-shaped but does not
+  // accept the public Responses API's optional max_output_tokens field. Keep
+  // the limit for api.openai.com/API-key traffic and omit it only for the
+  // OAuth-backed Codex subscription profile.
+  if (isCodexResponses && resolvedRuntime.requestProfile === "codex-subscription") {
+    delete requestBody.max_output_tokens;
+  }
   if (isKimi) requestBody.model = requestModel;
   const body = JSON.stringify(requestBody);
 
