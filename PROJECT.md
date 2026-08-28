@@ -82,7 +82,16 @@ terminal is created, never `agent_type` or a subscriber prefix:
    MCP `register_agent`, bare `ufoo bus join`, or resident `ufoo bus poll`.
 2. An absent `UFOO_SUBSCRIBER_ID` identifies an externally hosted Agent. It
    self-registers once through MCP, retains the returned subscriber and opaque
-   `agent_handle`, then
+   `agent_handle`, and may provide a stable `client_instance_id` to recover that
+   server-assigned subscriber after transport restarts. New external subscriber
+   session suffixes use the same eight-character server-generated shape as
+   wrapper registrations, and automatic nicknames use the same
+   `<agent-prefix>-<number>` allocator. Thus a Cursor MCP Agent registers as
+   `cursor:<8-hex>` with `cursor-N`; its potentially UUID-shaped
+   `client_instance_id` remains recovery metadata and never becomes the suffix.
+   A legacy UUID-suffix registration is superseded on its next registration.
+   MCP Agents cannot provide or update either identity field; explicit operator
+   renames use the controller/CLI rename path. The Agent then
    selects one receive wait from the host App's wake capability:
    - Codex App keeps one MCP `wait_for_message` tool call pending until a
      message arrives or the caller cancels it. A dedicated `ufoo_wait` MCP

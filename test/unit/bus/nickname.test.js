@@ -82,6 +82,7 @@ describe('NicknameManager', () => {
       const emptyManager = new NicknameManager({ agents: {} });
       expect(emptyManager.generateAutoNickname('claude-code')).toBe('claude-1');
       expect(emptyManager.generateAutoNickname('codex')).toBe('codex-1');
+      expect(emptyManager.generateAutoNickname('cursor')).toBe('cursor-1');
     });
 
     it('should find next available number', () => {

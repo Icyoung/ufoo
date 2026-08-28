@@ -45,6 +45,16 @@ function normalizeBusAgentType(agentType = "") {
   return value;
 }
 
+function assertServerOwnedExternalIdentity(args = {}, fields = [], operation = "register_agent") {
+  const field = fields.find((name) => Object.prototype.hasOwnProperty.call(args, name));
+  if (!field) return;
+  const err = new Error(
+    `${operation} ${field} is server-assigned; use the subscriber and nickname returned by ufoo`
+  );
+  err.code = "external_identity_field_forbidden";
+  throw err;
+}
+
 function ensureBusLoaded(projectRoot) {
   const bus = new EventBus(projectRoot);
   bus.ensureBus();
@@ -72,12 +82,12 @@ function resolveSubscriberArg(args = {}) {
   return subscriber;
 }
 
-function createSessionId() {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
 function createCryptoSessionId() {
   return crypto.randomBytes(4).toString("hex");
+}
+
+function isServerAllocatedExternalSessionId(sessionId = "") {
+  return /^[0-9a-f]{8}$/.test(String(sessionId || ""));
 }
 
 function createAgentHandle() {
@@ -174,7 +184,9 @@ async function registerAgentFull(projectRoot, args = {}, options = {}) {
   ).trim();
   const bus = ensureBusLoaded(projectRoot);
 
-  // Session ID: explicit > reuse > generate
+  // Wrapper launches may provide resume metadata. External MCP registrations
+  // recover only through client_instance_id; otherwise the server owns the
+  // short session id so subscriber shapes stay consistent across launch modes.
   let sessionId;
   const explicitSessionId = String(args.session_id || args.sessionId || "").trim();
   const reuseSession = args.reuseSession && typeof args.reuseSession === "object"
@@ -187,14 +199,18 @@ async function registerAgentFull(projectRoot, args = {}, options = {}) {
   const reuseProviderSessionId = typeof reuseSession?.providerSessionId === "string"
     ? reuseSession.providerSessionId.trim() : "";
 
-  const recoveredEntry = !validateParentPid && clientInstanceId
-    ? Object.entries(bus.busData.agents || {}).find(([, meta]) => (
+  const clientInstanceEntries = !validateParentPid && clientInstanceId
+    ? Object.entries(bus.busData.agents || {}).filter(([, meta]) => (
       meta
       && meta.mcp_bridge === true
-      && meta.agent_type === agentType
       && meta.mcp_client_instance_id === clientInstanceId
     ))
-    : null;
+    : [];
+  const recoveredEntry = clientInstanceEntries.find(([subscriber, meta]) => (
+    meta.agent_type === agentType
+    && subscriber.startsWith(`${agentType}:`)
+    && isServerAllocatedExternalSessionId(subscriber.slice(agentType.length + 1))
+  ));
   const recoveredSubscriber = recoveredEntry ? recoveredEntry[0] : "";
   const recoveredSessionId = recoveredSubscriber.startsWith(`${agentType}:`)
     ? recoveredSubscriber.slice(agentType.length + 1)
@@ -202,12 +218,16 @@ async function registerAgentFull(projectRoot, args = {}, options = {}) {
 
   if (recoveredSessionId) {
     sessionId = recoveredSessionId;
-  } else if (explicitSessionId) {
+  } else if (validateParentPid && explicitSessionId) {
     sessionId = explicitSessionId;
-  } else if (reuseSessionId && reuseSubscriberId === `${agentType}:${reuseSessionId}`) {
+  } else if (
+    validateParentPid
+    && reuseSessionId
+    && reuseSubscriberId === `${agentType}:${reuseSessionId}`
+  ) {
     sessionId = reuseSessionId;
   } else {
-    sessionId = validateParentPid ? createCryptoSessionId() : createSessionId();
+    sessionId = createCryptoSessionId();
   }
 
   // parentPid validation
@@ -284,6 +304,20 @@ async function registerAgentFull(projectRoot, args = {}, options = {}) {
     extendMcpAgentLease(meta);
   }
   if (hostCapabilities) meta.mcp_capabilities = hostCapabilities;
+  const supersededSubscribers = [];
+  if (!validateParentPid && clientInstanceId) {
+    for (const [previousSubscriber, previousMeta] of clientInstanceEntries) {
+      if (previousSubscriber === subscriber) continue;
+      const revokedAt = nowIso();
+      previousMeta.mcp_revoked_at = revokedAt;
+      previousMeta.mcp_lease_expires_at = revokedAt;
+      previousMeta.mcp_superseded_by = subscriber;
+      await bus.subscriberManager.leave(previousSubscriber);
+      previousMeta.status = "inactive";
+      previousMeta.activity_state = "";
+      supersededSubscribers.push(previousSubscriber);
+    }
+  }
   bus.saveBusData();
   notifyDaemonRefresh(projectRoot);
   return {
@@ -301,6 +335,7 @@ async function registerAgentFull(projectRoot, args = {}, options = {}) {
       lease_expires_at: meta.mcp_lease_expires_at,
       client_instance_id: clientInstanceId,
       recovered: Boolean(recoveredSubscriber),
+      ...(supersededSubscribers.length > 0 ? { superseded_subscribers: supersededSubscribers } : {}),
     } : {}),
     reuseProviderSessionId,
     skipSessionResolve: !!args.skipSessionResolve,
@@ -308,6 +343,18 @@ async function registerAgentFull(projectRoot, args = {}, options = {}) {
 }
 
 async function registerAgent(projectRoot, args = {}) {
+  if (!String(args.agent_type || args.agentType || "").trim()) {
+    const err = new Error("register_agent requires agent_type for canonical identity allocation");
+    err.code = "external_agent_type_required";
+    throw err;
+  }
+  assertServerOwnedExternalIdentity(args, [
+    "session_id",
+    "sessionId",
+    "nickname",
+    "scoped_nickname",
+    "scopedNickname",
+  ]);
   return registerAgentFull(projectRoot, args, {
     validateParentPid: false,
     checkNicknameConflicts: false,
@@ -360,13 +407,14 @@ async function publishActivityState(projectRoot, args = {}) {
 }
 
 async function updateAgentMetadata(projectRoot, args = {}) {
+  assertServerOwnedExternalIdentity(args, [
+    "nickname",
+    "scoped_nickname",
+    "scopedNickname",
+  ], "update_agent_metadata");
   const subscriber = resolveSubscriberArg(args);
   const bus = ensureBusLoaded(projectRoot);
   const meta = assertAgentHandle(bus, subscriber, args);
-  const nickname = String(args.nickname || "").trim();
-  if (nickname) {
-    await bus.subscriberManager.rename(subscriber, nickname);
-  }
   const metadata = args.metadata && typeof args.metadata === "object" ? args.metadata : {};
   if (Object.keys(metadata).length > 0) {
     meta.mcp_metadata = {
@@ -631,7 +679,6 @@ module.exports = {
   ensureBusLoaded,
   assertSubscriberExists,
   resolveSubscriberArg,
-  createSessionId,
   createAgentHandle,
   hashAgentHandle,
   assertAgentHandle,

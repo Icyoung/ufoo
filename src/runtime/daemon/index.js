@@ -73,6 +73,7 @@ function sleep(ms) {
 function normalizeBusAgentType(agentType = "") {
   const value = String(agentType || "").trim().toLowerCase();
   if (!value) return "claude-code";
+  if (value === "cursor") return "cursor";
   if (value === "codex") return "codex";
   if (value === "claude" || value === "claude-code") return "claude-code";
   if (value === "agy" || value === "antigravity") return "agy";

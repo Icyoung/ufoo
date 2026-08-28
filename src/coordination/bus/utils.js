@@ -362,6 +362,7 @@ function isMetaActive(meta) {
 function normalizeAgentTypeAlias(value = "") {
   const text = String(value || "").trim().toLowerCase();
   if (!text) return "";
+  if (text === "cursor") return "cursor";
   if (text === "codex") return "codex";
   if (text === "claude" || text === "claude-code") return "claude-code";
   if (text === "agy") return "agy";

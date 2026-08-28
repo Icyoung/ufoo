@@ -4,6 +4,7 @@
 const AUTO_NICKNAME_PREFIXES = new Set([
   "claude",
   "codex",
+  "cursor",
   "agy",
   "grok",
   "kimi",

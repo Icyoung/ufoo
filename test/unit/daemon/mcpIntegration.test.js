@@ -55,11 +55,13 @@ describe("MCP external integration (Phase 6)", () => {
     const regA = await call(server, 1, "register_agent", {
       project_root: projectRoot,
       agent_type: "claude",
-      nickname: "claude-ext",
     });
     const a = regA.result.structuredContent;
     expect(a.ok).toBe(true);
     expect(a.agent_type).toBe("claude-code");
+    expect(a.session_id).toMatch(/^[0-9a-f]{8}$/);
+    expect(a.subscriber).toBe(`claude-code:${a.session_id}`);
+    expect(a.nickname).toMatch(/^claude-\d+$/);
     const subA = a.subscriber;
     const handleA = a.agent_handle;
 
@@ -67,10 +69,12 @@ describe("MCP external integration (Phase 6)", () => {
     const regB = await call(server, 2, "register_agent", {
       project_root: projectRoot,
       agent_type: "codex",
-      nickname: "codex-ext",
     });
     const b = regB.result.structuredContent;
     expect(b.ok).toBe(true);
+    expect(b.session_id).toMatch(/^[0-9a-f]{8}$/);
+    expect(b.subscriber).toBe(`codex:${b.session_id}`);
+    expect(b.nickname).toMatch(/^codex-\d+$/);
     const subB = b.subscriber;
     const handleB = b.agent_handle;
 
@@ -158,16 +162,23 @@ describe("MCP external integration (Phase 6)", () => {
     });
     expect(report.result.structuredContent.status).toBe("queued");
 
-    // Agent A updates metadata
+    // Agent A updates metadata without changing its server-assigned identity.
     const meta = await call(server, 10, "update_agent_metadata", {
       project_root: projectRoot,
       subscriber: subA,
       agent_handle: handleA,
-      nickname: "claude-reviewer",
       metadata: { role: "reviewer" },
     });
-    expect(meta.result.structuredContent.nickname).toBe("claude-reviewer");
+    expect(meta.result.structuredContent.nickname).toBe(a.nickname);
     expect(meta.result.structuredContent.metadata.role).toBe("reviewer");
+
+    const forbiddenRename = await call(server, "forbidden-rename", "update_agent_metadata", {
+      project_root: projectRoot,
+      subscriber: subA,
+      agent_handle: handleA,
+      nickname: "claude-reviewer",
+    });
+    expect(forbiddenRename.error.data.code).toBe("external_identity_field_forbidden");
 
     // Both unregister
     const unA = await call(server, 11, "unregister_agent", {

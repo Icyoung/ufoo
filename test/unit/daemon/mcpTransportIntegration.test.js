@@ -163,6 +163,9 @@ describe("MCP HTTP and stdio transport interoperability", () => {
         () => proxyMessages.find((message) => message.id === "register-b")
       );
       const agentB = registeredB.result.structuredContent;
+      expect(agentB.session_id).toMatch(/^[0-9a-f]{8}$/);
+      expect(agentB.subscriber).toBe(`cursor:${agentB.session_id}`);
+      expect(agentB.nickname).toMatch(/^cursor-\d+$/);
 
       proxyInput.write(`${JSON.stringify({
         jsonrpc: "2.0",

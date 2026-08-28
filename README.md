@@ -269,6 +269,19 @@ and `agent_handle`. Include the handle in heartbeat, activity, send, receive,
 acknowledgement, report, and unregister calls. The handle is an ownership
 capability: do not send it to peers or print it in reports.
 
+For a new external registration, ufoo assigns both the subscriber's
+eight-character session suffix and its automatic `<agent-prefix>-<number>`
+nickname on the server, using the same identity generators as wrapper launches.
+A Cursor MCP registration with `agent_type: "cursor"`, for example, receives
+`cursor:<8-hex>` and `cursor-N`; the model selected inside Cursor does not
+replace the Cursor Agent type.
+A stable `client_instance_id` recovers that same identity after a transport
+restart; even when that value is a UUID, it is not used as the subscriber
+suffix. Legacy MCP subscribers whose suffix is the client UUID are superseded
+by the short server-assigned identity on their next registration. MCP Agents
+cannot self-assign or update these identity fields; an explicit operator rename
+remains available through the controller/CLI rename path.
+
 - **Codex App:** call MCP `wait_for_message` in the foreground with
   the registered subscriber and handle, `after_seq: 0`, and
   `timeout_seconds: 0`. The tool call stays pending inside the dedicated

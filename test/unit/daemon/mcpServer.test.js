@@ -46,8 +46,19 @@ describe("ufoo global MCP server", () => {
     expect(names).not.toContain("launch_agent");
     expect(names).not.toContain("close_agent");
     expect(names).not.toContain("manage_cron");
-    expect(tools.find((tool) => tool.name === "register_agent").description)
+    const registerAgentTool = tools.find((tool) => tool.name === "register_agent");
+    expect(registerAgentTool.description)
       .toContain("no wrapper-provided UFOO_SUBSCRIBER_ID");
+    expect(registerAgentTool.description).toContain("assigns the subscriber id and nickname");
+    expect(registerAgentTool.description).toContain("cursor:<8-hex> and cursor-N");
+    expect(registerAgentTool.inputSchema.properties.agent_type.description)
+      .toContain("cursor");
+    expect(registerAgentTool.inputSchema.required).toEqual(["project_root", "agent_type"]);
+    expect(registerAgentTool.inputSchema.properties).not.toHaveProperty("session_id");
+    expect(registerAgentTool.inputSchema.properties).not.toHaveProperty("nickname");
+    expect(registerAgentTool.inputSchema.properties).not.toHaveProperty("scoped_nickname");
+    expect(tools.find((tool) => tool.name === "update_agent_metadata").inputSchema.properties)
+      .not.toHaveProperty("nickname");
     expect(tools.find((tool) => tool.name === "wait_for_message").inputSchema)
       .toMatchObject({
         required: ["project_root", "subscriber", "agent_handle"],
@@ -144,20 +155,20 @@ describe("ufoo global MCP server", () => {
         arguments: {
           project_root: projectRoot,
           agent_type: "codex",
-          session_id: "mcp123",
-          nickname: "mcp-one",
         },
       },
     });
     const registerPayload = registered.result.structuredContent;
     expect(registerPayload.ok).toBe(true);
-    expect(registerPayload.subscriber).toBe("codex:mcp123");
-    expect(registerPayload.nickname).toBe("mcp-one");
+    expect(registerPayload.session_id).toMatch(/^[0-9a-f]{8}$/);
+    expect(registerPayload.subscriber).toBe(`codex:${registerPayload.session_id}`);
+    expect(registerPayload.nickname).toMatch(/^codex-\d+$/);
     expect(registerPayload.agent_handle).toEqual(expect.any(String));
     expect(registerPayload.lease_expires_at).toEqual(expect.any(String));
+    const subscriber = registerPayload.subscriber;
     const agentHandle = registerPayload.agent_handle;
     const storedRegistry = JSON.parse(fs.readFileSync(getUfooPaths(projectRoot).agentsFile, "utf8"));
-    expect(storedRegistry.agents["codex:mcp123"].mcp_agent_handle_hash)
+    expect(storedRegistry.agents[subscriber].mcp_agent_handle_hash)
       .toEqual(expect.any(String));
     expect(JSON.stringify(storedRegistry)).not.toContain(agentHandle);
 
@@ -169,7 +180,7 @@ describe("ufoo global MCP server", () => {
         name: "heartbeat_agent",
         arguments: {
           project_root: projectRoot,
-          subscriber: "codex:mcp123",
+          subscriber,
           agent_handle: agentHandle,
         },
       },
@@ -184,7 +195,7 @@ describe("ufoo global MCP server", () => {
         name: "poll_inbox",
         arguments: {
           project_root: projectRoot,
-          subscriber: "codex:mcp123",
+          subscriber,
           agent_handle: agentHandle,
         },
       },
@@ -203,7 +214,7 @@ describe("ufoo global MCP server", () => {
         name: "report_agent_status",
         arguments: {
           project_root: projectRoot,
-          subscriber: "codex:mcp123",
+          subscriber,
           agent_handle: agentHandle,
           task_id: "task-a",
           phase: "done",
@@ -213,7 +224,7 @@ describe("ufoo global MCP server", () => {
     });
     const reportPayload = report.result.structuredContent;
     expect(reportPayload.status).toBe("queued");
-    expect(reportPayload.report.agent_id).toBe("codex:mcp123");
+    expect(reportPayload.report.agent_id).toBe(subscriber);
     expect(fs.existsSync(getUfooPaths(projectRoot).busDir)).toBe(true);
     expect(fs.readFileSync(
       path.join(getUfooPaths(projectRoot).busDir, "control", "report", "pending.jsonl"),
@@ -228,12 +239,64 @@ describe("ufoo global MCP server", () => {
         name: "unregister_agent",
         arguments: {
           project_root: projectRoot,
-          subscriber: "codex:mcp123",
+          subscriber,
           agent_handle: agentHandle,
         },
       },
     });
     expect(unregistered.result.structuredContent.ok).toBe(true);
+  });
+
+  test.each([
+    ["session_id", "df41c495-1a21-496c-95d1-182e238dae9d"],
+    ["sessionId", "df41c495-1a21-496c-95d1-182e238dae9d"],
+    ["nickname", "grok"],
+    ["scoped_nickname", "grok"],
+    ["scopedNickname", "grok"],
+  ])("rejects caller-owned external identity field %s", async (field, value) => {
+    const projectRoot = makeTempProject();
+    const server = createUfooMcpServer({
+      autoStart: false,
+      validateProjectRoot: false,
+    });
+
+    const response = await server.handleRequest({
+      jsonrpc: "2.0",
+      id: "caller-session-id",
+      method: "tools/call",
+      params: {
+        name: "register_agent",
+        arguments: {
+          project_root: projectRoot,
+          agent_type: "cursor",
+          client_instance_id: "cursor-window-1",
+          [field]: value,
+        },
+      },
+    });
+
+    expect(response.error.data.code).toBe("external_identity_field_forbidden");
+    expect(response.error.message).toContain(`${field} is server-assigned`);
+  });
+
+  test("requires an agent type for canonical external identity allocation", async () => {
+    const projectRoot = makeTempProject();
+    const server = createUfooMcpServer({
+      autoStart: false,
+      validateProjectRoot: false,
+    });
+
+    const response = await server.handleRequest({
+      jsonrpc: "2.0",
+      id: "missing-agent-type",
+      method: "tools/call",
+      params: {
+        name: "register_agent",
+        arguments: { project_root: projectRoot },
+      },
+    });
+
+    expect(response.error.data.code).toBe("external_agent_type_required");
   });
 
   test("recovers a client instance with the same subscriber and rotates its handle", async () => {
@@ -258,6 +321,10 @@ describe("ufoo global MCP server", () => {
 
     const first = (await register("register-first")).result.structuredContent;
     const second = (await register("register-second")).result.structuredContent;
+    expect(first.session_id).toMatch(/^[0-9a-f]{8}$/);
+    expect(first.subscriber).toBe(`cursor:${first.session_id}`);
+    expect(first.subscriber).not.toContain("cursor-window-1");
+    expect(first.nickname).toMatch(/^cursor-\d+$/);
     expect(second).toMatchObject({
       subscriber: first.subscriber,
       client_instance_id: "cursor-window-1",
@@ -297,6 +364,65 @@ describe("ufoo global MCP server", () => {
       .toEqual(expect.any(String));
   });
 
+  test("migrates a legacy cursor UUID subscriber to the server-assigned short format", async () => {
+    const projectRoot = makeTempProject();
+    const paths = getUfooPaths(projectRoot);
+    const legacySessionId = "df41c495-1a21-496c-95d1-182e238dae9d";
+    const legacySubscriber = `cursor:${legacySessionId}`;
+    fs.writeFileSync(paths.agentsFile, JSON.stringify({
+      created_at: new Date().toISOString(),
+      agents: {
+        [legacySubscriber]: {
+          agent_type: "cursor",
+          nickname: "cursor",
+          scoped_nickname: "cursor",
+          status: "active",
+          activity_state: "ready",
+          mcp_bridge: true,
+          mcp_client_instance_id: legacySessionId,
+        },
+      },
+    }, null, 2));
+    const server = createUfooMcpServer({
+      autoStart: false,
+      validateProjectRoot: false,
+    });
+
+    const response = await server.handleRequest({
+      jsonrpc: "2.0",
+      id: "recover-legacy",
+      method: "tools/call",
+      params: {
+        name: "register_agent",
+        arguments: {
+          project_root: projectRoot,
+          agent_type: "cursor",
+          client_instance_id: legacySessionId,
+        },
+      },
+    });
+
+    const registration = response.result.structuredContent;
+    expect(registration.session_id).toMatch(/^[0-9a-f]{8}$/);
+    expect(registration.subscriber).toBe(`cursor:${registration.session_id}`);
+    expect(registration.subscriber).not.toBe(legacySubscriber);
+    expect(registration.nickname).toMatch(/^cursor-\d+$/);
+    expect(registration.recovered).toBe(false);
+    expect(registration.superseded_subscribers).toEqual([legacySubscriber]);
+
+    const registry = JSON.parse(fs.readFileSync(paths.agentsFile, "utf8"));
+    expect(registry.agents[legacySubscriber]).toMatchObject({
+      status: "inactive",
+      mcp_superseded_by: registration.subscriber,
+    });
+    expect(registry.agents[legacySubscriber].mcp_revoked_at).toEqual(expect.any(String));
+    expect(registry.agents[registration.subscriber]).toMatchObject({
+      agent_type: "cursor",
+      status: "active",
+      nickname: registration.nickname,
+    });
+  });
+
   test("wait_for_message retains an explicit bounded compatibility mode", async () => {
     const projectRoot = makeTempProject();
     let now = 0;
@@ -319,7 +445,6 @@ describe("ufoo global MCP server", () => {
         arguments: {
           project_root: projectRoot,
           agent_type: "codex",
-          session_id: "wait-timeout",
         },
       },
     });
@@ -373,7 +498,6 @@ describe("ufoo global MCP server", () => {
         arguments: {
           project_root: projectRoot,
           agent_type: "codex",
-          session_id: "wait-unbounded",
         },
       },
     });
@@ -441,7 +565,6 @@ describe("ufoo global MCP server", () => {
         arguments: {
           project_root: projectRoot,
           agent_type: "codex",
-          session_id: "wait-cancel",
         },
       },
     });

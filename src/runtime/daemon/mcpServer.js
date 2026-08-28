@@ -51,16 +51,16 @@ const CUSTOM_TOOL_DEFINITIONS = Object.freeze([
   },
   {
     name: "register_agent",
-    description: "Register an externally launched Agent only when its shell has no wrapper-provided UFOO_SUBSCRIBER_ID.",
+    description: "Register an externally launched Agent only when its shell has no wrapper-provided UFOO_SUBSCRIBER_ID. ufoo assigns the subscriber id and nickname with the same format used by wrapper launches (for example, cursor:<8-hex> and cursor-N).",
     input_schema: {
       type: "object",
-      required: ["project_root"],
+      required: ["project_root", "agent_type"],
       properties: {
         project_root: { type: "string" },
-        agent_type: { type: "string" },
-        session_id: { type: "string" },
-        nickname: { type: "string" },
-        scoped_nickname: { type: "string" },
+        agent_type: {
+          type: "string",
+          description: "Agent family used as the subscriber and automatic nickname prefix, such as cursor, codex, claude, agy, grok, kimi, or ucode.",
+        },
         launch_mode: { type: "string" },
         capabilities: { type: "object", additionalProperties: true },
         client_instance_id: {
@@ -107,7 +107,7 @@ const CUSTOM_TOOL_DEFINITIONS = Object.freeze([
   },
   {
     name: "update_agent_metadata",
-    description: "Update the caller agent nickname or MCP metadata in its project bus.",
+    description: "Update caller-owned MCP metadata in the project bus.",
     input_schema: {
       type: "object",
       required: ["project_root", "subscriber", "agent_handle"],
@@ -115,7 +115,6 @@ const CUSTOM_TOOL_DEFINITIONS = Object.freeze([
         project_root: { type: "string" },
         subscriber: { type: "string" },
         agent_handle: { type: "string" },
-        nickname: { type: "string" },
         metadata: { type: "object", additionalProperties: true },
       },
       additionalProperties: false,
