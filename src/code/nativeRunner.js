@@ -1,5 +1,6 @@
 const os = require("os");
 const { randomUUID } = require("crypto");
+const { Agent: UndiciAgent } = require("undici");
 const { loadConfig, defaultAgentModelForProvider, sameModelProvider } = require("../config");
 const {
   readKimiAccessToken,
@@ -115,6 +116,14 @@ const DEFAULT_MAX_NATIVE_TOOL_CALLS = 100;
 const DEFAULT_MAX_NATIVE_TOOL_ERRORS = 20;
 const MAX_EMPTY_TERMINAL_RETRIES = 2;
 const DEFAULT_NATIVE_TIMEOUT_MS = 43200000; // 12 hours
+// Node's fetch is backed by Undici, whose default headers/body idle timeout is
+// 300 seconds. Reasoning providers can legitimately stay silent longer than
+// that between SSE chunks, so leave the absolute deadline to our existing
+// AbortController instead of inheriting Undici's shorter hidden deadline.
+const NATIVE_SSE_DISPATCHER_OPTIONS = Object.freeze({
+  headersTimeout: 0,
+  bodyTimeout: 0,
+});
 /** Max text-only auto-continues while a plan is waiting on a task (per user submit). */
 const DEFAULT_MAX_PLAN_AUTO_CONTINUES = 24;
 // Anthropic Messages rejects max_tokens above the model's real cap (64K on
@@ -139,6 +148,40 @@ function normalizeTimeoutMs(value) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return DEFAULT_NATIVE_TIMEOUT_MS;
   return Math.max(1000, Math.floor(parsed));
+}
+
+let nativeSseDispatcher = null;
+
+function createNativeSseDispatcher() {
+  return new UndiciAgent({ ...NATIVE_SSE_DISPATCHER_OPTIONS });
+}
+
+function getNativeSseDispatcher() {
+  if (!nativeSseDispatcher || nativeSseDispatcher.destroyed) {
+    nativeSseDispatcher = createNativeSseDispatcher();
+  }
+  return nativeSseDispatcher;
+}
+
+function enrichProviderTransportError(err) {
+  if (!err || typeof err !== "object") return err;
+
+  const cause = err.cause && typeof err.cause === "object" ? err.cause : null;
+  const code = String((cause && cause.code) || err.code || "").trim();
+  const causeMessage = String((cause && cause.message) || "").trim();
+  if (!code && !causeMessage) return err;
+
+  const message = String(err.message || "provider transport failed").trim();
+  const details = [code, causeMessage]
+    .filter(Boolean)
+    .filter((value, index, values) => values.indexOf(value) === index)
+    .join(": ");
+  if (!details || message.includes(details)) return err;
+
+  const enriched = new Error(`${message} (${details})`);
+  enriched.code = code || err.code;
+  enriched.cause = err;
+  return enriched;
 }
 
 function normalizePositiveInt(value, fallback) {
@@ -1216,6 +1259,7 @@ async function runSseRequest({
       headers,
       body: JSON.stringify(payload),
       signal: request.signal,
+      dispatcher: getNativeSseDispatcher(),
     });
 
     if (!response.ok) {
@@ -1275,7 +1319,7 @@ async function runSseRequest({
       cancelError.code = "cancelled";
       throw cancelError;
     }
-    throw err;
+    throw enrichProviderTransportError(err);
   } finally {
     request.cleanup();
   }
@@ -2847,6 +2891,7 @@ module.exports = {
   resolveTransport,
   resolveThinkingBudgetTokens,
   resolveReasoningEffort,
+  createNativeSseDispatcher,
   buildCoreToolSpecs,
   buildAnthropicToolSpecs,
 };

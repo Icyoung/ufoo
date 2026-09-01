@@ -2,6 +2,13 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
+const mockSseDispatcher = { dispatch: jest.fn() };
+const mockUndiciAgent = jest.fn(() => mockSseDispatcher);
+
+jest.mock("undici", () => ({
+  Agent: mockUndiciAgent,
+}));
+
 jest.mock("../../../src/code/dispatch", () => ({
   runToolCall: jest.fn(() => ({ ok: true, content: "" })),
 }));
@@ -32,6 +39,7 @@ const {
   resolveCompletionUrl,
   resolveAnthropicMessagesUrl,
   resolveTransport,
+  createNativeSseDispatcher,
 } = require("../../../src/code/nativeRunner");
 
 function makeSseResponse(chunks = []) {
@@ -142,6 +150,14 @@ describe("ucode native runner", () => {
     else delete process.env.UFOO_UCODE_THINKING_BUDGET_TOKENS;
   });
 
+  test("disables Undici's implicit 300-second SSE idle timeout", () => {
+    expect(createNativeSseDispatcher()).toBe(mockSseDispatcher);
+    expect(mockUndiciAgent).toHaveBeenCalledWith({
+      headersTimeout: 0,
+      bodyTimeout: 0,
+    });
+  });
+
   test("streams model output through openai-compatible provider", async () => {
     global.fetch.mockResolvedValueOnce(makeSseResponse([
       { choices: [{ delta: { content: "Hello" } }] },
@@ -163,6 +179,25 @@ describe("ucode native runner", () => {
     expect(deltas).toEqual(["Hello", " world"]);
     expect(global.fetch).toHaveBeenCalledTimes(1);
     expect(global.fetch.mock.calls[0][0]).toBe("https://api.openai.com/v1/chat/completions");
+    expect(global.fetch.mock.calls[0][1].dispatcher).toBe(mockSseDispatcher);
+  });
+
+  test("surfaces the underlying Undici error code when fetch fails", async () => {
+    const cause = Object.assign(new Error("Body Timeout Error"), {
+      code: "UND_ERR_BODY_TIMEOUT",
+    });
+    const fetchError = Object.assign(new TypeError("fetch failed"), { cause });
+    global.fetch.mockRejectedValueOnce(fetchError);
+
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "hello",
+      provider: "openai",
+      model: "gpt-test",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("fetch failed (UND_ERR_BODY_TIMEOUT: Body Timeout Error)");
   });
 
   test("streams Grok Build through Responses with CLIProxyAPI identity and session id", async () => {
