@@ -610,11 +610,11 @@ class EventBus {
   /**
    * 智能路由
    */
-  async resolve(myId, targetType) {
+  async resolve(myId, target) {
     this.ensureBus();
     this.loadBusData();
 
-    const result = await this.messageManager.resolve(myId, targetType);
+    const result = await this.messageManager.resolve(myId, target);
 
     if (result.single) {
       console.log(result.single);
@@ -622,11 +622,11 @@ class EventBus {
     }
 
     if (result.candidates.length === 0) {
-      logError(`No ${targetType} agents found`);
+      logError(`No agents found for target "${target}"`);
       return null;
     }
 
-    console.log(`Multiple ${targetType} agents found:`);
+    console.log(`Multiple agents found for target "${target}":`);
     for (const candidate of result.candidates) {
       const nickname = candidate.nickname ? ` (${candidate.nickname})` : "";
       console.log(`  ${candidate.id}${nickname}`);

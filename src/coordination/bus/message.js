@@ -578,18 +578,12 @@ class MessageManager {
   /**
    * 智能路由解析（找出所有匹配的候选者）
    */
-  async resolve(myId, targetType) {
-    const normalizedTargetType = normalizeAgentTypeAlias(targetType);
+  async resolve(myId, target) {
     const subscribers = this.busData.agents || {};
-    const candidates = Object.entries(subscribers)
-      .filter(([id, meta]) => {
-        if (id === myId) return false; // 排除自己
-        if (meta.status !== "active") return false;
-
-        if (normalizeAgentTypeAlias(meta.agent_type) === normalizedTargetType) return true;
-
-        return false;
-      })
+    const candidates = this.resolveTarget(target)
+      .filter((id) => id !== myId)
+      .map((id) => [id, subscribers[id]])
+      .filter(([, meta]) => meta && meta.status === "active")
       .map(([id, meta]) => {
         const nickname = meta.nickname || meta.scoped_nickname;
         return {

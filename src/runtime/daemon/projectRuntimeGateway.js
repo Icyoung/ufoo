@@ -53,13 +53,20 @@ function unsupportedOperationError(operation = "") {
   return err;
 }
 
-function createControlPlaneHandlers(service = null) {
+function createControlPlaneHandlers(service = null, options = {}) {
   const resolvedService = service || require("./controlPlaneService");
+  const notificationOptions = {
+    notifyDaemon: options.notifyDaemonRefresh !== false,
+  };
   return {
-    register_agent: (projectRoot, args) => resolvedService.registerAgent(projectRoot, args),
-    heartbeat_agent: (projectRoot, args) => resolvedService.heartbeatAgent(projectRoot, args),
-    publish_activity_state: (projectRoot, args) => resolvedService.publishActivityState(projectRoot, args),
-    update_agent_metadata: (projectRoot, args) => resolvedService.updateAgentMetadata(projectRoot, args),
+    register_agent: (projectRoot, args) =>
+      resolvedService.registerAgent(projectRoot, args, notificationOptions),
+    heartbeat_agent: (projectRoot, args) =>
+      resolvedService.heartbeatAgent(projectRoot, args, notificationOptions),
+    publish_activity_state: (projectRoot, args) =>
+      resolvedService.publishActivityState(projectRoot, args, notificationOptions),
+    update_agent_metadata: (projectRoot, args) =>
+      resolvedService.updateAgentMetadata(projectRoot, args, notificationOptions),
     poll_inbox: (projectRoot, args) => resolvedService.pollInbox(projectRoot, args),
     wait_for_message: (projectRoot, args, context) => resolvedService.waitForMessage(projectRoot, args, {
       signal: context.signal,
@@ -69,7 +76,8 @@ function createControlPlaneHandlers(service = null) {
       sleep: context.waitSleep,
     }),
     report_agent_status: (projectRoot, args) => resolvedService.reportAgentStatus(projectRoot, args),
-    unregister_agent: (projectRoot, args) => resolvedService.unregisterAgent(projectRoot, args),
+    unregister_agent: (projectRoot, args) =>
+      resolvedService.unregisterAgent(projectRoot, args, notificationOptions),
   };
 }
 
@@ -82,7 +90,7 @@ async function executeProjectRuntimeOperation(
 ) {
   const name = String(operation || "").trim();
   const handlers = options.controlPlaneHandlers
-    || createControlPlaneHandlers(options.controlPlaneService);
+    || createControlPlaneHandlers(options.controlPlaneService, options);
   const customHandler = handlers[name];
   if (customHandler) {
     return customHandler(projectRoot, args, context);
@@ -126,7 +134,13 @@ function assertExternalAgentHandle(bus, subscriber, args = {}, options = {}) {
 
 class LocalProjectRuntimeGateway {
   constructor(options = {}) {
-    this.options = options;
+    this.options = {
+      // A local gateway is an in-process ownership boundary. It must not
+      // signal or activate a separate user daemon unless the caller opts in
+      // explicitly (the production global bridge uses a managed gateway).
+      notifyDaemonRefresh: false,
+      ...options,
+    };
   }
 
   call(projectRoot, operation, args = {}, context = {}) {

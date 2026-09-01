@@ -4,7 +4,10 @@ const fs = require("fs");
 const net = require("net");
 const path = require("path");
 
-const { GlobalDaemon } = require("../../../src/runtime/daemon/globalDaemon");
+const {
+  GlobalDaemon,
+  projectRuntimeRecoveryReasons,
+} = require("../../../src/runtime/daemon/globalDaemon");
 const { getUfooPaths } = require("../../../src/coordination/state/paths");
 
 function initializeProject(name) {
@@ -102,6 +105,124 @@ function requestResponse(sockPath, request) {
 }
 
 describe("GlobalDaemon", () => {
+  test("recovery policy selects live wrapper agents and durable cron work", () => {
+    const liveRoot = initializeProject("recovery-live");
+    const mcpOnlyRoot = initializeProject("recovery-mcp");
+    const cronRoot = initializeProject("recovery-cron");
+    try {
+      fs.writeFileSync(getUfooPaths(liveRoot).agentsFile, JSON.stringify({
+        agents: {
+          "codex:live": {
+            status: "active",
+            pid: 41,
+            launch_mode: "host",
+          },
+        },
+      }));
+      fs.writeFileSync(getUfooPaths(mcpOnlyRoot).agentsFile, JSON.stringify({
+        agents: {
+          "codex:mcp": {
+            status: "active",
+            pid: 42,
+            mcp_bridge: true,
+          },
+        },
+      }));
+      fs.writeFileSync(
+        path.join(getUfooPaths(cronRoot).runDir, "cron.tasks.json"),
+        JSON.stringify({ version: 1, tasks: [{ id: "c1" }] })
+      );
+      const options = {
+        isAgentPidAlive: (pid) => pid === 41,
+      };
+
+      expect(projectRuntimeRecoveryReasons(liveRoot, options))
+        .toEqual(["live_host_agent"]);
+      expect(projectRuntimeRecoveryReasons(mcpOnlyRoot, options)).toEqual([]);
+      expect(projectRuntimeRecoveryReasons(cronRoot, options))
+        .toEqual(["scheduled_task"]);
+    } finally {
+      fs.rmSync(liveRoot, { recursive: true, force: true });
+      fs.rmSync(mcpOnlyRoot, { recursive: true, force: true });
+      fs.rmSync(cronRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("rehydrates owned project runtimes after a global controller restart", async () => {
+    const controllerRoot = initializeProject("controller-rehydrate");
+    const liveRoot = initializeProject("rehydrate-live");
+    const cronRoot = initializeProject("rehydrate-cron");
+    const idleRoot = initializeProject("rehydrate-idle");
+    const missingRoot = initializeProject("rehydrate-missing");
+    fs.rmSync(missingRoot, { recursive: true, force: true });
+    const starts = [];
+    const handles = [];
+    const daemon = new GlobalDaemon({
+      controllerRoot,
+      topology: "global",
+      rehydrateProjects: true,
+      listProjectRuntimes: () => [
+        { project_root: liveRoot },
+        { project_root: cronRoot },
+        { project_root: idleRoot },
+        { project_root: missingRoot },
+      ],
+      projectRuntimeRecoveryReasons: (projectRoot) => {
+        if (projectRoot === liveRoot) return ["live_host_agent"];
+        if (projectRoot === cronRoot) return ["scheduled_task"];
+        return [];
+      },
+      startProjectRuntime: (options) => {
+        starts.push(options.projectRoot);
+        const handle = {
+          cleanup: jest.fn(),
+          status: () => ({ active: [] }),
+          handleRequest: jest.fn(),
+          runtime: { resource: () => null },
+        };
+        handles.push(handle);
+        return handle;
+      },
+      loadProjectConfig: () => ({
+        agentProvider: "codex-cli",
+        agentModel: "",
+      }),
+      sweepIntervalMs: 0,
+    });
+
+    try {
+      daemon.start();
+      const recovery = await daemon.rehydrationPromise;
+
+      expect(starts).toEqual([controllerRoot, liveRoot, cronRoot]);
+      expect(recovery.state).toBe("complete");
+      expect(recovery.restored).toEqual([
+        { project_root: liveRoot, reasons: ["live_host_agent"] },
+        { project_root: cronRoot, reasons: ["scheduled_task"] },
+      ]);
+      expect(recovery.skipped).toEqual(expect.arrayContaining([
+        { project_root: idleRoot, reason: "no_live_runtime_owner" },
+        { project_root: missingRoot, reason: "missing_project_root" },
+      ]));
+      expect(recovery.skipped_count).toBe(2);
+      expect(daemon.status()).toMatchObject({
+        runtime_count: 2,
+        rehydration: { state: "complete" },
+      });
+      expect(daemon.projectRuntimeGateway.status()).toMatchObject({
+        runtime_count: 2,
+        rehydration: { state: "complete" },
+      });
+    } finally {
+      daemon.stop("test");
+      fs.rmSync(controllerRoot, { recursive: true, force: true });
+      fs.rmSync(liveRoot, { recursive: true, force: true });
+      fs.rmSync(cronRoot, { recursive: true, force: true });
+      fs.rmSync(idleRoot, { recursive: true, force: true });
+      for (const handle of handles) expect(handle.cleanup).toHaveBeenCalled();
+    }
+  });
+
   test("hybrid routes global requests into isolated runtimes and exposes compatibility sockets", async () => {
     const controllerRoot = initializeProject("controller");
     const rootA = initializeProject("a");

@@ -164,6 +164,14 @@ function notifyDaemonRefresh(projectRoot) {
   }
 }
 
+function notifyDaemonRefreshIfEnabled(projectRoot, options = {}) {
+  if (options.notifyDaemon === false) return;
+  const notify = typeof options.notifyDaemonRefresh === "function"
+    ? options.notifyDaemonRefresh
+    : notifyDaemonRefresh;
+  notify(projectRoot);
+}
+
 async function registerAgentFull(projectRoot, args = {}, options = {}) {
   const {
     validateParentPid = false,
@@ -319,7 +327,7 @@ async function registerAgentFull(projectRoot, args = {}, options = {}) {
     }
   }
   bus.saveBusData();
-  notifyDaemonRefresh(projectRoot);
+  notifyDaemonRefreshIfEnabled(projectRoot, options);
   return {
     ok: true,
     project_root: projectRoot,
@@ -342,7 +350,7 @@ async function registerAgentFull(projectRoot, args = {}, options = {}) {
   };
 }
 
-async function registerAgent(projectRoot, args = {}) {
+async function registerAgent(projectRoot, args = {}, options = {}) {
   if (!String(args.agent_type || args.agentType || "").trim()) {
     const err = new Error("register_agent requires agent_type for canonical identity allocation");
     err.code = "external_agent_type_required";
@@ -358,10 +366,12 @@ async function registerAgent(projectRoot, args = {}) {
   return registerAgentFull(projectRoot, args, {
     validateParentPid: false,
     checkNicknameConflicts: false,
+    notifyDaemon: options.notifyDaemon,
+    notifyDaemonRefresh: options.notifyDaemonRefresh,
   });
 }
 
-async function heartbeatAgent(projectRoot, args = {}) {
+async function heartbeatAgent(projectRoot, args = {}, options = {}) {
   const subscriber = resolveSubscriberArg(args);
   const bus = ensureBusLoaded(projectRoot);
   const meta = assertAgentHandle(bus, subscriber, args);
@@ -369,7 +379,7 @@ async function heartbeatAgent(projectRoot, args = {}) {
   meta.status = "active";
   const leaseExpiresAt = extendMcpAgentLease(meta);
   bus.saveBusData();
-  notifyDaemonRefresh(projectRoot);
+  notifyDaemonRefreshIfEnabled(projectRoot, options);
   return {
     ok: true,
     project_root: projectRoot,
@@ -379,7 +389,7 @@ async function heartbeatAgent(projectRoot, args = {}) {
   };
 }
 
-async function publishActivityState(projectRoot, args = {}) {
+async function publishActivityState(projectRoot, args = {}, options = {}) {
   const subscriber = resolveSubscriberArg(args);
   const activityState = String(args.activity_state || args.activityState || "").trim();
   if (!activityState) {
@@ -395,7 +405,7 @@ async function publishActivityState(projectRoot, args = {}) {
   meta.activity_detail = String(args.detail || "").trim();
   meta.activity_since = String(args.since || "").trim() || nowIso();
   bus.saveBusData();
-  notifyDaemonRefresh(projectRoot);
+  notifyDaemonRefreshIfEnabled(projectRoot, options);
   return {
     ok: true,
     project_root: projectRoot,
@@ -406,7 +416,7 @@ async function publishActivityState(projectRoot, args = {}) {
   };
 }
 
-async function updateAgentMetadata(projectRoot, args = {}) {
+async function updateAgentMetadata(projectRoot, args = {}, options = {}) {
   assertServerOwnedExternalIdentity(args, [
     "nickname",
     "scoped_nickname",
@@ -424,7 +434,7 @@ async function updateAgentMetadata(projectRoot, args = {}) {
   }
   bus.subscriberManager.updateLastSeen(subscriber);
   bus.saveBusData();
-  notifyDaemonRefresh(projectRoot);
+  notifyDaemonRefreshIfEnabled(projectRoot, options);
   const nextMeta = bus.subscriberManager.getSubscriber(subscriber) || meta;
   return {
     ok: true,
@@ -655,7 +665,7 @@ async function reportAgentStatus(projectRoot, args = {}) {
   };
 }
 
-async function unregisterAgent(projectRoot, args = {}) {
+async function unregisterAgent(projectRoot, args = {}, options = {}) {
   const subscriber = resolveSubscriberArg(args);
   const bus = ensureBusLoaded(projectRoot);
   const meta = assertAgentHandle(bus, subscriber, args, {
@@ -666,7 +676,7 @@ async function unregisterAgent(projectRoot, args = {}) {
   meta.mcp_lease_expires_at = meta.mcp_revoked_at;
   const ok = await bus.subscriberManager.leave(subscriber);
   bus.saveBusData();
-  notifyDaemonRefresh(projectRoot);
+  notifyDaemonRefreshIfEnabled(projectRoot, options);
   return {
     ok,
     project_root: projectRoot,
@@ -684,6 +694,7 @@ module.exports = {
   assertAgentHandle,
   extendMcpAgentLease,
   notifyDaemonRefresh,
+  notifyDaemonRefreshIfEnabled,
   registerAgentFull,
   registerAgent,
   heartbeatAgent,

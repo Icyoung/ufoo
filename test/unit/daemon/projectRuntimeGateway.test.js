@@ -44,7 +44,7 @@ describe("ProjectRuntimeGateway", () => {
     expect(resolveCallTimeoutMs("wait_for_message", { timeout_seconds: 12 })).toBe(17000);
   });
 
-  test("local gateway delegates control-plane operations through one boundary", async () => {
+  test("local gateway delegates without signaling an external daemon", async () => {
     const registerAgent = jest.fn(async (projectRoot, args) => ({
       ok: true,
       project_root: projectRoot,
@@ -63,9 +63,29 @@ describe("ProjectRuntimeGateway", () => {
       project_root: "/tmp/project-a",
       subscriber: "codex:session-a",
     });
-    expect(registerAgent).toHaveBeenCalledWith("/tmp/project-a", {
-      session_id: "session-a",
+    expect(registerAgent).toHaveBeenCalledWith(
+      "/tmp/project-a",
+      { session_id: "session-a" },
+      { notifyDaemon: false }
+    );
+  });
+
+  test("local gateway can explicitly opt into live-daemon refresh", async () => {
+    const registerAgent = jest.fn(async () => ({ ok: true }));
+    const gateway = createLocalProjectRuntimeGateway({
+      controlPlaneService: { registerAgent },
+      notifyDaemonRefresh: true,
     });
+
+    await gateway.call("/tmp/test-only-project", "register_agent", {
+      agent_type: "codex",
+    });
+
+    expect(registerAgent).toHaveBeenCalledWith(
+      "/tmp/test-only-project",
+      { agent_type: "codex" },
+      { notifyDaemon: true }
+    );
   });
 
   test("socket gateway sends a correlated call and returns the runtime result", async () => {

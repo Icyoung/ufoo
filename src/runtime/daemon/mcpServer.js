@@ -36,7 +36,6 @@ const PACKAGE_ROOT = path.resolve(__dirname, "..", "..", "..");
 const PACKAGE_JSON = require(path.join(PACKAGE_ROOT, "package.json"));
 
 const EXPOSED_SHARED_TOOLS = MCP_EXPOSED_SHARED_TOOLS;
-const DEFAULT_PROJECT_RUNTIME_GATEWAY = createLocalProjectRuntimeGateway();
 
 const CUSTOM_TOOL_DEFINITIONS = Object.freeze([
   {
@@ -552,15 +551,22 @@ async function invokeTool(name, args = {}, ctx = {}) {
 
 class UfooMcpServer {
   constructor(options = {}) {
+    const autoStart = options.autoStart !== false;
     this.options = {
-      autoStart: options.autoStart !== false,
+      autoStart,
       validateProjectRoot: options.validateProjectRoot !== false,
       startTimeoutMs: options.startTimeoutMs,
       waitPollIntervalMs: options.waitPollIntervalMs,
       waitHeartbeatIntervalMs: options.waitHeartbeatIntervalMs,
       waitNow: options.waitNow,
       waitSleep: options.waitSleep,
-      projectRuntimeGateway: options.projectRuntimeGateway || DEFAULT_PROJECT_RUNTIME_GATEWAY,
+      projectRuntimeGateway: options.projectRuntimeGateway || createLocalProjectRuntimeGateway({
+        // An explicitly embedded/no-autostart server (notably unit and
+        // integration harnesses) must never wake the user's live daemon for a
+        // temporary project. The production stdio bridge uses the global HTTP
+        // server and does not rely on this local gateway.
+        notifyDaemonRefresh: autoStart,
+      }),
     };
     this.initialized = false;
     this.startup = null;

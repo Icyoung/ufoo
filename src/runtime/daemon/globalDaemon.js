@@ -2,6 +2,7 @@
 
 const { randomUUID } = require("crypto");
 const fs = require("fs");
+const path = require("path");
 
 const {
   defaultAgentModelForProvider,
@@ -15,9 +16,12 @@ const {
 } = require("../../coordination/state/agentsStore");
 const {
   canonicalProjectRoot,
+  isGlobalControllerProjectRoot,
+  listProjectRuntimes,
   markProjectStopped,
   resolveGlobalControllerProjectRoot,
 } = require("../projects");
+const { isAgentPidAlive } = require("../../coordination/bus/utils");
 const { startDaemon } = require("./index");
 const { createProjectRuntime } = require("./projectRuntime");
 const { ProjectRuntimeManager } = require("./projectRuntimeManager");
@@ -26,6 +30,51 @@ const {
   MCP_EXPOSED_SHARED_TOOLS,
   executeProjectRuntimeOperation,
 } = require("./projectRuntimeGateway");
+
+const MAX_REHYDRATION_SKIP_SAMPLES = 25;
+
+function isSocketFile(filePath = "") {
+  if (!filePath) return false;
+  try {
+    return fs.statSync(filePath).isSocket();
+  } catch {
+    return false;
+  }
+}
+
+function hasPersistedCronTasks(projectRoot) {
+  const cronFile = path.join(getUfooPaths(projectRoot).runDir, "cron.tasks.json");
+  try {
+    const state = JSON.parse(fs.readFileSync(cronFile, "utf8"));
+    return Array.isArray(state.tasks) && state.tasks.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function projectRuntimeRecoveryReasons(projectRoot, options = {}) {
+  const paths = getUfooPaths(projectRoot);
+  if (!fs.existsSync(paths.ufooDir)) return [];
+  const loadAgents = options.loadAgentsData || loadAgentsData;
+  const agentPidIsAlive = options.isAgentPidAlive || isAgentPidAlive;
+  const socketIsLive = options.isSocketFile || isSocketFile;
+  const reasons = [];
+  const data = fs.existsSync(paths.agentsFile)
+    ? loadAgents(paths.agentsFile)
+    : { agents: {} };
+  const hasLiveHostAgent = Object.entries(data.agents || {}).some(([subscriber, meta]) => {
+    if (!meta || meta.status !== "active" || meta.mcp_bridge === true) return false;
+    if (subscriber === "ufoo-agent" || meta.agent_type === "ufoo-agent") return false;
+    const pid = Number.parseInt(meta.pid, 10);
+    return agentPidIsAlive(pid) || socketIsLive(meta.host_inject_sock);
+  });
+  if (hasLiveHostAgent) reasons.push("live_host_agent");
+  const hasCronTasks = typeof options.hasPersistedCronTasks === "function"
+    ? options.hasPersistedCronTasks(projectRoot)
+    : hasPersistedCronTasks(projectRoot);
+  if (hasCronTasks) reasons.push("scheduled_task");
+  return reasons;
+}
 
 class GlobalDaemon {
   constructor(options = {}) {
@@ -38,6 +87,12 @@ class GlobalDaemon {
     this.authorizeProjectRoot = typeof options.authorizeProjectRoot === "function"
       ? options.authorizeProjectRoot
       : (projectRoot) => fs.existsSync(getUfooPaths(projectRoot).ufooDir);
+    this.listProjectRuntimes = options.listProjectRuntimes || listProjectRuntimes;
+    this.projectRuntimeRecoveryReasons = options.projectRuntimeRecoveryReasons
+      || ((projectRoot) => projectRuntimeRecoveryReasons(projectRoot));
+    this.rehydrateProjects = options.rehydrateProjects === undefined
+      ? isGlobalControllerProjectRoot(this.controllerRoot)
+      : options.rehydrateProjects === true;
     this.controller = null;
     this.runtimeManager = options.runtimeManager || new ProjectRuntimeManager({
       authorizeProjectRoot: this.authorizeProjectRoot,
@@ -56,13 +111,24 @@ class GlobalDaemon {
         const projectRoot = this.activeGatewayRequests.get(id);
         return projectRoot ? this.runtimeManager.cancel(projectRoot, id) : false;
       },
-      status: () => this.runtimeManager.status(),
+      status: () => ({
+        ...this.runtimeManager.status(),
+        rehydration: this.rehydration,
+      }),
       // GlobalDaemon owns the shared manager; MCP listener restart/cleanup
       // must not independently dispose project runtimes.
       dispose: () => {},
     };
     this.disposed = false;
     this.startedAt = "";
+    this.rehydration = {
+      state: this.rehydrateProjects ? "pending" : "disabled",
+      restored: [],
+      skipped: [],
+      skipped_count: 0,
+      failed: [],
+    };
+    this.rehydrationPromise = Promise.resolve(this.rehydration);
   }
 
   createHostedRuntime(context) {
@@ -173,6 +239,79 @@ class GlobalDaemon {
       daemonTopology: this.topology,
     });
     return runtime.hostHandle;
+  }
+
+  async restoreRegisteredProjectRuntimes() {
+    const startedAt = new Date().toISOString();
+    const restored = [];
+    const skipped = [];
+    let skippedCount = 0;
+    const failed = [];
+    const recordSkip = (entry) => {
+      skippedCount += 1;
+      if (skipped.length < MAX_REHYDRATION_SKIP_SAMPLES) skipped.push(entry);
+    };
+    this.rehydration = {
+      state: "running",
+      started_at: startedAt,
+      restored,
+      skipped,
+      skipped_count: skippedCount,
+      failed,
+    };
+    const rows = this.listProjectRuntimes({ validate: false, cleanupTmp: true });
+    const seen = new Set();
+    for (const row of rows) {
+      if (this.disposed) break;
+      const rawRoot = row && row.project_root;
+      if (!rawRoot) continue;
+      let projectRoot;
+      try {
+        projectRoot = canonicalProjectRoot(rawRoot);
+      } catch {
+        recordSkip({ project_root: String(rawRoot), reason: "missing_project_root" });
+        continue;
+      }
+      if (projectRoot === this.controllerRoot || seen.has(projectRoot)) continue;
+      seen.add(projectRoot);
+      let reasons;
+      try {
+        reasons = this.projectRuntimeRecoveryReasons(projectRoot);
+      } catch (err) {
+        failed.push({
+          project_root: projectRoot,
+          error: err && err.message ? err.message : String(err),
+        });
+        continue;
+      }
+      if (!Array.isArray(reasons) || reasons.length === 0) {
+        recordSkip({ project_root: projectRoot, reason: "no_live_runtime_owner" });
+        continue;
+      }
+      try {
+        // Preserve ordering and the manager's active-runtime bound rather than
+        // stampeding every registered project after a controller restart.
+        // eslint-disable-next-line no-await-in-loop
+        await this.activateProject(projectRoot);
+        restored.push({ project_root: projectRoot, reasons: reasons.slice() });
+      } catch (err) {
+        failed.push({
+          project_root: projectRoot,
+          reasons: reasons.slice(),
+          error: err && err.message ? err.message : String(err),
+        });
+      }
+    }
+    this.rehydration = {
+      state: failed.length > 0 ? "degraded" : "complete",
+      started_at: startedAt,
+      completed_at: new Date().toISOString(),
+      restored,
+      skipped,
+      skipped_count: skippedCount,
+      failed,
+    };
+    return this.rehydration;
   }
 
   async handleRequest(projectRoot, request, socket) {
@@ -347,6 +486,23 @@ class GlobalDaemon {
       beforeCleanup: () => this.disposeProjectRuntimes("global-controller-cleanup"),
     });
     this.startedAt = new Date().toISOString();
+    if (this.rehydrateProjects) {
+      this.rehydrationPromise = this.restoreRegisteredProjectRuntimes().catch((err) => {
+        this.rehydration = {
+          state: "failed",
+          started_at: this.rehydration.started_at || new Date().toISOString(),
+          completed_at: new Date().toISOString(),
+          restored: this.rehydration.restored || [],
+          skipped: this.rehydration.skipped || [],
+          skipped_count: this.rehydration.skipped_count || 0,
+          failed: [{
+            project_root: "",
+            error: err && err.message ? err.message : String(err),
+          }],
+        };
+        return this.rehydration;
+      });
+    }
     return this;
   }
 
@@ -378,6 +534,7 @@ class GlobalDaemon {
       active_runtime_count: manager.active_runtime_count,
       active_request_count: manager.active_request_count,
       activating_runtime_count: this.runtimeManager.activationPromises.size,
+      rehydration: this.rehydration,
       runtimes: manager.runtimes,
     };
   }
@@ -390,5 +547,7 @@ function startGlobalDaemon(options = {}) {
 
 module.exports = {
   GlobalDaemon,
+  hasPersistedCronTasks,
+  projectRuntimeRecoveryReasons,
   startGlobalDaemon,
 };

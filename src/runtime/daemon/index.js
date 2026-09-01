@@ -865,7 +865,15 @@ async function dispatchMessages(projectRoot, dispatch = []) {
   }
 }
 
-function startBusBridge(projectRoot, provider, onEvent, onStatus, shouldDrain, onReport) {
+function startBusBridge(
+  projectRoot,
+  provider,
+  onEvent,
+  onStatus,
+  shouldDrain,
+  onReport,
+  options = {}
+) {
   const state = {
     subscriber: null,
     queueFile: null,
@@ -875,8 +883,13 @@ function startBusBridge(projectRoot, provider, onEvent, onStatus, shouldDrain, o
     emittedEventKeys: [],
     emittedEventKeySet: new Set(),
   };
-  const eventBus = new EventBus(projectRoot);
-  let joinInProgress = false;
+  const eventBus = options.eventBus || new EventBus(projectRoot);
+  const reportJoinError = typeof options.onJoinError === "function"
+    ? options.onJoinError
+    : () => {};
+  let joinInProgress = null;
+  let lastJoinError = "";
+  let stopped = false;
   let polling = false;
 
   function getAgentNickname(agentId) {
@@ -1041,31 +1054,38 @@ function startBusBridge(projectRoot, provider, onEvent, onStatus, shouldDrain, o
     state.lastEventSeq = Math.max(state.lastEventSeq, maxSeq);
   }
 
-  function ensureSubscriber() {
-    if (state.subscriber || joinInProgress) return;
-    const debugFile = path.join(getUfooPaths(projectRoot).runDir, "bus-join-debug.txt");
-    joinInProgress = true;
-    (async () => {
+  async function ensureSubscriber() {
+    if (stopped || state.subscriber) return state.subscriber;
+    if (joinInProgress) return joinInProgress;
+    joinInProgress = (async () => {
       try {
-        fs.writeFileSync(debugFile, `Attempting join at ${new Date().toISOString()}\n`, { flag: "a" });
         // Determine agent type based on provider configuration
         const agentType = provider === "codex-cli" ? "codex" : (provider === "ucode" ? "ufoo-code" : "claude-code");
         // Use fixed ID "ufoo-agent" for daemon's bus identity with explicit nickname
         const sub = await eventBus.join("ufoo-agent", agentType, "ufoo-agent");
-        if (!sub) {
-          fs.writeFileSync(debugFile, "Join returned empty subscriber\n", { flag: "a" });
-          return;
-        }
+        if (!sub || stopped) return null;
         state.subscriber = sub;
         const safe = subscriberToSafeName(sub);
         state.queueFile = path.join(getUfooPaths(projectRoot).busQueuesDir, safe, "pending.jsonl");
-        fs.writeFileSync(debugFile, `Successfully joined as ${sub} (type: ${agentType})\n`, { flag: "a" });
+        lastJoinError = "";
+        return sub;
       } catch (err) {
-        fs.writeFileSync(debugFile, `Exception: ${err.message || err}\n`, { flag: "a" });
+        const detail = err && err.message ? err.message : String(err || "unknown join error");
+        if (detail !== lastJoinError) {
+          lastJoinError = detail;
+          try {
+            reportJoinError(err);
+          } catch {
+            // Diagnostics must never turn a recoverable join failure into an
+            // unhandled rejection in the process-wide global daemon.
+          }
+        }
+        return null;
       } finally {
-        joinInProgress = false;
+        joinInProgress = null;
       }
     })();
+    return joinInProgress;
   }
 
   async function handleReportControlEvent(evt) {
@@ -1122,7 +1142,7 @@ function startBusBridge(projectRoot, provider, onEvent, onStatus, shouldDrain, o
     if (polling) return;
     polling = true;
     try {
-      ensureSubscriber();
+      await ensureSubscriber();
       await pollReportControlQueue();
       if (typeof shouldDrain === "function" && !shouldDrain()) return;
       pollQueue();
@@ -1145,12 +1165,11 @@ function startBusBridge(projectRoot, provider, onEvent, onStatus, shouldDrain, o
       }
     },
     getSubscriber() {
-      ensureSubscriber();
-      try {
-        fs.writeFileSync(path.join(getUfooPaths(projectRoot).runDir, "bridge-debug.txt"),
-          `subscriber: ${state.subscriber || "NULL"}\nqueue: ${state.queueFile || "NULL"}\n`);
-      } catch {}
+      void ensureSubscriber();
       return state.subscriber;
+    },
+    refresh() {
+      return poll();
     },
     watchAgent(agentId, enabled = true) {
       if (!agentId) return;
@@ -1165,6 +1184,7 @@ function startBusBridge(projectRoot, provider, onEvent, onStatus, shouldDrain, o
       }
     },
     stop() {
+      stopped = true;
       clearInterval(interval);
     },
   };
@@ -1418,6 +1438,10 @@ function startDaemon({
     } catch (err) {
       log(`report bus event failed request=${meta.requestId || ""} error=${err.message || String(err)}`);
     }
+  }, {
+    onJoinError: (err) => {
+      log(`bus bridge join deferred: ${err && err.message ? err.message : String(err)}`);
+    },
   });
   projectRuntime.own("busBridge", busBridge);
   const deliveryScheduler = new DeliveryScheduler(projectRoot, {
@@ -2968,6 +2992,7 @@ function stopDaemon(projectRoot, options = {}) {
 
 module.exports = {
   startDaemon,
+  startBusBridge,
   stopDaemon,
   isRunning,
   cleanupStaleState,

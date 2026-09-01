@@ -604,6 +604,26 @@ describe('MessageManager', () => {
   });
 
   describe('resolve', () => {
+    it('should resolve an exact active subscriber ID', async () => {
+      const result = await manager.resolve('claude-code:abc123', 'codex:xyz789');
+
+      expect(result.single).toBe('codex:xyz789');
+      expect(result.candidates.map((candidate) => candidate.id)).toEqual(['codex:xyz789']);
+    });
+
+    it('should resolve a nickname through the canonical target resolver', async () => {
+      const result = await manager.resolve('claude-code:abc123', 'dev-lead');
+
+      expect(result.single).toBe('codex:xyz789');
+    });
+
+    it('should resolve wildcard to every other active subscriber', async () => {
+      const result = await manager.resolve('claude-code:abc123', '*');
+
+      expect(result.single).toBe('codex:xyz789');
+      expect(result.candidates.map((candidate) => candidate.id)).toEqual(['codex:xyz789']);
+    });
+
     it('should return single candidate', async () => {
       const result = await manager.resolve('codex:xyz789', 'claude-code');
 
