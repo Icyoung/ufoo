@@ -424,6 +424,46 @@ fn collapsed_tool_tree_rows<'a>(lines: &'a [&'a str]) -> Vec<(&'a str, bool)> {
     }
 }
 
+fn compact_assistant_paragraphs(text: &str) -> String {
+    let mut lines = Vec::new();
+    let mut fence: Option<(char, usize)> = None;
+    let mut blank = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let marker = trimmed.chars().next().unwrap_or(' ');
+        let count = trimmed.chars().take_while(|ch| *ch == marker).count();
+        let in_code = fence.is_some();
+        if marker == '`' || marker == '~' {
+            if let Some((open_marker, open_count)) = fence {
+                if marker == open_marker
+                    && count >= open_count
+                    && trimmed[count..].trim().is_empty()
+                {
+                    fence = None;
+                }
+            } else if count >= 3 {
+                fence = Some((marker, count));
+            }
+        }
+        if !in_code && trimmed.is_empty() {
+            if blank || lines.is_empty() {
+                continue;
+            }
+            blank = true;
+        } else {
+            blank = false;
+        }
+        lines.push(line);
+    }
+    // The renderer supplies the inter-message gap itself.
+    if fence.is_none() {
+        while lines.last().is_some_and(|line| line.trim().is_empty()) {
+            lines.pop();
+        }
+    }
+    lines.join("\n")
+}
+
 fn build_scrollback_lines(state: &AppState, width: usize) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     let pad = " ";
@@ -443,6 +483,9 @@ fn build_scrollback_lines(state: &AppState, width: usize) -> Vec<Line<'static>> 
                 .get(entry_idx + 1)
                 .is_none_or(|next| next.kind != "spacer");
         let mut body = entry.text.clone();
+        if entry.kind == "assistant" {
+            body = compact_assistant_paragraphs(&body);
+        }
 
         // Host already echoes user lines as "› …" / "> …". Strip that and
         // paint a single Grok-style ❯ so we don't get "❯ ›" / "> >".
@@ -1308,6 +1351,19 @@ mod tests {
         assert_eq!(lines.len(), 4);
         assert!(lines[..3].iter().all(|line| !line.spans.is_empty()));
         assert!(lines[3].spans.is_empty());
+    }
+
+    #[test]
+    fn assistant_paragraph_gaps_are_compact_but_code_whitespace_is_preserved() {
+        assert_eq!(
+            compact_assistant_paragraphs("\nfirst\n\n\n \nsecond\n\n\n"),
+            "first\n\nsecond"
+        );
+        for marker in ["```", "~~~"] {
+            let code = format!("{marker}text\na\n\n\nb\n{marker}");
+            assert_eq!(compact_assistant_paragraphs(&code), code);
+        }
+        assert_eq!(compact_assistant_paragraphs("```\na\n\n\n"), "```\na\n\n");
     }
 
     #[test]

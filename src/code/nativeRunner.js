@@ -19,6 +19,7 @@ const {
   sanitizeModelMessages,
 } = require("./context/assembler");
 const { systemBlocksToAnthropicPayload } = require("./context/promptLayers");
+const { retireMessageImages } = require("./providers/visionBlocks");
 const { parseStructuredSideEffects } = require("./context/stateCommit");
 const {
   emptyExecutionState,
@@ -2367,6 +2368,12 @@ async function runNativeLoop({
         }
       },
     });
+
+    // Images belong to the request that just completed, not subsequent tool
+    // iterations. Run only after success so failed requests retain their images.
+    // TaskFocus may already have mirrored these blocks into the main transcript.
+    retireMessageImages(providerMessages);
+    if (providerMessages !== messages) retireMessageImages(messages);
 
     usage.turns += 1;
     addUsageTotals(usage, turnResult && turnResult.usage);

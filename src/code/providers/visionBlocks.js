@@ -99,6 +99,46 @@ function degradeVisionContent(content) {
   return texts.filter(Boolean).join("\n") || "[multimodal content]";
 }
 
+// Retire only visual blocks after a successful model call. In particular,
+// preserve Anthropic tool_result envelopes and their tool_use_id linkage.
+function retireVisionContent(content) {
+  if (!Array.isArray(content)) return content;
+  let changed = false;
+  const retired = content.map((block) => {
+    if (!block || typeof block !== "object") return block;
+    const type = String(block.type || "").toLowerCase();
+    if (type === "image" || type === "image_url" || type === "input_image") {
+      changed = true;
+      const pathHint = block.path || (block.source && block.source.path) || "";
+      return {
+        type: "text",
+        text: pathHint
+          ? `[image already viewed: ${pathHint}; use read_image to view again]`
+          : "[image already viewed; use read_image with the recorded path to view again]",
+      };
+    }
+    if (Array.isArray(block.content)) {
+      const nested = retireVisionContent(block.content);
+      if (nested !== block.content) {
+        changed = true;
+        return { ...block, content: nested };
+      }
+    }
+    return block;
+  });
+  return changed ? retired : content;
+}
+
+function retireMessageImages(messages = []) {
+  for (let i = 0; i < messages.length; i += 1) {
+    const message = messages[i];
+    if (message && Array.isArray(message.content)) {
+      const content = retireVisionContent(message.content);
+      if (content !== message.content) messages[i] = { ...message, content };
+    }
+  }
+}
+
 module.exports = {
   extractVisionPayload,
   isVisionToolResult,
@@ -107,4 +147,5 @@ module.exports = {
   toAnthropicImageBlock,
   toOpenAiImagePart,
   degradeVisionContent,
+  retireMessageImages,
 };

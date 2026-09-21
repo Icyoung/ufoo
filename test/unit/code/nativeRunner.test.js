@@ -371,6 +371,73 @@ describe("ucode native runner", () => {
     ]);
   });
 
+  test.each(["openai-chat", "openai-responses", "anthropic-messages"])(
+    "%s sends each image only once and supports reading it again",
+    async (transport) => {
+      const anthropic = transport === "anthropic-messages";
+      const responses = transport === "openai-responses";
+      if (responses) process.env.UFOO_UCODE_BASE_URL = "https://example.test/v1/responses";
+      const reply = (name, id, imagePath) => {
+        const args = { path: imagePath };
+        if (anthropic) return { content: name
+          ? [{ type: "tool_use", id, name, input: args }]
+          : [{ type: "text", text: "done" }] };
+        if (responses) return { status: "completed", output: name
+          ? [{ type: "function_call", call_id: id, name, arguments: JSON.stringify(args) }]
+          : [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "done" }] }] };
+        return { choices: [{ message: name
+          ? { tool_calls: [{ id, type: "function", function: { name, arguments: JSON.stringify(args) } }] }
+          : { content: "done" } }] };
+      };
+      // A -> B -> ordinary tool -> A again -> final answer.
+      for (const data of [
+        reply("read_image", "img1", "a.png"),
+        reply("read_image", "img2", "b.png"),
+        reply("read", "text1", "note.txt"),
+        reply("read_image", "img3", "a.png"),
+        reply(),
+      ]) global.fetch.mockResolvedValueOnce(responses
+        ? makeResponsesSseResponse([{ type: "response.completed", response: data }])
+        : { ok: true, json: async () => data });
+      const imageResult = (imagePath, base64) => ({
+        ok: true, kind: "image", path: imagePath, mediaType: "image/png", bytes: 3, base64,
+      });
+      runToolCall
+        .mockReturnValueOnce(imageResult("a.png", "QUFB"))
+        .mockReturnValueOnce(imageResult("b.png", "QkJC"))
+        .mockReturnValueOnce({ ok: true, content: "note" })
+        .mockReturnValueOnce(imageResult("a.png", "QUFB"));
+
+      const result = await runNativeAgentTask({
+        workspaceRoot, prompt: "inspect images", model: "test-model",
+        provider: anthropic ? "anthropic" : "openai",
+      });
+      expect(result.ok).toBe(true);
+      const requests = global.fetch.mock.calls.map(([, options]) => JSON.parse(options.body));
+      expect(requests).toHaveLength(5);
+      const visuals = (value) => {
+        if (Array.isArray(value)) return value.flatMap(visuals);
+        if (!value || typeof value !== "object") return [];
+        if (["image", "image_url", "input_image"].includes(value.type)) return [value];
+        return Object.values(value).flatMap(visuals);
+      };
+      expect(requests.map((request) => visuals(request).length)).toEqual([0, 1, 1, 0, 1]);
+      expect(JSON.stringify(visuals(requests[1]))).toContain("QUFB");
+      expect(JSON.stringify(visuals(requests[2]))).toContain("QkJC");
+      expect(JSON.stringify(requests[2])).not.toContain("QUFB");
+      expect(JSON.stringify(requests[3])).toContain("a.png");
+      expect(JSON.stringify(requests[3])).toContain("b.png");
+      expect(JSON.stringify(visuals(requests[4]))).toContain("QUFB");
+      expect(visuals(result.messages)).toEqual([]);
+      if (anthropic) {
+        const results = requests[3].messages.flatMap((message) => (
+          Array.isArray(message.content) ? message.content : []
+        )).filter((block) => block.type === "tool_result");
+        expect(results.map((block) => block.tool_use_id)).toEqual(["img1", "img2", "text1"]);
+      }
+    },
+  );
+
   test("executes core tool call from model and emits start event immediately", async () => {
     global.fetch
       .mockResolvedValueOnce(makeSseResponse([
