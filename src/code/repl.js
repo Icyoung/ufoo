@@ -1,4 +1,5 @@
 const readline = require("readline");
+const { parseMaxToolCalls } = require("./toolBudget");
 const { runToolCall, TOOL_NAMES } = require("./dispatch");
 const {
   runUcodeTui,
@@ -289,6 +290,7 @@ async function runUcodeCoreAgent({
   systemPrompt = "",
   sessionId = "",
   timeoutMs = 0,
+  maxToolCalls = undefined,
   jsonOutput = false,
   forceTui = false,
   disableTui = false,
@@ -346,6 +348,7 @@ async function runUcodeCoreAgent({
     nlMessages: [],
     sessionId: resolveSessionId(String(sessionId || "").trim()),
     timeoutMs: resolveNlTaskTimeoutMs(Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : NaN),
+    maxToolCalls,
     jsonOutput,
   };
   // Named levels sync into env; leave an explicit numeric budget override alone.
@@ -514,6 +517,7 @@ async function runUcodeCoreAgent({
         nlMessages: Array.isArray(state.nlMessages) ? state.nlMessages.slice() : [],
         sessionId: "",
         timeoutMs: state.timeoutMs,
+        maxToolCalls: state.maxToolCalls,
         jsonOutput: false,
       };
       const run = runNaturalLanguageTask(task, bgState)
@@ -824,6 +828,7 @@ function parseAgentArgs(argv = []) {
     systemPrompt: "",
     sessionId: "",
     timeoutMs: 0,
+    maxToolCalls: undefined,
     jsonOutput: false,
     forceTui: false,
     disableTui: false,
@@ -859,6 +864,12 @@ function parseAgentArgs(argv = []) {
     if (item === "--session-id") {
       out.sessionId = String(args[i + 1] || "").trim();
       i += 1;
+      continue;
+    }
+    if (item === "--max-tool-calls" || item.startsWith("--max-tool-calls=")) {
+      const value = item === "--max-tool-calls" ? args[++i] : item.slice("--max-tool-calls=".length);
+      if (value === undefined) throw new Error("--max-tool-calls requires a positive integer or none");
+      out.maxToolCalls = parseMaxToolCalls(value);
       continue;
     }
     if (item === "--timeout-ms") {

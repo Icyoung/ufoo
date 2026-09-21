@@ -20,6 +20,8 @@ const {
 } = require("./context/assembler");
 const { systemBlocksToAnthropicPayload } = require("./context/promptLayers");
 const { retireMessageImages } = require("./providers/visionBlocks");
+const { resolveMaxToolCalls } = require("./toolBudget");
+const { ToolLoopGuard } = require("./toolLoopGuard");
 const { parseStructuredSideEffects } = require("./context/stateCommit");
 const {
   emptyExecutionState,
@@ -110,10 +112,8 @@ const DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1";
 const DEFAULT_GROK_BUILD_BASE_URL = DEFAULT_XAI_BASE_URL;
 const DEFAULT_GROK_BUILD_MODEL = "grok-4.6";
 const DEFAULT_KIMI_MODEL = "k3";
-// Claude Code SDK defaults to no turn limit; built-in agents cap at 30 (DreamTask)
-// to 200 (fork). We count individual tool calls (not turns), so 100 leaves headroom
-// for non-trivial tasks while still catching runaway loops. Override via env.
-const DEFAULT_MAX_NATIVE_TOOL_CALLS = 100;
+// No tool-call cap unless explicitly configured by the caller or environment.
+const DEFAULT_MAX_NATIVE_TOOL_CALLS = null;
 const DEFAULT_MAX_NATIVE_TOOL_ERRORS = 20;
 const MAX_EMPTY_TERMINAL_RETRIES = 2;
 const DEFAULT_NATIVE_TIMEOUT_MS = 43200000; // 12 hours
@@ -191,9 +191,9 @@ function normalizePositiveInt(value, fallback) {
   return Math.floor(parsed);
 }
 
-function resolveNativeToolBudget(env = process.env) {
+function resolveNativeToolBudget(maxToolCalls, env = process.env) {
   return {
-    maxToolCalls: normalizePositiveInt(env.UFOO_UCODE_MAX_TOOL_CALLS, DEFAULT_MAX_NATIVE_TOOL_CALLS),
+    maxToolCalls: resolveMaxToolCalls(maxToolCalls, env),
     maxToolErrors: normalizePositiveInt(env.UFOO_UCODE_MAX_TOOL_ERRORS, DEFAULT_MAX_NATIVE_TOOL_ERRORS),
   };
 }
@@ -301,7 +301,7 @@ function enforceNativeToolBudget({
   lastTool = "",
   lastError = "",
 } = {}) {
-  if (toolCallsExecuted >= maxToolCalls) {
+  if (maxToolCalls != null && toolCallsExecuted >= maxToolCalls) {
     throw new Error(`tool call budget exceeded (${maxToolCalls})`);
   }
   if (toolErrors >= maxToolErrors) {
@@ -2130,6 +2130,7 @@ async function runNativeLoop({
   provider = "",
   accountId = "",
   timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
+  maxToolCalls = undefined,
   onStreamDelta = null,
   onThinkingDelta = null,
   onPhase = null,
@@ -2207,7 +2208,8 @@ async function runNativeLoop({
     : emptyExecutionState();
   if (typeof executionState.planMode !== "boolean") executionState.planMode = false;
   ensurePendingUserPrompts(executionState);
-  const toolBudget = resolveNativeToolBudget();
+  const toolBudget = resolveNativeToolBudget(maxToolCalls);
+  const toolLoopGuard = new ToolLoopGuard();
   const usage = createUsageTotals();
   // Shadow Tool Call Ledger (R1). Observes declare/defer/resolve; does not
   // materialize Provider messages yet. STRICT via UFOO_UCODE_PROTOCOL_STRICT=1.
@@ -2227,6 +2229,7 @@ async function runNativeLoop({
   function injectPendingUserReminders() {
     const nudges = drainUserPrompts(executionState);
     if (nudges.length === 0) return "";
+    toolLoopGuard.reset();
     const waiting = executionState.planGraph && executionState.planGraph.waitingFor
       ? executionState.planGraph.waitingFor
       : null;
@@ -2237,6 +2240,7 @@ async function runNativeLoop({
   function injectRuntimeMailboxEvents(targetMessages) {
     const drained = drainAgentMailboxForTurn(executionState);
     if (!drained.text) return false;
+    toolLoopGuard.reset();
     targetMessages.push({ role: "user", content: drained.text });
     return true;
   }
@@ -2268,6 +2272,7 @@ async function runNativeLoop({
     }
     const drained = drainAgentMailboxForTurn(executionState);
     const userNudge = injectPendingUserReminders();
+    if (drained.events && drained.events.length > 0) toolLoopGuard.reset();
     const isolated = buildIsolatedTaskFocusTurn(executionState, {
       mailboxEvents: drained.events || [],
       userNudge,
@@ -2344,6 +2349,28 @@ async function runNativeLoop({
       runProviderTurnGate(activeLedger);
     }
 
+    // Check only after the preceding batch has been fully materialized. A
+    // warning must never split tool calls from their results, and a stop must
+    // return the completed transcript instead of losing it through an exception.
+    const loopAction = toolLoopGuard.nextAction();
+    if (loopAction && loopAction.kind === "stop") {
+      return {
+        error: loopAction.message,
+        stopReason: "repeated_tool_calls",
+        text: aggregated,
+        streamed,
+        toolCallsExecuted,
+        messages,
+        turnItems: currentTurnItems(),
+        usage,
+        executionState,
+        protocolLedger: lastProtocolLedger,
+      };
+    }
+    if (loopAction && loopAction.kind === "warn") {
+      providerMessages.push({ role: "user", content: loopAction.message });
+    }
+
     const turnResult = await transport.runTurn({
       url: requestUrl,
       apiKey,
@@ -2382,6 +2409,7 @@ async function runNativeLoop({
     const toolCalls = transport.getToolCalls(turnResult);
 
     if (toolCalls.length === 0) {
+      toolLoopGuard.reset();
       const text = String(turnResult.text || "").trim();
       if (!text && toolCallsExecuted > 0) {
         if (emptyTerminalRetries >= MAX_EMPTY_TERMINAL_RETRIES) {
@@ -2475,6 +2503,7 @@ async function runNativeLoop({
       };
     }
 
+    toolLoopGuard.observe(pendingCalls);
     activeLedger = createToolCallLedger({ provider, sessionId });
     shadowDeclarePendingCalls(activeLedger, pendingCalls);
     lastProtocolLedger = snapshotLedger(activeLedger);
@@ -2709,6 +2738,7 @@ async function runNativeAgentTask({
   messages = [],
   sessionId = "",
   timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
+  maxToolCalls = undefined,
   onStreamDelta = null,
   onThinkingDelta = null,
   onPhase = null,
@@ -2816,6 +2846,7 @@ async function runNativeAgentTask({
       provider: runtime.provider,
       accountId,
       timeoutMs,
+      maxToolCalls,
       onStreamDelta: trackingStreamDelta,
       onThinkingDelta,
       onPhase,
@@ -2855,8 +2886,9 @@ async function runNativeAgentTask({
     });
 
     return {
-      ok: true,
-      error: "",
+      ok: !runResult.error,
+      error: runResult.error || "",
+      stopReason: runResult.stopReason || "",
       output: outputText,
       messages: cloneMessageList(runResult.messages),
       turnItems: cloneMessageList(runResult.turnItems),

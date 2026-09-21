@@ -221,6 +221,7 @@ async function runDecomposedTask({
         messages: stepMessages,
         sessionId,
         timeoutMs: step.timeoutMs,
+        maxToolCalls: state ? state.maxToolCalls : undefined,
         onToolEvent,
         signal,
         onArtifactPersisted: state

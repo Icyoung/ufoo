@@ -67,6 +67,17 @@ Installed binaries:
 | `ukimi` | Kimi Code wrapper with ufoo bootstrap and bus identity. |
 | `ucode` | Native ufoo coding-agent CLI/TUI. |
 
+`ucode` has no tool-call count limit by default. Set an optional per-run cap with
+`ucode --max-tool-calls 200`, or `UFOO_UCODE_MAX_TOOL_CALLS=200 ucode`.
+`ucode --max-tool-calls none` explicitly disables the cap, including an environment
+override. The CLI option takes precedence. Limits count individual tool calls,
+not model turns; timeouts and the tool-error budget still apply.
+Consecutive identical tool batches trigger a model reminder, then stop the run
+if repetition continues: read/plan-only batches warn at 4 steps and stop at 8;
+other batches warn at 8 and stop at 12. Comparison uses tool names and arguments,
+ignoring JSON key order and parallel call order. A different batch resets the
+streak; this is not a semantic check of tool results or alternating loops.
+
 ## Quick Start
 
 Initialize a project and open the chat dashboard:

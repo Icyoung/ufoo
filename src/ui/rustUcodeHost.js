@@ -1007,6 +1007,7 @@ async function runUcodeRust(props = {}) {
                         : [],
                       sessionId: "",
                       timeoutMs: props.state && props.state.timeoutMs,
+                      maxToolCalls: props.state ? props.state.maxToolCalls : undefined,
                       jsonOutput: false,
                     };
                     Promise.resolve()

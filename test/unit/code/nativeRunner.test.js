@@ -1425,7 +1425,7 @@ describe("ucode native runner", () => {
     );
   });
 
-  test("stops tool loop after exactly max tool calls", async () => {
+  test.each([undefined, 2])("stops tool loop after exactly max tool calls (option %s)", async (maxToolCalls) => {
     process.env.UFOO_UCODE_MAX_TOOL_CALLS = "2";
     global.fetch.mockImplementation(() => Promise.resolve(makeSseResponse([
       {
@@ -1450,6 +1450,7 @@ describe("ucode native runner", () => {
     const result = await runNativeAgentTask({
       workspaceRoot,
       prompt: "loop",
+      maxToolCalls,
       provider: "openai",
       model: "gpt-test",
     });
@@ -1458,6 +1459,91 @@ describe("ucode native runner", () => {
     expect(result.error).toContain("tool call budget exceeded (2)");
     expect(runToolCall).toHaveBeenCalledTimes(2);
     expect(global.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  test.each([undefined, null])("allows more than 100 tools with unlimited budget %s", async (maxToolCalls) => {
+    if (maxToolCalls === null) process.env.UFOO_UCODE_MAX_TOOL_CALLS = "2";
+    let calls = 0;
+    global.fetch.mockImplementation(async () => ({
+      ok: true,
+      json: async () => ({ choices: [{ message: calls++ < 101
+        ? { tool_calls: [{ id: `read_${calls}`, type: "function", function: {
+          name: "read", arguments: JSON.stringify({ path: `file-${calls}.txt` }),
+        } }] }
+        : { content: "done" } }] }),
+    }));
+    runToolCall.mockReturnValue({ ok: true, content: "ok" });
+    const result = await runNativeAgentTask({
+      workspaceRoot, prompt: "long task", provider: "openai", model: "gpt-test", maxToolCalls,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.output).toBe("done");
+    expect(runToolCall).toHaveBeenCalledTimes(101);
+    expect(global.fetch).toHaveBeenCalledTimes(102);
+  });
+
+  test.each(["openai-chat", "openai-responses", "anthropic-messages"])(
+    "%s warns once, stops repeated reads, and preserves completed tool pairs",
+    async (transport) => {
+      const anthropic = transport === "anthropic-messages";
+      const responses = transport === "openai-responses";
+      if (responses) process.env.UFOO_UCODE_BASE_URL = "https://example.test/v1/responses";
+      let count = 0;
+      global.fetch.mockImplementation(async () => {
+        const id = `repeat_${++count}`;
+        const args = { path: "a.txt" };
+        if (responses) return makeResponsesSseResponse([{ type: "response.completed", response: {
+          status: "completed", output: [{ type: "function_call", call_id: id, name: "read", arguments: JSON.stringify(args) }],
+        } }]);
+        return { ok: true, json: async () => anthropic
+          ? { content: [{ type: "tool_use", id, name: "read", input: args }] }
+          : { choices: [{ message: { tool_calls: [{ id, type: "function", function: {
+            name: "read", arguments: JSON.stringify(args),
+          } }] } }] } };
+      });
+      runToolCall.mockReturnValue({ ok: true, content: "unchanged" });
+      const result = await runNativeAgentTask({
+        workspaceRoot, prompt: "inspect", provider: anthropic ? "anthropic" : "openai", model: "test-model",
+      });
+      expect(result.ok).toBe(false);
+      expect(result.stopReason).toBe("repeated_tool_calls");
+      expect(result.error).toContain("8 consecutive model steps");
+      expect(global.fetch).toHaveBeenCalledTimes(8);
+      expect(runToolCall).toHaveBeenCalledTimes(8);
+      const requests = global.fetch.mock.calls.map(([, options]) => options.body);
+      expect(requests[3]).not.toContain("You have repeated the same tool batch");
+      expect(requests[4]).toContain("You have repeated the same tool batch");
+      expect(requests[7].match(/You have repeated the same tool batch/g)).toHaveLength(1);
+      const toolResults = anthropic
+        ? result.turnItems.flatMap((message) => Array.isArray(message.content) ? message.content : [])
+          .filter((block) => block.type === "tool_result")
+        : result.turnItems.filter((message) => message.role === "tool");
+      expect(toolResults).toHaveLength(8);
+      expect(JSON.stringify(result.turnItems)).not.toContain("You have repeated the same tool batch");
+      expect(Object.values(result.protocolLedger.calls).every((call) => call.state === "resolved")).toBe(true);
+    },
+  );
+
+  test("a changed approach after the reminder can finish normally", async () => {
+    let count = 0;
+    global.fetch.mockImplementation(async () => ({
+      ok: true,
+      json: async () => ({ choices: [{ message: ++count <= 8
+        ? { tool_calls: [{ id: `call_${count}`, type: "function", function: {
+          name: "read", arguments: JSON.stringify({ path: count <= 4 ? "a.txt" : "b.txt" }),
+        } }] }
+        : { content: "finished with a different approach" } }] }),
+    }));
+    runToolCall.mockReturnValue({ ok: true, content: "file content" });
+    const result = await runNativeAgentTask({
+      workspaceRoot, prompt: "inspect", provider: "openai", model: "test-model",
+    });
+    expect(result.ok).toBe(true);
+    expect(result.output).toBe("finished with a different approach");
+    expect(runToolCall).toHaveBeenCalledTimes(8);
+    expect(global.fetch).toHaveBeenCalledTimes(9);
+    const lastRequest = global.fetch.mock.calls[8][1].body;
+    expect(lastRequest.match(/You have repeated the same tool batch/g)).toHaveLength(2);
   });
 
   test("write tool spec declares the mode parameter supported by the implementation", async () => {
