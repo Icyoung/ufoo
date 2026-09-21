@@ -395,7 +395,7 @@ function redactUserMessageForLog(text = "") {
       const paths = [...block.matchAll(/^\s*-\s*(.+)$/gm)].map((m) => String(m[1] || "").trim());
       if (paths.length === 0) return "[image]";
       return paths
-        .map((p) => `[image: ${require("path").basename(p)}]`)
+        .map((_, index) => `[Image #${index + 1}]`)
         .join(" ");
     },
   );

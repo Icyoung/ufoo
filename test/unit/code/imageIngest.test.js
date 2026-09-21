@@ -54,6 +54,43 @@ describe("imageIngest", () => {
     try { fs.unlinkSync(src); } catch { /* ignore */ }
   });
 
+  test("imports escaped macOS screenshot paths and removes their original spellings", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-img-drag-"));
+    try {
+      const first = path.join(root, "截屏2026-09-22 上午12.00.46.png");
+      const second = path.join(root, "截图 下午12.01.00\u202f(2).png");
+      for (const file of [first, second]) fs.writeFileSync(file, PNG_1X1);
+      const escape = (file) => file.replace(/([\s()])/gu, "\\$1");
+      const pasted = `${escape(first)} ${escape(second)} 请比较`;
+      expect(extractImagePathsFromPaste(pasted)).toEqual([first, second]);
+      const result = handleImagePaste(pasted, { workspaceRoot: root, tryClipboard: false });
+      expect(result.errors).toEqual([]);
+      expect(result.attachments).toHaveLength(2);
+      expect(result.text).toBe("请比较");
+      expect(formatUserLogWithAttachments(result.text, result.attachments)).toBe("[Image #1] [Image #2] 请比较");
+      for (const attachment of result.attachments) {
+        expect(fs.readFileSync(attachment.absPath)).toEqual(PNG_1X1);
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps quoted paths literal, handles multiple raw paths and preserves failed imports", () => {
+    expect(extractImagePathsFromPaste("'/tmp/a\\ b.png' \"/tmp/c d.png\""))
+      .toEqual(["/tmp/a\\ b.png", "/tmp/c d.png"]);
+    expect(extractImagePathsFromPaste("/tmp/a.png /tmp/b.png"))
+      .toEqual(["/tmp/a.png", "/tmp/b.png"]);
+    expect(extractImagePathsFromPaste("/tmp/raw filename.png")).toEqual(["/tmp/raw filename.png"]);
+    const execFile = jest.fn();
+    const input = "/nonexistent/ufoo-image-test\\ file.png";
+    const result = handleImagePaste(input, { execFile });
+    expect(result.attachments).toEqual([]);
+    expect(result.errors).toHaveLength(1);
+    expect(result.text).toBe(input);
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
   test("handleImagePaste strips paths and returns attachments", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-img-paste-"));
     const src = path.join(root, "ui.png");
@@ -90,9 +127,9 @@ describe("imageIngest", () => {
   });
 
   test("log helpers never expose base64", () => {
-    expect(formatImageLogLabel({ fileName: "shot.png" })).toBe("[image: shot.png]");
+    expect(formatImageLogLabel({ fileName: "shot.png" })).toBe("[Image #1]");
     expect(formatUserLogWithAttachments("hello", [{ fileName: "a.png" }]))
-      .toBe("[image: a.png] hello");
+      .toBe("[Image #1] hello");
     const prefix = buildAttachedImagesPromptPrefix([
       { relPath: ".ufoo/agent/ucode/uploads/s/x.png" },
     ]);
@@ -102,7 +139,7 @@ describe("imageIngest", () => {
     const redacted = redactUserMessageForLog(
       `${prefix}look at this\ndata:image/png;base64,AAAA\n{"base64":"BBBB"}`,
     );
-    expect(redacted).toContain("[image: x.png]");
+    expect(redacted).toContain("[Image #1]");
     expect(redacted).not.toContain("AAAA");
     expect(redacted).not.toContain("BBBB");
     expect(redacted).not.toMatch(/data:image/);

@@ -810,7 +810,7 @@ fn draw_attachments(frame: &mut Frame, area: Rect, state: &AppState) {
             spans.push(Span::styled(" ", Style::default()));
         }
         spans.push(Span::styled(
-            format!("[img] {label}"),
+            label.clone(),
             Style::default()
                 .fg(Color::Black)
                 .bg(Color::Cyan)

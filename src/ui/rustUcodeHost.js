@@ -481,7 +481,7 @@ async function runUcodeRust(props = {}) {
     if (Array.isArray(outcome.errors) && outcome.errors.length > 0 && pendingAttachments.length === 0) {
       appendLog(`Image paste: ${outcome.errors[0]}`, "system");
     }
-    const labels = pendingAttachments.map((item) => formatImageLogLabel(item) || "image");
+    const labels = pendingAttachments.map((item, index) => formatImageLogLabel(item, index));
     publish("attachments.set", {
       count: pendingAttachments.length,
       labels,

@@ -50,91 +50,84 @@ function expandHome(filePath = "") {
   return text;
 }
 
-/**
- * Extract image file paths from terminal paste / drag-drop text.
- * Supports file://, quoted paths with spaces, and bare absolute paths.
- */
-function extractImagePathsFromPaste(text = "") {
+// Parse terminal shell quoting without evaluating shell expressions. Keep source
+// spans so the exact pasted spelling (including escapes) can be removed later.
+function imagePathMatches(text = "") {
   const raw = String(text || "");
-  if (!raw.trim()) return [];
-  const found = [];
-  const seen = new Set();
-
-  function pushPath(candidate) {
-    let next = decodeFileUrl(String(candidate || "").trim());
-    next = next.replace(/^['"]|['"]$/g, "");
-    if (!looksLikeImagePath(next)) return;
-    next = expandHome(next);
-    const key = path.resolve(next);
-    if (seen.has(key)) return;
-    seen.add(key);
-    found.push(next);
-  }
-
-  // Quoted paths (possibly with spaces)
-  const quoted = /["']([^"']+\.(?:png|jpe?g|gif|webp))["']/gi;
-  let match;
-  while ((match = quoted.exec(raw))) {
-    pushPath(match[1]);
-  }
-
-  // file:// URLs
-  const fileUrls = /file:\/\/[^\s"'<>]+/gi;
-  while ((match = fileUrls.exec(raw))) {
-    pushPath(match[0]);
-  }
-
-  // Bare tokens / lines
-  for (const line of raw.split(/\r?\n/)) {
+  const matches = [];
+  let offset = 0;
+  for (const line of raw.split(/\n/)) {
+    const tokens = [];
+    let i = 0;
+    while (i < line.length) {
+      if (/\s/.test(line[i])) { i += 1; continue; }
+      const start = i;
+      let value = "";
+      let quote = "";
+      const windowsPath = /^[A-Za-z]:[\\/]/.test(line.slice(i).replace(/^["']/, ""));
+      while (i < line.length) {
+        const ch = line[i];
+        if (!quote && /\s/.test(ch)) break;
+        if (ch === quote) { quote = ""; i += 1; continue; }
+        if (!quote && (ch === "'" || ch === '"')) { quote = ch; i += 1; continue; }
+        if (ch === "\\" && quote !== "'" && !windowsPath && i + 1 < line.length
+          && (!quote || /[\\"$`]/.test(line[i + 1]))) {
+          value += line[i + 1];
+          i += 2;
+          continue;
+        }
+        value += ch;
+        i += 1;
+      }
+      tokens.push({ value, start: offset + start, end: offset + i });
+    }
     const trimmed = line.trim();
-    if (!trimmed) continue;
-    if (looksLikeImagePath(trimmed)) {
-      pushPath(trimmed);
-      continue;
+    // Preserve support for a raw, unquoted absolute filename containing spaces.
+    // Escaped or quoted terminal input always uses the tokenized path above.
+    const rawWholePath = !/[\\"']/.test(trimmed)
+      && looksLikeImagePath(trimmed)
+      && tokens.filter((token) => looksLikeImagePath(token.value)).length < 2
+      && !tokens.slice(1).some((token) => /^(?:\/|file:\/\/|~\/)/.test(token.value));
+    const candidates = rawWholePath
+      ? [{ value: trimmed, start: offset + line.indexOf(trimmed), end: offset + line.indexOf(trimmed) + trimmed.length }]
+      : tokens;
+    for (const token of candidates) {
+      if (!looksLikeImagePath(token.value)) continue;
+      matches.push({ ...token, path: expandHome(decodeFileUrl(token.value)) });
     }
-    for (const token of trimmed.split(/\s+/)) {
-      if (looksLikeImagePath(token)) pushPath(token);
-    }
+    offset += line.length + 1;
   }
+  return matches;
+}
 
-  return found;
+function extractImagePathsFromPaste(text = "") {
+  const seen = new Set();
+  return imagePathMatches(text).flatMap((match) => {
+    const key = path.resolve(match.path);
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [match.path];
+  });
 }
 
 function stripExtractedPathsFromText(text = "", paths = []) {
   let out = String(text || "");
-  for (const p of paths) {
-    const variants = [
-      `"${p}"`,
-      `'${p}'`,
-      p,
-      p.startsWith("/") ? `file://${p}` : "",
-      p.startsWith("/") ? `file://${encodeURI(p)}` : "",
-    ].filter(Boolean);
-    for (const v of variants) {
-      out = out.split(v).join(" ");
-    }
+  const selected = new Set(paths.map((p) => path.resolve(p)));
+  const matches = imagePathMatches(out).filter((match) => selected.has(path.resolve(match.path)));
+  for (const match of matches.reverse()) {
+    out = `${out.slice(0, match.start)} ${out.slice(match.end)}`;
   }
-  return out
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .replace(/[ \t]{2,}/g, " ")
-    .replace(/\s+"/g, " ")
-    .replace(/"\s+/g, " ")
-    .replace(/\s+'/g, " ")
-    .replace(/'\s+/g, " ")
-    .trim();
+  return out.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ").trim();
 }
 
-function formatImageLogLabel({ relPath = "", fileName = "", path: pathText = "" } = {}) {
-  const name = String(fileName || "").trim()
-    || path.basename(String(relPath || pathText || "").trim())
-    || "image";
-  return `[image: ${name}]`;
+function formatImageLogLabel(_attachment = {}, index = 0) {
+  return `[Image #${index + 1}]`;
 }
 
 function formatUserLogWithAttachments(userText = "", attachments = []) {
   const labels = (Array.isArray(attachments) ? attachments : [])
-    .map((item) => formatImageLogLabel(item))
+    .map((item, index) => formatImageLogLabel(item, index))
     .filter(Boolean);
   const body = String(userText || "").trim();
   if (labels.length === 0) return body;
@@ -315,14 +308,18 @@ function handleImagePaste(text = "", {
   const paths = extractImagePathsFromPaste(raw);
   const attachments = [];
   const errors = [];
+  const importedPaths = [];
 
   for (const sourcePath of paths) {
     const ingested = ingestImageFile({ sourcePath, workspaceRoot, sessionId });
-    if (ingested.ok) attachments.push(ingested);
+    if (ingested.ok) {
+      attachments.push(ingested);
+      importedPaths.push(sourcePath);
+    }
     else errors.push(ingested.error || "ingest failed");
   }
 
-  let remaining = stripExtractedPathsFromText(raw, paths);
+  let remaining = stripExtractedPathsFromText(raw, importedPaths);
 
   // If paste had no usable text/paths, try clipboard PNG (Cmd+V of a screenshot).
   const trimmedRemaining = remaining.trim();
@@ -330,7 +327,7 @@ function handleImagePaste(text = "", {
     || /[\x00-\x08\x0e-\x1f]/.test(raw)
     || (Buffer.byteLength(raw, "utf8") > 200 && paths.length === 0 && !/\s/.test(raw.slice(0, 40)));
 
-  if (tryClipboard && attachments.length === 0 && looksEmptyOrBinary) {
+  if (tryClipboard && paths.length === 0 && attachments.length === 0 && looksEmptyOrBinary) {
     const clip = tryIngestClipboardImage({
       workspaceRoot,
       sessionId,
