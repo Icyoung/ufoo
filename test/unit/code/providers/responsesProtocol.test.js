@@ -7,6 +7,10 @@ const {
 } = require("../../../../src/code/providers/responsesProtocol");
 
 describe("Responses protocol projection", () => {
+  test("defaults output to 32K and preserves explicit overrides", () => {
+    expect(buildResponsesPayload({ model: "test" }).max_output_tokens).toBe(32768);
+    expect(buildResponsesPayload({ model: "test", maxOutputTokens: 8192 }).max_output_tokens).toBe(8192);
+  });
   test("projects generic tool history without private response metadata", () => {
     expect(messagesToResponsesInput([
       { role: "system", content: "rules" },

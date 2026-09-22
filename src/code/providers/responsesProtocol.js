@@ -1,6 +1,6 @@
 "use strict";
 
-const DEFAULT_RESPONSES_MAX_OUTPUT_TOKENS = 131072;
+const DEFAULT_RESPONSES_MAX_OUTPUT_TOKENS = 32768;
 const RESPONSES_REASONING_ITEMS = Symbol("ufoo.responsesReasoningItems");
 
 function cloneJsonValue(value) {

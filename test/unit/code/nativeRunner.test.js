@@ -1136,7 +1136,7 @@ describe("ucode native runner", () => {
     }
   });
 
-  test("sends transport-specific default max_tokens", async () => {
+  test("sends 32K default max_tokens across transports", async () => {
     global.fetch.mockResolvedValueOnce(makeSseResponse([
       { choices: [{ delta: { content: "ok" } }] },
     ]));
@@ -1147,7 +1147,7 @@ describe("ucode native runner", () => {
       model: "gpt-test",
     });
     expect(openAiResult.ok).toBe(true);
-    expect(JSON.parse(global.fetch.mock.calls[0][1].body).max_tokens).toBe(131072);
+    expect(JSON.parse(global.fetch.mock.calls[0][1].body).max_tokens).toBe(32768);
 
     const anthropicSse = [
       "event: content_block_start",
@@ -1171,7 +1171,20 @@ describe("ucode native runner", () => {
       model: "claude-opus-4-6",
     });
     expect(anthropicResult.ok).toBe(true);
-    expect(JSON.parse(global.fetch.mock.calls[1][1].body).max_tokens).toBe(64000);
+    expect(JSON.parse(global.fetch.mock.calls[1][1].body).max_tokens).toBe(32768);
+  });
+
+  test("caps thinking below the 32K output budget", async () => {
+    process.env.UFOO_UCODE_THINKING_BUDGET_TOKENS = "48000";
+    global.fetch.mockResolvedValueOnce(new Response(
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    ));
+    const result = await runNativeAgentTask({ workspaceRoot, prompt: "hi", provider: "anthropic", model: "test" });
+    expect(result.ok).toBe(true);
+    const payload = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(payload.max_tokens).toBe(32768);
+    expect(payload.thinking.budget_tokens).toBe(32767);
   });
 
   test("UFOO_UCODE_MAX_TOKENS overrides max_tokens for both transports", async () => {
@@ -1214,7 +1227,7 @@ describe("ucode native runner", () => {
       model: "gpt-test",
     });
     expect(openAiResult.ok).toBe(true);
-    expect(JSON.parse(global.fetch.mock.calls[0][1].body).max_tokens).toBe(131072);
+    expect(JSON.parse(global.fetch.mock.calls[0][1].body).max_tokens).toBe(32768);
 
     process.env.UFOO_UCODE_MAX_TOKENS = "-5";
     global.fetch.mockResolvedValueOnce(new Response(
@@ -1228,7 +1241,7 @@ describe("ucode native runner", () => {
       model: "claude-opus-4-6",
     });
     expect(anthropicResult.ok).toBe(true);
-    expect(JSON.parse(global.fetch.mock.calls[1][1].body).max_tokens).toBe(64000);
+    expect(JSON.parse(global.fetch.mock.calls[1][1].body).max_tokens).toBe(32768);
   });
 
   test("does not collapse parallel tool calls when stream omits index", async () => {

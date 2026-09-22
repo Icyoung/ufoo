@@ -127,11 +127,10 @@ const NATIVE_SSE_DISPATCHER_OPTIONS = Object.freeze({
 });
 /** Max text-only auto-continues while a plan is waiting on a task (per user submit). */
 const DEFAULT_MAX_PLAN_AUTO_CONTINUES = 24;
-// Anthropic Messages rejects max_tokens above the model's real cap (64K on
-// current models), so the transports use different defaults. Override either
-// via UFOO_UCODE_MAX_TOKENS (positive integer).
-const DEFAULT_OPENAI_MAX_TOKENS = 131072;
-const DEFAULT_ANTHROPIC_MAX_TOKENS = 64000;
+// Reserve 32K output tokens by default across transports. Override via
+// UFOO_UCODE_MAX_TOKENS (positive integer).
+const DEFAULT_OPENAI_MAX_TOKENS = 32768;
+const DEFAULT_ANTHROPIC_MAX_TOKENS = 32768;
 // Extended thinking defaults live in thinkingLevels.js (medium = 10k).
 // UFOO_UCODE_THINKING=off|low|medium|high|max selects a preset; numeric
 // UFOO_UCODE_THINKING_BUDGET_TOKENS still overrides. 0 disables thinking.
@@ -1779,8 +1778,8 @@ async function runAnthropicTurn({
     tools: buildAnthropicToolSpecs(),
     stream: true,
   };
-  const thinkingBudget = resolveThinkingBudgetTokens();
-  if (thinkingBudget > 0) {
+  const thinkingBudget = Math.min(resolveThinkingBudgetTokens(), payload.max_tokens - 1);
+  if (thinkingBudget >= 1024) {
     payload.thinking = { type: "enabled", budget_tokens: thinkingBudget };
   }
   if (Array.isArray(systemBlocks) && systemBlocks.length > 0) {
