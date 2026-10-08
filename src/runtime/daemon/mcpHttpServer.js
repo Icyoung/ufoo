@@ -30,6 +30,8 @@ const DEFAULT_MCP_HOST = "127.0.0.1";
 const DEFAULT_MCP_PORT = 47631;
 const MAX_REQUEST_BODY_BYTES = 2 * 1024 * 1024;
 const LOCAL_HOSTNAMES = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+const RATE_LIMIT_WINDOW_MS = 1000;
+const RATE_LIMIT_MAX_REQUESTS = 50;
 
 function ensurePrivateFile(filePath, createValue) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
