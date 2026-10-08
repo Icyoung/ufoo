@@ -42,7 +42,8 @@ async function main() {
   const legacyOptOut = process.argv.includes("--legacy");
   // macOS's per-user temp path can exceed the Unix socket length limit once
   // the wrapper's project-local bus socket suffix is appended.
-  const root = fs.mkdtempSync(path.join(process.platform === "darwin" ? "/private/tmp" : os.tmpdir(), "uf-smoke-"));
+  const fixtureParent = process.platform === "darwin" ? "/private/tmp" : process.env.RUNNER_TEMP || os.tmpdir();
+  const root = fs.mkdtempSync(path.join(fixtureParent, "uf-smoke-"));
   const received = [];
   let probeCalled = false;
   const api = http.createServer((request, response) => {
@@ -179,7 +180,8 @@ async function main() {
     api.closeAllConnections();
     await new Promise((resolve) => api.close(resolve));
     await new Promise((resolve) => setTimeout(resolve, 200));
-    fs.rmSync(root, { recursive: true, force: true });
+    // Vendor processes can finish writing state just after the wrapper exits.
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   }
 }
 
