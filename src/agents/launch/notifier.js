@@ -1,7 +1,8 @@
 const fs = require("fs");
+const { updateAgentsData } = require("../../coordination/state/agentsStore");
 const path = require("path");
 const EventBus = require("../../coordination/bus");
-const { readJSON, writeJSON } = require("../../coordination/bus/utils");
+const { readJSON } = require("../../coordination/bus/utils");
 const Injector = require("../../coordination/bus/inject");
 const { getUfooPaths } = require("../../coordination/state/paths");
 const { appendAgentRegistryDiagnostic } = require("../../coordination/state/agentRegistryDiagnostics");
@@ -118,25 +119,19 @@ class AgentNotifier {
    * 更新心跳时间戳（last_seen）
    */
   updateHeartbeat() {
-    // TODO(race, needs evidence): this read-modify-write of all-agents.json
-    // has no file lock and races with the daemon, the launcher, and other
-    // agents' notifiers writing the same file — a lost update could roll
-    // back activity_state/last_seen (suspected amplifier of delivery
-    // stalls, not yet confirmed). If evidence shows lost updates, serialize
-    // writes (lockfile or single-writer daemon IPC) instead of JSON RMW.
     try {
       if (!this.agentsFile || !fs.existsSync(this.agentsFile)) return;
-      const data = readJSON(this.agentsFile, null);
-      if (!data) return;
-      if (data.agents && data.agents[this.subscriber]) {
-        data.agents[this.subscriber].last_seen = new Date().toISOString();
-        writeJSON(this.agentsFile, data);
-        return;
-      }
-      appendAgentRegistryDiagnostic(this.agentsFile, "heartbeat_subscriber_missing", {
-        source: "agent.notifier.updateHeartbeat",
-        subscriber: this.subscriber,
-        known_ids: Object.keys(data.agents || {}).sort(),
+      updateAgentsData(this.agentsFile, (data) => {
+        if (data.agents && data.agents[this.subscriber]) {
+          data.agents[this.subscriber].last_seen = new Date().toISOString();
+          return true;
+        }
+        appendAgentRegistryDiagnostic(this.agentsFile, "heartbeat_subscriber_missing", {
+          source: "agent.notifier.updateHeartbeat",
+          subscriber: this.subscriber,
+          known_ids: Object.keys(data.agents || {}).sort(),
+        });
+        return false;
       });
     } catch {
       // 心跳更新失败时静默忽略

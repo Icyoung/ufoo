@@ -1,6 +1,6 @@
 const { ROUTE_AGENT_SCHEMA } = require("../schemaFixtures");
 const { CALLER_TIERS, TOOL_TIERS, createToolDefinition } = require("../types");
-const { buildDormantHandler } = require("../unimplemented");
+const { routeAgentHandler } = require("../handlers/routeAgent");
 
 module.exports = createToolDefinition({
   name: ROUTE_AGENT_SCHEMA.name,
@@ -10,5 +10,5 @@ module.exports = createToolDefinition({
   inputSchema: ROUTE_AGENT_SCHEMA.input_schema,
   outputSchema: ROUTE_AGENT_SCHEMA.output_schema,
   schemaVersion: ROUTE_AGENT_SCHEMA.schema_version,
-  handler: buildDormantHandler(ROUTE_AGENT_SCHEMA.name),
+  handler: routeAgentHandler,
 });

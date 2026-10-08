@@ -42,8 +42,9 @@ describe("tool handlers", () => {
         target: receiver,
         source: sender,
         mode: "immediate",
-        delivered: 1,
-        queued: 0,
+        delivered: 0,
+        queued: 1,
+        delivery_status: "queued",
         targets: [receiver],
       })
     );
@@ -78,6 +79,8 @@ describe("tool handlers", () => {
       })
     );
     expect(result.targets).toEqual(expect.arrayContaining([sender, receiver]));
+    expect(result.delivered).toBe(0);
+    expect(result.queued).toBe(result.targets.length);
   });
 
   test("dispatch_message rejects mismatched source", async () => {

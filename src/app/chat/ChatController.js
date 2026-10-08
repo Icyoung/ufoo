@@ -29,6 +29,7 @@ const { IPC_REQUEST_TYPES } = require("../../runtime/contracts/eventContract");
 function createChatController({
   projectRoot = process.cwd(),
   globalMode = false,
+  internalOnly = false,
   ports = {},
 } = {}) {
   const view = {
@@ -66,14 +67,17 @@ function createChatController({
     loop: null,
     targetAgent: null,
     pending: null,
+    runtimeSessionId: "main-default",
   };
 
   function setSend(fn) {
-    daemonSend = typeof fn === "function" ? fn : () => {};
+    daemonSend = typeof fn === "function" ? (req) => fn(req.type === IPC_REQUEST_TYPES.PROMPT || req.type === IPC_REQUEST_TYPES.AGENT_RUNTIME
+      ? { ...req, request_id: req.request_id || require("crypto").randomUUID(), session_id: req.session_id || session.runtimeSessionId } : req) : () => {};
   }
+  setSend(view.send);
 
   function applyStatus(data = {}) {
-    const snapshot = normalizeStatusToAgentsSnapshot(data);
+    const snapshot = normalizeStatusToAgentsSnapshot(data, { internalOnly });
     session.agents = snapshot.agents.map((row) => row.id || row.fullId);
     session.metaMap = snapshot.metaMap;
     session.labelMap = snapshot.labelMap;
@@ -97,13 +101,14 @@ function createChatController({
 
   function patchAgentActivity(agentId, patch = {}) {
     if (!agentId) return;
+    if (internalOnly && !session.metaMap.has(agentId)) return;
     const existing = session.metaMap.get(agentId) || { id: agentId };
     const next = { ...existing, ...patch };
     session.metaMap.set(agentId, next);
     const rebuilt = normalizeStatusToAgentsSnapshot({
       active: session.agents,
       active_meta: session.agents.map((id) => session.metaMap.get(id) || { id }),
-    });
+    }, { internalOnly });
     session.footer = rebuilt.footer;
     view.publish("agents.patch", {
       agents: rebuilt.agents.map((row) => ({
@@ -130,6 +135,7 @@ function createChatController({
 
     commandExecutor = createCommandExecutor({
       projectRoot,
+      internalOnly,
       getActiveProjectRoot: typeof ports.getActiveProjectRoot === "function"
         ? ports.getActiveProjectRoot
         : () => projectRoot,
@@ -168,12 +174,16 @@ function createChatController({
         ? ports.restartDaemon
         : async () => {},
       send: (req) => daemonSend(req),
+      setRuntimeSession: (id) => { session.runtimeSessionId = id; },
+      getRuntimeSession: () => session.runtimeSessionId,
       requestStatus: () => {
         if (typeof requestDaemonStatus === "function") requestDaemonStatus();
         else daemonSend({ type: IPC_REQUEST_TYPES.STATUS });
       },
       requestCron: (payload = {}) => daemonSend({ type: IPC_REQUEST_TYPES.CRON, ...payload }),
       activateAgent: async (target) => {
+        if (typeof ports.activateAgent === "function") return ports.activateAgent(target);
+        if (internalOnly) return;
         const activator = new AgentActivator(projectRoot);
         await activator.activate(target);
       },
@@ -223,6 +233,7 @@ function createChatController({
     });
     submitHandler = createInputSubmitHandler({
       state: submitState,
+      requireKnownTarget: internalOnly,
       parseAtTarget,
       resolveAgentId: (label) => resolveAgentId({
         label,

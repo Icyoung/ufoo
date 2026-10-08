@@ -1,6 +1,9 @@
 "use strict";
 
 const { executeControllerTool } = require("./controllerToolExecutor");
+const { createAgentRuntime } = require("../runtime");
+const { createControllerJsonTransport } = require("../providers/controllerJsonTransport");
+const { createCoordinationCapability } = require("../capabilities/coordination");
 const { createLoopObserver } = require("./loopObservability");
 const { finalizeRouterPayload } = require("../../orchestration/controller/routerFinalize");
 
@@ -232,232 +235,93 @@ async function runPromptWithControllerLoop({
     return finalPayload;
   };
 
-  for (let round = 1; round <= options.maxRounds; round += 1) {
-    if (checkCancellation()) {
-      const payload = terminate(TERMINAL_REASONS.USER_CANCEL, lastPayload, round - 1);
-      return finalizeLoopRun({
-        projectRoot,
-        payload,
-        prompt: currentPrompt,
-        processManager,
-        dispatchMessages,
-        handleOps,
-        markPending,
-        finalizeLocally,
-      });
-    }
-
-    if (currentPrompt.length > options.maxPromptChars) {
-      const payload = terminate(TERMINAL_REASONS.BUDGET_EXCEEDED, lastPayload, round - 1);
-      return finalizeLoopRun({
-        projectRoot,
-        payload,
-        prompt: currentPrompt,
-        processManager,
-        dispatchMessages,
-        handleOps,
-        markPending,
-        finalizeLocally,
-      });
-    }
-
-    const roundStartedAt = now();
-    observer.emit("model_call_started", {
-      round,
-      provider: String(provider || ""),
-      model: String(model || ""),
-      prompt_chars: currentPrompt.length,
-    });
-
-    const result = await runUfooAgent({
-      projectRoot,
-      prompt: currentPrompt,
-      provider,
-      model,
-      ...ufooAgentOptions,
-      loopRuntime: {
-        enabled: true,
-        round,
-        maxRounds: options.maxRounds,
-        maxToolCalls: options.maxToolCalls,
-        remainingToolCalls: Math.max(options.maxToolCalls - toolCalls, 0),
+  let rounds = 0;
+  const host = {
+    grantedPermissions: ["coordination.read", "coordination.write", "agents.manage", "schedules.manage", "memory.write"],
+    coordination: {
+      projectRoot, processManager, dispatchMessages, handleOps, ackBus, markPending, observer,
+      async execute(ctx, call) {
+        const started = now();
+        const result = await executeControllerTool({ ...ctx, turnId: `loop-round-${rounds}` }, call);
+        let size = 0;
+        let memory = 0;
+        try {
+          size = result.result === undefined ? 0 : JSON.stringify(result.result).length;
+          memory = toNonNegativeInt(result.result && result.result.dynamic_memory_tokens);
+        } catch { /* diagnostic metadata only */ }
+        dynamicMemoryTokens += memory;
+        observer.emit("tool_call", {
+          round: rounds, tool_name: result.name || call.name,
+          tool_call_id: result.tool_call_id || "", turn_id: result.turn_id || `loop-round-${rounds}`,
+          duration_ms: Math.max(0, now() - started), result_size: size,
+          dynamic_memory_tokens: memory, retry_count: 0, final_status: result.ok ? "ok" : "error",
+        });
+        return result;
       },
-    });
-
+    },
+  };
+  const policy = {
+    beforeTurn() {
+      if (checkCancellation()) return TERMINAL_REASONS.USER_CANCEL;
+      if (rounds >= options.maxRounds || currentPrompt.length > options.maxPromptChars) return TERMINAL_REASONS.BUDGET_EXCEEDED;
+      return null;
+    },
+    beforeTool() {
+      return toolCalls >= options.maxToolCalls ? TERMINAL_REASONS.BUDGET_EXCEEDED : null;
+    },
+    afterTool({ call, result }) {
+      toolCalls += 1;
+      if (!result || !result.ok) toolErrors += 1;
+      toolResults.push(result && result.name ? result : {
+        ...result, name: call.name, tool_call_id: call.source.id, turn_id: `loop-round-${rounds}`,
+      });
+      if (toolErrors >= options.maxToolErrors) return TERMINAL_REASONS.TOOL_FAILURE;
+      currentPrompt = buildLoopContinuationPrompt({
+        originalPrompt: prompt, toolResults, lastReply: lastPayload.reply,
+        loopState: { round: rounds, max_rounds: options.maxRounds, tool_calls_used: toolCalls,
+          tool_calls_remaining: Math.max(options.maxToolCalls - toolCalls, 0), tool_errors: toolErrors },
+      });
+      return null;
+    },
+  };
+  const transport = createControllerJsonTransport({ async invoke() {
+    rounds += 1;
+    const started = now();
+    observer.emit("model_call_started", { round: rounds, provider: String(provider || ""),
+      model: String(model || ""), prompt_chars: currentPrompt.length });
+    const result = await runUfooAgent({ projectRoot, prompt: currentPrompt, provider, model,
+      ...ufooAgentOptions, loopRuntime: { enabled: true, round: rounds, maxRounds: options.maxRounds,
+        maxToolCalls: options.maxToolCalls, remainingToolCalls: Math.max(options.maxToolCalls - toolCalls, 0) } });
     const metrics = extractModelMetrics(result);
-    const modelLatency = metrics.latency_ms > 0 ? metrics.latency_ms : Math.max(0, now() - roundStartedAt);
+    const latency = metrics.latency_ms || Math.max(0, now() - started);
     totalTokens += metrics.input_tokens + metrics.output_tokens;
-    totalLatencyMs += modelLatency;
-
-    const toolCall = result && result.payload && typeof result.payload === "object"
-      && result.payload.tool_call && typeof result.payload.tool_call === "object"
-      ? result.payload.tool_call
-      : null;
-
-    observer.emit("model_call", {
-      round,
-      provider: String(provider || ""),
-      model: String(model || ""),
-      ok: result && result.ok === true,
-      input_tokens: metrics.input_tokens,
-      output_tokens: metrics.output_tokens,
-      cache_read_tokens: metrics.cache_read_tokens,
-      cache_creation_tokens: metrics.cache_creation_tokens,
-      cache_semistatic_hit: metrics.cache_semistatic_hit,
-      cache_semistatic_miss: metrics.cache_semistatic_miss,
-      memory_prefix_tokens: metrics.memory_prefix_tokens,
-      dynamic_memory_tokens: metrics.dynamic_memory_tokens,
-      latency_ms: modelLatency,
-      first_token_ms: metrics.first_token_ms,
-      tool_call_count: toolCall ? 1 : 0,
-      stop_reason: metrics.stop_reason,
-      error: result && result.ok === false ? String(result.error || "") : "",
-    });
-    observer.emit("model_call_finished", {
-      round,
-      ok: result && result.ok === true,
-      error: result && result.ok === false ? String(result.error || "") : "",
-    });
-
-    if (!result || result.ok !== true) {
-      const payload = terminate(TERMINAL_REASONS.PROVIDER_ERROR, lastPayload, round);
-      return {
-        ok: false,
-        error: result && result.error ? result.error : "ufoo-agent loop failed",
-        payload,
-      };
-    }
-
-    const payload = normalizePayload(result.payload);
-    lastPayload = payload;
-
-    if (!toolCall) {
-      const finalPayload = {
-        ...payload,
-        loop: {
-          terminal_reason: TERMINAL_REASONS.FINAL_ANSWER,
-          rounds: round,
-          tool_calls: toolCalls,
-          tool_errors: toolErrors,
-          fallback_used: FALLBACK_USED_VALUES.NONE,
-          total_tokens: totalTokens,
-          total_latency_ms: totalLatencyMs,
-          dynamic_memory_tokens: dynamicMemoryTokens,
-        },
-      };
-      observer.emit("loop_terminal", finalPayload.loop);
-      return finalizeLoopRun({
-        projectRoot,
-        payload: finalPayload,
-        prompt: currentPrompt,
-        processManager,
-        dispatchMessages,
-        handleOps,
-        markPending,
-        finalizeLocally,
-      });
-    }
-
-    if (toolCalls >= options.maxToolCalls) {
-      const finalPayload = terminate(TERMINAL_REASONS.BUDGET_EXCEEDED, payload, round);
-      return finalizeLoopRun({
-        projectRoot,
-        payload: finalPayload,
-        prompt: currentPrompt,
-        processManager,
-        dispatchMessages,
-        handleOps,
-        markPending,
-        finalizeLocally,
-      });
-    }
-
-    toolCalls += 1;
-    const toolStartedAt = now();
-    const toolResult = await executeControllerTool({
-      projectRoot,
-      subscriber: "ufoo-agent",
-      processManager,
-      dispatchMessages,
-      handleOps,
-      ackBus,
-      markPending,
-      observer,
-      turnId: `loop-round-${round}`,
-    }, toolCall);
-    const toolDuration = Math.max(0, now() - toolStartedAt);
-
-    let toolResultSize = 0;
-    let toolDynamicMemoryTokens = 0;
-    try {
-      toolResultSize = toolResult && toolResult.result !== undefined
-        ? JSON.stringify(toolResult.result).length
-        : 0;
-      toolDynamicMemoryTokens = toolResult && toolResult.result && Number.isFinite(Number(toolResult.result.dynamic_memory_tokens))
-        ? Math.max(0, Math.floor(Number(toolResult.result.dynamic_memory_tokens)))
-        : 0;
-    } catch {
-      toolResultSize = 0;
-      toolDynamicMemoryTokens = 0;
-    }
-    dynamicMemoryTokens += toolDynamicMemoryTokens;
-
-    observer.emit("tool_call", {
-      round,
-      tool_name: String(toolResult && toolResult.name ? toolResult.name : toolCall.name || ""),
-      tool_call_id: String(toolResult && toolResult.tool_call_id ? toolResult.tool_call_id : ""),
-      turn_id: toolResult && toolResult.turn_id ? String(toolResult.turn_id) : `loop-round-${round}`,
-      duration_ms: toolDuration,
-      result_size: toolResultSize,
-      dynamic_memory_tokens: toolDynamicMemoryTokens,
-      retry_count: 0,
-      final_status: toolResult && toolResult.ok === true ? "ok" : "error",
-    });
-
-    if (!toolResult.ok) {
-      toolErrors += 1;
-    }
-    toolResults.push(toolResult);
-
-    if (toolErrors >= options.maxToolErrors) {
-      const finalPayload = terminate(TERMINAL_REASONS.TOOL_FAILURE, payload, round);
-      return finalizeLoopRun({
-        projectRoot,
-        payload: finalPayload,
-        prompt: currentPrompt,
-        processManager,
-        dispatchMessages,
-        handleOps,
-        markPending,
-        finalizeLocally,
-      });
-    }
-
-    currentPrompt = buildLoopContinuationPrompt({
-      originalPrompt: prompt,
-      toolResults,
-      lastReply: payload.reply,
-      loopState: {
-        round,
-        max_rounds: options.maxRounds,
-        tool_calls_used: toolCalls,
-        tool_calls_remaining: Math.max(options.maxToolCalls - toolCalls, 0),
-        tool_errors: toolErrors,
-      },
-    });
+    totalLatencyMs += latency;
+    observer.emit("model_call", { round: rounds, provider: String(provider || ""), model: String(model || ""),
+      ...metrics, latency_ms: latency, ok: result && result.ok === true,
+      tool_call_count: result && result.payload && result.payload.tool_call ? 1 : 0,
+      error: result && result.ok === false ? String(result.error || "") : "" });
+    observer.emit("model_call_finished", { round: rounds, ok: result && result.ok === true,
+      error: result && result.ok === false ? String(result.error || "") : "" });
+    if (result && result.ok) lastPayload = normalizePayload(result.payload);
+    return result;
+  } });
+  const runtime = createAgentRuntime({ profile: { capabilities: ["controller"] }, transport, host,
+    capabilities: [createCoordinationCapability({ host, id: "controller", policy })] });
+  let run;
+  try {
+    run = await runtime.run({ workspaceRoot: projectRoot, prompt, model: model || "controller",
+      toolBudget: { maxToolErrors: Infinity } });
+  } catch (error) {
+    const payload = terminate(TERMINAL_REASONS.PROVIDER_ERROR, lastPayload, rounds);
+    return { ok: false, error: error.message, payload };
   }
-
-  const payload = terminate(TERMINAL_REASONS.BUDGET_EXCEEDED, lastPayload, options.maxRounds);
-  return finalizeLoopRun({
-    projectRoot,
-    payload,
-    prompt: currentPrompt,
-    processManager,
-    dispatchMessages,
-    handleOps,
-    markPending,
-    finalizeLocally,
-  });
+  const payload = run.stopReason
+    ? terminate(run.stopReason, lastPayload, rounds)
+    : { ...lastPayload, loop: { terminal_reason: TERMINAL_REASONS.FINAL_ANSWER, rounds,
+      tool_calls: toolCalls, tool_errors: toolErrors, ...totals() } };
+  if (!run.stopReason) observer.emit("loop_terminal", payload.loop);
+  return finalizeLoopRun({ projectRoot, payload, prompt: currentPrompt, processManager,
+    dispatchMessages, handleOps, markPending, finalizeLocally });
 }
 
 module.exports = {

@@ -10,6 +10,7 @@ const {
   listProjectRuntimes,
   getCurrentProjectRuntime,
   validateProjectRuntime,
+  archiveMissingProjectRuntimes,
 } = require("../../../src/runtime/projects/registry");
 
 describe("projects registry", () => {
@@ -122,6 +123,29 @@ describe("projects registry", () => {
     const rows = listProjectRuntimes({ runtimeDir, validate: false });
     expect(rows).toHaveLength(1);
     expect(rows[0].project_id).toBe(buildProjectId(projectRoot));
+  });
+
+  test("archives only old deleted workspaces without a live runtime, retaining original records", () => {
+    const gone = path.join(sandboxRoot, "deleted");
+    const old = { daemonPid: 99999999, lastSeen: "2026-01-01T00:00:00Z" };
+    fs.mkdirSync(gone);
+    const missing = upsertProjectRuntime({ projectRoot: gone, ...old }, { runtimeDir });
+    fs.rmdirSync(gone);
+    upsertProjectRuntime({ projectRoot, status: "dormant", ...old }, { runtimeDir });
+    for (const [name, entry] of [["live-deleted", { ...old, daemonPid: process.pid }], ["recent-deleted", { daemonPid: 99999999 }]]) {
+      const root = path.join(sandboxRoot, name);
+      fs.mkdirSync(root);
+      upsertProjectRuntime({ projectRoot: root, ...entry }, { runtimeDir });
+      fs.rmdirSync(root);
+    }
+    const preview = archiveMissingProjectRuntimes({ runtimeDir });
+    expect(preview.count).toBe(1);
+    expect(listProjectRuntimes({ runtimeDir })).toHaveLength(4);
+    const result = archiveMissingProjectRuntimes({ runtimeDir, dryRun: false });
+    expect(result.projects.map((row) => row.project_id)).toEqual([missing.project_id]);
+    expect(listProjectRuntimes({ runtimeDir })).toHaveLength(3);
+    const original = JSON.parse(fs.readFileSync(path.join(result.archive_dir, `${missing.project_id}.json`), "utf8"));
+    expect(original.project_root).toBe(missing.project_root);
   });
 
   test("validation marks stale when heartbeat exceeded and endpoint unavailable", () => {

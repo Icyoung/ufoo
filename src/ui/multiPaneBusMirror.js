@@ -2,8 +2,8 @@
 
 /**
  * Mirror inbound bus events into multi/side internal panes.
- * Rust host uses this so pane VT stays live while the main transcript
- * router still runs.
+ * Rust host projects provider events independently of the main transcript
+ * and inbox routing.
  */
 
 function parseInternalBusPayload(raw = "") {
@@ -64,6 +64,8 @@ function writeMultiPaneBusEvent(data = {}, options = {}) {
     agentIds = [],
     getMeta = () => ({}),
     writeToPane = () => false,
+    acceptEvent = null,
+    hasStructuredEvents = () => false,
   } = options;
 
   const watched = agentIds instanceof Set
@@ -79,6 +81,30 @@ function writeMultiPaneBusEvent(data = {}, options = {}) {
     const fromAgent = aliases.has(publisher);
     const toAgent = aliases.has(target) || aliases.has(String(data.subscriber || ""));
     if (!fromAgent && !toAgent) continue;
+
+    if (typeof acceptEvent === "function") {
+      if (data.event === "agent_surface" && fromAgent) {
+        acceptEvent(agentId, data.data?.surface || data.surface || {}, Number(data.seq) || 0);
+        handled = true;
+        continue;
+      }
+      if (data.event === "activity_state_changed") {
+        acceptEvent(agentId, { type: "activity", state: data.state || data.data?.state,
+          detail: data.data?.detail || data.detail || "", ts: data.ts });
+        handled = true;
+        continue;
+      }
+      if (fromAgent && hasStructuredEvents(agentId)) { handled = true; continue; }
+      if (!data.silent && !(toAgent && !fromAgent && ["rust-multi-window", "chat-direct", "chat-internal-agent-view"].includes(data.source))) {
+        const { displayMessage, streamPayload } = parseInternalBusPayload(data.message || "");
+        if (streamPayload) {
+          if (fromAgent && streamPayload.delta) acceptEvent(agentId, { type: "text_delta", delta: streamPayload.delta });
+          if (fromAgent && streamPayload.done) acceptEvent(agentId, { type: "task_completed", usage: streamPayload.usage });
+        } else if (displayMessage) acceptEvent(agentId, { type: fromAgent ? "text_delta" : "task_started", delta: displayMessage, message: displayMessage });
+      }
+      handled = true;
+      continue;
+    }
 
     if (data.silent) {
       handled = true;
@@ -110,7 +136,7 @@ function writeMultiPaneBusEvent(data = {}, options = {}) {
         ? streamPayload.delta.replace(/\\r\\n/g, "\n").replace(/\\n/g, "\n").replace(/\\r/g, "\n")
         : "";
       try {
-        if (delta) writeToPane(agentId, delta);
+        if (delta) writeToPane(agentId, delta.replace(/\r\n?/g, "\n").replace(/\n/g, "\r\n"));
         if (streamPayload.done) writeToPane(agentId, "\r\n");
       } catch { /* ignore */ }
       handled = true;

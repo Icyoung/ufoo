@@ -4,15 +4,22 @@ use std::io;
 use std::path::PathBuf;
 use std::time::Duration;
 
+#[cfg(unix)]
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crossterm::cursor::{Hide, Show};
 use crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
     Event, KeyEventKind, MouseButton, MouseEventKind,
+};
+#[cfg(unix)]
+use crossterm::event::{
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use crossterm::cursor::{Hide, Show};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
@@ -21,6 +28,9 @@ use crate::dispatch::{dispatch, multi_viewport_effects_public};
 use crate::draw;
 use crate::host::{HostClient, HostEvent};
 use crate::model::AppState;
+
+#[cfg(unix)]
+static KEYBOARD_ENHANCEMENTS_PUSHED: AtomicBool = AtomicBool::new(false);
 
 pub enum Surface {
     Chat,
@@ -53,6 +63,9 @@ pub fn run_surface(surface: Surface, ui_socket: Option<PathBuf>) -> io::Result<i
         EnableMouseCapture,
         Hide
     )?;
+    if surface_name == "chat" {
+        enable_keyboard_enhancements(&mut stdout)?;
+    }
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     if let Ok(size) = terminal.size() {
@@ -141,8 +154,16 @@ pub fn run_surface(surface: Surface, ui_socket: Option<PathBuf>) -> io::Result<i
                             column: mouse.column,
                             row: mouse.row,
                         }),
-                        MouseEventKind::ScrollUp => Some(Action::MouseScroll { lines: 3 }),
-                        MouseEventKind::ScrollDown => Some(Action::MouseScroll { lines: -3 }),
+                        MouseEventKind::ScrollUp => Some(Action::MouseScroll {
+                            lines: 3,
+                            column: mouse.column,
+                            row: mouse.row,
+                        }),
+                        MouseEventKind::ScrollDown => Some(Action::MouseScroll {
+                            lines: -3,
+                            column: mouse.column,
+                            row: mouse.row,
+                        }),
                         _ => None,
                     };
                     if let Some(action) = action {
@@ -191,6 +212,7 @@ fn apply_effects(client: &HostClient, effects: &[Effect]) -> io::Result<Option<i
 
 fn restore_terminal_full(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
     disable_raw_mode()?;
+    restore_keyboard_enhancements(terminal.backend_mut())?;
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
@@ -205,6 +227,7 @@ fn restore_terminal_full(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) 
 pub fn restore_terminal() {
     let _ = disable_raw_mode();
     let mut stdout = io::stdout();
+    let _ = restore_keyboard_enhancements(&mut stdout);
     let _ = execute!(
         stdout,
         LeaveAlternateScreen,
@@ -212,4 +235,32 @@ pub fn restore_terminal() {
         DisableMouseCapture,
         Show
     );
+}
+
+fn enable_keyboard_enhancements(writer: &mut impl io::Write) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        // Supported terminals distinguish Ctrl+M from Enter; legacy terminals
+        // ignore this request and continue reporting Enter as usual.
+        execute!(
+            writer,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )?;
+        KEYBOARD_ENHANCEMENTS_PUSHED.store(true, Ordering::Relaxed);
+    }
+    #[cfg(not(unix))]
+    let _ = writer;
+    Ok(())
+}
+
+fn restore_keyboard_enhancements(writer: &mut impl io::Write) -> io::Result<()> {
+    #[cfg(unix)]
+    if KEYBOARD_ENHANCEMENTS_PUSHED.swap(false, Ordering::Relaxed) {
+        // Pop while still in the alternate screen, including error / panic
+        // cleanup. Do not pop twice or disturb the caller's keyboard mode.
+        execute!(writer, PopKeyboardEnhancementFlags)?;
+    }
+    #[cfg(not(unix))]
+    let _ = writer;
+    Ok(())
 }

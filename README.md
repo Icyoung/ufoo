@@ -2,10 +2,11 @@
 
 [中文](README.zh-CN.md)
 
-ufoo is a project-scoped multi-agent workspace runtime. It wraps Claude Code,
-OpenAI Codex, Antigravity, Grok Build, Kimi Code, and ufoo's native `ucode`
-agent with a shared chat dashboard, daemon, event bus, memory, reports, group
-orchestration, and terminal launch modes.
+ufoo is a project-scoped multi-agent workspace runtime with two ways to work.
+Keep using Claude Code, OpenAI Codex, and other supported CLIs through wrappers
+and MCP for messages and shared context. Or open the ufoo dashboard to work with
+a main agent and internal Codex, Claude, and `ucode` agents in one terminal.
+Both share a daemon, event bus, memory, reports, and group orchestration.
 
 Package: [u-foo on npm](https://www.npmjs.com/package/u-foo)
 
@@ -17,14 +18,16 @@ Package: [u-foo on npm](https://www.npmjs.com/package/u-foo)
 
 ## Highlights
 
-- One TUI dashboard for launching, watching, messaging, and resuming agents.
+- One TUI dashboard for a main agent and internal child agents, with shared input,
+  live output, status, and three layouts.
 - One user-scoped daemon over `~/.ufoo/run/ufoo.sock`, hosting isolated project
   runtimes for launch/resume, reports, groups, cron, and controller routing.
 - Project-local event bus for agent-to-agent messages, wakeups, queue checks,
   and activation.
 - Shared context primitives: decisions, durable memory, prompt history, reports,
   and agent registry state.
-- Launch modes for internal, tmux, host, Terminal.app, and iTerm2 workflows.
+- Wrappers and MCP keep external CLI workflows connected; dashboard child agents
+  run internally without opening external terminals.
 - Built-in group templates for launching and orchestrating multi-agent workflows.
 - `ucode`, a native ufoo coding-agent runtime.
 - One loopback Streamable HTTP MCP server inside the home-scoped global
@@ -32,7 +35,7 @@ Package: [u-foo on npm](https://www.npmjs.com/package/u-foo)
 
 ## Requirements
 
-- Node.js 18 or newer.
+- Node.js 18.17 or newer.
 - macOS for Terminal.app/iTerm2 integration.
 - Claude Code, Codex CLI, Antigravity CLI, Grok Build, or Kimi Code installed
   when using the matching wrappers: `uclaude`, `ucodex`, `uagy`, `ugrok`, or
@@ -52,6 +55,7 @@ Or link this repository for local development:
 git clone https://github.com/Icyoung/ufoo.git
 cd ufoo
 npm install
+npm run pack:tui
 npm link
 ```
 
@@ -124,7 +128,9 @@ ufoo mcp configure codex
 ```
 
 The configuration points all three Codex surfaces at the same authenticated
-loopback endpoint. Restart the Codex surface after configuring it.
+loopback endpoint. Existing ufoo authentication fields and headers are retained.
+Use `ufoo mcp configure codex --dry-run` to preview the change with credentials
+redacted. Restart the Codex surface after configuring it.
 
 For a host that has not been verified with direct HTTP, keep the compatible
 stdio configuration:
@@ -173,6 +179,10 @@ inherited `UFOO_SUBSCRIBER_ID` before any helper terminal is started:
   activity and injection endpoint, so bus messages can be injected directly.
   These Agents reuse the environment identity and do not register through MCP
   or run a resident bus poll.
+  Current wrappers also provide `UFOO_AGENT_HANDLE` so the Agent can use the
+  shared MCP `dispatch_message`, `ack_bus`, and `report_agent_status` tools.
+  The CLI remains available when MCP is not configured. Receive, activity,
+  and shutdown stay with the wrapper.
 - Externally hosted Agents have no wrapper-provided subscriber environment.
   They register themselves once through MCP `register_agent`, retain the
   returned subscriber plus opaque `agent_handle`, and select the host App's
@@ -191,6 +201,72 @@ Chat is a UI client. The daemon owns project runtime state. Agents communicate
 through bus queues, prompt injection, shared memory, reports, and tool handlers
 instead of importing chat UI code.
 
+MCP sends confirm durable queue persistence, not delivery or task completion.
+The result reports `delivery_status: "queued"`, `queued: <target count>`, and
+`delivered: 0`. Registry reads return up to 100 existing project paths per page;
+follow `next_offset` for more, or set `include_missing: true` for diagnostics.
+To archive abandoned records for deleted workspaces, preview with
+`ufoo project prune`, then run `ufoo project prune --apply`. Original JSON
+records remain recoverable under `~/.ufoo/projects/archive/`.
+
+The stdio proxy reconnects after listener restarts and preserves the Agent's
+registration. It automatically replays reads; an uncertain write returns
+`UFOO_MCP_OUTCOME_UNKNOWN` so its persisted result can be checked before retrying.
+Run `ufoo doctor` to detect outdated Codex MCP configuration, and
+`ufoo mcp configure codex` to refresh it with a backup.
+
+Codex and Claude Code wrappers use native incoming-message transports by
+default for interactive launches on macOS/Linux:
+
+```bash
+ucodex
+uclaude
+```
+
+Codex connects its TUI to a private local app-server. ufoo observes the TUI's
+exact thread response, preserves its requests and approvals, and sends bus
+work through `thread/queue/add`. Claude uses a launch-local stdio MCP channel
+and retains Claude's development-channel confirmation. Its startup probe must
+arrive through the native channel before any bus work is sent. Channels are a
+[Claude research preview](https://code.claude.com/docs/en/channels); account and
+organization availability rules still apply. Existing MCP configuration and
+credentials remain intact; these launches do not write global host settings.
+
+Native receivers admit work while busy. A queue receipt confirms transport
+acceptance, not task completion. Stable delivery IDs and project-local native
+receipts prevent duplicate retries; uncertain writes retain the bus event for
+inspection rather than falling back to keyboard injection. The wrapper still
+owns terminal rendering, identity, activity, and shutdown. Use
+`--no-native-messages` or `UFOO_NATIVE_MESSAGES=0` to select the existing delivery
+path; `--native-messages` explicitly overrides that environment setting.
+Headless commands such as `ucodex exec` and `uclaude --print`, help/version,
+internal agents, and other providers keep their existing launch behavior.
+Launchers check CLI versions against the tested baselines (Codex 0.160.1 and
+Claude Code 2.1.204), and check Codex remote support. Older CLIs use legacy
+delivery with a diagnostic; explicit `--native-messages` requires compatibility.
+`ufoo doctor` shows versions, receiver readiness, and uncertain receipts.
+
+Inspect or explicitly resolve an uncertain receipt:
+
+```bash
+ufoo bus deliveries <subscriber>
+ufoo bus deliveries <subscriber> <receipt-id> accepted
+ufoo bus deliveries <subscriber> <receipt-id> retry
+```
+
+Use `accepted` after verifying the receiving session got the work. `retry`
+allows another submission and can duplicate work if the first submission
+succeeded. A live in-flight submission cannot be resolved.
+
+Codex resume pickers and `resume --last` bind the exact session returned by the
+TUI after selection.
+
+The integration tests use real Unix sockets, WebSockets, and stdio MCP. Optional
+vendor CLI smoke tests use isolated homes and a fake local model endpoint:
+`node scripts/smoke-native-messages.js codex` and
+`node scripts/smoke-native-messages.js claude`. Verified locally with Codex
+0.160.1 and Claude Code 2.1.204.
+
 ## Daily Usage
 
 The normal workflow is to enter chat first, then launch agents and run project
@@ -205,6 +281,20 @@ ufoo -g
 between registered projects. The global daemon starts once and project runtimes
 activate lazily.
 
+The project main agent shares a composable runtime with `ucode`. It can read and
+edit code, run validation, delegate to internal agents, or start independent
+tasks. The global profile selects projects before coding begins. Long tasks run
+in the daemon; disconnecting chat does not cancel them, and reconnecting replays
+runtime events.
+
+Existing controller conversations retain their executor. Use `/session new` to
+start a main conversation with current settings; existing provider/model bindings
+stay pinned. A crash during an active round marks it interrupted: inspect actual
+effects before resubmitting. Writes, shell commands, launches, and uncertain
+deliveries are not automatically replayed. Managed writers share directory
+leases; verified git worktrees can run independently. These checks are not an OS
+sandbox for shell commands. See the [runtime implementation record](AGENT_RUNTIME_REFACTOR.md).
+
 ### Chat Commands
 
 ```text
@@ -215,13 +305,55 @@ activate lazily.
 @reviewer inspect the current diff and list release risks
 
 /status
+/task list
+/task inspect <run-id>
+/task cancel <run-id>
+/answer <interaction-id> <reply>
+/session show
+/session new
 /settings
 /multi
+/multi on
+/multi off
+/multi @reviewer
 /resume list
 /project list
 /project switch 2
 /open /path/to/project
 ```
+
+The dashboard keeps three layouts: main agent only, main plus one selected
+internal agent, and main plus all internal agents. Wrapper and MCP agents stay
+outside the dashboard. Dashboard child launches use internal mode and never
+open an external terminal. A project with no chat or input history shows the
+existing compact ufoo banner as its welcome screen.
+`/multi` or `Ctrl+T` toggles the all-agent layout; from a single-agent layout it
+expands to all agents. `/multi @reviewer` opens just that internal agent.
+`Ctrl+M` opens the all-agent layout and leaves it open when pressed again.
+It requires a terminal that reports modified keys separately from Enter; the
+dashboard requests the enhanced keyboard protocol automatically. In legacy
+terminals where Ctrl+M and Enter share the same encoding, Enter keeps submitting
+input and `/multi` or `Ctrl+T` remains available.
+In either split layout, `Esc` first returns child focus to the main agent;
+when the main agent has focus, `Esc` closes the split. Drafts and running tasks
+are preserved. `Ctrl+Q` or `/multi off` closes either split directly.
+At the main-only root, `Esc` never exits the application; use `Ctrl+C`.
+`Tab` cycles keyboard focus through the main agent and the visible child panes;
+all agents share one bottom input, which follows the selected agent while
+preserving each draft. Each agent's live status sits in its pane's bottom border;
+the main agent's input is labelled `main`, and its status stays independent of
+child selection, focus changes and child activity.
+The selected pane's body uses the terminal's default foreground. In the main-only
+layout, `Tab` selects the first agent in the bottom bar, then advances through
+the agents and wraps to the first. `Esc` returns to
+the main input. Command completion keeps its existing `Tab` behavior in the
+main-only layout.
+Layout commands also work from an internal child's input. Switching layouts
+keeps unsent child drafts and does not stop running agents.
+With a child active, `Down` from an empty input or a footer click opens the Agents
+selector. `Down` then opens provider settings and cron controls; `Esc` returns to
+the same agent's input. In the selector, `Enter` opens the selected internal
+agent. The provider caption in the footer also opens its settings directly.
 
 Direct wrapper commands such as `uclaude`, `ucodex`, `uagy`, `ugrok`, `ukimi`, and
 `ucode` are still available, but the normal ufoo workflow is to work from chat.
@@ -312,7 +444,11 @@ remains available through the controller/CLI rename path.
 Both paths keep idle queue checks outside the LLM. A background PTY alone is
 not a wake mechanism in Codex App.
 
-The poll skill is not installed by postinstall or `skills install all`.
+The poll skill is opt-in. Postinstall refreshes only verified ufoo-owned links;
+user directories, files, and foreign links are preserved. `skills install all`
+refreshes an already-installed optional skill with a backup, but does not
+install it for a new host. Explicit skill installs retain previous contents in
+a sibling `.backup-*` path.
 Wrapper-managed Agents skip MCP registration and external waiting when
 `UFOO_SUBSCRIBER_ID` was present in the Agent's inherited launch environment.
 A value exported later inside a Cursor listener terminal does not rerun this
@@ -378,6 +514,17 @@ ufoo online inbox builder --unread
 The default public service URL is `https://online.ufoo.dev`. Local development
 can run its own relay with `ufoo online server`.
 
+Internal Codex, Claude Code and ucode panes share the standalone ucode TUI's
+transcript renderer and one bottom multiline input. Submitting immediately shows
+loading; waiting, thinking, generating, tool execution, user interaction, errors,
+elapsed time, context usage and plans follow the selected agent's actual events.
+Provider-specific retry, compaction and background task events use the same status
+surface. Text, thinking and tool
+results update from provider events; Ctrl+O expands the newest thinking/tool
+block in the focused pane. Display observations are separate from agent inboxes,
+so peer-routed tasks remain visible without waking the main agent. Output and
+drafts survive switching between main-only, focused-child and all-child layouts.
+
 ### Native ucode Runtime
 
 ```bash
@@ -410,13 +557,17 @@ Common project settings:
   "routerProvider": "",
   "routerModel": "",
   "agentModel": "",
-  "autoResume": true
+  "autoResume": false
 }
 ```
 
 Supported `launchMode` values: `auto`, `internal`, `tmux`, `terminal`, and
 `host`. `controllerMode` accepts `main`, `shadow`, `loop`, and legacy
 compatibility values.
+
+Ordinary provider sessions authenticate through their provider-owned adapters;
+MCP `agent_handle` is never model authentication. Select `agentProvider=ucode`
+to use the ucode gateway settings below.
 
 Global `ucode` settings:
 
@@ -440,8 +591,8 @@ src/
   runtime/        daemon, projects, terminal adapters, contracts, privacy, process helpers
   coordination/   bus, context, memory, history, reports, state, status
   orchestration/  router/controller logic, groups, solo roles
-  agents/         launchers, providers, prompts, internal runner, activity, controller
-  code/           native ucode runtime, launcher, skills, file/shell tools
+  agents/         shared runtime, capabilities, profiles, providers, launchers, prompts
+  code/           native ucode host, launcher, skills, file/shell tools
   tools/          shared controller/worker tool registry and handlers
   online/         relay client/server/runner/token helpers
 ```
@@ -449,10 +600,18 @@ src/
 See [PROJECT.md](PROJECT.md) for the maintainer-facing map and detailed package
 ownership.
 
+Reports share one task ID across lifecycle phases. Pass `--task <id>` to
+`ufoo report`, or `task_id` to MCP `report_agent_status`. Without an explicit ID,
+CLI progress/done/error attach to the agent's single active task; multiple
+active tasks require an ID. Reports are acknowledged after persistence, and
+ordinary bus replies do not imply task completion. `autoResume` defaults to
+`false` consistently before and after partial configuration updates.
+
 ## Development
 
 ```bash
 npm install
+npm run pack:tui
 npm link
 node bin/ufoo.js --help
 npm test
@@ -465,7 +624,7 @@ npm run test:watch
 npm run test:coverage
 ```
 
-The repository is CommonJS, targets Node.js 18+, and ships a Rust TTY UI
+The repository is CommonJS, targets Node.js 18.17+, and ships a Rust TTY UI
 (`crates/ufoo-tui`) as platform binaries under `dist/tui/`.
 
 ## Release

@@ -3,18 +3,21 @@
 /**
  * In-process split-pane session for the Rust TUI host.
  *
- * Two kinds share the same draw/keys (Ctrl+W / Ctrl+Q) and multi.* wire:
- * - "multi"  — /multi; panes track all active agents
+ * Both kinds use Tab to cycle focus and Esc to return focus to chat, then exit.
+ * They share draw and the multi.* wire:
+ * - "multi"  — /multi; panes track active internal agents
  * - "side"   — internal-only activate; single locked agent on the right
  *              (not a user-facing mode name; looks like multi with one agent)
  *
- * The Rust TUI owns TTY / layout / focus. Node owns paneManager (VT +
- * inject.sock) and ships bounded, lossy `multi.pane.frame` events.
+ * The Rust TUI owns TTY / layout / focus. Node owns internal pane buffers
+ * and ships bounded, lossy `multi.pane.frame` events.
  */
 
 const crypto = require("crypto");
+const { isInternalAgentMeta } = require("../runtime/contracts/agentMode");
 const { createPaneManager } = require("../app/chat/multiWindow/paneManager");
-const { vtScreenToAnsiLines } = require("../app/chat/multiWindow/vtFrame");
+const { createAgentSurface } = require("./agentSurface");
+const { readAgentSurfaceEvents } = require("../coordination/history/agentSurface");
 
 const DEFAULT_COLS = 40;
 const DEFAULT_ROWS = 12;
@@ -52,12 +55,13 @@ function createRustMultiSession(options = {}) {
   const {
     getActiveAgents = () => [],
     getAgentMeta = () => ({}),
-    getInjectSockPath = () => "",
-    resolvePaneOptions = () => ({ mode: "socket" }),
+    resolvePaneOptions = () => ({ mode: "internal" }),
     onInternalSubmit = () => {},
     publish = () => {},
     publishLossy = null,
     getLabel = (id) => id,
+    projectRoot = "",
+    getProjectRoot = () => projectRoot,
   } = options;
 
   let sessionId = null;
@@ -74,36 +78,101 @@ function createRustMultiSession(options = {}) {
   let paneManager = null;
   /** @type {Map<string, number>} last successful frame emit per agent */
   const lastEmitAt = new Map();
+  const internalDrafts = new Map();
+  const surfaces = new Map();
+  const replayedAgents = new Set();
+
+  function surfaceFor(agentId) {
+    if (!isInternalAgentMeta(getAgentMeta(agentId))) return null;
+    if (!surfaces.has(agentId)) {
+      const surface = createAgentSurface();
+      const opts = ensurePaneMeta(agentId);
+      const initial = (opts.initialLines || []).join("\n");
+      if (initial) surface.apply("transcript.append", { kind: "meta", text: initial });
+      surfaces.set(agentId, { surface, seq: 0, structured: false });
+    }
+    return surfaces.get(agentId);
+  }
+
+  function syncActivity(agentId) {
+    const view = surfaceFor(agentId);
+    if (!view || view.structured) return;
+    const meta = getAgentMeta(agentId) || {};
+    const key = JSON.stringify([meta.activity_state, meta.activity_detail, meta.activity_since]);
+    if (view.activityKey === key) return;
+    view.activityKey = key;
+    if (meta.activity_state) acceptEvent(agentId, { type: "activity", state: meta.activity_state,
+      detail: meta.activity_detail || "", ts: meta.activity_since, started_at: Date.parse(meta.activity_since) || 0,
+      authoritative: true });
+  }
+
+  function acceptEvent(agentId, event, seq = 0) {
+    const view = surfaceFor(agentId);
+    if (!view || (seq > 0 && seq <= view.seq)) return false;
+    if (event.type === "submission_failed") {
+      const pane = paneManager?.getPane(agentId);
+      if (pane && !pane.internalInput) {
+        pane.internalInput = String(event.message || "");
+        pane.internalCursor = pane.internalInput.length;
+      } else if (!pane && !internalDrafts.get(agentId)?.initialInput) {
+        internalDrafts.set(agentId, { initialInput: String(event.message || ""), initialCursor: String(event.message || "").length });
+      }
+    }
+    if (seq > 0) { view.seq = seq; view.structured = true; }
+    if (event.type === "activity") event = { ...event, authoritative: !view.structured };
+    const changed = view.surface.accept(event);
+    if (changed) markDirty(agentId);
+    return changed;
+  }
+
+  function replaySurfaces() {
+    const ids = listInternalAgentIds().filter((id) => !replayedAgents.has(id));
+    const root = getProjectRoot();
+    if (!root || !ids.length) return;
+    const events = readAgentSurfaceEvents(root, ids);
+    for (const id of new Set(events.map((event) => event.publisher))) {
+      const view = surfaceFor(id);
+      if (view && !view.structured) view.surface.apply("transcript.reset", { entries: [] });
+    }
+    for (const event of events) {
+      acceptEvent(event.publisher, event.data.surface, event.seq);
+    }
+    for (const id of ids) replayedAgents.add(id);
+  }
+
+  function rememberDraft(agentId) {
+    const pane = paneManager && paneManager.getPane(agentId);
+    if (pane && pane.mode === "internal") {
+      internalDrafts.set(agentId, { initialInput: pane.internalInput, initialCursor: pane.internalCursor, scrollOffset: pane.scrollOffset });
+    }
+  }
 
   function paneAgentIds() {
     if (kind === KIND_SIDE && lockedAgentIds.length > 0) {
-      return lockedAgentIds.slice();
+      return lockedAgentIds.filter((id) => isInternalAgentMeta(getAgentMeta(id)));
     }
-    return normalizeAgentList(getActiveAgents);
+    return normalizeAgentList(getActiveAgents).filter((id) => isInternalAgentMeta(getAgentMeta(id)));
   }
 
   function currentPanesDesc() {
     return paneAgentIds().map((id) => {
-      const opts = paneMeta.get(id) || (() => {
-        try { return resolvePaneOptions(id) || {}; } catch { return {}; }
-      })();
       return {
         agent_id: id,
         label: String(getLabel(id) || id),
-        mode: opts.mode === "internal" ? "internal" : "socket",
+        mode: "internal",
       };
     });
   }
 
   function ensurePaneMeta(id) {
     if (paneMeta.has(id)) return paneMeta.get(id);
-    let opts = { mode: "socket" };
+    let opts = { mode: "internal" };
     try {
       opts = resolvePaneOptions(id) || opts;
     } catch {
       // ignore
     }
-    if (!opts.mode) opts.mode = "socket";
+    if (!opts.mode) opts = { ...opts, mode: "internal" };
     paneMeta.set(id, opts);
     return opts;
   }
@@ -134,7 +203,7 @@ function createRustMultiSession(options = {}) {
       const last = lastEmitAt.get(id) || 0;
       if (now - last < MIN_EMIT_GAP_MS) {
         // Keep dirty; schedule another pass — drop intermediate by only
-        // re-emitting once the gap elapses (VT snapshot is always current).
+        // re-emitting once the gap elapses (transcript snapshot is always current).
         dirty.add(id);
         deferred = true;
         continue;
@@ -149,12 +218,7 @@ function createRustMultiSession(options = {}) {
     if (!active || !paneManager) return;
     const pane = paneManager.getPane(agentId);
     if (!pane) return;
-    const size = paneSizes.get(agentId) || { cols: DEFAULT_COLS, rows: DEFAULT_ROWS };
-    const lines = vtScreenToAnsiLines(pane.vt, {
-      maxCols: Math.max(1, size.cols),
-      maxRows: Math.max(1, size.rows),
-    });
-    const opts = paneMeta.get(agentId) || {};
+    const view = pane.surface.snapshot();
     const meta = (() => {
       try { return getAgentMeta(agentId) || {}; } catch { return {}; }
     })();
@@ -162,15 +226,20 @@ function createRustMultiSession(options = {}) {
       session_id: sessionId,
       agent_id: agentId,
       label: String(getLabel(agentId) || agentId),
-      mode: opts.mode === "internal" ? "internal" : "socket",
-      lines,
-      status: String(meta.activity_state || meta.state || "ready"),
+      mode: "internal",
+      entries: view.entries,
+      status: view.status || String(meta.activity_state || "ready"),
+      busy: view.busy,
+      usage: view.usage,
+      plan: view.plan,
+      revision: view.revision,
+      started_at: view.started_at,
+      activity_detail: String(meta.activity_detail || ""),
       viewport_rev: viewportRev,
+      scroll_offset: pane.scrollOffset,
     };
-    if (opts.mode === "internal") {
-      payload.input = String(pane.internalInput || "");
-      payload.cursor = Number.isFinite(pane.internalCursor) ? pane.internalCursor : 0;
-    }
+    payload.input = String(pane.internalInput || "");
+    payload.cursor = Number.isFinite(pane.internalCursor) ? pane.internalCursor : 0;
     const emit = typeof publishLossy === "function" ? publishLossy : publish;
     try { emit("multi.pane.frame", payload); } catch {}
   }
@@ -185,17 +254,22 @@ function createRustMultiSession(options = {}) {
   function ensurePaneManager() {
     if (paneManager) return paneManager;
     paneManager = createPaneManager({
-      getInjectSockPath,
       onPaneOutput: (agentId) => markDirty(agentId),
       onInternalSubmit: (agentId, message) => {
-        try { onInternalSubmit(agentId, message); } catch {}
         markDirty(agentId);
+        return onInternalSubmit(agentId, message);
       },
     });
     return paneManager;
   }
 
   function syncAgents() {
+    const live = new Set(listInternalAgentIds());
+    for (const id of surfaces.keys()) if (!live.has(id)) {
+      surfaces.delete(id); replayedAgents.delete(id); internalDrafts.delete(id);
+    }
+    replaySurfaces();
+    for (const id of live) syncActivity(id);
     if (!paneManager) return;
     const ids = paneAgentIds();
     const existing = new Set(paneManager.getAgentIds());
@@ -204,13 +278,17 @@ function createRustMultiSession(options = {}) {
       const opts = ensurePaneMeta(id);
       const size = paneSizes.get(id) || { cols: DEFAULT_COLS, rows: DEFAULT_ROWS };
       if (!existing.has(id)) {
-        paneManager.addAgent(id, size.cols, size.rows, opts);
+        paneManager.addAgent(id, size.cols, size.rows, { ...opts, surface: surfaceFor(id).surface, ...internalDrafts.get(id) });
+        paneManager.sendResize(id, size.cols, size.rows, size.inputCols || size.cols);
         markDirty(id);
         changed = true;
+      } else {
+        markDirty(id);
       }
     }
     for (const id of existing) {
       if (!ids.includes(id)) {
+        rememberDraft(id);
         paneManager.removeAgent(id);
         paneSizes.delete(id);
         paneMeta.delete(id);
@@ -220,7 +298,7 @@ function createRustMultiSession(options = {}) {
     }
     // Only republish multi.set when membership actually changes. Spamming
     // multi.set on every daemon status tick forced Rust to bump viewport_rev
-    // and drop in-flight pane frames (Ctrl+W felt stuck).
+    // and drop in-flight pane frames (focus switching felt stuck).
     if (active && changed) {
       rev += 1;
       publishSet();
@@ -258,10 +336,6 @@ function createRustMultiSession(options = {}) {
     if (active && kind === nextKind && nextKind === KIND_MULTI) {
       return { ok: true, session_id: sessionId, kind };
     }
-    if (active) {
-      stop();
-    }
-
     let ids;
     if (nextKind === KIND_SIDE) {
       const raw = Array.isArray(options.agentIds) ? options.agentIds : [];
@@ -269,23 +343,27 @@ function createRustMultiSession(options = {}) {
       if (!id) {
         return { ok: false, error: "side requires one agent_id" };
       }
+      if (!isInternalAgentMeta(getAgentMeta(id))) return { ok: false, error: "Dashboard supports internal agents only" };
       ids = [id];
-      lockedAgentIds = [id];
     } else {
-      lockedAgentIds = [];
-      ids = normalizeAgentList(getActiveAgents);
+      ids = normalizeAgentList(getActiveAgents).filter((id) => isInternalAgentMeta(getAgentMeta(id)));
       if (ids.length === 0) {
         return { ok: false, error: "No active agents for multi-window mode" };
       }
     }
+
+    const previousFocus = active ? { ...focus } : null;
+    if (active) stop();
+    lockedAgentIds = nextKind === KIND_SIDE ? ids.slice() : [];
 
     kind = nextKind;
     sessionId = generateSessionId(kind);
     active = true;
     rev = 1;
     viewportRev = 0;
-    const focusOpt = options.focus && typeof options.focus === "object" ? options.focus : null;
-    if (focusOpt && focusOpt.target === "agent" && String(focusOpt.agent_id || "").trim()) {
+    const focusOpt = options.focus && typeof options.focus === "object" ? options.focus
+      : nextKind === KIND_MULTI ? previousFocus : null;
+    if (focusOpt && focusOpt.target === "agent" && ids.includes(String(focusOpt.agent_id || "").trim())) {
       focus = {
         target: "agent",
         agent_id: String(focusOpt.agent_id).trim(),
@@ -305,7 +383,8 @@ function createRustMultiSession(options = {}) {
     return { ok: true, session_id: sessionId, kind };
   }
 
-  function stop() {
+  function stop({ clearDrafts = false } = {}) {
+    if (clearDrafts) { internalDrafts.clear(); surfaces.clear(); replayedAgents.clear(); }
     if (!active && !paneManager) return;
     if (flushTimer) {
       clearTimeout(flushTimer);
@@ -313,6 +392,7 @@ function createRustMultiSession(options = {}) {
     }
     dirty.clear();
     if (paneManager) {
+      if (!clearDrafts) for (const id of paneManager.getAgentIds()) rememberDraft(id);
       try { paneManager.disconnectAll(); } catch {}
       paneManager = null;
     }
@@ -337,6 +417,16 @@ function createRustMultiSession(options = {}) {
     focus = { target: "chat", agent_id: "" };
   }
 
+  function setLayout(layout = "toggle", agentId = "") {
+    if (layout === "main" || (layout === "toggle" && isMultiKind())) {
+      stop();
+      return { ok: true, layout: "main" };
+    }
+    if (layout === "all" || layout === "toggle") return start({ kind: KIND_MULTI });
+    if (layout === "single") return start({ kind: KIND_SIDE, agentIds: [agentId] });
+    return { ok: false, error: "unknown layout" };
+  }
+
   function handleViewport(payload = {}) {
     if (!active || !paneManager) return { ok: false, error: "multi not active" };
     if (payload.session_id && payload.session_id !== sessionId) {
@@ -354,9 +444,10 @@ function createRustMultiSession(options = {}) {
       if (!id) continue;
       const cols = Math.max(1, Math.floor(Number(spec.cols) || DEFAULT_COLS));
       const rows = Math.max(1, Math.floor(Number(spec.rows) || DEFAULT_ROWS));
-      paneSizes.set(id, { cols, rows });
+      const inputCols = Math.max(1, Math.floor(Number(spec.input_cols) || cols));
+      paneSizes.set(id, { cols, rows, inputCols });
       if (paneManager.getPane(id)) {
-        try { paneManager.sendResize(id, cols, rows); } catch {}
+        try { paneManager.sendResize(id, cols, rows, inputCols); } catch {}
         markDirty(id);
       }
     }
@@ -378,6 +469,21 @@ function createRustMultiSession(options = {}) {
     }
     if (!data) return { ok: false, error: "empty data" };
     try { paneManager.sendInputToAgent(agentId, data); } catch {}
+    return { ok: true };
+  }
+
+  function handleScroll(payload = {}) {
+    if (!active || !paneManager) return { ok: false, error: "multi not active" };
+    if (payload.session_id && payload.session_id !== sessionId) return { ok: false, error: "stale session_id" };
+    const agentId = String(payload.agent_id || "").trim();
+    const lines = Math.max(-2000, Math.min(2000, Math.trunc(Number(payload.lines) || 0)));
+    const maxOffset = Number.isFinite(Number(payload.max_offset)) ? Math.max(0, Number(payload.max_offset)) : 2000;
+    const pane = paneManager.getPane(agentId);
+    if (!pane) return { ok: false, error: "agent pane not found" };
+    if (Number.isFinite(Number(payload.offset))) {
+      pane.scrollOffset = Math.max(0, Math.min(maxOffset, Math.trunc(Number(payload.offset))));
+      markDirty(agentId);
+    } else paneManager.scrollPane(agentId, lines, maxOffset);
     return { ok: true };
   }
 
@@ -445,12 +551,16 @@ function createRustMultiSession(options = {}) {
   }
 
   function listInternalAgentIds() {
-    const out = [];
-    for (const id of paneAgentIds()) {
-      const opts = paneMeta.get(id) || ensurePaneMeta(id);
-      if (opts && opts.mode === "internal") out.push(id);
-    }
-    return out;
+    return normalizeAgentList(getActiveAgents).filter((id) => isInternalAgentMeta(getAgentMeta(id)));
+  }
+
+  function handleExpand(payload = {}) {
+    if (!active || payload.session_id !== sessionId) return { ok: false, error: "stale session_id" };
+    const view = surfaces.get(payload.agent_id);
+    if (!view || !paneManager?.getPane(payload.agent_id)) return { ok: false, error: "agent pane not found" };
+    view.surface.toggleExpanded();
+    markDirty(payload.agent_id);
+    return { ok: true };
   }
 
   function writeToPane(agentId, data) {
@@ -466,6 +576,7 @@ function createRustMultiSession(options = {}) {
 
   return {
     start,
+    setLayout,
     stop,
     isActive,
     getSessionId,
@@ -475,6 +586,7 @@ function createRustMultiSession(options = {}) {
     getSnapshot,
     handleViewport,
     handleRaw,
+    handleScroll,
     handleFocus,
     focusAgent,
     handleExit,
@@ -482,6 +594,9 @@ function createRustMultiSession(options = {}) {
     markDirty,
     writeToPane,
     listInternalAgentIds,
+    acceptEvent,
+    hasStructuredEvents: (id) => Boolean(surfaces.get(id)?.structured),
+    handleExpand,
   };
 }
 

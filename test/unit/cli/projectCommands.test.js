@@ -14,6 +14,9 @@ function runCli(args = [], options = {}) {
     env: {
       ...process.env,
       ...(options.env || {}),
+      UFOO_PROJECT_RUNTIME_DIR: options.env?.HOME
+        ? path.join(options.env.HOME, ".ufoo", "projects", "runtime")
+        : process.env.UFOO_PROJECT_RUNTIME_DIR,
     },
   });
 }
@@ -79,5 +82,25 @@ describe("cli project commands", () => {
 
     expect(result.status).toBe(2);
     expect(result.stderr).toContain("project switch is chat-only in v1");
+  });
+
+  test("project prune previews before archiving abandoned registrations", () => {
+    const gone = path.join(sandboxRoot, "deleted");
+    fs.mkdirSync(gone);
+    upsertProjectRuntime({
+      projectRoot: gone, daemonPid: 99999999,
+      lastSeen: "2026-01-01T00:00:00Z",
+    }, { runtimeDir });
+    fs.rmdirSync(gone);
+    const options = { cwd: projectRoot, env: { HOME: homeDir } };
+    const preview = runCli(["project", "prune", "--json"], options);
+    expect(preview.status).toBe(0);
+    expect(JSON.parse(preview.stdout)).toMatchObject({ dry_run: true, count: 1 });
+    const applied = runCli(["project", "prune", "--apply", "--json"], options);
+    expect(applied.status).toBe(0);
+    const result = JSON.parse(applied.stdout);
+    expect(result).toMatchObject({ dry_run: false, count: 1 });
+    expect(fs.readdirSync(result.archive_dir)).toHaveLength(1);
+    expect(fs.readdirSync(runtimeDir).filter((file) => file.endsWith(".json"))).toHaveLength(1);
   });
 });

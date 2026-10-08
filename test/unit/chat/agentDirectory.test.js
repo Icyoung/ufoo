@@ -8,6 +8,23 @@ const {
 } = require("../../../src/app/chat/agentDirectory");
 
 describe("chat agentDirectory helpers", () => {
+  test("internal snapshots exclude wrappers, MCP agents and unknown modes from all maps", () => {
+    const data = {
+      active: ["codex:child", "claude:child", "codex:wrapper", "claude:mcp", "codex:unknown"],
+      active_meta: [
+        { id: "codex:child", nickname: "coder", launch_mode: "internal" },
+        { id: "claude:child", nickname: "reviewer", launchMode: "internal" },
+        { id: "codex:wrapper", nickname: "wrapper", launch_mode: "terminal" },
+        { id: "claude:mcp", nickname: "mcp", launch_mode: "external" },
+      ],
+    };
+    const snapshot = normalizeStatusToAgentsSnapshot(data, { internalOnly: true });
+    expect(snapshot.agents.map((row) => row.id)).toEqual(["codex:child", "claude:child"]);
+    expect([...snapshot.metaMap.keys()]).toEqual(["codex:child", "claude:child"]);
+    expect([...snapshot.labelMap.values()]).toEqual(["coder", "reviewer"]);
+    expect(snapshot.footer).toBe("coder · reviewer");
+    expect(normalizeStatusToAgentsSnapshot(data).agents).toHaveLength(5);
+  });
   test("buildAgentMaps prefers meta nickname, then fallback, then id", () => {
     const activeAgents = ["a:1", "b:2", "c:3"];
     const metaList = [{ id: "a:1", nickname: "alpha", display_nickname: "alpha", launch_mode: "internal" }];

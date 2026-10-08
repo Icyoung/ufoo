@@ -3,6 +3,7 @@
 const IPC_REQUEST_TYPES = {
   STATUS: "status",
   PROMPT: "prompt",
+  AGENT_RUNTIME: "agent_runtime",
   CRON: "cron",
   BUS_SEND: "bus_send",
   BUS_WATCH: "bus_watch",
@@ -30,6 +31,8 @@ const IPC_REQUEST_TYPES = {
 const IPC_RESPONSE_TYPES = {
   STATUS: "status",
   RESPONSE: "response",
+  RUNTIME_EVENT: "runtime_event",
+  RUNTIME_RESULT: "runtime_result",
   BUS: "bus",
   ERROR: "error",
   BUS_SEND_OK: "bus_send_ok",

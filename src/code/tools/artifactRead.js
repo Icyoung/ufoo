@@ -13,7 +13,7 @@ function runArtifactReadTool(args = {}, options = {}) {
     return { ok: false, error: "sessionId is required for artifact_read" };
   }
 
-  const loaded = loadArtifact(workspaceRoot, sessionId, artifactId);
+  const loaded = loadArtifact(workspaceRoot, sessionId, artifactId, { namespace: options.artifactNamespace || "ucode" });
   if (!loaded.ok || !loaded.artifact) {
     return { ok: false, error: loaded.error || "artifact not found", artifactId };
   }

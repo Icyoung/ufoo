@@ -40,6 +40,17 @@ describe("multiPaneBusMirror", () => {
     expect(writes[0].text).toContain("hello from alice");
   });
 
+  test("streamed work starts each terminal line at column zero", () => {
+    const { createPaneManager } = require("../../../src/app/chat/multiWindow/paneManager");
+    const manager = createPaneManager();
+    manager.addAgent("codex:work", 30, 8, { mode: "internal" });
+    writeMultiPaneBusEvent({ publisher: "codex:work", message: JSON.stringify({ stream: true, delta: "first\nsecond\nthird" }) }, {
+      agentIds: ["codex:work"], writeToPane: manager.writeToPane,
+    });
+    expect(manager.getPane("codex:work").surface.snapshot().entries[0].text).toBe("first\nsecond\nthird");
+    manager.disconnectAll();
+  });
+
   test("writeMultiPaneBusEvent ignores outbound chat echoes", () => {
     const writes = [];
     writeMultiPaneBusEvent(

@@ -4,7 +4,7 @@
  * Shared launch-mode / agent-provider options for Ink + Rust chat hosts.
  */
 
-const MODE_OPTIONS = Object.freeze(["auto", "host", "terminal", "tmux", "internal"]);
+const MODE_OPTIONS = Object.freeze(["internal"]);
 
 const PROVIDER_OPTIONS = Object.freeze([
   { label: "codex", value: "codex-cli" },
@@ -14,8 +14,8 @@ const PROVIDER_OPTIONS = Object.freeze([
 ]);
 
 function buildSettingsSnapshot(settings = {}) {
-  const { normalizeLaunchMode, normalizeAgentProvider } = require("../config");
-  const launchMode = normalizeLaunchMode(settings.launchMode || "auto");
+  const { normalizeAgentProvider } = require("../config");
+  const launchMode = "internal";
   const agentProvider = normalizeAgentProvider(settings.agentProvider || "codex-cli");
   return {
     launch_mode: launchMode,
@@ -29,7 +29,10 @@ function applySettingsPatch(projectRoot, patch = {}) {
   const { saveConfig, normalizeLaunchMode, normalizeAgentProvider } = require("../config");
   const next = {};
   if (patch.launch_mode != null || patch.launchMode != null) {
-    next.launchMode = normalizeLaunchMode(patch.launch_mode || patch.launchMode);
+    if (normalizeLaunchMode(patch.launch_mode || patch.launchMode) !== "internal") {
+      return { ok: false, error: "ufoo dashboard uses internal agents only" };
+    }
+    next.launchMode = "internal";
   }
   if (patch.agent_provider != null || patch.agentProvider != null) {
     next.agentProvider = normalizeAgentProvider(patch.agent_provider || patch.agentProvider);

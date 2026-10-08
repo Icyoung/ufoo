@@ -14,7 +14,7 @@ function hasGlobalModeFlag(args = []) {
 }
 
 function printMcpHelp() {
-  console.log("Usage: ufoo mcp [status|restart|configure codex] [options]");
+  console.log("Usage: ufoo mcp [status|restart|configure codex|channel] [options]");
   console.log("");
   console.log("Run the stdio compatibility proxy or control the global MCP listener.");
   console.log("");
@@ -59,6 +59,8 @@ async function main() {
     } else if (operation === "configure") {
       const { runMcpConfigureCli } = require("../src/runtime/daemon/mcpConfigure");
       runMcpConfigureCli(argv[2], { dryRun: argv.includes("--dry-run") });
+    } else if (operation === "channel") {
+      await require("../src/runtime/daemon/claudeChannel").runClaudeChannel();
     } else {
       await runMcpServer({
         autoStart: !argv.includes("--no-auto-start"),

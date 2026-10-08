@@ -12,7 +12,7 @@ const {
   extractAgentReportControl,
   getReportControlQueueFile,
   isAgentReportControlEvent,
-  takeReportControlEvents,
+  drainReportControlEvents,
 } = require("../../../src/runtime/daemon/reportControlBus");
 
 describe("daemon report control bus", () => {
@@ -136,7 +136,8 @@ describe("daemon report control bus", () => {
       { requestId: "report-req-3" },
     );
 
-    const events = takeReportControlEvents(projectRoot);
+    const events = [];
+    await drainReportControlEvents(projectRoot, async (event) => { events.push(event); });
     expect(events).toHaveLength(1);
     expect(events[0]).toEqual(expect.objectContaining({
       event: REPORT_CONTROL_EVENT,
@@ -147,6 +148,54 @@ describe("daemon report control bus", () => {
       request_id: "report-req-3",
       report: expect.objectContaining({ task_id: "task-3" }),
     }));
-    expect(takeReportControlEvents(projectRoot)).toEqual([]);
+    expect(await drainReportControlEvents(projectRoot, async () => {})).toBe(0);
   });
+  test("failed persistence restores the claim and never acknowledges ahead of the handler", async () => {
+    await enqueueAgentReport(projectRoot, { agent_id: "a", phase: "start" });
+    const { DeliveryQueue } = require("../../../src/coordination/bus/deliveryQueue");
+    const queue = new DeliveryQueue(getReportControlQueueFile(projectRoot));
+    await expect(drainReportControlEvents(projectRoot, async () => {
+      expect(queue.processingFiles()).toHaveLength(1);
+      throw new Error("persistence failure");
+    })).rejects.toThrow("persistence failure");
+    expect(queue.readPending()).toHaveLength(1);
+    expect(queue.processingFiles()).toHaveLength(0);
+    expect(await drainReportControlEvents(projectRoot, async () => true)).toBe(1);
+  });
+
+  test("implicit lifecycle reports share a task ID, including queued starts", async () => {
+    const first = await enqueueAgentReport(projectRoot, { agent_id: "a", phase: "start" });
+    const progress = await enqueueAgentReport(projectRoot, { agent_id: "a", phase: "progress" });
+    const done = await enqueueAgentReport(projectRoot, { agent_id: "a", phase: "done" });
+    expect(progress.report.task_id).toBe(first.report.task_id);
+    expect(done.report.task_id).toBe(first.report.task_id);
+    await drainReportControlEvents(projectRoot, async (event) => {
+      await require("../../../src/runtime/daemon/reporting").recordAgentReport({ projectRoot, report: event.data.report });
+      return true;
+    });
+    expect(require("../../../src/coordination/report/store").readReportSummary(projectRoot).pending_total).toBe(0);
+  });
+
+  test("ambiguous implicit reports require an explicit task ID", async () => {
+    await enqueueAgentReport(projectRoot, { agent_id: "a", phase: "start", task_id: "one" });
+    await enqueueAgentReport(projectRoot, { agent_id: "a", phase: "start", task_id: "two" });
+    await expect(enqueueAgentReport(projectRoot, { agent_id: "a", phase: "done" })).rejects.toThrow("Multiple active tasks");
+  });
+
+  test("retry after persistence does not duplicate reports or reopen completed work", async () => {
+    const { recordAgentReport } = require("../../../src/runtime/daemon/reporting");
+    const store = require("../../../src/coordination/report/store");
+    await enqueueAgentReport(projectRoot, { agent_id: "a", phase: "done", task_id: "one" });
+    await expect(drainReportControlEvents(projectRoot, async (event) => {
+      await recordAgentReport({ projectRoot, report: event.data.report });
+      throw new Error("crash before ack");
+    })).rejects.toThrow("crash before ack");
+    await drainReportControlEvents(projectRoot, async (event) => {
+      await recordAgentReport({ projectRoot, report: event.data.report });
+    });
+    expect(store.listReports(projectRoot)).toHaveLength(1);
+    expect(store.listControllerInboxEntries(projectRoot)).toHaveLength(1);
+    expect(store.readReportSummary(projectRoot).pending_total).toBe(0);
+  });
+
 });

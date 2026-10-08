@@ -1,4 +1,5 @@
 const fs = require("fs");
+const { withFileLock } = require("../../coordination/state/fileLock");
 const os = require("os");
 const path = require("path");
 const { canonicalProjectRoot, buildProjectId, trimTrailingSlashes } = require("./projectId");
@@ -33,6 +34,7 @@ function canonicalizeForRecord(projectRoot) {
 
 function resolveRuntimeDir(options = {}) {
   if (options.runtimeDir) return options.runtimeDir;
+  if (process.env.UFOO_PROJECT_RUNTIME_DIR) return path.resolve(process.env.UFOO_PROJECT_RUNTIME_DIR);
   return path.join(os.homedir(), ".ufoo", "projects", "runtime");
 }
 
@@ -117,6 +119,16 @@ function isSocketAlive(socketPath) {
   }
 }
 
+function projectPathExists(projectRoot) {
+  try {
+    fs.statSync(projectRoot);
+    return true;
+  } catch (err) {
+    // Permission and transient IO failures are not proof of deletion.
+    return !["ENOENT", "ENOTDIR"].includes(err.code);
+  }
+}
+
 function normalizeStatus(value, fallback = "running") {
   const raw = String(value || "").trim().toLowerCase();
   if (
@@ -165,52 +177,58 @@ function upsertProjectRuntime(entry = {}, options = {}) {
   const projectRoot = entry.projectRoot || entry.project_root;
   if (!projectRoot) throw new Error("projectRoot is required");
 
-  const existing = readProjectRuntimeByRoot(projectRoot, options) || {};
-  const normalized = normalizeRuntimeEntry({
-    ...existing,
-    ...entry,
-    project_root: projectRoot,
-    project_name: entry.projectName || entry.project_name || existing.project_name,
-    daemon_pid: parseDaemonPid(entry.daemonPid ?? entry.daemon_pid, existing.daemon_pid),
-    socket_path: entry.socketPath || entry.socket_path || existing.socket_path,
-    status: normalizeStatus(entry.status, existing.status || "running"),
-    last_seen: normalizeIsoTimestamp(entry.lastSeen || entry.last_seen || new Date().toISOString()),
-    last_switch_at: entry.lastSwitchAt || entry.last_switch_at || existing.last_switch_at,
-  }, projectRoot);
+  return withFileLock(runtimeFilePathByProjectRoot(projectRoot, options), () => {
+    const existing = readProjectRuntimeByRoot(projectRoot, options) || {};
+    const normalized = normalizeRuntimeEntry({
+      ...existing,
+      ...entry,
+      project_root: projectRoot,
+      project_name: entry.projectName || entry.project_name || existing.project_name,
+      daemon_pid: parseDaemonPid(entry.daemonPid ?? entry.daemon_pid, existing.daemon_pid),
+      socket_path: entry.socketPath || entry.socket_path || existing.socket_path,
+      status: normalizeStatus(entry.status, existing.status || "running"),
+      last_seen: normalizeIsoTimestamp(entry.lastSeen || entry.last_seen || new Date().toISOString()),
+      last_switch_at: entry.lastSwitchAt || entry.last_switch_at || existing.last_switch_at,
+    }, projectRoot);
 
-  const filePath = runtimeFilePathByProjectId(normalized.project_id, options);
-  writeJsonAtomic(filePath, normalized);
-  return normalized;
+    const filePath = runtimeFilePathByProjectId(normalized.project_id, options);
+    writeJsonAtomic(filePath, normalized);
+    return normalized;
+  });
 }
 
 function markProjectStopped(projectRoot, options = {}) {
   if (!projectRoot) return null;
-  const existing = readProjectRuntimeByRoot(projectRoot, options);
-  const paths = getUfooPaths(canonicalizeForRecord(projectRoot));
-  return upsertProjectRuntime({
-    projectRoot,
-    projectName: existing ? existing.project_name : path.basename(projectRoot),
-    daemonPid: existing ? existing.daemon_pid : null,
-    socketPath: existing ? existing.socket_path : paths.ufooSock,
-    status: "stopped",
-    lastSeen: new Date().toISOString(),
-    lastSwitchAt: existing ? existing.last_switch_at : undefined,
-  }, options);
+  return withFileLock(runtimeFilePathByProjectRoot(projectRoot, options), () => {
+    const existing = readProjectRuntimeByRoot(projectRoot, options);
+    const paths = getUfooPaths(canonicalizeForRecord(projectRoot));
+    return upsertProjectRuntime({
+      projectRoot,
+      projectName: existing ? existing.project_name : path.basename(projectRoot),
+      daemonPid: existing ? existing.daemon_pid : null,
+      socketPath: existing ? existing.socket_path : paths.ufooSock,
+      status: "stopped",
+      lastSeen: new Date().toISOString(),
+      lastSwitchAt: existing ? existing.last_switch_at : undefined,
+    }, options);
+  });
 }
 
 function markProjectDormant(projectRoot, options = {}) {
   if (!projectRoot) return null;
-  const existing = readProjectRuntimeByRoot(projectRoot, options);
-  const paths = getUfooPaths(canonicalizeForRecord(projectRoot));
-  return upsertProjectRuntime({
-    projectRoot,
-    projectName: existing ? existing.project_name : path.basename(projectRoot),
-    daemonPid: existing ? existing.daemon_pid : process.pid,
-    socketPath: existing ? existing.socket_path : paths.ufooSock,
-    status: "dormant",
-    lastSeen: new Date().toISOString(),
-    lastSwitchAt: existing ? existing.last_switch_at : undefined,
-  }, options);
+  return withFileLock(runtimeFilePathByProjectRoot(projectRoot, options), () => {
+    const existing = readProjectRuntimeByRoot(projectRoot, options);
+    const paths = getUfooPaths(canonicalizeForRecord(projectRoot));
+    return upsertProjectRuntime({
+      projectRoot,
+      projectName: existing ? existing.project_name : path.basename(projectRoot),
+      daemonPid: existing ? existing.daemon_pid : process.pid,
+      socketPath: existing ? existing.socket_path : paths.ufooSock,
+      status: "dormant",
+      lastSeen: new Date().toISOString(),
+      lastSwitchAt: existing ? existing.last_switch_at : undefined,
+    }, options);
+  });
 }
 
 function validateProjectRuntime(entry = {}, options = {}) {
@@ -239,6 +257,7 @@ function validateProjectRuntime(entry = {}, options = {}) {
     ...entry,
     status,
     validation: {
+      project_exists: projectPathExists(entry.project_root),
       pid_alive: pidAlive,
       socket_alive: socketAlive,
       stale_ttl_ms: staleTtlMs,
@@ -246,6 +265,45 @@ function validateProjectRuntime(entry = {}, options = {}) {
       validated_at: new Date(nowMs).toISOString(),
     },
   };
+}
+
+// Archive only abandoned registrations whose workspace is gone. Keep dormant
+// projects, live daemons, and recent records. Reads never perform this mutation.
+function archiveMissingProjectRuntimes(options = {}) {
+  const runtimeDir = resolveRuntimeDir(options);
+  const archiveDir = options.archiveDir || path.join(path.dirname(runtimeDir), "archive", String(Date.now()));
+  const nowMs = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
+  const archived = [];
+  if (!fs.existsSync(runtimeDir)) return { count: 0, archive_dir: archiveDir, projects: archived };
+  for (const file of fs.readdirSync(runtimeDir).filter((name) => name.endsWith(".json")).sort()) {
+    const source = path.join(runtimeDir, file);
+    try {
+      const row = withFileLock(source, () => {
+        if (!fs.lstatSync(source).isFile()) return null;
+        const raw = fs.readFileSync(source, "utf8");
+        const parsed = JSON.parse(raw);
+        if (!parsed.project_root || !parsed.last_seen || !Number.isFinite(Date.parse(parsed.last_seen))) return null;
+        const row = validateProjectRuntime(normalizeRuntimeEntry(parsed), { ...options, nowMs });
+        if (row.validation.project_exists || row.validation.pid_alive || row.validation.socket_alive
+          || row.validation.age_ms <= DEFAULT_STALE_TTL_MS) return null;
+        if (options.dryRun !== false) {
+          return row;
+        }
+        // An upsert may have refreshed the record since it was examined.
+        if (fs.readFileSync(source, "utf8") !== raw || projectPathExists(row.project_root)) return null;
+        ensureDir(archiveDir);
+        const destination = path.join(archiveDir, file);
+        if (fs.existsSync(destination)) throw new Error(`Archive already exists: ${destination}`);
+        fs.renameSync(source, destination);
+        return row;
+      });
+      if (row) archived.push(row);
+    } catch (err) {
+      if (err.code === "ENOENT" || err instanceof SyntaxError) continue;
+      throw err;
+    }
+  }
+  return { count: archived.length, archive_dir: archiveDir, projects: archived };
 }
 
 function listProjectRuntimes(options = {}) {
@@ -298,4 +356,6 @@ module.exports = {
   listProjectRuntimes,
   getCurrentProjectRuntime,
   validateProjectRuntime,
+  projectPathExists,
+  archiveMissingProjectRuntimes,
 };

@@ -215,4 +215,37 @@ describe("chat daemonConnection", () => {
     );
     expect(connection.getState().client).toBe(first);
   });
+  test("reconnect replays journal events before later live deltas and does not lose batched messages", async () => {
+    const first = new FakeClient(); const second = new FakeClient();
+    const { connection, connectClient, handleMessage } = createHarness();
+    connectClient.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+    await connection.connect();
+    const event = (sequence, text) => ({ type: "runtime_event", data: { type: "message.delta", projectRoot: "/project/a", sessionId: "main", sequence, text } });
+    first.emit("data", JSON.stringify(event(4, "a")) + "\n");
+    first.emit("close"); await flushPromises();
+    const replay = second.writes.map(JSON.parse).find((request) => request.operation === "events");
+    expect(replay).toMatchObject({ session_id: "main", project_root: "/project/a", after_sequence: 4 });
+    second.emit("data", JSON.stringify(event(6, "c")) + "\n" + JSON.stringify({ type: "status", data: {} }) + "\n");
+    expect(handleMessage.mock.calls.filter(([message]) => message.type === "runtime_event")).toHaveLength(1);
+    second.emit("data", JSON.stringify({ type: "runtime_result", request_id: replay.request_id, data: { events: [event(5, "b").data], next_sequence: 5, has_more: false } }) + "\n");
+    expect(handleMessage.mock.calls.filter(([message]) => message.type === "runtime_event").map(([message]) => message.data.text)).toEqual(["a", "b", "c"]);
+    expect(handleMessage).toHaveBeenCalledWith({ type: "status", data: {} });
+    connection.markExit(); connection.close();
+  });
+  test("a new client replays active child tasks discovered in status", async () => {
+    const client = new FakeClient();
+    const { connection, connectClient, handleMessage } = createHarness();
+    connectClient.mockResolvedValueOnce(client);
+    await connection.connect();
+    client.emit("data", JSON.stringify({ type: "status", data: { project_root: "/project/a", agent_runtime: { sessions: [], children: [{ sessionId: "child-session", taskRunId: "child-run", status: "running" }] } } }) + "\n");
+    const request = client.writes.map(JSON.parse).find((message) => message.operation === "events");
+    expect(request).toMatchObject({ session_id: "child-session", project_root: "/project/a", after_sequence: 0 });
+    const events = [
+      { type: "message.delta", projectRoot: "/project/a", sessionId: "child-session", taskRunId: "older-task", sequence: 1, text: "old" },
+      { type: "message.delta", projectRoot: "/project/a", sessionId: "child-session", taskRunId: "child-run", sequence: 2, text: "current" },
+    ];
+    client.emit("data", JSON.stringify({ type: "runtime_result", request_id: request.request_id, data: { events, has_more: false, next_sequence: 2 } }) + "\n");
+    expect(handleMessage.mock.calls.filter(([message]) => message.type === "runtime_event").map(([message]) => message.data.text)).toEqual(["current"]);
+    connection.markExit(); connection.close();
+  });
 });

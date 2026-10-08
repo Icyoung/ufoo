@@ -302,23 +302,23 @@ function buildShellEnvPrefix(extraEnv = {}) {
 // would stay blocked until restart.
 const APPLESCRIPT_TIMEOUT_MS = 10000;
 
-function killAfterTimeout(proc, cmd, onTimeout) {
+function killAfterTimeout(proc, cmd, onTimeout, timeoutMs = APPLESCRIPT_TIMEOUT_MS) {
   return setTimeout(() => {
     try {
       proc.kill("SIGKILL");
     } catch {
       // process already exited, nothing to kill
     }
-    onTimeout(new Error(`${cmd} timeout after ${APPLESCRIPT_TIMEOUT_MS}ms`));
-  }, APPLESCRIPT_TIMEOUT_MS);
+    onTimeout(new Error(`${cmd} timeout after ${timeoutMs}ms`));
+  }, timeoutMs);
 }
 
-function runAppleScript(lines) {
+function runAppleScript(lines, options = {}) {
   return new Promise((resolve, reject) => {
     const proc = spawn("osascript", lines.flatMap((l) => ["-e", l]));
     let stderr = "";
     let stdout = "";
-    const timeout = killAfterTimeout(proc, "osascript", reject);
+    const timeout = killAfterTimeout(proc, "osascript", reject, options.timeoutMs);
     proc.stderr.on("data", (d) => {
       stderr += d.toString("utf8");
     });
@@ -451,7 +451,7 @@ async function closeTerminalWindowByTty(ttyPath, preferApp = "") {
       "end tell",
       'return "not found"',
     ];
-    const res = await runAppleScript(script);
+    const res = await runAppleScript(script, { timeoutMs: 1000 });
     return res === "ok";
   };
 
@@ -470,7 +470,7 @@ async function closeTerminalWindowByTty(ttyPath, preferApp = "") {
       "end tell",
       'return "not found"',
     ];
-    const res = await runAppleScript(script);
+    const res = await runAppleScript(script, { timeoutMs: 1000 });
     return res === "ok";
   };
 
@@ -598,6 +598,7 @@ async function spawnManagedHostAgent(
   const EventBus = require("../../coordination/bus");
   const existing = listSubscribers(projectRoot, agentType);
   let subscriberId = "";
+  let agentHandle = "";
   let preRegistrationError = null;
   try {
     const bus = new EventBus(projectRoot);
@@ -607,11 +608,11 @@ async function spawnManagedHostAgent(
       subscriberId = `${agentType}:${sessionToken}`;
       const defaultNickname = agentType === "ufoo-code" ? "ucode" : normalizedAgent;
       const finalNickname = nickname || defaultNickname;
-      await bus.subscriberManager.join(sessionToken, agentType, finalNickname, {
-        launchMode: "host",
+      const registration = await require("./controlPlaneService").registerAgentFull(projectRoot, {
+        sessionId: sessionToken, agentType, nickname: finalNickname, launchMode: "host",
         parentPid: process.pid,
-      });
-      bus.saveBusData();
+      }, { validateParentPid: true, notifyDaemon: false });
+      agentHandle = registration.agent_handle;
     }
   } catch (err) {
     preRegistrationError = err;
@@ -629,6 +630,7 @@ async function spawnManagedHostAgent(
   };
   if (subscriberId) {
     env.UFOO_SUBSCRIBER_ID = subscriberId;
+    env.UFOO_AGENT_HANDLE = agentHandle;
   }
   if (nickname) {
     env.UFOO_NICKNAME = nickname;
@@ -718,6 +720,7 @@ async function spawnInternalAgent(
     const replaceAgentId = typeof options.replaceAgentId === "string" ? options.replaceAgentId.trim() : "";
     if (replaceAgentId && bus.busData.agents && bus.busData.agents[replaceAgentId]) {
       delete bus.busData.agents[replaceAgentId];
+      bus.saveBusData();
     }
 
     const requestedNickname = nickname
@@ -727,14 +730,14 @@ async function spawnInternalAgent(
     const launchMode = "internal";
 
     // 传递 launch_mode 和 parent PID 到 join
-    const joinResult = await bus.subscriberManager.join(sessionId, agentType, requestedNickname, {
+    const joinResult = await require("./controlPlaneService").registerAgentFull(projectRoot, {
+      sessionId, agentType, nickname: requestedNickname,
       launchMode,
       parentPid: originalPid,
       providerSessionId,
       scopedNickname: String(extraEnv.UFOO_SCOPED_NICKNAME || "").trim(),
-    });
+    }, { validateParentPid: true, notifyDaemon: false });
     const finalNickname = joinResult.nickname || requestedNickname || "";
-    bus.saveBusData();
 
     const managedBootstrap = applyDefaultManagedBootstrap(projectRoot, normalizedAgent, extraArgs, extraEnv);
     const runnerCmd = "agent-runner";
@@ -748,6 +751,7 @@ async function spawnInternalAgent(
         ...(managedBootstrap.extraEnv && typeof managedBootstrap.extraEnv === "object" ? managedBootstrap.extraEnv : {}),
         UFOO_INTERNAL_AGENT: "1",
         UFOO_SUBSCRIBER_ID: subscriberId,
+        UFOO_AGENT_HANDLE: joinResult.agent_handle,
         UFOO_NICKNAME: finalNickname,
         UFOO_LAUNCH_MODE: "internal",
         UFOO_PARENT_PID: String(originalPid),
@@ -969,7 +973,7 @@ function spawnTmuxPane(
 
 async function launchAgent(projectRoot, agent, count = 1, nickname = "", processManager = null, options = {}) {
   const config = loadConfig(projectRoot);
-  const mode = resolveConfiguredLaunchMode(config.launchMode, options);
+  const mode = options.internalOnly ? "internal" : resolveConfiguredLaunchMode(config.launchMode, options);
   const launchScope = normalizeLaunchScope(options.launchScope, "inplace");
   const terminalApp = normalizeTerminalAppPreference(options.terminalApp);
   const extraEnvObject = options.extraEnv && typeof options.extraEnv === "object" ? options.extraEnv : {};
@@ -1339,8 +1343,9 @@ async function closeAgent(projectRoot, agentId) {
   }
 
   if (canCloseWindow) {
-    // Non-blocking: don't hold close response on AppleScript window operations.
-    void closeTerminalWindowByTty(tty, terminalApp).catch(() => false);
+    // Complete the bounded cleanup before returning; detached attempts can
+    // outlive their project runtime and use stale terminal/agent metadata.
+    await closeTerminalWindowByTty(tty, terminalApp).catch(() => false);
   }
 
   // Tmux pane cleanup: kill the pane after sending SIGTERM to the process.

@@ -8,6 +8,7 @@ function createInputSubmitHandler(options = {}) {
     state,
     parseAtTarget = () => null,
     resolveAgentId = () => null,
+    requireKnownTarget = false,
     executeCommand = async () => false,
     queueStatusLine = () => {},
     send = () => {},
@@ -130,6 +131,12 @@ function createInputSubmitHandler(options = {}) {
     }
 
     if (state.targetAgent) {
+      if (requireKnownTarget && !resolveAgentId(state.targetAgent)) {
+        clearTargetAgent();
+        logMessage("error", "Unknown internal @target");
+        focusInput();
+        return;
+      }
       const label = getAgentLabel(state.targetAgent);
       logMessage(
         "user",
@@ -159,11 +166,16 @@ function createInputSubmitHandler(options = {}) {
           return;
         }
         setTargetAgent(resolvedTarget);
-        queueStatusLine(`Target selected: @${escapeBlessed(atTarget.target)}`);
+        if (!requireKnownTarget) queueStatusLine(`Target selected: @${escapeBlessed(atTarget.target)}`);
         focusInput();
         return;
       }
-      const resolvedTarget = resolveAgentId(atTarget.target) || atTarget.target;
+      const resolvedTarget = resolveAgentId(atTarget.target) || (requireKnownTarget ? "" : atTarget.target);
+      if (!resolvedTarget) {
+        logMessage("error", "Unknown internal @target");
+        focusInput();
+        return;
+      }
       const message = atTarget.message.trim();
       logMessage(
         "user",

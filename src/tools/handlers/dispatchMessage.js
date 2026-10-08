@@ -69,8 +69,11 @@ async function dispatchMessageHandler(ctx = {}, args = {}) {
     target,
     source: subscriber,
     mode,
-    delivered: mode === "immediate" ? result.targets.length : 0,
-    queued: mode === "queued" ? result.targets.length : 0,
+    // send/broadcast persist queue entries. The delivery scheduler or the
+    // recipient's MCP reader consumes them later, even in immediate mode.
+    delivered: 0,
+    queued: result.targets.length,
+    delivery_status: "queued",
     targets: result.targets,
     seq: result.seq,
   };

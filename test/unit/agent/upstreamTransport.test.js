@@ -1,4 +1,4 @@
-jest.mock("../../../src/code/nativeRunner", () => ({
+jest.mock("../../../src/agents/providers/runtimeConfig", () => ({
   resolveRuntimeConfig: jest.fn(() => ({
     provider: "openai",
     model: "gpt-4o-mini",
@@ -17,10 +17,12 @@ jest.mock("../../../src/agents/providers/credentials/codex", () => ({
 jest.mock("../../../src/agents/providers/credentials/claude", () => ({
   resolveClaudeUpstreamCredentials: jest.fn(),
 }));
+jest.mock("../../../src/agents/providers/credentials/kimi", () => ({ resolveKimiUpstreamCredentials: jest.fn() }));
 
-const { resolveRuntimeConfig } = require("../../../src/code/nativeRunner");
+const { resolveRuntimeConfig } = require("../../../src/agents/providers/runtimeConfig");
 const { resolveCodexUpstreamCredentials } = require("../../../src/agents/providers/credentials/codex");
 const { resolveClaudeUpstreamCredentials } = require("../../../src/agents/providers/credentials/claude");
+const { resolveKimiUpstreamCredentials } = require("../../../src/agents/providers/credentials/kimi");
 const {
   buildAnthropicMessagesRequest,
   buildCodexResponsesRequest,
@@ -50,6 +52,20 @@ describe("agent upstreamTransport", () => {
   test("normalizes latest Kimi Code model aliases", () => {
     expect(normalizeKimiUpstreamModel("kimi-k2.7-code[1m](high)")).toBe("kimi-for-coding(high)");
     expect(normalizeKimiUpstreamModel("kimi-k3")).toBe("k3");
+  });
+  test("Claude requests use the endpoint owned by the resolved settings credential", async () => {
+    resolveClaudeUpstreamCredentials.mockResolvedValueOnce({ provider: "claude", credentialKind: "oauth", accessToken: "gateway-token", metadata: { baseUrl: "https://gateway.invalid/api" } });
+    const runtime = await resolveUpstreamRuntime({ projectRoot: "/tmp/project", provider: "claude", model: "test", env: {}, loadConfigImpl: () => ({}) });
+    expect(runtime.baseUrl).toBe("https://gateway.invalid/api");
+    expect(runtime.auth.headers.authorization).toBe("Bearer gateway-token");
+  });
+  test("Kimi host refreshes provider-owned credentials before model execution", async () => {
+    resolveRuntimeConfig.mockReturnValueOnce({ provider: "kimi", model: "kimi-for-coding", transport: "openai-chat", baseUrl: "https://kimi.invalid/v1", apiKey: "expired-key", apiKeySource: "kimi-credential" });
+    resolveKimiUpstreamCredentials.mockResolvedValueOnce({ accessToken: "refreshed-key" });
+    const runtime = await resolveUpstreamRuntime({ projectRoot: "/tmp/project", provider: "kimi", env: {}, loadConfigImpl: () => ({}) });
+    expect(runtime.auth.apiKey).toBe("refreshed-key");
+    expect(resolveRuntimeConfig).toHaveBeenLastCalledWith(expect.objectContaining({ provider: "kimi", useCodingConfig: false }));
+    expect(resolveKimiUpstreamCredentials).toHaveBeenCalledTimes(1);
   });
 
   test("builds codex responses request with developer and user input items", () => {

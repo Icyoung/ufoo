@@ -22,7 +22,7 @@ function defaultClaudeConfigDir() {
 }
 
 function resolveClaudeOauthPaths(options = {}) {
-  const configDir = String(options.configDir || defaultClaudeConfigDir()).trim() || defaultClaudeConfigDir();
+  const configDir = String(options.configDir || (options.env || process.env).CLAUDE_CONFIG_DIR || defaultClaudeConfigDir()).trim() || defaultClaudeConfigDir();
   const profile = String(options.profile || "").trim();
   const explicitTokenPath = String(options.tokenPath || "").trim();
   const explicitSettingsPath = String(options.settingsPath || "").trim();
@@ -234,6 +234,7 @@ class ClaudeUpstreamCredentialResolver {
       apiKey: firstString(env.ANTHROPIC_API_KEY, env.CLAUDE_API_KEY),
       apiKeySource,
       authToken: firstString(env.ANTHROPIC_AUTH_TOKEN),
+      baseUrl: firstString(env.ANTHROPIC_BASE_URL),
     };
   }
 
@@ -332,7 +333,7 @@ class ClaudeUpstreamCredentialResolver {
     });
   }
 
-  async resolveCredentials() {
+  async resolveAuthCredential(settingsEnv) {
     const anthropicApiKey = firstString(this.env.ANTHROPIC_API_KEY);
     const claudeApiKey = firstString(this.env.CLAUDE_API_KEY);
     if (anthropicApiKey || claudeApiKey) {
@@ -347,7 +348,6 @@ class ClaudeUpstreamCredentialResolver {
       return this.buildAuthTokenCredential(authToken, "env:ANTHROPIC_AUTH_TOKEN");
     }
 
-    const settingsEnv = this.readSettingsEnv();
     if (settingsEnv.apiKey) {
       return this.buildApiKeyCredential(settingsEnv.apiKey, settingsEnv.apiKeySource || "settings:ANTHROPIC_API_KEY", this.paths.settingsPath);
     }
@@ -372,6 +372,13 @@ class ClaudeUpstreamCredentialResolver {
     }
 
     return this.refreshIfNeeded(tokenRecord);
+  }
+
+  async resolveCredentials() {
+    const settings = this.readSettingsEnv();
+    const credential = await this.resolveAuthCredential(settings);
+    return { ...credential, metadata: { ...credential.metadata,
+      baseUrl: firstString(this.env.ANTHROPIC_BASE_URL, settings.baseUrl) } };
   }
 }
 

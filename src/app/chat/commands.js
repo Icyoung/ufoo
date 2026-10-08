@@ -36,14 +36,10 @@ const COMMAND_TREE = {
     },
   },
   "/mode": {
-    desc: "Set agent launch mode",
+    desc: "Show internal dashboard launch mode",
     children: {
       show: { desc: "Show current launch mode", order: 1 },
-      auto: { desc: "Auto-select launch mode", order: 2 },
-      host: { desc: "Launch via host inject", order: 3 },
-      terminal: { desc: "Launch in external terminal", order: 4 },
-      tmux: { desc: "Launch in tmux", order: 5 },
-      internal: { desc: "Launch as internal agent", order: 6 },
+      internal: { desc: "Launch as internal agent", order: 2 },
     },
   },
   "/provider": {
@@ -69,7 +65,14 @@ const COMMAND_TREE = {
     },
   },
   "/init": { desc: "Initialize workspace" },
-  "/multi": { desc: "Toggle multi-window agent view" },
+  "/multi": {
+    desc: "Toggle all agent panes; /multi @agent opens one",
+    optionalArguments: true,
+    children: {
+      on: { desc: "Show all agent panes" },
+      off: { desc: "Return to the main agent" },
+    },
+  },
   "/mcp": {
     desc: "MCP bridge diagnostics",
     children: {
@@ -171,6 +174,9 @@ const COMMAND_TREE = {
     },
   },
   "/status": { desc: "Status display" },
+  "/task": { desc: "Main agent tasks", children: { list: { desc: "List durable tasks" }, inspect: { desc: "Inspect a child task" }, cancel: { desc: "Cancel a task by run ID" } } },
+  "/answer": { desc: "Answer a runtime interaction: /answer <interaction-id> <reply>" },
+  "/session": { desc: "Main conversation", children: { show: { desc: "Show conversation ID" }, new: { desc: "Start a conversation with current settings" } } },
   "/ufoo": { desc: "ufoo protocol" },
 };
 
@@ -190,6 +196,7 @@ function buildCommandRegistry(tree) {
       desc: node.desc || "",
       order: Number.isFinite(node.order) ? node.order : undefined,
     };
+    if (node.optionalArguments) entry.optionalArguments = true;
     if (node.children) {
       entry.subcommands = Object.keys(node.children)
         .sort((a, b) => {

@@ -26,6 +26,8 @@ function withIsolatedClaudeBin({ args = [], env = {} } = {}) {
     require("../../../bin/uclaude.js");
   });
 
+  const snapshotEnv = { ...process.env };
+
   process.argv = originalArgv;
   process.chdir(originalCwd);
   for (const key of Object.keys(process.env)) {
@@ -37,6 +39,7 @@ function withIsolatedClaudeBin({ args = [], env = {} } = {}) {
     cwd,
     launchMock,
     launcherCtor,
+    env: snapshotEnv,
   };
 }
 
@@ -69,6 +72,20 @@ describe("bin/uclaude default bootstrap", () => {
     } finally {
       fs.rmSync(cwd, { recursive: true, force: true });
     }
+  });
+
+  test("consumes the native messages launch flag", () => {
+    const { cwd, launchMock } = withIsolatedClaudeBin({ args: ["--native-messages", "--help"] });
+    try { expect(launchMock).toHaveBeenCalledWith(["--help"]); }
+    finally { fs.rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  test("explicitly disables native messages without forwarding the ufoo flag", () => {
+    const { cwd, launchMock, env } = withIsolatedClaudeBin({ args: ["--no-native-messages", "--help"], env: { UFOO_NATIVE_MESSAGES: "1" } });
+    try {
+      expect(launchMock).toHaveBeenCalledWith(["--help"]);
+      expect(env.UFOO_NATIVE_MESSAGES).toBe("0");
+    } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
   });
 
   test("merges bootstrap with caller-provided append-system-prompt", () => {

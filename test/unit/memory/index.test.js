@@ -16,6 +16,15 @@ describe("MemoryManager", () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
+  test("recovers a stale crash lock without leaving memory permanently unwritable", () => {
+    const manager = new MemoryManager(projectRoot);
+    fs.mkdirSync(manager.lockDir);
+    const old = new Date(Date.now() - 20000);
+    fs.utimesSync(manager.lockDir, old, old);
+    expect(manager.add({ title: "Recovery invariant", body: "Expired locks can be recovered." }).id).toBeTruthy();
+    expect(fs.existsSync(manager.lockDir)).toBe(false);
+  });
+
   test("requires an explicit project root", () => {
     expect(() => new MemoryManager()).toThrow("projectRoot is required");
   });

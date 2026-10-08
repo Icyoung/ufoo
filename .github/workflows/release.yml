@@ -59,6 +59,9 @@ jobs:
             cargo build -p ufoo-tui --release
           fi
 
+      - name: Test host Rust renderer
+        run: cargo test -p ufoo-tui
+
       - name: Stage binary
         run: |
           set -euo pipefail
@@ -136,6 +139,8 @@ jobs:
 
       - name: Test
         run: npm test
+      - name: Check production dependencies
+        run: npm audit --omit=dev --audit-level=high
 
       - name: Verify tag matches package.json (tag pushes only)
         if: startsWith(github.ref, 'refs/tags/v')

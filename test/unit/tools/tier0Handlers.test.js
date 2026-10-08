@@ -121,4 +121,29 @@ describe("tier0 tool handlers", () => {
       }),
     ]);
   });
+
+  test("registry hides deleted projects and paginates without deleting registrations", () => {
+    for (let index = 0; index < 3; index += 1) {
+      const root = path.join(projectRoot, `child-${index}`);
+      fs.mkdirSync(root);
+      upsertProjectRuntime({ projectRoot: root, lastSeen: `2026-01-0${index + 1}T00:00:00Z` }, { runtimeDir });
+    }
+    const gone = path.join(projectRoot, "gone");
+    fs.mkdirSync(gone);
+    upsertProjectRuntime({ projectRoot: gone }, { runtimeDir });
+    fs.rmdirSync(gone);
+    const first = readProjectRegistryHandler({}, { runtimeDir, limit: 2, validate: false });
+    expect(first).toMatchObject({ count: 2, total: 4, next_offset: 2, omitted_missing: 1 });
+    const second = readProjectRegistryHandler({}, { runtimeDir, limit: 2, offset: first.next_offset });
+    expect(second).toMatchObject({ count: 2, total: 4, next_offset: null });
+    expect(new Set([...first.projects, ...second.projects].map((row) => row.project_id)).size).toBe(4);
+    expect(fs.readdirSync(runtimeDir).filter((name) => name.endsWith(".json"))).toHaveLength(5);
+    expect(readProjectRegistryHandler({}, { runtimeDir, include_missing: true }).count).toBe(5);
+  });
+
+  test("registry rejects invalid pagination and filters an exact root", () => {
+    expect(() => readProjectRegistryHandler({}, { runtimeDir, limit: 0 })).toThrow("registry limit");
+    expect(() => readProjectRegistryHandler({}, { runtimeDir, offset: -1 })).toThrow("registry limit");
+    expect(readProjectRegistryHandler({}, { runtimeDir, project_root: projectRoot }).count).toBe(1);
+  });
 });

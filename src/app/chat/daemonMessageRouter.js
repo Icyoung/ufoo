@@ -32,6 +32,59 @@ function createDaemonMessageRouter(options = {}) {
     clearTransientAgentState = () => {},
     refreshDashboard = () => {},
   } = options;
+  const runtimeSequences = new Map();
+  const runtimeStreams = new Map();
+  const runtimeFinished = new Set();
+  const runtimeInteractions = new Set();
+  function showInteraction(interaction) {
+    if (!interaction || runtimeInteractions.has(interaction.id)) return;
+    runtimeInteractions.add(interaction.id);
+    logMessage("system", escapeBlessed(`${interaction.prompt}\n${(interaction.options || []).map((option) => `[${option.key}] ${option.label}`).join("  ")}\n/answer ${interaction.id} <reply>`));
+  }
+  function handleRuntimeEvent(event) {
+    if (!event || !event.sessionId || !Number.isInteger(event.sequence)) return true;
+    const sessionKey = `${event.projectId || ""}:${event.sessionId}`;
+    if (event.sequence <= (runtimeSequences.get(sessionKey) || 0)) return true;
+    runtimeSequences.set(sessionKey, event.sequence);
+    const key = `${sessionKey}:${event.taskRunId}`;
+    const label = event.agentId === "ufoo-agent" ? "ufoo" : `task ${event.taskRunId}`;
+    if (event.type === "message.delta") {
+      const state = beginStream(key, speakerPrefix(label, "white"), "       ", { runtime: true, sessionId: event.sessionId, taskRunId: event.taskRunId });
+      appendStreamDelta(state, event.text || "");
+      runtimeStreams.set(key, true);
+    } else if (["task.completed", "task.failed", "task.cancelled", "task.paused", "task.interrupted"].includes(event.type)) {
+      if (runtimeStreams.has(key)) {
+        finalizeStream(key, { sessionId: event.sessionId, taskRunId: event.taskRunId }, event.type);
+        runtimeStreams.delete(key);
+      } else if (event.type === "task.completed" && event.result?.text) {
+        let text = event.result.text;
+        if (event.global) { try { text = JSON.parse(text).reply || ""; } catch { text = ""; } }
+        if (text) logMessage("reply", `${speakerPrefix(label, "white")}${escapeBlessed(text)}`);
+      }
+      if (["task.failed", "task.interrupted"].includes(event.type)) logMessage("error", escapeBlessed(`${label}: ${event.error || event.type}`));
+      if (event.type === "task.paused") showInteraction(event.result?.executionState?.pendingUserInteraction);
+      runtimeFinished.add(event.taskRunId);
+      if (runtimeFinished.size > 500) runtimeFinished.delete(runtimeFinished.values().next().value);
+      requestStatus();
+    }
+    renderScreen();
+    return true;
+  }
+  function handleRuntimeResult(msg) {
+    const data = msg.data || {};
+    if (Array.isArray(data.events)) { data.events.forEach(handleRuntimeEvent); return true; }
+    const tasks = data.sessions ? [...data.sessions.flatMap((session) => session.tasks.map((task) => ({ ...task, sessionId: session.sessionId }))), ...(data.children || []), ...(data.delegated || [])]
+      : data.task ? [data.task] : [];
+    for (const task of tasks) {
+      const effects = Object.entries(task.effects || {}).map(([id, effect]) => `${id} (${effect.toolName}: ${effect.status})`).join(", ");
+      logMessage("system", escapeBlessed(`${task.taskRunId || task.taskId || task.id}: ${task.status}${task.error ? ` (${task.error})` : ""}${task.summary ? `\n${task.summary}` : ""}${effects ? `\nEffects to inspect: ${effects}` : ""}`));
+      showInteraction(task.interaction);
+    }
+    for (const receipt of data.uncertainReceipts || []) logMessage("system", escapeBlessed(`Outcome unknown: ${receipt.commandId} (${receipt.kind}). Inspect effects before resubmitting.`));
+    if (!tasks.length) resolveStatusLine(escapeBlessed(data.status || (data.accepted ? "Accepted" : "Done")));
+    renderScreen();
+    return true;
+  }
 
   function isLikelySubscriberId(value) {
     const text = String(value || "");
@@ -139,6 +192,8 @@ function createDaemonMessageRouter(options = {}) {
     }
 
     updateDashboard(data);
+    for (const session of data.agent_runtime?.sessions || []) for (const task of session.tasks || []) showInteraction(task.interaction);
+    for (const task of data.agent_runtime?.children || []) showInteraction(task.interaction);
     return false;
   }
 
@@ -247,7 +302,7 @@ function createDaemonMessageRouter(options = {}) {
 
   function handleResponseMessage(msg) {
     const payload = msg.data || {};
-    if (payload.reply) {
+    if (payload.reply && !runtimeFinished.has(payload.runtime?.taskRunId)) {
       const replyText = decodeEscapedNewlines(payload.reply);
       resolveStatusLine(`{gray-fg}←{/gray-fg} ${escapeBlessed(replyText)}`);
       const ops = Array.isArray(payload.ops) ? payload.ops : [];
@@ -528,6 +583,8 @@ function createDaemonMessageRouter(options = {}) {
 
   function handleMessage(msg) {
     if (!msg || typeof msg !== "object") return false;
+    if (msg.type === IPC_RESPONSE_TYPES.RUNTIME_EVENT) { handleRuntimeEvent(msg.data); return false; }
+    if (msg.type === IPC_RESPONSE_TYPES.RUNTIME_RESULT) { handleRuntimeResult(msg); return false; }
 
     if (msg.type === IPC_RESPONSE_TYPES.STATUS) return handleStatusMessage(msg);
     if (msg.type === IPC_RESPONSE_TYPES.RESPONSE) return handleResponseMessage(msg);

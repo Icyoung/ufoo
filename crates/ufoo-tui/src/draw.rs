@@ -6,43 +6,55 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
-use crate::model::{AppState, FocusPane, MultiFocus};
+pub(crate) use crate::agent_surface::pane_content_area;
+use crate::agent_surface::{
+    build_transcript_lines, build_transcript_lines_with_text_color, draw_input, pane_border_style,
+};
+#[cfg(test)]
+use crate::agent_surface::{
+    compact_assistant_paragraphs, is_speaker_stream_entry, UCODE_ASSISTANT_TEXT, UCODE_BANNER_BLUE,
+    UCODE_BANNER_META, UCODE_TOOL_TEXT,
+};
+use crate::model::{AppState, FocusPane, MultiFocus, MultiPaneFrame, PromptState};
 
 const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 // Reuse the UI's existing theme blue (the same color as "Agents: none").
-const UCODE_BANNER_BLUE: Color = Color::Cyan;
-const UCODE_BANNER_META: Color = Color::Rgb(163, 171, 183);
-const UCODE_TOOL_TEXT: Color = Color::Rgb(168, 172, 178);
-const UCODE_ASSISTANT_TEXT: Color = Color::Rgb(112, 116, 122);
-const UCODE_SYSTEM_TEXT: Color = Color::Rgb(138, 142, 148);
 
 /// Draw UI and return hardware cursor position (x, y) for IME, if any.
 pub fn draw(frame: &mut Frame, state: &mut AppState) -> Option<(u16, u16)> {
     let area = frame.area();
+    let child_focused = focused_child(state).is_some();
+    let status_h = if state.surface == "chat" { 0 } else { 1 };
     let project_h = if state.show_project_bar() { 1 } else { 0 };
-    let completion_h = if state.focus == FocusPane::Completions && !state.completions.is_empty() {
-        (state.completions.len().min(8) as u16)
-            .saturating_add(2)
-            .max(3)
-    } else {
-        0
-    };
-    let plan_h = if state.plan_lines.is_empty() {
+    let completion_h =
+        if !child_focused && state.focus == FocusPane::Completions && !state.completions.is_empty()
+        {
+            (state.completions.len().min(8) as u16)
+                .saturating_add(2)
+                .max(3)
+        } else {
+            0
+        };
+    let plan_h = if child_focused || state.plan_lines.is_empty() {
         0
     } else {
         (state.plan_lines.len() as u16).clamp(1, 8)
     };
-    let interaction_h = state
-        .interaction
-        .as_ref()
-        .map(|i| {
-            let n = if i.lines.is_empty() { 1 } else { i.lines.len() };
-            (n as u16).clamp(1, 6)
-        })
-        .unwrap_or(0);
-    let attach_h = if state.attachment_labels.is_empty() {
+    let interaction_h = if child_focused {
+        0
+    } else {
+        state
+            .interaction
+            .as_ref()
+            .map(|i| {
+                let n = if i.lines.is_empty() { 1 } else { i.lines.len() };
+                (n as u16).clamp(1, 6)
+            })
+            .unwrap_or(0)
+    };
+    let attach_h = if child_focused || state.attachment_labels.is_empty() {
         0
     } else {
         1
@@ -56,7 +68,7 @@ pub fn draw(frame: &mut Frame, state: &mut AppState) -> Option<(u16, u16)> {
             Constraint::Length(plan_h),
             Constraint::Length(interaction_h),
             Constraint::Length(attach_h),
-            Constraint::Length(1), // status above input (Ink ChatStatusLine)
+            Constraint::Length(status_h), // chat status lives in each pane's border
             Constraint::Length(prompt_height(state, area.width)),
             Constraint::Length(1), // agents / mode / provider / cron
         ])
@@ -82,7 +94,9 @@ pub fn draw(frame: &mut Frame, state: &mut AppState) -> Option<(u16, u16)> {
     if attach_h > 0 {
         draw_attachments(frame, chunks[5], state);
     }
-    draw_status(frame, chunks[6], state);
+    if status_h > 0 {
+        draw_status(frame, chunks[6], state);
+    }
     let cursor = draw_prompt(frame, chunks[7], state);
     draw_footer(frame, chunks[8], state);
     cursor
@@ -117,11 +131,17 @@ pub fn project_index_at(state: &AppState, area: Rect, column: u16, row: u16) -> 
     None
 }
 
-fn prompt_height(state: &AppState, width: u16) -> u16 {
+pub(crate) fn prompt_height(state: &AppState, width: u16) -> u16 {
     // Border consumes 2 rows; size the content area, then add chrome.
-    let inner = width.saturating_sub(2).max(1) as usize;
+    let inner_width = width.saturating_sub(2);
+    let inner = if state.surface == "chat" {
+        pane_content_area(Rect::new(0, 0, inner_width, 1)).width
+    } else {
+        inner_width
+    }
+    .max(1) as usize;
     let mut rows = 0usize;
-    for line in state.prompt.lines() {
+    for line in shared_prompt(state).lines() {
         let w = line.width().max(1);
         rows += (w + inner - 1) / inner;
     }
@@ -130,11 +150,6 @@ fn prompt_height(state: &AppState, width: u16) -> u16 {
 }
 
 fn prompt_accepts_typing(state: &AppState) -> bool {
-    // When multi focuses an agent pane, keys go raw to that pane — hide the
-    // chat caret so Ctrl+W focus changes feel immediate.
-    if state.multi.active && matches!(state.multi.focus, MultiFocus::Agent) {
-        return false;
-    }
     // Footer / project focus still routes printable keys into the draft, so the
     // hardware caret must stay inside the prompt box (IME / CJK preedit).
     match state.focus {
@@ -144,9 +159,13 @@ fn prompt_accepts_typing(state: &AppState) -> bool {
     }
 }
 
-/// Multi-window: ufoo (chat log + prompt) owns focus — cyan like agent panes.
-fn multi_ufoo_focused(state: &AppState) -> bool {
-    state.multi.active && matches!(state.multi.focus, MultiFocus::Chat)
+/// Main log and prompt share the child panes' focus colors in split layouts.
+fn main_border_style(state: &AppState) -> Style {
+    if state.multi.active {
+        pane_border_style(matches!(state.multi.focus, MultiFocus::Chat))
+    } else {
+        Style::default()
+    }
 }
 
 fn draw_project_bar(frame: &mut Frame, area: Rect, state: &AppState) {
@@ -186,13 +205,13 @@ fn draw_project_bar(frame: &mut Frame, area: Rect, state: &AppState) {
 }
 
 fn draw_scrollback(frame: &mut Frame, area: Rect, state: &mut AppState) {
-    let ufoo_hi = multi_ufoo_focused(state);
     let inner = Block::default().borders(Borders::ALL).inner(area);
-    let content = Rect {
-        x: inner.x.saturating_add(1),
-        y: inner.y,
-        width: inner.width.saturating_sub(2).max(1),
-        height: inner.height,
+    // Standalone ucode retains its existing inline gutter; embedded/chat
+    // surfaces receive their gutter from the shared pane rectangle.
+    let content = if state.surface == "ucode" {
+        inner
+    } else {
+        pane_content_area(inner)
     };
     let max_rows = content.height as usize;
     let lines = build_scrollback_lines(state, content.width as usize);
@@ -215,24 +234,25 @@ fn draw_scrollback(frame: &mut Frame, area: Rect, state: &mut AppState) {
     } else {
         format!("{}↑{} ", state.title.trim_end(), state.scroll_offset)
     };
-    let border_style = if ufoo_hi {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
-    let title_style = if ufoo_hi {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
-    let block = Block::default()
-        .title(Span::styled(title, title_style))
+    let border_style = main_border_style(state);
+    let mut block = Block::default()
+        .title(Span::styled(title, border_style))
         .borders(Borders::ALL)
         .border_style(border_style);
+    if state.surface == "chat" {
+        block = block
+            .title_bottom(Line::from(Span::styled(
+                format!(" {} ", main_status_text(state)),
+                Style::default().fg(Color::DarkGray),
+            )))
+            .title_bottom(
+                Line::from(Span::styled(
+                    format!(" {} ", display_version(state)),
+                    Style::default().fg(Color::DarkGray),
+                ))
+                .right_aligned(),
+            );
+    }
     frame.render_widget(block, area);
 
     let offset = state.scroll_offset.min(max_off);
@@ -273,461 +293,18 @@ fn draw_scrollback(frame: &mut Frame, area: Rect, state: &mut AppState) {
     }
 }
 
-fn strip_ansi_codes(input: &str) -> String {
-    let bytes = input.as_bytes();
-    let mut out = String::with_capacity(input.len());
-    let mut i = 0usize;
-    while i < bytes.len() {
-        if bytes[i] == 0x1b {
-            i += 1;
-            if i < bytes.len() && bytes[i] == b'[' {
-                i += 1;
-                while i < bytes.len() {
-                    let b = bytes[i];
-                    i += 1;
-                    if (b'@'..=b'~').contains(&b) {
-                        break;
-                    }
-                }
-            }
-            continue;
-        }
-        let ch = input[i..].chars().next().unwrap_or('\u{fffd}');
-        out.push(ch);
-        i += ch.len_utf8();
-    }
-    out
-}
-
-fn is_speaker_stream_entry(entry: &crate::model::ScrollbackEntry) -> bool {
-    // Nearly all chat rows zebra; keep tools dim/unstriped so collapsed
-    // tool dumps don't dominate the stripe rhythm. Banners are preformatted
-    // presentation content, and thinking is a transient mutable log block.
-    !matches!(
-        entry.kind.as_str(),
-        "tool" | "spacer" | "banner" | "thinking"
-    )
-}
-
-fn wrap_entry_visual_lines(
-    body: &str,
-    first_prefix: &str,
-    continuation_prefix: &str,
-    content_width: usize,
-) -> Vec<String> {
-    let mut out = Vec::new();
-    for (line_idx, line) in body.lines().enumerate() {
-        let mut prefix = if line_idx == 0 {
-            first_prefix
-        } else {
-            continuation_prefix
-        };
-        let mut rest = line;
-        if rest.is_empty() {
-            out.push(prefix.to_string());
-            continue;
-        }
-        while !rest.is_empty() {
-            let available = content_width.saturating_sub(prefix.width()).max(1);
-            let mut used = 0usize;
-            let mut cut = rest.len();
-            for (idx, ch) in rest.char_indices() {
-                let w = ch.width().unwrap_or(1);
-                if used + w > available && used > 0 {
-                    cut = idx;
-                    break;
-                }
-                used += w;
-                cut = idx + ch.len_utf8();
-            }
-            let (chunk, next) = rest.split_at(cut);
-            out.push(format!("{prefix}{chunk}"));
-            rest = next;
-            prefix = continuation_prefix;
-            if cut == 0 {
-                break;
-            }
-        }
-    }
-    out
-}
-
-fn truncate_single_visual_line(text: &str, content_width: usize) -> String {
-    let single_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if single_line.width() <= content_width {
-        return single_line;
-    }
-    if content_width <= 3 {
-        return ".".repeat(content_width);
-    }
-
-    let target = content_width - 3;
-    let mut out = String::new();
-    let mut used = 0usize;
-    for ch in single_line.chars() {
-        let width = ch.width().unwrap_or(1);
-        if used + width > target {
-            break;
-        }
-        out.push(ch);
-        used += width;
-    }
-    out.push_str("...");
-    out
-}
-
-fn tool_tree_line(
-    raw: &str,
-    branch: &str,
-    omitted: bool,
-    hint: &str,
-    content_width: usize,
-    style: Style,
-) -> Line<'static> {
-    let clean = raw.trim().strip_prefix("• ").unwrap_or(raw.trim());
-    let omission = if omitted { "... " } else { "" };
-    let decorated = format!("{branch}{omission}{clean}{hint}");
-    let truncated = truncate_single_visual_line(&decorated, content_width);
-    let mut spans = vec![Span::raw(" ".to_string())];
-    let rest = truncated.strip_prefix(branch).unwrap_or(truncated.as_str());
-    spans.push(Span::styled(branch.to_string(), style));
-    let rest = if omitted {
-        if let Some(value) = rest.strip_prefix("... ") {
-            spans.push(Span::styled("... ".to_string(), style));
-            value
-        } else {
-            rest
-        }
-    } else {
-        rest
-    };
-    let (action, command) = rest.split_once(' ').unwrap_or((rest, ""));
-    spans.push(Span::styled(
-        action.to_string(),
-        style.add_modifier(Modifier::BOLD),
-    ));
-    if !command.is_empty() {
-        spans.push(Span::styled(format!(" {command}"), style));
-    }
-    Line::from(spans)
-}
-
-fn collapsed_tool_tree_rows<'a>(lines: &'a [&'a str]) -> Vec<(&'a str, bool)> {
-    match lines.len() {
-        0 => Vec::new(),
-        1..=3 => lines.iter().map(|line| (*line, false)).collect(),
-        count => vec![
-            (lines[0], false),
-            (lines[count - 2], true),
-            (lines[count - 1], false),
-        ],
-    }
-}
-
-fn compact_assistant_paragraphs(text: &str) -> String {
-    let mut lines = Vec::new();
-    let mut fence: Option<(char, usize)> = None;
-    let mut blank = false;
-    for line in text.lines() {
-        let trimmed = line.trim();
-        let marker = trimmed.chars().next().unwrap_or(' ');
-        let count = trimmed.chars().take_while(|ch| *ch == marker).count();
-        let in_code = fence.is_some();
-        if marker == '`' || marker == '~' {
-            if let Some((open_marker, open_count)) = fence {
-                if marker == open_marker
-                    && count >= open_count
-                    && trimmed[count..].trim().is_empty()
-                {
-                    fence = None;
-                }
-            } else if count >= 3 {
-                fence = Some((marker, count));
-            }
-        }
-        if !in_code && trimmed.is_empty() {
-            if blank || lines.is_empty() {
-                continue;
-            }
-            blank = true;
-        } else {
-            blank = false;
-        }
-        lines.push(line);
-    }
-    // The renderer supplies the inter-message gap itself.
-    if fence.is_none() {
-        while lines.last().is_some_and(|line| line.trim().is_empty()) {
-            lines.pop();
-        }
-    }
-    lines.join("\n")
-}
-
 fn build_scrollback_lines(state: &AppState, width: usize) -> Vec<Line<'static>> {
-    let mut out = Vec::new();
-    let pad = " ";
-    for (entry_idx, entry) in state.entries.iter().enumerate() {
-        // Transcript entries are content, not layout boundaries. Markdown
-        // renderers commonly emit one entry per visual row (tables, lists,
-        // code blocks), so inserting a gap between every entry corrupts the
-        // original layout. Callers that need vertical space send an explicit
-        // spacer entry instead.
-        if entry.kind == "spacer" {
-            out.push(Line::from(""));
-            continue;
-        }
-        let append_block_gap = entry.kind != "banner"
-            && state
-                .entries
-                .get(entry_idx + 1)
-                .is_none_or(|next| next.kind != "spacer");
-        let mut body = entry.text.clone();
-        if entry.kind == "assistant" {
-            body = compact_assistant_paragraphs(&body);
-        }
-
-        // Host already echoes user lines as "› …" / "> …". Strip that and
-        // paint a single Grok-style ❯ so we don't get "❯ ›" / "> >".
-        if entry.kind == "user" {
-            let trimmed = body.trim_start();
-            for needle in ["❯ ", "› ", "> ", "❯", "›", ">"] {
-                if let Some(rest) = trimmed.strip_prefix(needle) {
-                    body = rest.to_string();
-                    break;
-                }
-            }
-        }
-
-        let speaker_stream = is_speaker_stream_entry(entry);
-        // Markdown chalk (bold→whiteBright) punched random white holes into
-        // solid-colored semantic rows. Strip it before applying role colors.
-        if (speaker_stream || entry.kind == "thinking") && body.contains('\u{1b}') {
-            body = strip_ansi_codes(&body);
-        }
-
-        let (prefix, kind_style) = match entry.kind.as_str() {
-            "user" => (
-                if entry.speaker.is_empty() {
-                    "❯ ".to_string()
-                } else {
-                    format!("❯ {} · ", entry.speaker)
-                },
-                Style::default().fg(Color::Cyan),
-            ),
-            "error" => (
-                if entry.speaker.is_empty() {
-                    String::new()
-                } else {
-                    format!("{} · ", entry.speaker)
-                },
-                Style::default().fg(Color::Red),
-            ),
-            "tool" => (String::new(), Style::default().fg(UCODE_TOOL_TEXT)),
-            "banner" => (String::new(), Style::default()),
-            "thinking" => (
-                "Thinking · ".to_string(),
-                Style::default().fg(Color::Rgb(121, 142, 164)),
-            ),
-            "assistant" => (
-                if entry.speaker.is_empty() {
-                    "• ".to_string()
-                } else {
-                    format!("• {} · ", entry.speaker)
-                },
-                Style::default().fg(UCODE_ASSISTANT_TEXT),
-            ),
-            "bus" | "agent" | "report" | "success" | "system" | "meta" => (
-                if entry.speaker.is_empty() {
-                    String::new()
-                } else {
-                    format!("{} · ", entry.speaker)
-                },
-                match entry.kind.as_str() {
-                    "bus" => Style::default().fg(Color::Yellow),
-                    "success" => Style::default().fg(Color::Green),
-                    "system" | "meta" => Style::default().fg(UCODE_SYSTEM_TEXT),
-                    _ => Style::default().fg(UCODE_ASSISTANT_TEXT),
-                },
-            ),
-            _ => (
-                if entry.speaker.is_empty() {
-                    String::new()
-                } else {
-                    format!("{} · ", entry.speaker)
-                },
-                Style::default().fg(UCODE_ASSISTANT_TEXT),
-            ),
-        };
-        let content_width = width.saturating_sub(pad.width()).max(1);
-        if entry.kind == "thinking" {
-            let continuation = " ".repeat(prefix.width());
-            let mut lines = wrap_entry_visual_lines(&body, &prefix, &continuation, content_width);
-            if !entry.expanded && lines.len() > 4 {
-                let gutter = "  ";
-                lines = wrap_entry_visual_lines(&body, gutter, gutter, content_width);
-                if lines.len() > 4 {
-                    lines = lines.split_off(lines.len() - 4);
-                }
-                if let Some(first) = lines.first_mut() {
-                    let content = first
-                        .strip_prefix(gutter)
-                        .unwrap_or(first.as_str())
-                        .to_string();
-                    *first = format!("… {content}");
-                }
-            }
-            for line in lines {
-                out.push(Line::from(vec![
-                    Span::raw(pad.to_string()),
-                    Span::styled(line, kind_style),
-                ]));
-            }
-            if append_block_gap {
-                out.push(Line::from(""));
-            }
-            continue;
-        }
-        if entry.kind == "banner" {
-            let has_body = !body.is_empty();
-            let mut spans = vec![Span::raw(pad.to_string())];
-            if has_body {
-                spans.push(Span::styled(body, Style::default().fg(UCODE_BANNER_BLUE)));
-            }
-            if !entry.detail.is_empty() {
-                if has_body {
-                    spans.push(Span::raw("  "));
-                }
-                spans.push(Span::styled(
-                    entry.detail.clone(),
-                    Style::default().fg(UCODE_BANNER_META),
-                ));
-            }
-            if has_body || !entry.detail.is_empty() {
-                out.push(Line::from(spans));
-            }
-            continue;
-        }
-        if entry.kind == "tool" && !entry.detail.is_empty() {
-            let detail_lines: Vec<&str> = entry
-                .detail
-                .lines()
-                .map(str::trim)
-                .filter(|line| !line.is_empty())
-                .collect();
-            if detail_lines.len() >= 2 {
-                let visible = if entry.expanded {
-                    detail_lines.iter().map(|line| (*line, false)).collect()
-                } else {
-                    collapsed_tool_tree_rows(&detail_lines)
-                };
-                let visible_len = visible.len();
-                for (index, (line, omitted)) in visible.into_iter().enumerate() {
-                    let branch = if index == 0 {
-                        ""
-                    } else if index + 1 == visible_len {
-                        "└─ "
-                    } else {
-                        "├─ "
-                    };
-                    let hint = if !entry.expanded && index == 0 {
-                        " (Ctrl+O expand)"
-                    } else {
-                        ""
-                    };
-                    out.push(tool_tree_line(
-                        line,
-                        branch,
-                        omitted,
-                        hint,
-                        content_width,
-                        kind_style,
-                    ));
-                }
-                if append_block_gap {
-                    out.push(Line::from(""));
-                }
-                continue;
-            }
-        }
-        if entry.kind == "tool" && !entry.expanded {
-            let line = truncate_single_visual_line(&body, content_width);
-            let mut spans = vec![Span::raw(pad.to_string())];
-            if let Some(rest) = line.strip_prefix("• ") {
-                let (action, command) = rest.split_once(' ').unwrap_or((rest, ""));
-                spans.push(Span::styled("• ", kind_style));
-                spans.push(Span::styled(
-                    action.to_string(),
-                    kind_style.add_modifier(Modifier::BOLD),
-                ));
-                if !command.is_empty() {
-                    spans.push(Span::styled(format!(" {command}"), kind_style));
-                }
-            } else {
-                spans.push(Span::styled(line, kind_style));
-            }
-            out.push(Line::from(spans));
-            if append_block_gap {
-                out.push(Line::from(""));
-            }
-            continue;
-        }
-        for (line_idx, line) in body.lines().enumerate() {
-            let head = if line_idx == 0 {
-                format!("{prefix}{line}")
-            } else {
-                format!("{:width$}{line}", "", width = prefix.width())
-            };
-            // Speaker-stream rows always use zebra flat paint (no ANSI path).
-            if !speaker_stream && head.contains('\u{1b}') {
-                if let Ok(text) = head.into_text() {
-                    for ansi_line in text.lines {
-                        let mut spans = vec![Span::raw(pad.to_string())];
-                        for span in ansi_line.spans {
-                            spans.push(Span::styled(span.content.to_string(), span.style));
-                        }
-                        out.push(Line::from(spans));
-                    }
-                    continue;
-                }
-            }
-            let mut rest = head;
-            while !rest.is_empty() {
-                let mut used = 0usize;
-                let mut cut = rest.len();
-                for (idx, ch) in rest.char_indices() {
-                    let w = ch.width().unwrap_or(1);
-                    if used + w > content_width && used > 0 {
-                        cut = idx;
-                        break;
-                    }
-                    used += w;
-                    cut = idx + ch.len_utf8();
-                }
-                let (chunk, next) = rest.split_at(cut);
-                let content = if entry.kind == "banner" {
-                    // A banner is literal terminal content, not a styled log span.
-                    Span::raw(chunk.to_string())
-                } else {
-                    Span::styled(chunk.to_string(), kind_style)
-                };
-                let mut spans = Vec::with_capacity(2);
-                if entry.kind != "banner" {
-                    spans.push(Span::raw(pad.to_string()));
-                }
-                spans.push(content);
-                out.push(Line::from(spans));
-                rest = next.to_string();
-                if cut == 0 {
-                    break;
-                }
-            }
-        }
-        if append_block_gap {
-            out.push(Line::from(""));
-        }
+    if state.surface == "chat" {
+        let focused = !state.multi.active || matches!(state.multi.focus, MultiFocus::Chat);
+        build_transcript_lines_with_text_color(
+            &state.entries,
+            width,
+            false,
+            focused.then_some(Color::Reset),
+        )
+    } else {
+        build_transcript_lines(&state.entries, width, true)
     }
-    out
 }
 
 fn draw_completions(frame: &mut Frame, area: Rect, state: &AppState) {
@@ -821,7 +398,55 @@ fn draw_attachments(frame: &mut Frame, area: Rect, state: &AppState) {
     frame.render_widget(paragraph, area);
 }
 
+fn focused_child(state: &AppState) -> Option<&MultiPaneFrame> {
+    if state.multi.active && matches!(state.multi.focus, MultiFocus::Agent) {
+        state.multi.frames.get(&state.multi.focus_agent_id)
+    } else {
+        None
+    }
+}
+
+fn shared_prompt(state: &AppState) -> PromptState {
+    let Some(pane) = focused_child(state) else {
+        return state.prompt.clone();
+    };
+    // Child drafts are Node-owned and use UTF-16 offsets; Rust prompts use scalars.
+    let mut units = 0;
+    let cursor = pane
+        .input
+        .chars()
+        .take_while(|ch| {
+            units += ch.len_utf16();
+            units <= pane.input_cursor
+        })
+        .count();
+    PromptState {
+        text: pane.input.clone(),
+        cursor,
+        ..Default::default()
+    }
+}
+
 fn draw_prompt(frame: &mut Frame, area: Rect, state: &AppState) -> Option<(u16, u16)> {
+    if state.multi.active && matches!(state.multi.focus, MultiFocus::Agent) {
+        let label = state
+            .multi
+            .panes
+            .iter()
+            .find(|pane| pane.agent_id == state.multi.focus_agent_id)
+            .map(|pane| pane.label.as_str())
+            .unwrap_or(state.multi.focus_agent_id.as_str());
+        return draw_input(
+            frame,
+            area,
+            &shared_prompt(state),
+            format!("› @{}", label.trim_start_matches('@')),
+            pane_border_style(true),
+            true,
+            true,
+        );
+    }
+
     let title = if state.focus == FocusPane::AgentView {
         if state.agent_bar_focused {
             "› agent bar".to_string()
@@ -836,7 +461,11 @@ fn draw_prompt(frame: &mut Frame, area: Rect, state: &AppState) -> Option<(u16, 
             )
         }
     } else if state.focus == FocusPane::Input || state.focus == FocusPane::Interaction {
-        state.prompt_prefix.trim_end().to_string()
+        if state.surface == "chat" && !state.prompt_prefix.contains('@') {
+            "› main".into()
+        } else {
+            state.prompt_prefix.trim_end().to_string()
+        }
     } else if state.focus == FocusPane::Agents {
         if let Some(agent) = state.agents.get(state.selected_agent.max(0) as usize) {
             format!("›@{}", agent.label)
@@ -853,170 +482,44 @@ fn draw_prompt(frame: &mut Frame, area: Rect, state: &AppState) -> Option<(u16, 
             _ => "›".into(),
         }
     };
-    let ufoo_hi = multi_ufoo_focused(state);
-    let border_style = if ufoo_hi {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
-    let block = Block::default()
-        .title(Span::styled(
-            title,
-            if ufoo_hi {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            },
-        ))
-        .borders(Borders::ALL)
-        .border_style(border_style);
-    let inner = block.inner(area);
-    let show_caret = prompt_accepts_typing(state);
-    let inner_w = inner.width.max(1) as usize;
-
-    // Soft-wrap draft into visual rows and map the caret onto them.
-    let chars: Vec<char> = state.prompt.text.chars().collect();
-    let mut visual_rows: Vec<String> = Vec::new();
-    let mut caret_row = 0usize;
-    let mut caret_col = 0usize;
-    let mut row = String::new();
-    let mut row_w = 0usize;
-
-    if chars.is_empty() {
-        visual_rows.push(String::new());
-    } else {
-        for (i, ch) in chars.iter().enumerate() {
-            if i == state.prompt.cursor {
-                caret_row = visual_rows.len();
-                caret_col = row_w;
-            }
-            if *ch == '\n' {
-                visual_rows.push(std::mem::take(&mut row));
-                row_w = 0;
-                continue;
-            }
-            let cw = ch.width().unwrap_or(1);
-            if row_w + cw > inner_w && !row.is_empty() {
-                visual_rows.push(std::mem::take(&mut row));
-                row_w = 0;
-            }
-            row.push(*ch);
-            row_w += cw;
-        }
-        if state.prompt.cursor >= chars.len() {
-            caret_row = visual_rows.len();
-            caret_col = row_w;
-        }
-        visual_rows.push(row);
-    }
-
-    let max_rows = inner.height.max(1) as usize;
-    let start_row = caret_row.saturating_add(1).saturating_sub(max_rows);
-    let visible: Vec<Line> = visual_rows
-        .iter()
-        .enumerate()
-        .skip(start_row)
-        .take(max_rows)
-        .map(|(row_idx, text)| {
-            if show_caret && row_idx == caret_row {
-                let mut spans = Vec::new();
-                let mut w = 0usize;
-                let mut placed = false;
-                for ch in text.chars() {
-                    let cw = ch.width().unwrap_or(1);
-                    if !placed && w == caret_col {
-                        spans.push(Span::styled(
-                            ch.to_string(),
-                            Style::default().fg(Color::Black).bg(Color::White),
-                        ));
-                        placed = true;
-                    } else {
-                        spans.push(Span::raw(ch.to_string()));
-                    }
-                    w += cw;
-                }
-                if !placed {
-                    spans.push(Span::styled(
-                        " ",
-                        Style::default().fg(Color::Black).bg(Color::White),
-                    ));
-                }
-                Line::from(spans)
-            } else {
-                Line::from(text.clone())
-            }
-        })
-        .collect();
-
-    let paragraph = Paragraph::new(visible).block(block);
-    frame.render_widget(paragraph, area);
-
-    if !show_caret {
-        return None;
-    }
-    let vis_row = caret_row.saturating_sub(start_row) as u16;
-    let col = (caret_col as u16).min(inner.width.saturating_sub(1));
-    let x = inner.x.saturating_add(col);
-    let y = inner
-        .y
-        .saturating_add(vis_row.min(inner.height.saturating_sub(1)));
-    // Keep IME preedit inside the prompt inner area — never past status/footer.
-    let max_x = inner.x.saturating_add(inner.width.saturating_sub(1));
-    let max_y = inner.y.saturating_add(inner.height.saturating_sub(1));
-    Some((x.min(max_x), y.min(max_y)))
+    draw_input(
+        frame,
+        area,
+        &state.prompt,
+        title,
+        if state.multi.active {
+            pane_border_style(true)
+        } else {
+            main_border_style(state)
+        },
+        prompt_accepts_typing(state),
+        state.surface == "chat",
+    )
 }
 
 fn draw_status(frame: &mut Frame, area: Rect, state: &AppState) {
-    // Ink ChatStatusLine: left = live status, right = version. No ui:ok chrome.
-    let spin = if state.busy {
-        let ch = SPINNER[state.spinner_ticks as usize % SPINNER.len()];
-        format!("{ch} ")
-    } else {
-        String::new()
-    };
-    let elapsed = if state.busy {
-        state
-            .status_started
-            .map(|started| {
-                let secs = started.elapsed().as_secs();
-                format!(" ({secs}s, esc cancel)")
-            })
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
-    let ask = if let Some(interaction) = state.interaction.as_ref() {
-        format!(" | {}: {}", interaction.kind, interaction.prompt)
-    } else if !state.agent_view_status.is_empty() {
-        format!(" | {}", state.agent_view_status)
-    } else {
-        String::new()
-    };
-    let loop_bit = if state.loop_summary.is_empty() {
-        String::new()
-    } else {
-        format!(" | {}", state.loop_summary)
-    };
-    let queue_bit = if state.queued_count > 0 {
-        format!(" · queued {}", state.queued_count)
-    } else if state.queue_cancel_requested {
-        " · stopping…".to_string()
-    } else {
-        String::new()
-    };
+    if let Some(pane) = focused_child(state) {
+        let label = state
+            .multi
+            .panes
+            .iter()
+            .find(|desc| desc.agent_id == state.multi.focus_agent_id)
+            .map(|desc| desc.label.as_str())
+            .unwrap_or(state.multi.focus_agent_id.as_str());
+        let text = format!(
+            " @{} · {}",
+            label.trim_start_matches('@'),
+            multi_status_text(pane, state.spinner_ticks)
+        );
+        frame.render_widget(
+            Paragraph::new(Span::styled(text, Style::default().fg(Color::DarkGray))),
+            area,
+        );
+        return;
+    }
+
     let version = display_version(state);
-    let left = format!(
-        "{spin}{status}{elapsed}{ask}{loop_bit}{queue_bit}",
-        status = if state.status.is_empty() {
-            "ready"
-        } else {
-            state.status.as_str()
-        }
-    );
+    let left = main_status_text(state);
     let version_w = version.width() as u16;
     let gap = area
         .width
@@ -1033,14 +536,65 @@ fn draw_status(frame: &mut Frame, area: Rect, state: &AppState) {
     frame.render_widget(paragraph, area);
 }
 
+fn main_status_text(state: &AppState) -> String {
+    let spin = if state.busy {
+        let ch = SPINNER[state.spinner_ticks as usize % SPINNER.len()];
+        format!("{ch} ")
+    } else {
+        String::new()
+    };
+    let elapsed = if state.busy {
+        state
+            .status_started
+            .map(|started| {
+                let secs = started.elapsed().as_secs();
+                if state.multi.active {
+                    format!(" ({secs}s)")
+                } else {
+                    format!(" ({secs}s, esc cancel)")
+                }
+            })
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let ask = if let Some(interaction) = state.interaction.as_ref() {
+        format!(" | {}: {}", interaction.kind, interaction.prompt)
+    } else if state.surface != "chat" && !state.agent_view_status.is_empty() {
+        format!(" | {}", state.agent_view_status)
+    } else {
+        String::new()
+    };
+    let loop_bit = if state.loop_summary.is_empty() {
+        String::new()
+    } else {
+        format!(" | {}", state.loop_summary)
+    };
+    let queue_bit = if state.queued_count > 0 {
+        format!(" · queued {}", state.queued_count)
+    } else if state.queue_cancel_requested {
+        " · stopping…".to_string()
+    } else {
+        String::new()
+    };
+    format!(
+        "{spin}{status}{elapsed}{ask}{loop_bit}{queue_bit}",
+        status = if state.status.is_empty() {
+            "ready"
+        } else {
+            state.status.as_str()
+        }
+    )
+}
+
 fn display_version(state: &AppState) -> String {
     format!("v{}", state.package_version)
 }
 
 /// Split the content area horizontally: ~1/3 chat scrollback on the left,
-/// agent panes grid on the right. Ports paneLayout.js::layoutAgentPanes so the
-/// Rust presentation and Node's `multi.viewport` calculation stay in sync.
+/// agent panes grid on the right. The viewport dispatch shares this layout.
 fn draw_multi_content(frame: &mut Frame, area: Rect, state: &mut AppState) {
+    state.multi.pane_rects.clear();
     let chat_w = (area.width / 3).max(4);
     let right_left = area.x.saturating_add(chat_w).saturating_add(1);
     let right_w = area.width.saturating_sub(chat_w).saturating_sub(1);
@@ -1050,6 +604,7 @@ fn draw_multi_content(frame: &mut Frame, area: Rect, state: &mut AppState) {
         width: chat_w,
         height: area.height,
     };
+    state.multi.chat_rect = Some((chat_area.x, chat_area.y, chat_area.width, chat_area.height));
     // Chat scrollback keeps its own borders/title.
     draw_scrollback(frame, chat_area, state);
     if right_w < 4 || area.height < 3 {
@@ -1068,85 +623,124 @@ fn draw_multi_content(frame: &mut Frame, area: Rect, state: &mut AppState) {
         };
         let focused = matches!(state.multi.focus, MultiFocus::Agent)
             && state.multi.focus_agent_id == desc.agent_id;
+        state.multi.pane_rects.insert(
+            desc.agent_id.clone(),
+            (pane_area.x, pane_area.y, pane_area.width, pane_area.height),
+        );
         draw_multi_pane(frame, *pane_area, state, i, focused);
     }
 }
 
-fn draw_multi_pane(frame: &mut Frame, area: Rect, state: &AppState, idx: usize, focused: bool) {
-    let Some(desc) = state.multi.panes.get(idx) else {
+fn draw_multi_pane(frame: &mut Frame, area: Rect, state: &mut AppState, idx: usize, focused: bool) {
+    let Some(desc) = state.multi.panes.get(idx).cloned() else {
         return;
     };
-    let title = format!(" {} ", desc.label);
-    let border_style = if focused {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
+    if desc.mode != "internal" {
+        return;
+    }
+    let pane = state.multi.frames.entry(desc.agent_id.clone()).or_default();
+    let border_style = pane_border_style(focused);
     let block = Block::default()
-        .title(title)
+        .title(format!(" {} ", desc.label))
         .borders(Borders::ALL)
         .border_style(border_style);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let lines: Vec<Line<'static>> = state
-        .multi
-        .frames
-        .get(&desc.agent_id)
-        .map(|frame_state| {
-            let mut out: Vec<Line<'static>> = Vec::new();
-            for raw in &frame_state.lines {
-                if raw.contains('\u{1b}') {
-                    match raw.as_str().into_text() {
-                        Ok(text) => {
-                            for l in text.lines {
-                                let owned = Line::from(
-                                    l.spans
-                                        .into_iter()
-                                        .map(|s| Span::styled(s.content.to_string(), s.style))
-                                        .collect::<Vec<_>>(),
-                                );
-                                out.push(owned);
-                            }
-                        }
-                        Err(_) => {
-                            out.push(Line::from(raw.clone()));
-                        }
-                    }
-                } else {
-                    out.push(Line::from(raw.clone()));
-                }
-            }
-            if frame_state.mode == "internal" && !frame_state.input.is_empty() {
-                out.push(Line::from(vec![
-                    Span::styled("› ".to_string(), Style::default().fg(Color::Magenta)),
-                    Span::raw(frame_state.input.clone()),
-                ]));
-            }
-            out
-        })
-        .unwrap_or_else(|| {
-            vec![Line::from(Span::styled(
-                "(waiting for frame…)",
-                Style::default().fg(Color::DarkGray),
-            ))]
-        });
-
-    let take = (inner.height as usize).max(1);
-    let visible = if lines.len() > take {
-        lines[lines.len() - take..].to_vec()
-    } else {
-        lines
-    };
-    let paragraph = Paragraph::new(visible);
-    frame.render_widget(paragraph, inner);
+    let inner = pane_content_area(block.inner(area));
+    let plan_height = (pane.plan.len() as u16)
+        .min(3)
+        .min(inner.height.saturating_sub(2));
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(plan_height)])
+        .split(inner);
+    let content = chunks[0];
+    let lines = build_transcript_lines_with_text_color(
+        &pane.entries,
+        content.width as usize,
+        false,
+        focused.then_some(Color::Reset),
+    );
+    let max_off = lines.len().saturating_sub(content.height as usize);
+    if pane.scroll_offset > 0 && pane.rendered_rows > 0 {
+        pane.scroll_offset = pane
+            .scroll_offset
+            .saturating_add(lines.len().saturating_sub(pane.rendered_rows));
+    }
+    pane.rendered_rows = lines.len();
+    pane.scroll_max_off = max_off;
+    pane.scroll_offset = pane.scroll_offset.min(max_off);
+    let skip = max_off.saturating_sub(pane.scroll_offset);
+    frame.render_widget(
+        block.title_bottom(Line::from(Span::styled(
+            format!(" {} ", multi_status_text(pane, state.spinner_ticks)),
+            Style::default().fg(Color::DarkGray),
+        ))),
+        area,
+    );
+    frame.render_widget(
+        Paragraph::new(
+            lines
+                .into_iter()
+                .skip(skip)
+                .take(content.height as usize)
+                .collect::<Vec<_>>(),
+        ),
+        content,
+    );
+    if plan_height > 0 {
+        frame.render_widget(
+            Paragraph::new(
+                pane.plan
+                    .iter()
+                    .take(plan_height as usize)
+                    .map(|line| Line::from(line.clone()))
+                    .collect::<Vec<_>>(),
+            ),
+            chunks[1],
+        );
+    }
 }
 
-/// Mirror of paneLayout.js::layoutAgentPanes. Returns Rects in absolute
-/// coordinates so the caller can `frame.render_widget` directly.
-fn layout_agent_panes(left: u16, top: u16, width: u16, height: u16, count: usize) -> Vec<Rect> {
+fn multi_status_text(pane: &MultiPaneFrame, spinner_ticks: u64) -> String {
+    let spinner = if pane.busy {
+        format!("{} ", SPINNER[spinner_ticks as usize % SPINNER.len()])
+    } else {
+        String::new()
+    };
+    let elapsed = if pane.busy && pane.started_at > 0 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        format!(" · {}s", now.saturating_sub(pane.started_at) / 1000)
+    } else {
+        String::new()
+    };
+    let usage = if pane.usage.is_empty() {
+        String::new()
+    } else {
+        format!(" · {}", pane.usage)
+    };
+    let scroll = if pane.scroll_offset > 0 {
+        format!(" · ↑{}", pane.scroll_offset)
+    } else {
+        String::new()
+    };
+    let status = if pane.status.is_empty() {
+        "ready"
+    } else {
+        pane.status.as_str()
+    };
+    format!("{spinner}{status}{elapsed}{usage}{scroll}")
+}
+
+/// Shared child grid for drawing and viewport sizing. Returns absolute Rects.
+pub(crate) fn layout_agent_panes(
+    left: u16,
+    top: u16,
+    width: u16,
+    height: u16,
+    count: usize,
+) -> Vec<Rect> {
     if count == 0 || width == 0 || height == 0 {
         return Vec::new();
     }
@@ -1217,14 +811,76 @@ fn layout_agent_panes(left: u16, top: u16, width: u16, height: u16, count: usize
     out
 }
 
+/// Footer controls remain usable while an internal child owns the shared input.
+pub(crate) fn footer_focus_at(
+    state: &AppState,
+    column: u16,
+    row: u16,
+) -> Option<(FocusPane, Option<usize>)> {
+    if state.multi.term_rows == 0
+        || row != state.multi.term_rows - 1
+        || column >= state.multi.term_cols
+    {
+        return None;
+    }
+    let text = state.footer.as_str();
+    let hits = |needle: &str| {
+        text.match_indices(needle).any(|(start, _)| {
+            let left = 1 + text[..start].width();
+            let right = left + needle.width();
+            (column as usize) >= left && (column as usize) < right
+        })
+    };
+    if state.focus == FocusPane::Provider {
+        for (index, provider) in state.provider_options.iter().enumerate() {
+            if hits(&provider.label) {
+                return Some((FocusPane::Provider, Some(index)));
+            }
+        }
+        return Some((FocusPane::Provider, None));
+    }
+    if state.focus == FocusPane::Cron {
+        for (index, task) in state.cron_tasks.iter().enumerate() {
+            if hits(&task.label) {
+                return Some((FocusPane::Cron, Some(index)));
+            }
+        }
+        return Some((FocusPane::Cron, None));
+    }
+    for (index, agent) in state.agents.iter().enumerate() {
+        let needle = format!("@{}", agent.label.trim_start_matches('@'));
+        let selected = text.match_indices(&needle).any(|(start, _)| {
+            let end = start + needle.len();
+            let suffix = &text[end..];
+            let boundary =
+                suffix.is_empty() || suffix.starts_with([',', ']']) || suffix.starts_with(" ·");
+            let left = 1 + text[..start].width();
+            boundary && (column as usize) >= left && (column as usize) < left + needle.width()
+        });
+        if selected {
+            return Some((FocusPane::Agents, Some(index)));
+        }
+    }
+    let provider = crate::model::provider_short(&state.agent_provider);
+    if state.surface == "chat" && (hits(&format!(" · {provider}")) || hits("↓ settings")) {
+        return Some((FocusPane::Provider, None));
+    }
+    let index = state
+        .agents
+        .iter()
+        .position(|agent| agent.id == state.multi.focus_agent_id)
+        .or_else(|| (!state.agents.is_empty()).then_some(0));
+    Some((FocusPane::Agents, index))
+}
+
 fn draw_footer(frame: &mut Frame, area: Rect, state: &AppState) {
     let base = if state.footer.is_empty() {
-        "enter submit · tab agents/cron · / @ complete · esc".to_string()
+        "enter submit · tab agents · / @ complete · esc".to_string()
     } else {
         state.footer.clone()
     };
     let text = if state.multi.active {
-        format!("{base} · Ctrl+W cycle · Ctrl+Q exit")
+        format!("{base} · Tab switch")
     } else {
         base
     };
@@ -1253,6 +909,296 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn main_input_title_and_status_are_independent_of_child_status() {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+        let mut state = AppState::new("ufoo", "chat");
+        state.status = "Thinking…".into();
+        state.agent_view_status = "child task".into();
+        for split in [false, true] {
+            state.multi.active = split;
+            state.multi.focus = MultiFocus::Chat;
+            terminal
+                .draw(|frame| {
+                    draw(frame, &mut state);
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let row = |y| -> String {
+                (0..120)
+                    .map(|x| buffer.cell((x, y)).unwrap().symbol())
+                    .collect()
+            };
+            assert!(row(36).contains("› main"));
+            assert!(row(35).starts_with("└ Thinking… "));
+            assert!(!row(35).contains("child task"));
+        }
+    }
+
+    #[test]
+    fn footer_clicks_use_unicode_cell_widths_and_distinguish_agent_names_from_settings() {
+        let mut state = AppState::new("ufoo", "chat");
+        state.multi.term_rows = 40;
+        state.multi.term_cols = 120;
+        state.agents = vec![
+            crate::model::AgentItem {
+                id: "a".into(),
+                label: "coder".into(),
+                activity_state: String::new(),
+            },
+            crate::model::AgentItem {
+                id: "b".into(),
+                label: "coder-review".into(),
+                activity_state: String::new(),
+            },
+            crate::model::AgentItem {
+                id: "c".into(),
+                label: "中文".into(),
+                activity_state: String::new(),
+            },
+        ];
+        state.rebuild_footer();
+        for (needle, index) in [("@coder,", 0), ("@coder-review", 1), ("@中文", 2)] {
+            let start = state.footer.find(needle).unwrap();
+            let column = (1 + state.footer[..start].width()) as u16;
+            assert_eq!(
+                footer_focus_at(&state, column, 39),
+                Some((FocusPane::Agents, Some(index)))
+            );
+        }
+        let start = state.footer.rfind("codex").unwrap();
+        let column = (1 + state.footer[..start].width()) as u16;
+        assert_eq!(
+            footer_focus_at(&state, column, 39),
+            Some((FocusPane::Provider, None))
+        );
+        assert_eq!(footer_focus_at(&state, column, 38), None);
+    }
+
+    #[test]
+    fn agent_footer_precedes_compact_split_hint() {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 1)).unwrap();
+        let mut state = AppState::new("ufoo", "chat");
+        state.multi.active = true;
+        state.multi.kind = "side".into();
+        state.footer = "Agents: @coder".into();
+        terminal
+            .draw(|frame| draw_footer(frame, frame.area(), &state))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let text: String = (0..80)
+            .map(|x| buffer.cell((x, 0)).unwrap().symbol())
+            .collect();
+        assert!(text.starts_with(" Agents: @coder · Tab switch"));
+        assert!(!text.contains("Ctrl+"));
+        state.footer = format!("Agents: {}", "agent metadata ".repeat(20));
+        terminal
+            .draw(|frame| draw_footer(frame, frame.area(), &state))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let text: String = (0..80)
+            .map(|x| buffer.cell((x, 0)).unwrap().symbol())
+            .collect();
+        assert!(text.starts_with(" Agents:"));
+        assert!(!text.contains("Tab switch"));
+    }
+
+    #[test]
+    fn child_status_is_embedded_in_the_bottom_border_and_plan_stays_inside() {
+        use crate::model::MultiPaneDesc;
+        for (label, status) in [
+            ("codex", "ready"),
+            ("claude", "Thinking…"),
+            ("ucode", "Reading file…"),
+        ] {
+            for focused in [false, true] {
+                let mut terminal =
+                    ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
+                let mut state = AppState::new("ufoo", "chat");
+                state.multi.panes.push(MultiPaneDesc {
+                    agent_id: label.into(),
+                    label: label.into(),
+                    mode: "internal".into(),
+                });
+                state.multi.frames.insert(
+                    label.into(),
+                    MultiPaneFrame {
+                        status: status.into(),
+                        plan: vec!["→ Next step".into()],
+                        ..Default::default()
+                    },
+                );
+                terminal
+                    .draw(|frame| {
+                        draw_multi_pane(frame, Rect::new(0, 0, 40, 10), &mut state, 0, focused);
+                    })
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                let row = |y| -> String {
+                    (0..40)
+                        .map(|x| buffer.cell((x, y)).unwrap().symbol())
+                        .collect()
+                };
+                assert!(row(0).contains(&format!(" {label} ")));
+                assert!(row(9).starts_with(&format!("└ {status} ─")));
+                assert!(row(9).ends_with('┘'));
+                assert!(row(8).starts_with("│ → Next step"));
+                assert!(row(10).trim().is_empty());
+                assert_eq!(buffer.cell((39, 8)).unwrap().symbol(), "│");
+                assert_eq!(
+                    buffer.cell((0, 9)).unwrap().fg,
+                    if focused {
+                        Color::Cyan
+                    } else {
+                        Color::DarkGray
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn selected_child_uses_the_single_bottom_input_and_keeps_output_padding() {
+        use crate::model::{MultiPaneDesc, MultiPaneFrame};
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+        let mut state = AppState::new("ufoo", "chat");
+        state.status = "ready".into();
+        state.multi.active = true;
+        state.multi.focus = MultiFocus::Agent;
+        state.multi.focus_agent_id = "codex:one".into();
+        state.multi.term_cols = 120;
+        state.multi.term_rows = 40;
+        state.append_entry(crate::model::ScrollbackEntry {
+            id: "main-output".into(),
+            kind: "system".into(),
+            text: "MAIN_OUTPUT".into(),
+            speaker: String::new(),
+            expanded: false,
+            detail: String::new(),
+        });
+        state.multi.panes.push(MultiPaneDesc {
+            agent_id: "codex:one".into(),
+            label: "coder".into(),
+            mode: "internal".into(),
+        });
+        let viewport = crate::dispatch::multi_viewport_effects_public(&mut state);
+        let cols = match &viewport[0] {
+            crate::action::Effect::SendCommand { payload, .. } => {
+                payload["panes"][0]["cols"].as_u64().unwrap() as usize
+            }
+            _ => panic!("child viewport missing"),
+        };
+        state.multi.frames.insert(
+            "codex:one".into(),
+            MultiPaneFrame {
+                status: "working".into(),
+                entries: [crate::model::ScrollbackEntry {
+                    text: format!("CHILD_OUTPUT{}Z", "x".repeat(cols - 13)),
+                    kind: "system".into(),
+                    id: "child-output".into(),
+                    speaker: String::new(),
+                    expanded: false,
+                    detail: String::new(),
+                }]
+                .into(),
+                ..Default::default()
+            },
+        );
+        let mut cursor = None;
+        terminal
+            .draw(|frame| {
+                cursor = draw(frame, &mut state);
+            })
+            .unwrap();
+        let (x, y) = cursor.expect("agent caret is visible even before typing");
+        assert_eq!(x, 2);
+        assert!(y >= 35);
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer.cell((1, 1)).unwrap().symbol(), " ");
+        assert_eq!(buffer.cell((2, 1)).unwrap().symbol(), "M");
+        assert_eq!(buffer.cell((42, 1)).unwrap().symbol(), " ");
+        assert_eq!(buffer.cell((43, 1)).unwrap().symbol(), "C");
+        assert_eq!(buffer.cell((43, 1)).unwrap().fg, Color::Reset);
+        assert_eq!(
+            buffer.cell((2, 1)).unwrap().fg,
+            crate::agent_surface::UCODE_SYSTEM_TEXT
+        );
+        assert_eq!(buffer.cell((117, 1)).unwrap().symbol(), "Z");
+        assert_eq!(buffer.cell((118, 1)).unwrap().symbol(), " ");
+        assert_eq!(buffer.cell((1, y - 1)).unwrap().symbol(), "›");
+        assert_eq!(buffer.cell((41, y - 1)).unwrap().symbol(), "─");
+        let status: String = (41..120)
+            .map(|x| buffer.cell((x, y - 2)).unwrap().symbol())
+            .collect();
+        assert!(status.starts_with("└ working ─"));
+        let main_status: String = (0..40)
+            .map(|x| buffer.cell((x, y - 2)).unwrap().symbol())
+            .collect();
+        assert!(main_status.starts_with("└ ready ─"));
+        state.multi.focus = MultiFocus::Chat;
+        terminal
+            .draw(|frame| {
+                cursor = draw(frame, &mut state);
+            })
+            .unwrap();
+        assert!(cursor.unwrap().0 < 40);
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer.cell((2, 1)).unwrap().fg, Color::Reset);
+        assert_eq!(
+            buffer.cell((43, 1)).unwrap().fg,
+            crate::agent_surface::UCODE_SYSTEM_TEXT
+        );
+    }
+
+    #[test]
+    fn embedded_input_shares_multiline_chrome_and_utf16_caret_mapping() {
+        use crate::model::{MultiPaneDesc, MultiPaneFrame};
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+        let mut state = AppState::new("ufoo", "chat");
+        state.multi.active = true;
+        state.multi.focus = MultiFocus::Agent;
+        state.multi.focus_agent_id = "native".into();
+        state.multi.panes.push(MultiPaneDesc {
+            agent_id: "native".into(),
+            label: "ucode".into(),
+            mode: "internal".into(),
+        });
+        state.multi.frames.insert(
+            "native".into(),
+            MultiPaneFrame {
+                input: "你好🙂abc\nsecond".into(),
+                input_cursor: 4,
+                busy: true,
+                status: "Thinking…".into(),
+                ..Default::default()
+            },
+        );
+        let mut caret = None;
+        terminal
+            .draw(|frame| caret = draw(frame, &mut state))
+            .unwrap();
+        let (x, y) = caret.unwrap();
+        assert_eq!(x, 8); // x=2 + two CJK cells + emoji width=2
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer.cell((2, y)).unwrap().symbol(), "你");
+        assert_eq!(buffer.cell((2, y + 1)).unwrap().symbol(), "s");
+        assert_eq!(buffer.cell((1, y - 1)).unwrap().symbol(), "›");
+        assert_eq!(buffer.cell((0, y - 1)).unwrap().fg, Color::Cyan);
+        state.multi.focus = MultiFocus::Chat;
+        terminal
+            .draw(|frame| {
+                draw(frame, &mut state);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer.cell((41, 0)).unwrap().fg, Color::DarkGray);
+        assert_eq!(buffer.cell((0, 36)).unwrap().fg, Color::Cyan);
+    }
 
     #[test]
     fn status_version_uses_host_package_version() {

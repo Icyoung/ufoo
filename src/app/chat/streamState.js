@@ -122,7 +122,7 @@ function createChatStreamState({
       meta: meta || {},
     };
     streams.set(key, state);
-    dispatch({ type: "stream/begin", publisher: displayName });
+    dispatch({ type: "stream/begin", publisher: key, displayName });
     return state;
   }
 
@@ -132,7 +132,7 @@ function createChatStreamState({
     state.parts.push(text);
     let batch = pendingDeltas.get(state.publisher);
     if (!batch) {
-      batch = { publisher: state.displayName || state.publisher, parts: [] };
+      batch = { publisher: state.publisher, parts: [] };
       pendingDeltas.set(state.publisher, batch);
     }
     batch.parts.push(text);
@@ -144,7 +144,7 @@ function createChatStreamState({
     const state = streams.get(key);
     if (!state) return;
     flushDeltas();
-    dispatch({ type: "stream/end" });
+    dispatch({ type: "stream/end", publisher: key });
     if (typeof appendHistory === "function") {
       const full = state.parts.join("");
       const text = state.displayName

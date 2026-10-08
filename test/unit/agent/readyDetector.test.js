@@ -2,6 +2,55 @@ const ReadyDetector = require("../../../src/agents/launch/readyDetector");
 
 describe("ReadyDetector", () => {
   describe("claude-code prompt detection", () => {
+    test("waits through the first-run workspace trust menu and resumes after confirmation", () => {
+      const detector = new ReadyDetector("claude-code");
+      const onReady = jest.fn();
+      detector.onReady(onReady);
+      detector.processOutput("Accessing workspace:\n/tmp/project\nIs this a project you created or one you trust?\n");
+      detector.processOutput("\x1b[36m❯\x1b[0m");
+      detector.processOutput(" 1. Yes, I trust this folder\n  2. No, exit\nEnter to confirm · Esc to cancel\n");
+      detector.forceReady();
+      expect(detector.ready).toBe(false);
+      expect(onReady).not.toHaveBeenCalled();
+
+      // Ink redraws the terminal without erasing the old trust bytes from a
+      // stream buffer. New input chrome must release the startup latch.
+      detector.processOutput("\x1b[2J\x1b[HClaude Code v2.1.204\n❯ Try a task\n? for shortcuts\n");
+      expect(onReady).toHaveBeenCalledTimes(1);
+    });
+
+    test.each(["claude-code", "codex"])("%s does not mistake a numbered choice for its input prompt", (agentType) => {
+      const detector = new ReadyDetector(agentType);
+      const marker = agentType === "codex" ? "›" : "❯";
+      detector.processOutput(`${marker} 1. Yes, continue\n  2. No, exit\n`);
+      expect(detector.ready).toBe(false);
+    });
+
+    test("trust confirmation survives a rolling buffer trim", () => {
+      const detector = new ReadyDetector("claude-code");
+      detector.processOutput("Accessing workspace:\n❯ 1. Yes, I trust this folder\n");
+      detector.processOutput("x".repeat(3000));
+      detector.processOutput("\n❯");
+      expect(detector.ready).toBe(false);
+      detector.processOutput("\nClaude Code v2.1.204\n❯\n? for shortcuts\n");
+      expect(detector.ready).toBe(true);
+    });
+
+    test("accepts the real Claude input's non-breaking space after an ANSI cursor-positioned trust screen", () => {
+      const detector = new ReadyDetector("claude-code");
+      detector.processOutput("Accessing\x1b[1Cworkspace:\n❯ 1. Yes, I\x1b[1Ctrust\x1b[1Cthis\x1b[1Cfolder\n");
+      expect(detector.ready).toBe(false);
+      detector.processOutput("\x1b[2JClaude\x1b[1CCode\x1b[1Cv2.1.204\n❯\u00a0 \n?\x1b[1Cfor\x1b[1Cshortcuts\n");
+      expect(detector.ready).toBe(true);
+    });
+
+    test("does not treat quoted prompts or a banner as readiness", () => {
+      for (const agentType of ["claude-code", "codex"]) {
+        const detector = new ReadyDetector(agentType);
+        detector.processOutput('Example prompt: ❯ or codex>\n──────── Try signing in\n');
+        expect(detector.ready).toBe(false);
+      }
+    });
     test("should detect prompt marker ❯", () => {
       const detector = new ReadyDetector("claude-code");
       let readyCalled = false;
@@ -158,6 +207,17 @@ describe("ReadyDetector", () => {
   });
 
   describe("codex detection", () => {
+    test("waits through an ANSI-positioned Codex folder trust menu, then recognizes the mounted input", () => {
+      const detector = new ReadyDetector("codex");
+      const onReady = jest.fn();
+      detector.onReady(onReady);
+      detector.processOutput("\x1b[1;1HDo you trust the contents of this directory?\x1b[3;1H›");
+      detector.processOutput(" 1. Yes, continue\x1b[4;1H  2. No, quit");
+      detector.forceReady();
+      expect(detector.ready).toBe(false);
+      detector.processOutput("\x1b[2J\x1b[2;1H>_ OpenAI Codex (v0.160.1)\x1b[8;1H» Ask Codex to do anything\x1b[10;1HGPT-6.1-Sol");
+      expect(onReady).toHaveBeenCalledTimes(1);
+    });
     test("should detect codex prompt", () => {
       const detector = new ReadyDetector("codex");
       let readyCalled = false;
@@ -410,7 +470,7 @@ describe("ReadyDetector", () => {
       });
 
       // Simulate slow output, one char at a time
-      "Loading claude-code... ❯".split("").forEach((char) => {
+      "Loading claude-code...\n❯".split("").forEach((char) => {
         detector.processOutput(char);
       });
 

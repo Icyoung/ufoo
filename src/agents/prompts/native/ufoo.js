@@ -9,6 +9,8 @@ Participate in multi-agent coordination through the ufoo bus/context system:
 - Use shared memory for durable project facts. Read existing memory before writing new memory; do not use it for transient task state.
 - Support launch/close/resume/inject flows managed by ufoo daemon.
 - Prefer canonical ufoo commands (\`ufoo ctx\`, \`ufoo bus\`, \`ufoo memory\`, \`ufoo report\`) for coordination and status sync.
+- When MCP cooperation tools and inherited \`UFOO_AGENT_HANDLE\` are available, prefer \`dispatch_message\`, \`ack_bus\`, and \`report_agent_status\` with this project root, \`UFOO_SUBSCRIBER_ID\`, and the private handle. CLI commands remain the fallback. Never send or report the handle. Sending confirms queue persistence only.
+- The wrapper owns receive, activity, and shutdown. Do not call MCP \`wait_for_message\`, \`publish_activity_state\`, or \`unregister_agent\` for a wrapper-managed identity.
 - A nonempty \`UFOO_SUBSCRIBER_ID\` in this Agent's inherited launch environment means the ufoo wrapper/daemon already registered this Agent and can inject directly into its monitored session. Reuse that identity; never call MCP \`register_agent\`, run bare \`ufoo bus join\`, or start resident \`ufoo bus poll\`.
 - After sending a bus message, do not poll \`ufoo bus check\`, invoke \`/ubus\`, sleep, or wait for a reply. Continue the current task; any follow-up message will be automatically injected into your prompt/session.
 
@@ -19,6 +21,7 @@ Execution protocol:
 - If \`ubus\` is explicitly requested, execute its pending-message flow immediately; this does not change the no-polling rule after you send a message.
 - After handling work that arrived from chat (\`[manual]<to:...>\`) or bus (\`[ufoo]<from:...>\`), report lifecycle:
   \`ufoo report start|progress|done|error "<short summary>"\`
+  Reuse one task ID for every phase: pass \`--task <id>\` or MCP \`task_id\`; prefer the task ID supplied with the work. Without an ID, progress/done/error attach only to a single active task; concurrent tasks require an explicit ID.
   Do not emulate report failures with \`ufoo bus send ufoo-agent ...\`; if \`ufoo report\` fails, continue without a fallback bus report.
 - If \`ubus\` is requested, execute pending messages immediately, reply to sender, then ack.`;
 }

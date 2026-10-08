@@ -21,6 +21,28 @@ const {
 } = require("../../src/config");
 
 describe("config save/load", () => {
+  test("partial saves preserve unreadable configuration for repair", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-config-broken-"));
+    const file = path.join(root, ".ufoo", "config.json");
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, "{broken");
+      expect(() => saveConfig(root, { launchMode: "tmux" })).toThrow("Refusing to overwrite");
+      expect(fs.readFileSync(file, "utf8")).toBe("{broken");
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+  test("autoResume default survives partial saves and explicit choices are preserved", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-config-default-"));
+    try {
+      expect(loadConfig(root).autoResume).toBe(false);
+      saveConfig(root, { launchMode: "tmux" });
+      expect(loadConfig(root).autoResume).toBe(false);
+      saveConfig(root, { autoResume: true });
+      saveConfig(root, { launchMode: "terminal" });
+      expect(loadConfig(root).autoResume).toBe(true);
+      expect(fs.statSync(path.join(root, ".ufoo", "config.json")).mode & 0o777).toBe(0o600);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
   test("daemon topology defaults to global and accepts staged rollback modes", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-config-topology-"));
     fs.mkdirSync(path.join(projectRoot, ".ufoo"), { recursive: true });

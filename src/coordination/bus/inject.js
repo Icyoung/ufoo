@@ -387,16 +387,17 @@ class Injector {
   /**
    * 使用指定路径的 PTY socket 注入命令
    */
-  async injectPtyAtPath(sockPath, command) {
+  async injectPtyAtPath(sockPath, command, options = {}) {
     return new Promise((resolve, reject) => {
       const client = net.createConnection(sockPath, () => {
-        client.write(JSON.stringify({ type: "inject", command }) + "\n");
+        client.write(JSON.stringify({ type: "inject", command, ...options }) + "\n");
       });
 
       let buffer = "";
+      let received = false;
       const timeout = setTimeout(() => {
         client.destroy();
-        reject(new Error("PTY inject timeout"));
+        reject(Object.assign(new Error("Inject response timed out"), options.deliveryId ? { code: "native_outcome_unknown" } : {}));
       }, 5000);
 
       client.on("data", (data) => {
@@ -406,6 +407,7 @@ class Injector {
 
         for (const line of lines) {
           if (!line.trim()) continue;
+          received = true;
           clearTimeout(timeout);
           try {
             const res = JSON.parse(line);
@@ -413,7 +415,7 @@ class Injector {
             if (res.ok) {
               resolve();
             } else {
-              reject(new Error(res.error || "PTY inject failed"));
+              reject(Object.assign(new Error(res.error || "PTY inject failed"), { code: res.code }));
             }
           } catch (err) {
             client.end();
@@ -430,6 +432,7 @@ class Injector {
 
       client.on("close", () => {
         clearTimeout(timeout);
+        if (!received) reject(Object.assign(new Error("Inject socket closed without a receipt"), options.deliveryId ? { code: "native_outcome_unknown" } : {}));
       });
     });
   }
@@ -455,7 +458,7 @@ class Injector {
    * 2. tmux send-keys（无需权限）
    * 3. Terminal.app/iTerm2 tty lookup（terminal mode fallback）
    */
-  async inject(subscriber, commandOverride) {
+  async inject(subscriber, commandOverride, delivery = {}) {
     if (String(subscriber || "").startsWith("ufoo-code:")) {
       throw new Error(`Inject disabled for ${subscriber}. ufoo-code consumes bus internally.`);
     }
@@ -471,6 +474,11 @@ class Injector {
     }
 
     const meta = this.getAgentMeta(subscriber) || {};
+    if (meta.native_delivery) {
+      // A native write may already be accepted. Never fall back to keystrokes
+      // after a native failure; the scheduler retains the queued work.
+      return this.injectPtyAtPath(this.getInjectSockPath(subscriber), command, delivery);
+    }
     const launchMode = meta.launch_mode || "";
     const adapterRouter = createTerminalAdapterRouter();
     const adapter = adapterRouter.getAdapter({ launchMode, agentId: subscriber, meta });

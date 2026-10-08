@@ -9,7 +9,6 @@ const {
   releasePollLease,
 } = require("../../coordination/bus/poll");
 const { subscriberToSafeName } = require("../../coordination/bus/utils");
-const { normalizeReportInput } = require("../../coordination/report/store");
 const { enqueueAgentReport } = require("./reportControlBus");
 const { isRunning } = require("./index");
 const {
@@ -110,8 +109,8 @@ function extendMcpAgentLease(meta, nowMs = Date.now()) {
 
 function assertAgentHandle(bus, subscriber, args = {}, options = {}) {
   const meta = assertSubscriberExists(bus, subscriber);
-  if (meta.mcp_bridge !== true || !meta.mcp_agent_handle_hash) {
-    const err = new Error(`subscriber is not an MCP-registered Agent: ${subscriber}`);
+  if (!meta.mcp_agent_handle_hash) {
+    const err = new Error(`subscriber has no MCP capability: ${subscriber}`);
     err.code = "agent_handle_not_available";
     throw err;
   }
@@ -135,7 +134,7 @@ function assertAgentHandle(bus, subscriber, args = {}, options = {}) {
   }
   const expiresAtMs = Date.parse(String(meta.mcp_lease_expires_at || ""));
   if (
-    options.allowExpired !== true
+    meta.mcp_bridge === true && options.allowExpired !== true
     && (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now())
   ) {
     const err = new Error(`Agent lease expired: ${subscriber}`);
@@ -143,6 +142,13 @@ function assertAgentHandle(bus, subscriber, args = {}, options = {}) {
     throw err;
   }
   return meta;
+}
+
+function assertExternalLifecycle(meta, operation) {
+  if (meta.mcp_bridge === true) return;
+  const err = new Error(`${operation} is owned by this Agent's wrapper or host`);
+  err.code = "managed_agent_lifecycle";
+  throw err;
 }
 
 function notifyDaemonRefresh(projectRoot) {
@@ -250,9 +256,8 @@ async function registerAgentFull(projectRoot, args = {}, options = {}) {
 
   // Nickname scope and conflict check
   let finalNickname = nickname;
-  let scopedNickname = nickname
-    ? applyProjectNicknamePrefix(projectRoot, nickname, { agentType })
-    : "";
+  let scopedNickname = String(args.scoped_nickname || args.scopedNickname || "").trim()
+    || (nickname ? applyProjectNicknamePrefix(projectRoot, nickname, { agentType }) : "");
   if (checkNicknameConflicts && finalNickname) {
     const nickCheck = checkAndCleanupNickname(projectRoot, finalNickname, {
       tty: String(args.tty || ""),
@@ -276,6 +281,7 @@ async function registerAgentFull(projectRoot, args = {}, options = {}) {
     hostName: String(args.host_name || args.hostName || "ufoo-mcp"),
     hostSessionId: String(args.hostSessionId || `mcp-${process.pid}`),
     hostCapabilities: hostCapabilities,
+    providerSessionId: String(args.providerSessionId || ""),
     scopedNickname: scopedNickname || String(args.scoped_nickname || args.scopedNickname || finalNickname || "").trim(),
   };
   if (args.skipSessionResolve) joinOptions.skipSessionResolve = true;
@@ -297,16 +303,16 @@ async function registerAgentFull(projectRoot, args = {}, options = {}) {
   const result = await bus.subscriberManager.join(sessionId, agentType, finalNickname, joinOptions);
   const subscriber = result.subscriber;
   if (finalNickname) {
-    bus.subscriberManager.rename(subscriber, finalNickname, "ufoo-agent", { scopedNickname });
+    await bus.subscriberManager.rename(subscriber, finalNickname, { scopedNickname });
   }
   const meta = bus.subscriberManager.getSubscriber(subscriber) || {};
-  meta.activity_state = String(args.activity_state || "ready");
+  meta.activity_state = String(args.activity_state || (validateParentPid ? "starting" : "ready"));
   meta.activity_since = nowIso();
   meta.mcp_bridge = !validateParentPid;
-  let agentHandle = "";
+  const agentHandle = createAgentHandle();
+  meta.mcp_agent_handle_hash = hashAgentHandle(agentHandle);
+  delete meta.mcp_revoked_at;
   if (!validateParentPid) {
-    agentHandle = createAgentHandle();
-    meta.mcp_agent_handle_hash = hashAgentHandle(agentHandle);
     meta.mcp_client_instance_id = clientInstanceId;
     meta.mcp_registered_at = meta.mcp_registered_at || nowIso();
     extendMcpAgentLease(meta);
@@ -340,7 +346,7 @@ async function registerAgentFull(projectRoot, args = {}, options = {}) {
     launch_mode: launchMode,
     ...(agentHandle ? {
       agent_handle: agentHandle,
-      lease_expires_at: meta.mcp_lease_expires_at,
+      lease_expires_at: meta.mcp_bridge === true ? meta.mcp_lease_expires_at : null,
       client_instance_id: clientInstanceId,
       recovered: Boolean(recoveredSubscriber),
       ...(supersededSubscribers.length > 0 ? { superseded_subscribers: supersededSubscribers } : {}),
@@ -377,7 +383,7 @@ async function heartbeatAgent(projectRoot, args = {}, options = {}) {
   const meta = assertAgentHandle(bus, subscriber, args);
   bus.subscriberManager.updateLastSeen(subscriber);
   meta.status = "active";
-  const leaseExpiresAt = extendMcpAgentLease(meta);
+  const leaseExpiresAt = meta.mcp_bridge === true ? extendMcpAgentLease(meta) : null;
   bus.saveBusData();
   notifyDaemonRefreshIfEnabled(projectRoot, options);
   return {
@@ -399,6 +405,7 @@ async function publishActivityState(projectRoot, args = {}, options = {}) {
   }
   const bus = ensureBusLoaded(projectRoot);
   const meta = assertAgentHandle(bus, subscriber, args);
+  assertExternalLifecycle(meta, "publish_activity_state");
   bus.subscriberManager.updateLastSeen(subscriber);
   meta.status = "active";
   meta.activity_state = activityState;
@@ -569,6 +576,7 @@ async function waitForMessage(projectRoot, args = {}, options = {}) {
   const timeoutMs = timeoutSeconds > 0 ? timeoutSeconds * 1000 : null;
 
   const bus = ensureBusLoaded(projectRoot);
+  assertExternalLifecycle(assertAgentHandle(bus, subscriber, args), "wait_for_message");
   touchWaitingSubscriber(bus, subscriber, args);
   const lease = acquirePollLease(path.join(
     bus.busDir,
@@ -649,12 +657,13 @@ async function reportAgentStatus(projectRoot, args = {}) {
   const subscriber = resolveSubscriberArg(args);
   const bus = ensureBusLoaded(projectRoot);
   assertAgentHandle(bus, subscriber, args);
-  const report = normalizeReportInput({
+  const reportInput = {
     ...args,
     agent_id: subscriber,
     source: "mcp",
-  });
-  const queued = await enqueueAgentReport(projectRoot, report, { publisher: subscriber });
+  };
+  const queued = await enqueueAgentReport(projectRoot, reportInput, { publisher: subscriber });
+  const report = queued.report;
   return {
     ok: true,
     project_root: projectRoot,
@@ -672,6 +681,7 @@ async function unregisterAgent(projectRoot, args = {}, options = {}) {
     allowExpired: true,
     allowInactive: true,
   });
+  assertExternalLifecycle(meta, "unregister_agent");
   meta.mcp_revoked_at = nowIso();
   meta.mcp_lease_expires_at = meta.mcp_revoked_at;
   const ok = await bus.subscriberManager.leave(subscriber);

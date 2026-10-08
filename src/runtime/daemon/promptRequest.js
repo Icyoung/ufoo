@@ -121,6 +121,9 @@ async function handlePromptRequest(options = {}) {
     runPromptWithControllerLoop: injectedLoopRunner = runPromptWithControllerLoop,
     runUfooAgent,
     runUfooRouteAgent,
+    runMainAgent = null,
+    runCompatibility = null,
+    selectExecutionPath = null,
     dispatchMessages,
     handleOps,
     ackBus,
@@ -151,6 +154,10 @@ async function handlePromptRequest(options = {}) {
   if (controllerMode === CONTROLLER_MODES.LEGACY && resolvedLoopRuntime.enabled) {
     controllerMode = CONTROLLER_MODES.LOOP;
   }
+  if (selectExecutionPath) {
+    try { controllerMode = selectExecutionPath({ sessionId: req.session_id || requestMeta.session_id || "main-default", requestedMode: requestedControllerMode, mode: controllerMode }); }
+    catch (error) { socket.write(`${JSON.stringify({ type: IPC_RESPONSE_TYPES.ERROR, error: error.message, code: error.code })}\n`); return false; }
+  }
   const controllerObserver = createLoopObserver({
     projectRoot,
     enabled: true,
@@ -171,6 +178,7 @@ async function handlePromptRequest(options = {}) {
     enabled: controllerMode === CONTROLLER_MODES.LOOP,
   };
   const shadowEnabled = controllerMode === CONTROLLER_MODES.SHADOW;
+  const useNativeMain = controllerMode === CONTROLLER_MODES.MAIN && typeof runMainAgent === "function";
 
   if (isGlobalController && forcedProjectRoot) {
     try {
@@ -263,7 +271,7 @@ async function handlePromptRequest(options = {}) {
     })
     : null;
 
-  if (!useGlobalProjectRouter && gateRouterEligibility.enabled && typeof runUfooRouteAgent === "function") {
+  if (!useNativeMain && !useGlobalProjectRouter && gateRouterEligibility.enabled && typeof runUfooRouteAgent === "function") {
     logGateRouterEvent("controller.gate_router_attempted", {
       flag: gateRouterEligibility.executionPath,
       intent_reason: gateRouterEligibility.intent.reason,
@@ -341,6 +349,10 @@ async function handlePromptRequest(options = {}) {
           );
           return true;
         } catch (err) {
+          if (err.code === "uncertain_effect") {
+            socket.write(`${JSON.stringify({ type: IPC_RESPONSE_TYPES.ERROR, error: err.message, code: err.code })}\n`);
+            return false;
+          }
           attachGateRouterMeta("dispatch_failed", {
             target: route.target,
             confidence: Number(route.confidence || 0),
@@ -360,14 +372,14 @@ async function handlePromptRequest(options = {}) {
   }
 
   const promptText = buildPromptWithPrivateReports(req.text || "", privateReports, nextRequestMeta);
-  const promptRunner = loopRuntime.enabled
+  const promptRunner = useNativeMain ? runMainAgent : loopRuntime.enabled
     && !forceMainRouterFallback
     && typeof injectedLoopRunner === "function"
     ? injectedLoopRunner
     : runPromptWithAssistant;
 
   try {
-    const handled = await promptRunner({
+    const runnerOptions = {
       projectRoot,
       prompt: promptText,
       provider,
@@ -385,7 +397,14 @@ async function handlePromptRequest(options = {}) {
       ufooAgentOptions,
       finalizeLocally: !useGlobalProjectRouter,
       loopRuntime,
-    });
+      requestId: messageId || undefined,
+      sessionId: req.session_id || requestMeta.session_id || "main-default",
+      originalPrompt: req.text || "",
+      requestMeta,
+    };
+    const handled = !useNativeMain && runCompatibility
+      ? await runCompatibility(runnerOptions, () => promptRunner(runnerOptions))
+      : await promptRunner(runnerOptions);
 
     if (!handled.ok) {
       log(`agent-fail ${handled.error || "agent failed"}`);

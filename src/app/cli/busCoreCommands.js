@@ -142,6 +142,15 @@ function resolveAckArgs(cmdArgs = []) {
 
 async function runBusCoreCommand(eventBus, cmd, cmdArgs = []) {
   switch (cmd) {
+    case "deliveries": {
+      const { listNativeReceipts, resolveNativeReceipt } = require("../../coordination/bus/nativeReceipts");
+      const [subscriber, id, resolution, ...extra] = cmdArgs;
+      if (!subscriber || extra.length || (id && !resolution)) throw new Error("Usage: ufoo bus deliveries <subscriber> [<receipt-id> accepted|retry]");
+      const result = id ? resolveNativeReceipt(eventBus.projectRoot, subscriber, id, resolution)
+        : listNativeReceipts(eventBus.projectRoot, subscriber);
+      console.log(JSON.stringify(result, null, 2));
+      return {};
+    }
     case "init":
       await eventBus.init();
       return {};

@@ -1,6 +1,16 @@
 const { normalizeCodexEvent } = require("../../../src/agents/providers/codexEventTranslator");
 
 describe("agent codexEventTranslator", () => {
+  test("native todo-list updates project live plan progress", () => {
+    const items = [{ text: "Inspect", completed: true }, { text: "Fix", completed: false }];
+    expect(normalizeCodexEvent({ type: "item.updated", item: { type: "todo_list", id: "plan", items } })).toEqual({ type: "plan", items });
+  });
+  test("reasoning and response item starts update status before their first text", () => {
+    expect(normalizeCodexEvent({ type: "item.started", item: { type: "reasoning", id: "think", text: "" } }))
+      .toEqual({ type: "phase", phase: { type: "thinking" } });
+    expect(normalizeCodexEvent({ type: "item.started", item: { type: "agent_message", id: "reply", text: "" } }))
+      .toEqual({ type: "phase", phase: { type: "text_delta" } });
+  });
   test("normalizes thread and turn lifecycle events", () => {
     expect(normalizeCodexEvent({ type: "thread.started", thread_id: "thread-1" })).toEqual({
       type: "thread_started",

@@ -8,9 +8,16 @@ use crate::protocol::Envelope;
 pub enum Action {
     Key(KeyEvent),
     Paste(String),
-    MouseClick { column: u16, row: u16 },
+    MouseClick {
+        column: u16,
+        row: u16,
+    },
     /// Positive = scroll up (older), negative = scroll down (newer).
-    MouseScroll { lines: i32 },
+    MouseScroll {
+        lines: i32,
+        column: u16,
+        row: u16,
+    },
     Host(Envelope),
     HostDisconnected,
     Tick,

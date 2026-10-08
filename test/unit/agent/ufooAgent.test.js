@@ -7,7 +7,7 @@ jest.mock("../../../src/runtime/daemon/status", () => ({
 jest.mock("../../../src/agents/providers/credentials/codex", () => ({
   resolveCodexUpstreamCredentials: jest.fn(),
 }));
-jest.mock("../../../src/code/nativeRunner", () => ({
+jest.mock("../../../src/agents/providers/runtimeConfig", () => ({
   resolveRuntimeConfig: jest.fn(() => ({
     provider: "openai",
     model: "gpt-4o",

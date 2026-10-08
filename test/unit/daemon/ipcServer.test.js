@@ -77,6 +77,27 @@ describe("daemon ipcServer", () => {
     expect(server.server.close).toHaveBeenCalled();
   });
 
+  test("routed sockets subscribe once, detach without closing, and release listeners on disconnect", () => {
+    const { server } = createServerHarness();
+    const socket = createFakeSocket();
+    socket.destroy = jest.fn();
+    server.attachSocket(socket);
+    server.attachSocket(socket);
+    expect(socket.listenerCount("close")).toBe(1);
+    expect(server.hasClients()).toBe(true);
+    server.sendToSockets({ type: "bus", data: { message: "live" } });
+    expect(socket.write).toHaveBeenCalledTimes(1);
+    server.detachSocket(socket);
+    expect(socket.destroy).not.toHaveBeenCalled();
+    expect(socket.listenerCount("close")).toBe(0);
+    server.sendToSockets({ type: "bus", data: { message: "hidden" } });
+    expect(socket.write).toHaveBeenCalledTimes(1);
+    server.attachSocket(socket);
+    socket.emit("close");
+    expect(server.hasClients()).toBe(false);
+    expect(socket.listenerCount("error")).toBe(0);
+  });
+
   test("status sync invokes cleanup and buildStatus when clients connected", () => {
     jest.useFakeTimers();
     const cleanupInactive = jest.fn();
@@ -149,6 +170,17 @@ describe("daemon ipcServer", () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(handleRequest).toHaveBeenCalled();
+  });
+  test("status and cancellation in the same read are not queued behind a long prompt", async () => {
+    let finish;
+    const pending = new Promise((resolve) => { finish = resolve; });
+    const handleRequest = jest.fn((request) => request.type === "prompt" ? pending : Promise.resolve());
+    const { server } = createServerHarness({ handleRequest });
+    const socket = createFakeSocket(); server.server._handler(socket);
+    socket.emit("data", Buffer.from('{"type":"prompt"}\n{"type":"status"}\n{"type":"agent_runtime","operation":"cancel"}\n'));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(handleRequest.mock.calls.map(([request]) => request.type)).toEqual(["prompt", "status", "agent_runtime"]);
+    finish();
   });
 
   test("logs and replies with error when request handler rejects", async () => {

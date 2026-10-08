@@ -1,12 +1,16 @@
 const fs = require("fs");
+const { randomUUID } = require("crypto");
+const { createAgentSurfacePublisher } = require("../../coordination/history/agentSurface");
+const { contextMeterForUsage } = require("../../ui/agentPresentation");
+const { updateAgentsData } = require("../../coordination/state/agentsStore");
 const path = require("path");
 const { getUfooPaths } = require("../../coordination/state/paths");
 const { spawnSync } = require("child_process");
 const EventBus = require("../../coordination/bus");
-const { readJSON, writeJSON } = require("../../coordination/bus/utils");
+const { readJSON } = require("../../coordination/bus/utils");
 const { createActivityStatePublisher } = require("../activity/activityStatePublisher");
 const { createActivityTracker } = require("../activity/activityTracker");
-const { loadConfig, normalizeCodexInternalThreadMode } = require("../../config");
+const { loadConfig, normalizeCodexInternalThreadMode, defaultAgentModelForProvider, sameModelProvider } = require("../../config");
 const { createCodexThreadProvider } = require("../providers/codexThreadProvider");
 const { createClaudeThreadProvider } = require("../providers/claudeThreadProvider");
 const { resolveClaudeUpstreamCredentials } = require("../providers/credentials/claude");
@@ -176,6 +180,7 @@ function buildInternalPromptMessage(projectRoot, subscriber, evt = {}) {
 
 function createBusSender(projectRoot, subscriber) {
   const eventBus = new EventBus(projectRoot);
+  const surface = createAgentSurfacePublisher(projectRoot, subscriber);
   let sendQueue = Promise.resolve();
 
   function enqueue(target, message) {
@@ -190,19 +195,21 @@ function createBusSender(projectRoot, subscriber) {
   async function flush() {
     try {
       await sendQueue;
+      await surface.flush();
     } catch {
       // ignore flush errors
     }
   }
 
-  return { enqueue, flush };
+  return { enqueue, flush, surface: surface.enqueue };
 }
 
 function isChatUiSource(source = "") {
   const value = String(source || "").trim();
   return value === "chat-direct"
     || value === "chat-agent-view"
-    || value === "chat-internal-agent-view";
+    || value === "chat-internal-agent-view"
+    || value === "rust-multi-window";
 }
 
 function isUfooAgentDispatchSource(source = "") {
@@ -318,6 +325,9 @@ async function handleEvent(
     .join("\n\n");
   const publisher = evt.publisher || "unknown";
   const streamToPublisher = shouldStreamReplyToPublisher(projectRoot, publisher, evt);
+  const emitSurface = typeof busSender.surface === "function"
+    ? busSender.surface : () => {};
+  emitSurface({ type: "task_started", task_id: randomUUID(), message: evt.data.message, publisher });
 
   const emitStreamDelta = (delta) => {
     const text = String(delta || "");
@@ -330,17 +340,21 @@ async function handleEvent(
     return handleThreadedEvent({
       agentType,
       provider,
+      model,
       publisher,
       prompt,
+      userMessage: evt.data.message,
       busSender,
       emitStreamDelta,
       streamToPublisher,
       threadRuntime,
       tracker,
+      emitSurface,
     });
   }
 
   const errorText = `[internal:${agentType}] error: no thread runtime available for provider ${provider}; cliRunner fallback has been removed`;
+  emitSurface({ type: "task_failed", error: errorText });
   // eslint-disable-next-line no-console
   console.error(errorText);
   if (streamToPublisher) {
@@ -384,16 +398,17 @@ function toNonNegativeInt(value) {
 function normalizeTurnUsage(usage = null) {
   const item = usage && typeof usage === "object" ? usage : {};
   return {
-    input_tokens: toNonNegativeInt(item.input_tokens || item.prompt_tokens),
-    output_tokens: toNonNegativeInt(item.output_tokens || item.completion_tokens),
+    input_tokens: toNonNegativeInt(item.input_tokens ?? item.prompt_tokens ?? item.input),
+    output_tokens: toNonNegativeInt(item.output_tokens ?? item.completion_tokens ?? item.output),
     cache_read_tokens: toNonNegativeInt(
       item.cache_read_tokens
         || item.cache_read_input_tokens
         || item.cached_input_tokens
+        || item.cacheRead
         || (item.input_tokens_details && item.input_tokens_details.cached_tokens)
     ),
     cache_creation_tokens: toNonNegativeInt(
-      item.cache_creation_tokens || item.cache_creation_input_tokens
+      item.cache_creation_tokens || item.cache_creation_input_tokens || item.cacheCreation
     ),
   };
 }
@@ -401,23 +416,32 @@ function normalizeTurnUsage(usage = null) {
 async function handleThreadedEvent({
   agentType,
   provider,
+  model = "",
   publisher,
   prompt,
+  userMessage = "",
   busSender,
   emitStreamDelta,
   streamToPublisher = true,
   threadRuntime,
   tracker = null,
+  emitSurface = () => {},
 }) {
   try {
     const plainReplyParts = [];
     let turnUsage = null;
     let stopReason = "";
+    let waitingForUser = false;
     if (tracker && typeof tracker.notifyTurnStart === "function") {
       tracker.notifyTurnStart();
     }
-    for await (const event of threadRuntime.thread.runStreamed(prompt, {})) {
+    for await (const event of threadRuntime.thread.runStreamed(prompt, provider === "ucode" ? { userInput: userMessage } : {})) {
       if (!event || typeof event !== "object") continue;
+      emitSurface(event);
+      if (["usage", "turn_completed"].includes(event.type) && event.usage && provider !== "ucode") {
+        emitSurface({ type: "context_usage", meter: contextMeterForUsage(event.usage, model || threadRuntime.thread.model, provider) });
+      }
+      if (event.type === "interaction" || (event.type === "status" && event.state === "waiting_input")) waitingForUser = true;
       if (typeof threadRuntime.syncProviderSessionId === "function") {
         threadRuntime.syncProviderSessionId();
       }
@@ -435,6 +459,12 @@ async function handleThreadedEvent({
         if (streamToPublisher && summary) {
           emitStreamDelta(`\nTool: ${summary}\n`);
         }
+      } else if (event.type === "tool_result" && streamToPublisher) {
+        const output = typeof event.output === "string" ? event.output
+          : Array.isArray(event.output) ? event.output.map((block) => block && block.text || "").join("\n")
+          : event.output && typeof event.output === "object" ? JSON.stringify(event.output) : "";
+        if (output) emitStreamDelta(output.slice(0, 4000) + (output.endsWith("\n") ? "" : "\n"));
+        if (Number.isFinite(event.exitCode)) emitStreamDelta(`[exit ${event.exitCode}]\n`);
       } else if (event.type === "usage" && event.usage) {
         turnUsage = normalizeTurnUsage(event.usage);
       } else if (event.type === "turn_completed") {
@@ -447,6 +477,8 @@ async function handleThreadedEvent({
     if (typeof threadRuntime.syncProviderSessionId === "function") {
       threadRuntime.syncProviderSessionId();
     }
+    emitSurface({ type: "task_completed", usage: turnUsage });
+    if (waitingForUser && tracker?.requestUserInput) tracker.requestUserInput("reply");
 
     if (streamToPublisher) {
       const doneEnvelope = { stream: true, done: true, reason: "complete" };
@@ -465,13 +497,16 @@ async function handleThreadedEvent({
       },
     };
   } catch (err) {
-    if (threadRuntime && typeof threadRuntime.rebuildThread === "function") {
-      await threadRuntime.rebuildThread();
-    }
     if (tracker && typeof tracker.markIdle === "function") {
       tracker.markIdle();
     }
     const errorText = `[internal:${agentType}] error: ${err && err.message ? err.message : "unknown error"}`;
+    emitSurface(err?.code === "cancelled" || err?.name === "AbortError"
+      ? { type: "task_cancelled" } : { type: "task_failed", error: errorText });
+    if (threadRuntime && typeof threadRuntime.rebuildThread === "function") {
+      try { await threadRuntime.rebuildThread(); }
+      catch (recoveryError) { console.error(`[internal:${agentType}] recovery failed: ${recoveryError?.message || "unknown error"}`); }
+    }
     // eslint-disable-next-line no-console
     console.error(errorText);
     if (streamToPublisher) {
@@ -612,27 +647,47 @@ function persistProviderSessionId(projectRoot, subscriber, providerSessionId) {
   if (!projectRoot || !subscriber || !id) return false;
   try {
     const agentsFile = getUfooPaths(projectRoot).agentsFile;
-    const parsed = fs.existsSync(agentsFile)
-      ? readJSON(agentsFile, null)
-      : {};
-    if (!parsed) return false;
-    if (!parsed.agents || typeof parsed.agents !== "object") return false;
-    if (!parsed.agents[subscriber] || typeof parsed.agents[subscriber] !== "object") {
-      appendAgentRegistryDiagnostic(agentsFile, "provider_session_subscriber_missing", {
-        source: "agent.internalRunner.persistProviderSessionId",
-        subscriber,
-        known_ids: Object.keys(parsed.agents || {}).sort(),
-      });
-      return false;
-    }
-    if (parsed.agents[subscriber].provider_session_id === id) return false;
-    parsed.agents[subscriber].provider_session_id = id;
-    parsed.agents[subscriber].provider_session_updated_at = new Date().toISOString();
-    writeJSON(agentsFile, parsed);
-    return true;
+    if (!fs.existsSync(agentsFile)) return false;
+    return updateAgentsData(agentsFile, (parsed) => {
+      if (!parsed.agents || typeof parsed.agents !== "object") return false;
+      if (!parsed.agents[subscriber] || typeof parsed.agents[subscriber] !== "object") {
+        appendAgentRegistryDiagnostic(agentsFile, "provider_session_subscriber_missing", {
+          source: "agent.internalRunner.persistProviderSessionId",
+          subscriber,
+          known_ids: Object.keys(parsed.agents || {}).sort(),
+        });
+        return false;
+      }
+      if (parsed.agents[subscriber].provider_session_id === id) return false;
+      parsed.agents[subscriber].provider_session_id = id;
+      parsed.agents[subscriber].provider_session_updated_at = new Date().toISOString();
+      return true;
+    });
   } catch {
     return false;
   }
+}
+
+function resolveInternalModel({ projectRoot, provider, extraArgs = [], env = process.env }) {
+  for (let index = 0; index < extraArgs.length; index++) {
+    if (["-m", "--model"].includes(extraArgs[index]) && extraArgs[index + 1]) return String(extraArgs[index + 1]);
+    if (String(extraArgs[index]).startsWith("--model=")) return String(extraArgs[index]).slice(8);
+  }
+  if (env.UFOO_AGENT_MODEL) return String(env.UFOO_AGENT_MODEL);
+  // Native ucode resolves its own provider/model in the coding host.
+  if (provider === "ucode") return "";
+  const config = loadConfig(projectRoot);
+  return (sameModelProvider(config.agentProvider, provider) && config.agentModel)
+    || defaultAgentModelForProvider(provider);
+}
+
+function resolveInternalCodexEffort(extraArgs = []) {
+  for (let index = 0; index < extraArgs.length; index++) {
+    if (!["-c", "--config"].includes(extraArgs[index])) continue;
+    const match = String(extraArgs[index + 1] || "").match(/^model_reasoning_effort\s*=\s*["']?(none|minimal|low|medium|high|xhigh|max)["']?$/);
+    if (match) return match[1];
+  }
+  return "medium";
 }
 
 function createThreadRuntime({ projectRoot, provider, model, extraArgs = [], subscriber = "", providerSessionId = "" }) {
@@ -656,6 +711,17 @@ function createThreadRuntime({ projectRoot, provider, model, extraArgs = [], sub
     return changed;
   }
 
+  if (provider === "ucode") {
+    const { createInternalCodingThread } = require("../../code/internalThread");
+    const thread = createInternalCodingThread({ workspaceRoot: projectRoot, model, sessionId: initialProviderSessionId });
+    return {
+      enabled: true, thread,
+      syncProviderSessionId: () => rememberProviderSessionId(thread),
+      rebuildThread: async () => {},
+      close: () => thread.close(),
+    };
+  }
+
   if (provider === "codex-cli") {
     if (getCodexThreadMode(projectRoot) !== "api") {
       return disabledRuntime;
@@ -671,6 +737,7 @@ function createThreadRuntime({ projectRoot, provider, model, extraArgs = [], sub
         cwd: projectRoot,
         extraArgs,
         tools: toolRuntime.tools,
+        threadOptions: { modelReasoningEffort: resolveInternalCodexEffort(extraArgs) },
       });
       let thread = initialProviderSessionId
         ? providerInstance.resumeThread(initialProviderSessionId)
@@ -694,6 +761,7 @@ function createThreadRuntime({ projectRoot, provider, model, extraArgs = [], sub
             cwd: projectRoot,
             extraArgs,
             tools: toolRuntime.tools,
+            threadOptions: { modelReasoningEffort: resolveInternalCodexEffort(extraArgs) },
           });
           thread = savedProviderSessionId
             ? providerInstance.resumeThread(savedProviderSessionId)
@@ -771,8 +839,9 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
   const queueDir = path.join(getUfooPaths(projectRoot).busQueuesDir, safeSubscriber(subscriber));
   const queueFile = path.join(queueDir, "pending.jsonl");
   const normalizedAgentType = String(agentType || "").trim().toLowerCase();
-  const provider = normalizedAgentType === "codex" ? "codex-cli" : "claude-cli";
-  const model = process.env.UFOO_AGENT_MODEL || "";
+  const provider = ["ufoo", "ucode", "ufoo-code"].includes(normalizedAgentType)
+    ? "ucode" : normalizedAgentType === "codex" ? "codex-cli" : "claude-cli";
+  const model = resolveInternalModel({ projectRoot, provider, extraArgs });
   const bootstrap = resolveInternalBootstrap({
     projectRoot,
     agentType: normalizedAgentType,
@@ -912,7 +981,7 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
           // 处理消息后更新心跳
           updateHeartbeat();
           lastHeartbeat = now;
-          if (handledAny) {
+          if (handledAny && activityTracker.getState().state !== "waiting_input") {
             activityTracker.markIdle();
           }
           await busSender.flush();
@@ -934,6 +1003,8 @@ module.exports = {
   handleEvent,
   handleThreadedEvent,
   createThreadRuntime,
+  resolveInternalModel,
+  resolveInternalCodexEffort,
   getCodexThreadMode,
   getWorkerThreadToolMode,
   buildWorkerThreadToolRuntime,

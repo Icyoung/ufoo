@@ -363,13 +363,18 @@ pub struct MultiPaneDesc {
 
 #[derive(Debug, Clone, Default)]
 pub struct MultiPaneFrame {
-    pub agent_id: String,
-    pub label: String,
-    pub mode: String,
-    pub lines: Vec<String>,
+    pub entries: VecDeque<ScrollbackEntry>,
+    pub busy: bool,
+    pub usage: String,
+    pub plan: Vec<String>,
+    pub started_at: u64,
+    pub rendered_rows: usize,
+    pub scroll_max_off: usize,
+    pub source_scroll_offset: usize,
     pub status: String,
     pub input: String,
-    pub viewport_rev: u64,
+    pub input_cursor: usize,
+    pub scroll_offset: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -387,10 +392,8 @@ pub struct MultiState {
     pub viewport_rev: u64,
     pub term_cols: u16,
     pub term_rows: u16,
-    /// After returning to chat, ignore Chat→agent for a short window so a
-    /// duplicate Ctrl+W encoding (CONTROL+'w' + bare \x17) cannot bounce
-    /// straight back onto agent0.
-    pub suppress_agent_focus_until: Option<Instant>,
+    pub chat_rect: Option<(u16, u16, u16, u16)>,
+    pub pane_rects: HashMap<String, (u16, u16, u16, u16)>,
 }
 
 impl MultiState {
@@ -403,8 +406,9 @@ impl MultiState {
         self.focus_agent_id.clear();
         self.panes.clear();
         self.frames.clear();
+        self.chat_rect = None;
+        self.pane_rects.clear();
         self.viewport_rev = 0;
-        self.suppress_agent_focus_until = None;
     }
 }
 
@@ -710,14 +714,19 @@ impl AppState {
                 })
                 .collect();
             self.footer = format!(
-                "Provider: {} · ←/→ · ↓/esc back · ↑ mode",
+                "Provider: {} · ←/→ · Enter apply · ↓ cron · ↑ agents · Esc back",
                 parts.join(" · ")
             );
             return;
         }
         if self.focus == FocusPane::Cron {
             if self.cron_tasks.is_empty() {
-                self.footer = "Cron: none · ↑ agents · esc".into();
+                self.footer = if self.surface == "chat" {
+                    "Cron: none · ↑ settings · Esc back"
+                } else {
+                    "Cron: none · ↑ agents · esc"
+                }
+                .into();
                 return;
             }
             let parts: Vec<String> = self
@@ -733,8 +742,13 @@ impl AppState {
                 })
                 .collect();
             self.footer = format!(
-                "Cron: {} · ←/→ · Ctrl+X stop · ↑ agents · esc",
-                parts.join(" · ")
+                "Cron: {} · ←/→ · Ctrl+X stop · ↑ {} · Esc back",
+                parts.join(" · "),
+                if self.surface == "chat" {
+                    "settings"
+                } else {
+                    "agents"
+                }
             );
             return;
         }
@@ -778,7 +792,12 @@ impl AppState {
             // Ink summary row: "Agents: @a, @b, @c" (+N when truncated).
             const MAX_VISIBLE: usize = 6;
             let total = self.agents.len();
-            let visible = self.agents.iter().enumerate().take(MAX_VISIBLE);
+            let start = if self.focus == FocusPane::Agents && self.selected_agent >= 0 {
+                (self.selected_agent as usize + 1).saturating_sub(MAX_VISIBLE)
+            } else {
+                0
+            };
+            let visible = self.agents.iter().enumerate().skip(start).take(MAX_VISIBLE);
             let parts: Vec<String> = visible
                 .map(|(i, agent)| {
                     let mark = match agent.activity_state.as_str() {
@@ -799,8 +818,11 @@ impl AppState {
                 })
                 .collect();
             let mut agents = parts.join(", ");
-            if total > MAX_VISIBLE {
-                agents = format!("{agents} +{}", total - MAX_VISIBLE);
+            if start > 0 {
+                agents = format!("+{start} {agents}");
+            }
+            if total > start + MAX_VISIBLE {
+                agents = format!("{agents} +{}", total - start - MAX_VISIBLE);
             }
             format!("Agents: {agents}")
         };
@@ -817,9 +839,21 @@ impl AppState {
             base = format!("{base} · {}", self.loop_summary);
         }
         // Detail panes (Agents focused) show only that caption — cron belongs
-        // on the idle summary row when tasks exist. Mode/provider are slash cmds.
+        // on the idle summary row when tasks exist. Provider settings are also
+        // reachable below agents; launch mode remains internal in dashboards.
         if self.focus == FocusPane::Agents {
-            self.footer = format!("{base} · ←/→ · Enter @lock · empty Enter activate · Ctrl+X close · ↓ cron · ↑/esc back");
+            let navigation = if self.surface == "chat" {
+                "Tab/←/→"
+            } else {
+                "←/→"
+            };
+            self.footer = if self.surface == "ucode" {
+                format!("{base} · {navigation} · Enter @lock · empty Enter activate · Ctrl+X close · ↓ cron · ↑/esc back")
+            } else if self.multi.active {
+                format!("{base} · {navigation} · Enter open · Ctrl+X close · ↓ settings · Esc back")
+            } else {
+                format!("{base} · {navigation} · Enter @lock · empty Enter activate · Ctrl+X close · ↓ settings · ↑/esc back")
+            };
             return;
         }
         // Summary: Agents (+ Mode · Provider) · Cron only when non-empty.
@@ -1035,7 +1069,7 @@ fn ensure_at_prefix(value: &str) -> String {
     }
 }
 
-fn provider_short(value: &str) -> &str {
+pub(crate) fn provider_short(value: &str) -> &str {
     match value {
         "claude-cli" => "claude",
         "agy-cli" | "agy" | "antigravity" => "agy",

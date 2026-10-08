@@ -5,11 +5,12 @@ const path = require("path");
 const crypto = require("crypto");
 const { randomUUID } = require("crypto");
 
-function getArtifactsDir(workspaceRoot = process.cwd(), sessionId = "") {
+function getArtifactsDir(workspaceRoot = process.cwd(), sessionId = "", namespace = "ucode") {
   const root = path.resolve(workspaceRoot || process.cwd());
   const id = String(sessionId || "").trim();
-  if (!id) return path.join(root, ".ufoo", "agent", "ucode", "artifacts");
-  return path.join(root, ".ufoo", "agent", "ucode", "artifacts", id);
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(namespace) || id && !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(id)) throw new Error("invalid artifact storage identity");
+  if (!id) return path.join(root, ".ufoo", "agent", namespace, "artifacts");
+  return path.join(root, ".ufoo", "agent", namespace, "artifacts", id);
 }
 
 function createArtifactId(prefix = "artifact") {
@@ -21,10 +22,10 @@ function hashContent(value = "") {
   return crypto.createHash("sha256").update(String(value || ""), "utf8").digest("hex").slice(0, 16);
 }
 
-function getArtifactFilePath(workspaceRoot = process.cwd(), sessionId = "", artifactId = "") {
+function getArtifactFilePath(workspaceRoot = process.cwd(), sessionId = "", artifactId = "", namespace = "ucode") {
   const id = String(artifactId || "").trim();
-  if (!id) return "";
-  return path.join(getArtifactsDir(workspaceRoot, sessionId), `${id}.json`);
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(id)) return "";
+  return path.join(getArtifactsDir(workspaceRoot, sessionId, namespace), `${id}.json`);
 }
 
 function buildArtifactRecord({
@@ -66,15 +67,15 @@ function buildArtifactRecord({
   };
 }
 
-function saveArtifact(workspaceRoot = process.cwd(), sessionId = "", record = {}) {
+function saveArtifact(workspaceRoot = process.cwd(), sessionId = "", record = {}, options = {}) {
   const payload = buildArtifactRecord(record);
-  const filePath = getArtifactFilePath(workspaceRoot, sessionId, payload.artifactId);
+  const filePath = getArtifactFilePath(workspaceRoot, sessionId, payload.artifactId, options.namespace || "ucode");
   if (!filePath) {
     return { ok: false, error: "invalid artifact id", artifact: null };
   }
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+    fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
     return { ok: true, error: "", artifact: payload, filePath };
   } catch (err) {
     return {
@@ -86,8 +87,8 @@ function saveArtifact(workspaceRoot = process.cwd(), sessionId = "", record = {}
   }
 }
 
-function loadArtifact(workspaceRoot = process.cwd(), sessionId = "", artifactId = "") {
-  const filePath = getArtifactFilePath(workspaceRoot, sessionId, artifactId);
+function loadArtifact(workspaceRoot = process.cwd(), sessionId = "", artifactId = "", options = {}) {
+  const filePath = getArtifactFilePath(workspaceRoot, sessionId, artifactId, options.namespace || "ucode");
   if (!filePath || !fs.existsSync(filePath)) {
     return { ok: false, error: `artifact not found: ${artifactId}`, artifact: null, filePath };
   }

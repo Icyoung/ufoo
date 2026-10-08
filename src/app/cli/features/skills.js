@@ -67,6 +67,7 @@ class SkillsManager {
    * 查找技能路径
    */
   findSkill(name) {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(name)) throw new Error(`Invalid skill name: ${name}`);
     for (const root of [...this.skillRoots, ...this.optionalSkillRoots]) {
       const skillPath = path.join(root, name);
       if (fs.existsSync(skillPath)) {
@@ -103,7 +104,12 @@ class SkillsManager {
 
     if (name === "all") {
       // 安装所有技能
-      const skills = this.list();
+      const skills = [
+        ...this.list(),
+        ...this.list({ optionalOnly: true }).filter((skill) => {
+          try { return Boolean(fs.lstatSync(path.join(target, skill))); } catch { return false; }
+        }),
+      ];
       for (const skill of skills) {
         await this.installOne(skill, target);
       }
@@ -126,9 +132,15 @@ class SkillsManager {
 
     const targetPath = path.join(target, name);
 
-    // 如果目标已存在，先删除
-    if (fs.existsSync(targetPath)) {
-      fs.rmSync(targetPath, { recursive: true, force: true });
+    // Explicit installs preserve the previous skill, including custom files and
+    // symlinks. npm postinstall uses the stricter managed-link policy instead.
+    try {
+      fs.lstatSync(targetPath);
+      const backup = `${targetPath}.backup-${Date.now()}-${require("crypto").randomBytes(4).toString("hex")}`;
+      fs.renameSync(targetPath, backup);
+      console.log(`    Previous skill saved to: ${backup}`);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
     }
 
     // 复制技能目录

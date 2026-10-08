@@ -4,6 +4,56 @@ const path = require("path");
 const EventEmitter = require("events");
 
 const AgentLauncher = require("../../../src/agents/launch/launcher");
+const { resolveNativeMessageMode } = require("../../../src/agents/launch/nativeMessages");
+
+describe("native delivery defaults", () => {
+  const select = (overrides = {}) => resolveNativeMessageMode({
+    agentType: "codex", args: [], env: {}, stdinIsTTY: true, stdoutIsTTY: true, platform: "darwin", ...overrides,
+  });
+
+  test.each(["codex", "claude-code"])("%s enables native delivery for an ordinary interactive launch", (agentType) => {
+    expect(select({ agentType })).toBe(true);
+    expect(select({ agentType, env: { UFOO_NATIVE_MESSAGES: "0" } })).toBe(false);
+  });
+  test("managed host PTYs enable native delivery even when wrapper stdio is redirected", () => {
+    expect(select({ env: { UFOO_FORCE_PTY: "1" }, stdinIsTTY: false, stdoutIsTTY: false })).toBe(true);
+  });
+  test.each([
+    { stdinIsTTY: false },
+    { stdoutIsTTY: false },
+    { env: { UFOO_DISABLE_PTY: "1" } },
+    { env: { UFOO_INTERNAL_AGENT: "1", UFOO_FORCE_PTY: "1" } },
+    { agentType: "ufoo-code" },
+    { agentType: "agy" },
+    { platform: "win32" },
+  ])("preserves launches without a supported interactive native host: %j", (context) => {
+    expect(select(context)).toBe(false);
+  });
+  test.each([
+    ["codex", ["exec", "--json"]],
+    ["codex", ["--profile", "default", "mcp", "list"]],
+    ["codex", ["--remote", "unix://caller.sock"]],
+    ["codex", ["--native-flag", "--help"]],
+    ["codex", ["-V"]],
+    ["claude-code", ["-p", "user prompt"]],
+    ["claude-code", ["--input-format=stream-json"]],
+    ["claude-code", ["--safe-mode"]],
+    ["claude-code", ["--verbose", "auth", "status"]],
+    ["claude-code", ["--version"]],
+  ])("%s leaves the non-channel command %j unchanged", (agentType, args) => {
+    expect(select({ agentType, args, env: { UFOO_NATIVE_MESSAGES: "1" } })).toBe(false);
+  });
+  test.each([
+    ["codex", ["resume"]],
+    ["codex", ["resume", "--last"]],
+    ["codex", ["--model", "exec"]],
+    ["codex", ["--", "exec"]],
+    ["claude-code", ["--agent", "mcp"]],
+    ["claude-code", ["--continue"]],
+  ])("%s enables native delivery after interactive options %j", (agentType, args) => {
+    expect(select({ agentType, args })).toBe(true);
+  });
+});
 
 // --- _sanitizeNickname ---
 

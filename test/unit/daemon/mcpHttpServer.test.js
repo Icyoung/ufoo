@@ -150,6 +150,11 @@ describe("global MCP Streamable HTTP server", () => {
       expect(second.sessionId).toBeTruthy();
       expect(second.sessionId).not.toBe(first.sessionId);
 
+      const expired = await rpc(server.endpoint, token, {
+        jsonrpc: "2.0", id: "expired", method: "tools/list",
+      }, "expired-session");
+      expect(expired.response.status).toBe(404);
+
       const listed = await rpc(server.endpoint, token, {
         jsonrpc: "2.0",
         id: "list",
@@ -256,5 +261,37 @@ describe("global MCP Streamable HTTP server", () => {
     } finally {
       await server.stop();
     }
+  });
+
+  test("releases a resident receive when its HTTP client disconnects", async () => {
+    const root = makeTempRoot();
+    let started;
+    const waiting = new Promise((resolve) => { started = resolve; });
+    let cancelled;
+    const cancellation = new Promise((resolve) => { cancelled = resolve; });
+    const server = createGlobalMcpHttpServer({
+      projectRoot: root, port: 0, token: "disconnect", validateProjectRoot: false,
+      projectRuntimeGateway: { call: (_root, _operation, _args, context) => new Promise((_resolve, reject) => {
+        context.signal.addEventListener("abort", () => { cancelled(); reject(new Error("disconnected")); }, { once: true });
+        started();
+      }) },
+    });
+    await server.start();
+    try {
+      const initialized = await initialize(server.endpoint, "disconnect");
+      const controller = new AbortController();
+      const pending = fetch(server.endpoint, {
+        method: "POST", headers: mcpHeaders("disconnect", initialized.sessionId), signal: controller.signal,
+        body: JSON.stringify({ jsonrpc: "2.0", id: "wait", method: "tools/call", params: {
+          name: "wait_for_message", arguments: { project_root: root, subscriber: "codex:a", agent_handle: "handle" },
+        } }),
+      });
+      await waiting;
+      controller.abort();
+      await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+      await cancellation;
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(server.getStatus().active_wait_count).toBe(0);
+    } finally { await server.stop(); }
   });
 });

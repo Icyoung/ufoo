@@ -16,10 +16,24 @@ const { emptyTaskContract } = require("./context/stateCommit");
 const { emptyWorkingSet } = require("./context/workingSet");
 const { emptyExecutionState } = require("./context/executionSegment");
 
-function getSessionsDir(workspaceRoot = process.cwd()) {
-  const root = path.resolve(workspaceRoot || process.cwd());
-  return path.join(root, ".ufoo", "agent", "ucode", "sessions");
-}
+const { createSessionStore } = require("../agents/runtime/context/sessionStore");
+const sessionStore = createSessionStore({
+  namespace: "ucode",
+  encode: (input, { workspaceRoot }) => buildSessionSnapshot({ ...input, workspaceRoot }),
+  toDisk: (payload) => {
+    const stored = { ...payload };
+    // Explicit turn commits own conversation truth; snapshots only save metadata.
+    if (stored.version >= 2) delete stored.nlMessages;
+    return stored;
+  },
+  decode: (parsed, { workspaceRoot, sessionId }) => hydrateSessionFromDisk({
+    ...parsed, sessionId, workspaceRoot,
+    createdAt: parsed && parsed.createdAt || "",
+    nlMessages: parsed && parsed.nlMessages || [],
+  }, workspaceRoot),
+  prepareSave: (workspaceRoot) => fs.mkdirSync(getTranscriptsDir(workspaceRoot), { recursive: true }),
+});
+const getSessionsDir = sessionStore.getDirectory;
 
 function normalizeSessionId(value = "") {
   const raw = String(value || "").trim();
@@ -212,50 +226,14 @@ function listSessionSummaries(workspaceRoot = process.cwd(), { limit = 40 } = {}
   return rows.slice(0, cap);
 }
 
-function getSessionFilePath(workspaceRoot = process.cwd(), sessionId = "") {
-  const normalizedId = normalizeSessionId(sessionId);
-  if (!normalizedId) return "";
-  return path.join(getSessionsDir(workspaceRoot), `${normalizedId}.json`);
-}
+const getSessionFilePath = sessionStore.getFilePath;
 
 function saveSessionSnapshot(workspaceRoot = process.cwd(), snapshot = {}) {
   const normalizedRoot = path.resolve(workspaceRoot || process.cwd());
-  const payload = buildSessionSnapshot({
-    ...snapshot,
-    workspaceRoot: normalizedRoot,
-  });
-  const filePath = getSessionFilePath(normalizedRoot, payload.sessionId);
-  if (!filePath) {
-    return {
-      ok: false,
-      error: "invalid session id",
-      sessionId: "",
-      filePath: "",
-    };
-  }
-
-  const toWrite = { ...payload };
-  if (toWrite.version >= 2) {
-    // Conversation content is committed explicitly by the turn coordinator.
-    // Session snapshot saves projections/metadata only and never tries to infer
-    // missing events from a mutable provider message array.
-    delete toWrite.nlMessages;
-  }
-
-  try {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.mkdirSync(getTranscriptsDir(normalizedRoot), { recursive: true });
-    const tmpFile = `${filePath}.${process.pid}-${randomUUID()}.tmp`;
-    fs.writeFileSync(tmpFile, `${JSON.stringify(toWrite, null, 2)}\n`, "utf8");
-    fs.renameSync(tmpFile, filePath);
-  } catch (err) {
-    return {
-      ok: false,
-      error: err && err.message ? err.message : "failed to save session",
-      sessionId: payload.sessionId,
-      filePath,
-    };
-  }
+  const saved = sessionStore.save(normalizedRoot, snapshot);
+  if (!saved.ok) return saved;
+  const payload = saved.snapshot;
+  const filePath = saved.filePath;
 
   // Artifact GC is throttled (default 2m) so long sessions do not accumulate
   // unbounded tool result files between explicit maintenance runs.
@@ -278,57 +256,7 @@ function saveSessionSnapshot(workspaceRoot = process.cwd(), snapshot = {}) {
   };
 }
 
-function loadSessionSnapshot(workspaceRoot = process.cwd(), sessionId = "") {
-  const normalizedRoot = path.resolve(workspaceRoot || process.cwd());
-  const normalizedId = normalizeSessionId(sessionId);
-  if (!normalizedId) {
-    return {
-      ok: false,
-      error: "invalid session id",
-      sessionId: "",
-      snapshot: null,
-      filePath: "",
-    };
-  }
-
-  const filePath = getSessionFilePath(normalizedRoot, normalizedId);
-  if (!filePath || !fs.existsSync(filePath)) {
-    return {
-      ok: false,
-      error: `session not found: ${normalizedId}`,
-      sessionId: normalizedId,
-      snapshot: null,
-      filePath: filePath || "",
-    };
-  }
-
-  try {
-    const raw = fs.readFileSync(filePath, "utf8");
-    const parsed = JSON.parse(raw);
-    const snapshot = hydrateSessionFromDisk({
-      ...parsed,
-      sessionId: normalizedId,
-      workspaceRoot: normalizedRoot,
-      createdAt: parsed && parsed.createdAt ? parsed.createdAt : "",
-      nlMessages: parsed && parsed.nlMessages ? parsed.nlMessages : [],
-    }, normalizedRoot);
-    return {
-      ok: true,
-      error: "",
-      sessionId: normalizedId,
-      snapshot,
-      filePath,
-    };
-  } catch (err) {
-    return {
-      ok: false,
-      error: err && err.message ? err.message : "failed to load session",
-      sessionId: normalizedId,
-      snapshot: null,
-      filePath,
-    };
-  }
-}
+const loadSessionSnapshot = sessionStore.load;
 
 function deleteSessionData(workspaceRoot = process.cwd(), sessionId = "") {
   const normalizedId = normalizeSessionId(sessionId);

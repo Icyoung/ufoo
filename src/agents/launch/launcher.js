@@ -14,6 +14,7 @@ const { createActivityStatePublisher } = require("../activity/activityStatePubli
 const { reconcileDetectorOwnedActivity } = require("../activity/activityReconcile");
 const { detectLaunchEnvironment } = require("./launchEnvironment");
 const { getUfooPaths } = require("../../coordination/state/paths");
+const { updateAgentsData } = require("../../coordination/state/agentsStore");
 const {
   resolveDaemonEndpoint,
   routeDaemonRequest,
@@ -29,6 +30,21 @@ const {
   extractResumeConversationId,
   persistConversationId,
 } = require("./agyConversation");
+
+function setLauncherReady(projectRoot, subscriber, ready) {
+  try {
+    const file = getUfooPaths(projectRoot).agentsFile;
+    if (!fs.existsSync(file)) return false;
+    return updateAgentsData(file, (data) => {
+      const meta = data.agents && data.agents[subscriber];
+      if (!meta || meta.status === "inactive") return false;
+      meta.launcher_ready = ready;
+      return true;
+    });
+  } catch {
+    return false;
+  }
+}
 
 function connectSocket(sockPath) {
   return new Promise((resolve, reject) => {
@@ -385,6 +401,7 @@ class AgentLauncher {
         subscriberId,
         sessionId: parts[1],
         nickname: meta.nickname || process.env.UFOO_NICKNAME || "",
+        agentHandle: process.env.UFOO_AGENT_HANDLE || "",
         preRegistered: true,
       };
     } catch {
@@ -567,6 +584,7 @@ class AgentLauncher {
             resolve({
               subscriberId: payload.subscriberId,
               nickname: payload.nickname || nickname || "",
+              agentHandle: payload.agentHandle || "",
               sessionId: (payload.subscriberId || "").split(":")[1] || "",
               preRegistered: false,
             });
@@ -640,6 +658,7 @@ class AgentLauncher {
       const monitorStartedAt = Date.now();
       detector.onReady(() => {
         stopReadyMonitor();
+        setLauncherReady(this.cwd, subscriberId, true);
         notifier.markLauncherReady();
         notifier.updateActivityState("ready");
       });
@@ -672,12 +691,14 @@ class AgentLauncher {
 
     child.on("error", (err) => {
       stopReadyMonitor();
+      void options.nativeMessages?.close();
       console.error(`[${this.command}] Failed to start:`, err.message);
       process.exit(1);
     });
 
     child.on("exit", async (code, signal) => {
       stopReadyMonitor();
+      await options.nativeMessages?.close();
       // 清理 bus 状态
       try {
         const bus = new EventBus(this.cwd);
@@ -701,9 +722,21 @@ class AgentLauncher {
    * 启动 agent
    */
   async launch(args) {
+    let nativeMessages = null;
     // 保存用户/group 显式传入的 nickname（在 session 复用覆盖前）
     this._originalNickname = process.env.UFOO_NICKNAME || "";
     try {
+      let useNativeMessages = require("./nativeMessages").resolveNativeMessageMode({ agentType: this.agentType, args });
+      let nativeCapabilities = null;
+      if (useNativeMessages) {
+        nativeCapabilities = require("./nativeCapabilities").probeNativeCapabilities({ agentType: this.agentType, command: this.command });
+        if (!nativeCapabilities.supported) {
+          const detail = `Native messages unavailable: ${nativeCapabilities.reason}; update ${this.command} or use --no-native-messages`;
+          if (process.env.UFOO_NATIVE_MESSAGES === "1") throw new Error(detail);
+          console.error(`[ufoo] ${detail}. Using legacy delivery for this launch.`);
+          useNativeMessages = false;
+        }
+      }
       // 1. 确保初始化
       await this.ensureInit();
 
@@ -719,10 +752,38 @@ class AgentLauncher {
       const sessionId = result.sessionId || (subscriberId.split(":")[1] || "");
       const finalNickname = result.nickname || nickname || "";
 
+      if (["codex", "claude-code"].includes(this.agentType)) {
+        setLauncherReady(this.cwd, subscriberId, false);
+      }
+
       // 4. 更新环境变量（供子进程/后续使用）
       if (subscriberId) process.env.UFOO_SUBSCRIBER_ID = subscriberId;
+      // Never inherit the launching Agent's capability for a new identity.
+      if (result.agentHandle) process.env.UFOO_AGENT_HANDLE = result.agentHandle;
+      else delete process.env.UFOO_AGENT_HANDLE;
       if (finalNickname) process.env.UFOO_NICKNAME = finalNickname;
       process.env.UFOO_AGENT_TYPE = this.agentType;
+
+      if (["codex", "claude-code"].includes(this.agentType)) {
+        // A resumed host may retain the previous launch's receiver metadata.
+        // Select the new transport before asynchronous receiver startup.
+        require("./nativeMessages").setNativeMetadata(this.cwd, subscriberId, {
+          native_delivery: useNativeMessages ? (this.agentType === "codex" ? "codex_queue" : "claude_channel") : null,
+          native_delivery_ready: false,
+          native_delivery_instance: null,
+          native_delivery_version: nativeCapabilities?.version || "",
+          native_delivery_diagnostic: nativeCapabilities?.reason || "",
+        });
+      }
+
+      if (useNativeMessages) {
+        nativeMessages = await require("./nativeMessages").prepareNativeMessages({
+          agentType: this.agentType, command: this.command, args,
+          projectRoot: this.cwd, subscriber: subscriberId,
+        });
+        args = nativeMessages.args;
+        Object.assign(process.env, nativeMessages.env || {});
+      }
 
       // 5. 显示 banner（ucode 自带 TUI banner，这里避免重复）
       if (shouldShowLaunchBanner(this.agentType)) {
@@ -874,19 +935,26 @@ class AgentLauncher {
             }
 
             if (startupBootstrapText && wrapper.pty) {
-              await injectPtyCommand(wrapper, this.agentType, startupBootstrapText, "startup-bootstrap");
+              if (nativeMessages) {
+                try { await nativeMessages.send({ command: startupBootstrapText, deliveryId: `startup-bootstrap:${sessionId}` }); }
+                catch (err) { console.error(`[ufoo] Native startup bootstrap failed: ${err.message}`); }
+              } else await injectPtyCommand(wrapper, this.agentType, startupBootstrapText, "startup-bootstrap");
             }
 
+            setLauncherReady(this.cwd, subscriberId, true);
             await notifyDaemonAgentReady(daemonEndpoint, subscriberId, wrapper.pty ? wrapper.pty.pid : 0);
           });
+          nativeMessages?.onReady?.(() => readyDetector.confirmNativeReady());
 
-          // Fallback：如果10秒后还没检测到ready，强制标记为ready
+          // Elapsed time cannot prove that a host can accept input. Preserve
+          // queued work and report a slow startup instead of injecting blindly.
           const forceReadyTimer = setTimeout(() => {
-            readyDetector.forceReady();
+            if (!readyDetector.ready) console.error(`[ufoo] Waiting for ${this.command} to become ready; queued work is retained.`);
           }, 10000);
 
           // 设置退出回调（复用清理逻辑）
           wrapper.onExit = async ({ exitCode, signal }) => {
+            await nativeMessages?.close();
             // 清理 timers
             clearTimeout(forceReadyTimer);
             clearInterval(activityReconcileTimer);
@@ -1000,9 +1068,20 @@ class AgentLauncher {
                       client.write(JSON.stringify({ ok: false, error: "inject disabled for ufoo-code (internal bus loop)" }) + "\n");
                       continue;
                     }
-                    // 注入命令到PTY（带延迟确保输入完成）
-                    void injectPtyCommand(wrapper, this.agentType, req.command, "inject");
-                    client.write(JSON.stringify({ ok: true }) + "\n");
+                    if (nativeMessages) {
+                      const reply = (result) => {
+                        if (!client.destroyed) client.write(JSON.stringify(result) + "\n");
+                      };
+                      void nativeMessages.send(req).then((receipt) => {
+                        reply({ ok: true, ...receipt });
+                      }).catch((err) => {
+                        reply({ ok: false, error: err.message, code: err.code });
+                      });
+                    } else {
+                      // 注入命令到PTY（带延迟确保输入完成）
+                      void injectPtyCommand(wrapper, this.agentType, req.command, "inject");
+                      client.write(JSON.stringify({ ok: true }) + "\n");
+                    }
                   } else if (req.type === PTY_SOCKET_MESSAGE_TYPES.RAW && req.data) {
                     // Raw PTY write (no Enter appended) - for TTY view passthrough
                     wrapper.write(req.data);
@@ -1094,14 +1173,17 @@ class AgentLauncher {
           process.on("SIGTERM", () => handleTermSignal("SIGTERM"));
           process.on("SIGINT", () => handleTermSignal("SIGINT"));
         } catch (err) {
+          if (nativeMessages) throw err;
           console.error(`[PTY] Failed to start, falling back to spawn:`, err.message);
           this._spawnDirect(args, subscriberId, { notifier });
         }
       } else {
+        if (nativeMessages) throw new Error("Native messages require an interactive PTY launch; remove UFOO_DISABLE_PTY or use a terminal");
         // 非PTY环境：tmux、internal、管道、显式禁用等
         this._spawnDirect(args, subscriberId, { notifier });
       }
     } catch (err) {
+      await nativeMessages?.close();
       console.error(`[${this.command}] Error:`, err.message);
       process.exit(1);
     }

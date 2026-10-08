@@ -149,7 +149,7 @@ describe("agentsStore diagnostics", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  test("records save attempts that would drop existing disk agents", () => {
+  test("untracked snapshots preserve existing disk agents", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-agents-store-"));
     const filePath = path.join(dir, ".ufoo", "agent", "all-agents.json");
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -168,14 +168,33 @@ describe("agentsStore diagnostics", () => {
       },
     }, { source: "test.drop" });
 
-    const logPath = getRegistryLogPath(filePath);
-    const lines = fs.readFileSync(logPath, "utf8").trim().split("\n").map(JSON.parse);
-    const dropLine = lines.find((line) => line.event === "save_agents_dropping_disk_entries");
-    expect(dropLine).toMatchObject({
-      source: "test.drop",
-      dropped_ids: ["codex:drop"],
-    });
+    expect(Object.keys(loadAgentsData(filePath).agents).sort()).toEqual(["codex:drop", "codex:keep"]);
 
     fs.rmSync(dir, { recursive: true, force: true });
   });
+  test("stale snapshots preserve new registrations and independently updated fields", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-agents-stale-"));
+    const file = path.join(dir, "all-agents.json");
+    try {
+      saveAgentsData(file, { agents: { a: { status: "active", last_seen: "old" } } });
+      const stale = loadAgentsData(file);
+      const fresh = loadAgentsData(file);
+      fresh.agents.b = { status: "active" };
+      fresh.agents.a.native_delivery_ready = true;
+      saveAgentsData(file, fresh);
+      stale.agents.a.last_seen = "new";
+      saveAgentsData(file, stale);
+      expect(loadAgentsData(file).agents).toEqual({
+        a: { status: "active", last_seen: "new", native_delivery_ready: true },
+        b: { status: "active" },
+      });
+      const removed = loadAgentsData(file);
+      delete removed.agents.a;
+      saveAgentsData(file, removed);
+      stale.agents.a.last_seen = "later";
+      saveAgentsData(file, stale);
+      expect(loadAgentsData(file).agents.a).toBeUndefined();
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
 });

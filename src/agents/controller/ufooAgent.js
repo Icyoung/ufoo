@@ -432,6 +432,7 @@ function renderUntrustedTextContext(label = "", value = "", options = {}) {
 
 function listControllerLoopToolNames() {
   const names = listToolsForCallerTier(CALLER_TIERS.CONTROLLER)
+    .filter((tool) => !(tool.requiredPorts || []).length)
     .map((tool) => String(tool && tool.name ? tool.name : "").trim())
     .filter(Boolean);
   return Array.from(new Set(names)).sort();

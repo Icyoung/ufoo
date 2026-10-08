@@ -8,6 +8,7 @@ const {
   resolveDaemonEndpoint,
   routeDaemonRequest,
 } = require("../../runtime/daemon/endpoint");
+const { sendAgentReportRequest, printReportOutput } = require("./reportCoreCommands");
 const { runBusCoreCommand } = require("./busCoreCommands");
 const { runCtxCommand } = require("./ctxCoreCommands");
 const { runOnlineCommand } = require("./onlineCoreCommands");
@@ -15,7 +16,7 @@ const { runGroupCoreCommand } = require("./groupCoreCommands");
 const { loadConfig } = require("../../config");
 const { loadPromptProfileRegistry } = require("../../orchestration/groups/promptProfiles");
 const { resolveSoloAgentType } = require("../../orchestration/solo/commands");
-const { listProjectRuntimes, getCurrentProjectRuntime } = require("../../runtime/projects/registry");
+const { listProjectRuntimes, getCurrentProjectRuntime, archiveMissingProjectRuntimes } = require("../../runtime/projects/registry");
 const { canonicalProjectRoot, buildProjectId } = require("../../runtime/projects/projectId");
 const { getUfooPaths } = require("../../coordination/state/paths");
 const { resolveNodeExecutable } = require("../../runtime/process/nodeExecutable");
@@ -146,41 +147,6 @@ async function sendDaemonRequest(projectRoot, payload) {
     });
     client.write(`${JSON.stringify(routeDaemonRequest(endpoint, payload))}\n`);
   });
-}
-
-async function sendAgentReportRequest(projectRoot, report) {
-  const { normalizeReportInput } = require("../../coordination/report/store");
-  const { enqueueAgentReport } = require("../../runtime/daemon/reportControlBus");
-  const entry = normalizeReportInput(report);
-  const queued = await enqueueAgentReport(projectRoot, entry);
-  return {
-    type: "response",
-    data: {
-      reply: `Report queued (${entry.phase})`,
-      report: entry,
-      queued,
-    },
-  };
-}
-
-function getReportDetail(out = {}) {
-  if (out.phase === "error") {
-    return out.error || out.summary || out.message || out.task_id;
-  }
-  return out.summary || out.message || out.task_id;
-}
-
-function printReportOutput(out, json = false, queued = null) {
-  if (json) {
-    console.log(JSON.stringify({
-      status: "queued",
-      report: out,
-      queued,
-    }, null, 2));
-    return;
-  }
-  const detail = getReportDetail(out);
-  console.log(`[report] queued ${out.phase} ${out.agent_id} ${out.task_id} ${detail}`);
 }
 
 function requireOptional(name) {
@@ -487,6 +453,7 @@ function runMemoryCommand({
 function runProjectCommand({
   subcommand = "list",
   outputJson = false,
+  apply = false,
   cwd = process.cwd(),
   write = (line) => console.log(line),
   writeError = (line) => console.error(line),
@@ -512,12 +479,21 @@ function runProjectCommand({
       printCurrentProject(current, write);
       return 0;
     }
+    if (sub === "prune") {
+      const result = archiveMissingProjectRuntimes({ dryRun: !apply });
+      if (outputJson) write(JSON.stringify({ ...result, dry_run: !apply }, null, 2));
+      else {
+        write(`${apply ? "Archived" : "Would archive"} ${result.count} abandoned project record(s).`);
+        write(apply ? `Archive: ${result.archive_dir}` : "Use --apply to archive these records; existing workspaces and live daemons are retained.");
+      }
+      return 0;
+    }
     if (sub === "switch") {
       const err = projectSwitchV1Error();
       writeError(err.message);
       return err.exitCode || 2;
     }
-    writeError("project requires list|current|switch subcommand");
+    writeError("project requires list|current|prune|switch subcommand");
     return 1;
   } catch (err) {
     writeError(err.message || String(err));
@@ -649,6 +625,14 @@ async function runCli(argv) {
           outputJson: opts.json === true,
           cwd: process.cwd(),
         });
+      });
+    project
+      .command("prune")
+      .description("Archive abandoned registrations for deleted workspaces")
+      .option("--apply", "Move records into the recoverable archive (default: preview)")
+      .option("--json", "Output as JSON")
+      .action((opts) => {
+        process.exitCode = runProjectCommand({ subcommand: "prune", apply: opts.apply === true, outputJson: opts.json === true });
       });
     project
       .command("switch")
@@ -1043,7 +1027,7 @@ async function runCli(argv) {
         }
 
         const agentId = String(opts.agent || process.env.UFOO_SUBSCRIBER_ID || "unknown-agent").trim() || "unknown-agent";
-        const taskId = String(opts.task || `task-${Date.now()}`).trim();
+        const taskId = String(opts.task || "").trim();
         const summary = String(opts.summary || (normalized === "done" ? text : "")).trim();
         const error = String(opts.error || (normalized === "error" ? text : "")).trim();
         const report = {
@@ -1516,6 +1500,21 @@ async function runCli(argv) {
 
     const bus = program.command("bus").description("Project bus commands");
     bus
+      .command("deliveries")
+      .description("Inspect native receipts or explicitly resolve an uncertain delivery")
+      .argument("<subscriber>", "Subscriber ID")
+      .argument("[receipt-id]", "Uncertain receipt ID")
+      .argument("[resolution]", "accepted|retry (retry can duplicate already accepted work)")
+      .action(async (subscriber, id, resolution) => {
+        const EventBus = require("../../coordination/bus");
+        try {
+          await runBusCoreCommand(new EventBus(process.cwd()), "deliveries", [subscriber, id, resolution].filter(Boolean));
+        } catch (error) {
+          console.error(error.message);
+          process.exitCode = 1;
+        }
+      });
+    bus
       .command("alert")
       .description("Start/stop background notification daemon")
       .argument("<subscriber>", "Subscriber ID (e.g., claude-code:abc123)")
@@ -1770,6 +1769,7 @@ async function runCli(argv) {
     console.log("  ufoo -g");
     console.log("  ufoo chat [-g]");
     console.log("  ufoo project list [--json]");
+    console.log("  ufoo project prune [--apply] [--json]");
     console.log("  ufoo project current [--json]");
     console.log("  ufoo project switch <index|path>");
     console.log("  ufoo resume [nickname]");
@@ -1857,6 +1857,7 @@ async function runCli(argv) {
     process.exitCode = runProjectCommand({
       subcommand: sub,
       outputJson,
+      apply: rest.includes("--apply"),
       cwd: process.cwd(),
     });
     return;
@@ -2016,7 +2017,7 @@ async function runCli(argv) {
 
     const report = {
       phase: normalized,
-      task_id: getOpt("--task", `task-${Date.now()}`),
+      task_id: getOpt("--task", ""),
       agent_id: getOpt("--agent", process.env.UFOO_SUBSCRIBER_ID || "unknown-agent"),
       message,
       summary: getOpt("--summary", normalized === "done" ? message : ""),

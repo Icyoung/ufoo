@@ -17,6 +17,8 @@ const {
 } = require("../code/UcodeController");
 const { createEnvelope, encodeMessage } = require("../runtime/contracts/uiProtocol");
 const fmt = require("./format");
+const { createAgentSurface } = require("./agentSurface");
+const { buildPlanSetPayload, statusForAgentPhase } = require("./agentPresentation");
 const PACKAGE_VERSION = require("../../package.json").version;
 
 function stripTags(value) {
@@ -92,65 +94,6 @@ async function buildUcodeCompletionItems({
   });
 }
 
-function buildPlanSetPayload(executionState, options = {}) {
-  try {
-    const { buildPlanUiProjection } = require("../code/context/planProjection");
-    const projection = buildPlanUiProjection(executionState, {
-      cols: Number(options.cols) > 0 ? Number(options.cols) : 80,
-      activityMessage: String(options.activityMessage || ""),
-    });
-    if (!projection || !projection.visible) {
-      return {
-        summary: "",
-        lines: [],
-        hash: projection && projection.hash || "",
-        visible: false,
-        idle_hint: String((projection && projection.idleHint) || ""),
-        status_line: "",
-        band_mode: String((projection && projection.bandMode) || ""),
-      };
-    }
-    let lines = Array.isArray(projection.bandLines) ? projection.bandLines.slice() : [];
-    const md = String(projection.roadmapMarkdown || "").trim();
-    if (md) {
-      try {
-        const rendered = fmt.renderLogLinesWithMarkdownAnsi(md, { inCodeBlock: false });
-        if (Array.isArray(rendered) && rendered.length > 0) {
-          lines = rendered.map((line) => String(line || ""));
-        }
-      } catch {
-        // keep bandLines
-      }
-    }
-    const summary = String(
-      projection.statusLine
-      || projection.activityStatusLine
-      || lines[0]
-      || ""
-    ).trim();
-    return {
-      summary,
-      text: summary,
-      lines,
-      hash: projection.hash || "",
-      visible: true,
-      idle_hint: String(projection.idleHint || ""),
-      status_line: String(projection.statusLine || projection.activityStatusLine || ""),
-      activity_status_line: String(projection.activityStatusLine || ""),
-      band_mode: String(projection.bandMode || ""),
-    };
-  } catch {
-    return {
-      summary: "",
-      lines: [],
-      hash: "",
-      visible: false,
-      idle_hint: "",
-      status_line: "",
-      band_mode: "",
-    };
-  }
-}
 
 function normalizeToolLogEntry(entry = {}) {
   const tool = String(entry.tool || "").trim().toLowerCase();
@@ -266,6 +209,7 @@ async function runUcodeRust(props = {}) {
   let backgroundSeq = 0;
   let requestExit = false;
   const MARKDOWN_LOG_KINDS = new Set(["assistant", "error"]);
+  const surface = createAgentSurface({ maxEntries: 4000 });
   const controller = createUcodeController({
     projectRoot: workspaceRoot,
     ports: {
@@ -274,6 +218,7 @@ async function runUcodeRust(props = {}) {
   });
 
   function publish(name, payload) {
+    surface.apply(name, payload);
     if (!hostRef) return;
     hostRef.broadcast(hostRef.createEvent(name, payload, {
       surface: "ucode",
@@ -533,8 +478,16 @@ async function runUcodeRust(props = {}) {
     ),
   });
 
+  surface.apply("transcript.reset", {
+    entries: banner.map((line, idx) => {
+      const { logo, metadata } = splitUcodeBannerRow(line, idx);
+      return { id: `b-${idx}`, kind: "banner", text: logo, detail: metadata, speaker: "" };
+    }).concat([{ id: `b-${banner.length}`, kind: "spacer", text: "", speaker: "" }]),
+  });
+
   function buildSnapshot() {
     const meter = props.state && props.state.contextMeter;
+    const view = surface.snapshot();
     const agentsSnap = buildUcodeAgentsSnapshot(
       workspaceRoot,
       String(
@@ -544,30 +497,15 @@ async function runUcodeRust(props = {}) {
       ).trim()
     );
     return {
-      status: "ready",
+      status: view.status,
+      busy: view.busy,
       package_version: PACKAGE_VERSION,
       footer: agentsSnap.footer,
-      entries: banner.map((line, idx) => {
-        const { logo, metadata } = splitUcodeBannerRow(line, idx);
-        return {
-          id: `b-${idx}`,
-          kind: "banner",
-          // Logo and metadata are separate raw renderer segments. Neither
-          // ever passes through the ordinary log formatter.
-          text: logo,
-          detail: metadata,
-          speaker: "",
-        };
-      }).concat([{
-        id: `b-${banner.length}`,
-        kind: "spacer",
-        text: "",
-        speaker: "",
-      }]),
+      entries: view.entries,
       input_history: [],
       agents: agentsSnap.agents,
       attachment_count: pendingAttachments.length,
-      usage: String((meter && meter.label) || ""),
+      usage: String((meter && meter.label) || view.usage || ""),
       task_queue: controller.getQueueSnapshot(),
     };
   }
@@ -699,15 +637,10 @@ async function runUcodeRust(props = {}) {
           onToolLog: ingestToolLog,
           onPhase: (event) => {
             if (!event || typeof event !== "object") return;
-            if (event.type === "request_start") {
-              publish("status.set", { text: "Waiting for model…", busy: true });
-            } else if (event.type === "text_delta") {
-              beginResponse();
-            } else if (event.type === "tool_request") {
-              const tool = String(event.name || "tool").trim() || "tool";
-              const label = (fmt.TOOL_LABELS && fmt.TOOL_LABELS[tool.toLowerCase()])
-                || `Calling ${tool}`;
-              publish("status.set", { text: `${label}…`, busy: true });
+            if (event.type === "text_delta") beginResponse();
+            else {
+              const text = statusForAgentPhase(event);
+              if (text) publish("status.set", { text, busy: true });
             }
           },
         });

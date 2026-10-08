@@ -35,6 +35,7 @@ const {
 } = require("./types");
 
 module.exports = {
+  ...require("./controllerSchemas"),
   SHARED_TOOL_REGISTRY,
   getSharedToolRegistry,
   getToolDefinition,

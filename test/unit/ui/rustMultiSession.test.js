@@ -17,7 +17,7 @@ function makeSession({
   const session = createRustMultiSession({
     projectRoot: "/tmp/does-not-matter",
     getActiveAgents: () => agents.slice(),
-    getAgentMeta: () => ({ activity_state: "ready" }),
+    getAgentMeta: () => ({ activity_state: "ready", launch_mode: "internal" }),
     getInjectSockPath: () => "",
     resolvePaneOptions: paneOptions,
     onInternalSubmit,
@@ -29,6 +29,98 @@ function makeSession({
 }
 
 describe("createRustMultiSession", () => {
+  test("opening and polling an already running legacy child projects its actual activity", () => {
+    jest.useFakeTimers();
+    const events = [];
+    const meta = { launch_mode: "internal", activity_state: "working", activity_detail: "thinking", activity_since: "2026-10-08T12:00:00Z" };
+    const session = createRustMultiSession({ getActiveAgents: () => ["child"], getAgentMeta: () => meta,
+      publish: (name, payload) => events.push({ name, payload }) });
+    try {
+      session.setLayout("single", "child"); jest.advanceTimersByTime(100);
+      expect(collect(events, "multi.pane.frame").at(-1)).toMatchObject({ busy: true, status: "Thinking…" });
+      meta.activity_detail = "tool read";
+      session.syncAgents(); jest.advanceTimersByTime(100);
+      expect(collect(events, "multi.pane.frame").at(-1).status).toBe("Reading file…");
+      meta.activity_state = "idle"; meta.activity_detail = "";
+      session.syncAgents(); jest.advanceTimersByTime(100);
+      expect(collect(events, "multi.pane.frame").at(-1)).toMatchObject({ busy: false, status: "ready" });
+    } finally { session.stop(); jest.useRealTimers(); }
+  });
+  test("only internal agents get panes, focus and watches, including membership changes", () => {
+    const events = [];
+    const meta = new Map([["child", { launch_mode: "internal" }], ["wrapper", { launch_mode: "terminal" }]]);
+    const session = createRustMultiSession({
+      getActiveAgents: () => ["wrapper", "child", "unknown"],
+      getAgentMeta: (id) => meta.get(id),
+      publish: (name, payload) => events.push({ name, payload }),
+    });
+    try {
+      expect(session.setLayout("all").ok).toBe(true);
+      expect(session.getSnapshot().panes.map((pane) => pane.agent_id)).toEqual(["child"]);
+      expect(session.focusAgent("wrapper").ok).toBe(false);
+      expect(session.setLayout("single", "wrapper").ok).toBe(false);
+      expect(session.listInternalAgentIds()).toEqual(["child"]);
+      meta.set("child", { launch_mode: "terminal" });
+      session.syncAgents();
+      expect(session.getSnapshot().panes).toEqual([]);
+    } finally { session.stop(); }
+  });
+  test("all three layouts have direct transitions and toggle preserves the original main/all behavior", () => {
+    const { session } = makeSession();
+    expect(session.getSnapshot().active).toBe(false);
+    expect(session.setLayout("single", "agent-b").ok).toBe(true);
+    expect(session.getSnapshot().panes.map((pane) => pane.agent_id)).toEqual(["agent-b"]);
+    expect(session.setLayout().ok).toBe(true);
+    expect(session.getKind()).toBe("multi");
+    expect(session.getSnapshot().focus).toEqual({ target: "agent", agent_id: "agent-b" });
+    expect(session.getSnapshot().panes).toHaveLength(2);
+    expect(session.setLayout("single", "agent-a").ok).toBe(true);
+    expect(session.getKind()).toBe("side");
+    expect(session.setLayout("main").ok).toBe(true);
+    expect(session.isActive()).toBe(false);
+    session.setLayout();
+    expect(session.getKind()).toBe("multi");
+    session.setLayout();
+    expect(session.isActive()).toBe(false);
+  });
+
+  test("switching layouts keeps child drafts and their Unicode cursor positions without submitting them", () => {
+    jest.useFakeTimers();
+    const submitted = jest.fn();
+    const { session, events } = makeSession({ onInternalSubmit: submitted });
+    try {
+      session.setLayout("single", "agent-a");
+      session.handleRaw({ agent_id: "agent-a", data: "你好🙂abc" });
+      session.handleRaw({ agent_id: "agent-a", data: "\x1b[D" });
+      session.setLayout("all");
+      jest.advanceTimersByTime(80);
+      expect(collect(events, "multi.pane.frame").filter((frame) => frame.agent_id === "agent-a").pop())
+        .toMatchObject({ input: "你好🙂abc", cursor: 6 });
+      session.setLayout("single", "agent-b");
+      session.setLayout("main");
+      session.setLayout("single", "agent-a");
+      jest.advanceTimersByTime(80);
+      expect(collect(events, "multi.pane.frame").pop()).toMatchObject({ input: "你好🙂abc", cursor: 6 });
+      expect(submitted).not.toHaveBeenCalled();
+      session.stop({ clearDrafts: true });
+      session.setLayout("single", "agent-a");
+      jest.advanceTimersByTime(80);
+      expect(collect(events, "multi.pane.frame").pop()).toMatchObject({ input: "", cursor: 0 });
+    } finally {
+      session.stop();
+      jest.useRealTimers();
+    }
+  });
+
+  test("a failed layout change leaves the current view intact", () => {
+    const { session } = makeSession({ agents: [] });
+    session.setLayout("single", "agent-a");
+    const before = session.getSnapshot();
+    expect(session.setLayout("all").ok).toBe(false);
+    expect(session.getSnapshot()).toEqual(before);
+    session.stop();
+  });
+
   test("start() publishes multi.set active with panes and rev>=1", () => {
     const { session, events } = makeSession();
     const result = session.start();

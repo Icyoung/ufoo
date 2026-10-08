@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const { randomUUID } = require("crypto");
 const { getUfooPaths } = require("../../coordination/state/paths");
 const {
   parseIntervalMs,
@@ -231,17 +232,21 @@ function createDaemonCronController(options = {}) {
         createdAt: task.createdAt,
         lastRunAt: task.lastRunAt,
         tickCount: task.tickCount,
+        scheduleId: task.scheduleId,
       })),
     };
 
+    const tmpFile = `${persistedFile}.${randomUUID()}.tmp`;
     try {
       fsModule.mkdirSync(pathModule.dirname(persistedFile), { recursive: true });
-      const tmpFile = `${persistedFile}.tmp`;
-      fsModule.writeFileSync(tmpFile, JSON.stringify(state, null, 2), "utf8");
+      fsModule.writeFileSync(tmpFile, JSON.stringify(state, null, 2), { encoding: "utf8", mode: 0o600 });
       fsModule.renameSync(tmpFile, persistedFile);
     } catch (err) {
       const detail = err && err.message ? err.message : String(err || "persist failed");
       log(`cron persist failed: ${detail}`);
+      throw err;
+    } finally {
+      try { fsModule.unlinkSync(tmpFile); } catch {}
     }
   }
 
@@ -263,13 +268,18 @@ function createDaemonCronController(options = {}) {
   }
 
   function runTask(task) {
+    if (!tasks.includes(task)) return;
+    const previous = { lastRunAt: task.lastRunAt, tickCount: task.tickCount };
     task.lastRunAt = nowFn();
     task.tickCount += 1;
+    // Reserve the occurrence before effects. A restart never sends this tick twice.
+    try { persistState(); } catch (error) { Object.assign(task, previous); throw error; }
 
     for (const target of task.targets) {
       try {
         Promise.resolve(dispatch({
           taskId: task.id,
+          occurrenceId: `${task.scheduleId}:${task.tickCount}`,
           target,
           message: task.prompt,
         })).catch((err) => {
@@ -290,9 +300,9 @@ function createDaemonCronController(options = {}) {
     if (idx < 0) return false;
 
     const task = tasks[idx];
-    clearTaskTimer(task);
     tasks.splice(idx, 1);
-    persistState();
+    try { persistState(); } catch (error) { tasks.splice(idx, 0, task); throw error; }
+    clearTaskTimer(task);
     return true;
   }
 
@@ -300,15 +310,13 @@ function createDaemonCronController(options = {}) {
     if (task.onceAtMs > 0) {
       const delay = Math.max(0, task.onceAtMs - nowFn());
       task.timer = detachTimer(setTimeoutFn(() => {
-        runTask(task);
-        stopTask(task.id);
+        try { runTask(task); stopTask(task.id); } catch (error) { log(`cron occurrence not dispatched: ${error.message}`); }
       }, delay));
       return;
     }
 
     task.timer = detachTimer(setIntervalFn(() => {
-      runTask(task);
-      persistState();
+      try { runTask(task); } catch (error) { log(`cron occurrence not dispatched: ${error.message}`); }
     }, task.intervalMs));
   }
 
@@ -338,13 +346,14 @@ function createDaemonCronController(options = {}) {
       createdAt: nowFn(),
       lastRunAt: 0,
       tickCount: 0,
+      scheduleId: randomUUID(),
       timer: null,
     };
 
-    attachTaskTimer(task);
-    runTask(task);
     tasks.push(task);
-    persistState();
+    try { persistState(); } catch (error) { tasks.pop(); throw error; }
+    attachTaskTimer(task);
+    if (!useOnce) runTask(task);
 
     return formatCronTask(task);
   }
@@ -356,11 +365,9 @@ function createDaemonCronController(options = {}) {
   function stopAll() {
     if (tasks.length === 0) return 0;
     const count = tasks.length;
-    while (tasks.length > 0) {
-      const task = tasks.pop();
-      clearTaskTimer(task);
-    }
-    persistState();
+    const removed = tasks.splice(0);
+    try { persistState(); } catch (error) { tasks.push(...removed); throw error; }
+    removed.forEach(clearTaskTimer);
     return count;
   }
 
@@ -415,7 +422,7 @@ function createDaemonCronController(options = {}) {
       }
 
       if (Number.isFinite(onceAtMs) && onceAtMs > 0) {
-        if (onceAtMs <= now) {
+        if (Number(item.tickCount) > 0) {
           changed = true;
           continue;
         }
@@ -434,6 +441,7 @@ function createDaemonCronController(options = {}) {
         createdAt: Number(item && item.createdAt) || now,
         lastRunAt: Number(item && item.lastRunAt) || 0,
         tickCount: Number(item && item.tickCount) || 0,
+        scheduleId: item.scheduleId || `legacy-${rawId}-${Number(item.createdAt) || now}`,
         timer: null,
       };
 

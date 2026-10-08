@@ -14,6 +14,10 @@ function extractUfooParamsFromArgs(args = []) {
   let role = "";
   for (let i = 0; i < args.length; i += 1) {
     const arg = String(args[i] || "");
+    if (arg === "--native-messages" || arg === "--no-native-messages") {
+      process.env.UFOO_NATIVE_MESSAGES = arg === "--native-messages" ? "1" : "0";
+      continue;
+    }
     if (arg === "--nickname") {
       if (i + 1 < args.length) {
         nickname = String(args[i + 1]).trim();

@@ -65,8 +65,8 @@ function requestStatus(sockPath, projectRoot) {
         const payload = JSON.parse(line);
         if (payload.type !== "status") continue;
         clearTimeout(timer);
+        socket.once("close", () => resolve(payload.data));
         socket.end();
-        resolve(payload.data);
         return;
       }
     });
@@ -105,6 +105,69 @@ function requestResponse(sockPath, request) {
 }
 
 describe("GlobalDaemon", () => {
+  test("one persistent global socket receives live events only from its selected project", async () => {
+    const controllerRoot = initializeProject("sub-controller");
+    const rootA = initializeProject("sub-a");
+    const rootB = initializeProject("sub-b");
+    const daemon = new GlobalDaemon({ controllerRoot, topology: "global" });
+    let socket;
+    const frames = [];
+    const waitFor = async (predicate) => {
+      const deadline = Date.now() + 3000;
+      while (!predicate()) {
+        if (Date.now() > deadline) throw new Error("project subscription timed out");
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    };
+    try {
+      daemon.start({ resumeMode: "none" });
+      await waitForSocket(daemon.controller.socket_path);
+      socket = net.createConnection(daemon.controller.socket_path);
+      let buffer = "";
+      socket.on("data", (chunk) => {
+        const lines = (buffer + chunk.toString()).split("\n");
+        buffer = lines.pop();
+        frames.push(...lines.filter(Boolean).map(JSON.parse));
+      });
+      await new Promise((resolve, reject) => { socket.once("connect", resolve); socket.once("error", reject); });
+      const select = async (root) => {
+        socket.write(`${JSON.stringify({ type: "status", project_root: root })}\n`);
+        await waitFor(() => frames.some((frame) => frame.type === "status" && frame.data.projectRoot === fs.realpathSync(root)));
+        return root === controllerRoot ? daemon.controller : daemon.activateProject(root);
+      };
+      const hostA = await select(rootA);
+      const ipcA = hostA.runtime.resource("ipcServer");
+      const ipcController = daemon.controller.runtime.resource("ipcServer");
+      expect(ipcA.hasClients()).toBe(true);
+      expect(ipcController.hasClients()).toBe(false);
+      ipcController.sendToSockets({ type: "bus", data: { message: "hidden-controller" } });
+      ipcA.sendToSockets({ type: "bus", data: { message: "live-a" } });
+      await waitFor(() => frames.some((frame) => frame.data?.message === "live-a"));
+      const hostB = await select(rootB);
+      const ipcB = hostB.runtime.resource("ipcServer");
+      expect(ipcA.hasClients()).toBe(false);
+      expect(ipcB.hasClients()).toBe(true);
+      ipcA.sendToSockets({ type: "bus", data: { message: "hidden-a" } });
+      ipcB.sendToSockets({ type: "bus", data: { message: "live-b" } });
+      await waitFor(() => frames.some((frame) => frame.data?.message === "live-b"));
+      await select(controllerRoot);
+      expect(ipcB.hasClients()).toBe(false);
+      expect(ipcController.hasClients()).toBe(true);
+      ipcB.sendToSockets({ type: "bus", data: { message: "hidden-b" } });
+      ipcController.sendToSockets({ type: "bus", data: { message: "live-controller" } });
+      await waitFor(() => frames.some((frame) => frame.data?.message === "live-controller"));
+      expect(frames.filter((frame) => frame.data?.message?.startsWith("hidden-"))).toEqual([]);
+      socket.destroy();
+      await waitFor(() => !ipcController.hasClients());
+    } finally {
+      socket?.destroy();
+      daemon.stop("test-subscriptions");
+      fs.rmSync(controllerRoot, { recursive: true, force: true });
+      fs.rmSync(rootA, { recursive: true, force: true });
+      fs.rmSync(rootB, { recursive: true, force: true });
+    }
+  }, 10000);
+
   test("recovery policy selects live wrapper agents and durable cron work", () => {
     const liveRoot = initializeProject("recovery-live");
     const mcpOnlyRoot = initializeProject("recovery-mcp");

@@ -2,6 +2,8 @@ const fs = require("fs");
 const path = require("path");
 const { getUfooPaths } = require("../state/paths");
 const { redactSecrets } = require("../../runtime/privacy/redactor");
+const { withFileLock } = require("../state/fileLock");
+const { writeFileAtomic } = require("../bus/utils");
 
 const REPORT_PHASES = {
   START: "start",
@@ -38,7 +40,7 @@ function normalizeScope(value = "") {
 }
 
 function normalizeReportInput(input = {}, options = {}) {
-  const ts = options.ts || new Date().toISOString();
+  const ts = options.ts || input.ts || new Date().toISOString();
   let phase = normalizePhase(input.phase || options.phase);
   const entryId = String(
     input.entry_id
@@ -53,7 +55,7 @@ function normalizeReportInput(input = {}, options = {}) {
       || input.task
       || options.task_id
       || options.taskId
-      || `task-${Date.now()}`
+      || `task-${require("crypto").randomUUID()}`
   ).trim();
   const agentId = String(
     input.agent_id
@@ -101,7 +103,11 @@ function normalizeReportInput(input = {}, options = {}) {
 function appendReport(projectRoot, entry) {
   ensureReportDir(projectRoot);
   const { reportsFile } = getReportPaths(projectRoot);
-  fs.appendFileSync(reportsFile, `${JSON.stringify(redactSecrets(entry))}\n`, "utf8");
+  return withFileLock(reportsFile, () => {
+    if (entry.entry_id && parseJsonLines(reportsFile).some((row) => row.entry_id === entry.entry_id)) return false;
+    fs.appendFileSync(reportsFile, `${JSON.stringify(redactSecrets(entry))}\n`, "utf8");
+    return true;
+  });
 }
 
 function parseJsonLines(file) {
@@ -152,34 +158,40 @@ function loadReportState(projectRoot) {
 function saveReportState(projectRoot, state) {
   ensureReportDir(projectRoot);
   const { stateFile } = getReportPaths(projectRoot);
-  fs.writeFileSync(stateFile, JSON.stringify(redactSecrets(state), null, 2));
+  writeFileAtomic(stateFile, JSON.stringify(redactSecrets(state), null, 2));
 }
 
 function updateReportState(projectRoot, entry) {
-  const state = loadReportState(projectRoot);
-  const current = state.agents[entry.agent_id] && typeof state.agents[entry.agent_id] === "object"
-    ? state.agents[entry.agent_id]
-    : {};
-  const pending = current.pending && typeof current.pending === "object"
-    ? { ...current.pending }
-    : {};
+  return withFileLock(getReportPaths(projectRoot).stateFile, () => {
+    const state = loadReportState(projectRoot);
+    const current = state.agents[entry.agent_id] && typeof state.agents[entry.agent_id] === "object"
+      ? state.agents[entry.agent_id]
+      : {};
+    const lastByTask = current.last_by_task || {};
+    const previous = lastByTask[entry.task_id];
+    if (previous && (previous.entry_id === entry.entry_id || previous.ts > entry.ts)) return state;
+    const pending = current.pending && typeof current.pending === "object"
+      ? { ...current.pending }
+      : {};
 
-  if (entry.phase === REPORT_PHASES.START || entry.phase === REPORT_PHASES.PROGRESS) {
-    pending[entry.task_id] = entry;
-  } else {
-    delete pending[entry.task_id];
-  }
+    if (entry.phase === REPORT_PHASES.START || entry.phase === REPORT_PHASES.PROGRESS) {
+      pending[entry.task_id] = entry;
+    } else {
+      delete pending[entry.task_id];
+    }
 
-  state.agents[entry.agent_id] = {
-    ...current,
-    pending,
-    pending_count: Object.keys(pending).length,
-    last: entry,
-    updated_at: entry.ts,
-  };
-  state.updated_at = entry.ts;
-  saveReportState(projectRoot, state);
-  return state;
+    state.agents[entry.agent_id] = {
+      ...current,
+      last_by_task: { ...lastByTask, [entry.task_id]: entry },
+      pending,
+      pending_count: Object.keys(pending).length,
+      last: entry,
+      updated_at: entry.ts,
+    };
+    state.updated_at = entry.ts;
+    saveReportState(projectRoot, state);
+    return state;
+  });
 }
 
 function isSummaryHiddenEntry(entry) {
@@ -206,7 +218,11 @@ function getControllerInboxFile(projectRoot, controllerId = "ufoo-agent") {
 function appendControllerInboxEntry(projectRoot, controllerId, entry) {
   const file = getControllerInboxFile(projectRoot, controllerId);
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.appendFileSync(file, `${JSON.stringify(redactSecrets(entry))}\n`, "utf8");
+  return withFileLock(file, () => {
+    if (entry.entry_id && parseJsonLines(file).some((row) => row.entry_id === entry.entry_id)) return false;
+    fs.appendFileSync(file, `${JSON.stringify(redactSecrets(entry))}\n`, "utf8");
+    return true;
+  });
 }
 
 function listControllerInboxEntries(projectRoot, controllerId = "ufoo-agent", options = {}) {
@@ -224,75 +240,79 @@ function countControllerInboxEntries(projectRoot, controllerId = "ufoo-agent") {
 
 function clearControllerInbox(projectRoot, controllerId = "ufoo-agent") {
   const file = getControllerInboxFile(projectRoot, controllerId);
-  try {
-    if (fs.existsSync(file)) fs.rmSync(file, { force: true });
-  } catch {
-    // ignore clear errors
-  }
+  return withFileLock(file, () => {
+    try {
+      if (fs.existsSync(file)) fs.rmSync(file, { force: true });
+    } catch {
+      // ignore clear errors
+    }
+  });
 }
 
 function consumeControllerInboxEntries(projectRoot, controllerId = "ufoo-agent", consumed = []) {
   const file = getControllerInboxFile(projectRoot, controllerId);
-  if (!fs.existsSync(file)) return { removed: 0, remaining: 0 };
-  const list = Array.isArray(consumed) ? consumed : [];
-  if (list.length === 0) {
-    const current = parseJsonLines(file);
-    return { removed: 0, remaining: current.length };
-  }
-
-  const idSet = new Set();
-  const legacySerialized = new Set();
-  for (const item of list) {
-    if (!item) continue;
-    if (typeof item === "string") {
-      idSet.add(item);
-      continue;
+  return withFileLock(file, () => {
+    if (!fs.existsSync(file)) return { removed: 0, remaining: 0 };
+    const list = Array.isArray(consumed) ? consumed : [];
+    if (list.length === 0) {
+      const current = parseJsonLines(file);
+      return { removed: 0, remaining: current.length };
     }
-    if (typeof item === "object") {
-      if (item.entry_id) {
-        idSet.add(String(item.entry_id));
-      } else {
-        legacySerialized.add(JSON.stringify(item));
-      }
-    }
-  }
 
-  const raw = fs.readFileSync(file, "utf8");
-  const lines = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  if (lines.length === 0) {
-    return { removed: 0, remaining: 0 };
-  }
-
-  const keptLines = [];
-  let removed = 0;
-  for (const line of lines) {
-    let parsed = null;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      parsed = null;
-    }
-    if (parsed && typeof parsed === "object") {
-      const id = parsed.entry_id ? String(parsed.entry_id) : "";
-      if (id && idSet.has(id)) {
-        removed += 1;
+    const idSet = new Set();
+    const legacySerialized = new Set();
+    for (const item of list) {
+      if (!item) continue;
+      if (typeof item === "string") {
+        idSet.add(item);
         continue;
       }
-      if (!id && legacySerialized.has(JSON.stringify(parsed))) {
-        removed += 1;
-        continue;
+      if (typeof item === "object") {
+        if (item.entry_id) {
+          idSet.add(String(item.entry_id));
+        } else {
+          legacySerialized.add(JSON.stringify(item));
+        }
       }
     }
-    keptLines.push(line);
-  }
 
-  if (keptLines.length === 0) {
-    fs.rmSync(file, { force: true });
-    return { removed, remaining: 0 };
-  }
+    const raw = fs.readFileSync(file, "utf8");
+    const lines = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (lines.length === 0) {
+      return { removed: 0, remaining: 0 };
+    }
 
-  fs.writeFileSync(file, `${keptLines.join("\n")}\n`, "utf8");
-  return { removed, remaining: keptLines.length };
+    const keptLines = [];
+    let removed = 0;
+    for (const line of lines) {
+      let parsed = null;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        parsed = null;
+      }
+      if (parsed && typeof parsed === "object") {
+        const id = parsed.entry_id ? String(parsed.entry_id) : "";
+        if (id && idSet.has(id)) {
+          removed += 1;
+          continue;
+        }
+        if (!id && legacySerialized.has(JSON.stringify(parsed))) {
+          removed += 1;
+          continue;
+        }
+      }
+      keptLines.push(line);
+    }
+
+    if (keptLines.length === 0) {
+      fs.rmSync(file, { force: true });
+      return { removed, remaining: 0 };
+    }
+
+    writeFileAtomic(file, `${keptLines.join("\n")}\n`);
+    return { removed, remaining: keptLines.length };
+  });
 }
 
 function readReportSummary(projectRoot) {

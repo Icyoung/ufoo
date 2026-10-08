@@ -350,7 +350,7 @@ describe("Ready Detection Integration Tests", () => {
         readyCalled = true;
       });
 
-      detector.processOutput("❯");
+      detector.processOutput("\n❯");
       expect(readyCalled).toBe(true);
     });
 

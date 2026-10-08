@@ -45,6 +45,18 @@ describe("bin/ucodex default bootstrap", () => {
     expect(env.UFOO_STARTUP_BOOTSTRAP_TEXT).toContain("ufoo ctx decisions -l");
   });
 
+  test("selects native messages without forwarding a ufoo flag to Codex", () => {
+    const { launchMock, env } = withIsolatedCodexBin({ args: ["--native-messages", "--model", "test"] });
+    expect(launchMock).toHaveBeenCalledWith(["--model", "test"]);
+    expect(env.UFOO_NATIVE_MESSAGES).toBe("1");
+  });
+
+  test("explicitly disables native messages without forwarding the ufoo flag", () => {
+    const { launchMock, env } = withIsolatedCodexBin({ args: ["--no-native-messages", "--model", "test"], env: { UFOO_NATIVE_MESSAGES: "1" } });
+    expect(launchMock).toHaveBeenCalledWith(["--model", "test"]);
+    expect(env.UFOO_NATIVE_MESSAGES).toBe("0");
+  });
+
   test("merges startup bootstrap when user already passes a prompt arg", () => {
     const { launchMock, env } = withIsolatedCodexBin({ args: ["fix the flaky test"] });
     expect(launchMock.mock.calls[0][0][0]).toContain("Session bootstrap for Codex.");

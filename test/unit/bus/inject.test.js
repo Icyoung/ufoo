@@ -153,6 +153,18 @@ describe("Injector", () => {
   });
 
   describe("injectPty", () => {
+    test("native errors do not fall back to PTY keys or tmux", async () => {
+      const agentsFile = path.join(busDir, "agents.json");
+      fs.writeFileSync(agentsFile, JSON.stringify({ agents: { "codex:native": { native_delivery: "codex_queue", launch_mode: "terminal" } } }));
+      const injector = new Injector(busDir, agentsFile);
+      injector.injectPtyAtPath = jest.fn().mockRejectedValue(new Error("native unavailable"));
+      injector.injectPty = jest.fn();
+      injector.injectTmux = jest.fn();
+      await expect(injector.inject("codex:native", "work", { deliveryId: "seq:1" })).rejects.toThrow("native unavailable");
+      expect(injector.injectPtyAtPath).toHaveBeenCalledWith(injector.getInjectSockPath("codex:native"), "work", { deliveryId: "seq:1" });
+      expect(injector.injectPty).not.toHaveBeenCalled();
+      expect(injector.injectTmux).not.toHaveBeenCalled();
+    });
     test("throws when socket does not exist", async () => {
       const injector = new Injector(busDir, null);
       await expect(injector.injectPty("codex:abc", "test")).rejects.toThrow(

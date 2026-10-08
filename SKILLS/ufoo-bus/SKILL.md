@@ -43,6 +43,15 @@ signal. Evaluate it before creating or mutating helper terminals:
 Never choose a delivery mode from an Agent type such as `codex`, `cursor`, or
 `claude-code`. Agents do not self-register with bare `ufoo bus join`.
 
+Both launch modes share the MCP cooperation tools. When a wrapper supplies
+`UFOO_AGENT_HANDLE` and MCP is available, prefer `dispatch_message`, `ack_bus`,
+and `report_agent_status` with the project root, inherited subscriber, and
+handle. Keep the handle private and out of messages, reports, and environment
+dumps. The CLI examples below are the fallback for older wrappers or hosts
+without those MCP tools. The wrapper retains receive, activity, and shutdown
+ownership: never call `wait_for_message`, `publish_activity_state`, or
+`unregister_agent` for a wrapper-managed identity.
+
 ## Handle pending messages
 
 If a wrapper-managed Agent was explicitly asked for a manual inbox check, run:
@@ -103,6 +112,10 @@ creating a CLI-side identity.
 
 Target resolution order is exact ID, nickname, agent type, then `*`.
 
+A successful send confirms that the message is durably queued. It does not
+confirm delivery or processing; `delivery_status` is `queued` and `delivered`
+is zero until a later delivery step has independent evidence.
+
 After sending or broadcasting, continue the current task. Do not run
 `ufoo bus check`, start another poll, sleep, or wait for a reply.
 Wrapper-managed Agents receive follow-ups by direct injection; external Agents
@@ -135,7 +148,14 @@ ufoo report done "<summary>" --task <id> --agent "<subscriber-id>"
 ufoo report error "<reason>" --task <id> --agent "<subscriber-id>"
 ```
 
-Use `--scope private` only for helper-internal reports.
+Use `--scope private` for helper-internal reports and when a controller
+delegation requests private scope; retain its `--controller` / `controller_id`.
 
 An external Agent calls MCP `report_agent_status` with `project_root`,
 `subscriber`, `agent_handle`, the task id, phase, and summary.
+
+A delegation contains a controller-assigned task ID. Reuse that exact ID in all
+reports; it binds the worker result to its parent task. Ordinary replies and
+queued/delivered receipts do not complete or accept the task. The parent checks
+validation evidence before accepting a reported result. Worker reports cannot
+change project roots or grant controller permissions.

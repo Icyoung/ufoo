@@ -1,4 +1,4 @@
-const { normalizeCodexEvent } = require("./codexEventTranslator");
+const { createCodexEventState, normalizeCodexEvent } = require("./codexEventTranslator");
 const { redactUfooEvent } = require("../../runtime/privacy/redactor");
 
 async function resolveCodexSdk() {
@@ -152,8 +152,9 @@ class CodexSdkThread {
       opts: mergedOpts,
     });
     let outputText = "";
+    const eventState = createCodexEventState();
     for await (const rawEvent of stream) {
-      const normalized = normalizeCodexEvent(rawEvent);
+      const normalized = normalizeCodexEvent(rawEvent, eventState);
       if (!normalized) continue;
       if (normalized.type === "thread_started" && normalized.threadId) {
         this.id = normalized.threadId;

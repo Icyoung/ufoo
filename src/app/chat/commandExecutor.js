@@ -1,3 +1,4 @@
+const { defaultResolveTerminalApp, collectHostLaunchRequestContext, collectTerminalLaunchRequestContext, collectTmuxLaunchRequestContext } = require("./launchRequestContext");
 const path = require("path");
 const EventBus = require("../../coordination/bus");
 const { IPC_REQUEST_TYPES } = require("../../runtime/contracts/eventContract");
@@ -54,13 +55,6 @@ function defaultCreateSkills(projectRoot) {
   return new UfooSkills(projectRoot);
 }
 
-function defaultResolveTerminalApp() {
-  const program = String(process.env.TERM_PROGRAM || "").trim();
-  if (program === "Apple_Terminal") return "terminal";
-  if (program === "iTerm.app" || process.env.ITERM_SESSION_ID) return "iterm2";
-  return "";
-}
-
 function normalizeSettingsProvider(value = "", fallback = "codex-cli") {
   const text = String(value || "").trim().toLowerCase();
   if (text === "claude" || text === "claude-cli" || text === "claude-code" || text === "anthropic") {
@@ -94,38 +88,6 @@ function defaultGateModelForProvider(value = "") {
   return defaultRouterModelForProvider(value);
 }
 
-function collectHostLaunchRequestContext(env = process.env) {
-  const hostInjectSock = String(env.UFOO_HOST_INJECT_SOCK || env.HORIZON_INJECT_SOCK || "").trim();
-  const hostDaemonSock = String(env.UFOO_HOST_DAEMON_SOCK || "").trim();
-  const hostName = String(env.UFOO_HOST_NAME || "").trim();
-  const hostSessionId = String(env.UFOO_HOST_SESSION_ID || env.HORIZON_SESSION_ID || "").trim();
-  const context = {};
-  if (hostInjectSock) context.host_inject_sock = hostInjectSock;
-  if (hostDaemonSock) context.host_daemon_sock = hostDaemonSock;
-  if (hostName) context.host_name = hostName;
-  if (hostSessionId) context.host_session_id = hostSessionId;
-  return context;
-}
-
-function collectTerminalLaunchRequestContext(resolveTerminalApp = defaultResolveTerminalApp) {
-  const terminalApp = String(resolveTerminalApp() || "").trim().toLowerCase();
-  if (terminalApp === "terminal" || terminalApp === "iterm2") {
-    return { terminal_app: terminalApp };
-  }
-  return {};
-}
-
-function collectTmuxLaunchRequestContext(env = process.env) {
-  const tmuxTarget = String(env.UFOO_TMUX_TARGET || "").trim();
-  const tmuxPane = String(env.UFOO_TMUX_PANE || env.TMUX_PANE || "").trim();
-  const tmuxSession = String(env.UFOO_TMUX_SESSION || "").trim();
-  const context = {};
-  if (tmuxTarget) context.tmux_target = tmuxTarget;
-  if (tmuxPane) context.tmux_pane = tmuxPane;
-  if (tmuxSession) context.tmux_session = tmuxSession;
-  return context;
-}
-
 async function withCapturedConsole(capture, fn) {
   const originalLog = console.log;
   const originalError = console.error;
@@ -149,6 +111,7 @@ function createCommandExecutor(options = {}) {
   const hasRestartDaemon = typeof options.restartDaemon === "function";
   const {
     projectRoot,
+    internalOnly = false,
     getActiveProjectRoot = () => projectRoot,
     parseCommand = () => null,
     escapeBlessed = (value) => String(value || ""),
@@ -722,9 +685,11 @@ function createCommandExecutor(options = {}) {
         nickname,
         prompt_profile: promptProfile,
         launch_scope: launchScope,
-        ...collectHostLaunchRequestContext(),
-        ...collectTerminalLaunchRequestContext(resolveTerminalApp),
-        ...collectTmuxLaunchRequestContext(),
+        ...(internalOnly ? { internal_only: true, launch_scope: "inplace" } : {
+          ...collectHostLaunchRequestContext(),
+          ...collectTerminalLaunchRequestContext(resolveTerminalApp),
+          ...collectTmuxLaunchRequestContext(),
+        }),
       };
       send(request);
       schedule(requestStatus, 1000);
@@ -1056,6 +1021,11 @@ function createCommandExecutor(options = {}) {
 
   async function handleModeCommand(args = []) {
     const action = String(args[0] || "").trim().toLowerCase();
+    if (internalOnly) {
+      logMessage(action && !["internal", "show", "status"].includes(action) ? "error" : "system",
+        "ufoo dashboard uses internal agents only.");
+      return;
+    }
     const config = loadConfig(projectRoot) || {};
     const current = normalizeLaunchMode(config.launchMode || "auto");
 
@@ -1367,9 +1337,11 @@ function createCommandExecutor(options = {}) {
         alias,
         instance,
         dry_run: dryRun,
-        ...collectHostLaunchRequestContext(),
-        ...collectTerminalLaunchRequestContext(resolveTerminalApp),
-        ...collectTmuxLaunchRequestContext(),
+        ...(internalOnly ? { internal_only: true } : {
+          ...collectHostLaunchRequestContext(),
+          ...collectTerminalLaunchRequestContext(resolveTerminalApp),
+          ...collectTmuxLaunchRequestContext(),
+        }),
       });
       schedule(requestStatus, 1000);
       return;
@@ -1930,6 +1902,24 @@ function createCommandExecutor(options = {}) {
     const { command, args } = parsed;
 
     switch (command) {
+      case "session": {
+        if (args[0] === "new") options.setRuntimeSession?.(`main-${require("crypto").randomUUID()}`);
+        logMessage("system", `Conversation: ${options.getRuntimeSession?.() || "main-default"}`);
+        return true;
+      }
+      case "task": {
+        const operation = args[0] || "list";
+        if (operation === "list") send({ type: IPC_REQUEST_TYPES.AGENT_RUNTIME, operation: "status" });
+        else if (operation === "cancel" && args[1]) send({ type: IPC_REQUEST_TYPES.AGENT_RUNTIME, operation: "cancel", task_run_id: args[1] });
+        else if (operation === "inspect" && args[1]) send({ type: IPC_REQUEST_TYPES.AGENT_RUNTIME, operation: "tasks", arguments: { operation: "inspect", task_run_id: args[1] } });
+        else logMessage("error", "Usage: /task list | inspect <run-id> | cancel <run-id>");
+        return true;
+      }
+      case "answer": {
+        if (args.length < 2) logMessage("error", "Usage: /answer <interaction-id> <reply>");
+        else send({ type: IPC_REQUEST_TYPES.AGENT_RUNTIME, operation: "resume", interaction_id: args[0], answer: args.slice(1).join(" ") });
+        return true;
+      }
       case "clear":
         if (typeof clearLog === "function") {
           clearLog();
@@ -1939,7 +1929,7 @@ function createCommandExecutor(options = {}) {
         return true;
       case "multi":
         if (typeof options.toggleMultiWindow === "function") {
-          options.toggleMultiWindow();
+          await (args.length ? options.toggleMultiWindow(args) : options.toggleMultiWindow());
         } else {
           logMessage("error", "{white-fg}✗{/white-fg} Multi-window mode is not available");
         }

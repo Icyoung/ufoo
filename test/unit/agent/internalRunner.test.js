@@ -19,8 +19,11 @@ const { createClaudeThreadProvider } = require("../../../src/agents/providers/cl
 const { resolveClaudeUpstreamCredentials } = require("../../../src/agents/providers/credentials/claude");
 const {
   handleEvent,
+  handleThreadedEvent,
   createBusSender,
   createThreadRuntime,
+  resolveInternalModel,
+  resolveInternalCodexEffort,
   getCodexThreadMode,
   getWorkerThreadToolMode,
   buildWorkerThreadToolRuntime,
@@ -35,6 +38,34 @@ const {
 const { SHARED_UFOO_PROTOCOL } = require("../../../src/agents/prompts/groupBootstrap");
 
 describe("agent internalRunner stream forwarding", () => {
+  test("a provider failure stops the surface even if rebuilding the thread also fails", async () => {
+    const view = require("../../../src/ui/agentSurface").createAgentSurface();
+    view.accept({ type: "task_started", task_id: "one" });
+    const log = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const result = await handleThreadedEvent({ agentType: "codex", provider: "codex-cli", publisher: "ufoo-agent", prompt: "task",
+        busSender: { enqueue: jest.fn(), flush: async () => {} }, emitStreamDelta: jest.fn(), emitSurface: view.accept,
+        threadRuntime: { thread: { runStreamed: async function* () { throw new Error("request failed"); } },
+          rebuildThread: async () => { throw new Error("recovery failed"); } } });
+      expect(result.ok).toBe(false);
+      expect(view.snapshot()).toMatchObject({ busy: false, status: "error" });
+      expect(view.snapshot().entries.at(-1).text).toContain("request failed");
+    } finally { log.mockRestore(); }
+  });
+  test("internal SDKs honor the selected model; native ucode keeps its own model resolution", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-sdk-model-"));
+    fs.mkdirSync(path.join(root, ".ufoo"));
+    fs.writeFileSync(path.join(root, ".ufoo/config.json"), JSON.stringify({ agentProvider: "codex-cli", agentModel: "configured-codex" }));
+    try {
+      expect(resolveInternalModel({ projectRoot: root, provider: "codex-cli", env: {} })).toBe("configured-codex");
+      expect(resolveInternalModel({ projectRoot: root, provider: "codex-cli", env: { UFOO_AGENT_MODEL: "environment-model" } })).toBe("environment-model");
+      expect(resolveInternalModel({ projectRoot: root, provider: "codex-cli", extraArgs: ["--model", "explicit-model"], env: {} })).toBe("explicit-model");
+      expect(resolveInternalModel({ projectRoot: root, provider: "claude-cli", env: {} })).not.toBe("configured-codex");
+      expect(resolveInternalModel({ projectRoot: root, provider: "ucode", env: {} })).toBe("");
+      expect(resolveInternalCodexEffort([])).toBe("medium");
+      expect(resolveInternalCodexEffort(["-c", 'model_reasoning_effort="xhigh"'])).toBe("xhigh");
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
   beforeEach(() => {
     jest.clearAllMocks();
   });
@@ -499,7 +530,7 @@ describe("agent internalRunner stream forwarding", () => {
     );
   });
 
-  test.each(["chat-agent-view", "ufoo-agent", "ufoo-agent-gate-router"])(
+  test.each(["chat-agent-view", "rust-multi-window", "ufoo-agent", "ufoo-agent-gate-router"])(
     "thread runtime streams replies for %s source through managed ufoo-agent",
     async (source) => {
       const busSender = {
@@ -818,6 +849,7 @@ describe("internalRunner codex thread mode", () => {
       cwd: projectRoot,
       extraArgs: ["--model", "gpt-5-codex"],
       tools: [],
+      threadOptions: { modelReasoningEffort: "medium" },
     });
 
     fs.rmSync(projectRoot, { recursive: true, force: true });
@@ -966,7 +998,9 @@ describe("internalRunner codex thread mode", () => {
       ok: true,
       target: receiver,
       source: sender,
-      delivered: 1,
+      delivered: 0,
+      queued: 1,
+      delivery_status: "queued",
     }));
 
     const badAck = await runtime.executeToolCall({

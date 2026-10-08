@@ -131,12 +131,16 @@ const READ_PROJECT_REGISTRY_SCHEMA = Object.freeze({
   name: "read_project_registry",
   tier: "tier0-read",
   allowed_tiers: CALLER_TIERS_READ_COORD,
-  description: "Read the cross-project runtime registry.",
+  description: "Read a page of the cross-project runtime registry. Deleted project paths are hidden by default; use next_offset to read more.",
   input_schema: Object.freeze({
     type: "object",
     properties: Object.freeze({
       validate: Object.freeze({ type: "boolean" }),
       cleanup_tmp: Object.freeze({ type: "boolean" }),
+      include_missing: Object.freeze({ type: "boolean", default: false }),
+      limit: Object.freeze({ type: "integer", minimum: 1, maximum: 1000, default: 100 }),
+      offset: Object.freeze({ type: "integer", minimum: 0, default: 0 }),
+      project_root: Object.freeze({ type: "string", description: "Filter to this exact project root." }),
     }),
     additionalProperties: false,
   }),
@@ -145,6 +149,9 @@ const READ_PROJECT_REGISTRY_SCHEMA = Object.freeze({
     required: ["count", "projects"],
     properties: Object.freeze({
       count: Object.freeze({ type: "integer" }),
+      total: Object.freeze({ type: "integer" }),
+      next_offset: Object.freeze({ type: Object.freeze(["integer", "null"]) }),
+      omitted_missing: Object.freeze({ type: "integer" }),
       projects: Object.freeze({
         type: "array",
         items: Object.freeze({ type: "object", additionalProperties: true }),
@@ -159,7 +166,7 @@ const ROUTE_AGENT_SCHEMA = Object.freeze({
   name: "route_agent",
   tier: "tier1-coordination",
   allowed_tiers: CALLER_TIERS_READ_COORD,
-  description: "Pick the best agent or nickname for the user request.",
+  description: "Preview an active worker in the current project using explicit references, roles, and availability. Returns an empty target when none is available. Does not launch or dispatch; the main agent decides the next action.",
   input_schema: Object.freeze({
     type: "object",
     required: ["request"],
@@ -187,7 +194,7 @@ const DISPATCH_MESSAGE_SCHEMA = Object.freeze({
   name: "dispatch_message",
   tier: "tier1-coordination",
   allowed_tiers: CALLER_TIERS_READ_COORD,
-  description: "Send a message to a target agent, nickname, or broadcast queue.",
+  description: "Enqueue a message for a target agent, nickname, or broadcast queue. Success confirms queue persistence, not delivery or processing.",
   input_schema: Object.freeze({
     type: "object",
     required: ["target", "message"],
@@ -209,6 +216,11 @@ const DISPATCH_MESSAGE_SCHEMA = Object.freeze({
       ok: Object.freeze({ type: "boolean" }),
       delivered: Object.freeze({ type: "integer" }),
       queued: Object.freeze({ type: "integer" }),
+      delivery_status: Object.freeze({ type: "string", enum: Object.freeze(["queued"]) }),
+      target: Object.freeze({ type: "string" }),
+      source: Object.freeze({ type: "string" }),
+      mode: Object.freeze({ type: "string", enum: Object.freeze(["immediate", "queued"]) }),
+      seq: Object.freeze({ type: "integer" }),
       targets: Object.freeze({
         type: "array",
         items: Object.freeze({ type: "string" }),
@@ -611,6 +623,7 @@ const PHASE0_TOOL_SCHEMAS = Object.freeze({
 });
 
 module.exports = {
+  ...require("./controllerSchemas"),
   SCHEMA_VERSION,
   READ_BUS_SUMMARY_SCHEMA,
   READ_PROMPT_HISTORY_SCHEMA,

@@ -300,6 +300,22 @@ describe("chat commandExecutor", () => {
     expect(logs.some((entry) => entry.text.includes("Launching codex"))).toBe(false);
   });
 
+  test("internal dashboard launch and group requests cannot inherit external terminal context", async () => {
+    process.env.UFOO_HOST_INJECT_SOCK = "/tmp/outside-inject.sock";
+    const { executor, options } = createHarness({ internalOnly: true, resolveTerminalApp: jest.fn(() => "terminal") });
+    await executor.handleLaunchCommand(["codex", "scope=window"]);
+    expect(options.send).toHaveBeenCalledWith(expect.objectContaining({
+      type: "launch_agent", internal_only: true, launch_scope: "inplace",
+    }));
+    expect(options.send.mock.calls[0][0]).not.toHaveProperty("terminal_app");
+    expect(options.send.mock.calls[0][0]).not.toHaveProperty("host_inject_sock");
+    await executor.handleGroupCommand(["run", "review"]);
+    expect(options.send).toHaveBeenLastCalledWith(expect.objectContaining({ type: "launch_group", internal_only: true }));
+    expect(options.send.mock.calls[1][0]).not.toHaveProperty("terminal_app");
+    await executor.handleModeCommand(["terminal"]);
+    expect(options.saveConfig).not.toHaveBeenCalled();
+  });
+
   test("handleLaunchCommand reports send failure without scheduling refresh", async () => {
     const { executor, options, logs } = createHarness({
       send: jest.fn(() => {
@@ -1323,6 +1339,16 @@ describe("chat commandExecutor", () => {
     expect(result).toBe(true);
     expect(toggleMultiWindow).toHaveBeenCalledTimes(1);
     expect(logs.some((entry) => entry.text.includes("Multi-window mode is not available"))).toBe(false);
+  });
+
+  test.each(["on", "off", "@coder"])("/multi %s passes the requested layout to the host", async (argument) => {
+    const toggleMultiWindow = jest.fn();
+    const { executor } = createHarness({
+      parseCommand: jest.fn(() => ({ command: "multi", args: [argument] })),
+      toggleMultiWindow,
+    });
+    await executor.executeCommand(`/multi ${argument}`);
+    expect(toggleMultiWindow).toHaveBeenCalledWith([argument]);
   });
 
   test("executeCommand routes /mcp status to MCP status diagnostics", async () => {

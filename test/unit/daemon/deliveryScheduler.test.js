@@ -19,6 +19,37 @@ function makeQueue(event) {
 }
 
 describe("DeliveryScheduler", () => {
+  test.each(["queued", "immediate"])("retains %s work during startup confirmation even after the timeout, then delivers when ready", async (mode) => {
+    const event = { seq: 1, timestamp: "2026-01-01T00:00:00.000Z", event: "message",
+      publisher: "ufoo-agent", data: { message: "read the project", injection_mode: mode } };
+    const queue = makeQueue(event);
+    const injector = { inject: jest.fn().mockResolvedValue(undefined) };
+    const meta = { status: "active", activity_state: "idle", launch_mode: "terminal", launcher_ready: false };
+    const scheduler = new DeliveryScheduler("/tmp/project", { injector, queueFactory: () => queue,
+      readAgents: () => ({ agents: { "claude-code:first": meta } }),
+      now: () => Date.parse("2026-01-01T00:30:00.000Z"), forceDeliveryAfterMs: 1 });
+    expect(await scheduler.deliverSubscriber("claude-code:first")).toMatchObject({
+      delivered: 0, deferred: true, reason: "launcher_not_ready",
+    });
+    expect(injector.inject).not.toHaveBeenCalled();
+    expect(queue.claimNext).not.toHaveBeenCalled();
+    meta.launcher_ready = true;
+    expect(await scheduler.deliverSubscriber("claude-code:first")).toMatchObject({ delivered: 1 });
+    expect(injector.inject).toHaveBeenCalledTimes(1);
+    expect(queue.completeClaim).toHaveBeenCalledTimes(1);
+  });
+
+  test("a delivery observer failure cannot restore and resend a confirmed injection", async () => {
+    const queue = makeQueue({ seq: 1, event: "message", publisher: "ufoo-agent", data: { message: "hello" } });
+    const injector = { inject: jest.fn().mockResolvedValue(undefined) };
+    const scheduler = new DeliveryScheduler("/tmp/project", { injector, queueFactory: () => queue,
+      readAgents: () => ({ agents: { "codex:one": { status: "active", activity_state: "idle", launch_mode: "terminal" } } }),
+      markWorking: () => {}, emitDelivery: async () => { throw new Error("client disconnected"); } });
+    expect(await scheduler.deliverSubscriber("codex:one")).toMatchObject({ ok: true, delivered: 1 });
+    expect(injector.inject).toHaveBeenCalledTimes(1);
+    expect(queue.completeClaim).toHaveBeenCalledTimes(1);
+    expect(queue.restoreClaim).not.toHaveBeenCalled();
+  });
   test("activity gate only allows idle and ready", () => {
     expect(isDeliverableActivityState("idle")).toBe(true);
     expect(isDeliverableActivityState("ready")).toBe(true);

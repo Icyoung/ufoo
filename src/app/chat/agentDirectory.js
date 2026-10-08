@@ -1,3 +1,5 @@
+const { isInternalAgentMeta } = require("../../runtime/contracts/agentMode");
+
 function buildAgentMaps(activeAgents = [], metaList = [], fallbackMap = null) {
   const labelMap = new Map();
   const metaMap = new Map();
@@ -83,9 +85,13 @@ function clampAgentWindowWithSelection({
  * Normalize daemon STATUS payload into agents list + footer string.
  * Shared by Ink dashboard and Rust `agents.snapshot`.
  */
-function normalizeStatusToAgentsSnapshot(data = {}) {
-  const activeIds = Array.isArray(data.active) ? data.active : [];
+function normalizeStatusToAgentsSnapshot(data = {}, { internalOnly = false } = {}) {
+  let activeIds = Array.isArray(data.active) ? data.active : [];
   const metaList = Array.isArray(data.active_meta) ? data.active_meta : [];
+  if (internalOnly) {
+    const internalIds = new Set(metaList.filter(isInternalAgentMeta).map((meta) => meta.id));
+    activeIds = activeIds.filter((id) => internalIds.has(id));
+  }
   const { labelMap, metaMap } = buildAgentMaps(activeIds, metaList);
   const agents = activeIds.map((id) => {
     const meta = metaMap.get(id) || {};

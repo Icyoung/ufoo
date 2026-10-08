@@ -13,7 +13,8 @@ function normalizeProjectRoot(projectRoot) {
 }
 
 function resolveGlobalControllerProjectRoot() {
-  return trimTrailingSlashes(path.resolve(os.homedir()));
+  const root = trimTrailingSlashes(path.resolve(os.homedir()));
+  try { return canonicalProjectRoot(root); } catch { return root; }
 }
 
 function resolveGlobalControllerUfooDir() {

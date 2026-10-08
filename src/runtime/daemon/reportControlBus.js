@@ -15,6 +15,9 @@ const {
 const REPORT_CONTROL_TARGET = "ufoo-agent";
 const REPORT_CONTROL_EVENT = "agent_report";
 const REPORT_CONTROL_TYPE = "control/report";
+const { withFileLock } = require("../../coordination/state/fileLock");
+const { normalizeReportInput, normalizePhase, loadReportState } = require("../../coordination/report/store");
+const draining = new Set();
 
 function getReportControlQueueDir(projectRoot) {
   const paths = getUfooPaths(projectRoot);
@@ -60,35 +63,66 @@ function buildReportControlEvent(report = {}, options = {}) {
 
 async function enqueueAgentReport(projectRoot, report, options = {}) {
   ensureReportControlQueue(projectRoot);
+  return withFileLock(getReportControlQueueFile(projectRoot), () => {
+    const queue = new DeliveryQueue(getReportControlQueueFile(projectRoot));
+    const publisher = options.publisher || resolveReportPublisher(report);
+    const pending = { ...(loadReportState(projectRoot).agents[publisher]?.pending || {}) };
+    const controls = [...queue.processingFiles().flatMap((file) => {
+      return require("../../coordination/bus/utils").readJSONL(file);
+    }), ...queue.readPendingRaw()];
+    for (const control of controls) {
+      const entry = control.data?.report;
+      if (!entry || entry.agent_id !== publisher) continue;
+      if (["start", "progress"].includes(entry.phase)) pending[entry.task_id] = entry;
+      else delete pending[entry.task_id];
+    }
+    let taskId = String(report.task_id || report.taskId || report.task || "").trim();
+    if (!taskId && normalizePhase(report.phase) !== "start") {
+      const tasks = Object.keys(pending);
+      if (tasks.length > 1) throw new Error("Multiple active tasks; specify --task / task_id for this report");
+      taskId = tasks[0];
+    }
+    const entry = normalizeReportInput({ ...report, agent_id: publisher, task_id: taskId });
+    const event = normalizeQueueEnvelope(buildReportControlEvent(entry, options), {
+      queueType: QUEUE_TYPES.REPORT,
+      delivery: { mode: "daemon_consume", gate: "none", max_inflight: 1 },
+      ack: { policy: "on_consume" },
+    });
+    queue.append(event);
 
-  const event = normalizeQueueEnvelope(buildReportControlEvent(report, options), {
-    queueType: QUEUE_TYPES.REPORT,
-    delivery: { mode: "daemon_consume", gate: "none", max_inflight: 1 },
-    ack: { policy: "on_consume" },
+    return {
+      queued: true,
+      request_id: event.data.request_id,
+      target: REPORT_CONTROL_TARGET,
+      targets: [REPORT_CONTROL_TARGET],
+      report: entry,
+    };
   });
-  new DeliveryQueue(getReportControlQueueFile(projectRoot)).append(event);
-
-  return {
-    queued: true,
-    request_id: event.data.request_id,
-    target: REPORT_CONTROL_TARGET,
-    targets: [REPORT_CONTROL_TARGET],
-    report,
-  };
 }
 
-function takeReportControlEvents(projectRoot) {
+async function drainReportControlEvents(projectRoot, handle) {
   const queueFile = getReportControlQueueFile(projectRoot);
+  if (draining.has(queueFile)) return 0;
+  draining.add(queueFile);
   const queue = new DeliveryQueue(queueFile);
-  const events = [];
-  queue.recover();
-  while (true) {
-    const claim = queue.claimNext();
-    if (!claim) break;
-    events.push(claim.event);
-    queue.completeClaim(claim);
-  }
-  return events;
+  let consumed = 0;
+  try {
+    while (true) {
+      const claim = withFileLock(queueFile, () => {
+        queue.recover();
+        if (queue.processingFiles().length) return null;
+        return queue.claimNext();
+      });
+      if (!claim) break;
+      try {
+        const handled = await handle(claim.event);
+        if (handled === false) { queue.restoreClaim(claim); break; }
+        queue.completeClaim(claim);
+        consumed += 1;
+      } catch (error) { queue.restoreClaim(claim); throw error; }
+    }
+    return consumed;
+  } finally { draining.delete(queueFile); }
 }
 
 function isAgentReportControlEvent(evt) {
@@ -104,7 +138,7 @@ function extractAgentReportControl(evt) {
   if (!isAgentReportControlEvent(evt)) return null;
   const data = evt.data && typeof evt.data === "object" ? evt.data : {};
   return {
-    report: data.report,
+    report: normalizeReportInput(data.report, { entry_id: data.request_id, ts: data.report.ts || data.queued_at || evt.timestamp || evt.ts }),
     request_id: data.request_id || "",
     queued_at: data.queued_at || evt.timestamp || evt.ts || "",
   };
@@ -121,7 +155,7 @@ module.exports = {
   buildReportControlData,
   buildReportControlEvent,
   enqueueAgentReport,
-  takeReportControlEvents,
+  drainReportControlEvents,
   isAgentReportControlEvent,
   extractAgentReportControl,
 };

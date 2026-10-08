@@ -8,6 +8,7 @@ const {
   createUfooMcpServer,
 } = require("../../../src/runtime/daemon/mcpServer");
 const { getUfooPaths } = require("../../../src/coordination/state/paths");
+const controlPlane = require("../../../src/runtime/daemon/controlPlaneService");
 
 const tempProjects = [];
 
@@ -41,6 +42,40 @@ describe("MCP external integration (Phase 6)", () => {
     for (const p of tempProjects) {
       fs.rmSync(p, { recursive: true, force: true });
     }
+  });
+
+  test("managed and external Agents share MCP cooperation while retaining distinct lifecycle ownership", async () => {
+    const projectRoot = makeTempProject();
+    const managed = await controlPlane.registerAgentFull(projectRoot, {
+      agent_type: "codex", parentPid: process.pid, launch_mode: "terminal",
+    }, { validateParentPid: true, notifyDaemon: false });
+    const server = createUfooMcpServer({ autoStart: false, validateProjectRoot: false });
+    const registration = await call(server, "external", "register_agent", { project_root: projectRoot, agent_type: "claude" });
+    const external = registration.result.structuredContent;
+    const identity = { project_root: projectRoot, subscriber: managed.subscriber, agent_handle: managed.agent_handle };
+    const sent = await call(server, "send", "dispatch_message", { ...identity, target: external.subscriber, message: "review" });
+    expect(sent.result.structuredContent).toMatchObject({ queued: 1, delivered: 0, delivery_status: "queued" });
+    const reply = await call(server, "reply", "dispatch_message", {
+      project_root: projectRoot, subscriber: external.subscriber, agent_handle: external.agent_handle,
+      target: managed.subscriber, message: "review complete",
+    });
+    const inbox = await call(server, "inbox", "poll_inbox", identity);
+    expect(inbox.result.structuredContent.count).toBe(1);
+    const ack = await call(server, "ack", "ack_bus", { ...identity, through_seq: reply.result.structuredContent.seq });
+    expect(ack.result.structuredContent.acknowledged).toBe(1);
+    const report = await call(server, "report", "report_agent_status", { ...identity, task_id: "review", phase: "done", summary: "finished" });
+    expect(report.result.structuredContent.status).toBe("queued");
+    for (const operation of ["wait_for_message", "publish_activity_state", "unregister_agent"]) {
+      const result = await call(server, operation, operation, { ...identity, activity_state: "ready" });
+      expect(result.error.data.code).toBe("managed_agent_lifecycle");
+    }
+    const impersonation = await call(server, "forged", "dispatch_message", {
+      ...identity, agent_handle: external.agent_handle, target: external.subscriber, message: "forged",
+    });
+    expect(impersonation.error.data.code).toBe("invalid_agent_handle");
+    const stored = fs.readFileSync(getUfooPaths(projectRoot).agentsFile, "utf8");
+    expect(stored).not.toContain(managed.agent_handle);
+    expect(JSON.parse(stored).agents[managed.subscriber]).toMatchObject({ mcp_bridge: false, status: "active", activity_state: "starting" });
   });
 
   test("two external agents collaborate via MCP bridge without wrappers", async () => {

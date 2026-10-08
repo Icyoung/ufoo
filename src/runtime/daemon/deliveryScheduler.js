@@ -191,6 +191,18 @@ class DeliveryScheduler {
     if (meta.mcp_bridge === true) {
       return { ok: false, reason: "external_receive" };
     }
+    // Startup confirmation is a transport gate, not a stale activity sample.
+    // Even immediate messages and queue-age overrides must wait for the host.
+    if (meta.launcher_ready === false) {
+      return { ok: false, reason: "launcher_not_ready" };
+    }
+    if (meta.native_delivery) {
+      // The provider queues work while busy. PTY activity snapshots must not
+      // gate a native receive, including messages waiting for the next turn.
+      return meta.native_delivery_ready === true
+        ? { ok: true, reason: "native_receiver" }
+        : { ok: false, reason: "native_not_ready" };
+    }
     const launchMode = String(meta.launch_mode || "").trim();
     const adapter = this.adapterRouter.getAdapter({ launchMode, agentId: subscriber, meta });
     if (!adapter.capabilities.supportsNotifierInjector) {
@@ -376,6 +388,15 @@ class DeliveryScheduler {
       } else {
         this.graceWarned.delete(subscriber);
       }
+      if (selectedEvent && this.getAgentMeta(subscriber).meta?.native_delivery) {
+        const receipt = require("../../coordination/bus/nativeReceipts").readNativeReceipt(
+          this.projectRoot, subscriber, `${subscriber}:${this.pendingEventKey(selectedEvent)}`
+        );
+        if (receipt && ["unknown", "inflight"].includes(receipt.state)) {
+          this.noteDeferral(subscriber, "native_outcome_unknown");
+          return { ok: true, delivered: 0, deferred: true, reason: "native_outcome_unknown", receipt_id: receipt.id };
+        }
+      }
       this.clearDeferral(subscriber);
 
       const selectedKey = selectedEvent ? this.pendingEventKey(selectedEvent) : "";
@@ -416,7 +437,12 @@ class DeliveryScheduler {
       const { agents } = this.getAgentMeta(subscriber);
       const injectionText = this.buildInjectionText(envelope, subscriber, agents);
       try {
-        await this.injector.inject(subscriber, injectionText);
+        if (agents[subscriber]?.native_delivery) {
+          await this.injector.inject(subscriber, injectionText, {
+            deliveryId: `${subscriber}:${this.pendingEventKey(evt)}`,
+            through_seq: Number(evt.seq) || undefined,
+          });
+        } else await this.injector.inject(subscriber, injectionText);
         queue.completeClaim(claim);
         this.clearPendingTracking(subscriber, evt);
         // Close the idle gate immediately. PTY ActivityDetector will refresh
@@ -428,21 +454,22 @@ class DeliveryScheduler {
         } catch {
           // activity stamp must never undo a successful inject
         }
-        await this.emitDelivery({
+        try { await this.emitDelivery({
           subscriber,
           event: envelope,
           status: "ok",
-        });
+        }); } catch (error) { this.log(`delivery observer failed after confirmed inject: ${error.message}`); }
         return { ok: true, delivered: 1, event: envelope };
       } catch (err) {
         queue.restoreClaim(claim);
         if (gate.forceOverride) this.noteForceFailure(subscriber, gate.pending);
-        await this.emitDelivery({
+        try { await this.emitDelivery({
           subscriber,
           event: envelope,
           status: "error",
           error: err && err.message ? err.message : String(err || "inject failed"),
-        });
+          errorCode: err && err.code || "",
+        }); } catch (error) { this.log(`delivery observer failed: ${error.message}`); }
         return {
           ok: false,
           delivered: 0,

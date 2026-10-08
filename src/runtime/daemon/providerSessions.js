@@ -1,20 +1,24 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { loadAgentsData, saveAgentsData } = require("../../coordination/state/agentsStore");
+const { loadAgentsData, updateAgentsData } = require("../../coordination/state/agentsStore");
 const { getUfooPaths } = require("../../coordination/state/paths");
 
 function persistProviderSession(projectRoot, subscriberId, payload) {
   const filePath = getUfooPaths(projectRoot).agentsFile;
-  const data = loadAgentsData(filePath);
-  const meta = data.agents[subscriberId] || {};
-  data.agents[subscriberId] = {
-    ...meta,
-    provider_session_id: payload.sessionId || "",
-    provider_session_source: payload.source || "",
-    provider_session_updated_at: new Date().toISOString(),
-  };
-  saveAgentsData(filePath, data);
+  return updateAgentsData(filePath, (data) => {
+    const meta = data.agents[subscriberId] || {};
+    if (meta.status === "inactive") return false;
+    if (Object.entries(data.agents).some(([id, other]) => id !== subscriberId
+      && other.status === "active" && other.provider_session_id === payload.sessionId)) return false;
+    data.agents[subscriberId] = {
+      ...meta,
+      provider_session_id: payload.sessionId || "",
+      provider_session_source: payload.source || "",
+      provider_session_updated_at: new Date().toISOString(),
+    };
+    return true;
+  });
 }
 
 function loadProviderSessionCache(projectRoot) {
@@ -56,9 +60,46 @@ function resolveClaudeSessionFromFile(pid) {
  * Codex writes ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl
  * First line contains { type: "session_meta", payload: { id, cwd, ... } }
  */
-function resolveCodexSessionFromFile(cwd) {
+function readFirstJsonLine(filePath) {
+  const fd = fs.openSync(filePath, "r");
+  const chunks = [];
+  let total = 0;
+  try {
+    // Modern session_meta includes base instructions and can exceed 4 KB.
+    // Bound memory while reading the complete first JSON record.
+    while (total < 2 * 1024 * 1024) {
+      const buffer = Buffer.alloc(64 * 1024);
+      const size = fs.readSync(fd, buffer, 0, buffer.length, null);
+      if (!size) return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      const newline = buffer.subarray(0, size).indexOf(10);
+      chunks.push(buffer.subarray(0, newline === -1 ? size : newline));
+      total += size;
+      if (newline !== -1) return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    }
+    return null;
+  } finally { fs.closeSync(fd); }
+}
+
+function resolveCodexSessionFromFile(cwd, options = {}) {
   if (!cwd) return null;
   try {
+    let expectedSession = String(options.sessionId || "");
+    let startedAt = options.startedAt || "";
+    let claimedSessions = new Set();
+    if (options.projectRoot && options.subscriberId) {
+      const data = loadAgentsData(getUfooPaths(options.projectRoot).agentsFile);
+      const own = data.agents[options.subscriberId];
+      if (!own || own.status !== "active") return null;
+      expectedSession = expectedSession || own.provider_session_id || "";
+      startedAt = startedAt || own.joined_at || "";
+      const peers = Object.entries(data.agents).filter(([id, meta]) => id !== options.subscriberId
+        && meta.status === "active" && meta.agent_type === "codex");
+      // Cwd is not a process identity. Parallel launches must bind through an
+      // exact provider session id instead of racing for the newest rollout.
+      if (!expectedSession && peers.length) return null;
+      claimedSessions = new Set(peers.map(([, meta]) => meta.provider_session_id).filter(Boolean));
+    }
+    const startedAtMs = Date.parse(startedAt);
     const now = new Date();
     // Check today and yesterday (session may have started before midnight)
     const dates = [now];
@@ -66,14 +107,14 @@ function resolveCodexSessionFromFile(cwd) {
     yesterday.setDate(yesterday.getDate() - 1);
     dates.push(yesterday);
 
-    let bestMatch = null;
-    let bestMtime = 0;
+    const matches = new Map();
 
     for (const d of dates) {
       const yyyy = String(d.getFullYear());
       const mm = String(d.getMonth() + 1).padStart(2, "0");
       const dd = String(d.getDate()).padStart(2, "0");
-      const dir = path.join(os.homedir(), ".codex", "sessions", yyyy, mm, dd);
+      const codexHome = options.codexHome || process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+      const dir = path.join(codexHome, "sessions", yyyy, mm, dd);
       if (!fs.existsSync(dir)) continue;
 
       const files = fs.readdirSync(dir)
@@ -83,31 +124,24 @@ function resolveCodexSessionFromFile(cwd) {
         const filePath = path.join(dir, file);
         try {
           const stat = fs.statSync(filePath);
-          if (stat.mtimeMs <= bestMtime) continue;
-
-          // Read first line for session_meta
-          const fd = fs.openSync(filePath, "r");
-          const buf = Buffer.alloc(4096);
-          const bytesRead = fs.readSync(fd, buf, 0, 4096, 0);
-          fs.closeSync(fd);
-          const firstLine = buf.toString("utf8", 0, bytesRead).split("\n")[0];
-          if (!firstLine) continue;
-
-          const record = JSON.parse(firstLine);
+          const record = readFirstJsonLine(filePath);
+          if (!record) continue;
           const payload = record.payload || record;
           const sessionCwd = payload.cwd || "";
           const sessionId = payload.id || "";
 
-          if (sessionId && sessionCwd === cwd && stat.mtimeMs > bestMtime) {
-            bestMatch = { sessionId, source: filePath };
-            bestMtime = stat.mtimeMs;
-          }
+          if (!sessionId || sessionCwd !== cwd || claimedSessions.has(sessionId)) continue;
+          if (expectedSession && sessionId !== expectedSession) continue;
+          const createdAt = Date.parse(payload.timestamp || record.timestamp || "");
+          if (!expectedSession && Number.isFinite(startedAtMs)
+            && (Number.isFinite(createdAt) ? createdAt : stat.birthtimeMs) < startedAtMs) continue;
+          matches.set(sessionId, { sessionId, source: filePath });
         } catch {
           continue;
         }
       }
     }
-    return bestMatch;
+    return matches.size === 1 ? matches.values().next().value : null;
   } catch {
     return null;
   }
@@ -158,7 +192,7 @@ function resolveSessionFromFile(agentType, opts = {}) {
     return resolveClaudeSessionFromFile(opts.pid);
   }
   if (agentType === "codex") {
-    return resolveCodexSessionFromFile(opts.cwd);
+    return resolveCodexSessionFromFile(opts.cwd, opts);
   }
   if (agentType === "kimi") {
     return resolveKimiSessionFromIndex(opts.cwd);
@@ -222,13 +256,13 @@ function scheduleProviderSessionResolve({
     }
 
     // 1. Try direct file read (fast, non-invasive)
-    const fileOpts = { pid: agentPid, cwd: agentCwd || projectRoot };
+    const fileOpts = { pid: agentPid, cwd: agentCwd || projectRoot, projectRoot, subscriberId };
     const fileResolved = await resolveSessionFromFileWithRetries(
       agentType, fileOpts, fileAttempts, fileIntervalMs,
     );
     if (cancelled) return;
     if (fileResolved && fileResolved.sessionId) {
-      persistProviderSession(projectRoot, subscriberId, fileResolved);
+      if (!persistProviderSession(projectRoot, subscriberId, fileResolved)) return;
       if (typeof onResolved === "function") {
         onResolved(subscriberId, fileResolved);
       }

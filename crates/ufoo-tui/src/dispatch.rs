@@ -23,7 +23,9 @@ pub fn dispatch(state: &mut AppState, action: Action) -> Vec<Effect> {
                     state.mark_dirty();
                 }
             }
-            if state.busy {
+            if state.busy
+                || (state.multi.active && state.multi.frames.values().any(|pane| pane.busy))
+            {
                 state.spinner_ticks = state.spinner_ticks.wrapping_add(1);
                 state.mark_dirty();
             }
@@ -62,6 +64,7 @@ pub fn dispatch(state: &mut AppState, action: Action) -> Vec<Effect> {
                 && matches!(state.multi.focus, MultiFocus::Agent)
                 && !state.multi.focus_agent_id.is_empty()
             {
+                leave_dashboard(state);
                 let session_id = state.multi.session_id.clone();
                 let agent_id = state.multi.focus_agent_id.clone();
                 state.mark_dirty();
@@ -99,6 +102,20 @@ pub fn dispatch(state: &mut AppState, action: Action) -> Vec<Effect> {
             maybe_request_completions(state)
         }
         Action::MouseClick { column, row } => {
+            if let Some((focus, index)) = crate::draw::footer_focus_at(state, column, row) {
+                state.focus = focus;
+                if let Some(index) = index {
+                    match focus {
+                        FocusPane::Agents => state.selected_agent = index as isize,
+                        FocusPane::Provider => state.selected_provider = index,
+                        FocusPane::Cron => state.selected_cron = index as isize,
+                        _ => {}
+                    }
+                }
+                state.rebuild_footer();
+                state.mark_dirty();
+                return Vec::new();
+            }
             // Top project bar: click a chip to switch (global mode).
             if state.show_project_bar() {
                 // Project bar is always row 0 of the frame.
@@ -128,15 +145,108 @@ pub fn dispatch(state: &mut AppState, action: Action) -> Vec<Effect> {
                     }
                 }
             }
+            if state.multi.active {
+                let input_top = state
+                    .multi
+                    .term_rows
+                    .saturating_sub(1 + crate::draw::prompt_height(state, state.multi.term_cols));
+                if row >= input_top && row < state.multi.term_rows.saturating_sub(1) {
+                    leave_dashboard(state);
+                    state.mark_dirty();
+                    return Vec::new();
+                }
+                if let Some(id) = multi_agent_at(state, column, row) {
+                    return set_multi_focus(state, Some(id));
+                }
+                if state
+                    .multi
+                    .chat_rect
+                    .map(|rect| contains_point(rect, column, row))
+                    .unwrap_or(false)
+                {
+                    return set_multi_focus(state, None);
+                }
+            }
             Vec::new()
         }
-        Action::MouseScroll { lines } => {
+        Action::MouseScroll { lines, column, row } => {
+            if state.multi.active {
+                let over_chat = state
+                    .multi
+                    .chat_rect
+                    .map(|rect| contains_point(rect, column, row))
+                    .unwrap_or(false);
+                let agent = multi_agent_at(state, column, row).or_else(|| {
+                    if !over_chat && matches!(state.multi.focus, MultiFocus::Agent) {
+                        Some(state.multi.focus_agent_id.clone())
+                    } else {
+                        None
+                    }
+                });
+                if let Some(id) = agent.filter(|id| !id.is_empty()) {
+                    let (offset, max_offset) = if let Some(pane) = state.multi.frames.get_mut(&id) {
+                        pane.scroll_offset = if lines >= 0 {
+                            pane.scroll_offset
+                                .saturating_add(lines as usize)
+                                .min(pane.scroll_max_off)
+                        } else {
+                            pane.scroll_offset
+                                .saturating_sub(lines.unsigned_abs() as usize)
+                        };
+                        (pane.scroll_offset, pane.scroll_max_off)
+                    } else {
+                        (0, 0)
+                    };
+                    state.mark_dirty();
+                    return vec![Effect::SendCommand {
+                        name: "multi.scroll".into(),
+                        request_id: state.alloc_request_id(),
+                        payload: json!({ "session_id": state.multi.session_id, "agent_id": id, "lines": lines, "offset": offset, "max_offset": max_offset }),
+                    }];
+                }
+            }
             scroll_by(state, lines as isize);
             state.mark_dirty();
             Vec::new()
         }
     };
     effects
+}
+
+fn contains_point(rect: (u16, u16, u16, u16), column: u16, row: u16) -> bool {
+    column >= rect.0
+        && column < rect.0.saturating_add(rect.2)
+        && row >= rect.1
+        && row < rect.1.saturating_add(rect.3)
+}
+
+fn multi_agent_at(state: &AppState, column: u16, row: u16) -> Option<String> {
+    state
+        .multi
+        .pane_rects
+        .iter()
+        .find(|(_, rect)| contains_point(**rect, column, row))
+        .map(|(id, _)| id.clone())
+}
+
+fn set_multi_focus(state: &mut AppState, agent: Option<String>) -> Vec<Effect> {
+    state.multi.focus = if agent.is_some() {
+        MultiFocus::Agent
+    } else {
+        MultiFocus::Chat
+    };
+    state.multi.focus_agent_id = agent.unwrap_or_default();
+    state.focus = FocusPane::Input;
+    state.completions.clear();
+    state.completion_suppressed = Some(state.prompt.text.clone());
+    state.mark_dirty();
+    vec![Effect::SendCommand {
+        name: "multi.focus".into(),
+        request_id: state.alloc_request_id(),
+        payload: json!({ "session_id": state.multi.session_id,
+            "target": if matches!(state.multi.focus, MultiFocus::Agent) { "agent" } else { "chat" },
+            "agent_id": state.multi.focus_agent_id }),
+    }]
 }
 
 fn check_seq_gap(state: &mut AppState, env: &Envelope) -> Vec<Effect> {
@@ -395,6 +505,12 @@ fn apply_named_payload(
                 .or_else(|| payload.get("status"))
                 .and_then(|v| v.as_str())
             {
+                if state.surface == "chat" {
+                    let lower = status.trim().to_ascii_lowercase();
+                    if lower.starts_with("target @") || lower.starts_with("target selected:") {
+                        return Vec::new();
+                    }
+                }
                 state.status = status.to_string();
             }
             if let Some(busy) = payload.get("busy").and_then(|v| v.as_bool()) {
@@ -428,6 +544,12 @@ fn apply_named_payload(
             Vec::new()
         }
         "completions.set" => {
+            if let Some(text) = payload.get("text").and_then(|value| value.as_str()) {
+                if text != state.prompt.text || state.completion_suppressed.as_deref() == Some(text)
+                {
+                    return Vec::new();
+                }
+            }
             state.completions = payload
                 .get("items")
                 .and_then(|v| v.as_array())
@@ -795,7 +917,12 @@ fn apply_task_queue_payload(state: &mut AppState, payload: &serde_json::Value) {
             .get("id")
             .and_then(|v| v.as_u64())
             .map(|id| id.to_string())
-            .or_else(|| active.get("id").and_then(|v| v.as_str()).map(str::to_string))
+            .or_else(|| {
+                active
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            })
             .unwrap_or_default();
         state.active_task_label = active
             .get("label")
@@ -819,9 +946,7 @@ fn apply_task_queue_payload(state: &mut AppState, payload: &serde_json::Value) {
         state.status_started = Some(Instant::now());
     } else if !queue_busy {
         state.status_started = None;
-        if state.status == "sending…"
-            || state.status == "working…"
-            || state.status == "cancelling…"
+        if state.status == "sending…" || state.status == "working…" || state.status == "cancelling…"
         {
             state.status = "ready".into();
         }
@@ -873,7 +998,7 @@ fn apply_multi_set(state: &mut AppState, payload: &serde_json::Value) -> Vec<Eff
                     let mode = item
                         .get("mode")
                         .and_then(|v| v.as_str())
-                        .unwrap_or("socket")
+                        .unwrap_or("internal")
                         .to_string();
                     Some(MultiPaneDesc {
                         agent_id,
@@ -939,19 +1064,25 @@ fn apply_multi_set(state: &mut AppState, payload: &serde_json::Value) -> Vec<Eff
             .unwrap_or("")
             .to_string();
         if target == "agent" && !agent_id.is_empty() && live_ids.contains(&agent_id) {
-            state.multi.suppress_agent_focus_until = None;
+            if !matches!(state.multi.focus, MultiFocus::Agent)
+                || state.multi.focus_agent_id != agent_id
+            {
+                state.focus = FocusPane::Input;
+            }
             state.multi.focus = MultiFocus::Agent;
             state.multi.focus_agent_id = agent_id;
         } else if target == "chat" {
+            if !matches!(state.multi.focus, MultiFocus::Chat) {
+                state.focus = FocusPane::Input;
+            }
             state.multi.focus = MultiFocus::Chat;
             state.multi.focus_agent_id.clear();
-            state.focus = FocusPane::Input;
         }
     }
     state.mark_dirty();
     // Only request viewport sizing on first enter or when the agent set
     // changes. Re-emitting on every daemon status → syncAgents storm bumps
-    // viewport_rev, drops in-flight frames, and makes Ctrl+W feel stuck.
+    // viewport_rev, drops in-flight frames, and makes focus switching feel stuck.
     if !previously_active || panes_changed {
         multi_viewport_effects(state)
     } else {
@@ -985,26 +1116,30 @@ fn apply_multi_frame(state: &mut AppState, payload: &serde_json::Value) {
     if agent_id.is_empty() {
         return;
     }
-    let label = payload
-        .get("label")
-        .and_then(|v| v.as_str())
-        .unwrap_or(agent_id.as_str())
-        .to_string();
-    let mode = payload
+    if payload
         .get("mode")
         .and_then(|v| v.as_str())
-        .unwrap_or("socket")
-        .to_string();
-    let lines: Vec<String> = payload
-        .get("lines")
+        .unwrap_or("internal")
+        != "internal"
+    {
+        return;
+    }
+    let entries = payload
+        .get("entries")
         .and_then(|v| v.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|v| v.as_str().map(str::to_string))
-                .collect()
-        })
+        .map(|rows| rows.iter().filter_map(entry_from_json).collect())
         .unwrap_or_default();
+    let source_scroll_offset = payload
+        .get("scroll_offset")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+    let previous = state.multi.frames.get(&agent_id);
+    let scroll_offset = previous
+        .filter(|pane| pane.source_scroll_offset == source_scroll_offset)
+        .map(|pane| pane.scroll_offset)
+        .unwrap_or(source_scroll_offset);
+    let rendered_rows = previous.map(|pane| pane.rendered_rows).unwrap_or(0);
+    let scroll_max_off = previous.map(|pane| pane.scroll_max_off).unwrap_or(0);
     let status = payload
         .get("status")
         .and_then(|v| v.as_str())
@@ -1018,74 +1153,62 @@ fn apply_multi_frame(state: &mut AppState, payload: &serde_json::Value) {
     state.multi.frames.insert(
         agent_id.clone(),
         MultiPaneFrame {
-            agent_id,
-            label,
-            mode,
-            lines,
+            entries,
+            busy: payload
+                .get("busy")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            usage: payload
+                .get("usage")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .into(),
+            plan: payload
+                .get("plan")
+                .and_then(|v| v.as_array())
+                .map(|rows| {
+                    rows.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            started_at: payload
+                .get("started_at")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+            rendered_rows,
+            scroll_max_off,
+            source_scroll_offset,
+            scroll_offset,
             status,
             input,
-            viewport_rev,
+            input_cursor: payload.get("cursor").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
         },
     );
     state.mark_dirty();
 }
 
-/// Layout mirroring paneLayout.js: left ≈ 1/3 chat, right = agent grid.
+/// Use the rendered child grid and padding for the Node terminal viewport.
 fn multi_agent_layout(width: u16, height: u16, count: usize) -> Vec<(u16, u16)> {
-    // Returns (inner_cols, inner_rows) per pane. Layout must match Rust
-    // draw.rs::layout_agent_panes.
     if count == 0 || width < 6 || height < 3 {
         return Vec::new();
     }
-    let chat_w = (width / 3).max(1);
+    let chat_w = (width / 3).max(4);
     let right_left = chat_w.saturating_add(1);
     let right_w = width.saturating_sub(right_left);
     if right_w < 4 {
         return Vec::new();
     }
-    if count == 1 {
-        let inner_w = right_w.saturating_sub(2).max(1);
-        let inner_h = height.saturating_sub(2).max(1);
-        return vec![(inner_w, inner_h)];
-    }
-    if count == 2 {
-        let h1 = height / 2;
-        let h2 = height - h1;
-        let inner_w = right_w.saturating_sub(2).max(1);
-        return vec![
-            (inner_w, h1.saturating_sub(2).max(1)),
-            (inner_w, h2.saturating_sub(2).max(1)),
-        ];
-    }
-    let rows_ct = ((count + 1) / 2) as u16;
-    let row_h = height / rows_ct;
-    let mut out = Vec::with_capacity(count);
-    let mut placed = 0usize;
-    for row in 0..rows_ct {
-        let last_row = row == rows_ct - 1;
-        let actual_h = if last_row {
-            height - row * row_h
-        } else {
-            row_h
-        };
-        let remaining = count - placed;
-        let odd_first = remaining % 2 == 1 && row == 0 && count % 2 == 1;
-        if odd_first {
-            let inner_w = right_w.saturating_sub(2).max(1);
-            let inner_h = actual_h.saturating_sub(2).max(1);
-            out.push((inner_w, inner_h));
-            placed += 1;
-        } else {
-            let half_w = right_w / 2;
-            let inner_left = half_w.saturating_sub(2).max(1);
-            let inner_right = (right_w - half_w).saturating_sub(3).max(1);
-            let inner_h = actual_h.saturating_sub(2).max(1);
-            out.push((inner_left, inner_h));
-            out.push((inner_right, inner_h));
-            placed += 2;
-        }
-    }
-    out
+    crate::draw::layout_agent_panes(0, 0, right_w, height, count)
+        .into_iter()
+        .map(|area| {
+            let inner = ratatui::widgets::Block::default()
+                .borders(ratatui::widgets::Borders::ALL)
+                .inner(area);
+            let content = crate::draw::pane_content_area(inner);
+            (content.width.max(1), content.height.max(1))
+        })
+        .collect()
 }
 
 /// Public wrapper so the chat loop can trigger a viewport update on Resize
@@ -1108,8 +1231,12 @@ fn multi_viewport_effects(state: &mut AppState) -> Vec<Effect> {
     } else {
         state.multi.term_rows
     };
-    // Reserve rows for chrome (project bar + status + prompt + footer + gutters).
-    let content_h = term_rows.saturating_sub(6).max(3);
+    // Chat status is embedded in borders; standalone ucode retains its row.
+    let status_rows = if state.surface == "chat" { 0 } else { 1 };
+    let project_rows = if state.show_project_bar() { 1 } else { 0 };
+    let content_h = term_rows
+        .saturating_sub(4 + project_rows + status_rows)
+        .max(3);
     let sizes = multi_agent_layout(term_cols, content_h, state.multi.panes.len());
     if sizes.is_empty() {
         return Vec::new();
@@ -1126,6 +1253,7 @@ fn multi_viewport_effects(state: &mut AppState) -> Vec<Effect> {
                     "agent_id": desc.agent_id,
                     "cols": *cols,
                     "rows": *rows,
+                    "input_cols": term_cols.saturating_sub(4).max(1),
                 })
             })
         })
@@ -1177,17 +1305,9 @@ fn apply_agents(state: &mut AppState, payload: &serde_json::Value) {
             };
         }
     }
-    if state.surface == "ucode" {
-        // The ucode footer is composed from independent state (agents, usage,
-        // attachments, loop status). A periodic agents.snapshot must not
-        // replace the whole row with its agents-only fallback and erase the
-        // context meter that usage.set already installed.
-        state.rebuild_footer();
-    } else if let Some(footer) = payload.get("footer").and_then(|v| v.as_str()) {
-        state.footer = footer.to_string();
-    } else {
-        state.rebuild_footer();
-    }
+    // The renderer owns the caption and focus marks. Periodic roster payloads
+    // carry plain labels and must not replace the canonical Agents footer.
+    state.rebuild_footer();
 }
 
 fn entry_from_json(value: &serde_json::Value) -> Option<ScrollbackEntry> {
@@ -1229,8 +1349,25 @@ fn entry_from_json(value: &serde_json::Value) -> Option<ScrollbackEntry> {
 }
 
 fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
+    // Layout switching must stay reachable while a child owns the keyboard.
+    // Legacy Ctrl+M is indistinguishable from Enter. Only claim the explicit
+    // modified letter reported by an enhanced keyboard protocol.
+    let open_multi = key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key.code, KeyCode::Char('m' | 'M'));
+    if state.surface == "chat" && (open_multi || is_ctrl_letter(key, 't')) {
+        return vec![Effect::SendCommand {
+            name: if open_multi {
+                "multi.open"
+            } else {
+                "multi.toggle"
+            }
+            .into(),
+            request_id: state.alloc_request_id(),
+            payload: json!({ "session_id": state.multi.session_id }),
+        }];
+    }
     // Multi-window intercepts run before the shared Ctrl+C exit and
-    // dashboard routing so /multi can own Ctrl+Q / Ctrl+W and raw keys
+    // dashboard routing so /multi can own Ctrl+Q / Tab and raw keys
     // when agent-focused.
     if state.multi.active {
         if let Some(effects) = dispatch_multi_key(state, key) {
@@ -1276,6 +1413,9 @@ fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
 
     match key.code {
         KeyCode::Tab => {
+            if state.surface == "chat" {
+                return cycle_agent_selection(state);
+            }
             state.focus = next_tab_focus(state);
             if state.focus == FocusPane::Agents
                 && state.selected_agent < 0
@@ -1296,7 +1436,8 @@ fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
                 }];
             }
             // Esc layers (Ink parity): busy cancel → completions → @target →
-            // project return / exit. Do NOT wipe the draft.
+            // project return. The chat workspace is the root of the back stack;
+            // Esc at that root never exits or wipes the draft.
             if !state.completions.is_empty() {
                 state.completions.clear();
                 state.completion_suppressed = Some(state.prompt.text.clone());
@@ -1307,7 +1448,6 @@ fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
                 state.prompt_prefix = "› ".into();
                 state.selected_agent = -1;
                 state.rebuild_footer();
-                state.status = "ready".into();
                 return vec![Effect::SendCommand {
                     name: "agent.select".into(),
                     request_id: state.alloc_request_id(),
@@ -1321,7 +1461,7 @@ fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
                     request_id: state.alloc_request_id(),
                     payload: json!({}),
                 }]
-            } else if state.prompt.text.is_empty() {
+            } else if state.surface != "chat" && state.prompt.text.is_empty() {
                 state.exit_requested = true;
                 vec![
                     Effect::SendCommand {
@@ -1332,7 +1472,7 @@ fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
                     Effect::Exit(0),
                 ]
             } else {
-                // Draft preserved — same as Ink onCancel.
+                // Root reached; preserve both the workspace and any draft.
                 Vec::new()
             }
         }
@@ -1592,7 +1732,7 @@ fn dispatch_completions(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
 }
 
 fn lock_selected_agent(state: &mut AppState) -> Option<Effect> {
-    if state.selected_agent < 0 {
+    if state.selected_agent < 0 || state.multi.active {
         return None;
     }
     let agent = state.agents.get(state.selected_agent as usize)?;
@@ -1610,6 +1750,7 @@ fn lock_selected_agent(state: &mut AppState) -> Option<Effect> {
 /// Dashboard stack: projects → agents → cron.
 fn dashboard_up(state: &mut AppState) {
     state.focus = match state.focus {
+        FocusPane::Cron if state.surface == "chat" => FocusPane::Provider,
         FocusPane::Cron => {
             if !state.agents.is_empty() {
                 if state.selected_agent < 0 {
@@ -1630,8 +1771,8 @@ fn dashboard_up(state: &mut AppState) {
             }
         }
         FocusPane::Projects => FocusPane::Input,
-        // Mode/provider removed from dashboard; escape to input.
-        FocusPane::Mode | FocusPane::Provider => FocusPane::Input,
+        FocusPane::Provider => FocusPane::Agents,
+        FocusPane::Mode => FocusPane::Input,
         _ => FocusPane::Input,
     };
     state.rebuild_footer();
@@ -1653,9 +1794,10 @@ fn dashboard_down(state: &mut AppState) {
             }
             FocusPane::Agents
         }
-        FocusPane::Agents => FocusPane::Cron,
+        FocusPane::Agents => FocusPane::Provider,
+        FocusPane::Provider => FocusPane::Cron,
         FocusPane::Cron => FocusPane::Input,
-        FocusPane::Mode | FocusPane::Provider => FocusPane::Input,
+        FocusPane::Mode => FocusPane::Input,
         _ => state.focus,
     };
     state.rebuild_footer();
@@ -1681,6 +1823,9 @@ fn dispatch_agents(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             Vec::new()
         }
         KeyCode::Tab => {
+            if state.surface == "chat" {
+                return cycle_agent_selection(state);
+            }
             state.focus = next_tab_focus(state);
             state.rebuild_footer();
             Vec::new()
@@ -1737,6 +1882,21 @@ fn dispatch_agents(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             ]
         }
         KeyCode::Enter => {
+            if state.multi.active {
+                leave_dashboard(state);
+                return state
+                    .agents
+                    .get(state.selected_agent.max(0) as usize)
+                    .cloned()
+                    .map(|agent| {
+                        vec![Effect::SendCommand {
+                            name: "agent.open".into(),
+                            request_id: state.alloc_request_id(),
+                            payload: json!({ "agent_id": agent.id, "label": agent.label }),
+                        }]
+                    })
+                    .unwrap_or_default();
+            }
             // Enter only locks ›@target. Activate is ›@xxx + empty Enter
             // in the prompt (input.submit → tryActivateTargetAgent).
             state.focus = FocusPane::Input;
@@ -1747,6 +1907,10 @@ fn dispatch_agents(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             effects
         }
         KeyCode::Char(ch) => {
+            if state.multi.active {
+                leave_dashboard(state);
+                return dispatch_key(state, key);
+            }
             // Typing while browsing agents locks the highlighted ›@target
             // (Ink parity: agentSelectionMode keeps target while drafting).
             state.focus = FocusPane::Input;
@@ -1762,9 +1926,27 @@ fn dispatch_agents(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
     }
 }
 
+fn cycle_agent_selection(state: &mut AppState) -> Vec<Effect> {
+    if state.agents.is_empty() {
+        state.focus = FocusPane::Input;
+        state.selected_agent = -1;
+    } else {
+        state.selected_agent = if state.focus == FocusPane::Agents && state.selected_agent >= 0 {
+            (state.selected_agent + 1) % state.agents.len() as isize
+        } else {
+            0
+        };
+        state.focus = FocusPane::Agents;
+    }
+    state.completions.clear();
+    state.completion_suppressed = Some(state.prompt.text.clone());
+    state.rebuild_footer();
+    Vec::new()
+}
+
 fn next_tab_focus(state: &AppState) -> FocusPane {
     // Global projects live in the top bar.
-    // Bottom cycle: agents → cron.
+    // Bottom cycle: agents → provider settings → cron (ucode: agents only).
     match state.focus {
         FocusPane::Input => {
             if state.show_project_bar() {
@@ -1776,12 +1958,13 @@ fn next_tab_focus(state: &AppState) -> FocusPane {
         FocusPane::Projects => FocusPane::Agents,
         FocusPane::Agents => {
             if state.surface != "ucode" {
-                FocusPane::Cron
+                FocusPane::Provider
             } else {
                 FocusPane::Input
             }
         }
-        FocusPane::Cron | FocusPane::Mode | FocusPane::Provider => FocusPane::Input,
+        FocusPane::Provider => FocusPane::Cron,
+        FocusPane::Cron | FocusPane::Mode => FocusPane::Input,
         FocusPane::Completions | FocusPane::Interaction | FocusPane::AgentView => FocusPane::Input,
     }
 }
@@ -1838,6 +2021,10 @@ fn dispatch_mode(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             }]
         }
         KeyCode::Char(ch) => {
+            if state.multi.active {
+                leave_dashboard(state);
+                return dispatch_key(state, key);
+            }
             state.focus = FocusPane::Input;
             state.prompt.insert_char(ch);
             maybe_request_completions(state)
@@ -1898,6 +2085,10 @@ fn dispatch_provider(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             }]
         }
         KeyCode::Char(ch) => {
+            if state.multi.active {
+                leave_dashboard(state);
+                return dispatch_key(state, key);
+            }
             state.focus = FocusPane::Input;
             state.prompt.insert_char(ch);
             maybe_request_completions(state)
@@ -1980,6 +2171,10 @@ fn dispatch_projects(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             Vec::new()
         }
         KeyCode::Char(ch) => {
+            if state.multi.active {
+                leave_dashboard(state);
+                return dispatch_key(state, key);
+            }
             state.focus = FocusPane::Input;
             state.prompt.insert_char(ch);
             maybe_request_completions(state)
@@ -2042,6 +2237,10 @@ fn dispatch_cron(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
             Vec::new()
         }
         KeyCode::Char(ch) => {
+            if state.multi.active {
+                leave_dashboard(state);
+                return dispatch_key(state, key);
+            }
             state.focus = FocusPane::Input;
             state.prompt.insert_char(ch);
             maybe_request_completions(state)
@@ -2296,17 +2495,23 @@ fn submit_prompt(state: &mut AppState) -> Vec<Effect> {
         state.selected_agent = -1;
     }
     state.focus = FocusPane::Input;
-    state.status = if text.trim().is_empty() {
-        "activating…".into()
-    } else {
-        "sending…".into()
-    };
-    let was_busy = state.busy;
-    state.busy = !text.trim().is_empty() || state.attachment_count > 0;
-    if state.busy && (!was_busy || state.status_started.is_none()) {
-        state.status_started = Some(Instant::now());
+    let ui_only = state.surface == "chat"
+        && (has_target
+            || text.trim_start().starts_with('@')
+            || text.trim().split_whitespace().next() == Some("/multi"));
+    if !ui_only {
+        state.status = if text.trim().is_empty() {
+            "activating…".into()
+        } else {
+            "sending…".into()
+        };
+        let was_busy = state.busy;
+        state.busy = !text.trim().is_empty() || state.attachment_count > 0;
+        if state.busy && (!was_busy || state.status_started.is_none()) {
+            state.status_started = Some(Instant::now());
+        }
+        state.status_clear_at = None;
     }
-    state.status_clear_at = None;
     let attachment_count = state.attachment_count;
     state.attachment_count = 0;
     state.attachment_labels.clear();
@@ -2329,10 +2534,46 @@ fn submit_prompt(state: &mut AppState) -> Vec<Effect> {
 /// None to fall through to normal chat dispatch (e.g. MultiFocus::Chat with
 /// non-multi keys).
 fn dispatch_multi_key(state: &mut AppState, key: KeyEvent) -> Option<Vec<Effect>> {
+    // Dashboard focus is independent of the selected agent. Its controls must
+    // handle keys before child input, and Esc must return to that child's draft.
+    if matches!(
+        state.focus,
+        FocusPane::Agents
+            | FocusPane::Mode
+            | FocusPane::Provider
+            | FocusPane::Cron
+            | FocusPane::Projects
+    ) {
+        return None;
+    }
+    if key.code == KeyCode::Down
+        && key.modifiers.is_empty()
+        && matches!(state.multi.focus, MultiFocus::Agent)
+        && state
+            .multi
+            .frames
+            .get(&state.multi.focus_agent_id)
+            .is_none_or(|pane| pane.input.is_empty())
+    {
+        state.focus = FocusPane::Agents;
+        state.selected_agent = state
+            .agents
+            .iter()
+            .position(|agent| agent.id == state.multi.focus_agent_id)
+            .map(|index| index as isize)
+            .unwrap_or(if state.agents.is_empty() { -1 } else { 0 });
+        state.rebuild_footer();
+        return Some(Vec::new());
+    }
+    // Esc unwinds child focus, then the split, before cancellation or raw input.
+    let escape = key.code == KeyCode::Esc && key.modifiers.is_empty();
+    if escape && matches!(state.multi.focus, MultiFocus::Agent) {
+        return Some(set_multi_focus(state, None));
+    }
     // Ctrl+Q — exit multi. Always consumed.
     // Some terminals deliver Ctrl+Q as CONTROL+'q'; others as raw \x11 with
     // no CONTROL modifier — both must exit, never fall through as agent RAW.
-    if is_ctrl_letter(key, 'q') {
+    if escape || is_ctrl_letter(key, 'q') {
         let session_id = state.multi.session_id.clone();
         return Some(vec![Effect::SendCommand {
             name: "multi.exit".into(),
@@ -2340,13 +2581,22 @@ fn dispatch_multi_key(state: &mut AppState, key: KeyEvent) -> Option<Vec<Effect>
             payload: json!({ "session_id": session_id }),
         }]);
     }
-    // Ctrl+W — cycle focus Chat → agent0 → agent1 → … → Chat.
-    // Same dual encoding as Ctrl+Q (\x17). Without this, agent-focused Ctrl+W
-    // was forwarded as RAW into the PTY and could never return to ufoo chat.
-    if is_ctrl_letter(key, 'w') {
+    // Tab always cycles the visible panes, including when a child owns input.
+    if key.code == KeyCode::Tab
+        && !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+    {
         return Some(cycle_multi_focus(state));
     }
 
+    if matches!(state.multi.focus, MultiFocus::Agent) && is_ctrl_letter(key, 'o') {
+        return Some(vec![Effect::SendCommand {
+            name: "multi.expand".into(),
+            request_id: state.alloc_request_id(),
+            payload: json!({ "session_id": state.multi.session_id, "agent_id": state.multi.focus_agent_id }),
+        }]);
+    }
     // Agent-focused: encode as raw bytes and ship to Node.
     if matches!(state.multi.focus, MultiFocus::Agent) && !state.multi.focus_agent_id.is_empty() {
         if let Some(bytes) = encode_key_to_raw(key) {
@@ -2368,7 +2618,7 @@ fn dispatch_multi_key(state: &mut AppState, key: KeyEvent) -> Option<Vec<Effect>
     None
 }
 
-/// True for CONTROL+letter and for the C0 control byte (e.g. Ctrl+W → \x17).
+/// True for CONTROL+letter and for the C0 control byte (e.g. Ctrl+Q → \x11).
 fn is_ctrl_letter(key: KeyEvent, letter: char) -> bool {
     let lower = letter.to_ascii_lowercase();
     if !lower.is_ascii_alphabetic() {
@@ -2385,23 +2635,7 @@ fn is_ctrl_letter(key: KeyEvent, letter: char) -> bool {
 }
 
 fn cycle_multi_focus(state: &mut AppState) -> Vec<Effect> {
-    use std::time::{Duration, Instant};
-
     let panes = state.multi.panes.clone();
-    let session_id = state.multi.session_id.clone();
-
-    // Duplicate Ctrl+W encodings (CONTROL+'w' then bare \x17) arrive as two
-    // Press events a few ms apart. Without this guard the ring does
-    // lastAgent→Chat→agent0 in one keypress and it feels impossible to stay
-    // on the ufoo chat input.
-    if matches!(state.multi.focus, MultiFocus::Chat) {
-        if let Some(until) = state.multi.suppress_agent_focus_until {
-            if Instant::now() < until {
-                return Vec::new();
-            }
-            state.multi.suppress_agent_focus_until = None;
-        }
-    }
 
     let (next_focus, next_agent) = match state.multi.focus {
         MultiFocus::Chat if !panes.is_empty() => (MultiFocus::Agent, panes[0].agent_id.clone()),
@@ -2420,34 +2654,14 @@ fn cycle_multi_focus(state: &mut AppState) -> Vec<Effect> {
         }
         _ => (MultiFocus::Chat, String::new()),
     };
-    state.multi.focus = next_focus;
-    state.multi.focus_agent_id = next_agent.clone();
-    if matches!(next_focus, MultiFocus::Chat) {
-        state.focus = FocusPane::Input;
-        state.multi.suppress_agent_focus_until = Some(Instant::now() + Duration::from_millis(200));
-    } else {
-        state.multi.suppress_agent_focus_until = None;
-    }
-    state.mark_dirty();
-    let target = if matches!(next_focus, MultiFocus::Agent) {
-        "agent"
-    } else {
-        "chat"
-    };
-    state.status = if target == "agent" {
-        format!("multi · agent {next_agent}")
-    } else {
-        "multi · chat".to_string()
-    };
-    vec![Effect::SendCommand {
-        name: "multi.focus".into(),
-        request_id: state.alloc_request_id(),
-        payload: json!({
-            "session_id": session_id,
-            "target": target,
-            "agent_id": next_agent,
-        }),
-    }]
+    set_multi_focus(
+        state,
+        if matches!(next_focus, MultiFocus::Agent) {
+            Some(next_agent)
+        } else {
+            None
+        },
+    )
 }
 
 fn encode_key_to_raw(key: KeyEvent) -> Option<String> {
@@ -2474,7 +2688,17 @@ fn encode_key_to_raw(key: KeyEvent) -> Option<String> {
             }
             Some(ch.to_string())
         }
-        KeyCode::Enter => Some("\r".into()),
+        KeyCode::Enter => Some(
+            if key
+                .modifiers
+                .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT)
+            {
+                "\n"
+            } else {
+                "\r"
+            }
+            .into(),
+        ),
         KeyCode::Backspace => Some("\x7f".into()),
         KeyCode::Esc => Some("\x1b".into()),
         KeyCode::Tab => Some("\t".into()),
@@ -2533,6 +2757,562 @@ fn scroll_by(state: &mut AppState, lines: isize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn escape_unwinds_dashboard_before_child_focus_and_split_layout() {
+        for kind in ["side", "multi"] {
+            for dashboard in [FocusPane::Agents, FocusPane::Provider, FocusPane::Cron] {
+                let mut state = AppState::new("ufoo", "chat");
+                state.multi.active = true;
+                state.multi.kind = kind.into();
+                state.multi.session_id = "session".into();
+                state.multi.focus = MultiFocus::Agent;
+                state.multi.focus_agent_id = "child".into();
+                state.focus = dashboard;
+                state.busy = true;
+                state.prompt.set_text("main draft".into());
+                let escape = |state: &mut AppState| {
+                    dispatch(
+                        state,
+                        Action::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+                    )
+                };
+                let effects = escape(&mut state);
+                assert!(
+                    effects.is_empty(),
+                    "dashboard Esc must not switch agent, close the split or cancel main work"
+                );
+                assert_eq!(state.focus, FocusPane::Input);
+                assert!(state.multi.active);
+                assert_eq!(state.multi.focus_agent_id, "child");
+                let effects = escape(&mut state);
+                assert!(
+                    matches!(&effects[0], Effect::SendCommand { name, payload, .. } if name == "multi.focus" && payload["target"] == "chat")
+                );
+                assert!(state.multi.active);
+                assert_eq!(state.focus, FocusPane::Input);
+                let effects = escape(&mut state);
+                assert!(
+                    matches!(&effects[0], Effect::SendCommand { name, .. } if name == "multi.exit")
+                );
+                assert_eq!(state.prompt.text, "main draft");
+            }
+        }
+    }
+
+    #[test]
+    fn child_focus_can_open_the_dashboard_and_settings_without_redirecting_keys_or_drafts() {
+        for kind in ["side", "multi"] {
+            let mut state = AppState::new("ufoo", "chat");
+            state.multi.active = true;
+            state.multi.kind = kind.into();
+            state.multi.session_id = "session".into();
+            state.multi.term_cols = 120;
+            state.multi.term_rows = 40;
+            state.multi.focus = MultiFocus::Agent;
+            state.multi.focus_agent_id = "agent-a".into();
+            state.prompt.set_text("main draft".into());
+            state.status = "Generating…".into();
+            state.busy = true;
+            apply_agents(
+                &mut state,
+                &json!({ "agents": [
+                { "id": "agent-a", "label": "coder" }, { "id": "agent-b", "label": "reviewer" }
+            ] }),
+            );
+            state
+                .multi
+                .frames
+                .insert("agent-a".into(), MultiPaneFrame::default());
+            let press = |state: &mut AppState, code| {
+                dispatch(state, Action::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+            };
+            assert!(press(&mut state, KeyCode::Down).is_empty());
+            assert_eq!(state.focus, FocusPane::Agents);
+            assert_eq!(state.selected_agent, 0);
+            assert!(press(&mut state, KeyCode::Right).is_empty());
+            assert_eq!(state.selected_agent, 1);
+            assert_eq!(state.prompt_prefix, "› ");
+            press(&mut state, KeyCode::Down);
+            assert_eq!(state.focus, FocusPane::Provider);
+            let old_provider = state.selected_provider;
+            assert!(press(&mut state, KeyCode::Right).is_empty());
+            assert_ne!(state.selected_provider, old_provider);
+            press(&mut state, KeyCode::Down);
+            assert_eq!(state.focus, FocusPane::Cron);
+            press(&mut state, KeyCode::Up);
+            assert_eq!(state.focus, FocusPane::Provider);
+            press(&mut state, KeyCode::Esc);
+            assert_eq!(state.focus, FocusPane::Input);
+            assert_eq!(state.multi.focus_agent_id, "agent-a");
+            let effects = press(&mut state, KeyCode::Char('a'));
+            match &effects[0] {
+                Effect::SendCommand { name, payload, .. } => {
+                    assert_eq!(name, "multi.raw");
+                    assert_eq!(payload["agent_id"], "agent-a");
+                    assert_eq!(payload["data"], "a");
+                }
+                _ => panic!("typing must return to the child"),
+            }
+            assert_eq!(state.prompt.text, "main draft");
+            assert_eq!(state.status, "Generating…");
+            assert!(state.busy);
+            state.multi.frames.get_mut("agent-a").unwrap().input = "child draft".into();
+            assert!(press(&mut state, KeyCode::Down).iter().any(
+                |effect| matches!(effect, Effect::SendCommand { name, .. } if name == "multi.raw")
+            ));
+            dispatch(&mut state, Action::MouseClick { column: 3, row: 39 });
+            assert_eq!(state.focus, FocusPane::Agents);
+            press(&mut state, KeyCode::Right);
+            let effects = press(&mut state, KeyCode::Enter);
+            match &effects[0] {
+                Effect::SendCommand { name, payload, .. } => {
+                    assert_eq!(name, "agent.open");
+                    assert_eq!(payload["agent_id"], "agent-b");
+                }
+                _ => panic!("agent selection must open the selected internal agent"),
+            }
+            assert_eq!(state.multi.frames["agent-a"].input, "child draft");
+            assert_eq!(state.prompt.text, "main draft");
+            let provider_col = state.footer.rfind("codex").unwrap() as u16 + 1;
+            dispatch(
+                &mut state,
+                Action::MouseClick {
+                    column: provider_col,
+                    row: 39,
+                },
+            );
+            assert_eq!(state.focus, FocusPane::Provider);
+            let effects = press(&mut state, KeyCode::Enter);
+            assert!(effects.iter().any(|effect| matches!(effect, Effect::SendCommand { name, .. } if name == "settings.set")));
+            dispatch(&mut state, Action::MouseClick { column: 3, row: 39 });
+            assert_eq!(state.focus, FocusPane::Agents);
+            dispatch(&mut state, Action::MouseClick { column: 3, row: 37 });
+            assert_eq!(state.focus, FocusPane::Input);
+            assert_eq!(state.multi.focus_agent_id, "agent-a");
+            dispatch(&mut state, Action::MouseClick { column: 3, row: 39 });
+            let effects = dispatch(&mut state, Action::Paste("paste".into()));
+            assert_eq!(state.focus, FocusPane::Input);
+            assert!(effects.iter().any(|effect| matches!(effect, Effect::SendCommand { name, payload, .. } if name == "multi.raw" && payload["data"] == "paste")));
+            assert_eq!(state.prompt.text, "main draft");
+        }
+    }
+
+    #[test]
+    fn selecting_targets_and_switching_layouts_preserve_the_main_agents_own_status() {
+        for (prefix, draft) in [
+            ("›@coder ", ""),
+            ("›@coder ", "child task"),
+            ("› ", "@coder"),
+            ("› ", "/multi"),
+        ] {
+            let mut state = AppState::new("ufoo", "chat");
+            state.status = "Reading file…".into();
+            state.busy = true;
+            let started = Instant::now();
+            state.status_started = Some(started);
+            state.prompt_prefix = prefix.into();
+            state.prompt.set_text(draft.into());
+            let effects = submit_prompt(&mut state);
+            assert_eq!(effects.len(), 1);
+            assert_eq!(state.status, "Reading file…");
+            assert!(state.busy);
+            assert_eq!(state.status_started, Some(started));
+            for text in ["target @coder", "Target selected: @coder"] {
+                apply_named_payload(
+                    &mut state,
+                    "status.set",
+                    &json!({ "text": text, "busy": false }),
+                );
+                assert_eq!(state.status, "Reading file…");
+                assert!(state.busy);
+            }
+            state.multi.active = true;
+            set_multi_focus(&mut state, Some("child".into()));
+            set_multi_focus(&mut state, None);
+            assert_eq!(state.status, "Reading file…");
+            assert!(state.busy);
+            assert_eq!(state.status_started, Some(started));
+        }
+    }
+
+    #[test]
+    fn periodic_multi_updates_do_not_remove_dashboard_focus() {
+        for target in ["agent", "chat"] {
+            let mut state = AppState::new("ufoo", "chat");
+            let payload = json!({ "active": true, "session_id": "session", "kind": "multi", "panes": [
+                { "agent_id": "child", "label": "coder", "mode": "internal" }
+            ], "focus": { "target": target, "agent_id": "child" } });
+            apply_multi_set(&mut state, &payload);
+            state.focus = FocusPane::Provider;
+            apply_multi_set(&mut state, &payload);
+            assert_eq!(state.focus, FocusPane::Provider);
+        }
+    }
+
+    #[test]
+    fn esc_at_chat_root_never_exits_with_or_without_a_draft() {
+        let mut state = AppState::new("ufoo", "chat");
+        for draft in ["", "unfinished message"] {
+            state.prompt.text = draft.into();
+            for _ in 0..3 {
+                let effects = dispatch(
+                    &mut state,
+                    Action::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+                );
+                assert!(effects.is_empty());
+                assert!(!state.exit_requested);
+                assert_eq!(state.prompt.text, draft);
+            }
+        }
+        let effects = dispatch(
+            &mut state,
+            Action::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        );
+        assert!(state.exit_requested);
+        assert!(effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Exit(0))));
+    }
+
+    fn press_tab(state: &mut AppState) -> Vec<Effect> {
+        dispatch(
+            state,
+            Action::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+        )
+    }
+
+    #[test]
+    fn tab_cycles_visible_panes_without_swallowing_rapid_presses_or_editing_drafts() {
+        for kind in ["side", "multi"] {
+            let mut state = AppState::new("ufoo", "chat");
+            state.prompt.set_text("main draft".into());
+            state.status = "Generating…".into();
+            state.busy = true;
+            state.status_started = Some(Instant::now());
+            let started = state.status_started;
+            state.multi.active = true;
+            state.multi.kind = kind.into();
+            state.multi.session_id = "session".into();
+            let ids = if kind == "side" {
+                vec!["agent-b"]
+            } else {
+                vec!["agent-a", "agent-b"]
+            };
+            state.multi.panes = ids
+                .iter()
+                .map(|id| MultiPaneDesc {
+                    agent_id: (*id).into(),
+                    mode: "internal".into(),
+                    ..Default::default()
+                })
+                .collect();
+            let expected = if kind == "side" {
+                vec!["agent-b", "", "agent-b", ""]
+            } else {
+                vec!["agent-a", "agent-b", "", "agent-a", "agent-b", ""]
+            };
+            for id in expected {
+                let effects = press_tab(&mut state);
+                assert_eq!(effects.len(), 1);
+                match &effects[0] {
+                    Effect::SendCommand { name, payload, .. } => {
+                        assert_eq!(name, "multi.focus");
+                        assert_eq!(payload["session_id"], "session");
+                        assert_eq!(payload["agent_id"], id);
+                        assert_eq!(
+                            payload["target"],
+                            if id.is_empty() { "chat" } else { "agent" }
+                        );
+                    }
+                    _ => panic!("Tab must change workspace focus"),
+                }
+                assert_eq!(state.multi.focus_agent_id, id);
+                assert_eq!(state.focus, FocusPane::Input);
+                assert_eq!(state.prompt.text, "main draft");
+                assert_eq!(state.status, "Generating…");
+                assert!(state.busy);
+                assert_eq!(state.status_started, started);
+            }
+            press_tab(&mut state);
+            let effects = dispatch(
+                &mut state,
+                Action::Key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL)),
+            );
+            match &effects[0] {
+                Effect::SendCommand { name, payload, .. } => {
+                    assert_eq!(name, "multi.raw");
+                    assert_eq!(payload["data"], "\x17");
+                }
+                _ => panic!("Ctrl+W must no longer change workspace focus"),
+            }
+        }
+    }
+
+    #[test]
+    fn main_only_tab_starts_at_first_agent_cycles_and_keeps_later_selections_visible() {
+        let mut state = AppState::new("ufoo", "chat");
+        let agents: Vec<_> = (0..8)
+            .map(|i| json!({ "id": format!("agent-{i}"), "label": format!("agent-{i}") }))
+            .collect();
+        apply_agents(&mut state, &json!({ "agents": agents }));
+        state.selected_agent = 5;
+        state.prompt.set_text("unfinished draft".into());
+        state.apply_projects_payload(&json!({
+            "global_mode": true, "projects": [{ "root": "/tmp/project", "label": "project" }]
+        }));
+        assert!(state.show_project_bar());
+        for i in (0..8).chain([0]) {
+            assert!(press_tab(&mut state).is_empty());
+            assert_eq!(state.focus, FocusPane::Agents);
+            assert_eq!(state.selected_agent, i);
+            assert!(state.footer.contains(&format!("[@agent-{i}]")));
+            apply_agents(
+                &mut state,
+                &json!({ "agents": agents, "footer": "generic status" }),
+            );
+            assert!(state.footer.contains(&format!("[@agent-{i}]")));
+            assert_eq!(state.prompt.text, "unfinished draft");
+        }
+        dispatch(
+            &mut state,
+            Action::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        );
+        assert_eq!(state.focus, FocusPane::Input);
+        state.selected_agent = 6;
+        press_tab(&mut state);
+        assert_eq!(state.selected_agent, 0);
+    }
+
+    #[test]
+    fn tab_handles_empty_agents_and_preserves_main_completion_and_ucode_navigation() {
+        let mut state = AppState::new("ufoo", "chat");
+        press_tab(&mut state);
+        assert_eq!(state.focus, FocusPane::Input);
+        assert_eq!(state.selected_agent, -1);
+        state.prompt.set_text("/mul".into());
+        apply_named_payload(
+            &mut state,
+            "completions.set",
+            &json!({
+                "text": "/mul", "items": [{ "label": "/multi", "replace": "/multi " }]
+            }),
+        );
+        press_tab(&mut state);
+        assert_eq!(state.prompt.text, "/multi ");
+        assert_eq!(state.focus, FocusPane::Input);
+        state.multi.active = true;
+        state.multi.session_id = "session".into();
+        state.multi.panes = vec![MultiPaneDesc {
+            agent_id: "child".into(),
+            ..Default::default()
+        }];
+        apply_named_payload(
+            &mut state,
+            "completions.set",
+            &json!({
+                "text": "/multi ", "items": [{ "label": "/multi off", "replace": "/multi off " }]
+            }),
+        );
+        press_tab(&mut state);
+        assert_eq!(state.multi.focus_agent_id, "child");
+        assert_eq!(state.prompt.text, "/multi ");
+        apply_named_payload(
+            &mut state,
+            "completions.set",
+            &json!({
+                "text": "/multi ", "items": [{ "label": "/multi off", "replace": "/multi off " }]
+            }),
+        );
+        assert!(state.completions.is_empty());
+        assert_eq!(state.focus, FocusPane::Input);
+
+        let mut ucode = AppState::new("ucode", "ucode");
+        press_tab(&mut ucode);
+        assert_eq!(ucode.focus, FocusPane::Agents);
+        press_tab(&mut ucode);
+        assert_eq!(ucode.focus, FocusPane::Input);
+    }
+
+    #[test]
+    fn late_completion_responses_cannot_take_focus_after_typing_or_submitting_a_layout_command() {
+        let mut state = AppState::new("ufoo", "chat");
+        state.prompt.text = "/multi @coder".into();
+        apply_named_payload(
+            &mut state,
+            "completions.set",
+            &json!({
+                "text": "/multi ", "items": [{ "label": "/multi off", "replace": "/multi off " }]
+            }),
+        );
+        assert!(state.completions.is_empty());
+        assert_eq!(state.focus, FocusPane::Input);
+    }
+
+    #[test]
+    fn ctrl_m_opens_all_agents_without_submitting_a_draft_or_capturing_enter() {
+        for kind in ["", "side", "multi"] {
+            for child_focus in [false, true] {
+                let mut state = AppState::new("ufoo", "chat");
+                state.prompt.text = "main draft".into();
+                state.multi.active = !kind.is_empty();
+                state.multi.kind = kind.into();
+                state.multi.session_id = "session".into();
+                state.multi.focus = if child_focus {
+                    MultiFocus::Agent
+                } else {
+                    MultiFocus::Chat
+                };
+                state.multi.focus_agent_id = "codex:one".into();
+                let effects = dispatch(
+                    &mut state,
+                    Action::Key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::CONTROL)),
+                );
+                assert_eq!(effects.len(), 1);
+                match &effects[0] {
+                    Effect::SendCommand { name, payload, .. } => {
+                        assert_eq!(name, "multi.open");
+                        assert_eq!(payload["session_id"], "session");
+                    }
+                    _ => panic!("Ctrl+M must open the workspace layout"),
+                }
+                assert_eq!(state.prompt.text, "main draft");
+                assert!(!state.busy);
+                let effects = dispatch(
+                    &mut state,
+                    Action::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+                );
+                match &effects[0] {
+                    Effect::SendCommand { name, payload, .. }
+                        if state.multi.active && child_focus =>
+                    {
+                        assert_eq!(name, "multi.raw");
+                        assert_eq!(payload["data"], "\r");
+                        assert_eq!(payload["agent_id"], "codex:one");
+                    }
+                    Effect::SendCommand { name, payload, .. } => {
+                        assert_eq!(name, "input.submit");
+                        assert_eq!(payload["text"], "main draft");
+                    }
+                    _ => panic!("Enter must still submit to the focused agent"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn layout_shortcuts_stay_global_in_main_single_and_all_views() {
+        for kind in ["", "side", "multi"] {
+            for modifiers in [KeyModifiers::CONTROL, KeyModifiers::NONE] {
+                let mut state = AppState::new("ufoo", "chat");
+                state.prompt.text = "main draft".into();
+                state.multi.active = !kind.is_empty();
+                state.multi.kind = kind.into();
+                state.multi.session_id = if kind.is_empty() { "" } else { "session" }.into();
+                state.multi.focus = MultiFocus::Agent;
+                state.multi.focus_agent_id = "codex:one".into();
+                let code = if modifiers.is_empty() { '\x14' } else { 't' };
+                let effects = dispatch(
+                    &mut state,
+                    Action::Key(KeyEvent::new(KeyCode::Char(code), modifiers)),
+                );
+                match &effects[0] {
+                    Effect::SendCommand { name, .. } => assert_eq!(name, "multi.toggle"),
+                    _ => panic!("layout toggle must reach the workspace"),
+                }
+                assert_eq!(state.prompt.text, "main draft");
+                assert!(!state.exit_requested);
+                if !kind.is_empty() {
+                    let code = if modifiers.is_empty() { '\x11' } else { 'q' };
+                    let effects = dispatch(
+                        &mut state,
+                        Action::Key(KeyEvent::new(KeyCode::Char(code), modifiers)),
+                    );
+                    match &effects[0] {
+                        Effect::SendCommand { name, .. } => assert_eq!(name, "multi.exit"),
+                        _ => panic!("closing a split must reach the workspace"),
+                    }
+                }
+                if !kind.is_empty() {
+                    state.multi.focus = MultiFocus::Agent;
+                    for expected in ["multi.focus", "multi.exit"] {
+                        state.busy = true;
+                        let effects = dispatch(
+                            &mut state,
+                            Action::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+                        );
+                        assert_eq!(effects.len(), 1);
+                        match &effects[0] {
+                            Effect::SendCommand { name, payload, .. } => {
+                                assert_eq!(name, expected);
+                                assert_eq!(payload["session_id"], "session");
+                                if expected == "multi.focus" {
+                                    assert_eq!(payload["target"], "chat");
+                                    assert_eq!(payload["agent_id"], "");
+                                }
+                            }
+                            _ => panic!("Esc must unwind focus before closing the split"),
+                        }
+                        assert_eq!(state.multi.focus, MultiFocus::Chat);
+                        assert!(state.multi.focus_agent_id.is_empty());
+                        assert_eq!(state.focus, FocusPane::Input);
+                        assert!(state.busy);
+                        assert!(!state.exit_requested);
+                        assert_eq!(state.prompt.text, "main draft");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mouse_wheel_and_click_target_the_agent_pane_without_scrolling_chat() {
+        let mut state = AppState::new("ufoo", "chat");
+        state.multi.active = true;
+        state.multi.session_id = "multi-test".into();
+        state.multi.chat_rect = Some((0, 0, 40, 30));
+        state
+            .multi
+            .pane_rects
+            .insert("codex:one".into(), (41, 0, 79, 15));
+        state
+            .multi
+            .pane_rects
+            .insert("claude-code:two".into(), (41, 15, 79, 15));
+        let effects = dispatch(
+            &mut state,
+            Action::MouseScroll {
+                lines: 3,
+                column: 70,
+                row: 20,
+            },
+        );
+        assert_eq!(state.scroll_offset, 0);
+        match &effects[0] {
+            Effect::SendCommand { name, payload, .. } => {
+                assert_eq!(name, "multi.scroll");
+                assert_eq!(payload["agent_id"], "claude-code:two");
+            }
+            _ => panic!("wheel must target a pane"),
+        }
+        dispatch(
+            &mut state,
+            Action::MouseClick {
+                column: 70,
+                row: 20,
+            },
+        );
+        assert_eq!(state.multi.focus, MultiFocus::Agent);
+        assert_eq!(state.multi.focus_agent_id, "claude-code:two");
+        dispatch(
+            &mut state,
+            Action::MouseClick {
+                column: 10,
+                row: 20,
+            },
+        );
+        assert_eq!(state.multi.focus, MultiFocus::Chat);
+    }
     use crate::protocol::PROTOCOL;
 
     #[test]

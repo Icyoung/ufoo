@@ -16,6 +16,7 @@ const closeAgent = require("./tier2/closeAgent");
 const launchAgent = require("./tier2/launchAgent");
 const manageCron = require("./tier2/manageCron");
 const renameAgent = require("./tier2/renameAgent");
+const runtimeCoordination = require("./tier2/runtimeCoordination");
 const {
   CALLER_TIERS,
   assertCallerTierAllowed,
@@ -42,6 +43,7 @@ const SHARED_TOOL_REGISTRY = Object.freeze([
   renameAgent,
   closeAgent,
   manageCron,
+  ...runtimeCoordination,
 ]);
 
 function getSharedToolRegistry() {

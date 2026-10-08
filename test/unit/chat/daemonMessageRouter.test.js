@@ -39,6 +39,35 @@ function createHarness(overrides = {}) {
 }
 
 describe("chat daemonMessageRouter", () => {
+  test("parallel runtime streams are separate and duplicate events or final replies are suppressed", () => {
+    const { router, options } = createHarness();
+    const event = (sessionId, sequence, taskRunId, type, extra = {}) => ({ type: IPC_RESPONSE_TYPES.RUNTIME_EVENT, data: { projectId: "project", sessionId, sequence, taskRunId, agentId: "ufoo-agent", type, ...extra } });
+    router.handleMessage(event("main", 1, "a", "message.delta", { text: "Main" }));
+    router.handleMessage(event("child", 1, "b", "message.delta", { text: "Child" }));
+    router.handleMessage(event("main", 1, "a", "message.delta", { text: "Duplicate" }));
+    router.handleMessage(event("main", 2, "a", "task.completed", { result: { text: "Main" } }));
+    expect(options.appendStreamDelta).toHaveBeenCalledTimes(2);
+    expect(options.finalizeStream).toHaveBeenCalledTimes(1);
+    expect(options.finalizeStream.mock.calls[0][0]).toBe("project:main:a");
+    router.handleMessage(event("child", 2, "b", "task.completed", { result: { text: "Child" } }));
+    router.handleMessage({ type: IPC_RESPONSE_TYPES.RESPONSE, data: { reply: "Main", runtime: { taskRunId: "a", status: "completed" } } });
+    expect(options.finalizeStream.mock.calls[1][0]).toBe("project:child:b");
+    expect(options.logMessage).not.toHaveBeenCalled();
+  });
+  test("paused runtime interactions show a stable answer command only once", () => {
+    const { router, options } = createHarness();
+    const interaction = { id: "question-1", prompt: "Choose", options: [{ key: "1", label: "First" }] };
+    router.handleMessage({ type: IPC_RESPONSE_TYPES.RUNTIME_EVENT, data: { projectId: "p", sessionId: "main", sequence: 1, taskRunId: "task", type: "task.paused", result: { executionState: { pendingUserInteraction: interaction } } } });
+    router.handleMessage({ type: IPC_RESPONSE_TYPES.RUNTIME_RESULT, data: { task: { taskRunId: "task", status: "waiting_user", interaction } } });
+    expect(options.logMessage.mock.calls.filter((args) => args[1].includes("/answer question-1"))).toHaveLength(1);
+  });
+  test("task status includes delegated IDs and interrupted effects for inspection", () => {
+    const { router, options } = createHarness();
+    router.handleMessage({ type: IPC_RESPONSE_TYPES.RUNTIME_RESULT, data: { sessions: [], delegated: [{ taskId: "delegated-1", status: "delivery_uncertain" }] } });
+    router.handleMessage({ type: IPC_RESPONSE_TYPES.RUNTIME_RESULT, data: { task: { taskRunId: "main-1", status: "interrupted", effects: { "shell-1": { toolName: "bash", status: "uncertain" } } } } });
+    expect(options.logMessage).toHaveBeenCalledWith("system", expect.stringContaining("delegated-1: delivery_uncertain"));
+    expect(options.logMessage).toHaveBeenCalledWith("system", expect.stringContaining("shell-1 (bash: uncertain)"));
+  });
   test("handles status phase messages", () => {
     const { router, options } = createHarness();
 

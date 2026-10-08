@@ -63,22 +63,22 @@ async function handleDispatchMessage(ctx, args) {
         if (target !== "broadcast" && typeof ctx.markPending === "function") {
           ctx.markPending(target);
         }
-        await ctx.dispatchMessages(ctx.projectRoot, [{
+        const receipts = await ctx.dispatchMessages(ctx.projectRoot, [{
           target,
           message,
           injection_mode: options.injectionMode || "immediate",
           source: options.source || publisher,
         }]);
-        return { seq: 0, targets: [target] };
+        return receipts?.[0] || { seq: 0, targets: [target] };
       },
       broadcast: async (message, publisher, options = {}) => {
-        await ctx.dispatchMessages(ctx.projectRoot, [{
+        const receipts = await ctx.dispatchMessages(ctx.projectRoot, [{
           target: "broadcast",
           message,
           injection_mode: options.injectionMode || "immediate",
           source: options.source || publisher,
         }]);
-        return { seq: 0, targets: ["broadcast"] };
+        return receipts?.[0] || { seq: 0, targets: ["broadcast"] };
       },
     }
     : new EventBus(ctx.projectRoot);
@@ -90,6 +90,7 @@ async function handleDispatchMessage(ctx, args) {
   }, args);
 
   return {
+    ...result,
     dispatched: 1,
     target: result.target,
     injection_mode: result.mode,
@@ -156,6 +157,7 @@ async function handleSharedRegistryTool(ctx, name, args, audit = {}) {
   }
   const eventBus = ctx.eventBus || new EventBus(ctx.projectRoot);
   return definition.handler({
+    ...ctx,
     projectRoot: ctx.projectRoot,
     subscriber: ctx.subscriber || "ufoo-agent",
     caller_tier: CALLER_TIERS.CONTROLLER,

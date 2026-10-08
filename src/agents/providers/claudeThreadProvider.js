@@ -356,13 +356,44 @@ class ClaudeApiThread {
       const sessionId = String(message.session_id || message.sessionId || "").trim();
       for (const event of emitThreadStarted(this, sessionId)) yield event;
 
+      if (message.type === "system" && message.subtype === "status") {
+        yield redactUfooEvent({ type: "phase", phase: { type: message.status || "request_start" } });
+        continue;
+      }
+      if (message.type === "system" && message.subtype === "api_retry") {
+        yield redactUfooEvent({ type: "phase", phase: { type: "retry", attempt: message.attempt,
+          max_retries: message.max_retries, retry_delay_ms: message.retry_delay_ms } });
+        continue;
+      }
+      if (message.type === "system" && message.subtype === "compact_boundary") {
+        yield { type: "phase", phase: { type: "request_start" } };
+        continue;
+      }
+      if (message.type === "tool_progress") {
+        yield redactUfooEvent({ type: "phase", phase: { type: "tool_request", name: message.tool_name } });
+        continue;
+      }
+      if (message.type === "auth_status") {
+        yield redactUfooEvent({ type: "status", state: message.error ? "blocked" : "working",
+          text: message.error || (message.isAuthenticating ? "Authenticating…" : "Waiting for model…"), busy: !message.error });
+        continue;
+      }
+      if (message.type === "system" && ["task_started", "task_updated", "task_progress", "task_notification"].includes(message.subtype)) {
+        yield redactUfooEvent({ type: "background_task", task_id: message.task_id,
+          status: message.status || message.patch?.status || (message.subtype === "task_started" ? "running" : undefined),
+          description: message.description || message.patch?.description || message.summary || "" });
+        continue;
+      }
+
       if (message.type === "stream_event") {
         sawStreamEvents = true;
         const events = normalizeClaudeEvent(message.event || {}, state);
         for (const event of events) {
           if (!event || typeof event !== "object") continue;
           if (event.type === "text_delta" && event.delta) sawText = true;
-          if (event.type === "turn_completed") sawTurnCompleted = true;
+          // A message ends before Claude executes its tools and continues.
+          // Only the SDK result ends the complete agent turn.
+          if (event.type === "turn_completed") continue;
           yield redactUfooEvent(event);
         }
         continue;
@@ -374,8 +405,19 @@ class ClaudeApiThread {
         for (const event of events) {
           if (!event || typeof event !== "object") continue;
           if (event.type === "text_delta" && event.delta) sawText = true;
-          if (event.type === "turn_completed") sawTurnCompleted = true;
+          if (event.type === "turn_completed") continue;
           yield redactUfooEvent(event);
+        }
+        continue;
+      }
+
+      if (message.type === "user") {
+        const blocks = message.message && Array.isArray(message.message.content) ? message.message.content : [];
+        for (const block of blocks) {
+          if (block.type !== "tool_result") continue;
+          for (const event of normalizeClaudeMessage({ content: [block] })) {
+            if (event.type === "tool_result") yield redactUfooEvent(event);
+          }
         }
         continue;
       }

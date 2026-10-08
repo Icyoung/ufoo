@@ -2,6 +2,33 @@ const { getTimestamp, readJSON, writeJSON } = require("../bus/utils");
 const { appendAgentRegistryDiagnostic, summarizeAgents } = require("./agentRegistryDiagnostics");
 
 const AGENTS_SCHEMA_VERSION = 1;
+const { withFileLock } = require("./fileLock");
+const snapshots = new WeakMap();
+const clone = (value) => JSON.parse(JSON.stringify(value));
+
+function remember(data) {
+  snapshots.set(data, clone(data));
+  return data;
+}
+
+// Apply only fields changed since this caller's load. Unchanged fields and
+// agents created by another process belong to the latest disk snapshot.
+function applyChanges(current, baseline, next) {
+  const result = { ...current };
+  for (const key of new Set([...Object.keys(baseline), ...Object.keys(next)])) {
+    if (JSON.stringify(baseline[key]) === JSON.stringify(next[key])) continue;
+    if (!Object.prototype.hasOwnProperty.call(next, key)) {
+      delete result[key];
+    } else if (baseline[key] && next[key] && typeof baseline[key] === "object"
+      && typeof next[key] === "object" && !Array.isArray(next[key])) {
+      // A stale writer must not resurrect a concurrently removed record.
+      if (result[key]) result[key] = applyChanges(result[key], baseline[key], next[key]);
+    } else {
+      result[key] = next[key];
+    }
+  }
+  return result;
+}
 
 function toSafeString(value) {
   return typeof value === "string" ? value : "";
@@ -94,7 +121,7 @@ function loadAgentsData(filePath) {
       source: "ufoo.agentsStore.loadAgentsData",
       reason: "missing_or_unreadable_registry",
     });
-    return normalizeAgentsData({});
+    return remember(normalizeAgentsData({}));
   }
   const normalized = normalizeAgentsData(data);
   const beforeSummary = summarizeAgents(data);
@@ -106,7 +133,7 @@ function loadAgentsData(filePath) {
       after: afterSummary,
     });
   }
-  return normalized;
+  return remember(normalized);
 }
 
 function parseTimestampMs(value) {
@@ -137,18 +164,31 @@ function mergeExternalActivityFields(targetMeta, diskMeta) {
   if (preferDisk) {
     targetMeta.activity_state = diskState;
     targetMeta.activity_since = diskSince;
+    if (diskMeta.activity_detail) targetMeta.activity_detail = diskMeta.activity_detail;
+    else delete targetMeta.activity_detail;
   }
 }
 
 function saveAgentsData(filePath, data, options = {}) {
+  return withFileLock(filePath, () => saveAgentsDataUnlocked(filePath, data, options));
+}
+
+function saveAgentsDataUnlocked(filePath, data, options = {}) {
   const source = typeof options.source === "string" && options.source
     ? options.source
     : "ufoo.agentsStore.saveAgentsData";
-  const normalized = normalizeAgentsData(data);
+  let normalized = normalizeAgentsData(data);
 
   // Merge externally-managed fields from disk to avoid daemon in-memory writes
   // overwriting fresher runner/notifier state updates.
   const disk = readJSON(filePath, null);
+  if (!disk && require("fs").existsSync(filePath)) throw new Error(`Refusing to overwrite unreadable agent registry: ${filePath}`);
+  const baseline = snapshots.get(data);
+  if (disk) {
+    normalized = normalizeAgentsData(baseline
+      ? applyChanges(normalizeAgentsData(disk), baseline, normalized)
+      : { ...disk, ...normalized, agents: { ...disk.agents, ...normalized.agents } });
+  }
   if (disk && disk.agents && normalized.agents) {
     const droppedIds = Object.keys(disk.agents)
       .filter((id) => !Object.prototype.hasOwnProperty.call(normalized.agents, id))
@@ -177,6 +217,19 @@ function saveAgentsData(filePath, data, options = {}) {
     });
   }
   writeJSON(filePath, normalized);
+  Object.assign(data, normalized);
+  remember(data);
+  return normalized;
+}
+
+function updateAgentsData(filePath, mutate, options = {}) {
+  return withFileLock(filePath, () => {
+    const data = loadAgentsData(filePath);
+    const result = mutate(data);
+    if (result && typeof result.then === "function") throw new Error("Agent mutations must be synchronous");
+    if (result !== false) saveAgentsDataUnlocked(filePath, data, options);
+    return result;
+  });
 }
 
 module.exports = {
@@ -184,4 +237,5 @@ module.exports = {
   loadAgentsData,
   saveAgentsData,
   normalizeAgentsData,
+  updateAgentsData,
 };

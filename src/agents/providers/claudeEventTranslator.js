@@ -79,6 +79,8 @@ function normalizeClaudeContentBlock(block = {}) {
     }];
   }
 
+  if (type === "thinking") return [{ type: "thinking_delta", delta: String(item.thinking || "") }];
+
   if (type === "tool_use") {
     return [{
       type: "tool_call",
@@ -170,8 +172,10 @@ function normalizeClaudeEvent(event = {}, state = createClaudeEventState()) {
     if (blockState.type === "tool_use") {
       blockState.toolCallId = String(block.id || block.tool_use_id || "");
       blockState.name = String(block.name || "");
-      blockState.jsonText = safeStringify(block.input || "");
+      blockState.jsonText = block.input && Object.keys(block.input).length ? safeStringify(block.input) : "";
     }
+    if (blockState.type === "text" && blockState.text) return [{ type: "text_delta", delta: blockState.text, itemType: "text" }];
+    if (blockState.type === "thinking" && block.thinking) return [{ type: "thinking_delta", delta: String(block.thinking) }];
     return [];
   }
 
@@ -199,6 +203,7 @@ function normalizeClaudeEvent(event = {}, state = createClaudeEventState()) {
         itemType: "text",
       }];
     }
+    if (deltaType === "thinking_delta") return [{ type: "thinking_delta", delta: String(delta.thinking || "") }];
     if (deltaType === "input_json_delta") {
       blockState.jsonText += String(delta.partial_json || "");
     }

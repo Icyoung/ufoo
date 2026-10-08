@@ -447,6 +447,7 @@ function persistToolResultToContext({
   args = {},
   rawResult = {},
   segmentId = "",
+  artifactNamespace = "ucode",
 } = {}) {
   const rawForStorage = stripVisionBase64(rawResult);
   const saved = saveArtifact(workspaceRoot, sessionId, {
@@ -455,7 +456,7 @@ function persistToolResultToContext({
     args,
     raw: rawForStorage,
     createdBy: tool,
-  });
+  }, { namespace: artifactNamespace });
   const artifactId = saved.artifact && saved.artifact.artifactId
     ? saved.artifact.artifactId
     : "";

@@ -7,6 +7,8 @@ const {
   LEGACY_COMMAND_NAMES,
   RETIRED_DEFAULT_SKILLS,
   removeLegacySkillAndCommandLinks,
+  refreshInstalledOptionalSkills,
+  installManagedSkillLink,
 } = require("../../../scripts/postinstall-skills");
 
 function pathEntryExists(targetPath) {
@@ -109,4 +111,42 @@ describe("postinstall retired skill cleanup", () => {
     }
     expect(pathEntryExists(path.join(installHome, ".claude", "commands"))).toBe(false);
   });
+
+  test("updates installed optional skills while leaving uninstalled skills opt-in", () => {
+    const source = path.join(pkgRoot, "OPTIONAL_SKILLS", "ufoo-bus-poll");
+    fs.mkdirSync(source, { recursive: true });
+    fs.writeFileSync(path.join(source, "SKILL.md"), "timeout_seconds: 0");
+    const targetDir = path.join(home, ".agents", "skills");
+    const target = path.join(targetDir, "ufoo-bus-poll");
+    const oldRoot = path.join(root, "old-package");
+    fs.mkdirSync(path.join(oldRoot, "OPTIONAL_SKILLS", "ufoo-bus-poll"), { recursive: true });
+    fs.writeFileSync(path.join(oldRoot, "package.json"), JSON.stringify({ name: "u-foo" }));
+    fs.mkdirSync(targetDir, { recursive: true });
+    fs.symlinkSync(path.join(oldRoot, "OPTIONAL_SKILLS", "ufoo-bus-poll"), target);
+    const uninstalledDir = path.join(home, ".claude", "skills");
+    const refreshed = refreshInstalledOptionalSkills({ pkgRoot, targetDirs: [targetDir, uninstalledDir] });
+    expect(refreshed).toEqual([target]);
+    expect(fs.readFileSync(path.join(target, "SKILL.md"), "utf8")).toBe("timeout_seconds: 0");
+    expect(pathEntryExists(path.join(uninstalledDir, "ufoo-bus-poll"))).toBe(false);
+    expect(refreshInstalledOptionalSkills({ pkgRoot, targetDirs: [targetDir] })).toEqual([]);
+  });
+  test("never replaces user directories, files or foreign links", () => {
+    const source = path.join(pkgRoot, "SKILLS", "ufoo");
+    const targetDir = path.join(root, "targets");
+    fs.mkdirSync(targetDir);
+    const directory = path.join(targetDir, "directory");
+    fs.mkdirSync(directory);
+    fs.writeFileSync(path.join(directory, "notes.md"), "keep");
+    const file = path.join(targetDir, "file");
+    fs.writeFileSync(file, "keep");
+    const link = path.join(targetDir, "link");
+    fs.symlinkSync(directory, link);
+    for (const target of [directory, file, link]) {
+      expect(installManagedSkillLink(source, target)).toBe("conflict");
+    }
+    expect(fs.readFileSync(path.join(directory, "notes.md"), "utf8")).toBe("keep");
+    expect(fs.readFileSync(file, "utf8")).toBe("keep");
+    expect(fs.readlinkSync(link)).toBe(directory);
+  });
+
 });

@@ -12,14 +12,15 @@ const {
   resolveRuntimeConfig,
   resolveCompletionUrl,
   resolveAnthropicMessagesUrl,
-} = require("../../code/nativeRunner");
+} = require("./runtimeConfig");
 const {
   buildResponsesPayload,
   parseResponsesEvents,
   resolveResponsesUrl,
-} = require("../../code/providers/responsesProtocol");
+} = require("./transports/responsesProtocol");
 const { resolveClaudeUpstreamCredentials } = require("./credentials/claude");
 const { resolveCodexUpstreamCredentials } = require("./credentials/codex");
+const { resolveKimiUpstreamCredentials } = require("./credentials/kimi");
 const { buildUpstreamAuthFromCredential } = require("./credentials");
 
 function normalizeProvider(value = "") {
@@ -29,6 +30,7 @@ function normalizeProvider(value = "") {
   if (text === "claude-cli" || text === "claude-code" || text === "claude" || text === "anthropic") return "claude";
   if (text === "grok" || text === "grok-cli" || text === "grok-build" || text === "grok-shell" || text === "grok-api" || text === "xai") return "grok";
   if (text === "ucode" || text === "ufoo" || text === "ufoo-code") return "ucode";
+  if (text === "kimi-cli" || text === "kimi-code" || text === "moonshot") return "kimi";
   return text;
 }
 
@@ -346,7 +348,7 @@ async function resolveUpstreamRuntime({
       refreshWindowMs: Number(config.claudeOauthRefreshWindowSec || 300) * 1000,
       env,
     });
-    const baseUrl = String(env.ANTHROPIC_BASE_URL || "").trim() || "https://api.anthropic.com/v1";
+    const baseUrl = String(env.ANTHROPIC_BASE_URL || credential.metadata?.baseUrl || "").trim() || "https://api.anthropic.com/v1";
     const resolvedModel = String(
       model
         || resolveConfiguredModelForProvider(config, "claude")
@@ -368,6 +370,7 @@ async function resolveUpstreamRuntime({
       workspaceRoot: projectRoot,
       provider: "grok-build",
       model: model || resolveConfiguredModelForProvider(config, "grok-build") || defaultRouterModelForProvider("grok-build"),
+      useCodingConfig: false,
     });
     const auth = runtime.apiKey ? { apiKey: String(runtime.apiKey).trim() } : { headers: {} };
     return {
@@ -385,14 +388,20 @@ async function resolveUpstreamRuntime({
     workspaceRoot: projectRoot,
     provider: normalizedProvider === "ucode" ? "" : normalizedProvider,
     model: model || resolveConfiguredModelForProvider(config, normalizedProvider) || defaultAgentModelForProvider(config.agentProvider),
+    useCodingConfig: normalizedProvider === "ucode",
   });
+  let credential = null;
+  if (runtime.provider === "kimi" && runtime.apiKeySource === "kimi-credential") {
+    credential = await resolveKimiUpstreamCredentials({ env, fetchImpl });
+    runtime.apiKey = credential.accessToken;
+  }
   const auth = runtime.apiKey ? { apiKey: String(runtime.apiKey || "").trim() } : { headers: {} };
   return {
     provider: String(runtime.provider || normalizedProvider || "ucode"),
     transport: String(runtime.transport || "openai-chat"),
     model: String(runtime.model || "").trim(),
     baseUrl: String(runtime.baseUrl || "").trim(),
-    credential: null,
+    credential,
     auth,
     credentialSource: runtime.apiKey ? "runtime-api-key" : "",
   };

@@ -126,7 +126,7 @@ describe("resolveCodexSessionFromFile", () => {
     expect(__private.resolveCodexSessionFromFile("/my/project")).toBeNull();
   });
 
-  test("picks most recently modified rollout file", () => {
+  test("refuses ambiguous same-cwd rollouts and selects an explicitly bound id", () => {
     const now = new Date();
     const yyyy = String(now.getFullYear());
     const mm = String(now.getMonth() + 1).padStart(2, "0");
@@ -148,7 +148,36 @@ describe("resolveCodexSessionFromFile", () => {
     );
 
     const result = __private.resolveCodexSessionFromFile("/cwd");
-    expect(result.sessionId).toBe("new-sess");
+    expect(result).toBeNull();
+    expect(__private.resolveCodexSessionFromFile("/cwd", { sessionId: "old-sess" }).sessionId).toBe("old-sess");
+  });
+
+  test("reads modern metadata beyond 4 KB and ignores old sessions updated after a launch", () => {
+    const now = new Date();
+    const dir = path.join(fakeHome, ".codex", "sessions", String(now.getFullYear()), String(now.getMonth() + 1).padStart(2, "0"), String(now.getDate()).padStart(2, "0"));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "rollout-old.jsonl"), JSON.stringify({ payload: {
+      id: "old", cwd: "/cwd", timestamp: new Date(Date.now() - 60000).toISOString(),
+    } }) + "\n");
+    fs.writeFileSync(path.join(dir, "rollout-modern.jsonl"), JSON.stringify({ payload: {
+      base_instructions: { text: "long instructions ".repeat(4000) },
+      id: "modern", cwd: "/cwd", timestamp: now.toISOString(),
+    } }) + "\n");
+    expect(__private.resolveCodexSessionFromFile("/cwd", { startedAt: new Date(Date.now() - 5000).toISOString() }).sessionId).toBe("modern");
+  });
+
+  test("does not infer identity for parallel registered Codex Agents even with one rollout", () => {
+    const now = new Date();
+    const dir = path.join(fakeHome, ".codex", "sessions", String(now.getFullYear()), String(now.getMonth() + 1).padStart(2, "0"), String(now.getDate()).padStart(2, "0"));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "rollout-one.jsonl"), JSON.stringify({ payload: { id: "one", cwd: "/cwd" } }) + "\n");
+    fs.mkdirSync(path.join(fakeHome, ".ufoo", "agent"), { recursive: true });
+    fs.writeFileSync(path.join(fakeHome, ".ufoo", "agent", "all-agents.json"), JSON.stringify({ agents: {
+      "codex:a": { agent_type: "codex", status: "active" },
+      "codex:b": { agent_type: "codex", status: "active" },
+    } }));
+    expect(resolveSessionFromFile("codex", { cwd: "/cwd", projectRoot: fakeHome, subscriberId: "codex:a" })).toBeNull();
+    expect(resolveSessionFromFile("codex", { cwd: "/cwd", projectRoot: fakeHome, subscriberId: "codex:b" })).toBeNull();
   });
 
   test("skips non-rollout files", () => {

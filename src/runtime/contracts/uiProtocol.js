@@ -45,9 +45,13 @@ const COMMAND_NAMES = Object.freeze([
   "ui.resync.request",
   "app.exit",
   "multi.exit",
+  "multi.open",
+  "multi.toggle",
   "multi.focus",
   "multi.viewport",
   "multi.raw",
+  "multi.scroll",
+  "multi.expand",
 ]);
 
 const EVENT_NAMES = Object.freeze([

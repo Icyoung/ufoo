@@ -1,8 +1,10 @@
 const { buildStatus } = require("../../runtime/daemon/status");
+const { isInternalAgentMeta } = require("../../runtime/contracts/agentMode");
 
 function readBusSummaryHandler(ctx = {}) {
   const status = buildStatus(ctx.projectRoot);
-  const activeAgents = Array.isArray(status.active_meta) ? status.active_meta : [];
+  const activeAgents = (Array.isArray(status.active_meta) ? status.active_meta : [])
+    .filter((agent) => !ctx.internalAgentsOnly || isInternalAgentMeta(agent));
   const busyCount = activeAgents.filter((item) => {
     const state = String((item && item.activity_state) || "").trim().toLowerCase();
     return state === "working"

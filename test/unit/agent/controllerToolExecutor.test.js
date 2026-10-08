@@ -27,12 +27,14 @@ describe("controllerToolExecutor", () => {
 
     expect(result).toEqual(expect.objectContaining({
       ok: true,
-      result: {
+      result: expect.objectContaining({
         dispatched: 1,
         target: "codex:1",
         injection_mode: "immediate",
         source: "ufoo-agent",
-      },
+        delivered: 0,
+        delivery_status: "queued",
+      }),
     }));
     expect(dispatchMessages).toHaveBeenCalledWith("/tmp/project", [{
       target: "codex:1",

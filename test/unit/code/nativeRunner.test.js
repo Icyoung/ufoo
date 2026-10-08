@@ -486,7 +486,7 @@ describe("ucode native runner", () => {
     expect(global.fetch).toHaveBeenCalledTimes(2);
     expect(runToolCall).toHaveBeenCalledWith(
       { tool: "read", args: { path: "AGENTS.md" } },
-      { workspaceRoot: "/repo", cwd: "/repo" }
+      { workspaceRoot: "/repo", cwd: "/repo", signal: expect.any(AbortSignal) }
     );
     expect(events).toEqual([
       {
@@ -495,6 +495,8 @@ describe("ucode native runner", () => {
         args: { path: "AGENTS.md" },
         error: "",
       },
+      { tool: "read", phase: "end", args: { path: "AGENTS.md" }, error: "",
+        result: { ok: true, path: "/repo/AGENTS.md", totalLines: 12, content: "hello" } },
     ]);
   });
 
@@ -915,6 +917,16 @@ describe("ucode native runner", () => {
     expect(config.baseUrl).toBe("https://api.openai.com/v1");
     expect(config.transport).toBe("openai-responses");
   });
+  test("provider-owned mode never borrows the ucode gateway key or URL", () => {
+    process.env.UFOO_UCODE_API_KEY = "gateway-private-key";
+    process.env.UFOO_UCODE_BASE_URL = "https://gateway.invalid/v1/messages";
+    process.env.OPENAI_API_KEY = "provider-private-key";
+    const config = resolveRuntimeConfig({ workspaceRoot, provider: "codex", model: "test", useCodingConfig: false });
+    expect(config.apiKey).toBe("provider-private-key");
+    expect(config.baseUrl).toBe("https://api.openai.com/v1");
+    expect(config.transport).toBe("openai-responses");
+    expect(resolveRuntimeConfig({ workspaceRoot, provider: "openai", model: "test" }).apiKey).toBe("gateway-private-key");
+  });
 
   test("native Codex routes an API-key auth file to the public OpenAI API", async () => {
     const authPath = path.join(workspaceRoot, "codex-auth.json");
@@ -1286,11 +1298,11 @@ describe("ucode native runner", () => {
     expect(runToolCall).toHaveBeenCalledTimes(2);
     expect(runToolCall).toHaveBeenNthCalledWith(1,
       { tool: "read", args: { path: "a.txt" } },
-      { workspaceRoot, cwd: workspaceRoot }
+      { workspaceRoot, cwd: workspaceRoot, signal: expect.any(AbortSignal) }
     );
     expect(runToolCall).toHaveBeenNthCalledWith(2,
       { tool: "bash", args: { command: "ls" } },
-      { workspaceRoot, cwd: workspaceRoot }
+      { workspaceRoot, cwd: workspaceRoot, signal: expect.any(AbortSignal) }
     );
   });
 
@@ -1336,7 +1348,7 @@ describe("ucode native runner", () => {
     expect(runToolCall).toHaveBeenCalledTimes(1);
     expect(runToolCall).toHaveBeenCalledWith(
       { tool: "read", args: { path: "a.txt" } },
-      { workspaceRoot, cwd: workspaceRoot }
+      { workspaceRoot, cwd: workspaceRoot, signal: expect.any(AbortSignal) }
     );
   });
 
@@ -1430,11 +1442,11 @@ describe("ucode native runner", () => {
     expect(runToolCall).toHaveBeenCalledTimes(2);
     expect(runToolCall).toHaveBeenNthCalledWith(1,
       { tool: "read", args: { path: "a.txt" } },
-      { workspaceRoot, cwd: workspaceRoot }
+      { workspaceRoot, cwd: workspaceRoot, signal: expect.any(AbortSignal) }
     );
     expect(runToolCall).toHaveBeenNthCalledWith(2,
       { tool: "bash", args: { command: "ls" } },
-      { workspaceRoot, cwd: workspaceRoot }
+      { workspaceRoot, cwd: workspaceRoot, signal: expect.any(AbortSignal) }
     );
   });
 

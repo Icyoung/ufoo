@@ -409,6 +409,18 @@ describe('SkillsManager', () => {
       expect(fs.existsSync(path.join(targetDir, 'ufoo-bus-poll', 'SKILL.md'))).toBe(true);
     });
 
+    it('refreshes already-installed optional skills during an all upgrade', async () => {
+      const source = path.join(testRepoRoot, 'OPTIONAL_SKILLS', 'ufoo-bus-poll');
+      const targetDir = path.join(testRepoRoot, 'target');
+      fs.mkdirSync(source, { recursive: true });
+      fs.writeFileSync(path.join(source, 'SKILL.md'), 'timeout_seconds: 0');
+      fs.mkdirSync(path.join(targetDir, 'ufoo-bus-poll'), { recursive: true });
+      fs.writeFileSync(path.join(targetDir, 'ufoo-bus-poll', 'SKILL.md'), 'timeout_seconds: 270');
+      manager = new SkillsManager(testRepoRoot);
+      await manager.install('all', { target: targetDir });
+      expect(fs.readFileSync(path.join(targetDir, 'ufoo-bus-poll', 'SKILL.md'), 'utf8')).toBe('timeout_seconds: 0');
+    });
+
     it('should use default claude target if no options', async () => {
       const originalHome = process.env.HOME;
       process.env.HOME = testRepoRoot;

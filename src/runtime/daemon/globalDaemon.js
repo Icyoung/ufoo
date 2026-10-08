@@ -103,6 +103,8 @@ class GlobalDaemon {
       runtimeFactory: (context) => this.createHostedRuntime(context),
     });
     this.activeGatewayRequests = new Map();
+    this.clientProjects = new WeakMap();
+    this.clientSubscriptions = new WeakMap();
     this.projectRuntimeGateway = {
       call: (projectRoot, operation, args, context) =>
         this.callProjectOperation(projectRoot, operation, args, context),
@@ -166,9 +168,11 @@ class GlobalDaemon {
         err.code = "PROJECT_RUNTIME_UNAVAILABLE";
         throw err;
       }
+      const socket = callContext.requestContext.socket;
+      if (this.clientProjects.get(socket) === context.projectRoot) this.bindClientSocket(socket, hostHandle);
       return hostHandle.handleRequest(
         callContext.requestContext.request,
-        callContext.requestContext.socket
+        socket
       );
     });
     for (const operation of [
@@ -316,6 +320,11 @@ class GlobalDaemon {
 
   async handleRequest(projectRoot, request, socket) {
     const canonicalRoot = this.resolveProjectRoot(projectRoot);
+    if (socket && typeof socket.on === "function") {
+      const previousRoot = this.clientProjects.get(socket);
+      this.clientProjects.set(socket, canonicalRoot);
+      if (previousRoot !== canonicalRoot) this.bindClientSocket(socket, null);
+    }
     const config = this.loadProjectConfig(canonicalRoot);
     const provider = config.agentProvider || "codex-cli";
     const model = config.agentModel || defaultAgentModelForProvider(provider);
@@ -330,6 +339,24 @@ class GlobalDaemon {
       model,
       daemonTopology: this.topology,
     });
+  }
+
+  bindClientSocket(socket, host) {
+    if (!socket || typeof socket.on !== "function") return;
+    const next = host?.runtime?.resource("ipcServer") || null;
+    const previous = this.clientSubscriptions.get(socket)
+      || this.controller?.runtime?.resource("ipcServer");
+    if (previous === next) return;
+    previous?.detachSocket?.(socket);
+    next?.attachSocket?.(socket);
+    if (next) this.clientSubscriptions.set(socket, next);
+    else this.clientSubscriptions.delete(socket);
+  }
+
+  bindControllerClient(socket) {
+    if (!socket || typeof socket.on !== "function") return;
+    this.clientProjects.set(socket, this.controllerRoot);
+    this.bindClientSocket(socket, this.controller);
   }
 
   async callProjectOperation(projectRoot, operation, args = {}, context = {}) {

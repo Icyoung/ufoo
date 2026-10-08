@@ -2,7 +2,7 @@
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
-const { removeLegacySkillAndCommandLinks } = require("./postinstall-skills");
+const { removeLegacySkillAndCommandLinks, refreshInstalledOptionalSkills, installManagedSkillLink } = require("./postinstall-skills");
 
 // Fix node-pty spawn-helper permissions on macOS (both arm64 and x64)
 const platforms = ["darwin-arm64", "darwin-x64"];
@@ -59,26 +59,16 @@ function collectSkillSources(pkgRoot) {
   return sources;
 }
 
-function forceSymlink(target, linkPath) {
-  try {
-    const existing = fs.lstatSync(linkPath);
-    if (existing.isSymbolicLink() || existing.isFile() || existing.isDirectory()) {
-      fs.rmSync(linkPath, { recursive: true, force: true });
-    }
-  } catch {
-    // doesn't exist - fine
-  }
-  fs.symlinkSync(target, linkPath);
-}
-
 function installSkillDirs(targetDir, sources, label) {
   fs.mkdirSync(targetDir, { recursive: true });
-
+  let available = 0;
   for (const { name, dir } of sources) {
-    forceSymlink(dir, path.join(targetDir, name));
+    if (installManagedSkillLink(dir, path.join(targetDir, name)) === "conflict") {
+      console.log(`[postinstall] Preserved existing user skill: ${path.join(targetDir, name)}`);
+    } else available += 1;
   }
 
-  console.log(`[postinstall] Installed ${sources.length} ufoo skill(s) to ${label}`);
+  console.log(`[postinstall] ${available} ufoo skill(s) available in ${label}`);
 }
 
 // Install ufoo skills for Claude and Codex at npm install time.
@@ -100,6 +90,11 @@ try {
 
     installSkillDirs(path.join(codexHome, "skills"), sources, `${codexHome}/skills`);
   }
+  const refreshed = refreshInstalledOptionalSkills({
+    pkgRoot,
+    targetDirs: [path.join(home, ".claude", "skills"), path.join(codexHome, "skills"), path.join(home, ".agents", "skills")],
+  });
+  if (refreshed.length) console.log(`[postinstall] Refreshed ${refreshed.length} installed optional ufoo skill(s)`);
 } catch (err) {
   // Non-fatal - skills can be installed manually via `ufoo skills install`
   console.log(`[postinstall] Skipped skills install: ${err.message}`);

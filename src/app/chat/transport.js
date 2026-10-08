@@ -52,7 +52,7 @@ function connectSocket(sockPath, options = {}) {
 function resolveProjectFile(projectRoot, relativePath, fallbackRelativePath) {
   const local = path.join(projectRoot, relativePath);
   if (fs.existsSync(local)) return local;
-  return path.join(__dirname, "..", "..", fallbackRelativePath);
+  return path.join(__dirname, "..", "..", "..", fallbackRelativePath);
 }
 
 function startDaemon(projectRoot, options = {}) {

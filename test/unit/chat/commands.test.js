@@ -26,6 +26,13 @@ describe("chat command helpers", () => {
     expect(registry[0].subcommands.map((s) => s.cmd)).toEqual(["alpha", "beta"]);
   });
 
+  test("multi keeps its bare toggle command executable despite optional layout arguments", () => {
+    const { buildCompletions } = require("../../../src/ui/format");
+    const { COMMAND_TREE } = require("../../../src/app/chat/commands");
+    expect(COMMAND_REGISTRY.find((entry) => entry.cmd === "/multi").optionalArguments).toBe(true);
+    expect(buildCompletions({ text: "/multi", commands: COMMAND_REGISTRY, commandTree: COMMAND_TREE })).toEqual([]);
+  });
+
   test("launch command exposes ucode subcommand", () => {
     const launch = COMMAND_REGISTRY.find((item) => item.cmd === "/launch");
     expect(launch).toBeTruthy();
@@ -86,10 +93,6 @@ describe("chat command helpers", () => {
     expect(mode).toBeTruthy();
     expect((mode.subcommands || []).map((sub) => sub.cmd)).toEqual([
       "show",
-      "auto",
-      "host",
-      "terminal",
-      "tmux",
       "internal",
     ]);
   });

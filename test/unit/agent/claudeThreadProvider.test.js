@@ -20,6 +20,31 @@ describe("agent claudeThreadProvider", () => {
     })();
   }
 
+  test("SDK operational events expose compaction, retries, tool progress, authentication and background tasks", async () => {
+    const sdk = { query: () => makeMessages([
+      { type: "system", subtype: "status", status: "compacting" },
+      { type: "system", subtype: "api_retry", attempt: 2, max_retries: 3, retry_delay_ms: 1000 },
+      { type: "tool_progress", tool_name: "Bash" },
+      { type: "auth_status", isAuthenticating: true },
+      { type: "system", subtype: "task_started", task_id: "bg", description: "Check" },
+      { type: "system", subtype: "task_progress", task_id: "bg", description: "Reading" },
+      { type: "system", subtype: "task_notification", task_id: "bg", status: "completed" },
+      { type: "system", subtype: "compact_boundary" },
+      { type: "result", result: "done" },
+    ]) };
+    const thread = new ClaudeApiThread({ sdk, streamFactory: defaultClaudeAgentStreamFactory });
+    const events = [];
+    for await (const event of thread.runStreamed("task")) events.push(event);
+    const view = require("../../../src/ui/agentSurface").createAgentSurface();
+    const states = [];
+    for (const event of events) { view.accept(event); states.push(view.snapshot().status); }
+    expect(states).toContain("Compacting context…");
+    expect(states).toContain("Retrying request (2/3)…");
+    expect(states).toContain("Running command…");
+    expect(states).toContain("Authenticating…");
+    expect(states.some(state => state.includes("BG 1 done"))).toBe(true);
+  });
+
   test("builds cacheable static and semistatic system blocks", () => {
     expect(buildClaudeSystemBlocks({
       systemPrompt: "static rules",
@@ -137,8 +162,30 @@ describe("agent claudeThreadProvider", () => {
       { type: "thread_started", threadId: "11111111-1111-4111-8111-111111111111" },
       { type: "turn_started", turnId: "msg-1" },
       { type: "text_delta", delta: "hello", itemType: "text" },
-      { type: "turn_completed", turnId: "msg-1", usage: { input_tokens: 3, output_tokens: 0, cache_creation_tokens: 0, cache_read_tokens: 0 }, stopReason: "" },
+      { type: "turn_completed", turnId: "msg-1", usage: { input_tokens: 3, output_tokens: 2, cache_creation_tokens: 0, cache_read_tokens: 0 }, stopReason: "" },
     ]);
+  });
+
+  test("keeps an SDK task working across assistant messages and exposes actual tool arguments and results", async () => {
+    const sdk = { query: jest.fn(() => makeMessages([
+      { type: "stream_event", event: { type: "message_start", message: { id: "m1" } } },
+      { type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "c1", name: "Bash", input: {} } } },
+      { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"command":"npm test"}' } } },
+      { type: "stream_event", event: { type: "content_block_stop", index: 0 } },
+      { type: "stream_event", event: { type: "message_stop" } },
+      { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "c1", content: "tests passed" }] } },
+      { type: "stream_event", event: { type: "message_start", message: { id: "m2" } } },
+      { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "done" } } },
+      { type: "stream_event", event: { type: "message_stop" } },
+      { type: "result", result: "done", usage: { input_tokens: 20, output_tokens: 10 } },
+    ])) };
+    const thread = new ClaudeApiThread({ sdk, streamFactory: defaultClaudeAgentStreamFactory });
+    const events = [];
+    for await (const event of thread.runStreamed("test")) events.push(event);
+    expect(events.find(event => event.type === "tool_call")).toMatchObject({ name: "Bash", args: { command: "npm test" } });
+    expect(events.find(event => event.type === "tool_result")).toMatchObject({ output: "tests passed" });
+    expect(events.filter(event => event.type === "turn_completed")).toHaveLength(1);
+    expect(events.at(-1)).toMatchObject({ type: "turn_completed", usage: { output_tokens: 10 } });
   });
 
   test("Agent SDK resume passes prior session id", async () => {

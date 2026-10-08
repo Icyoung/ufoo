@@ -1,4 +1,9 @@
 const chalk = require("chalk");
+const UFOO_BANNER_LINES = Object.freeze([
+  "█ █ █▀▀ █▀█ █▀█",
+  "█ █ █▀  █ █ █ █",
+  "▀▀▀ ▀   ▀▀▀ ▀▀▀",
+]);
 
 /**
  * 显示 agent 启动横幅
@@ -7,11 +12,7 @@ function showBanner(options) {
   const { agentType, sessionId, nickname, daemonStatus } = options;
 
   // Compact logo (3 行)
-  const logo = [
-    "█ █ █▀▀ █▀█ █▀█",
-    "█ █ █▀  █ █ █ █",
-    "▀▀▀ ▀   ▀▀▀ ▀▀▀",
-  ];
+  const logo = UFOO_BANNER_LINES;
 
   // Normalize agent type display name
   const displayAgentType = agentType === "ufoo-code" ? "ucode" : agentType;
@@ -50,11 +51,7 @@ function showUfooBanner(options = {}) {
   const { version = "1.0.0" } = options;
 
   // Compact logo (3 行)
-  const logo = [
-    "█ █ █▀▀ █▀█ █▀█",
-    "█ █ █▀  █ █ █ █",
-    "▀▀▀ ▀   ▀▀▀ ▀▀▀",
-  ];
+  const logo = UFOO_BANNER_LINES;
 
   // 右侧信息
   const infoLines = [
@@ -73,4 +70,4 @@ function showUfooBanner(options = {}) {
   console.log("");
 }
 
-module.exports = { showBanner, showUfooBanner };
+module.exports = { showBanner, showUfooBanner, UFOO_BANNER_LINES };

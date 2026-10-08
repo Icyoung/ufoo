@@ -15,6 +15,7 @@ const {
 } = require("./utils");
 
 const PROCESSING_STALE_MS = 30000;
+const { withFileLock } = require("../state/fileLock");
 
 function positiveSeq(event) {
   const seq = Number(event && event.seq);
@@ -241,12 +242,15 @@ class DeliveryQueue {
       .filter((file) => this.isRecoverableProcessingFile(file, options));
     if (files.length === 0) return { recovered: 0, files: [] };
 
-    const all = [...this.readPendingRaw()];
+    const all = [];
     for (const file of files) {
       all.push(...readJsonlLoose(file));
     }
+    const pending = this.readPendingRaw();
+    all.push(...pending);
 
-    const merged = this.mergeAndSort(all);
+    const latestPending = new Map(pending.filter((event) => positiveSeq(event)).map((event) => [positiveSeq(event), event]));
+    const merged = this.mergeAndSort(all).map((event) => latestPending.get(positiveSeq(event)) || event);
     this.writePending(merged);
 
     for (const file of files) {
@@ -317,6 +321,16 @@ class DeliveryQueue {
     }
     return true;
   }
+}
+
+// All queue mutations share the same cross-process transaction, including
+// nested recovery and pending rewrites. Atomic rename alone cannot protect an
+// append from a concurrent read-modify-write consumer.
+for (const method of ["append", "writePending", "recover", "claimNext", "completeClaim", "restoreClaim", "readPending"]) {
+  const implementation = DeliveryQueue.prototype[method];
+  DeliveryQueue.prototype[method] = function (...args) {
+    return withFileLock(this.pendingFile, () => implementation.apply(this, args));
+  };
 }
 
 module.exports = {

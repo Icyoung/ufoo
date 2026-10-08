@@ -10,22 +10,60 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            node: "18.17.0"
+          - os: ubuntu-24.04
+            node: "20"
+          - os: macos-14
+            node: "22"
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
       - run: npm test
+      - run: npm audit --omit=dev --audit-level=high
 
   tui:
-    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Build ufoo-tui
         run: cargo build -p ufoo-tui --release
+      - name: Test Rust renderer
+        run: cargo test -p ufoo-tui
       - name: Version probe
         run: ./target/release/ufoo-tui --version
+
+  native-messages:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+        provider: [codex, claude]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: Install verified vendor CLIs
+        run: npm install -g @openai/codex@0.160.1 @anthropic-ai/claude-code@2.1.204
+      - name: Native and legacy delivery with isolated credentials and local fake inference
+        run: |
+          node scripts/smoke-native-messages.js ${{ matrix.provider }}
+          node scripts/smoke-native-messages.js ${{ matrix.provider }} --legacy

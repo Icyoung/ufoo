@@ -32,6 +32,12 @@ describe("shared tool registry", () => {
       "rename_agent",
       "close_agent",
       "manage_cron",
+      "delegate_task",
+      "read_task_reports",
+      "accept_task",
+      "manage_tasks",
+      "resume_agents",
+      "manage_group",
     ]);
 
     expect(getToolDefinition("read_bus_summary")).toMatchObject({
@@ -132,6 +138,12 @@ describe("shared tool registry", () => {
       "rename_agent",
       "close_agent",
       "manage_cron",
+      "delegate_task",
+      "read_task_reports",
+      "accept_task",
+      "manage_tasks",
+      "resume_agents",
+      "manage_group",
     ]);
     expect(listToolsForCallerTier(CALLER_TIERS.WORKER).map((tool) => tool.name)).toEqual([
       "read_bus_summary",
@@ -160,8 +172,8 @@ describe("shared tool registry", () => {
     const copy = getSharedToolRegistry();
     copy.pop();
 
-    expect(copy).toHaveLength(17);
-    expect(SHARED_TOOL_REGISTRY).toHaveLength(18);
+    expect(copy).toHaveLength(SHARED_TOOL_REGISTRY.length - 1);
+    expect(SHARED_TOOL_REGISTRY).toHaveLength(24);
   });
 
   test("exports Phase 0 schema fixtures for translator validation", () => {

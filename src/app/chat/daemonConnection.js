@@ -1,4 +1,5 @@
-const { IPC_REQUEST_TYPES } = require("../../runtime/contracts/eventContract");
+const { IPC_REQUEST_TYPES, IPC_RESPONSE_TYPES } = require("../../runtime/contracts/eventContract");
+const { randomUUID } = require("crypto");
 
 function createDaemonConnection(options = {}) {
   const {
@@ -21,6 +22,59 @@ function createDaemonConnection(options = {}) {
   const MAX_PENDING_REQUESTS = 50;
   const STATUS_KEY_RECONNECT = "daemon-reconnect";
   const STATUS_KEY_SWITCH = "daemon-switch";
+  const runtimeCursors = new Map();
+  const runtimeReplays = new Map();
+  const replayByScope = new Map();
+  const scopeFor = (event) => `${event.projectRoot || ""}:${event.sessionId}`;
+  function requestReplay(cursor, allowedTasks = null) {
+    const scope = scopeFor(cursor);
+    if (!client || replayByScope.has(scope)) return;
+    const requestId = `replay-${randomUUID()}`;
+    const replay = { ...cursor, scope, requestId, events: [], buffered: [], allowedTasks };
+    replayByScope.set(scope, replay); runtimeReplays.set(requestId, replay);
+    writeReplay(replay);
+  }
+  function writeReplay(replay) {
+    client.write(`${JSON.stringify(transformRequest({ type: IPC_REQUEST_TYPES.AGENT_RUNTIME, operation: "events", request_id: replay.requestId,
+      project_root: replay.projectRoot, session_id: replay.sessionId, after_sequence: replay.sequence || 0 }))}\n`);
+  }
+  function deliverRuntime(event) {
+    const scope = scopeFor(event);
+    runtimeCursors.set(scope, { projectRoot: event.projectRoot, sessionId: event.sessionId, sequence: Math.max(runtimeCursors.get(scope)?.sequence || 0, event.sequence || 0) });
+    handleMessage({ type: IPC_RESPONSE_TYPES.RUNTIME_EVENT, data: event });
+  }
+  function receive(msg) {
+    if (msg.type === IPC_RESPONSE_TYPES.RUNTIME_EVENT) {
+      const replay = replayByScope.get(scopeFor(msg.data || {}));
+      if (replay) { replay.buffered.push(msg.data); if (replay.buffered.length > 4096) replay.buffered.shift(); }
+      else deliverRuntime(msg.data);
+      return;
+    }
+    const replay = runtimeReplays.get(msg.request_id);
+    if (msg.type === IPC_RESPONSE_TYPES.ERROR && replay) {
+      runtimeReplays.delete(replay.requestId); replayByScope.delete(replay.scope);
+      replay.buffered.sort((a, b) => a.sequence - b.sequence).forEach(deliverRuntime);
+    }
+    if (msg.type === IPC_RESPONSE_TYPES.RUNTIME_RESULT && replay) {
+      (msg.data.events || []).filter((event) => !replay.allowedTasks || replay.allowedTasks.has(event.taskRunId)).forEach(deliverRuntime);
+      if (msg.data.has_more) { replay.sequence = msg.data.next_sequence; writeReplay(replay); return; }
+      runtimeReplays.delete(replay.requestId); replayByScope.delete(replay.scope);
+      const events = replay.buffered;
+      events.sort((a, b) => a.sequence - b.sequence).forEach(deliverRuntime);
+      runtimeCursors.set(replay.scope, { projectRoot: replay.projectRoot, sessionId: replay.sessionId, sequence: Math.max(runtimeCursors.get(replay.scope)?.sequence || 0, msg.data.next_sequence || 0) });
+      return;
+    }
+    if (msg.type === IPC_RESPONSE_TYPES.STATUS && msg.data?.agent_runtime) {
+      const runtime = msg.data.agent_runtime;
+      const scopes = [...(runtime.sessions || []), ...(runtime.children || []).map((task) => ({ sessionId: task.sessionId, tasks: [task] }))];
+      for (const session of scopes) {
+        const active = session.tasks.filter((task) => ["queued", "running", "waiting_user"].includes(task.status));
+        const cursor = { projectRoot: msg.data.project_root || msg.data.projectRoot || "", sessionId: session.sessionId, sequence: 0 };
+        if (active.length && !runtimeCursors.has(scopeFor(cursor))) requestReplay(cursor, new Set(active.map((task) => task.taskRunId)));
+      }
+    }
+    handleMessage(msg);
+  }
   const DEFAULT_SWITCH_TIMEOUT_MS = Number.isFinite(switchConnectionTimeoutMs)
     && switchConnectionTimeoutMs > 0
     ? Math.trunc(switchConnectionTimeoutMs)
@@ -94,10 +148,7 @@ function createDaemonConnection(options = {}) {
       for (const line of lines.filter((l) => l.trim())) {
         try {
           const msg = JSON.parse(line);
-          const shouldStop = handleMessage(msg);
-          if (shouldStop) {
-            return;
-          }
+          receive(msg);
         } catch {
           // ignore
         }
@@ -115,6 +166,8 @@ function createDaemonConnection(options = {}) {
     };
     client.on("close", handleDisconnect);
     client.on("error", handleDisconnect);
+    runtimeReplays.clear(); replayByScope.clear();
+    for (const cursor of runtimeCursors.values()) requestReplay(cursor);
     flushPendingRequests();
   }
 

@@ -211,16 +211,18 @@ class GlobalMcpHttpServer {
         ? request.params.arguments
         : {};
       const requestKey = `${extra.sessionId || "no-session"}:${String(extra.requestId)}`;
+      const controller = new AbortController();
       this.activeRequests.set(requestKey, {
         tool: name,
         started_at: new Date().toISOString(),
+        controller,
       });
       try {
         const result = await invokeTool(name, args, {
           projectRuntimeGateway: this.projectRuntimeGateway,
           validateProjectRoot: this.validateProjectRoot,
           toolCallId: extra.requestId,
-          signal: extra.signal,
+          signal: AbortSignal.any([extra.signal, controller.signal]),
           getMcpHttpStatus: () => this.getStatus(),
         });
         return createMcpContent(result);
@@ -283,10 +285,21 @@ class GlobalMcpHttpServer {
         session = this.createSession();
         await session.protocolServer.connect(session.transport);
       } else if (!session) {
-        rpcError(res, 400, "Bad Request: no valid MCP session");
+        rpcError(res, sessionId ? 404 : 400, "Bad Request: no valid MCP session");
         return;
       }
-      await session.transport.handleRequest(req, res, body);
+      const requestKey = `${session.transport.sessionId}:${String(body.id)}`;
+      const onDisconnect = () => {
+        if (!res.writableEnded) this.activeRequests.get(requestKey)?.controller.abort();
+      };
+      res.once("close", onDisconnect);
+      try {
+        await session.transport.handleRequest(req, res, body);
+      } finally {
+        // handleRequest can return before a streamed response ends. Keep the
+        // close listener until then; a finished response is not cancellation.
+        if (res.writableEnded) res.removeListener("close", onDisconnect);
+      }
       return;
     }
 
@@ -295,12 +308,13 @@ class GlobalMcpHttpServer {
       return;
     }
 
-    rpcError(res, sessionId ? 400 : 405, sessionId
+    rpcError(res, sessionId ? 404 : 405, sessionId
       ? "Bad Request: no valid MCP session"
       : "Method not allowed");
   }
 
   async handleHttpRequest(req, res) {
+    if (this.stopping) { jsonResponse(res, 503, { error: "MCP server is stopping" }); return; }
     this.httpRequestCount += 1;
     const requestUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
     if (requestUrl.pathname === "/health") {
@@ -390,7 +404,15 @@ class GlobalMcpHttpServer {
     if (this.server) {
       const server = this.server;
       this.server = null;
-      await new Promise((resolve) => server.close(() => resolve()));
+      await new Promise((resolve) => {
+        // Node 18 does not close idle keep-alive sockets in server.close().
+        // Sessions are already cancelled; bound shutdown even if a client
+        // leaves an HTTP stream or partially written request open.
+        const deadline = setTimeout(() => server.closeAllConnections?.(), 1000);
+        deadline.unref();
+        server.close(() => { clearTimeout(deadline); resolve(); });
+        server.closeIdleConnections?.();
+      });
     }
     try {
       if (fs.existsSync(this.endpointPath)) fs.unlinkSync(this.endpointPath);

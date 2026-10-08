@@ -19,5 +19,6 @@ scripts/*
 !scripts/postinstall.js
 !scripts/postinstall-skills.js
 !scripts/pack-tui.js
+!scripts/smoke-native-messages.js
 docs/
 skills-lock.json

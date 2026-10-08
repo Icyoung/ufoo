@@ -24,6 +24,7 @@ function createToolDefinition({
   outputSchema,
   handler,
   schemaVersion,
+  requiredPorts = [],
 }) {
   const allowed = Object.freeze([...(allowedCallerTiers || [])]);
   return Object.freeze({
@@ -36,6 +37,7 @@ function createToolDefinition({
     input_schema: Object.freeze(inputSchema),
     output_schema: outputSchema ? Object.freeze(outputSchema) : null,
     handler,
+    requiredPorts: Object.freeze(requiredPorts.slice()),
   });
 }
 

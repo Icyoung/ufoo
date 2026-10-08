@@ -23,6 +23,7 @@ const {
   assertToolAllowedForCallerTier,
 } = require("../../tools/registry");
 const { CALLER_TIERS } = require("../../tools/types");
+const { projectPathExists } = require("../projects/registry");
 const {
   MCP_PROTOCOL_VERSION,
   MCP_WAIT_FOR_MESSAGE_DEFAULT_TIMEOUT_SECONDS,
@@ -88,7 +89,7 @@ const CUSTOM_TOOL_DEFINITIONS = Object.freeze([
   },
   {
     name: "publish_activity_state",
-    description: "Publish the caller agent activity state in its project bus metadata.",
+    description: "Publish an external Agent's activity state. Wrapper-managed activity belongs to its host.",
     input_schema: {
       type: "object",
       required: ["project_root", "subscriber", "agent_handle", "activity_state"],
@@ -138,7 +139,7 @@ const CUSTOM_TOOL_DEFINITIONS = Object.freeze([
   },
   {
     name: "wait_for_message",
-    description: "Keep a Codex App-compatible MCP tool call pending until the caller-owned bus queue receives messages after after_seq or the wait reaches its timeout.",
+    description: "Keep an external Agent's MCP receive call pending until messages arrive after after_seq, or until cancellation/timeout. Wrapper-managed identities already have host delivery and cannot arm this wait.",
     input_schema: {
       type: "object",
       required: ["project_root", "subscriber", "agent_handle"],
@@ -323,7 +324,8 @@ async function suppressConsoleToStderr(fn) {
 
 function listRegisteredProjectRows() {
   return listProjectRuntimes({ validate: true, cleanupTmp: true })
-    .filter((row) => !isGlobalControllerProjectRoot(row && row.project_root));
+    .filter((row) => !isGlobalControllerProjectRoot(row && row.project_root)
+      && projectPathExists(row.project_root));
 }
 
 function resolveRegisteredProjectRoot(args = {}, options = {}) {
@@ -474,7 +476,8 @@ async function handleMcpStatus(ctx = {}) {
     auto_start: ctx.autoStart !== false,
     http,
     project_count: projects.length,
-    projects,
+    projects: projects.slice(0, 100),
+    projects_truncated: projects.length > 100,
   };
 }
 

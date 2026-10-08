@@ -51,6 +51,7 @@ describe("daemon cronOps", () => {
 
     expect(dispatch).toHaveBeenCalledWith({
       taskId: "c1",
+      occurrenceId: expect.any(String),
       target: "codex-3",
       message: "follow up",
     });
@@ -151,12 +152,14 @@ describe("daemon cronOps", () => {
     expect(started.task.mode).toBe("once");
     expect(controller.handleCronOp({ operation: "list" }).count).toBe(1);
     expect(setTimeoutFn.mock.results[0].value.unref).toHaveBeenCalledTimes(1);
+    expect(dispatch).not.toHaveBeenCalled();
 
     timeoutHandler();
     await Promise.resolve();
 
     expect(dispatch).toHaveBeenCalledWith({
       taskId: started.task.id,
+      occurrenceId: expect.any(String),
       target: "codex:1",
       message: "run once",
     });
@@ -197,5 +200,75 @@ describe("daemon cronOps", () => {
     expect(listed.tasks[0].id).toBe(started.task.id);
     expect(listed.tasks[0].title).toBe("persist me");
     expect(listed.tasks[0].label).toBe("codex:1:persist me:10s");
+    controller1.stopAll();
+    controller2.stopAll();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+  test("restart advances interval occurrence identity without replaying the committed tick", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-cron-restart-"));
+    const storageFile = path.join(dir, "tasks.json");
+    const dispatch = jest.fn();
+    const timers = [];
+    const options = { storageFile, dispatch, nowFn: () => 1000, setIntervalFn: (fn) => { timers.push(fn); return {}; }, clearIntervalFn: () => {} };
+    try {
+      const first = createDaemonCronController(options);
+      first.handleCronOp({ every: "10s", target: "worker", prompt: "check" });
+      const initial = dispatch.mock.calls[0][0].occurrenceId;
+      const recovered = createDaemonCronController(options);
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      timers[1]();
+      expect(dispatch.mock.calls[1][0].occurrenceId).toBe(initial.replace(/:1$/, ":2"));
+      expect(fs.statSync(storageFile).mode & 0o777).toBe(0o600);
+      recovered.stopAll();
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+  test("an overdue one-time task recovers once and a reserved occurrence is not resent", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-cron-once-"));
+    const storageFile = path.join(dir, "tasks.json");
+    let reserved;
+    const dispatch = jest.fn(() => { reserved = fs.readFileSync(storageFile, "utf8"); });
+    const timers = [];
+    const options = { storageFile, dispatch, nowFn: () => 1000, setTimeoutFn: (fn, ms) => { timers.push({ fn, ms }); return {}; }, clearTimeoutFn: () => {} };
+    try {
+      const first = createDaemonCronController(options);
+      first.handleCronOp({ once_at_ms: 2000, target: "worker", prompt: "check" });
+      expect(dispatch).not.toHaveBeenCalled();
+      const recovered = createDaemonCronController({ ...options, nowFn: () => 3000 });
+      expect(timers[1].ms).toBe(0);
+      timers[1].fn();
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(reserved).tasks[0].tickCount).toBe(1);
+      fs.writeFileSync(storageFile, reserved);
+      const afterReservation = createDaemonCronController(options);
+      expect(afterReservation.listTasks()).toHaveLength(0);
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      recovered.stopAll();
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+  test("storage failures cannot dispatch a tick or stop an active schedule", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-cron-fault-"));
+    const storageFile = path.join(dir, "tasks.json");
+    let fail = false;
+    let tick;
+    const dispatch = jest.fn();
+    const clearIntervalFn = jest.fn();
+    const fsModule = { ...fs, renameSync: (...args) => { if (fail) throw new Error("disk unavailable"); return fs.renameSync(...args); } };
+    try {
+      const controller = createDaemonCronController({ storageFile, fsModule, dispatch, log: () => {},
+        setIntervalFn: (fn) => { tick = fn; return {}; }, clearIntervalFn });
+      controller.handleCronOp({ every: "10s", target: "worker", prompt: "check" });
+      fail = true;
+      tick();
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      expect(controller.listTasks()[0].tickCount).toBe(1);
+      expect(() => controller.stopAll()).toThrow("disk unavailable");
+      expect(controller.listTasks()).toHaveLength(1);
+      expect(clearIntervalFn).not.toHaveBeenCalled();
+      expect(fs.readdirSync(dir)).toEqual(["tasks.json"]);
+      fail = false;
+      tick();
+      expect(dispatch).toHaveBeenCalledTimes(2);
+      controller.stopAll();
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
 });

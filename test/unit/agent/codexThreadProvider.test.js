@@ -11,6 +11,26 @@ describe("agent codexThreadProvider", () => {
     })();
   }
 
+  test("streams SDK item updates and native coding tools before the turn completes without duplicating snapshots", async () => {
+    const thread = new CodexSdkThread({ streamFactory: async function* () {
+      yield { type: "item.started", item: { id: "m", type: "agent_message", text: "reading " } };
+      yield { type: "item.updated", item: { id: "m", type: "agent_message", text: "reading files" } };
+      yield { type: "item.completed", item: { id: "m", type: "agent_message", text: "reading files" } };
+      yield { type: "item.started", item: { id: "c", type: "command_execution", command: "npm test", aggregated_output: "", status: "in_progress" } };
+      yield { type: "item.updated", item: { id: "c", type: "command_execution", command: "npm test", aggregated_output: "first\n", status: "in_progress" } };
+      yield { type: "item.completed", item: { id: "c", type: "command_execution", command: "npm test", aggregated_output: "first\nsecond\n", status: "completed", exit_code: 0 } };
+      yield { type: "item.completed", item: { id: "f", type: "file_change", changes: [{ path: "src/app.js", kind: "update" }], status: "completed" } };
+      yield { type: "turn.completed" };
+    } });
+    const events = [];
+    for await (const event of thread.runStreamed("work")) events.push(event);
+    expect(events.filter(event => event.type === "text_delta").map(event => event.delta).join("")).toBe("reading files");
+    expect(events.find(event => event.type === "tool_call")).toMatchObject({ name: "bash", args: { command: "npm test" } });
+    expect(events.filter(event => event.type === "tool_result").map(event => event.output).join("")).toBe("first\nsecond\n");
+    expect(events.find(event => event.name === "apply_patch")).toMatchObject({ args: { path: "src/app.js" } });
+    expect(events.at(-1).type).toBe("turn_completed");
+  });
+
   test("default factory runs a real SDK thread stream", async () => {
     const sdkThread = {
       id: null,

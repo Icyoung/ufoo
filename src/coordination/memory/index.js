@@ -11,6 +11,7 @@ const {
 const { redactSecrets } = require("../../runtime/privacy/redactor");
 const { canonicalProjectRoot } = require("../../runtime/projects/projectId");
 const { getUfooPaths } = require("../state/paths");
+const { withFileLock } = require("../state/fileLock");
 
 const SCHEMA_VERSION = "1.0";
 const ID_PREFIX = "mem-";
@@ -20,11 +21,6 @@ const HISTORY_CACHE_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_PREFIX_MAX_TOKENS = 1500;
 const prefixCache = new Map();
 
-function sleepSync(ms) {
-  const buffer = new SharedArrayBuffer(4);
-  const array = new Int32Array(buffer);
-  Atomics.wait(array, 0, 0, ms);
-}
 
 function normalizeId(value = "") {
   return String(value || "").trim();
@@ -168,23 +164,11 @@ class MemoryManager {
 
   withLock(fn) {
     ensureDir(this.memoryDir);
-    const started = Date.now();
-    while (true) {
-      try {
-        fs.mkdirSync(this.lockDir);
-        break;
-      } catch (err) {
-        if (err && err.code !== "EEXIST") throw err;
-        if (Date.now() - started > 5000) {
-          throw buildMemoryError("memory_lock_timeout", "timed out waiting for memory lock");
-        }
-        sleepSync(10);
-      }
-    }
     try {
-      return fn();
-    } finally {
-      fs.rmSync(this.lockDir, { recursive: true, force: true });
+      return withFileLock(this.indexFile, fn, { lockfilePath: this.lockDir });
+    } catch (error) {
+      if (error.code === "ELOCKED") throw buildMemoryError("memory_lock_timeout", "timed out waiting for memory lock");
+      throw error;
     }
   }
 

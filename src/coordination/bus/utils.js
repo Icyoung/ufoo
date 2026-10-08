@@ -184,12 +184,16 @@ function appendFileAtomic(filePath, content) {
 /**
  * 原子性地写入文件
  */
-function writeFileAtomic(filePath, content) {
+function writeFileAtomic(filePath, content, options = {}) {
   ensureDir(path.dirname(filePath));
   // Include pid + random suffix to avoid collisions across concurrent writers in the same millisecond.
   const tmpFile = `${filePath}.tmp.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString("hex")}`;
-  fs.writeFileSync(tmpFile, content, "utf8");
-  fs.renameSync(tmpFile, filePath);
+  try {
+    fs.writeFileSync(tmpFile, content, { encoding: "utf8", ...options });
+    fs.renameSync(tmpFile, filePath);
+  } finally {
+    fs.rmSync(tmpFile, { force: true });
+  }
 }
 
 /**

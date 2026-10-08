@@ -949,6 +949,7 @@ function createGroupOrchestrator(options = {}) {
 
       const op = {
         action: "launch",
+        internal_only: params.internal_only === true,
         agent: item.type,
         count: 1,
         nickname: item.scoped_nickname || item.runtime_nickname,

@@ -11,6 +11,7 @@ class ReadyDetector {
     this.callbacks = [];
     this.createdAt = Date.now(); // 用于性能指标
     this.readyAt = null; // 记录ready的时间
+    this.startupConfirmationPending = false;
   }
 
   /**
@@ -55,16 +56,11 @@ class ReadyDetector {
 
   /**
    * 检测claude-code的ready标记
-   * 特征：prompt "❯" 或分隔线 "────────"
+   * A numbered menu uses the same chevron as the input box.
    */
   _detectClaudeCodeReady(text) {
     // 1. 检测prompt标记（更可靠）
-    if (text.includes("❯")) {
-      return true;
-    }
-
-    // 2. 检测分隔线（banner完成后的标记）
-    if (text.includes("────────") && text.includes("Try")) {
+    if (/(?:^|\n)[ \t]*❯(?![ \t]*\d+[.)])(?:[ \t]+[^\n]*)?[ \t]*$/m.test(text)) {
       return true;
     }
 
@@ -77,12 +73,12 @@ class ReadyDetector {
   _detectCodexReady(text) {
     // Codex的prompt检测（更严格，避免误报）
     // 1. 明确的 "codex>" prompt
-    if (text.includes("codex>")) {
+    if (/(?:^|\n)[ \t]*codex>[ \t]*$/m.test(text)) {
       return true;
     }
     // 2. Codex TUI uses the single-chevron "›" prompt. Keep both markers
     // anchored to a line start to avoid matching prose, JSON, or HTML.
-    if (/(?:^|\n)[ \t]*(?:>[ \t]*$|›(?:[ \t]+[^\n]*)?[ \t]*$)/m.test(text)) {
+    if (/(?:^|\n)[ \t]*(?:>[ \t]*$|[›»](?![ \t]*\d+[.)])(?:[ \t]+[^\n]*)?[ \t]*$)/m.test(text)) {
       return true;
     }
     return false;
@@ -182,8 +178,22 @@ class ReadyDetector {
 
     if (!text) return; // 跳过空输入
 
-    // 追加到buffer
-    this.buffer += text;
+    // Remove terminal styling before looking for line-anchored prompts.
+    // Trust confirmation stays latched across redraws and buffer trimming;
+    // a mounted input footer or a fresh product welcome screen releases it.
+    this.buffer += text
+      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+      .replace(/\x1b\[\d*(?:;\d*)?[Hf]/g, "\n")
+      .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+      .replace(/[\u00a0\u2000-\u200a\u202f\u205f\u3000]/g, " ")
+      .replace(/\r\n?/g, "\n");
+    if (["claude-code", "codex"].includes(this.agentType)) {
+      const confirmations = [...this.buffer.matchAll(/Accessing\s*workspace:|I\s*trust\s*this\s*folder|Do\s*you\s*trust\s*(?:the\s*(?:authors|contents|files)\s*(?:of|in)\s*)?(?:this|these)\s*(?:folder|directory|files)|Is\s*this\s*a\s*project\s*you\s*created\s*or\s*one\s*you\s*trust|Choose\s*the\s*text\s*style/gi)];
+      const lastConfirmation = confirmations.length ? confirmations[confirmations.length - 1].index : -1;
+      if (lastConfirmation >= 0) this.startupConfirmationPending = true;
+      const mounted = [...this.buffer.matchAll(/\?\s*for\s*shortcuts|(?:Claude\s*Code|OpenAI\s*Codex)\s*\(?v\d/gi)];
+      if (mounted.some((match) => match.index > lastConfirmation)) this.startupConfirmationPending = false;
+    }
 
     // 限制buffer大小（防止内存泄漏）
     if (this.buffer.length > this.maxBufferSize) {
@@ -211,7 +221,7 @@ class ReadyDetector {
       isReady = this._detectUfooCodeReady(this.buffer);
     }
 
-    if (isReady) {
+    if (isReady && !this.startupConfirmationPending) {
       if (process.env.UFOO_DEBUG) {
         console.error(`[ReadyDetector] prompt detected in buffer (${this.buffer.length} bytes)`);
       }
@@ -223,11 +233,15 @@ class ReadyDetector {
    * 强制标记为ready（用于fallback超时）
    */
   forceReady() {
+    if (this.startupConfirmationPending) return;
     if (process.env.UFOO_DEBUG && !this.ready) {
       console.error(`[ReadyDetector] force ready triggered after ${Date.now() - this.createdAt}ms`);
     }
     this._triggerReady();
   }
+
+  // Exact host-native session binding is stronger evidence than TUI text.
+  confirmNativeReady() { this._triggerReady(); }
 
   /**
    * 获取性能指标

@@ -11,7 +11,8 @@ const {
   saveSessionSnapshot,
   loadSessionSnapshot,
 } = require("./sessionStore");
-const { buildSkillInjections } = require("./skills");
+const { createSkillsCapability } = require("../agents/capabilities/skills");
+const skillContextSource = createSkillsCapability().contextSources[0];
 const {
   assembleModelContext,
   applyContextSideEffects,
@@ -570,7 +571,7 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
   const taskPrompt = analysisTask
     ? `${taskText}\n\nAnalysis requirements:\n- Inspect repository evidence before concluding.\n- Cite concrete file observations.\n- Keep findings concise and actionable.`
     : taskText;
-  const skillInjections = buildSkillInjections({
+  const skillInjections = skillContextSource({
     prompt: taskPrompt,
     workspaceRoot,
     sessionId: String(state.sessionId || ""),
@@ -677,6 +678,7 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
       onToolEvent: (event) => {
         toolEventsThisAttempt += 1;
         pushToolLog(event);
+        if (typeof options.onToolEvent === "function") options.onToolEvent(event);
       },
       signal: options.signal,
     });
@@ -715,7 +717,10 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
       const decomposedResult = await runDecomposedTask({
         task: effectiveTaskPrompt,
         onProgress: options.onProgress,
-        onToolEvent: pushToolLog,
+        onToolEvent: (event) => {
+          pushToolLog(event);
+          if (typeof options.onToolEvent === "function") options.onToolEvent(event);
+        },
         signal: options.signal,
         workspaceRoot,
         provider,
@@ -1178,7 +1183,14 @@ async function resumeAfterUserInteraction(answerText = "", state = {}, options =
     systemBlocks: assembled.systemBlocks || null,
     messages,
     sessionId: String(state.sessionId || ""),
-    onToolEvent: pushToolLog,
+    onToolEvent: (event) => {
+      pushToolLog(event);
+      if (typeof options.onToolLog === "function") {
+        const log = normalizeToolLogEvent(event);
+        if (log) options.onToolLog(log);
+      }
+      if (typeof options.onToolEvent === "function") options.onToolEvent(event);
+    },
     maxToolCalls: state.maxToolCalls,
     onStreamDelta: trackingOnDelta,
     onThinkingDelta: typeof options.onThinkingDelta === "function" ? options.onThinkingDelta : null,

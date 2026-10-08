@@ -48,4 +48,10 @@ describe("providerapi redactor", () => {
     expect(isSensitiveKey("token")).toBe(true);
     expect(isSensitiveKey("token_count")).toBe(false);
   });
+
+  test("masks Agent capabilities in tool args and environment text, retaining verification hashes", () => {
+    expect(redactSecrets({ agent_handle: "secret", agentHandle: "secret", UFOO_AGENT_HANDLE: "secret", mcp_agent_handle_hash: "hash" }))
+      .toEqual({ agent_handle: REDACTED, agentHandle: REDACTED, UFOO_AGENT_HANDLE: REDACTED, mcp_agent_handle_hash: "hash" });
+    expect(redactString('UFOO_AGENT_HANDLE="secret-123456789"')).not.toContain("secret-123456789");
+  });
 });

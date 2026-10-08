@@ -87,7 +87,7 @@ describe("ufoo-ui/1 protocol", () => {
   });
 
   test("registers multi.* commands and events", () => {
-    for (const name of ["multi.exit", "multi.focus", "multi.viewport", "multi.raw"]) {
+    for (const name of ["multi.exit", "multi.open", "multi.toggle", "multi.focus", "multi.viewport", "multi.raw"]) {
       expect(COMMAND_NAMES).toContain(name);
     }
     for (const name of ["multi.set", "multi.pane.frame"]) {

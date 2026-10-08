@@ -183,6 +183,19 @@ describe("chat inputSubmitHandler", () => {
     expect(options.focusInput).toHaveBeenCalled();
   });
 
+  test("internal target selection leaves the main agent status unchanged", async () => {
+    const { options, handler } = createHarness({}, {
+      requireKnownTarget: true,
+      parseAtTarget: jest.fn(() => ({ target: "coder", message: "" })),
+      resolveAgentId: jest.fn(() => "codex:1"),
+      setTargetAgent: jest.fn(),
+    });
+    await handler.handleSubmit("@coder");
+    expect(options.setTargetAgent).toHaveBeenCalledWith("codex:1");
+    expect(options.queueStatusLine).not.toHaveBeenCalled();
+    expect(options.send).not.toHaveBeenCalled();
+  });
+
   test("@target without message logs error when target is unknown", async () => {
     const { options, handler } = createHarness({}, {
       parseAtTarget: jest.fn(() => ({ target: "unknown", message: "" })),

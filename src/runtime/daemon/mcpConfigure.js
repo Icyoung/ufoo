@@ -37,23 +37,32 @@ function codexConfigPath(options = {}) {
   return path.join(codexHome || path.join(os.homedir(), ".codex"), "config.toml");
 }
 
-function buildCodexManagedBlock(connection) {
+function buildCodexManagedBlock(connection, authentication = {}) {
   const authorization = tomlString(`Bearer ${connection.token}`);
+  const authLines = (name) => authentication[name]?.lines
+    || [`http_headers = { Authorization = ${authorization} }`];
+  const authTables = (name) => (authentication[name]?.tables || []).flatMap((table) => [
+    "",
+    `[mcp_servers.${name}.${table.suffix}]`,
+    table.body,
+  ]);
   return [
     MANAGED_BLOCK_START,
     "[mcp_servers.ufoo]",
     `url = ${tomlString(connection.endpoint)}`,
-    `http_headers = { Authorization = ${authorization} }`,
+    ...authLines("ufoo"),
     `tool_timeout_sec = ${CODEX_STANDARD_TOOL_TIMEOUT_SECONDS}`,
     'disabled_tools = ["wait_for_message"]',
     "enabled = true",
+    ...authTables("ufoo"),
     "",
     "[mcp_servers.ufoo_wait]",
     `url = ${tomlString(connection.endpoint)}`,
-    `http_headers = { Authorization = ${authorization} }`,
+    ...authLines("ufoo_wait"),
     `tool_timeout_sec = ${CODEX_WAIT_TOOL_TIMEOUT_SECONDS}`,
     'enabled_tools = ["wait_for_message"]',
     "enabled = true",
+    ...authTables("ufoo_wait"),
     "",
     "[mcp_servers.ufoo_wait.tools.wait_for_message]",
     'approval_mode = "approve"',
@@ -70,21 +79,78 @@ function removeManagedBlock(text = "") {
   );
 }
 
+// Split only outside strings, comments, arrays and inline tables. A table-like
+// line inside a multiline value is data, not a configuration section boundary.
+function tomlStatements(text = "") {
+  const statements = [];
+  let start = 0;
+  let quote = "";
+  let comment = false;
+  let depth = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (quote) {
+      if (quote[0] === '"' && char === "\\") { index += 1; continue; }
+      if (text.startsWith(quote, index)) { index += quote.length - 1; quote = ""; }
+      continue;
+    }
+    if (!comment) {
+      if (char === "#") comment = true;
+      else if (char === '"' || char === "'") {
+        quote = text.startsWith(char.repeat(3), index) ? char.repeat(3) : char;
+        index += quote.length - 1;
+      } else if (char === "[" || char === "{") depth += 1;
+      else if (char === "]" || char === "}") depth -= 1;
+    }
+    if (char === "\n") {
+      comment = false;
+      if (!quote && depth === 0) {
+        statements.push({ start, end: index + 1, text: text.slice(start, index + 1) });
+        start = index + 1;
+      }
+    }
+  }
+  if (start < text.length) statements.push({ start, end: text.length, text: text.slice(start) });
+  return statements;
+}
+
 function findTomlSections(text = "") {
   const sections = [];
-  const pattern = /^\s*\[([^\]]+)\]\s*(?:#.*)?$/gm;
-  let match;
-  while ((match = pattern.exec(text)) !== null) {
+  for (const statement of tomlStatements(text)) {
+    const match = statement.text.match(/^[ \t]*(\[\[?)([^\r\n]+?)(\]\]?)[ \t]*(?:#.*)?\r?\n?$/);
+    if (!match || match[1].length !== match[3].length) continue;
     sections.push({
-      header: match[1].trim(),
-      start: match.index,
-      contentStart: pattern.lastIndex,
+      header: match[2].trim(),
+      array: match[1].length === 2,
+      start: statement.start,
+      contentStart: statement.end,
     });
   }
   return sections.map((section, index) => ({
     ...section,
     end: index + 1 < sections.length ? sections[index + 1].start : text.length,
   }));
+}
+
+function collectCodexAuthentication(text, name) {
+  const prefix = `(?:mcp_servers\\.${name}|mcp_servers\\."${name}")`;
+  const mainPattern = new RegExp(`^${prefix}$`);
+  const tablePattern = new RegExp(`^${prefix}\\.((?:http_headers|env_http_headers|oauth)(?:\\..*)?)$`);
+  const keyPattern = /^[ \t]*(?:"(http_headers|env_http_headers|http_headers_helper|bearer_token_env_var|auth)"|'(http_headers|env_http_headers|http_headers_helper|bearer_token_env_var|auth)'|(http_headers|env_http_headers|http_headers_helper|bearer_token_env_var|auth))[ \t]*=/;
+  const lines = [];
+  const tables = [];
+  for (const section of findTomlSections(text)) {
+    if (section.array) continue;
+    const body = text.slice(section.contentStart, section.end);
+    if (mainPattern.test(section.header)) {
+      for (const statement of tomlStatements(body)) {
+        if (keyPattern.test(statement.text)) lines.push(statement.text.trimEnd());
+      }
+    }
+    const match = section.header.match(tablePattern);
+    if (match) tables.push({ suffix: match[1], body: body.trimEnd() });
+  }
+  return lines.length || tables.length ? { lines, tables } : null;
 }
 
 function isUfooMainSection(header = "") {
@@ -101,6 +167,8 @@ function removeLegacyUfooTransportSections(text = "") {
     .filter((section) => (
       isUfooMainSection(section.header)
       || isUfooStdioEnvSection(section.header)
+      || /^(?:mcp_servers\.ufoo|mcp_servers\."ufoo")\.(?:http_headers|env_http_headers|oauth)(?:\.|$)/
+        .test(section.header)
       || /^(?:mcp_servers\.ufoo_wait|mcp_servers\."ufoo_wait")(?:\.|$)/
         .test(String(section.header || ""))
     ))
@@ -115,18 +183,10 @@ function removeLegacyUfooTransportSections(text = "") {
 
 function removeRetiredUfooSkillConfigBlocks(text = "") {
   const source = String(text || "");
-  const tables = [];
-  const tablePattern = /^\s*(\[{1,2}[^\]\r\n]+\]{1,2})\s*(?:#.*)?$/gm;
-  let match;
-  while ((match = tablePattern.exec(source)) !== null) {
-    tables.push({
-      header: match[1],
-      start: match.index,
-    });
-  }
+  const tables = findTomlSections(source);
   const ranges = [];
   for (let index = 0; index < tables.length; index += 1) {
-    if (tables[index].header !== "[[skills.config]]") continue;
+    if (!tables[index].array || tables[index].header !== "skills.config") continue;
     const start = tables[index].start;
     const end = index + 1 < tables.length ? tables[index + 1].start : source.length;
     const block = source.slice(start, end);
@@ -148,11 +208,19 @@ function removeRetiredUfooSkillConfigBlocks(text = "") {
 }
 
 function renderCodexConfig(existing, connection) {
+  // Authentication belongs to the existing server configuration. Preserve it
+  // instead of redefining a nested header table as an inline value or replacing
+  // a host-managed credential source with the daemon's current token.
+  const ufoo = collectCodexAuthentication(existing, "ufoo");
+  const ufooWait = collectCodexAuthentication(existing, "ufoo_wait") || ufoo;
   const withoutManaged = removeManagedBlock(existing);
   const withoutLegacy = removeLegacyUfooTransportSections(withoutManaged);
   const withoutRetiredSkills = removeRetiredUfooSkillConfigBlocks(withoutLegacy);
   const trimmed = withoutRetiredSkills.trimEnd();
-  return `${trimmed ? `${trimmed}\n\n` : ""}${buildCodexManagedBlock(connection)}\n`;
+  return `${trimmed ? `${trimmed}\n\n` : ""}${buildCodexManagedBlock(connection, {
+    ...(ufoo ? { ufoo } : {}),
+    ...(ufooWait ? { ufoo_wait: ufooWait } : {}),
+  })}\n`;
 }
 
 function configureCodexMcp(options = {}) {
@@ -162,9 +230,23 @@ function configureCodexMcp(options = {}) {
   const existing = fs.existsSync(target) ? fs.readFileSync(target, "utf8") : "";
   const next = renderCodexConfig(existing, connection);
   if (options.dryRun === true) {
+    const ufoo = collectCodexAuthentication(existing, "ufoo");
+    const ufooWait = collectCodexAuthentication(existing, "ufoo_wait") || ufoo;
+    const redactAuth = (auth) => ({
+      lines: auth.lines.map((statement) => {
+        const key = statement.slice(0, statement.indexOf("=")).trim();
+        const value = /^(?:["']?)(?:http_headers|env_http_headers)["']?$/.test(key)
+          ? '{ "<redacted>" = "<redacted>" }' : '"<redacted>"';
+        return `${key} = ${value}`;
+      }),
+      tables: auth.tables.map((table) => ({ ...table, body: "# Existing authentication retained; values redacted." })),
+    });
     const managedBlock = buildCodexManagedBlock({
       ...connection,
       token: "<redacted>",
+    }, {
+      ...(ufoo ? { ufoo: redactAuth(ufoo) } : {}),
+      ...(ufooWait ? { ufoo_wait: redactAuth(ufooWait) } : {}),
     });
     return {
       ok: true,
@@ -205,6 +287,16 @@ function configureCodexMcp(options = {}) {
   };
 }
 
+function inspectCodexMcpConfig(options = {}) {
+  const target = codexConfigPath(options);
+  if (!fs.existsSync(target)) return { configured: false, changed: false, target };
+  const existing = fs.readFileSync(target, "utf8");
+  const configured = findTomlSections(existing).some((section) => isUfooMainSection(section.header));
+  if (!configured) return { configured: false, changed: false, target };
+  const connection = options.connection || readConnectionFiles(options.projectRoot || resolveGlobalControllerProjectRoot());
+  return { configured: true, changed: renderCodexConfig(existing, connection) !== existing, target };
+}
+
 function runMcpConfigureCli(host, options = {}) {
   const normalized = String(host || "").trim().toLowerCase();
   if (normalized !== "codex") {
@@ -237,6 +329,7 @@ module.exports = {
   buildCodexManagedBlock,
   codexConfigPath,
   configureCodexMcp,
+  inspectCodexMcpConfig,
   findTomlSections,
   removeLegacyUfooTransportSections,
   removeManagedBlock,

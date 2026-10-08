@@ -21,7 +21,14 @@ treated as a repository source of truth.
   `src/orchestration/`.
 - Agent launchers, internal runners, provider seams, activity tracking,
   controller loop code, and prompt/bootstrap code live in `src/agents/`.
-- Native `ucode` prompt/tool/runtime code lives in `src/code/`; wrapper launch,
+- Shared native model/tool loops, capability composition, protocol helpers,
+  durable requests/commands, scheduling, and namespaced session storage live in
+  `src/agents/runtime/`; business
+  adapters live in `src/agents/capabilities/`, and agent combinations live in
+  `src/agents/profiles/`. The shared core must not import coding, daemon, or UI
+  implementations. Provider configuration and transports live in
+  `src/agents/providers/`.
+- Native `ucode` host/context/tool code lives in `src/code/`; wrapper launch,
   bootstrap, doctor, build, and runtime-config helpers live in
   `src/code/launcher/`.
 - Shared controller/worker tools live in `src/tools/`; native `ucode` file and
@@ -47,6 +54,7 @@ Keep these sources in sync:
 - `src/agents/launch/`
 - `src/agents/activity/`
 - `src/agents/controller/`
+- `src/agents/runtime/`, `src/agents/capabilities/`, and `src/agents/profiles/`
 - `src/agents/prompts/native/` and
   `src/agents/prompts/native/toolDescriptions/`
 - `src/code/launcher/`
@@ -84,6 +92,8 @@ npm test -- --runTestsByPath test/unit/code/ucodeTui.test.js
 npm test -- --runTestsByPath test/unit/ui/tuiLauncher.test.js
 npm test -- --runTestsByPath test/unit/tools/registry.test.js
 npm test -- --runTestsByPath test/unit/agent/internalRunner.test.js
+npm test -- --runTestsByPath test/unit/agent/durableRuntime.test.js test/unit/agent/resourceLease.test.js
+npm test -- --runTestsByPath test/unit/daemon/agentHost.test.js test/unit/daemon/executionPaths.test.js
 node -e "require('./src/app/chat'); require('./src/ui/rustChatHost'); require('./src/code/tui'); console.log('ok')"
 ```
 

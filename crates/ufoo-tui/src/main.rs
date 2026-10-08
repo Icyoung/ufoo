@@ -1,6 +1,7 @@
 //! ufoo-tui — Rust TTY UI for ufoo chat / ucode (ufoo-ui/1).
 
 mod action;
+mod agent_surface;
 mod chat;
 mod dispatch;
 mod draw;

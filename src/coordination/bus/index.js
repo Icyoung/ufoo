@@ -11,7 +11,6 @@ const {
   generateInstanceId,
   subscriberToSafeName,
   isPidAlive,
-  truncateFile,
   getCurrentTty,
   sleep,
 } = require("./utils");
@@ -891,13 +890,10 @@ class EventBus {
 
     const queuePath = this.queueManager.getPendingPath(target);
     this.queueManager.ensureQueueDir(target);
-    if (!fs.existsSync(queuePath)) {
-      fs.writeFileSync(queuePath, "", "utf8");
-    }
 
     if (options.reset) {
       console.log("[listen] Resetting queue...");
-      truncateFile(queuePath);
+      await this.queueManager.clearPending(target);
     }
 
     const readLines = () => {
@@ -958,7 +954,7 @@ class EventBus {
   async inject(subscriber, commandOverride) {
     this.ensureBus();
     const injector = new Injector(this.busDir, this.agentsFile);
-    await injector.inject(subscriber, commandOverride);
+    await injector.inject(subscriber, commandOverride, { deliveryId: `manual:${require("crypto").randomUUID()}` });
   }
 }
 

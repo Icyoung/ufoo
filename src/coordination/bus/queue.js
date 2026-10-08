@@ -3,7 +3,6 @@ const path = require("path");
 const {
   subscriberToSafeName,
   ensureDir,
-  truncateFile,
 } = require("./utils");
 const {
   DeliveryQueue,
@@ -116,8 +115,7 @@ class QueueManager {
    * 清空待处理消息
    */
   async clearPending(subscriber) {
-    const pendingPath = this.getPendingPath(subscriber);
-    truncateFile(pendingPath);
+    this.getDeliveryQueue(subscriber).writePending([]);
   }
 
   /**

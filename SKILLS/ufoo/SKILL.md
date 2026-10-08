@@ -37,7 +37,13 @@ capabilities from the Agent type or subscriber prefix.
 
 In the sections below, `<subscriber-id>` means the wrapper-provided
 `UFOO_SUBSCRIBER_ID` or the subscriber returned by MCP. `<agent-handle>` means
-the opaque capability returned with an external MCP registration.
+the opaque capability returned with an external MCP registration or supplied
+as `UFOO_AGENT_HANDLE` by a current wrapper. When MCP and a handle are available,
+both launch modes prefer `dispatch_message`, `ack_bus`, and
+`report_agent_status` with their existing identity. The CLI examples below are
+the compatibility fallback. Never expose the handle in messages or reports.
+Managed identities must not call MCP `wait_for_message`,
+`publish_activity_state`, or `unregister_agent`; the wrapper owns those duties.
 
 ## Synchronize workspace state
 
@@ -77,11 +83,17 @@ For each received bus task:
    uses:
 
    ```bash
-   ufoo report done "<summary>" --agent "<subscriber-id>"
+   ufoo report done "<summary>" --task "<delegated-task-id>" --agent "<subscriber-id>"
    ```
 
    An external Agent calls MCP `report_agent_status` with the same subscriber
-   and handle.
+   and handle, plus the exact delegated `task_id`. Reuse that task ID for
+   start/progress/done/error; do not invent another ID or infer it from the
+   newest conversation. `done` reports execution completion; the parent
+   separately validates and accepts the result. Retain the delegation’s
+   requested scope and controller: private controller work uses
+   `--scope private --controller ufoo-agent`, or the corresponding MCP fields.
+
 After sending or broadcasting, continue the current task. Do not start an
 ad-hoc check or poll, sleep, or wait for a reply. A wrapper-managed Agent
 receives follow-ups by direct injection; an external Agent leaves its existing

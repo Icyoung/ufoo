@@ -1,6 +1,8 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { withFileLock } = require("./coordination/state/fileLock");
+const { writeFileAtomic } = require("./coordination/bus/utils");
 
 const UCODE_FIELDS = [
   "ucodeProvider",
@@ -187,6 +189,17 @@ function loadJsonSafe(filePath) {
   }
 }
 
+function loadJsonForUpdate(filePath) {
+  try {
+    const value = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Expected a JSON object");
+    return value;
+  } catch (error) {
+    if (error.code === "ENOENT") return {};
+    throw new Error(`Refusing to overwrite unreadable configuration: ${filePath}`, { cause: error });
+  }
+}
+
 function loadConfig(projectRoot) {
   try {
     const raw = loadJsonSafe(configPath(projectRoot));
@@ -221,7 +234,7 @@ function loadConfig(projectRoot) {
       claudeOauthProfile: normalizeClaudeOauthProfile(raw.claudeOauthProfile),
       claudeOauthTokenPath: normalizeClaudeOauthTokenPath(raw.claudeOauthTokenPath),
       claudeOauthRefreshWindowSec: normalizeClaudeOauthRefreshWindowSec(raw.claudeOauthRefreshWindowSec),
-      autoResume: raw.autoResume !== false,
+      autoResume: typeof raw.autoResume === "boolean" ? raw.autoResume : DEFAULT_CONFIG.autoResume,
       // Merge ucode fields from global config so callers still see them
       ...loadGlobalUcodeConfig(),
     };
@@ -240,56 +253,53 @@ function loadConfig(projectRoot) {
 
 function saveConfig(projectRoot, config) {
   const target = configPath(projectRoot);
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  let existing = {};
-  try {
-    existing = JSON.parse(fs.readFileSync(target, "utf8"));
-  } catch {
-    existing = {};
-  }
-  // Strip ucode fields — they belong in global config only
-  const projectUpdates = {};
-  for (const [k, v] of Object.entries(config)) {
-    if (!UCODE_FIELDS.includes(k)) {
-      projectUpdates[k] = v;
+  return withFileLock(target, () => {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const existing = loadJsonForUpdate(target);
+    // Strip ucode fields — they belong in global config only
+    const projectUpdates = {};
+    for (const [k, v] of Object.entries(config)) {
+      if (!UCODE_FIELDS.includes(k)) {
+        projectUpdates[k] = v;
+      }
     }
-  }
-  const merged = {
-    ...DEFAULT_CONFIG,
-    ...existing,
-    ...projectUpdates,
-  };
-  const hasProjectDaemonTopology =
-    Object.prototype.hasOwnProperty.call(existing, "daemonTopology")
-    || Object.prototype.hasOwnProperty.call(projectUpdates, "daemonTopology");
-  // Remove any stale ucode fields from project config
-  for (const f of UCODE_FIELDS) {
-    delete merged[f];
-  }
-  merged.launchMode = normalizeLaunchMode(merged.launchMode);
-  if (hasProjectDaemonTopology) {
-    merged.daemonTopology = normalizeDaemonTopology(merged.daemonTopology);
-  } else {
-    // Topology is a machine-wide rollout setting unless a project explicitly
-    // opts into an override. Do not persist the default and accidentally pin
-    // this project to project-daemon mode forever.
-    delete merged.daemonTopology;
-  }
-  merged.agentProvider = normalizeAgentProvider(merged.agentProvider);
-  merged.agentModel = typeof merged.agentModel === "string" ? merged.agentModel.trim() : "";
-  merged.routerProvider = typeof merged.routerProvider === "string" ? merged.routerProvider.trim() : "";
-  merged.routerModel = typeof merged.routerModel === "string" ? merged.routerModel.trim() : "";
-  merged.controllerMode = normalizeControllerMode(merged.controllerMode);
-  merged.mcpPort = normalizeMcpPort(merged.mcpPort);
-  merged.codexInternalThreadMode = normalizeCodexInternalThreadMode(merged.codexInternalThreadMode);
-  merged.codexAuthPath = normalizeCodexAuthPath(merged.codexAuthPath);
-  merged.codexOauthRefreshWindowSec = normalizeCodexOauthRefreshWindowSec(merged.codexOauthRefreshWindowSec);
-  merged.claudeOauthProfile = normalizeClaudeOauthProfile(merged.claudeOauthProfile);
-  merged.claudeOauthTokenPath = normalizeClaudeOauthTokenPath(merged.claudeOauthTokenPath);
-  merged.claudeOauthRefreshWindowSec = normalizeClaudeOauthRefreshWindowSec(merged.claudeOauthRefreshWindowSec);
-  merged.autoResume = merged.autoResume !== false;
-  fs.writeFileSync(target, JSON.stringify(merged, null, 2));
-  return merged;
+    const merged = {
+      ...DEFAULT_CONFIG,
+      ...existing,
+      ...projectUpdates,
+    };
+    const hasProjectDaemonTopology =
+      Object.prototype.hasOwnProperty.call(existing, "daemonTopology")
+      || Object.prototype.hasOwnProperty.call(projectUpdates, "daemonTopology");
+    // Remove any stale ucode fields from project config
+    for (const f of UCODE_FIELDS) {
+      delete merged[f];
+    }
+    merged.launchMode = normalizeLaunchMode(merged.launchMode);
+    if (hasProjectDaemonTopology) {
+      merged.daemonTopology = normalizeDaemonTopology(merged.daemonTopology);
+    } else {
+      // Topology is a machine-wide rollout setting unless a project explicitly
+      // opts into an override. Do not persist the default and accidentally pin
+      // this project to project-daemon mode forever.
+      delete merged.daemonTopology;
+    }
+    merged.agentProvider = normalizeAgentProvider(merged.agentProvider);
+    merged.agentModel = typeof merged.agentModel === "string" ? merged.agentModel.trim() : "";
+    merged.routerProvider = typeof merged.routerProvider === "string" ? merged.routerProvider.trim() : "";
+    merged.routerModel = typeof merged.routerModel === "string" ? merged.routerModel.trim() : "";
+    merged.controllerMode = normalizeControllerMode(merged.controllerMode);
+    merged.mcpPort = normalizeMcpPort(merged.mcpPort);
+    merged.codexInternalThreadMode = normalizeCodexInternalThreadMode(merged.codexInternalThreadMode);
+    merged.codexAuthPath = normalizeCodexAuthPath(merged.codexAuthPath);
+    merged.codexOauthRefreshWindowSec = normalizeCodexOauthRefreshWindowSec(merged.codexOauthRefreshWindowSec);
+    merged.claudeOauthProfile = normalizeClaudeOauthProfile(merged.claudeOauthProfile);
+    merged.claudeOauthTokenPath = normalizeClaudeOauthTokenPath(merged.claudeOauthTokenPath);
+    merged.claudeOauthRefreshWindowSec = normalizeClaudeOauthRefreshWindowSec(merged.claudeOauthRefreshWindowSec);
+    merged.autoResume = typeof merged.autoResume === "boolean" ? merged.autoResume : DEFAULT_CONFIG.autoResume;
+    writeFileAtomic(target, JSON.stringify(merged, null, 2), { mode: 0o600 });
+    return merged;
+  });
 }
 
 function loadGlobalUcodeConfig() {
@@ -306,16 +316,18 @@ function loadGlobalUcodeConfig() {
 
 function saveGlobalUcodeConfig(updates = {}) {
   const target = globalConfigPath();
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  const existing = loadJsonSafe(target);
-  const merged = { ...existing };
-  for (const [k, v] of Object.entries(updates)) {
-    if (UCODE_FIELDS.includes(k)) {
-      merged[k] = typeof v === "string" ? v : "";
+  return withFileLock(target, () => {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const existing = loadJsonForUpdate(target);
+    const merged = { ...existing };
+    for (const [k, v] of Object.entries(updates)) {
+      if (UCODE_FIELDS.includes(k)) {
+        merged[k] = typeof v === "string" ? v : "";
+      }
     }
-  }
-  fs.writeFileSync(target, JSON.stringify(merged, null, 2));
-  return merged;
+    writeFileAtomic(target, JSON.stringify(merged, null, 2), { mode: 0o600 });
+    return merged;
+  });
 }
 
 function loadGlobalDaemonConfig() {
@@ -327,14 +339,16 @@ function loadGlobalDaemonConfig() {
 
 function saveGlobalDaemonConfig(updates = {}) {
   const target = globalConfigPath();
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  const existing = loadJsonSafe(target);
-  const merged = { ...existing };
-  if (Object.prototype.hasOwnProperty.call(updates, "daemonTopology")) {
-    merged.daemonTopology = normalizeDaemonTopology(updates.daemonTopology);
-  }
-  fs.writeFileSync(target, JSON.stringify(merged, null, 2));
-  return loadGlobalDaemonConfig();
+  return withFileLock(target, () => {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const existing = loadJsonForUpdate(target);
+    const merged = { ...existing };
+    if (Object.prototype.hasOwnProperty.call(updates, "daemonTopology")) {
+      merged.daemonTopology = normalizeDaemonTopology(updates.daemonTopology);
+    }
+    writeFileAtomic(target, JSON.stringify(merged, null, 2), { mode: 0o600 });
+    return loadGlobalDaemonConfig();
+  });
 }
 
 module.exports = {

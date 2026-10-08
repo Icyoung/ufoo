@@ -3,6 +3,40 @@
 const { createChatController } = require("../../../src/app/chat/ChatController");
 
 describe("ChatController", () => {
+  test("internal dashboard cannot address external or stale agents through @target", async () => {
+    const send = jest.fn();
+    const published = jest.fn();
+    const controller = createChatController({ internalOnly: true, ports: { send, publish: published } });
+    controller.applyStatus({ active: ["codex:child", "claude:external"], active_meta: [
+      { id: "codex:child", nickname: "coder", launch_mode: "internal" },
+      { id: "claude:external", nickname: "outside", launch_mode: "terminal" },
+    ] });
+    expect(controller.session.agents).toEqual(["codex:child"]);
+    await controller.submitInput("@outside hello");
+    await controller.submitInput("@claude:external hello");
+    expect(send).not.toHaveBeenCalled();
+    published.mockClear();
+    controller.patchAgentActivity("claude:external", { activity_state: "working" });
+    expect(controller.session.metaMap.has("claude:external")).toBe(false);
+    expect(published).not.toHaveBeenCalled();
+    controller.session.targetAgent = "claude:external";
+    await controller.submitInput("stale target");
+    expect(send).not.toHaveBeenCalled();
+    await controller.submitInput("@coder hello");
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ type: "bus_send", target: "codex:child" }));
+    controller.stop();
+  });
+  test("constructor send port gives runtime commands stable identity and honors a new conversation", async () => {
+    const send = jest.fn();
+    const controller = createChatController({ ports: { send, appendHistory: () => {}, logMessage: () => {} } });
+    await controller.submitInput("/answer question-1 choose the first");
+    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ operation: "resume", interaction_id: "question-1", answer: "choose the first", session_id: "main-default", request_id: expect.any(String) }));
+    await controller.submitInput("/session new");
+    await controller.submitInput("/task cancel child-1");
+    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ operation: "cancel", task_run_id: "child-1", session_id: expect.stringMatching(/^main-/), request_id: expect.any(String) }));
+    expect(send.mock.calls[1][0].session_id).not.toBe("main-default");
+    controller.stop();
+  });
   test("start/stop owns stream state and status throttle hook", () => {
     const dispatches = [];
     let statusCalls = 0;

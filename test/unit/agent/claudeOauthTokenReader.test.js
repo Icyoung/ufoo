@@ -26,6 +26,17 @@ function isolatedSettingsPath(dir) {
 }
 
 describe("agent claudeOauthTokenReader", () => {
+  test("keeps a settings token bound to its custom endpoint and honors CLAUDE_CONFIG_DIR", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-claude-endpoint-"));
+    try {
+      fs.writeFileSync(path.join(dir, "settings.json"), JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: "gateway-token", ANTHROPIC_BASE_URL: "https://gateway.invalid/api" } }));
+      const { resolveClaudeUpstreamCredentials } = require("../../../src/agents/providers/credentials/claude");
+      const credential = await resolveClaudeUpstreamCredentials({ env: { CLAUDE_CONFIG_DIR: dir } });
+      expect(credential).toMatchObject({ accessToken: "gateway-token", metadata: { baseUrl: "https://gateway.invalid/api" } });
+      const override = await resolveClaudeUpstreamCredentials({ env: { CLAUDE_CONFIG_DIR: dir, ANTHROPIC_BASE_URL: "https://override.invalid/v1", ANTHROPIC_AUTH_TOKEN: "env-token" } });
+      expect(override).toMatchObject({ accessToken: "env-token", metadata: { baseUrl: "https://override.invalid/v1" } });
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
   test("resolves profile and explicit token paths", () => {
     const root = path.join(os.tmpdir(), "ufoo-claude-oauth-paths");
     expect(resolveClaudeOauthPaths({ configDir: root, profile: "work" })).toEqual({
