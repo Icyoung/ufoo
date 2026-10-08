@@ -172,6 +172,7 @@ async function runChatRust(projectRoot, options = {}) {
 
   let entrySeq = 0;
   const streamIds = new Map();
+  let mainSubmissionRev = 0;
   let hostRef = null;
   let daemonSend = () => {};
   let daemonCoordinator = null;
@@ -1092,8 +1093,9 @@ async function runChatRust(projectRoot, options = {}) {
             }
           }
         }
+        const beforeSubmit = mainSubmissionRev;
         await controller.submitInput(text);
-        if (!childOrLayout) publish("status.set", { text: "ready", busy: false });
+        if (!childOrLayout && beforeSubmit === mainSubmissionRev) publish("status.set", { text: "ready", busy: false });
         return { ok: true, routed: text.trim() ? "submit" : "empty" };
       }
       return { ok: false, error: `unsupported command ${name}` };
@@ -1104,6 +1106,7 @@ async function runChatRust(projectRoot, options = {}) {
 
   const router = createDaemonMessageRouter({
     escapeBlessed: (value) => String(value || ""),
+    resolveAgentDisplayName: getAgentLabel,
     stripBlessedTags: stripTags,
     logMessage: (kind, text) => {
       const normalized = kind === "error" ? "error"
@@ -1125,15 +1128,15 @@ async function runChatRust(projectRoot, options = {}) {
     },
     resolveStatusLine: (text, data) => {
       if (data?.key && isInternalChild(data.key)) return;
-      publish("status.set", { text: stripTags(text || "ready") });
+      publish("status.set", { text: stripTags(text || "ready"), busy: false });
     },
     enqueueBusStatus: (item) => {
       if (item?.key && isInternalChild(item.key)) return;
-      publish("status.set", { text: stripTags(typeof item === "object" ? item.text : item) });
+      publish("status.set", { text: stripTags(typeof item === "object" ? item.text : item), busy: true });
     },
     resolveBusStatus: (item) => {
       if (item?.key && isInternalChild(item.key)) return;
-      publish("status.set", { text: "ready" });
+      publish("status.set", { text: "ready", busy: false });
     },
     beginStream: (...args) => controller.getStreamState().beginStream(...args),
     appendStreamDelta: (...args) => controller.getStreamState().appendStreamDelta(...args),
@@ -1226,7 +1229,10 @@ async function runChatRust(projectRoot, options = {}) {
   });
 
   await daemonConnection.connect();
-  daemonSend = (req) => daemonConnection.send(req);
+  daemonSend = (req) => {
+    if (req.type === IPC_REQUEST_TYPES.PROMPT) mainSubmissionRev += 1;
+    return daemonConnection.send(req);
+  };
   controller.setSend(daemonSend);
 
   controller.start({

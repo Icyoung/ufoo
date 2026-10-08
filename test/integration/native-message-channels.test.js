@@ -54,7 +54,10 @@ describe("native message channel integration", () => {
         if (request.id === undefined) return;
         let result = {};
         if (request.method === "initialize") result = { userAgent: "native-fixture" };
-        if (["thread/start", "thread/resume"].includes(request.method)) result = { thread: { id: threadId } };
+        if (["thread/start", "thread/resume"].includes(request.method)) result = { thread: {
+          id: request.params?.ephemeral ? crypto.randomUUID() : threadId,
+          ephemeral: request.params?.ephemeral === true,
+        } };
         if (request.method === "thread/queue/add") result = { queuedSubmission: { id: request.params.clientUserMessageId } };
         ws.send(JSON.stringify({ id: request.id, result }));
       }));
@@ -79,6 +82,9 @@ describe("native message channel integration", () => {
       await tuiOne.call("thread/start", { cwd: root, config: { profile: "caller-profile" } });
       await tuiTwo.call("thread/resume", { threadId: crypto.randomUUID(), cwd: root });
       await until(() => loadAgentsData(getUfooPaths(root).agentsFile).agents[first.subscriber].native_delivery_ready);
+      const userThread = loadAgentsData(getUfooPaths(root).agentsFile).agents[first.subscriber].provider_session_id;
+      await tuiOne.call("thread/start", { cwd: root, ephemeral: true });
+      expect(loadAgentsData(getUfooPaths(root).agentsFile).agents[first.subscriber].provider_session_id).toBe(userThread);
       await one.send({ command: "work while busy", deliveryId: "seq:1" });
       await two.send({ command: "another session", deliveryId: "seq:2" });
       const agents = loadAgentsData(getUfooPaths(root).agentsFile).agents;
@@ -92,7 +98,7 @@ describe("native message channel integration", () => {
       expect(requests.some((r) => ["turn/start", "turn/steer"].includes(r.method))).toBe(false);
       // After binding, delivery connections send only initialize/queue, without
       // taking over the interactive TUI's thread subscriptions or approvals.
-      expect(requests.filter((r) => r.method === "thread/start")).toHaveLength(1);
+      expect(requests.filter((r) => r.method === "thread/start")).toHaveLength(2);
       expect(requests.filter((r) => r.method === "thread/resume")).toHaveLength(1);
       expect(requests.find((r) => r.method === "thread/start").params.config.profile).toBe("caller-profile");
       tuiOne.close();

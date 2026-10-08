@@ -39,6 +39,14 @@ function createHarness(overrides = {}) {
 }
 
 describe("chat daemonMessageRouter", () => {
+  test("a routing-only response records its queued targets in main history", () => {
+    const { router, options } = createHarness();
+    router.handleMessage({ type: IPC_RESPONSE_TYPES.RESPONSE,
+      data: { reply: "", dispatch: [{ target: "codex:builder", message: "change the scene" }], ops: [] } });
+    expect(options.logMessage).toHaveBeenCalledWith("system", expect.stringContaining("Task queued for: ESC(name:codex:builder)"));
+    expect(options.resolveStatusLine.mock.calls.at(-1)[0]).toContain("Dispatched to: ESC(name:codex:builder)");
+    expect(options.resolveStatusLine).not.toHaveBeenCalledWith("{gray-fg}✓{/gray-fg} Done");
+  });
   test("parallel runtime streams are separate and duplicate events or final replies are suppressed", () => {
     const { router, options } = createHarness();
     const event = (sessionId, sequence, taskRunId, type, extra = {}) => ({ type: IPC_RESPONSE_TYPES.RUNTIME_EVENT, data: { projectId: "project", sessionId, sequence, taskRunId, agentId: "ufoo-agent", type, ...extra } });

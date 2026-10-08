@@ -80,4 +80,63 @@ function readAgentSurfaceEvents(projectRoot, agentIds, maxBytes = 2 * 1024 * 102
   return events.sort((a, b) => (a.seq || 0) - (b.seq || 0));
 }
 
-module.exports = { createAgentSurfacePublisher, readAgentSurfaceEvents };
+// Keep partial rows as bytes: a provider can append in the middle of a UTF-8
+// character. File offsets, rather than sequence high-water marks, retain late
+// appends from concurrent writers.
+function createAgentSurfaceReader(projectRoot, maxBytes = 2 * 1024 * 1024) {
+  const cursors = new Map();
+  const dir = getUfooPaths(projectRoot).busEventsDir;
+  return {
+    read(agentIds) {
+      const accepted = new Set(agentIds);
+      let files;
+      try { files = fs.readdirSync(dir).filter((name) => name.endsWith(".jsonl")).sort().slice(-2); }
+      catch { return []; }
+      const events = [];
+      for (const name of files) {
+        let fd;
+        try {
+          fd = fs.openSync(path.join(dir, name), "r");
+          const stat = fs.fstatSync(fd);
+          let cursor = cursors.get(name);
+          if (!cursor || cursor.ino !== stat.ino || stat.size < cursor.offset) {
+            cursor = { ino: stat.ino, offset: Math.max(0, stat.size - maxBytes), partial: Buffer.alloc(0) };
+            cursor.skipFirst = cursor.offset > 0;
+          }
+          if (stat.size - cursor.offset > maxBytes) {
+            cursor.offset = stat.size - maxBytes;
+            cursor.partial = Buffer.alloc(0);
+            cursor.skipFirst = true;
+          }
+          const buffer = Buffer.alloc(Math.max(0, stat.size - cursor.offset));
+          const read = fs.readSync(fd, buffer, 0, buffer.length, cursor.offset);
+          cursor.offset += read;
+          const content = Buffer.concat([cursor.partial, buffer.subarray(0, read)]);
+          const end = content.lastIndexOf(10);
+          const skipFirst = cursor.skipFirst;
+          if (end >= 0) cursor.skipFirst = false;
+          cursor.partial = content.subarray(end + 1);
+          if (cursor.partial.length > maxBytes) {
+            cursor.partial = cursor.partial.subarray(-maxBytes);
+            cursor.skipFirst = true;
+          }
+          cursors.set(name, cursor);
+          if (end < 0) continue;
+          const lines = content.subarray(0, end).toString("utf8").split("\n");
+          if (skipFirst) lines.shift();
+          for (const line of lines) {
+            try {
+              const event = JSON.parse(line);
+              if (event.event === "agent_surface" && accepted.has(event.publisher) && event.data?.surface?.type) events.push(event);
+            } catch { /* Ignore unrelated or malformed observations. */ }
+          }
+        } catch { /* A writer can rotate the file between stat and read. */ }
+        finally { if (fd !== undefined) fs.closeSync(fd); }
+      }
+      for (const name of cursors.keys()) if (!files.includes(name)) cursors.delete(name);
+      return events;
+    },
+  };
+}
+
+module.exports = { createAgentSurfacePublisher, readAgentSurfaceEvents, createAgentSurfaceReader };

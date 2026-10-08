@@ -400,7 +400,8 @@ function createDaemonMessageRouter(options = {}) {
     }
 
     if (payload.dispatch && payload.dispatch.length > 0) {
-      const targets = payload.dispatch.map((d) => d.target || d).join(", ");
+      const targets = payload.dispatch.map((d) => resolveAgentDisplayName(d.target || d)).join(", ");
+      logMessage("system", `${speakerPrefix("ufoo", "white")}Task queued for: ${escapeBlessed(targets)}`);
       resolveStatusLine(`{gray-fg}→{/gray-fg} Dispatched to: ${escapeBlessed(targets)}`);
     }
 
@@ -431,7 +432,7 @@ function createDaemonMessageRouter(options = {}) {
       setPending(null);
     }
 
-    if (!payload.reply && !payload.disambiguate) {
+    if (!payload.reply && !payload.disambiguate && !payload.dispatch?.length) {
       resolveStatusLine("{gray-fg}✓{/gray-fg} Done");
     }
 

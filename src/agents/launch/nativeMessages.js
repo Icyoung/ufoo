@@ -230,7 +230,9 @@ async function startCodexHost({ command = "codex", args = [], projectRoot, subsc
       frontend.on("message", (data, binary) => {
         try {
           const message = JSON.parse(data.toString());
-          if (["thread/start", "thread/resume", "thread/fork"].includes(message.method)) requests.set(message.id, message.method);
+          if (["thread/start", "thread/resume", "thread/fork"].includes(message.method)) {
+            requests.set(message.id, { ephemeral: message.params?.ephemeral === true });
+          }
         } catch { /* forward frames unchanged */ }
         forward(data, binary);
       });
@@ -240,9 +242,12 @@ async function startCodexHost({ command = "codex", args = [], projectRoot, subsc
         try {
           const message = JSON.parse(data.toString());
           if (requests.has(message.id)) {
+            const request = requests.get(message.id);
             requests.delete(message.id);
             const id = message.result?.thread?.id;
-            if (id) {
+            // The TUI also starts temporary structured-output threads. They
+            // cannot receive queued work and must not replace its user thread.
+            if (id && !request.ephemeral && message.result.thread.ephemeral !== true) {
               if (!persistProviderSession(projectRoot, subscriber, { sessionId: id, source: "codex-native-app-server" })) {
                 throw nativeError("Cannot bind this Codex thread to the host identity");
               }

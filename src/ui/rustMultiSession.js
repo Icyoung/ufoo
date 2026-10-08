@@ -14,10 +14,12 @@
  */
 
 const crypto = require("crypto");
+const fs = require("fs");
+const { getUfooPaths } = require("../coordination/state/paths");
 const { isInternalAgentMeta } = require("../runtime/contracts/agentMode");
 const { createPaneManager } = require("../app/chat/multiWindow/paneManager");
 const { createAgentSurface } = require("./agentSurface");
-const { readAgentSurfaceEvents } = require("../coordination/history/agentSurface");
+const { readAgentSurfaceEvents, createAgentSurfaceReader } = require("../coordination/history/agentSurface");
 
 const DEFAULT_COLS = 40;
 const DEFAULT_ROWS = 12;
@@ -81,6 +83,56 @@ function createRustMultiSession(options = {}) {
   const internalDrafts = new Map();
   const surfaces = new Map();
   const replayedAgents = new Set();
+  let observationRoot = "";
+  let surfaceReader = null;
+  let surfaceWatch = null;
+  let surfacePoll = null;
+  let surfaceRefresh = null;
+
+  function closeSurfaceObservation() {
+    surfaceWatch?.close();
+    surfaceWatch = null;
+    clearInterval(surfacePoll);
+    surfacePoll = null;
+    clearTimeout(surfaceRefresh);
+    surfaceRefresh = null;
+  }
+
+  function refreshSurfaceObservations() {
+    if (!active) return;
+    const root = getProjectRoot();
+    if (!root) return;
+    if (root !== observationRoot) {
+      closeSurfaceObservation();
+      observationRoot = root;
+      surfaceReader = createAgentSurfaceReader(root);
+    }
+    for (const event of surfaceReader.read(listInternalAgentIds())) {
+      acceptEvent(event.publisher, event.data.surface, event.seq);
+    }
+    if (!surfaceWatch) {
+      try {
+        const watch = fs.watch(getUfooPaths(root).busEventsDir, () => {
+          if (surfaceRefresh) return;
+          surfaceRefresh = setTimeout(() => {
+            surfaceRefresh = null;
+            refreshSurfaceObservations();
+          }, 25);
+          surfaceRefresh.unref?.();
+        });
+        surfaceWatch = watch;
+        watch.unref?.();
+        watch.on("error", () => {
+          watch.close();
+          if (surfaceWatch === watch) surfaceWatch = null;
+        });
+      } catch { /* Retry from the poll after the first provider event. */ }
+    }
+    if (!surfacePoll) {
+      surfacePoll = setInterval(refreshSurfaceObservations, 500);
+      surfacePoll.unref?.();
+    }
+  }
 
   function surfaceFor(agentId) {
     if (!isInternalAgentMeta(getAgentMeta(agentId))) return null;
@@ -269,6 +321,9 @@ function createRustMultiSession(options = {}) {
       surfaces.delete(id); replayedAgents.delete(id); internalDrafts.delete(id);
     }
     replaySurfaces();
+    // Observe durable provider output independently of daemon inbox delivery.
+    // This also covers daemons already running when the package was upgraded.
+    refreshSurfaceObservations();
     for (const id of live) syncActivity(id);
     if (!paneManager) return;
     const ids = paneAgentIds();
@@ -384,7 +439,11 @@ function createRustMultiSession(options = {}) {
   }
 
   function stop({ clearDrafts = false } = {}) {
-    if (clearDrafts) { internalDrafts.clear(); surfaces.clear(); replayedAgents.clear(); }
+    closeSurfaceObservation();
+    if (clearDrafts) {
+      internalDrafts.clear(); surfaces.clear(); replayedAgents.clear();
+      surfaceReader = null; observationRoot = "";
+    }
     if (!active && !paneManager) return;
     if (flushTimer) {
       clearTimeout(flushTimer);
