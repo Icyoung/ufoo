@@ -66,6 +66,7 @@ test("a group member streams peer work into an already open pane without daemon 
     release(); await running;
     await waitFor(() => !frame()?.busy && frame()?.entries.some((entry) => entry.text === "REVIEW_FINISHED"));
     expect(frame().entries.find((entry) => entry.kind === "tool").detail).toContain("syntax valid");
+    expect(frame().entries.find((entry) => entry.kind === "tool").detail).not.toContain("[exit 0]");
     expect(frames.filter((item) => item.agent_id === architect).at(-1).entries).toEqual([]);
     session.setLayout("main");
     session.setLayout("single", reviewer);

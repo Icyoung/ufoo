@@ -193,7 +193,7 @@ function createAgentSurface(options = {}) {
       tool.output = (tool.output + output).slice(-64000);
       tools.set(id, tool);
       if (event.is_error || (Number.isFinite(event.exitCode) && event.exitCode !== 0)) tool.summary = tool.summary.replace(/^• /, "• Failed: ");
-      const exit = Number.isFinite(event.exitCode) ? `\n[exit ${event.exitCode}]` : "";
+      const exit = Number.isFinite(event.exitCode) && event.exitCode !== 0 ? `\n[exit ${event.exitCode}]` : "";
       const detail = [tool.summary.replace(/^• /, ""), tool.output + exit].filter(Boolean).join("\n");
       if (event.status !== "in_progress") status = "Waiting for model…";
       return apply("tool.result", { id, summary: tool.summary, detail });

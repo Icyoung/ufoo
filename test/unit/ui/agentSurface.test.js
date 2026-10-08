@@ -73,6 +73,7 @@ test("live text, thinking and tool output stay ordered and tool IDs can repeat a
   expect(view.snapshot()).toMatchObject({ busy: true, status: "Generating response…" });
   expect(view.snapshot().entries.map((row) => row.kind)).toEqual(["user", "thinking", "assistant", "tool", "assistant"]);
   expect(view.snapshot().entries[3].detail).toContain("first\nsecond\n");
+  expect(view.snapshot().entries[3].detail).not.toContain("[exit 0]");
   view.accept({ type: "task_completed", usage: { input_tokens: 5, output_tokens: 9 } });
   expect(view.snapshot()).toMatchObject({ busy: false, usage: "5 in · 9 out" });
   view.accept({ type: "task_started", task_id: "two", message: "another" });
@@ -104,12 +105,13 @@ test("bounded state evicts old output and keeps native tool stdout readable", ()
   for (let n = 0; n < 5; n++) {
     view.accept({ type: "task_started", task_id: `task-${n}`, message: "hello" });
     view.accept({ type: "tool_call", toolCallId: "1", name: "bash", args: { command: "ls" } });
-    view.accept({ type: "tool_result", toolCallId: "1", output: { stdout: "a.js\nb.js", stderr: "error" }, is_error: true });
+    view.accept({ type: "tool_result", toolCallId: "1", output: { stdout: "a.js\nb.js", stderr: "error" }, is_error: true, exitCode: 2 });
     view.accept({ type: "text_delta", delta: "x".repeat(100000) });
   }
   expect(view.snapshot().entries).toHaveLength(3);
   expect(view.snapshot().entries.at(-1).text).toHaveLength(64000);
   const tool = view.snapshot().entries.find((row) => row.kind === "tool");
   expect(tool.detail).toContain("a.js\nb.js\nerror");
+  expect(tool.detail).toContain("[exit 2]");
   expect(tool.text).toContain("Failed");
 });

@@ -464,7 +464,7 @@ async function handleThreadedEvent({
           : Array.isArray(event.output) ? event.output.map((block) => block && block.text || "").join("\n")
           : event.output && typeof event.output === "object" ? JSON.stringify(event.output) : "";
         if (output) emitStreamDelta(output.slice(0, 4000) + (output.endsWith("\n") ? "" : "\n"));
-        if (Number.isFinite(event.exitCode)) emitStreamDelta(`[exit ${event.exitCode}]\n`);
+        if (Number.isFinite(event.exitCode) && event.exitCode !== 0) emitStreamDelta(`[exit ${event.exitCode}]\n`);
       } else if (event.type === "usage" && event.usage) {
         turnUsage = normalizeTurnUsage(event.usage);
       } else if (event.type === "turn_completed") {

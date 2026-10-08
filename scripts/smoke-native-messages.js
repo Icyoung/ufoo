@@ -44,6 +44,7 @@ async function main() {
   // the wrapper's project-local bus socket suffix is appended.
   const fixtureParent = process.platform === "darwin" ? "/private/tmp" : process.env.RUNNER_TEMP || os.tmpdir();
   const root = fs.mkdtempSync(path.join(fixtureParent, "uf-smoke-"));
+  const ptyGroupsFile = path.join(root, "fixture-pty-groups");
   const received = [];
   let probeCalled = false;
   const api = http.createServer((request, response) => {
@@ -112,6 +113,15 @@ async function main() {
     // Exercise the full shared launcher and its inject socket. Only daemon
     // setup/registration use this fixture's already registered local identity.
     const launcherScript = `
+      // Each Unix PTY owns a separate session. Record only this fixture's
+      // groups so cleanup can stop vendor descendants after wrapper exit.
+      const pty = require(${JSON.stringify(require.resolve("node-pty"))});
+      const spawnPty = pty.spawn;
+      pty.spawn = (...args) => {
+        const child = spawnPty(...args);
+        require("fs").appendFileSync(${JSON.stringify(ptyGroupsFile)}, String(child.pid) + "\\n");
+        return child;
+      };
       const Launcher = require(${JSON.stringify(path.resolve(__dirname, "../src/agents/launch/launcher"))});
       const launcher = new Launcher(${JSON.stringify(agentType)}, ${JSON.stringify(selected === "codex" ? "codex" : "claude")});
       launcher.ensureInit = async () => {};
@@ -172,11 +182,27 @@ async function main() {
     console.error(JSON.stringify({ host: selected, ok: false, error: err.message, probe_called: probeCalled, channel_diagnostics: channelDiagnostics, fixture_ui: output.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").slice(-1800) }));
     process.exitCode = 1;
   } finally {
+    const groups = new Set(terminal ? [terminal.pid] : []);
+    try {
+      for (const value of fs.readFileSync(ptyGroupsFile, "utf8").split("\n")) {
+        const pid = Number(value);
+        if (Number.isInteger(pid) && pid > 1) groups.add(pid);
+      }
+    } catch { /* The launcher may have failed before starting its PTY. */ }
+    const signalGroups = (signal) => {
+      for (const pid of groups) {
+        try { process.kill(-pid, signal); }
+        catch (err) { if (err.code !== "ESRCH") throw err; }
+      }
+    };
+    signalGroups("SIGTERM");
     if (terminal && !exited) {
       terminal.kill("SIGTERM");
       try { await until(() => exited, 2500); }
       catch { terminal.kill("SIGKILL"); }
     }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    signalGroups("SIGKILL");
     api.closeAllConnections();
     await new Promise((resolve) => api.close(resolve));
     await new Promise((resolve) => setTimeout(resolve, 200));
