@@ -10,6 +10,13 @@ const { stableStringify } = require("./core/stableJson");
 const terminal = new Set(["completed", "failed", "cancelled", "interrupted", "waiting_user"]);
 const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (error) { return error.code !== "ESRCH"; } };
 
+function terminalResult(result) {
+  if (!Array.isArray(result?.messages) || !Number.isInteger(result.historyOffset)) return result;
+  // Persist this invocation once, rather than repeating all preceding turns.
+  // Paused invocations retain their full input separately for tool resume.
+  return { ...result, messages: result.messages.filter(message => message.role !== "system").slice(result.historyOffset), historyOffset: 0 };
+}
+
 /** A host injects persistence and preparation; core owns accepted invocation lifecycle. */
 function createAgentRuntime({ profile, transport, capabilities, host = {}, defaults = {} } = {}) {
   assertTransport(transport);
@@ -66,7 +73,9 @@ function createAgentRuntime({ profile, transport, capabilities, host = {}, defau
     const before = store.read();
     const task = before.tasks[event.taskRunId];
     event = { version: 1, projectId: host.projectId || "", agentId: host.agentId || "", sessionId: before.sessionId,
-      requestId: task?.request.requestId || "", taskId: task?.request.taskId || event.taskRunId || "", attemptId: task?.attemptId || "", ...event };
+      requestId: task?.request.requestId || "", taskId: task?.request.taskId || event.taskRunId || "", attemptId: task?.attemptId || "",
+      traceId: task?.request.traceId || task?.request.taskId || event.taskRunId || "",
+      parentTaskRunId: task?.request.parentTaskRunId || "", parentSessionId: task?.request.parentSessionId || "", ...event };
     let sequence;
     const snapshot = store.transaction((state) => { sequence = state.sequence + 1; return [event]; });
     const committed = store.events({ after: sequence - 1 }).find((entry) => entry.sequence === sequence);
@@ -100,21 +109,24 @@ function createAgentRuntime({ profile, transport, capabilities, host = {}, defau
             : host.prepareRequest ? await host.prepareRequest(task.request, task) : { prompt: task.request.text };
           return runtime.run({ ...prepared, requestId: task.request.requestId,
             taskId: task.request.taskId || task.taskRunId, taskRunId: task.taskRunId, attemptId,
+            traceId: task.request.traceId || task.request.taskId || task.taskRunId,
+            parentTaskRunId: task.request.parentTaskRunId || "", parentSessionId: task.request.parentSessionId || "",
             signal, onEvent: record });
         };
         const result = host.taskScheduler
           ? await host.taskScheduler.schedule({ id: task.taskRunId, resourceKey: task.request.resourceKey || "", signal: controller.signal }, execute)
           : await execute(controller.signal);
         if (controller.signal.aborted) throw Object.assign(new Error("agent cancelled"), { code: "cancelled" });
-        if (result.error || result.stopReason) throw Object.assign(new Error(result.error || `agent stopped: ${result.stopReason}`), { code: result.stopReason || "runtime_error" });
-        await record({ type: result.waitingUserInteraction ? "task.paused" : "task.completed", taskRunId: activeTask, result });
+        if (result.error || result.stopReason) throw Object.assign(new Error(result.error || `agent stopped: ${result.stopReason}`), { code: result.stopReason || "runtime_error", result });
+        await record({ type: result.waitingUserInteraction ? "task.paused" : "task.completed", taskRunId: activeTask,
+          result: result.waitingUserInteraction ? result : terminalResult(result) });
       } catch (error) {
         if (store.read().tasks[activeTask]?.status === "completed") {
           if (host.onError) host.onError(error);
           continue;
         }
         await record({ type: controller.signal.aborted || error.code === "cancelled" ? "task.cancelled" : "task.failed",
-          taskRunId: activeTask, error: error.message });
+          taskRunId: activeTask, error: error.message, code: error.code || "runtime_error", ...(error.result ? { result: terminalResult(error.result) } : {}) });
       } finally { activeTask = ""; controller = null; }
     }
   }

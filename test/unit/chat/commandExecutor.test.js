@@ -293,7 +293,7 @@ describe("chat commandExecutor", () => {
       count: 1,
       nickname: "neo",
       prompt_profile: "",
-      launch_scope: "inplace",
+      internal_only: true,
     });
     expect(options.schedule).toHaveBeenCalled();
     expect(options.requestStatus).toHaveBeenCalled();
@@ -305,14 +305,13 @@ describe("chat commandExecutor", () => {
     const { executor, options } = createHarness({ internalOnly: true, resolveTerminalApp: jest.fn(() => "terminal") });
     await executor.handleLaunchCommand(["codex", "scope=window"]);
     expect(options.send).toHaveBeenCalledWith(expect.objectContaining({
-      type: "launch_agent", internal_only: true, launch_scope: "inplace",
+      type: "launch_agent", internal_only: true,
     }));
     expect(options.send.mock.calls[0][0]).not.toHaveProperty("terminal_app");
     expect(options.send.mock.calls[0][0]).not.toHaveProperty("host_inject_sock");
     await executor.handleGroupCommand(["run", "review"]);
     expect(options.send).toHaveBeenLastCalledWith(expect.objectContaining({ type: "launch_group", internal_only: true }));
     expect(options.send.mock.calls[1][0]).not.toHaveProperty("terminal_app");
-    await executor.handleModeCommand(["terminal"]);
     expect(options.saveConfig).not.toHaveBeenCalled();
   });
 
@@ -346,153 +345,20 @@ describe("chat commandExecutor", () => {
 
     expect(options.send).toHaveBeenCalledWith({
       type: "launch_agent",
-      agent: "ufoo",
+      agent: "ucode",
       count: 1,
       nickname: "core",
       prompt_profile: "",
-      launch_scope: "inplace",
+      internal_only: true,
     });
-  });
-
-  test("handleLaunchCommand accepts agy and antigravity / uagy aliases", async () => {
-    for (const alias of ["agy", "antigravity", "uagy"]) {
-      const { executor, options } = createHarness();
-      await executor.handleLaunchCommand([alias, "nickname=lead"]);
-      expect(options.send).toHaveBeenCalledWith({
-        type: "launch_agent",
-        agent: "agy",
-        count: 1,
-        nickname: "lead",
-        prompt_profile: "",
-        launch_scope: "inplace",
-      });
-    }
-  });
-
-  test("handleLaunchCommand accepts grok and grok-build / ugrok aliases", async () => {
-    for (const alias of ["grok", "grok-build", "ugrok", "xai"]) {
-      const { executor, options } = createHarness();
-      await executor.handleLaunchCommand([alias, "nickname=lead"]);
-      expect(options.send).toHaveBeenCalledWith({
-        type: "launch_agent",
-        agent: "grok",
-        count: 1,
-        nickname: "lead",
-        prompt_profile: "",
-        launch_scope: "inplace",
-      });
-    }
-  });
-
-  test("handleLaunchCommand accepts kimi and kimi-cli / ukimi aliases", async () => {
-    for (const alias of ["kimi", "kimi-cli", "kimi-code", "ukimi"]) {
-      const { executor, options } = createHarness();
-      await executor.handleLaunchCommand([alias, "nickname=lead"]);
-      expect(options.send).toHaveBeenCalledWith({
-        type: "launch_agent",
-        agent: "kimi",
-        count: 1,
-        nickname: "lead",
-        prompt_profile: "",
-        launch_scope: "inplace",
-      });
-    }
   });
 
   test("handleLaunchCommand rejects unknown agent types but includes supported agents in the error hint", async () => {
     const { executor, options, logs } = createHarness();
     await executor.handleLaunchCommand(["mystery"]);
     expect(options.send).not.toHaveBeenCalled();
-    expect(logs.some((entry) => /Unknown agent type/.test(entry.text))).toBe(true);
-    expect(logs.some((entry) => /claude.*codex.*agy.*grok.*kimi.*ucode/.test(entry.text))).toBe(true);
-  });
-
-  test("handleLaunchCommand supports separate window scope", async () => {
-    const { executor, options } = createHarness();
-
-    await executor.handleLaunchCommand(["codex", "scope=window"]);
-    expect(options.send).toHaveBeenCalledWith({
-      type: "launch_agent",
-      agent: "codex",
-      count: 1,
-      nickname: "",
-      prompt_profile: "",
-      launch_scope: "window",
-    });
-
-    options.send.mockClear();
-    await executor.handleLaunchCommand(["codex", "window"]);
-    expect(options.send).toHaveBeenCalledWith({
-      type: "launch_agent",
-      agent: "codex",
-      count: 1,
-      nickname: "",
-      prompt_profile: "",
-      launch_scope: "window",
-    });
-  });
-
-  test("handleLaunchCommand forwards terminal app preference when available", async () => {
-    const { executor, options } = createHarness({
-      resolveTerminalApp: jest.fn(() => "terminal"),
-    });
-
-    await executor.handleLaunchCommand(["claude"]);
-    expect(options.send).toHaveBeenCalledWith({
-      type: "launch_agent",
-      agent: "claude",
-      count: 1,
-      nickname: "",
-      prompt_profile: "",
-      launch_scope: "inplace",
-      terminal_app: "terminal",
-    });
-  });
-
-  test("handleLaunchCommand forwards host launch context from environment", async () => {
-    const originalDaemonSock = process.env.UFOO_HOST_DAEMON_SOCK;
-    const originalSessionId = process.env.UFOO_HOST_SESSION_ID;
-    const originalInjectSock = process.env.UFOO_HOST_INJECT_SOCK;
-    const originalHostName = process.env.UFOO_HOST_NAME;
-    process.env.UFOO_HOST_DAEMON_SOCK = "/tmp/horizon-daemon.sock";
-    process.env.UFOO_HOST_SESSION_ID = "HS-SRC";
-    process.env.UFOO_HOST_INJECT_SOCK = "/tmp/horizon-current.sock";
-    process.env.UFOO_HOST_NAME = "horizon";
-
-    try {
-      const { executor, options } = createHarness();
-
-      await executor.handleLaunchCommand(["codex"]);
-      expect(options.send).toHaveBeenCalledWith({
-        type: "launch_agent",
-        agent: "codex",
-        count: 1,
-        nickname: "",
-        prompt_profile: "",
-        launch_scope: "inplace",
-        host_inject_sock: "/tmp/horizon-current.sock",
-        host_daemon_sock: "/tmp/horizon-daemon.sock",
-        host_name: "horizon",
-        host_session_id: "HS-SRC",
-      });
-    } finally {
-      if (originalDaemonSock === undefined) delete process.env.UFOO_HOST_DAEMON_SOCK;
-      else process.env.UFOO_HOST_DAEMON_SOCK = originalDaemonSock;
-      if (originalSessionId === undefined) delete process.env.UFOO_HOST_SESSION_ID;
-      else process.env.UFOO_HOST_SESSION_ID = originalSessionId;
-      if (originalInjectSock === undefined) delete process.env.UFOO_HOST_INJECT_SOCK;
-      else process.env.UFOO_HOST_INJECT_SOCK = originalInjectSock;
-      if (originalHostName === undefined) delete process.env.UFOO_HOST_NAME;
-      else process.env.UFOO_HOST_NAME = originalHostName;
-    }
-  });
-
-  test("handleLaunchCommand rejects invalid scope", async () => {
-    const { executor, options, logs } = createHarness();
-
-    await executor.handleLaunchCommand(["codex", "scope=weird"]);
-    expect(options.send).not.toHaveBeenCalled();
-    expect(logs.some((entry) => entry.text.includes("scope must be inplace|window"))).toBe(true);
+    expect(logs.some((entry) => /Unknown internal agent type/.test(entry.text))).toBe(true);
+    expect(logs.some((entry) => /claude.*codex.*ucode/.test(entry.text))).toBe(true);
   });
 
   test("handleLaunchCommand rejects ufoo alias input", async () => {
@@ -501,7 +367,7 @@ describe("chat commandExecutor", () => {
     await executor.handleLaunchCommand(["ufoo", "nickname=core2"]);
 
     expect(options.send).not.toHaveBeenCalled();
-    expect(logs.some((entry) => entry.text.includes("Unknown agent type. Use: claude, codex, agy, grok, kimi, or ucode"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("Unknown internal agent type. Use: claude, codex or ucode"))).toBe(true);
   });
 
   test("handleLaunchCommand forwards prompt profile", async () => {
@@ -515,7 +381,7 @@ describe("chat commandExecutor", () => {
       count: 1,
       nickname: "neo",
       prompt_profile: "design-critic",
-      launch_scope: "inplace",
+      internal_only: true,
     });
   });
 
@@ -608,7 +474,7 @@ describe("chat commandExecutor", () => {
       count: 1,
       nickname: "designer",
       prompt_profile: "design-critic",
-      launch_scope: "inplace",
+      internal_only: true,
     });
     expect(options.schedule).toHaveBeenCalled();
     expect(options.requestStatus).toHaveBeenCalled();
@@ -623,39 +489,33 @@ describe("chat commandExecutor", () => {
 
     expect(options.send).toHaveBeenCalledWith({
       type: "launch_agent",
-      agent: "ufoo",
+      agent: "ucode",
       count: 1,
       nickname: "",
       prompt_profile: "design-critic",
-      launch_scope: "window",
+      internal_only: true,
     });
   });
 
-  test("handleSoloCommand run forwards terminal app preference", async () => {
-    const { executor, options } = createHarness({
-      resolveTerminalApp: jest.fn(() => "terminal"),
-    });
-
-    await executor.handleSoloCommand(["run", "design-critic"]);
-
-    expect(options.send).toHaveBeenCalledWith(expect.objectContaining({
-      type: "launch_agent",
-      terminal_app: "terminal",
-    }));
+  test("bare resume opens its menu without resuming every agent", async () => {
+    const openResumeMenu = jest.fn();
+    const { executor, options } = createHarness({ openResumeMenu });
+    await executor.handleResumeCommand([]);
+    expect(openResumeMenu).toHaveBeenCalledTimes(1);
+    expect(options.send).not.toHaveBeenCalled();
   });
 
-  test("handleResumeCommand supports list subcommand", async () => {
+  test("resume list is removed from the dashboard", async () => {
     const { executor, options, logs } = createHarness();
-
     await executor.handleResumeCommand(["list", "codex-3"]);
+    expect(options.send).not.toHaveBeenCalled();
+    expect(logs.some((entry) => entry.text.includes("/resume list has been removed"))).toBe(true);
+  });
 
-    expect(options.send).toHaveBeenCalledWith({
-      type: "list_recoverable_agents",
-      target: "codex-3",
-    });
-    expect(options.schedule).toHaveBeenCalled();
-    expect(options.requestStatus).toHaveBeenCalled();
-    expect(logs.some((entry) => entry.text.includes("Listing recoverable agents (codex-3)"))).toBe(true);
+  test.each(["ucode:old", "group:dev-team"])("resume forwards selected %s and enforces internal scope", async (target) => {
+    const { executor, options } = createHarness({ internalOnly: true });
+    await executor.handleResumeCommand([target]);
+    expect(options.send).toHaveBeenCalledWith({ type: "resume_agents", target, internal_only: true });
   });
 
   test("handleCronCommand creates cron task with interval/targets/prompt", async () => {
@@ -708,23 +568,14 @@ describe("chat commandExecutor", () => {
     expect(options.createCronTask).toHaveBeenCalled();
   });
 
-  test("handleModeCommand sets launch mode and notifies host", async () => {
-    const applyChatSettings = jest.fn();
-    const saveConfig = jest.fn();
-    const restartDaemon = jest.fn().mockResolvedValue(undefined);
-    const { executor, logs } = createHarness({
-      loadConfig: jest.fn(() => ({ launchMode: "auto" })),
-      saveConfig,
-      restartDaemon,
-      applyChatSettings,
+  test.each(["show", "terminal", "internal"])("removed /mode %s does not change settings or restart the daemon", async (argument) => {
+    const { executor, options, logs } = createHarness({
+      parseCommand: jest.fn(() => ({ command: "mode", args: [argument] })),
     });
-
-    await executor.handleModeCommand(["terminal"]);
-
-    expect(saveConfig).toHaveBeenCalledWith("/tmp/ufoo", { launchMode: "terminal" });
-    expect(applyChatSettings).toHaveBeenCalledWith({ launchMode: "terminal" });
-    expect(restartDaemon).toHaveBeenCalledWith("/tmp/ufoo");
-    expect(logs.some((entry) => entry.text.includes("Launch mode: terminal"))).toBe(true);
+    await expect(executor.executeCommand(`/mode ${argument}`)).resolves.toBe(true);
+    expect(logs.some((entry) => entry.text.includes("Unknown command: /mode"))).toBe(true);
+    expect(options.saveConfig).not.toHaveBeenCalled();
+    expect(options.restartDaemon).not.toHaveBeenCalled();
   });
 
   test("handleProviderCommand sets agent provider and notifies host", async () => {
@@ -746,17 +597,15 @@ describe("chat commandExecutor", () => {
     expect(logs.some((entry) => entry.text.includes("ufoo-agent: claude"))).toBe(true);
   });
 
-  test("executeCommand routes /mode and /provider", async () => {
+  test("executeCommand routes /provider", async () => {
     const { executor } = createHarness({
       parseCommand: jest.fn((text) => {
-        if (String(text).startsWith("/mode")) return { command: "mode", args: ["show"] };
         if (String(text).startsWith("/provider")) return { command: "provider", args: ["show"] };
         return null;
       }),
       loadConfig: jest.fn(() => ({ launchMode: "host", agentProvider: "agy-cli" })),
     });
 
-    await expect(executor.executeCommand("/mode show")).resolves.toBe(true);
     await expect(executor.executeCommand("/provider show")).resolves.toBe(true);
   });
 
@@ -827,10 +676,7 @@ describe("chat commandExecutor", () => {
         alias: "dev-basic",
         instance: "team-a",
         dry_run: true,
-        host_inject_sock: "/tmp/host-inject.sock",
-        host_daemon_sock: "/tmp/host-daemon.sock",
-        host_name: "horizon",
-        host_session_id: "HS123",
+        internal_only: true,
       });
       expect(options.schedule).toHaveBeenCalled();
       expect(options.requestStatus).toHaveBeenCalled();
@@ -840,19 +686,6 @@ describe("chat commandExecutor", () => {
       process.env.UFOO_HOST_NAME = previousEnv.UFOO_HOST_NAME;
       process.env.UFOO_HOST_SESSION_ID = previousEnv.UFOO_HOST_SESSION_ID;
     }
-  });
-
-  test("handleGroupCommand run forwards terminal app preference", async () => {
-    const { executor, options } = createHarness({
-      resolveTerminalApp: jest.fn(() => "terminal"),
-    });
-
-    await executor.handleGroupCommand(["run", "dev-basic"]);
-
-    expect(options.send).toHaveBeenCalledWith(expect.objectContaining({
-      type: "launch_group",
-      terminal_app: "terminal",
-    }));
   });
 
   test("handleGroupCommand status/stop/validate/diagram send daemon requests", async () => {
@@ -1142,14 +975,14 @@ describe("chat commandExecutor", () => {
 
   test("executeCommand routes /settings ucode to ucode config handler", async () => {
     const { executor, options } = createHarness({
-      parseCommand: jest.fn(() => ({ command: "settings", args: ["ucode", "set", "provider=anthropic", "model=claude-opus-4-6"] })),
+      parseCommand: jest.fn(() => ({ command: "settings", args: ["ucode", "set", "provider=openai", "model=gpt-5.4"] })),
     });
 
-    await expect(executor.executeCommand("/settings ucode set provider=anthropic model=claude-opus-4-6")).resolves.toBe(true);
+    await expect(executor.executeCommand("/settings ucode set provider=openai model=gpt-5.4")).resolves.toBe(true);
 
     expect(options.saveUcodeConfig).toHaveBeenCalledWith({
-      ucodeProvider: "anthropic",
-      ucodeModel: "claude-opus-4-6",
+      ucodeProvider: "openai",
+      ucodeModel: "gpt-5.4",
     });
   });
 
@@ -1191,8 +1024,8 @@ describe("chat commandExecutor", () => {
     expect(options.loadConfig).toHaveBeenCalledWith("/tmp/ufoo");
     expect(logs.some((entry) => entry.text.includes("settings:"))).toBe(true);
     expect(logs.some((entry) => entry.text.includes("agent: codex"))).toBe(true);
-    expect(logs.some((entry) => entry.text.includes("recommended gpt-5.5"))).toBe(true);
-    expect(logs.some((entry) => entry.text.includes("router: mode main"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("recommended gpt-6.1-sol"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("router"))).toBe(false);
     expect(logs.some((entry) => entry.text.includes("ucode: provider openai"))).toBe(true);
   });
 
@@ -1203,11 +1036,21 @@ describe("chat commandExecutor", () => {
 
     expect(options.saveConfig).toHaveBeenCalledWith("/tmp/ufoo", {
       agentProvider: "claude-cli",
-      agentModel: "opus-4.7",
+      agentModel: "claude-opus-5-5",
     });
     expect(options.restartDaemon).toHaveBeenCalledWith("/tmp/ufoo");
     expect(logs.some((entry) => entry.text.includes("ufoo-agent config updated"))).toBe(true);
-    expect(logs.some((entry) => entry.text.includes("model: opus-4.7"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("model: claude-opus-5-5"))).toBe(true);
+  });
+
+  test("the Codex preset restores Sol 6.1 and medium through dashboard settings", async () => {
+    const applyAgentSettings = jest.fn().mockResolvedValue({ ok: true });
+    const { executor, options } = createHarness({ applyAgentSettings });
+    await executor.handleSettingsCommand(["agent", "codex"]);
+    expect(applyAgentSettings).toHaveBeenCalledWith({
+      agentProvider: "codex-cli", agentModel: "gpt-6.1-sol", agentThinking: "medium",
+    });
+    expect(options.restartDaemon).not.toHaveBeenCalled();
   });
 
   test("handleSettingsCommand sets ufoo-agent model with kv pairs", async () => {
@@ -1222,72 +1065,12 @@ describe("chat commandExecutor", () => {
     expect(options.restartDaemon).toHaveBeenCalledWith("/tmp/ufoo");
   });
 
-  test("handleSettingsCommand shows router mode", async () => {
-    const { executor, options, logs } = createHarness({
-      loadConfig: jest.fn(() => ({ controllerMode: "main", routerProvider: "codex", routerModel: "gpt-5.3-codex-spark" })),
-    });
-
-    await executor.handleSettingsCommand(["router"]);
-
-    expect(options.loadConfig).toHaveBeenCalledWith("/tmp/ufoo");
-    expect(logs.some((entry) => entry.text.includes("gate router config:"))).toBe(true);
-    expect(logs.some((entry) => entry.text.includes("controllerMode: main"))).toBe(true);
-    expect(logs.some((entry) => entry.text.includes("provider: codex"))).toBe(true);
-    expect(logs.some((entry) => entry.text.includes("model: gpt-5.3-codex-spark"))).toBe(true);
-  });
-
-  test("executeCommand routes /settings router loop to project config and daemon restart", async () => {
-    const { executor, options, logs } = createHarness({
-      parseCommand: jest.fn(() => ({ command: "settings", args: ["router", "loop"] })),
-    });
-
-    await expect(executor.executeCommand("/settings router loop")).resolves.toBe(true);
-
-    expect(options.saveConfig).toHaveBeenCalledWith("/tmp/ufoo", { controllerMode: "loop" });
-    expect(options.restartDaemon).toHaveBeenCalledWith("/tmp/ufoo");
-    expect(logs.some((entry) => entry.text.includes("gate router mode set to loop"))).toBe(true);
-  });
-
-  test("executeCommand routes /settings router set provider/model kv pairs", async () => {
-    const { executor, options, logs } = createHarness({
-      parseCommand: jest.fn(() => ({ command: "settings", args: ["router", "set", "provider=claude", "model=claude-haiku", "mode=main"] })),
-    });
-
-    await expect(executor.executeCommand("/settings router set provider=claude model=claude-haiku mode=main")).resolves.toBe(true);
-
-    expect(options.saveConfig).toHaveBeenCalledWith("/tmp/ufoo", {
-      controllerMode: "main",
-      routerProvider: "claude",
-      routerModel: "claude-haiku",
-    });
-    expect(options.restartDaemon).toHaveBeenCalledWith("/tmp/ufoo");
-    expect(logs.some((entry) => entry.text.includes("gate router config updated"))).toBe(true);
-  });
-
-  test("handleSettingsCommand applies gate router provider defaults", async () => {
+  test.each([[], ["loop"], ["set", "provider=claude", "model=unused"], ["clear", "all"]])("removed router settings reject arguments %j without changing config", async (...args) => {
     const { executor, options, logs } = createHarness();
-
-    await executor.handleSettingsCommand(["router", "codex"]);
-
-    expect(options.saveConfig).toHaveBeenCalledWith("/tmp/ufoo", {
-      routerProvider: "codex",
-      routerModel: "gpt-5.3-codex-spark",
-    });
-    expect(options.restartDaemon).toHaveBeenCalledWith("/tmp/ufoo");
-    expect(logs.some((entry) => entry.text.includes("gate router config updated"))).toBe(true);
-  });
-
-  test("handleSettingsCommand clears router provider and model", async () => {
-    const { executor, options, logs } = createHarness();
-
-    await executor.handleSettingsCommand(["router", "clear", "provider", "model"]);
-
-    expect(options.saveConfig).toHaveBeenCalledWith("/tmp/ufoo", {
-      routerProvider: "",
-      routerModel: "",
-    });
-    expect(options.restartDaemon).toHaveBeenCalledWith("/tmp/ufoo");
-    expect(logs.some((entry) => entry.text.includes("gate router config cleared"))).toBe(true);
+    await executor.handleSettingsCommand(["router", ...args]);
+    expect(options.saveConfig).not.toHaveBeenCalled();
+    expect(options.restartDaemon).not.toHaveBeenCalled();
+    expect(logs.some((entry) => entry.text.includes("Unknown settings section. Use: show, agent, ucode"))).toBe(true);
   });
 
   test("handleUfooCommand with legacy single-token arg silently checks messages", async () => {
@@ -1327,28 +1110,28 @@ describe("chat commandExecutor", () => {
     expect(result).toBe(true);
   });
 
-  test("executeCommand routes /multi to toggle callback", async () => {
-    const toggleMultiWindow = jest.fn();
+  test("the removed /multi command no longer changes the layout", async () => {
+    const setWindowLayout = jest.fn();
     const { executor, logs } = createHarness({
       parseCommand: jest.fn(() => ({ command: "multi", args: [] })),
-      toggleMultiWindow,
+      setWindowLayout,
     });
 
     const result = await executor.executeCommand("/multi");
 
     expect(result).toBe(true);
-    expect(toggleMultiWindow).toHaveBeenCalledTimes(1);
-    expect(logs.some((entry) => entry.text.includes("Multi-window mode is not available"))).toBe(false);
+    expect(logs.some((entry) => entry.text.includes("Unknown command: /multi"))).toBe(true);
+    expect(setWindowLayout).not.toHaveBeenCalled();
   });
 
-  test.each(["on", "off", "@coder"])("/multi %s passes the requested layout to the host", async (argument) => {
-    const toggleMultiWindow = jest.fn();
+  test.each(["main", "side", "multi"])("/window %s passes the requested layout to the host", async (argument) => {
+    const setWindowLayout = jest.fn();
     const { executor } = createHarness({
-      parseCommand: jest.fn(() => ({ command: "multi", args: [argument] })),
-      toggleMultiWindow,
+      parseCommand: jest.fn(() => ({ command: "window", args: argument.split(" ") })),
+      setWindowLayout,
     });
-    await executor.executeCommand(`/multi ${argument}`);
-    expect(toggleMultiWindow).toHaveBeenCalledWith([argument]);
+    expect(await executor.executeCommand(`/window ${argument}`)).toBe(true);
+    expect(setWindowLayout).toHaveBeenCalledWith(argument.split(" "));
   });
 
   test("executeCommand routes /mcp status to MCP status diagnostics", async () => {
@@ -1549,33 +1332,20 @@ describe("chat commandExecutor", () => {
     expect(logs.some((e) => e.text.includes("init boom"))).toBe(true);
   });
 
-  test("collectHostLaunchRequestContext collects env vars", () => {
-    const { collectHostLaunchRequestContext } = require("../../../src/app/chat/commandExecutor");
-    const ctx = collectHostLaunchRequestContext({
-      UFOO_HOST_INJECT_SOCK: "/tmp/inject.sock",
-      UFOO_HOST_DAEMON_SOCK: "/tmp/daemon.sock",
-      UFOO_HOST_NAME: "horizon",
-      UFOO_HOST_SESSION_ID: "sess-1",
-    });
-    expect(ctx.host_inject_sock).toBe("/tmp/inject.sock");
-    expect(ctx.host_daemon_sock).toBe("/tmp/daemon.sock");
-    expect(ctx.host_name).toBe("horizon");
-    expect(ctx.host_session_id).toBe("sess-1");
+  test.each(["agy", "kimi", "grok", "ufoo-code", "ufoo"])("dashboard rejects unsupported worker %s without sending or scheduling", async (agent) => {
+    const { executor, options, logs } = createHarness();
+    await executor.handleLaunchCommand([agent]);
+    await executor.handleSoloCommand(["run", "reviewer", `agent=${agent}`]);
+    expect(options.send).not.toHaveBeenCalled();
+    expect(options.schedule).not.toHaveBeenCalled();
+    expect(logs.some(({ text }) => text.includes("internal agent type"))).toBe(true);
+  });
+  test("solo stays internal even with an external host environment and a removed window option", async () => {
+    const { executor, options } = createHarness({ loadConfig: () => ({ launchMode: "terminal", agentProvider: "codex-cli" }) });
+    await executor.handleSoloCommand(["run", "reviewer", "agent=codex", "scope=window"]);
+    const request = options.send.mock.calls[0][0];
+    expect(request).toMatchObject({ type: "launch_agent", internal_only: true, agent: "codex" });
+    for (const field of ["launch_scope", "terminal_app", "host_inject_sock", "tmux_pane"]) expect(request).not.toHaveProperty(field);
   });
 
-  test("collectHostLaunchRequestContext returns empty for missing vars", () => {
-    const { collectHostLaunchRequestContext } = require("../../../src/app/chat/commandExecutor");
-    const ctx = collectHostLaunchRequestContext({});
-    expect(Object.keys(ctx)).toHaveLength(0);
-  });
-
-  test("collectHostLaunchRequestContext uses HORIZON fallbacks", () => {
-    const { collectHostLaunchRequestContext } = require("../../../src/app/chat/commandExecutor");
-    const ctx = collectHostLaunchRequestContext({
-      HORIZON_INJECT_SOCK: "/tmp/h-inject.sock",
-      HORIZON_SESSION_ID: "h-sess",
-    });
-    expect(ctx.host_inject_sock).toBe("/tmp/h-inject.sock");
-    expect(ctx.host_session_id).toBe("h-sess");
-  });
 });

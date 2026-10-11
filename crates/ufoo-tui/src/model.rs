@@ -12,13 +12,11 @@ pub const STREAM_COALESCE_MS: u64 = 40;
 pub enum FocusPane {
     Input,
     Agents,
-    Mode,
     Provider,
     Cron,
     Projects,
     Completions,
     Interaction,
-    AgentView,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -27,6 +25,7 @@ pub struct InteractionPrompt {
     pub prompt: String,
     pub kind: String,
     pub lines: Vec<String>,
+    pub secret: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -374,14 +373,33 @@ pub struct MultiPaneFrame {
     pub status: String,
     pub input: String,
     pub input_cursor: usize,
+    pub input_revision: u64,
+    pub revision: u64,
     pub scroll_offset: usize,
+}
+
+impl MultiPaneFrame {
+    pub fn draft(&self) -> PromptState {
+        let mut units = 0;
+        let cursor = self.input.chars().take_while(|ch| {
+            units += ch.len_utf16();
+            units <= self.input_cursor
+        }).count();
+        PromptState { text: self.input.clone(), cursor, ..Default::default() }
+    }
+
+    pub fn set_draft(&mut self, draft: PromptState) {
+        self.input_cursor = draft.text.chars().take(draft.cursor).map(char::len_utf16).sum();
+        self.input = draft.text;
+        self.input_revision = self.input_revision.saturating_add(1);
+    }
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct MultiState {
     pub active: bool,
-    /// Wire identity: "multi" (/multi) or "side" (internal activate).
-    /// Not shown as a separate user-facing mode — same chrome as multi.
+    /// Local renderer kind: "multi" for all children, "side" for one child.
+    /// Wire window.set.mode is main | side | multi, even with no child panes.
     pub kind: String,
     pub session_id: String,
     pub rev: u64,
@@ -422,6 +440,7 @@ pub struct PendingDelta {
 
 #[derive(Debug, Clone)]
 pub struct AppState {
+    pub text_selection: crate::selection::TextSelection,
     pub title: String,
     pub surface: String,
     pub package_version: String,
@@ -434,6 +453,7 @@ pub struct AppState {
     pub selected_agent: isize,
     pub completions: Vec<CompletionItem>,
     pub completion_index: usize,
+    pub completion_scroll: usize,
     pub focus: FocusPane,
     pub scroll_offset: usize,
     /// Max scroll_offset from the last draw (lines above the viewport).
@@ -456,12 +476,10 @@ pub struct AppState {
     pub status_started: Option<Instant>,
     pub spinner_ticks: u64,
     pub interaction: Option<InteractionPrompt>,
+    pub settings_draft: Option<PromptState>,
     pub plan_summary: String,
-    pub launch_mode: String,
     pub agent_provider: String,
-    pub mode_options: Vec<String>,
     pub provider_options: Vec<SettingOption>,
-    pub selected_mode: usize,
     pub selected_provider: usize,
     pub attachment_count: usize,
     pub usage_summary: String,
@@ -471,11 +489,6 @@ pub struct AppState {
     pub cron_tasks: Vec<CronItem>,
     pub selected_cron: isize,
     pub loop_summary: String,
-    pub viewing_agent_id: String,
-    pub viewing_agent_label: String,
-    pub agent_view_status: String,
-    pub agent_bar_index: usize,
-    pub agent_bar_focused: bool,
     pub prompt_prefix: String,
     pub attachment_labels: Vec<String>,
     pub controller_root: String,
@@ -489,6 +502,7 @@ pub struct AppState {
 impl AppState {
     pub fn new(title: impl Into<String>, surface: impl Into<String>) -> Self {
         Self {
+            text_selection: crate::selection::TextSelection::default(),
             title: title.into(),
             surface: surface.into(),
             package_version: crate::protocol::BINARY_VERSION.into(),
@@ -501,6 +515,7 @@ impl AppState {
             selected_agent: -1,
             completions: Vec::new(),
             completion_index: 0,
+            completion_scroll: 0,
             focus: FocusPane::Input,
             scroll_offset: 0,
             scroll_max_off: 0,
@@ -521,16 +536,9 @@ impl AppState {
             status_started: None,
             spinner_ticks: 0,
             interaction: None,
+            settings_draft: None,
             plan_summary: String::new(),
-            launch_mode: "auto".into(),
             agent_provider: "codex-cli".into(),
-            mode_options: vec![
-                "auto".into(),
-                "host".into(),
-                "terminal".into(),
-                "tmux".into(),
-                "internal".into(),
-            ],
             provider_options: vec![
                 SettingOption {
                     label: "codex".into(),
@@ -548,8 +556,9 @@ impl AppState {
                     label: "kimi".into(),
                     value: "kimi-cli".into(),
                 },
+                SettingOption { label: "grok".into(), value: "grok-cli".into() },
+                SettingOption { label: "custom".into(), value: "custom".into() },
             ],
-            selected_mode: 0,
             selected_provider: 0,
             attachment_count: 0,
             usage_summary: String::new(),
@@ -559,11 +568,6 @@ impl AppState {
             cron_tasks: Vec::new(),
             selected_cron: -1,
             loop_summary: String::new(),
-            viewing_agent_id: String::new(),
-            viewing_agent_label: String::new(),
-            agent_view_status: String::new(),
-            agent_bar_index: 0,
-            agent_bar_focused: false,
             prompt_prefix: "› ".into(),
             attachment_labels: Vec::new(),
             controller_root: String::new(),
@@ -681,27 +685,8 @@ impl AppState {
     }
 
     pub fn rebuild_footer(&mut self) {
-        if self.focus == FocusPane::Mode {
-            let parts: Vec<String> = self
-                .mode_options
-                .iter()
-                .enumerate()
-                .map(|(i, mode)| {
-                    if i == self.selected_mode {
-                        format!("[{mode}]")
-                    } else {
-                        mode.clone()
-                    }
-                })
-                .collect();
-            self.footer = format!(
-                "Mode: {} · ←/→ · ↓ provider · ↑ cron · esc",
-                parts.join(" · ")
-            );
-            return;
-        }
         if self.focus == FocusPane::Provider {
-            let parts: Vec<String> = self
+            let mut parts: Vec<String> = self
                 .provider_options
                 .iter()
                 .enumerate()
@@ -713,8 +698,13 @@ impl AppState {
                     }
                 })
                 .collect();
+            for (offset, label) in ["model", "thinking"].iter().enumerate() {
+                parts.push(if self.selected_provider == self.provider_options.len() + offset {
+                    format!("[{label}]")
+                } else { label.to_string() });
+            }
             self.footer = format!(
-                "Provider: {} · ←/→ · Enter apply · ↓ cron · ↑ agents · Esc back",
+                "Settings: {} · ←/→ Enter · Esc back",
                 parts.join(" · ")
             );
             return;
@@ -752,44 +742,10 @@ impl AppState {
             );
             return;
         }
-        if !self.viewing_agent_id.is_empty() {
-            let mut parts = Vec::with_capacity(self.agents.len() + 1);
-            let exit_selected = self.agent_bar_focused && self.agent_bar_index == 0;
-            parts.push(if exit_selected {
-                "[ufoo]".to_string()
-            } else {
-                "ufoo".to_string()
-            });
-            for (i, agent) in self.agents.iter().enumerate() {
-                let bar_i = i + 1;
-                let mark = match agent.activity_state.as_str() {
-                    "working" => "*",
-                    "waiting_input" => "?",
-                    "blocked" => "!",
-                    _ => "",
-                };
-                let selected = self.agent_bar_focused && self.agent_bar_index == bar_i;
-                let viewing = agent.id == self.viewing_agent_id;
-                if selected {
-                    parts.push(format!("[{mark}{}]", agent.label));
-                } else if viewing {
-                    parts.push(format!("*{mark}{}", agent.label));
-                } else {
-                    parts.push(format!("{mark}{}", agent.label));
-                }
-            }
-            let hint = if self.agent_bar_focused {
-                "←/→ enter · ↑ input · ctrl+x · esc exit"
-            } else {
-                "↓ bar · esc exit · enter send"
-            };
-            self.footer = format!("{} · {}", parts.join(" · "), hint);
-            return;
-        }
         let mut base = if self.agents.is_empty() {
             "Agents: none".to_string()
         } else {
-            // Ink summary row: "Agents: @a, @b, @c" (+N when truncated).
+            // Agent summary row: "Agents: @a, @b, @c" (+N when truncated).
             const MAX_VISIBLE: usize = 6;
             let total = self.agents.len();
             let start = if self.focus == FocusPane::Agents && self.selected_agent >= 0 {
@@ -856,13 +812,9 @@ impl AppState {
             };
             return;
         }
-        // Summary: Agents (+ Mode · Provider) · Cron only when non-empty.
+        // Summary: Agents · Provider · Cron only when non-empty.
         if self.surface != "ucode" {
-            base = format!(
-                "{base} · {} · {}",
-                self.launch_mode,
-                provider_short(&self.agent_provider)
-            );
+            base = format!("{base} · {}", provider_short(&self.agent_provider));
             if !self.cron_tasks.is_empty() {
                 base = format!("{base} · {}", self.cron_tasks.len());
             }
@@ -974,16 +926,6 @@ impl AppState {
     }
 
     pub fn apply_settings_payload(&mut self, payload: &Value) {
-        if let Some(mode) = payload
-            .get("launch_mode")
-            .or_else(|| payload.get("launchMode"))
-            .and_then(|v| v.as_str())
-        {
-            self.launch_mode = mode.to_string();
-            if let Some(idx) = self.mode_options.iter().position(|m| m == mode) {
-                self.selected_mode = idx;
-            }
-        }
         if let Some(provider) = payload
             .get("agent_provider")
             .or_else(|| payload.get("agentProvider"))
@@ -996,24 +938,6 @@ impl AppState {
                 .position(|opt| opt.value == provider)
             {
                 self.selected_provider = idx;
-            }
-        }
-        if let Some(modes) = payload.get("mode_options").and_then(|v| v.as_array()) {
-            let next: Vec<String> = modes
-                .iter()
-                .filter_map(|v| v.as_str().map(str::to_string))
-                .collect();
-            if !next.is_empty() {
-                self.mode_options = next;
-                if let Some(idx) = self
-                    .mode_options
-                    .iter()
-                    .position(|m| m == &self.launch_mode)
-                {
-                    self.selected_mode = idx;
-                } else {
-                    self.selected_mode = 0;
-                }
             }
         }
         if let Some(providers) = payload.get("provider_options").and_then(|v| v.as_array()) {
@@ -1074,7 +998,9 @@ pub(crate) fn provider_short(value: &str) -> &str {
         "claude-cli" => "claude",
         "agy-cli" | "agy" | "antigravity" => "agy",
         "kimi-cli" | "kimi" | "kimi-code" => "kimi",
-        "ucode" | "ufoo" | "ufoo-code" => "ucode",
+        "ucode" => "ucode",
+        "grok-cli" => "grok",
+        "custom" => "custom",
         _ => "codex",
     }
 }

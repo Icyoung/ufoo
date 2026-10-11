@@ -14,6 +14,8 @@ const {
 describe("shared tool registry", () => {
   test("exports the required Phase 0 tool definitions", () => {
     expect(SHARED_TOOL_REGISTRY.map((tool) => tool.name)).toEqual([
+      "read_agent_metrics",
+      "read_agent_trace",
       "read_bus_summary",
       "read_prompt_history",
       "read_open_decisions",
@@ -120,6 +122,8 @@ describe("shared tool registry", () => {
 
   test("filters tools by caller tier (identity-gated registry view)", () => {
     expect(listToolsForCallerTier(CALLER_TIERS.CONTROLLER).map((tool) => tool.name)).toEqual([
+      "read_agent_metrics",
+      "read_agent_trace",
       "read_bus_summary",
       "read_prompt_history",
       "read_open_decisions",
@@ -146,6 +150,8 @@ describe("shared tool registry", () => {
       "manage_group",
     ]);
     expect(listToolsForCallerTier(CALLER_TIERS.WORKER).map((tool) => tool.name)).toEqual([
+      "read_agent_metrics",
+      "read_agent_trace",
       "read_bus_summary",
       "read_prompt_history",
       "read_open_decisions",
@@ -173,7 +179,7 @@ describe("shared tool registry", () => {
     copy.pop();
 
     expect(copy).toHaveLength(SHARED_TOOL_REGISTRY.length - 1);
-    expect(SHARED_TOOL_REGISTRY).toHaveLength(24);
+    expect(SHARED_TOOL_REGISTRY).toHaveLength(26);
   });
 
   test("exports Phase 0 schema fixtures for translator validation", () => {

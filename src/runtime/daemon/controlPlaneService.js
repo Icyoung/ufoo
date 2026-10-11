@@ -40,7 +40,7 @@ function normalizeBusAgentType(agentType = "") {
   const value = String(agentType || "").trim().toLowerCase();
   if (!value) return "mcp-agent";
   if (value === "claude") return "claude-code";
-  if (value === "ucode" || value === "ufoo") return "ufoo-code";
+  if (value === "ucode") return "ucode";
   return value;
 }
 

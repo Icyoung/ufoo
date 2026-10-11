@@ -42,6 +42,7 @@ describe("ufoo global MCP server", () => {
     expect(names).toContain("register_agent");
     expect(names).toContain("wait_for_message");
     expect(names).toContain("read_project_registry");
+    expect(names).toContain("read_agent_trace");
     expect(names).toContain("dispatch_message");
     expect(names).not.toContain("launch_agent");
     expect(names).not.toContain("close_agent");
@@ -97,6 +98,14 @@ describe("ufoo global MCP server", () => {
       params: {},
     });
     expect(listed.result.tools.some((tool) => tool.name === "register_agent")).toBe(true);
+  });
+  test("exposes offline task observation through the project-scoped MCP tool", async () => {
+    const projectRoot = makeTempProject();
+    const server = createUfooMcpServer({ autoStart: false, validateProjectRoot: false });
+    const response = await server.handleRequest({ jsonrpc: "2.0", id: "trace", method: "tools/call", params: {
+      name: "read_agent_trace", arguments: { project_root: projectRoot, task_id: "delegated-1" },
+    } });
+    expect(response.result.structuredContent).toMatchObject({ version: 1, taskId: "delegated-1", events: [], incomplete: false });
   });
 
   test("routes project-scoped tools through the configured ProjectRuntimeGateway", async () => {

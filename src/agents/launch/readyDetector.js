@@ -150,7 +150,7 @@ class ReadyDetector {
   }
 
   /**
-   * 检测ufoo-code/ucode的ready标记
+   * 检测ucode的ready标记
    */
   _detectUfooCodeReady(text) {
     if (/(?:^|\n)(?:ufoo|ucode|pi-mono)>\s*$/m.test(text)) {
@@ -217,7 +217,7 @@ class ReadyDetector {
       isReady = this._detectGrokReady(this.buffer);
     } else if (this.agentType === "kimi") {
       isReady = this._detectKimiReady(this.buffer);
-    } else if (this.agentType === "ufoo" || this.agentType === "ucode" || this.agentType === "ufoo-code") {
+    } else if (this.agentType === "ucode") {
       isReady = this._detectUfooCodeReady(this.buffer);
     }
 

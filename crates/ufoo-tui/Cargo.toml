@@ -19,3 +19,4 @@ tokio = { workspace = true }
 clap = { workspace = true }
 unicode-width = "0.2"
 ansi-to-tui = { workspace = true }
+base64 = "0.22"

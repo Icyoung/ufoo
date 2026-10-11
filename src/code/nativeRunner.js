@@ -5,7 +5,7 @@ const { loadConfig } = require("../config");
 const { resolveKimiUpstreamCredentials } = require("../agents/providers/credentials/kimi");
 const { resolveCodexUpstreamCredentials } = require("../agents/providers/credentials/codex");
 const { resolveRuntimeConfig, resolveTransport, resolveCompletionUrl, resolveResponsesUrl, resolveAnthropicMessagesUrl, DEFAULT_OPENAI_BASE_URL } = require("../agents/providers/runtimeConfig");
-const { getNativeTransport, createNativeSseDispatcher, resolveThinkingBudgetTokens, resolveReasoningEffort, normalizeTimeoutMs, createUsageTotals, cloneMessageList } = require("../agents/providers/nativeTransport");
+const { getNativeTransport, createNativeSseDispatcher, resolveReasoningEffort, normalizeTimeoutMs, createUsageTotals, cloneMessageList } = require("../agents/providers/nativeTransport");
 const { createAgentRuntime } = require("../agents/runtime/createAgentRuntime");
 const { createCodingCapability } = require("../agents/capabilities/coding");
 const { createPlanningCapability } = require("../agents/capabilities/planning");
@@ -14,27 +14,20 @@ const codingProfile = require("../agents/profiles/coding");
 const { runCoreToolAsync } = require("./tools/executor");
 const { sanitizeModelMessages } = require("./context/assembler");
 const { retireMessageImages } = require("../agents/providers/transports/visionBlocks");
-const { resolveMaxToolCalls } = require("./toolBudget");
+const { resolveToolBudget, DEFAULT_TASK_TIMEOUT_MS } = require("../agents/runtime/core/executionBudget");
 const { clearUserPrompts } = require("./context/userNudge");
 const { runProviderTurnGate, resolveCall, checkFaultPoint, materializeAnswerToolResult } = require("./protocol");
 const { appendUsageRecord } = require("./usageStore");
 const { buildCoreToolSpecs, buildAnthropicToolSpecs } = require("./tools/specs");
+const { createContextManager } = require("../agents/runtime/context/compaction");
+const { createCheckpointStore } = require("../agents/runtime/context/checkpointStore");
+const { createRuntimeStore } = require("../agents/runtime/context/runtimeStore");
+const { normalizeTraceContext } = require("../agents/runtime/protocol/traceContext");
+const { redactSecrets } = require("../runtime/privacy/redactor");
 
-const DEFAULT_NATIVE_TIMEOUT_MS = 43200000;
-const DEFAULT_MAX_NATIVE_TOOL_ERRORS = 20;
+const DEFAULT_NATIVE_TIMEOUT_MS = DEFAULT_TASK_TIMEOUT_MS;
 const DEFAULT_MAX_PLAN_AUTO_CONTINUES = 24;
-const normalizePositiveInt = (value, fallback) => {
-  const parsed = Number.parseInt(String(value || ""), 10);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
-};
 const nowMs = () => Date.now();
-
-function resolveNativeToolBudget(maxToolCalls, env = process.env) {
-  return {
-    maxToolCalls: resolveMaxToolCalls(maxToolCalls, env),
-    maxToolErrors: normalizePositiveInt(env.UFOO_UCODE_MAX_TOOL_ERRORS, DEFAULT_MAX_NATIVE_TOOL_ERRORS),
-  };
-}
 
 function createGuards({ signal = null, timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS } = {}) {
   const startedAt = nowMs();
@@ -72,7 +65,7 @@ async function runNativeLoop(options = {}) {
       maxAutoContinues: DEFAULT_MAX_PLAN_AUTO_CONTINUES,
     },
   });
-  return runtime.run({ ...options, toolBudget: resolveNativeToolBudget(options.maxToolCalls) });
+  return runtime.run({ ...options, toolBudget: resolveToolBudget(options.maxToolCalls) });
 }
 
 function appendAnswerToolResult(messages = [], resume = null, answer = {}, options = {}) {
@@ -116,10 +109,40 @@ async function runNativeAgentTask({
   signal = null,
   executionState = null,
   resume = false,
+  contextPolicy = {},
+  runtimeContext = {},
+  onRuntimeEvent = null,
 } = {}) {
   const guards = createGuards({ signal, timeoutMs });
   const nextSessionId = String(sessionId || "").trim() || `native-${randomUUID()}`;
   const promptText = String(prompt || "").trim();
+  const ids = normalizeTraceContext(runtimeContext);
+  ids.taskRunId ||= `native-run-${randomUUID()}`;
+  ids.taskId ||= ids.taskRunId;
+  ids.traceId ||= ids.taskId;
+  ids.requestId ||= ids.taskRunId;
+  ids.attemptId ||= `attempt-${randomUUID()}`;
+  const observation = createRuntimeStore({ workspaceRoot, namespace: "ucode", sessionId: nextSessionId, redact: redactSecrets });
+  const observationWarnings = [];
+  const observe = async event => {
+    const value = { ...ids, agentId: process.env.UFOO_SUBSCRIBER_ID || "ucode", sessionId: nextSessionId, ...event };
+    let committed = value;
+    try {
+      const state = observation.append(value);
+      committed = observation.events({ after: state.sequence - 1 })[0];
+    } catch (error) {
+      if (!observationWarnings.length) {
+        observationWarnings.push({ code: "observation_unavailable", error: error.message });
+        console.error(`[ucode] observation unavailable: ${error.code || "write failed"}`);
+        if (onRuntimeEvent) {
+          try { await onRuntimeEvent(redactSecrets({ ...value, type: "observation.warning", warning: observationWarnings[0] })); } catch { /* observer failure is not task failure */ }
+        }
+      }
+    }
+    if (onRuntimeEvent) {
+      try { await onRuntimeEvent(redactSecrets(committed)); } catch { /* display observers do not own execution */ }
+    }
+  };
   // Track every text delta so the error path can return the partial output
   // the model already produced instead of discarding it.
   let partialOutput = "";
@@ -133,9 +156,12 @@ async function runNativeAgentTask({
   };
 
   try {
+    await observe({ type: "request.accepted", request: { ...ids, text: promptText } });
+    await observe({ type: "task.started" });
     guards.ensureActive();
 
     if (!resume && !promptText) {
+      await observe({ type: "task.failed", error: "empty task" });
       return {
         ok: false,
         error: "empty task",
@@ -200,6 +226,7 @@ async function runNativeAgentTask({
     }
 
     const transport = getNativeTransport(runtime.transport);
+    await observe({ type: "runtime.binding", binding: { provider: runtime.provider, model: runtime.model, transport: runtime.transport } });
 
     const runResult = await runNativeLoop({
       transport,
@@ -209,6 +236,7 @@ async function runNativeAgentTask({
       systemBlocks,
       historyMessages: messages,
       model: runtime.model,
+      requestKind: runtimeContext.requestKind || (runtimeContext.taskRunId ? "unknown" : "user"),
       baseUrl: runtime.baseUrl,
       apiKey: runtime.apiKey,
       provider: runtime.provider,
@@ -226,6 +254,11 @@ async function runNativeAgentTask({
       guards,
       executionState,
       resume: Boolean(resume),
+      contextManager: createContextManager({ policy: contextPolicy,
+        store: createCheckpointStore({ workspaceRoot, namespace: "ucode", sessionId: nextSessionId }) }),
+      ...ids,
+      agentId: process.env.UFOO_SUBSCRIBER_ID || "ucode",
+      onEvent: observe,
     });
 
     const outputText = String(runResult.text || "").trim() || (
@@ -252,12 +285,15 @@ async function runNativeAgentTask({
       cacheRead: usage.cacheRead,
       cacheCreation: usage.cacheCreation,
     });
+    await observe({ type: signal?.aborted || runResult.stopReason === "cancelled" ? "task.cancelled" : runResult.error || runResult.stopReason ? "task.failed" : runResult.waitingUserInteraction ? "task.paused" : "task.completed",
+      error: runResult.error || runResult.stopReason || "", result: { text: runResult.finalText || outputText, usage } });
 
     return {
       ok: !runResult.error,
       error: runResult.error || "",
       stopReason: runResult.stopReason || "",
       output: outputText,
+      finalText: runResult.finalText,
       messages: cloneMessageList(runResult.messages),
       turnItems: cloneMessageList(runResult.turnItems),
       sessionId: nextSessionId,
@@ -270,8 +306,10 @@ async function runNativeAgentTask({
       waitingUserInteraction: Boolean(runResult.waitingUserInteraction),
       interactionId: runResult.interactionId || "",
       protocolLedger: runResult.protocolLedger || null,
+      ...(observationWarnings.length ? { observationWarnings } : {}),
     };
   } catch (err) {
+    await observe({ type: signal?.aborted || err.code === "cancelled" ? "task.cancelled" : "task.failed", error: err.message || "native runner failed" });
     const message = err && err.message ? err.message : "native runner failed";
     if (executionState && typeof executionState === "object") {
       clearUserPrompts(executionState);
@@ -283,6 +321,7 @@ async function runNativeAgentTask({
       sessionId: nextSessionId,
       streamed: false,
       executionState: executionState || null,
+      ...(observationWarnings.length ? { observationWarnings } : {}),
     };
   }
 }
@@ -296,7 +335,6 @@ module.exports = {
   resolveResponsesUrl,
   resolveAnthropicMessagesUrl,
   resolveTransport,
-  resolveThinkingBudgetTokens,
   resolveReasoningEffort,
   createNativeSseDispatcher,
   buildCoreToolSpecs,

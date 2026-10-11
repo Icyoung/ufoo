@@ -205,11 +205,11 @@ ufoo -g
 切换。全局 daemon 只启动一次，各项目 runtime 按需激活。
 
 默认项目主 Agent 与 `ucode` 共用可组合的 runtime，可直接读取、修改代码并执行验证，
-也可委派外部 Agent 或创建独立任务。全局入口只负责选择项目；进入项目后才获得
+也可委派 internal Agent 或创建独立任务。全局入口只负责选择项目；进入项目后才获得
 编码能力。长任务在后台运行，断开 chat 不会取消任务，重连会补发运行事件。
 
-旧 controller 会话保留原执行路径。用 `/session new` 开始新主会话；旧会话的
-provider/model 绑定不会随设置变更而切换。副作用执行期间进程崩溃后，任务会标为
+主 agent 的所有会话统一使用共享 runtime。用 `/session new` 开始使用当前设置的
+新会话；已有会话的 provider/model 绑定不会随设置变更而切换。副作用执行期间进程崩溃后，任务会标为
 interrupted，需检查实际结果后决定是否重新提交；不会自动重复文件修改、shell、
 启动或投递。相同目录的托管写操作共用锁，独立且经过验证的 git worktree 可并行。
 这些约束不构成 shell 的操作系统沙箱。实现与恢复契约见
@@ -231,29 +231,37 @@ interrupted，需检查实际结果后决定是否重新提交；不会自动重
 /session show
 /session new
 /settings
-/multi
-/multi on
-/multi off
-/multi @reviewer
-/resume list
+/window main
+/window side
+/window multi
+/resume
 /project list
 /project switch 2
 /open /path/to/project
 ```
 
-面板保留三种布局：仅主 agent、主 agent 加一个选中的 internal 子 agent、
-主 agent 加全部 internal 子 agent。包装器与 MCP agent 不进入面板；面板
+面板保留三种布局：`main`（仅主 agent）、`side`（主 agent 加一个选中的
+internal 子 agent）、`multi`（主 agent 加全部 internal 子 agent）。包装器与 MCP agent 不进入面板；面板
 启动的子 agent 只使用 internal 模式，不会打开外部终端。当前文件夹没有
 聊天或输入历史时，欢迎页复用已有的紧凑 ufoo banner。
-`/multi` 或 `Ctrl+T` 切换全部子 agent 布局，在单子 agent 布局中使用会展开全部。
-`Ctrl+M` 打开全部子 agent 布局，再按一次仍保持打开。面板会自动请求增强键盘
-协议，需要终端能区分 Ctrl+M 与回车；传统终端中两者编码相同，回车仍用于提交，
-可继续使用 `/multi` 或 `Ctrl+T`。
-`/multi @reviewer` 只打开指定 internal 子 agent。两种分屏布局中，子 agent
-获得焦点时按 `Esc` 先回到主 agent 输入栏，再按一次退出分屏；焦点已在
-主 agent 时，按 `Esc` 直接退出分屏。草稿和运行中的任务都会保留。
-`Ctrl+Q` 或 `/multi off` 仍可直接退出分屏。
-回到仅主 agent 后，再按 `Esc` 不会退出应用；退出请使用 `Ctrl+C`。
+`Ctrl+W` 依次循环切换：`main → side → multi → main`。
+`/window main`、`/window side` 和
+`/window multi` 可直接选择对应布局。单子 agent 布局默认选最近激活的
+有效 internal 子 agent，没有激活记录则选第一个。没有子 agent 时仍保留模式，
+主窗格占满宽度，右侧不显示空框；子 agent 出现后自动按当前模式展示。
+两种分屏布局中，`Esc` 和 `Ctrl+C` 共用回退栈：优先退出底栏焦点，再从子 agent
+回到主 agent 输入栏，最后退出分屏。回退这些界面层级时，草稿和运行中的任务都会保留。
+两者也会关闭命令补全，并沿用主输入栏的任务取消、返回全局项目层级。
+`Ctrl+Q` 或 `/window main` 可直接退出分屏。
+到达最外层后，`Esc` 不会退出应用，只有 `Ctrl+C` 才退出。
+在主 agent 或 internal 子 agent 窗格内拖选可见文字，松开鼠标即复制到剪贴板。
+选择范围限定在起始窗格内，不包含边框和相邻 agent。本地 macOS 使用系统剪贴板；
+其他终端通过 OSC 52 复制，需要终端支持剪贴板写入。
+`/resume` 打开可恢复 internal 会话的二级菜单。独立启动的 agent 单独列出，
+group 的成员聚合为 `group:<group-id>`；选择 group 会批量恢复有已保存会话的
+非活跃成员，跳过已活跃成员，并更新 group 中的成员 ID。
+原生编码 agent 的注册类型统一为 `ucode`，ID 使用 `ucode:<session>`；
+会话文件仍保存在 `.ufoo/agent/ucode/`。
 `Tab` 在主 agent 和当前显示的子 agent 窗格之间循环切换输入焦点；单子 agent
 布局在这两个 agent 之间切换。所有 agent 共用底部一个输入框，随当前选中的 agent
 切换，每个 agent 的草稿独立保留。各 agent 的实时状态嵌在各自窗格底边，选中窗格
@@ -262,7 +270,7 @@ interrupted，需检查实际结果后决定是否重新提交；不会自动重
 不会覆盖主 agent 自己的状态。
 仅主 agent 时，`Tab` 先选中底部第一个 agent，之后依次选择下一个，末尾回到第一个；
 `Esc` 返回主输入栏。仅主 agent 布局
-下，命令补全仍沿用 `Tab`。布局命令在选中 internal 子 agent 的共享输入框中
+下，命令补全仍沿用 `Tab`；分屏中打开补全菜单时，`Tab` 也优先补全。布局命令在选中 internal 子 agent 的共享输入框中
 也可以使用；切换布局会保留未发送的子 agent 输入，不会停止运行中的任务。
 子 agent 激活时，在空输入框按 `↓` 或点击底栏可进入 Agents 选择；再按 `↓`
 进入 provider 设置和 cron 控制。`Esc` 返回原 agent 的输入框，选择 agent 后按
@@ -368,9 +376,28 @@ ufoo history prompt 30
 ufoo report start "Implement README refresh" --task docs-readme --agent builder
 ufoo report done "README updated" --task docs-readme --agent builder
 ufoo report list
+
+ufoo trace <task-id> --json
+ufoo trace --agent <id-or-nickname> --follow
+ufoo trace --details --limit 2000
 ```
 
 Decision 只用于计划级约束；长期项目事实应写入 memory。
+
+`trace` 可串联父子任务的模型、工具、报告、队列与压缩记录，不启动 daemon、
+不调用模型。MCP 提供相同的只读工具 `read_agent_trace`。参数和结果经过脱敏；
+读取范围受限、数据缺失或未写完时，JSON 中会明确标记。
+
+`ufoo metrics --json` 汇总执行结果、耗时、tokens、工具错误/重复、报告长度
+与委派验收。保存报告后，可用 `ufoo metrics --baseline baseline.json --json`
+对比后续样本。MCP 提供 `read_agent_metrics`；指标口径和优化流程见
+[OBSERVABILITY.md](OBSERVABILITY.md)。缺失证据保留 unknown，执行完成与
+验收通过分开统计。
+
+report 和 agent 交接默认使用 1–4 行短消息，包含结果、改动、检查和阻塞；
+详细计划或证据写入工作区文件，并附准确路径。internal agent 向同伴转发
+最终回复，过程与工具输出保留在自己的窗口。internal Codex 在 workspace
+沙箱内开启网络权限，支持 ADB、Gradle 等本地端口服务。
 
 ### Group
 
@@ -431,25 +458,48 @@ ufoo ucode build
 {
   "launchMode": "auto",
   "agentProvider": "codex-cli",
-  "controllerMode": "main",
-  "codexInternalThreadMode": "api",
   "codexAuthPath": "",
   "codexOauthRefreshWindowSec": 300,
   "claudeOauthProfile": "",
   "claudeOauthTokenPath": "",
   "claudeOauthRefreshWindowSec": 300,
-  "routerProvider": "",
-  "routerModel": "",
   "agentModel": "",
   "autoResume": false
 }
 ```
 
+internal Codex 和 Claude 固定使用各自 SDK，不再提供 thread mode 配置。
+
 `launchMode` 支持 `auto`、`internal`、`tmux`、`terminal`、`host`。
-`controllerMode` 支持 `main`、`shadow`、`loop` 和 legacy 兼容值。
+面板仅支持 internal Codex、Claude 和 ucode 子 agent；provider 的类型独立于 worker 类型。
+
+面板固定使用 internal 子 agent，不提供 `/mode` 命令，二进制也不提供
+`ufoo mode` 命令。直接运行 `ucodex` 或
+`uclaude` 时，包装器通过环境识别 tmux、host 会话、Terminal.app 或 iTerm2，
+并向 daemon 登记实际终端类型、TTY 及消息通道，无需打开面板即可通过 event bus
+互联。MCP agent 使用 MCP 消息接口通信，不需要终端适配器。
+主 agent 使用同一个 runtime 完成编码与路由，只配置 `agentProvider` 和
+`agentModel`。`/settings agent` 管理主 agent 配置，`/settings ucode` 管理
+独立的 ucode 网关配置。
+
+底部 Settings 提供 `custom`、`model`、`thinking`。选择 `custom` 后依次输入
+API 地址和隐藏显示的 key，再选择模型与思考强度。也可以使用
+`/settings agent custom`、`/settings agent model`、`/settings agent thinking`。
+模型菜单读取当前 provider 的完整可选目录，包括分页结果；Codex 菜单会过滤
+provider 标记为隐藏的内部模型。服务没有 `/models`
+接口时可以手动输入模型 ID。切换模型与思考强度保留当前对话，并用于下一次
+请求；切换 provider 会开始新对话，旧对话仍保留在 runtime 存储中。
+OpenAI 思考强度提供独立的 `xhigh` 和 `max`，请求会保留所选值。
+provider 配置了网关时，模型列表来自该网关；升级 agent SDK 不会改变网关的目录。
+
+custom 使用项目 `.ufoo/config.json` 中的 `agentProvider: "custom"`、
+`agentBaseUrl`、`agentApiKey`、`agentModel`、`agentThinking`。
+默认使用 OpenAI Chat Completions 协议，地址以 `/responses` 结尾时使用
+OpenAI Responses。custom 不提供 Anthropic 协议选项；internal Claude
+保留自身的原生接入与凭据。
 
 普通 provider 会话通过各自的凭据适配器认证；MCP `agent_handle` 不用于模型请求。
-只有选择 `agentProvider=ucode` 才使用下列 ucode 网关设置。
+独立和 internal ucode 使用下面的独立网关设置。
 
 全局 `ucode` 配置：
 

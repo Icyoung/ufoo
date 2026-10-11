@@ -771,7 +771,7 @@ async function runCli(argv) {
             normalizedAgent = "grok";
           } else if (agentLower === "ukimi" || agentLower === "kimi" || agentLower === "kimi-cli" || agentLower === "kimi-code") {
             normalizedAgent = "kimi";
-          } else if (agentLower === "ucode" || agentLower === "ufoo-code" || agentLower === "ufoo") {
+          } else if (agentLower === "ucode") {
             normalizedAgent = "ucode";
           } else {
             console.error(`Unknown agent type: ${agent}`);
@@ -845,7 +845,7 @@ async function runCli(argv) {
           }
           const resp = await sendDaemonRequest(projectRoot, {
             type: "launch_agent",
-            agent: agent === "ucode" ? "ufoo" : agent,
+            agent,
             nickname: String(opts.nickname || "").trim(),
             prompt_profile: promptProfile,
             count: 1,
@@ -1702,6 +1702,35 @@ async function runCli(argv) {
         }
       });
 
+    program.command("trace").description("Inspect agent task, tool, report, queue and compaction events")
+      .argument("[task-id]", "Delegated task ID or parent taskRunId")
+      .option("--task <id>", "Filter task")
+      .option("--agent <id>", "Filter subscriber ID or nickname")
+      .option("--session <id>", "Filter runtime session")
+      .option("--project <path>", "Project root (defaults to cwd)")
+      .option("--since <time>", "ISO timestamp lower bound")
+      .option("--limit <n>", "Maximum events (default: 200, follow: 2000)")
+      .option("--offset <n>", "Oldest-first pagination offset; default shows newest events")
+      .option("--details", "Include redacted arguments and results")
+      .option("--json", "JSON output; with --follow emits JSONL")
+      .option("--follow", "Observe new local events without model calls")
+      .action((taskId, opts) => require("./traceCommands").runTraceCommand(taskId, opts));
+
+    program.command("metrics").description("Summarize observed agent performance without model calls")
+      .argument("[task-id]", "Delegated task ID or parent taskRunId")
+      .option("--task <id>", "Filter task")
+      .option("--agent <id>", "Filter subscriber ID or nickname")
+      .option("--session <id>", "Filter runtime session")
+      .option("--project <path>", "Project root (defaults to cwd)")
+      .option("--since <time>", "Include runs starting at or after ISO timestamp")
+      .option("--until <time>", "Include runs starting before ISO timestamp")
+      .option("--provider <name>", "Filter observed model provider")
+      .option("--model <name>", "Filter observed model")
+      .option("--limit <n>", "Recent run records to return (default: 20; maximum: 100)")
+      .option("--baseline <path>", "Compare with a saved metrics JSON report")
+      .option("--json", "Export a performance report")
+      .action((taskId, opts) => require("./metricsCommands").runMetricsCommand(taskId, opts));
+
     const history = program.command("history").description("Agent input history timeline");
     history
       .command("build")
@@ -1802,6 +1831,7 @@ async function runCli(argv) {
     console.log("  ufoo bus <args...>    (JS bus implementation)");
     console.log("  ufoo ctx <subcmd> ... (doctor|lint|decisions|sync)");
     console.log("  ufoo history <build|show|prompt> [limit]");
+    console.log("  ufoo trace [task-id] [--agent <id>] [--project <dir>] [--json] [--follow] [--details]");
     console.log("");
     console.log("Notes:");
     console.log("  - For Codex notifications, use ufoo bus alert / ufoo bus listen");
@@ -1934,6 +1964,15 @@ async function runCli(argv) {
         process.exitCode = 1;
       }
     })();
+    return;
+  }
+  if (cmd === "trace") {
+    const value = name => { const i = rest.indexOf(`--${name}`); return i < 0 ? undefined : rest[i + 1]; };
+    const task = rest[0]?.startsWith("--") ? "" : rest[0];
+    try { require("./traceCommands").runTraceCommand(task, {
+      task: value("task"), agent: value("agent"), session: value("session"), project: value("project"), since: value("since"),
+      limit: value("limit"), offset: value("offset"), json: rest.includes("--json"), follow: rest.includes("--follow"), details: rest.includes("--details"),
+    }); } catch (error) { console.error(error.message); process.exitCode = 1; }
     return;
   }
   if (cmd === "report") {
@@ -2345,7 +2384,7 @@ async function runCli(argv) {
           const agent = resolveSoloAgentType(config, agentInput);
           const resp = await sendDaemonRequest(projectRoot, {
             type: "launch_agent",
-            agent: agent === "ucode" ? "ufoo" : agent,
+            agent,
             nickname,
             prompt_profile: profile,
             count: 1,

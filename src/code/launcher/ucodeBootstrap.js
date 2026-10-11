@@ -80,7 +80,7 @@ function mergeDefaultUfooProtocolPrompt(projectRoot = "", promptText = "") {
   const currentPrompt = String(promptText || "").trim();
   if (hasSharedUfooProtocolPrompt(currentPrompt)) return currentPrompt;
   const defaultPrompt = buildDefaultStartupBootstrapPrompt({
-    agentType: "ufoo-code",
+    agentType: "ucode",
     projectRoot,
   }).trim();
   return [defaultPrompt, currentPrompt].filter(Boolean).join("\n\n");

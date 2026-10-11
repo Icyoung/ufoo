@@ -1,12 +1,15 @@
 "use strict";
 
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const { createChatController } = require("../../../src/app/chat/ChatController");
 
 describe("ChatController", () => {
   test("internal dashboard cannot address external or stale agents through @target", async () => {
     const send = jest.fn();
     const published = jest.fn();
-    const controller = createChatController({ internalOnly: true, ports: { send, publish: published } });
+    const controller = createChatController({ ports: { send, publish: published } });
     controller.applyStatus({ active: ["codex:child", "claude:external"], active_meta: [
       { id: "codex:child", nickname: "coder", launch_mode: "internal" },
       { id: "claude:external", nickname: "outside", launch_mode: "terminal" },
@@ -26,16 +29,41 @@ describe("ChatController", () => {
     expect(send).toHaveBeenCalledWith(expect.objectContaining({ type: "bus_send", target: "codex:child" }));
     controller.stop();
   });
+  test.each([true, false])("project opening preserves the global-mode restriction (%s)", async (globalMode) => {
+    const switchProject = jest.fn(async () => ({ ok: true, project_root: "/tmp/ufoo-project" }));
+    const logMessage = jest.fn();
+    const controller = createChatController({ globalMode, ports: { switchProject, logMessage, appendHistory: () => {} } });
+    try {
+      await controller.submitInput("/open /tmp/ufoo-project");
+      if (globalMode) {
+        expect(switchProject).toHaveBeenCalledWith({ target: "/tmp/ufoo-project" });
+      } else {
+        expect(switchProject).not.toHaveBeenCalled();
+        expect(logMessage).toHaveBeenCalledWith("error", expect.stringContaining("only available in global mode"));
+      }
+    } finally { controller.stop(); }
+  });
   test("constructor send port gives runtime commands stable identity and honors a new conversation", async () => {
     const send = jest.fn();
-    const controller = createChatController({ ports: { send, appendHistory: () => {}, logMessage: () => {} } });
-    await controller.submitInput("/answer question-1 choose the first");
-    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ operation: "resume", interaction_id: "question-1", answer: "choose the first", session_id: "main-default", request_id: expect.any(String) }));
-    await controller.submitInput("/session new");
-    await controller.submitInput("/task cancel child-1");
-    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ operation: "cancel", task_run_id: "child-1", session_id: expect.stringMatching(/^main-/), request_id: expect.any(String) }));
-    expect(send.mock.calls[1][0].session_id).not.toBe("main-default");
-    controller.stop();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-controller-session-"));
+    const controller = createChatController({ projectRoot: root, ports: { send, appendHistory: () => {}, logMessage: () => {} } });
+    try {
+      await controller.submitInput("/answer question-1 choose the first");
+      expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ operation: "resume", interaction_id: "question-1", answer: "choose the first", session_id: "main-default", request_id: expect.any(String) }));
+      await controller.submitInput("/session new");
+      await controller.submitInput("/task cancel child-1");
+      expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ operation: "cancel", task_run_id: "child-1", session_id: expect.stringMatching(/^main-/), request_id: expect.any(String) }));
+      expect(send.mock.calls[1][0].session_id).not.toBe("main-default");
+      expect(require("../../../src/config").loadConfig(root).agentConversationId).toBe(send.mock.calls[1][0].session_id);
+      const reopened = createChatController({ projectRoot: root, ports: { send } });
+      try {
+        await reopened.submitInput("/task cancel child-2");
+        expect(send.mock.calls[2][0].session_id).toBe(send.mock.calls[1][0].session_id);
+      } finally { reopened.stop(); }
+    } finally {
+      controller.stop();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
   test("start/stop owns stream state and status throttle hook", () => {
     const dispatches = [];
@@ -78,7 +106,7 @@ describe("ChatController", () => {
     const snapshot = controller.applyStatus({
       active: ["codex:architect"],
       active_meta: [{
-        id: "codex:architect",
+        id: "codex:architect", launch_mode: "internal",
         nickname: "architect",
         display_nickname: "architect",
         activity_state: "working",
@@ -89,27 +117,4 @@ describe("ChatController", () => {
     expect(controller.getAgentsFooter()).toContain("architect");
   });
 
-  test("mapAgentsForDispatch can reshape agents for Ink", () => {
-    const { toInkAgentsDispatchList } = require("../../../src/app/chat/agentDirectory");
-    const dispatches = [];
-    const controller = createChatController({
-      projectRoot: process.cwd(),
-      ports: {
-        dispatch: (action) => dispatches.push(action),
-        mapAgentsForDispatch: toInkAgentsDispatchList,
-      },
-    });
-    controller.applyStatus({
-      active: ["codex:architect"],
-      active_meta: [{
-        id: "codex:architect",
-        nickname: "architect",
-        display_nickname: "architect",
-      }],
-    });
-    const set = dispatches.find((item) => item.type === "agents/set");
-    expect(set.list[0].fullId).toBe("codex:architect");
-    expect(set.list[0].nickname).toBe("architect");
-    expect(set.list[0].label).toBe("architect");
-  });
 });

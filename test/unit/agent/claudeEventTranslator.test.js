@@ -9,6 +9,12 @@ const {
 } = require("../../../src/agents/providers/claudeEventTranslator");
 
 describe("agent claudeEventTranslator", () => {
+  test("missing usage remains unknown while explicitly reported zero tokens remain valid", () => {
+    expect(normalizeClaudeUsage(null)).toBeNull();
+    expect(normalizeClaudeUsage({})).toBeNull();
+    expect(normalizeClaudeUsage({ cost_usd: 0 })).toBeNull();
+    expect(normalizeClaudeUsage({ input_tokens: 0, output_tokens: 0 })).toMatchObject({ input_tokens: 0, output_tokens: 0 });
+  });
   test("normalizes Claude SSE lifecycle, text, tool use, and usage events", () => {
     const state = createClaudeEventState({ threadId: "claude-thread-1" });
     const events = [];

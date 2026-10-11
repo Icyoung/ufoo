@@ -13,17 +13,6 @@ const {
   DEFAULT_THINKING_LEVEL,
 } = require("./thinkingLevels");
 
-function fallbackModelSuggestions(provider = "") {
-  const text = String(provider || "").trim().toLowerCase();
-  if (text.includes("anthropic") || text.includes("claude")) {
-    return ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"];
-  }
-  if (text.includes("kimi") || text.includes("moonshot")) {
-    return ["k3", "kimi-k2.5", "moonshot-v1-128k"];
-  }
-  return ["gpt-5.4", "gpt-5.3", "o3", "o4-mini"];
-}
-
 function resolveModelRuntime(state = {}, options = {}) {
   // Lazy require: nativeRunner pulls agent/repl paths that can load modelCommand.
   const { resolveRuntimeConfig } = require("./nativeRunner");
@@ -46,17 +35,7 @@ function currentThinkingLevel(state = {}) {
     env: process.env,
     configLevel: fromState || configLevel,
   });
-  if (resolved.level) return resolved.level;
-  if (resolved.source === "env-budget") {
-    // Approximate a named level for the secondary menu highlight.
-    const budget = Number(resolved.budgetTokens) || 0;
-    if (budget <= 0) return "off";
-    if (budget <= 3000) return "low";
-    if (budget <= 16000) return "medium";
-    if (budget <= 40000) return "high";
-    return "max";
-  }
-  return DEFAULT_THINKING_LEVEL;
+  return resolved.level || DEFAULT_THINKING_LEVEL;
 }
 
 function persistThinkingLevel(state = {}, level = "") {
@@ -110,7 +89,7 @@ async function applyUcodeModelCommand(state = {}, result = {}, options = {}) {
       `model: ${model}`,
       `provider: ${provider}`,
       `thinking: ${thinking}`,
-      "usage: /model <model-id> [off|low|medium|high|max]",
+      "usage: /model <model-id> [off|low|medium|high|xhigh|max]",
     ];
     try {
       const listed = await listUcodeModels(state, options);
@@ -139,15 +118,15 @@ async function applyUcodeModelCommand(state = {}, result = {}, options = {}) {
     if (!next) {
       return {
         ok: false,
-        error: "usage: /model [model-id] [off|low|medium|high|max]",
-        output: "usage: /model [model-id] [off|low|medium|high|max]",
+        error: "usage: /model [model-id] [off|low|medium|high|xhigh|max]",
+        output: "usage: /model [model-id] [off|low|medium|high|xhigh|max]",
       };
     }
     if (thinkingRaw && !thinkingNext) {
       return {
         ok: false,
-        error: `unknown thinking level "${thinkingRaw}" (use off|low|medium|high|max)`,
-        output: `unknown thinking level "${thinkingRaw}" (use off|low|medium|high|max)`,
+        error: `unknown thinking level "${thinkingRaw}" (use off|low|medium|high|xhigh|max)`,
+        output: `unknown thinking level "${thinkingRaw}" (use off|low|medium|high|xhigh|max)`,
       };
     }
 
@@ -216,30 +195,28 @@ async function applyUcodeModelCommand(state = {}, result = {}, options = {}) {
   }
   return {
     ok: false,
-    error: "usage: /model [model-id] [off|low|medium|high|max]",
-    output: "usage: /model [model-id] [off|low|medium|high|max]",
+    error: "usage: /model [model-id] [off|low|medium|high|xhigh|max]",
+    output: "usage: /model [model-id] [off|low|medium|high|xhigh|max]",
   };
 }
 
 /**
  * Build /model completion rows. Prefer a live models-route catalog when
- * provided; otherwise fall back to a small hardcoded list.
+ * provided; otherwise retain only the current model for manual selection.
  * Models are marked hasChildren so the TUI opens a thinking-intensity
  * secondary menu after the id is chosen.
  */
 function suggestUcodeModels(state = {}, options = {}) {
   const current = String((state && state.model) || "").trim();
-  const provider = String((state && state.provider) || "").trim().toLowerCase();
   const remote = Array.isArray(options.models)
     ? options.models.map((item) => String(item || "").trim()).filter(Boolean)
     : [];
-  const defaults = remote.length > 0 ? remote : fallbackModelSuggestions(provider);
   const ids = [];
   if (current) ids.push(current);
-  for (const id of defaults) {
+  for (const id of remote) {
     if (id && !ids.includes(id)) ids.push(id);
   }
-  return ids.slice(0, 40).map((id) => ({
+  return ids.map((id) => ({
     id,
     desc: id === current
       ? "current · pick thinking next"
@@ -257,7 +234,6 @@ module.exports = {
   suggestUcodeModels,
   suggestUcodeThinkingLevels,
   listUcodeModels,
-  fallbackModelSuggestions,
   currentThinkingLevel,
   persistThinkingLevel,
 };

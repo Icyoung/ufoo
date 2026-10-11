@@ -251,9 +251,9 @@ describe("ReadyDetector", () => {
     });
   });
 
-  describe("ufoo-code detection", () => {
+  describe("ucode detection", () => {
     test("should detect ucode prompt", () => {
-      const detector = new ReadyDetector("ufoo-code");
+      const detector = new ReadyDetector("ucode");
       let readyCalled = false;
       detector.onReady(() => {
         readyCalled = true;
@@ -264,7 +264,7 @@ describe("ReadyDetector", () => {
     });
 
     test("should detect pi-mono prompt", () => {
-      const detector = new ReadyDetector("ufoo-code");
+      const detector = new ReadyDetector("ucode");
       let readyCalled = false;
       detector.onReady(() => {
         readyCalled = true;
@@ -275,7 +275,7 @@ describe("ReadyDetector", () => {
     });
 
     test("should not detect false positive from inline > symbol", () => {
-      const detector = new ReadyDetector("ufoo-code");
+      const detector = new ReadyDetector("ucode");
       let readyCalled = false;
       detector.onReady(() => {
         readyCalled = true;

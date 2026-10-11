@@ -1,4 +1,7 @@
 "use strict";
+const { REPORTING_GUIDANCE } = require("../reporting");
+const { INTERNAL_BUS_DELIVERY_GUIDANCE } = require("../groupBootstrap");
+const { COOPERATION_GUIDANCE } = require("../cooperation");
 
 function getUfooIntegrationSection() {
   return `# ufoo integration
@@ -14,16 +17,21 @@ Participate in multi-agent coordination through the ufoo bus/context system:
 - A nonempty \`UFOO_SUBSCRIBER_ID\` in this Agent's inherited launch environment means the ufoo wrapper/daemon already registered this Agent and can inject directly into its monitored session. Reuse that identity; never call MCP \`register_agent\`, run bare \`ufoo bus join\`, or start resident \`ufoo bus poll\`.
 - After sending a bus message, do not poll \`ufoo bus check\`, invoke \`/ubus\`, sleep, or wait for a reply. Continue the current task; any follow-up message will be automatically injected into your prompt/session.
 
+${COOPERATION_GUIDANCE}
+
 Execution protocol:
 - On session start, check context quickly:
   \`ufoo ctx decisions -l\`
   \`ufoo ctx decisions -n 1\`
-- If \`ubus\` is explicitly requested, execute its pending-message flow immediately; this does not change the no-polling rule after you send a message.
-- After handling work that arrived from chat (\`[manual]<to:...>\`) or bus (\`[ufoo]<from:...>\`), report lifecycle:
+- Outside internal mode, if \`ubus\` is explicitly requested, execute its pending-message flow immediately; this does not change the no-polling rule after you send a message.
+- After handling actual assigned work that arrived from chat (\`[manual]<to:...>\`) or bus (\`[ufoo]<from:...>\`), or a material change to its status, report lifecycle. Acknowledgement-only inputs and repeated status notices require no report and no reply:
   \`ufoo report start|progress|done|error "<short summary>"\`
   Reuse one task ID for every phase: pass \`--task <id>\` or MCP \`task_id\`; prefer the task ID supplied with the work. Without an ID, progress/done/error attach only to a single active task; concurrent tasks require an explicit ID.
   Do not emulate report failures with \`ufoo bus send ufoo-agent ...\`; if \`ufoo report\` fails, continue without a fallback bus report.
-- If \`ubus\` is requested, execute pending messages immediately, reply to sender, then ack.`;
+- ${INTERNAL_BUS_DELIVERY_GUIDANCE}
+- Outside internal mode, if \`ubus\` is requested, execute pending messages immediately, reply only with a needed result, then ack.
+
+${REPORTING_GUIDANCE}`;
 }
 
 module.exports = { getUfooIntegrationSection };

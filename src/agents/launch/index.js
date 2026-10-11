@@ -7,6 +7,5 @@ module.exports = {
   ReadyDetector: require("./readyDetector"),
   ...require("./agyConversation"),
   ...require("./launchEnvironment"),
-  ...require("./ptyRunner"),
   ...require("./publisherRouting"),
 };

@@ -15,6 +15,7 @@ const DEFAULT_KIMI_MODEL = "k3";
 function normalizeProvider(value = "") {
   const text = String(value || "").trim().toLowerCase();
   if (!text) return "";
+  if (text === "custom") return "openai";
   if (text === "codex" || text === "codex-cli" || text === "codex-code") return "codex";
   if (text === "claude" || text === "claude-cli" || text === "claude-code") return "anthropic";
   if (text === "kimi" || text === "kimi-code" || text === "moonshot") return "kimi";
@@ -51,10 +52,6 @@ function resolveTransport({ provider = "", baseUrl = "" } = {}) {
   if (normalizedProvider === "anthropic") return "anthropic-messages";
   if (normalizedProvider === "kimi") return "openai-chat";
   if (/\/responses(?:$|[/?#])/.test(url)) return "openai-responses";
-  if (url.includes("anthropic.com")) return "anthropic-messages";
-  if (/\/messages(?:$|[/?#])/.test(url) && !/\/chat\/completions(?:$|[/?#])/.test(url)) {
-    return "anthropic-messages";
-  }
 
   return "openai-chat";
 }
@@ -68,6 +65,8 @@ function resolveRuntimeConfig({ workspaceRoot = process.cwd(), provider = "", mo
       || configuredProvider
       || "openai"
   ) || "openai";
+  const custom = selectedProvider === "openai" && config.agentProvider === "custom"
+    && (!useCodingConfig || !(config.ucodeProvider || process.env.UFOO_UCODE_PROVIDER));
   const configuredModel = sameModelProvider((useCodingConfig ? config.ucodeProvider : "") || config.agentProvider, selectedProvider)
     ? ((useCodingConfig ? config.ucodeModel : "") || config.agentModel)
     : "";
@@ -78,7 +77,7 @@ function resolveRuntimeConfig({ workspaceRoot = process.cwd(), provider = "", mo
       || configuredModel
       || (selectedProvider === "kimi"
         ? DEFAULT_KIMI_MODEL
-        : (selectedProvider === "grok-build" ? DEFAULT_GROK_BUILD_MODEL : defaultAgentModelForProvider(selectedProvider)))
+        : (selectedProvider === "grok-build" ? DEFAULT_GROK_BUILD_MODEL : custom ? "" : defaultAgentModelForProvider(selectedProvider)))
   ).trim();
 
   const defaultBaseUrl = selectedProvider === "anthropic"
@@ -98,12 +97,14 @@ function resolveRuntimeConfig({ workspaceRoot = process.cwd(), provider = "", mo
             : String(process.env.OPENAI_BASE_URL || DEFAULT_OPENAI_BASE_URL);
 
   let baseUrl = String(
-    (useCodingConfig ? process.env.UFOO_UCODE_BASE_URL : "")
+    (custom ? process.env.UFOO_AGENT_BASE_URL || config.agentBaseUrl : "")
+      || (useCodingConfig ? process.env.UFOO_UCODE_BASE_URL : "")
       || (useCodingConfig ? config.ucodeBaseUrl : "")
       || defaultBaseUrl
   ).trim();
+  if (custom) baseUrl = String(process.env.UFOO_AGENT_BASE_URL || config.agentBaseUrl || "").trim();
 
-  const explicitApiKey = String(
+  const explicitApiKey = String(custom ? process.env.UFOO_AGENT_API_KEY || config.agentApiKey || "" :
     (useCodingConfig ? process.env.UFOO_UCODE_API_KEY : "")
       || (useCodingConfig ? config.ucodeApiKey : "")
       || ""
@@ -119,7 +120,7 @@ function resolveRuntimeConfig({ workspaceRoot = process.cwd(), provider = "", mo
       kimiCredentialState = String(credential.state || "");
     }
   }
-  if (!apiKey) {
+  if (!apiKey && !custom) {
     apiKey = String(
       (selectedProvider === "openai" ? process.env.OPENAI_API_KEY : "")
         || (selectedProvider === "anthropic" ? process.env.ANTHROPIC_API_KEY : "")
@@ -151,6 +152,7 @@ function resolveRuntimeConfig({ workspaceRoot = process.cwd(), provider = "", mo
     apiKeySource,
     kimiCredentialState,
     transport: resolveTransport({ provider: selectedProvider, baseUrl }),
+    allowUnlistedModels: custom,
   };
 }
 

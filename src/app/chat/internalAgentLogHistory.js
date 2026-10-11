@@ -82,60 +82,10 @@ function parseStreamMessage(raw = "") {
   }
 }
 
-function appendPrefixedText(lines, prefix, text) {
-  const clean = normalizeText(text);
-  if (!clean) return;
-  const parts = clean.split("\n");
-  parts.forEach((part, index) => {
-    if (index === parts.length - 1 && part === "") return;
-    lines.push(`${index === 0 ? prefix : "  "}${part}`);
-  });
-}
-
-function appendUserText(lines, text, state) {
-  appendPrefixedText(lines, "> ", text);
-  state.replyActive = false;
-}
-
-function ensureAgentReplyPrefix(lines, prefix = "• ") {
-  if (lines.length === 0) {
-    lines.push(prefix);
-    return;
-  }
-  if (lines[lines.length - 1] === "") {
-    lines[lines.length - 1] = prefix;
-    return;
-  }
-  lines.push(prefix);
-}
-
-function appendAgentStreamText(lines, text, state) {
-  const clean = normalizeText(text);
-  if (!clean) return;
-  for (const char of clean) {
-    if (char === "\n") {
-      lines.push("");
-      continue;
-    }
-    if (!state.replyActive) {
-      ensureAgentReplyPrefix(lines, "• ");
-      state.replyActive = true;
-    } else if (lines.length === 0 || lines[lines.length - 1] === "") {
-      ensureAgentReplyPrefix(lines, "  ");
-    }
-    lines[lines.length - 1] += char;
-  }
-}
-
-function appendAgentMessage(lines, text, state) {
-  appendPrefixedText(lines, "• ", text);
-  state.replyActive = false;
-}
-
-function loadInternalAgentLogHistory(projectRoot, agentId, options = {}) {
+function loadInternalAgentTranscript(projectRoot, agentId, options = {}) {
   const paths = getUfooPaths(projectRoot || process.cwd());
   const maxEvents = Number.isFinite(options.maxEvents) ? Math.max(1, options.maxEvents) : 400;
-  const maxLines = Number.isFinite(options.maxLines) ? Math.max(1, options.maxLines) : 1000;
+  const maxEntries = Number.isFinite(options.maxEntries) ? Math.max(1, options.maxEntries) : 1000;
   let agents = {};
   try {
     const bus = JSON.parse(fs.readFileSync(paths.agentsFile, "utf8"));
@@ -164,8 +114,15 @@ function loadInternalAgentLogHistory(projectRoot, agentId, options = {}) {
     reversedEvents.push(...readMatchingEventsFromFileReverse(file, aliases, remaining));
   }
 
-  const lines = [];
-  const state = { replyActive: false };
+  const entries = [];
+  let streamEntry = null;
+  function append(kind, text, seq) {
+    const clean = normalizeText(text);
+    if (!clean) return null;
+    const entry = { id: `history-${seq || entries.length + 1}`, kind, text: clean };
+    entries.push(entry);
+    return entry;
+  }
   for (const evt of reversedEvents.reverse()) {
     const data = eventData(evt);
     const rawMessage = typeof data.message === "string" ? data.message : "";
@@ -177,24 +134,26 @@ function loadInternalAgentLogHistory(projectRoot, agentId, options = {}) {
 
     if (streamDelta !== null) {
       if (isFromAgent && streamDelta) {
-        appendAgentStreamText(lines, streamDelta, state);
+        if (streamEntry) streamEntry.text += streamDelta;
+        else streamEntry = append("assistant", streamDelta, evt.seq);
       } else if (isFromAgent) {
-        state.replyActive = false;
+        streamEntry = null;
       }
       continue;
     }
 
     if (isFromAgent) {
-      appendAgentMessage(lines, rawMessage, state);
+      append("assistant", rawMessage, evt.seq);
     } else if (isToAgent) {
-      appendUserText(lines, rawMessage, state);
+      append("user", rawMessage, evt.seq);
     }
+    streamEntry = null;
   }
 
-  return lines.slice(-maxLines);
+  return entries.slice(-maxEntries);
 }
 
 module.exports = {
-  loadInternalAgentLogHistory,
+  loadInternalAgentTranscript,
   buildAgentAliases,
 };

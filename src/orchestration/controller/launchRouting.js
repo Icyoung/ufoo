@@ -35,7 +35,7 @@ function normalizeLaunchAgentForNickname(agent = "") {
   if (raw === "claude" || raw === "claude-code" || raw === "uclaude") return "claude";
   if (raw === "codex" || raw === "ucodex") return "codex";
   if (raw === "grok" || raw === "ugrok" || raw === "grok-build" || raw === "xai") return "grok";
-  if (raw === "ufoo" || raw === "ucode" || raw === "ufoo-code") return "ucode";
+  if (raw === "ucode") return "ucode";
   return "";
 }
 

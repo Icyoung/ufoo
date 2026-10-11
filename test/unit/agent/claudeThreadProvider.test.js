@@ -162,12 +162,13 @@ describe("agent claudeThreadProvider", () => {
       { type: "thread_started", threadId: "11111111-1111-4111-8111-111111111111" },
       { type: "turn_started", turnId: "msg-1" },
       { type: "text_delta", delta: "hello", itemType: "text" },
-      { type: "turn_completed", turnId: "msg-1", usage: { input_tokens: 3, output_tokens: 2, cache_creation_tokens: 0, cache_read_tokens: 0 }, stopReason: "" },
+      { type: "turn_completed", turnId: "msg-1", usage: { input_tokens: 3, output_tokens: 2, cache_creation_tokens: 0, cache_read_tokens: 0 }, stopReason: "", finalText: "hello" },
     ]);
   });
 
   test("keeps an SDK task working across assistant messages and exposes actual tool arguments and results", async () => {
     const sdk = { query: jest.fn(() => makeMessages([
+      { type: "assistant", message: { content: [{ type: "text", text: "Checking the implementation." }] } },
       { type: "stream_event", event: { type: "message_start", message: { id: "m1" } } },
       { type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "c1", name: "Bash", input: {} } } },
       { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"command":"npm test"}' } } },
@@ -185,7 +186,8 @@ describe("agent claudeThreadProvider", () => {
     expect(events.find(event => event.type === "tool_call")).toMatchObject({ name: "Bash", args: { command: "npm test" } });
     expect(events.find(event => event.type === "tool_result")).toMatchObject({ output: "tests passed" });
     expect(events.filter(event => event.type === "turn_completed")).toHaveLength(1);
-    expect(events.at(-1)).toMatchObject({ type: "turn_completed", usage: { output_tokens: 10 } });
+    expect(events.at(-1)).toMatchObject({ type: "turn_completed", usage: { output_tokens: 10 }, finalText: "done" });
+    expect(events.filter(event => event.type === "text_delta").map(event => event.delta).join("")).toContain("Checking the implementation.");
   });
 
   test("Agent SDK resume passes prior session id", async () => {

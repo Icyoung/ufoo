@@ -4,6 +4,8 @@ const EventBus = require("../../coordination/bus");
 const { getToolDefinition, CALLER_TIERS } = require("../../tools");
 const { dispatchMessageHandler } = require("../../tools/handlers/dispatchMessage");
 const { ackBusHandler } = require("../../tools/handlers/ackBus");
+const { isMetaActive } = require("../../coordination/bus/utils");
+const { isInternalAgentMeta, normalizeInternalAgentType } = require("../../runtime/contracts/agentMode");
 
 function normalizeObjectArgs(value) {
   if (!value) return {};
@@ -33,6 +35,17 @@ function buildStructuredError(code, message, extra = {}) {
 }
 
 function resolveDispatchTargets(ctx, target) {
+  if (ctx.internalAgentsOnly) {
+    const eventBus = ctx.eventBus || new EventBus(ctx.projectRoot);
+    eventBus.loadBusData();
+    const agents = eventBus.busData.agents || {};
+    const targets = target === "broadcast"
+      ? Object.keys(agents)
+      : eventBus.messageManager.resolveTarget(target);
+    const active = targets.filter((id) => id !== "ufoo-agent" && isInternalAgentMeta(agents[id]) && isMetaActive(agents[id]));
+    if (active.length) return active;
+    throw buildStructuredError("invalid_target", `dispatch_message target not found among active internal agents: ${target}`);
+  }
   if (typeof ctx.resolveDispatchTargets === "function") {
     const resolved = ctx.resolveDispatchTargets(target);
     if (Array.isArray(resolved) && resolved.length > 0) return resolved;
@@ -56,22 +69,24 @@ function resolveDispatchTargets(ctx, target) {
 }
 
 async function handleDispatchMessage(ctx, args) {
+  const dispatch = async (target, message, publisher, options = {}) => {
+    const targets = resolveDispatchTargets(ctx, target);
+    const receipts = await ctx.dispatchMessages(ctx.projectRoot, (ctx.internalAgentsOnly ? targets : [target]).map((recipient) => ({
+      target: recipient,
+      message,
+      injection_mode: options.injectionMode || "immediate",
+      source: options.source || publisher,
+    })));
+    if (typeof ctx.markPending === "function" && target !== "broadcast") {
+      for (const recipient of ctx.internalAgentsOnly ? targets : [target]) ctx.markPending(recipient);
+    }
+    return { ...(receipts?.[0] || { seq: 0 }), targets: receipts?.length ? receipts.flatMap((receipt) => receipt.targets || []) : targets };
+  };
   const eventBus = typeof ctx.dispatchMessages === "function"
     ? {
-      send: async (target, message, publisher, options = {}) => {
-        resolveDispatchTargets(ctx, target);
-        if (target !== "broadcast" && typeof ctx.markPending === "function") {
-          ctx.markPending(target);
-        }
-        const receipts = await ctx.dispatchMessages(ctx.projectRoot, [{
-          target,
-          message,
-          injection_mode: options.injectionMode || "immediate",
-          source: options.source || publisher,
-        }]);
-        return receipts?.[0] || { seq: 0, targets: [target] };
-      },
+      send: dispatch,
       broadcast: async (message, publisher, options = {}) => {
+        if (ctx.internalAgentsOnly) return dispatch("broadcast", message, publisher, options);
         const receipts = await ctx.dispatchMessages(ctx.projectRoot, [{
           target: "broadcast",
           message,
@@ -125,20 +140,19 @@ async function handleLaunchAgent(ctx, args) {
     throw buildStructuredError("tool_unavailable", "launch_agent hook is unavailable");
   }
 
-  const agent = String(args.agent || "").trim().toLowerCase();
+  const agent = normalizeInternalAgentType(args.agent);
   if (!agent) {
-    throw buildStructuredError("invalid_arguments", "launch_agent requires agent");
+    throw buildStructuredError("invalid_arguments", "launch_agent requires internal codex, claude or ucode");
   }
 
   const op = {
     action: "launch",
+    internal_only: true,
     agent,
     count: normalizePositiveInt(args.count, 1),
   };
   if (args.nickname) op.nickname = String(args.nickname).trim();
   if (args.prompt_profile) op.prompt_profile = String(args.prompt_profile).trim();
-  if (args.launch_scope) op.launch_scope = String(args.launch_scope).trim();
-  if (args.terminal_app) op.terminal_app = String(args.terminal_app).trim();
 
   const opsResults = await ctx.handleOps(ctx.projectRoot, [op], ctx.processManager || null);
   return {
@@ -199,11 +213,12 @@ async function executeControllerTool(ctx, toolCall = {}) {
       });
     }
 
+    const ok = result?.ok !== false;
     observer.emit("tool_call_finished", {
       tool_name: name,
       tool_call_id: toolCallId,
       turn_id: turnId,
-      ok: true,
+      ok,
     });
     observer.audit({
       source: "controller_loop",
@@ -211,16 +226,17 @@ async function executeControllerTool(ctx, toolCall = {}) {
       tool_name: name,
       tool_call_id: toolCallId,
       turn_id: turnId,
-      ok: true,
+      ok,
       result,
     });
 
     return {
-      ok: true,
+      ok,
       name,
       tool_call_id: toolCallId,
       turn_id: turnId,
       result,
+      ...(!ok ? { error: buildStructuredError(result.code || "tool_rejected", typeof result.error === "string" ? result.error : result.error?.message || "tool rejected the request") } : {}),
     };
   } catch (err) {
     const error = err && typeof err === "object" && err.code

@@ -62,7 +62,7 @@ class AgentNotifier {
   }
 
   isUfooCodeSubscriber() {
-    return String(this.subscriber || "").startsWith("ufoo-code:");
+    return /^ucode:/.test(String(this.subscriber || ""));
   }
 
   /**
@@ -242,7 +242,7 @@ class AgentNotifier {
 
   async deliverPending() {
     if (this.isUfooCodeSubscriber()) {
-      // ufoo-code consumes bus queue internally; notifier must not inject text/commands.
+      // ucode consumes bus queue internally; notifier must not inject text/commands.
       return 0;
     }
 

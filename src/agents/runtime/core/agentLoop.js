@@ -6,6 +6,8 @@ const { materializeResolvedToolResults } = require("../protocol/materialize");
 const { withFaultPoint } = require("../protocol/faultHarness");
 const { ToolLoopGuard } = require("./toolLoopGuard");
 const { buildContextMeter, contextTokensFromUsage } = require("../context/contextWindow");
+const { isContextOverflow } = require("../context/compaction");
+const { buildRunObservation, observationFingerprint } = require("../protocol/runObservation");
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const count = (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? Math.floor(Number(value)) : 0;
@@ -23,6 +25,7 @@ async function runAgentLoop({
   transport, tools, policies = [], workspaceRoot = process.cwd(),
   prompt = "", systemPrompt = "", systemBlocks = null, historyMessages = [],
   model = "", baseUrl = "", apiKey = "", provider = "", accountId = "", requestHeaders = {}, requestProfile = "",
+  thinkingLevel = "", requestKind = "unknown",
   timeoutMs = 43200000, onStreamDelta = null, onThinkingDelta = null,
   onPhase = null, onToolEvent = null, onArtifactPersisted = null, onContextUsage = null,
   sessionId = "", signal = null, guards = null, executionState: initialState = null,
@@ -30,7 +33,9 @@ async function runAgentLoop({
   sanitizeMessages = (messages) => messages, retireImages = () => {},
   providerTurnGate = null, maxRounds = Infinity, onEvent = null,
   projectId = "", agentId = "", taskId = "", taskRunId = "", attemptId = "", requestId = "",
+  traceId = "", parentTaskRunId = "", parentSessionId = "",
   artifactNamespace = "ucode",
+  contextManager = null, historyOffset: restoredHistoryOffset = null,
 } = {}) {
   const requestModel = String(model || "").trim();
   if (!requestModel) throw new Error("agent model is not configured");
@@ -40,6 +45,7 @@ async function runAgentLoop({
   const signalGuards = createExecutionGuards({ signal, timeoutMs });
   const activeGuards = guards ? { ensureActive() { signalGuards.ensureActive(); guards.ensureActive(); } } : signalGuards;
   const messages = sanitizeMessages(clone(historyMessages));
+  const historyOffset = restoredHistoryOffset ?? (resume ? 0 : messages.filter(message => message.role !== "system").length);
   if (!resume) transport.prepareMessages({ messages, systemPrompt, prompt });
   const outputStart = messages.length;
   const currentTurnItems = () => clone(messages.slice(outputStart)).filter((message) => (
@@ -64,9 +70,13 @@ async function runAgentLoop({
   let providerMessages = messages;
   let isolatedPrefix = 0;
   let turnId = "";
+  let lastContextEstimate = 0;
+  let forceCompaction = false;
+  let contextRetry = false;
   const context = () => ({ executionState, messages, loopGuard, usage, toolCallsExecuted, toolErrors, turnId });
   const event = async (type, data = {}) => {
-    if (onEvent) await onEvent({ type, projectId, agentId, sessionId, taskId, taskRunId, attemptId, requestId, turnId, ...data });
+    if (onEvent) await onEvent({ type, time: new Date().toISOString(), projectId, agentId, sessionId, taskId, taskRunId, attemptId, requestId, turnId,
+      traceId: traceId || taskId || taskRunId, parentTaskRunId, parentSessionId, ...data });
   };
   const policyStop = async (hook, extra = {}) => {
     for (const policy of policies) {
@@ -84,9 +94,9 @@ async function runAgentLoop({
     isolatedPrefix = providerMessages.length;
   };
   const finish = (extra = {}) => ({
-    text: aggregated, streamed, toolCallsExecuted, messages,
+    text: aggregated, finalText: "", streamed, toolCallsExecuted, messages,
     turnItems: currentTurnItems(), usage, executionState,
-    protocolLedger: lastLedger || ledgerApi.snapshotLedger(activeLedger), ...extra,
+    protocolLedger: lastLedger || ledgerApi.snapshotLedger(activeLedger), historyOffset, ...extra,
   });
   const flush = (calls) => {
     const pendingById = Object.fromEntries(calls.map((call) => [callId(call), call]));
@@ -101,8 +111,12 @@ async function runAgentLoop({
     }
     return null;
   };
-  const toolContext = (extra = {}) => ({ workspaceRoot, onToolEvent, sessionId, onArtifactPersisted, executionState, signal,
-    projectId, agentId, taskId, taskRunId, attemptId, requestId, turnId, artifactNamespace, ...extra });
+  const toolContext = (extra = {}) => ({ workspaceRoot, onToolEvent: typeof onToolEvent === "function" ? event => onToolEvent({ ...event,
+    ...(event.origin ? { parentToolCallId: extra.toolCallId } : { toolCallId: extra.toolCallId }) }) : null, sessionId, onArtifactPersisted, executionState, signal,
+    projectId, agentId, taskId, taskRunId, attemptId, requestId, turnId, traceId: traceId || taskId || taskRunId, parentTaskRunId, parentSessionId, artifactNamespace, ...extra });
+  if (onEvent) await event("run.config", { configuration: buildRunObservation({ provider, model: requestModel,
+    transport: transport.name || transport.id || "", thinkingLevel, systemPrompt, systemBlocks, prompt,
+    tools: tools.toOpenAiTools(), resume, requestKind, engineFingerprint: LOOP_IMPLEMENTATION_FINGERPRINT }) });
   if (resume) await withFaultPoint("before_provider_resume", () => {});
 
   while (true) {
@@ -113,7 +127,7 @@ async function runAgentLoop({
     turnId = `turn_${randomUUID()}`;
     providerMessages = messages;
     for (const policy of policies) {
-      if (policy.prepareTurn) providerMessages = policy.prepareTurn({ ...context(), providerMessages }) || providerMessages;
+      if (policy.prepareTurn) providerMessages = await policy.prepareTurn({ ...context(), providerMessages }) || providerMessages;
     }
     isolatedPrefix = providerMessages.length;
     if (activeLedger) {
@@ -123,17 +137,54 @@ async function runAgentLoop({
       }
     }
     const action = loopGuard.nextAction();
+    if (action) await event(`loop.${action.kind === "stop" ? "stopped" : "warning"}`, { code: "repeated_tool_calls", repeatedSteps: loopGuard.count, toolNames: loopGuard.names });
     if (action && action.kind === "stop") return finish({ error: action.message, stopReason: "repeated_tool_calls" });
     if (action && action.kind === "warn") providerMessages.push({ role: "user", content: action.message });
+    mirror();
 
-    await event("model.started");
+    let maxOutputTokens;
+    if (contextManager) {
+      let prepared;
+      try { prepared = await contextManager.prepare({ messages: providerMessages, model: requestModel, systemPrompt, systemBlocks,
+        tools: tools.toOpenAiTools(), transport, signal, onPhase, onEvent: event,
+        lastUsage: usage.lastContextTokens, lastEstimate: lastContextEstimate,
+        force: forceCompaction,
+        request: { url: requestUrl, apiKey, provider, accountId, requestHeaders, requestProfile, sessionId } }); }
+      catch (error) {
+        // Preflight runs only after tool results are paired. Keep this complete
+        // transcript even when compression is cancelled or storage is broken.
+        return finish({ error: error.message, stopReason: error.code || "context_compression_failed" });
+      }
+      providerMessages = prepared.messages;
+      lastContextEstimate = prepared.estimatedTokens;
+      maxOutputTokens = prepared.maxOutputTokens;
+      forceCompaction = false;
+    }
+    // Only newly generated messages are mirrored into the full transcript.
+    isolatedPrefix = providerMessages.length;
+
+    try { activeGuards.ensureActive(); }
+    catch (error) { return finish({ error: error.message, stopReason: error.code || "runtime_error" }); }
+    const modelStarted = Date.now();
+    await event("model.started", { provider, model: requestModel, transport: transport.name || transport.id || "", estimatedInputTokens: lastContextEstimate });
     const streamEvents = [];
     let streamEventError = null;
     let turnResult;
+    let turnError = null;
+    const outputBeforeTurn = aggregated.length;
     try { turnResult = await transport.runTurn({
-      url: requestUrl, apiKey, model: requestModel, provider, accountId, requestHeaders, requestProfile,
+      url: requestUrl, apiKey, model: requestModel, provider, accountId, requestHeaders, requestProfile, thinkingLevel,
       systemPrompt, systemBlocks, messages: providerMessages, tools: tools.toOpenAiTools(),
-      sessionId, signal, timeoutMs, onPhase, onThinkingDelta,
+      ...(maxOutputTokens ? { maxOutputTokens } : {}),
+      sessionId, signal, timeoutMs,
+      onPhase(phase) {
+        streamEvents.push(event("model.phase", { phase }).catch(error => { streamEventError ||= error; }));
+        onPhase?.(phase);
+      },
+      onThinkingDelta(delta) {
+        streamEvents.push(event("thinking.delta", { text: String(delta || "") }).catch(error => { streamEventError ||= error; }));
+        onThinkingDelta?.(delta);
+      },
       onTextDelta(chunk) {
         const text = String(chunk || "");
         if (!text) return;
@@ -144,17 +195,27 @@ async function runAgentLoop({
         }
         if (typeof onStreamDelta === "function") { streamed = true; onStreamDelta(text); }
       },
-    }); } finally {
+    }); } catch (error) { turnError = error; } finally {
       await Promise.all(streamEvents);
       if (streamEventError) throw streamEventError;
     }
+    if (turnError) {
+      await event("model.failed", { error: turnError.message, code: turnError.code || "provider_error", durationMs: Date.now() - modelStarted });
+      if (!contextManager || !isContextOverflow(turnError)) throw turnError;
+      if (contextRetry || aggregated.length !== outputBeforeTurn) return finish({ error: turnError.message, stopReason: "context_budget_exceeded" });
+      contextRetry = true;
+      forceCompaction = true;
+      await event("model.retry", { code: "context_overflow", retry: 1 });
+      continue;
+    }
+    contextRetry = false;
     activeGuards.ensureActive();
     retireImages(providerMessages);
     if (providerMessages !== messages) retireImages(messages);
     usage.turns += 1;
     for (const key of ["input", "output", "cacheRead", "cacheCreation"]) usage[key] += count(turnResult && turnResult.usage && turnResult.usage[key]);
     usage.lastContextTokens = contextTokensFromUsage(turnResult && turnResult.usage);
-    await event("model.completed", { usage: turnResult && turnResult.usage || {} });
+    await event("model.completed", { usage: turnResult && turnResult.usage || {}, durationMs: Date.now() - modelStarted });
     if (typeof onContextUsage === "function") {
       try { onContextUsage(buildContextMeter({ usedTokens: usage.lastContextTokens, model: requestModel })); } catch { /* observer only */ }
     }
@@ -165,6 +226,7 @@ async function runAgentLoop({
       if (!text && toolCallsExecuted > 0) {
         if (emptyRetries >= 2) throw new Error("model returned an empty response after tool execution");
         emptyRetries += 1;
+        await event("model.retry", { code: "empty_response", retry: emptyRetries });
         providerMessages.push({ role: "user", content: "Continue the current task after the tool results. Call any remaining tools, or provide a concrete final answer to the user. Do not end the turn with an empty response." });
         mirror();
         continue;
@@ -194,8 +256,11 @@ async function runAgentLoop({
           }
         }
       }
-      if (continuation) continue;
-      return finish();
+      if (continuation) {
+        await event("model.retry", { code: "auto_continue", retry: autoContinues });
+        continue;
+      }
+      return finish({ finalText: text });
     }
     emptyContinues = 0;
     emptyRetries = 0;
@@ -217,7 +282,10 @@ async function runAgentLoop({
     let batchError = null;
     for (const policy of policies) if (policy.validateBatch) { batchError = policy.validateBatch(pending); if (batchError) break; }
     if (batchError) {
-      for (const call of pending) { resolve(call, batchError); toolCallsExecuted += 1; toolErrors += 1; }
+      for (const call of pending) {
+        await event("tool.rejected", { toolCallId: callId(call), toolName: call.name, code: batchError.code || "invalid_batch", argumentFingerprint: observationFingerprint(call.args) });
+        resolve(call, batchError); toolCallsExecuted += 1; toolErrors += 1;
+      }
       flush(pending);
       continue;
     }
@@ -228,17 +296,28 @@ async function runAgentLoop({
       const before = toolStop || await policyStop("beforeTool", { call });
       if (before) {
         toolStop = before;
+        await event("tool.rejected", { toolCallId: callId(call), toolName: name, code: before.stopReason || "stopped", argumentFingerprint: observationFingerprint(call.args) });
         resolve(call, { ok: false, code: before.stopReason || "stopped", error: "execution stopped before tool invocation" });
         continue;
       }
       let blocked = null;
       for (const policy of policies) if (policy.validateTool) { blocked = policy.validateTool(name, executionState); if (blocked) break; }
-      if (blocked) { toolCallsExecuted += 1; toolErrors += 1; resolve(call, blocked); continue; }
+      if (blocked) {
+        await event("tool.rejected", { toolCallId: callId(call), toolName: name, code: blocked.code || "tool_not_allowed", argumentFingerprint: observationFingerprint(call.args) });
+        toolCallsExecuted += 1; toolErrors += 1; resolve(call, blocked); continue;
+      }
       const resumeCall = tools.deferableTools().includes(name) ? { toolCallId: callId(call), toolName: name, call: { name: call.name, args: call.args, source: call.source } } : null;
       ledgerApi.markExecuting(activeLedger, callId(call));
       activeGuards.ensureActive();
-      await event("tool.started", { toolCallId: callId(call), toolName: name, args: call.args });
-      const result = await tools.execute(name, call.args, toolContext({ resume: resumeCall, toolCallId: callId(call) }));
+      await event("tool.started", { toolCallId: callId(call), toolName: name, args: call.args, argumentFingerprint: observationFingerprint(call.args) });
+      const toolStarted = Date.now();
+      let result;
+      try { result = await tools.execute(name, call.args, toolContext({ resume: resumeCall, toolCallId: callId(call) })); }
+      catch (error) {
+        await event("tool.failed", { toolCallId: callId(call), toolName: name, error: error.message, code: error.code || "tool_execution_failed",
+          outcome: "unknown", durationMs: Date.now() - toolStarted });
+        throw error;
+      }
       activeGuards.ensureActive();
       if (result && result.executionState) executionState = result.executionState;
       toolCallsExecuted += 1;
@@ -251,7 +330,7 @@ async function runAgentLoop({
         continue;
       }
       resolve(call, result);
-      await event("tool.completed", { toolCallId: callId(call), toolName: name, result: sanitizeResult(result) });
+      await event("tool.completed", { toolCallId: callId(call), toolName: name, result: sanitizeResult(result), durationMs: Date.now() - toolStarted });
       toolStop = await policyStop("afterTool", { call, result });
       if (toolStop) continue;
       if (toolBudget.maxToolCalls != null && toolCallsExecuted >= toolBudget.maxToolCalls) throw new Error(`tool call budget exceeded (${toolBudget.maxToolCalls})`);
@@ -266,5 +345,7 @@ async function runAgentLoop({
     if (deferred || interaction) return finish({ waitingUserInteraction: true, interactionId: deferred && deferred.interactionId || interaction && interaction.id || "" });
   }
 }
+
+const LOOP_IMPLEMENTATION_FINGERPRINT = observationFingerprint(runAgentLoop.toString());
 
 module.exports = { runAgentLoop, createExecutionGuards };

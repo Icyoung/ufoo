@@ -43,8 +43,8 @@ describe("AgentNotifier delivery strategy", () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  test("ufoo-code skips notifier injection and keeps pending queue", async () => {
-    const subscriber = "ufoo-code:abc123";
+  test("ucode skips notifier injection and keeps pending queue", async () => {
+    const subscriber = "ucode:abc123";
     const pendingFile = writePending(projectRoot, subscriber, [
       {
         seq: 1,
@@ -68,7 +68,7 @@ describe("AgentNotifier delivery strategy", () => {
     expect(fs.readFileSync(pendingFile, "utf8")).toContain("hello");
   });
 
-  test("non-ufoo-code drains pending and injects bus prompt envelope", async () => {
+  test("non-ucode drains pending and injects bus prompt envelope", async () => {
     const subscriber = "codex:abc123";
     fs.writeFileSync(
       path.join(projectRoot, ".ufoo", "agent", "all-agents.json"),

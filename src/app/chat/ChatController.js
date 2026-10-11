@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * Headless ChatController — composition root for Ink + Rust chat adapters.
+ * Headless ChatController — composition root for Rust chat.
  *
  * Owns stream state, STATUS→agents snapshot, slash/submit wiring ports.
  * View adapters attach via `ports` (dispatch / publish / log / setStatus).
@@ -21,7 +21,6 @@ const {
   buildAgentMaps,
   resolveAgentId,
   normalizeStatusToAgentsSnapshot,
-  toInkAgentsDispatchList,
 } = require("./agentDirectory");
 const { buildPromptIpcRequest, buildDirectBusSendRequest } = require("./ipcBuilders");
 const { IPC_REQUEST_TYPES } = require("../../runtime/contracts/eventContract");
@@ -29,7 +28,6 @@ const { IPC_REQUEST_TYPES } = require("../../runtime/contracts/eventContract");
 function createChatController({
   projectRoot = process.cwd(),
   globalMode = false,
-  internalOnly = false,
   ports = {},
 } = {}) {
   const view = {
@@ -38,9 +36,6 @@ function createChatController({
     setStatus: typeof ports.setStatus === "function" ? ports.setStatus : () => {},
     publish: typeof ports.publish === "function" ? ports.publish : () => {},
     getState: typeof ports.getState === "function" ? ports.getState : () => ({}),
-    mapAgentsForDispatch: typeof ports.mapAgentsForDispatch === "function"
-      ? ports.mapAgentsForDispatch
-      : (snapshot) => snapshot.agents,
     appendHistory: typeof ports.appendHistory === "function"
       ? ports.appendHistory
       : (type, text, meta) => appendChatHistory(projectRoot, type, text, meta, { globalMode }),
@@ -72,12 +67,13 @@ function createChatController({
 
   function setSend(fn) {
     daemonSend = typeof fn === "function" ? (req) => fn(req.type === IPC_REQUEST_TYPES.PROMPT || req.type === IPC_REQUEST_TYPES.AGENT_RUNTIME
-      ? { ...req, request_id: req.request_id || require("crypto").randomUUID(), session_id: req.session_id || session.runtimeSessionId } : req) : () => {};
+      ? { ...req, request_id: req.request_id || require("crypto").randomUUID(), session_id: req.session_id
+        || require("../../config").loadConfig(ports.getActiveProjectRoot?.() || projectRoot).agentConversationId || session.runtimeSessionId } : req) : () => {};
   }
   setSend(view.send);
 
   function applyStatus(data = {}) {
-    const snapshot = normalizeStatusToAgentsSnapshot(data, { internalOnly });
+    const snapshot = normalizeStatusToAgentsSnapshot(data, { internalOnly: true });
     session.agents = snapshot.agents.map((row) => row.id || row.fullId);
     session.metaMap = snapshot.metaMap;
     session.labelMap = snapshot.labelMap;
@@ -95,20 +91,20 @@ function createChatController({
       cron: snapshot.cron,
       loop: snapshot.loop,
     });
-    view.dispatch({ type: "agents/set", list: view.mapAgentsForDispatch(snapshot) });
+    view.dispatch({ type: "agents/set", list: snapshot.agents });
     return snapshot;
   }
 
   function patchAgentActivity(agentId, patch = {}) {
     if (!agentId) return;
-    if (internalOnly && !session.metaMap.has(agentId)) return;
+    if (!session.metaMap.has(agentId)) return;
     const existing = session.metaMap.get(agentId) || { id: agentId };
     const next = { ...existing, ...patch };
     session.metaMap.set(agentId, next);
     const rebuilt = normalizeStatusToAgentsSnapshot({
       active: session.agents,
       active_meta: session.agents.map((id) => session.metaMap.get(id) || { id }),
-    }, { internalOnly });
+    }, { internalOnly: true });
     session.footer = rebuilt.footer;
     view.publish("agents.patch", {
       agents: rebuilt.agents.map((row) => ({
@@ -130,12 +126,10 @@ function createChatController({
     const { createCommandExecutor } = require("./commandExecutor");
     const { parseCommand } = require("./commands");
     const { startDaemon, stopDaemon } = require("./transport");
-    const AgentActivator = require("../../coordination/bus/activate");
     const fs = require("fs");
 
     commandExecutor = createCommandExecutor({
       projectRoot,
-      internalOnly,
       getActiveProjectRoot: typeof ports.getActiveProjectRoot === "function"
         ? ports.getActiveProjectRoot
         : () => projectRoot,
@@ -174,18 +168,22 @@ function createChatController({
         ? ports.restartDaemon
         : async () => {},
       send: (req) => daemonSend(req),
-      setRuntimeSession: (id) => { session.runtimeSessionId = id; },
-      getRuntimeSession: () => session.runtimeSessionId,
+      setRuntimeSession: (id) => {
+        session.runtimeSessionId = id;
+        require("../../config").saveConfig(ports.getActiveProjectRoot?.() || projectRoot, { agentConversationId: id });
+      },
+      getRuntimeSession: () => require("../../config").loadConfig(ports.getActiveProjectRoot?.() || projectRoot).agentConversationId || session.runtimeSessionId,
+      openAgentSettings: ports.openAgentSettings,
+      applyAgentModel: ports.applyAgentModel,
+      applyAgentSettings: ports.applyAgentSettings,
       requestStatus: () => {
         if (typeof requestDaemonStatus === "function") requestDaemonStatus();
         else daemonSend({ type: IPC_REQUEST_TYPES.STATUS });
       },
       requestCron: (payload = {}) => daemonSend({ type: IPC_REQUEST_TYPES.CRON, ...payload }),
       activateAgent: async (target) => {
-        if (typeof ports.activateAgent === "function") return ports.activateAgent(target);
-        if (internalOnly) return;
-        const activator = new AgentActivator(projectRoot);
-        await activator.activate(target);
+        if (!session.metaMap.has(target)) return;
+        return ports.activateInternalAgent?.(target);
       },
       globalMode: Boolean(globalMode),
       listProjects: typeof ports.listProjects === "function"
@@ -197,14 +195,15 @@ function createChatController({
       switchProject: typeof ports.switchProject === "function"
         ? ports.switchProject
         : async () => ({ ok: false, error: "project switching unavailable" }),
-      toggleMultiWindow: typeof ports.toggleMultiWindow === "function"
-        ? ports.toggleMultiWindow
+      setWindowLayout: typeof ports.setWindowLayout === "function"
+        ? ports.setWindowLayout
         : () => {
-          view.logMessage("system", "Multi-window unavailable in this host.");
+          view.logMessage("system", "Window layouts unavailable in this host.");
         },
       applyChatSettings: typeof ports.applyChatSettings === "function"
         ? ports.applyChatSettings
         : null,
+      openResumeMenu: typeof ports.openResumeMenu === "function" ? ports.openResumeMenu : null,
     });
     return commandExecutor;
   }
@@ -233,7 +232,7 @@ function createChatController({
     });
     submitHandler = createInputSubmitHandler({
       state: submitState,
-      requireKnownTarget: internalOnly,
+      requireKnownTarget: true,
       parseAtTarget,
       resolveAgentId: (label) => resolveAgentId({
         label,
@@ -275,35 +274,10 @@ function createChatController({
         const label = getAgentLabel(agentId);
         view.publish("prompt.set_prefix", { prefix: `›@${label} ` });
       },
-      enterAgentView: (agentId, options = {}) => {
-        if (typeof ports.enterAgentView === "function") {
-          return ports.enterAgentView(agentId, options);
-        }
-        view.logMessage("system", "Agent enter unavailable in this host.");
-      },
-      getAgentAdapter: (agentId) => {
-        if (typeof ports.getAgentAdapter === "function") {
-          return ports.getAgentAdapter(agentId);
-        }
-        try {
-          const { createTerminalAdapterRouter } = require("../../runtime/terminal/adapterRouter");
-          const meta = session.metaMap.get(agentId) || {};
-          const launchMode = String(meta.launch_mode || meta.launchMode || "").trim();
-          return createTerminalAdapterRouter().getAdapter({ launchMode, agentId, meta });
-        } catch {
-          return null;
-        }
-      },
-      activateAgent: async (agentId) => {
-        if (typeof ports.activateAgent === "function") {
-          return ports.activateAgent(agentId);
-        }
-        const AgentActivator = require("../../coordination/bus/activate");
-        const root = typeof ports.getActiveProjectRoot === "function"
-          ? ports.getActiveProjectRoot()
-          : projectRoot;
-        const activator = new AgentActivator(root || projectRoot);
-        await activator.activate(agentId);
+      activateInternalAgent: (agentId) => {
+        if (!session.metaMap.has(agentId)) return { ok: false, error: "Unknown internal agent" };
+        if (typeof ports.activateInternalAgent === "function") return ports.activateInternalAgent(agentId);
+        return { ok: false, error: "Internal pane unavailable in this host" };
       },
       focusMultiPane: typeof ports.focusMultiPane === "function"
         ? ports.focusMultiPane
@@ -440,5 +414,4 @@ function createChatController({
 
 module.exports = {
   createChatController,
-  toInkAgentsDispatchList,
 };

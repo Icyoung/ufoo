@@ -8,6 +8,6 @@ module.exports = {
   ...require("./codexEventTranslator"),
   ...require("./codexThreadProvider"),
   ...require("./directAuthStatus"),
-  ...require("./upstreamTransport"),
+  ...require("./upstreamRuntime"),
   credentials: require("./credentials"),
 };

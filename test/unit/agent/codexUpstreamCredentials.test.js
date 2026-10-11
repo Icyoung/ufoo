@@ -26,7 +26,7 @@ function makeJwt(payload) {
 
 describe("agent codexUpstreamCredentials", () => {
   test("resolves default and explicit auth paths", () => {
-    const root = path.join(os.tmpdir(), "ufoo-codex-auth-paths");
+    const root = path.join(os.tmpdir(), "ucodex-auth-paths");
     expect(resolveCodexAuthPaths({ configDir: root })).toEqual({
       configDir: root,
       authPath: path.join(root, "auth.json"),
@@ -76,7 +76,7 @@ describe("agent codexUpstreamCredentials", () => {
   });
 
   test("prefers OPENAI_API_KEY over auth file", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-codex-api-key-"));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ucodex-api-key-"));
     const authPath = path.join(dir, "auth.json");
     fs.writeFileSync(authPath, JSON.stringify({
       tokens: {
@@ -98,7 +98,7 @@ describe("agent codexUpstreamCredentials", () => {
   });
 
   test("reads codex oauth descriptor from auth.json and derives email", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-codex-auth-file-"));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ucodex-auth-file-"));
     const authPath = path.join(dir, "auth.json");
     fs.writeFileSync(authPath, JSON.stringify({
       auth_mode: "chatgpt",
@@ -135,7 +135,7 @@ describe("agent codexUpstreamCredentials", () => {
   });
 
   test("throws a recognizable error when auth file is missing", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-codex-missing-"));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ucodex-missing-"));
     await expect(resolveCodexUpstreamCredentials({
       authPath: path.join(dir, "missing.json"),
       env: {},
@@ -146,7 +146,7 @@ describe("agent codexUpstreamCredentials", () => {
   });
 
   test("refreshes near-expiry codex oauth token and atomically updates auth file", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-codex-refresh-"));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ucodex-refresh-"));
     const authPath = path.join(dir, "auth.json");
     fs.writeFileSync(authPath, JSON.stringify({
       auth_mode: "chatgpt",

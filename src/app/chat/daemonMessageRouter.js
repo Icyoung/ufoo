@@ -16,12 +16,6 @@ function createDaemonMessageRouter(options = {}) {
     getPending = () => null,
     setPending = () => {},
     resolveAgentDisplayName = (value) => value,
-    getCurrentView = () => "main",
-    isAgentViewUsesBus = () => false,
-    getViewingAgent = () => "",
-    isAgentEventForViewingAgent = (data, viewingAgent, publisher) =>
-      Boolean(viewingAgent && (publisher === viewingAgent || data?.target === viewingAgent)),
-    writeToAgentTerm = () => {},
     consumePendingDelivery = () => false,
     getPendingState = () => null,
     beginStream = () => null,
@@ -487,46 +481,7 @@ function createDaemonMessageRouter(options = {}) {
     if (data.silent && !streamPayload) return true;
     if (!displayMessage && !streamPayload) return true;
 
-    const viewingAgent = getViewingAgent();
-    const isOwnInternalPrompt =
-      data.source === "chat-internal-agent-view" &&
-      viewingAgent &&
-      data.target === viewingAgent &&
-      publisher !== viewingAgent;
-    if (
-      getCurrentView() === "agent" &&
-      isAgentViewUsesBus() &&
-      isOwnInternalPrompt
-    ) {
-      return true;
-    }
-    const isAgentViewTarget =
-      getCurrentView() === "agent" &&
-      isAgentViewUsesBus() &&
-      viewingAgent &&
-      isAgentEventForViewingAgent(data, viewingAgent, publisher);
-
     const displayName = resolveAgentDisplayName(publisher);
-
-    if (isAgentViewTarget) {
-      if (streamPayload) {
-        const delta = typeof streamPayload.delta === "string"
-          ? decodeEscapedNewlines(streamPayload.delta)
-          : "";
-        if (delta || streamPayload.done) {
-          writeToAgentTerm(delta, {
-            data,
-            publisher,
-            streamPayload,
-            done: Boolean(streamPayload.done),
-            reason: streamPayload.reason || "",
-          });
-        }
-      } else if (displayMessage) {
-        writeToAgentTerm(`${displayMessage}\r\n`);
-      }
-      return true;
-    }
 
     if (data.event === "delivery" && consumePendingDelivery(publisher, displayName)) {
       // Delivery confirmations are already shown in the status bar — suppress from chat.

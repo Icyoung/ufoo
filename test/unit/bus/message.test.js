@@ -175,14 +175,14 @@ describe('MessageManager', () => {
       expect(targets).toEqual(['claude-code:abc123']);
     });
 
-    it('should resolve alias "ufoo" to ufoo-code subscribers', () => {
-      busData.agents['ufoo-code:core001'] = {
-        agent_type: 'ufoo-code',
+    it('should resolve the canonical ucode type', () => {
+      busData.agents['ucode:core001'] = {
+        agent_type: 'ucode',
         nickname: 'ufoo-1',
         status: 'active',
       };
-      const targets = manager.resolveTarget('ufoo');
-      expect(targets).toEqual(['ufoo-code:core001']);
+      const targets = manager.resolveTarget('ucode');
+      expect(targets).toEqual(['ucode:core001']);
     });
 
     it('should resolve wildcard to all active subscribers', () => {
@@ -227,14 +227,14 @@ describe('MessageManager', () => {
       expect(manager.targetMatches('codex', 'codex:xyz789')).toBe(true);
     });
 
-    it('should match ufoo aliases to ufoo-code agent type', () => {
-      busData.agents['ufoo-code:core001'] = {
-        agent_type: 'ufoo-code',
+    it('should match the canonical ucode agent type', () => {
+      busData.agents['ucode:core001'] = {
+        agent_type: 'ucode',
         nickname: 'ufoo-1',
         status: 'active',
       };
-      expect(manager.targetMatches('ufoo', 'ufoo-code:core001')).toBe(true);
-      expect(manager.targetMatches('ucode', 'ufoo-code:core001')).toBe(true);
+      expect(manager.targetMatches('ucode', 'ucode:core001')).toBe(true);
+      expect(manager.targetMatches('ucode', 'ucode:core001')).toBe(true);
     });
 
     it('should match nickname', () => {
@@ -663,14 +663,14 @@ describe('MessageManager', () => {
       expect(result.single).toBe('claude-code:abc123');
     });
 
-    it('should support "ufoo" alias for "ufoo-code"', async () => {
-      busData.agents['ufoo-code:core001'] = {
-        agent_type: 'ufoo-code',
+    it('should support the canonical ucode type', async () => {
+      busData.agents['ucode:core001'] = {
+        agent_type: 'ucode',
         nickname: 'ufoo-1',
         status: 'active',
       };
-      const result = await manager.resolve('codex:xyz789', 'ufoo');
-      expect(result.single).toBe('ufoo-code:core001');
+      const result = await manager.resolve('codex:xyz789', 'ucode');
+      expect(result.single).toBe('ucode:core001');
     });
 
     it('should include candidate metadata', async () => {

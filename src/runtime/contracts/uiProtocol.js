@@ -9,10 +9,18 @@
 
 const PROTOCOL = "ufoo-ui/1";
 
-// Capability advertised by clients that can render Rust-native /multi
-// and internal "side" activate (same multi.* wire; multi.set.kind =
-// "multi" | "side"). "side" is not a user-facing mode name.
+// Capability advertised by clients that can render internal agent panes.
+// window.set.mode is main | side | multi, independently of pane membership.
 const MULTI_FRAMES_CAPABILITY = "multi-frames-v1";
+const WINDOW_MODES_CAPABILITY = "window-modes-v1";
+
+// Internal input uses an explicit agent_id and complete input/cursor draft.
+// multi.raw.input_revision increases per child edit; submit=true commits that
+// same draft. multi.pane.frame echoes input_revision, separately from transcript
+// revision. Older echoes must not overwrite local edits. Frame entries are
+// semantic and remain valid across viewport revisions. Ready/resync replays all
+// visible pane frames, including quiet agents. input.submit.input_target=main
+// explicitly clears a previous footer target; unresolved targets never fall back.
 
 const KINDS = Object.freeze([
   "hello",
@@ -31,8 +39,6 @@ const COMMAND_NAMES = Object.freeze([
   "agent.select",
   "agent.open",
   "agent.close",
-  "agent.view.submit",
-  "agent.view.exit",
   "project.switch",
   "project.close",
   "project.return_controller",
@@ -41,12 +47,11 @@ const COMMAND_NAMES = Object.freeze([
   "command.execute",
   "interaction.respond",
   "settings.set",
-  "ui.suspend.request",
+  "settings.open",
   "ui.resync.request",
   "app.exit",
-  "multi.exit",
-  "multi.open",
-  "multi.toggle",
+  "window.set",
+  "window.cycle",
   "multi.focus",
   "multi.viewport",
   "multi.raw",
@@ -79,18 +84,14 @@ const EVENT_NAMES = Object.freeze([
   "tool.group",
   "settings.snapshot",
   "prompt.apply_paste",
+  "prompt.set_text",
+  "prompt.restore",
   "prompt.set_prefix",
   "attachments.set",
   "usage.set",
-  "agent.view.open",
-  "agent.view.append",
-  "agent.view.status",
-  "agent.view.close",
-  "ui.suspend.prepare",
-  "ui.resume",
   "connection.set",
   "error",
-  "multi.set",
+  "window.set",
   "multi.pane.frame",
 ]);
 
@@ -134,9 +135,6 @@ function validateEnvelope(raw) {
   }
   if (!KINDS.includes(String(raw.kind || ""))) {
     errors.push(`invalid kind "${raw.kind}"`);
-  }
-  if (raw.kind === "command" && raw.name && !COMMAND_NAMES.includes(String(raw.name))) {
-    // Additive: unknown commands are soft-fail for forward compat.
   }
   if (raw.payload != null && typeof raw.payload !== "object") {
     errors.push("payload must be an object");
@@ -185,6 +183,7 @@ function createSeqCounter(start = 0) {
 module.exports = {
   PROTOCOL,
   MULTI_FRAMES_CAPABILITY,
+  WINDOW_MODES_CAPABILITY,
   KINDS,
   COMMAND_NAMES,
   EVENT_NAMES,

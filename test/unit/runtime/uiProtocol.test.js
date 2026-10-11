@@ -5,6 +5,7 @@ const path = require("path");
 const {
   PROTOCOL,
   MULTI_FRAMES_CAPABILITY,
+  WINDOW_MODES_CAPABILITY,
   COMMAND_NAMES,
   EVENT_NAMES,
   createEnvelope,
@@ -37,20 +38,17 @@ describe("ufoo-ui/1 protocol", () => {
     expect(decoded.envelope.payload.text).toBe("hello");
   });
 
-  test("encodes interaction and suspend event names", () => {
-    const suspend = createEnvelope({
-      kind: "event",
-      name: "ui.suspend.prepare",
-      seq: 9,
-      payload: { reason: "agent.open" },
-    });
+  test("encodes interaction events and rejects retired names from the catalog", () => {
     const ask = createEnvelope({
       kind: "event",
       name: "interaction.request",
       seq: 10,
       payload: { id: "q1", prompt: "Continue?" },
     });
-    expect(decodeMessage(encodeMessage(suspend)).ok).toBe(true);
+    expect(COMMAND_NAMES).not.toContain("agent.view.submit");
+    expect(COMMAND_NAMES).not.toContain("ui.suspend.request");
+    expect(EVENT_NAMES).not.toContain("agent.view.open");
+    expect(EVENT_NAMES).not.toContain("ui.suspend.prepare");
     expect(decodeMessage(encodeMessage(ask)).envelope.name).toBe("interaction.request");
     const respond = createEnvelope({
       kind: "command",
@@ -84,15 +82,20 @@ describe("ufoo-ui/1 protocol", () => {
 
   test("exposes multi-frames capability constant", () => {
     expect(MULTI_FRAMES_CAPABILITY).toBe("multi-frames-v1");
+    expect(WINDOW_MODES_CAPABILITY).toBe("window-modes-v1");
   });
 
-  test("registers multi.* commands and events", () => {
-    for (const name of ["multi.exit", "multi.open", "multi.toggle", "multi.focus", "multi.viewport", "multi.raw"]) {
+  test("registers explicit window control and keeps the pane transport", () => {
+    for (const name of ["window.set", "window.cycle", "multi.focus", "multi.viewport", "multi.raw"]) {
       expect(COMMAND_NAMES).toContain(name);
     }
-    for (const name of ["multi.set", "multi.pane.frame"]) {
+    for (const name of ["window.set", "multi.pane.frame"]) {
       expect(EVENT_NAMES).toContain(name);
     }
+    for (const name of ["multi.exit", "multi.open", "multi.toggle"]) {
+      expect(COMMAND_NAMES).not.toContain(name);
+    }
+    expect(EVENT_NAMES).not.toContain("multi.set");
   });
 
   test("encodes multi.pane.frame without seq (lossy)", () => {

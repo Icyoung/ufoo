@@ -42,6 +42,11 @@ function buildThreadOptions({
   if (options.sandboxMode === undefined) {
     options.sandboxMode = "workspace-write";
   }
+  // SDK workspace-write disables sockets unless explicitly enabled. Coding
+  // tools need local services too (ADB, Gradle, dev servers), not just HTTP.
+  if (options.networkAccessEnabled === undefined) {
+    options.networkAccessEnabled = true;
+  }
   return options;
 }
 
@@ -50,11 +55,13 @@ function buildTurnOptions(opts = {}) {
     history,
     tools,
     timeoutMs,
+    runtimeContext,
     ...turnOptions
   } = opts || {};
   void history;
   void tools;
   void timeoutMs;
+  void runtimeContext;
   return turnOptions;
 }
 
@@ -156,13 +163,15 @@ class CodexSdkThread {
     for await (const rawEvent of stream) {
       const normalized = normalizeCodexEvent(rawEvent, eventState);
       if (!normalized) continue;
-      if (normalized.type === "thread_started" && normalized.threadId) {
-        this.id = normalized.threadId;
+      for (const item of Array.isArray(normalized) ? normalized : [normalized]) {
+        if (item.type === "thread_started" && item.threadId) {
+          this.id = item.threadId;
+        }
+        if (item.type === "text_delta" && item.delta) {
+          outputText += item.delta;
+        }
+        yield redactUfooEvent(item);
       }
-      if (normalized.type === "text_delta" && normalized.delta) {
-        outputText += normalized.delta;
-      }
-      yield redactUfooEvent(normalized);
     }
     if (sdkThread && sdkThread.id) {
       this.id = sdkThread.id;

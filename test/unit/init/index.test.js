@@ -79,11 +79,11 @@ describe("UfooInit", () => {
     expect(read(agentsFile)).toBe("ORIGINAL AGENTS CONTENT\n");
   });
 
-  test("init in controllerMode skips AGENTS/CLAUDE project files while bootstrapping .ufoo", async () => {
+  test("global controller init skips AGENTS/CLAUDE project files while bootstrapping .ufoo", async () => {
     await init.init({
       targets: "context",
       project: projectRoot,
-      controllerMode: true,
+      globalController: true,
     });
 
     expect(fs.existsSync(path.join(projectRoot, "AGENTS.md"))).toBe(false);

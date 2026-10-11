@@ -541,12 +541,12 @@ describe("ucode tui switch", () => {
 
   test("filterSelectableAgents excludes current subscriber", () => {
     const all = [
-      { fullId: "ufoo-code:abc123", nickname: "self" },
+      { fullId: "ucode:abc123", nickname: "self" },
       { fullId: "ufoo-agent", type: "ufoo-agent", nickname: "ufoo-agent" },
       { fullId: "codex:111111", nickname: "codex-1" },
       { fullId: "claude-code:222222", nickname: "claude-1" },
     ];
-    const filtered = filterSelectableAgents(all, "ufoo-code:abc123");
+    const filtered = filterSelectableAgents(all, "ucode:abc123");
     expect(filtered).toEqual([
       { fullId: "codex:111111", nickname: "codex-1" },
       { fullId: "claude-code:222222", nickname: "claude-1" },

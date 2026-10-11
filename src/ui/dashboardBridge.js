@@ -4,7 +4,7 @@
  * Shared dashboard snapshot helpers for Rust chat host.
  */
 
-const { formatLoopSummary } = require("../app/chat/dashboardView");
+const { formatLoopSummary } = require("./format/loopSummary");
 
 function loadGlobalProjectRows(activeProjectRoot = "") {
   const path = require("path");

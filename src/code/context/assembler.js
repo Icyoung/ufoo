@@ -34,6 +34,7 @@ const { renderExecutionSegmentContext } = require("./executionSegment");
 const { renderPlanModeContext } = require("./planMode");
 const { drainAgentMailboxForTurn } = require("../runtime/agentWakeup");
 const { stripVisionBase64, degradeVisionContent } = require("../providers/visionBlocks");
+const { DEFAULT_CONTEXT_POLICY } = require("../../agents/runtime/context/compaction");
 
 const DEFAULT_TRANSCRIPT_WINDOW = 12;
 const DEFAULT_RECENT_TOOL_EVENTS = 4;
@@ -46,7 +47,7 @@ function resolveTranscriptWindow(env = process.env) {
 
 function defaultContextPolicy(env = process.env) {
   return {
-    transcriptWindow: resolveTranscriptWindow(env),
+    ...DEFAULT_CONTEXT_POLICY,
     commitInterval: resolveCommitInterval(env),
   };
 }
@@ -389,14 +390,12 @@ function ensureTranscript(session = {}, workspaceRoot = process.cwd()) {
 
 function assembleModelContext(session = {}, request = {}, env = process.env) {
   const workspaceRoot = String(session.workspaceRoot || request.workspaceRoot || process.cwd());
-  const policy = {
-    ...defaultContextPolicy(env),
-    ...(session.contextPolicy && typeof session.contextPolicy === "object" ? session.contextPolicy : {}),
-  };
+  const policy = { ...defaultContextPolicy(env), ...(session.contextPolicy || {}) };
   session.workingSet = pruneWorkingSetByRetention(session.workingSet, session);
   const transcriptEvents = ensureTranscript(session, workspaceRoot);
-  const windowSize = policy.transcriptWindow || DEFAULT_TRANSCRIPT_WINDOW;
-  const summary = buildRollingSummary(transcriptEvents, session.summary, session);
+  // Semantic checkpointing lives in shared runtime, before each model call.
+  // Do not silently replace older conversation with a deterministic digest.
+  const summary = "";
 
   const layered = buildLayeredSystemPrompt({
     workspaceRoot,
@@ -428,7 +427,7 @@ function assembleModelContext(session = {}, request = {}, env = process.env) {
     sessionStableExtras: request.sessionStableExtras || "",
   });
 
-  const recentMessages = buildRecentMessages(transcriptEvents, windowSize, session);
+  const recentMessages = sanitizeModelMessages(transcriptEventsToMessages(transcriptEvents, { preferArtifact: true }));
 
   return {
     systemPrompt: layered.flatText,

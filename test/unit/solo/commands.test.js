@@ -11,7 +11,8 @@ describe("solo commands helpers", () => {
     expect(resolveSoloAgentType({}, "openai")).toBe("codex");
     expect(resolveSoloAgentType({}, "ugrok")).toBe("grok");
     expect(resolveSoloAgentType({}, "xai")).toBe("grok");
-    expect(resolveSoloAgentType({}, "ufoo")).toBe("ucode");
+    expect(resolveSoloAgentType({}, "ucode")).toBe("ucode");
+    expect(resolveSoloAgentType({}, "ufoo")).toBe("");
   });
 
   test("resolveSoloAgentType falls back to configured provider", () => {

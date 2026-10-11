@@ -16,7 +16,7 @@ describe("ucode launcher resolver", () => {
       loadConfigImpl: () => ({}),
     });
 
-    expect(resolved.agentType).toBe("ufoo-code");
+    expect(resolved.agentType).toBe("ucode");
     expect(resolved.command).toBe(process.execPath);
     expect(resolved.args[0]).toMatch(/src\/code\/agent\.js$/);
     expect(resolved.args).toEqual(expect.arrayContaining(["--help"]));

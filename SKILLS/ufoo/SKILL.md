@@ -60,6 +60,10 @@ Managed identities must not call MCP `wait_for_message`,
 
 ## Handle delivered messages
 
+Use the same natural language as the user's task prompt for replies, progress,
+report summaries, and handoffs, unless the user requests another language.
+Preserve that language when delegating; English protocol text does not override it.
+
 Treat these prompt prefixes as work inputs:
 
 - `[ufoo]<from:id(nickname)>` — event-bus delivery from direct injection or the
@@ -69,7 +73,11 @@ Treat these prompt prefixes as work inputs:
 For each received bus task:
 
 1. Execute it immediately within the current authority.
-2. Acknowledge it only after handling. A wrapper-managed Agent uses:
+2. In internal mode (`UFOO_LAUNCH_MODE=internal`), the runner confirms the
+   delivered task after execution. Do not check or acknowledge the inbox
+   yourself; queued messages are future tasks. CLI/MCP ack calls for internal
+   agents leave those messages pending.
+   Outside internal mode, acknowledge only after handling. A wrapper-managed Agent uses:
 
    ```bash
    ufoo bus ack "<subscriber-id>"
@@ -94,10 +102,26 @@ For each received bus task:
    requested scope and controller: private controller work uses
    `--scope private --controller ufoo-agent`, or the corresponding MCP fields.
 
+Acknowledgement-only inputs, repeated completion notices, and unchanged status
+are not new work. If they contain no question, action, new result, or remaining
+assigned obligation, end silently without a bus reply, lifecycle report, or
+final response. Internal final text is automatically sent to the peer: do not
+write "received", "confirmed", or "nothing to do" as a final reply. Never
+acknowledge an acknowledgement or report receipt of a report. Perform an
+assigned validation of a new result once; report the substantive outcome only.
+
 After sending or broadcasting, continue the current task. Do not start an
 ad-hoc check or poll, sleep, or wait for a reply. A wrapper-managed Agent
 receives follow-ups by direct injection; an external Agent leaves its existing
 App-specific `$ufoo-bus-poll` receive wait armed when idle.
+
+Keep reports, peer handoffs and final replies to 1-4 short lines and at most
+600 characters unless the user requests inline detail. A result includes the
+outcome, changed files or commit, exact checks (pass/fail/not run), and blockers;
+a handoff adds the next owner's action. Put longer plans, findings and logs in
+a workspace note or existing evidence file and send its exact path. Report only
+new information; omit tool transcripts, repeated analysis and duplicated final
+summaries. Preserve assigned task IDs and required acceptance evidence.
 
 ## Preserve shared knowledge
 

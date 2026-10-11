@@ -18,10 +18,6 @@ function createHarness(overrides = {}) {
       pending = value;
     }),
     resolveAgentDisplayName: jest.fn((v) => `name:${v}`),
-    getCurrentView: jest.fn(() => "main"),
-    isAgentViewUsesBus: jest.fn(() => false),
-    getViewingAgent: jest.fn(() => ""),
-    writeToAgentTerm: jest.fn(),
     consumePendingDelivery: jest.fn(() => false),
     getPendingState: jest.fn(() => null),
     beginStream: jest.fn(() => ({ state: true })),
@@ -161,96 +157,6 @@ describe("chat daemonMessageRouter", () => {
     });
   });
 
-  test("agent view bus passthrough writes to term and stops processing", () => {
-    const { router, options } = createHarness({
-      getCurrentView: jest.fn(() => "agent"),
-      isAgentViewUsesBus: jest.fn(() => true),
-      getViewingAgent: jest.fn(() => "codex:1"),
-    });
-
-    const stop = router.handleMessage({
-      type: IPC_RESPONSE_TYPES.BUS,
-      data: {
-        event: "message",
-        publisher: "codex:1",
-        message: "hello",
-      },
-    });
-
-    expect(stop).toBe(true);
-    expect(options.writeToAgentTerm).toHaveBeenCalledWith("hello\r\n");
-  });
-
-  test("agent view bus passthrough decodes escaped newlines", () => {
-    const { router, options } = createHarness({
-      getCurrentView: jest.fn(() => "agent"),
-      isAgentViewUsesBus: jest.fn(() => true),
-      getViewingAgent: jest.fn(() => "codex:1"),
-    });
-
-    const stop = router.handleMessage({
-      type: IPC_RESPONSE_TYPES.BUS,
-      data: {
-        event: "message",
-        publisher: "codex:1",
-        message: "hello\\nworld",
-      },
-    });
-
-    expect(stop).toBe(true);
-    expect(options.writeToAgentTerm).toHaveBeenCalledWith("hello\nworld\r\n");
-  });
-
-  test("agent view bus passthrough accepts watched target events", () => {
-    const { router, options } = createHarness({
-      getCurrentView: jest.fn(() => "agent"),
-      isAgentViewUsesBus: jest.fn(() => true),
-      getViewingAgent: jest.fn(() => "codex:1"),
-      isAgentEventForViewingAgent: jest.fn((data, viewingAgent, publisher) =>
-        publisher === viewingAgent || data.target === viewingAgent
-      ),
-    });
-
-    const stop = router.handleMessage({
-      type: IPC_RESPONSE_TYPES.BUS,
-      data: {
-        event: "message",
-        publisher: "ufoo-agent",
-        target: "codex:1",
-        message: "assigned task",
-      },
-    });
-
-    expect(stop).toBe(true);
-    expect(options.writeToAgentTerm).toHaveBeenCalledWith("assigned task\r\n");
-  });
-
-  test("agent view bus suppresses own submitted prompt echo", () => {
-    const { router, options } = createHarness({
-      getCurrentView: jest.fn(() => "agent"),
-      isAgentViewUsesBus: jest.fn(() => true),
-      getViewingAgent: jest.fn(() => "codex:1"),
-      isAgentEventForViewingAgent: jest.fn((data, viewingAgent, publisher) =>
-        publisher === viewingAgent || data.target === viewingAgent
-      ),
-    });
-
-    const stop = router.handleMessage({
-      type: IPC_RESPONSE_TYPES.BUS,
-      data: {
-        event: "message",
-        publisher: "ufoo-agent",
-        target: "codex:1",
-        source: "chat-internal-agent-view",
-        message: "你好",
-      },
-    });
-
-    expect(stop).toBe(true);
-    expect(options.writeToAgentTerm).not.toHaveBeenCalled();
-    expect(options.logMessage).not.toHaveBeenCalled();
-  });
-
   test("delivery event consumes pending and requests status without logging to chat", () => {
     const { router, options } = createHarness({
       consumePendingDelivery: jest.fn(() => true),
@@ -294,14 +200,7 @@ describe("chat daemonMessageRouter", () => {
   });
 
   test("activity_state_changed stays out of internal agent log", () => {
-    const { router, options } = createHarness({
-      getCurrentView: jest.fn(() => "agent"),
-      isAgentViewUsesBus: jest.fn(() => true),
-      getViewingAgent: jest.fn(() => "codex:1"),
-      isAgentEventForViewingAgent: jest.fn((data, viewingAgent, publisher) =>
-        publisher === viewingAgent
-      ),
-    });
+    const { router, options } = createHarness();
 
     router.handleMessage({
       type: IPC_RESPONSE_TYPES.BUS,
@@ -312,7 +211,7 @@ describe("chat daemonMessageRouter", () => {
       },
     });
 
-    expect(options.writeToAgentTerm).not.toHaveBeenCalled();
+    expect(options.logMessage).not.toHaveBeenCalled();
     expect(options.setTransientAgentState).toHaveBeenCalledWith("codex:1", "working", { detail: "" });
     expect(options.requestStatus).toHaveBeenCalledTimes(1);
   });
@@ -398,30 +297,6 @@ describe("chat daemonMessageRouter", () => {
     expect(options.beginStream).toHaveBeenCalled();
     expect(options.appendStreamDelta).toHaveBeenCalled();
     expect(options.finalizeStream).toHaveBeenCalledWith("codex:1", expect.any(Object), "end");
-  });
-
-  test("agent view stream done frame notifies the active agent view even without delta", () => {
-    const { router, options } = createHarness({
-      getCurrentView: jest.fn(() => "agent"),
-      isAgentViewUsesBus: jest.fn(() => true),
-      getViewingAgent: jest.fn(() => "codex:1"),
-      isAgentEventForViewingAgent: jest.fn(() => true),
-    });
-
-    router.handleMessage({
-      type: IPC_RESPONSE_TYPES.BUS,
-      data: {
-        event: "message",
-        publisher: "codex:1",
-        message: JSON.stringify({ stream: true, done: true, reason: "end" }),
-      },
-    });
-
-    expect(options.writeToAgentTerm).toHaveBeenCalledWith("", expect.objectContaining({
-      done: true,
-      reason: "end",
-      streamPayload: expect.objectContaining({ done: true }),
-    }));
   });
 
   test("response with recoverable payload logs recoverable and skipped entries", () => {

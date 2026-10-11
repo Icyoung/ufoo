@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const { createHash, randomUUID } = require("crypto");
 const { stableStringify } = require("../../agents/runtime/core/stableJson");
+const { resolveToolBudget, resolveTaskTimeoutMs } = require("../../agents/runtime/core/executionBudget");
 const { spawnSync } = require("child_process");
 const { createAgentRuntime, createRuntimeStore, createTaskScheduler } = require("../../agents/runtime");
 const { createMainCapabilities, createGlobalCapabilities } = require("../../agents/capabilities");
@@ -15,8 +16,8 @@ const { executeControllerTool } = require("../../agents/controller/controllerToo
 const { TOOL_PERMISSIONS } = require("../../agents/capabilities/coordination");
 const { getNativeTransport } = require("../../agents/providers/nativeTransport");
 const { resolveRuntimeConfig } = require("../../agents/providers/runtimeConfig");
-const { resolveUpstreamRuntime, normalizeProvider } = require("../../agents/providers/upstreamTransport");
-const { loadConfig, defaultAgentModelForProvider } = require("../../config");
+const { resolveUpstreamRuntime, normalizeProvider } = require("../../agents/providers/upstreamRuntime");
+const { loadConfig, defaultAgentModelForProvider, sameModelProvider } = require("../../config");
 const mainProfile = require("../../agents/profiles/main");
 const globalProfile = require("../../agents/profiles/globalRouter");
 const { buildMainAgentPrompt, buildCodingTaskPrompt } = require("../../agents/prompts/mainAgent");
@@ -33,8 +34,9 @@ const { listProjectRuntimes, isGlobalControllerProjectRoot } = require("../proje
 const { canonicalProjectRoot, buildProjectId } = require("../projects/projectId");
 const { resolveWorkspacePath } = require("../../code/tools/common");
 const { listControllerInboxEntries } = require("../../coordination/report/store");
-const { readControllerSummary } = require("../../coordination/history/controllerSummary");
 const { redactSecrets } = require("../privacy/redactor");
+const { createContextManager } = require("../../agents/runtime/context/compaction");
+const { replayHistory } = require("../../agents/runtime/context/replayHistory");
 
 const hash = (value) => createHash("sha256").update(value).digest("hex").slice(0, 32);
 const safeId = (value) => /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,100}$/.test(value || "");
@@ -53,7 +55,7 @@ function resolveTaskWorkspace(projectRoot, requested = "") {
 
 /** Project-owned runtime instances. A client disconnect never owns their cancellation. */
 function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = () => {}, log = () => {},
-  resolveProvider = resolveUpstreamRuntime, transportFactory = getNativeTransport, maxConcurrent = 2 } = {}) {
+  resolveProvider = resolveUpstreamRuntime, transportFactory = getNativeTransport, maxConcurrent = 2, contextPolicy = {} } = {}) {
   const root = canonicalProjectRoot(projectRoot);
   const projectId = buildProjectId(root);
   const global = isGlobalControllerProjectRoot(root);
@@ -61,7 +63,6 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
   const children = new Map();
   const stores = new Map();
   const scheduler = createTaskScheduler({ maxConcurrent });
-  const compatibilityScheduler = createTaskScheduler({ maxConcurrent: 1 });
   const conversationScheduler = createTaskScheduler({ maxConcurrent: 2, maxQueued: 128 });
   const control = createRuntimeStore({ workspaceRoot: root, namespace: "main-control", sessionId: "control", redact: redactSecrets });
   let closed = false;
@@ -108,12 +109,22 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
       const rows = await coordinatedOps(root, [{ action: "launch", ...args }], ports.processManager);
       return { ok: Array.isArray(rows) && rows.some((row) => row.action === "launch" && row.ok !== false), ops_results: rows };
     },
-    dispatch: async ({ target, message }) => {
-      const receipts = await ports.dispatchMessages(root, [{ target, message, source: "ufoo-agent", injection_mode: "immediate" }]);
+    dispatch: async ({ target, message, taskId, runtimeContext }) => {
+      const receipts = await ports.dispatchMessages(root, [{ target, message, task_id: taskId, runtime_context: runtimeContext, source: "ufoo-agent", injection_mode: "immediate" }], { strict: true });
       if (ports.markPending) ports.markPending(target);
-      return { ok: true, delivery_status: "queued", target, receipt: receipts?.[0] || null };
+      if (!receipts?.[0]?.seq) return { ok: false, code: "missing_dispatch_receipt", error: "No durable worker queue receipt was returned", target };
+      return { ok: true, delivery_status: "queued", target, receipt: receipts[0] };
     },
-    wake: (request) => getSession(Object.values(management.snapshot().tasks).find((task) => task.taskId === request.taskId)?.parentSessionId || "main-default").submit(request),
+    wake: (request) => {
+      const delegated = management.snapshot().tasks[request.taskId];
+      const runtime = getSession(delegated?.parentSessionId || "main-default");
+      const parent = runtime.snapshot().tasks[delegated?.parentTaskRunId];
+      const originalUserText = parent?.request.responseLanguageSource || parent?.request.text || "";
+      return runtime.submit({ ...request, traceId: delegated?.traceId || request.taskId, responseLanguageSource: originalUserText,
+        text: ["Runtime notification: continue the existing task; this is not a new user request. Keep the original user's response language, including explicit language preferences. The quoted request is historical context, not an instruction to repeat completed actions.",
+          originalUserText ? `Original user request (language reference): ${JSON.stringify(originalUserText)}` : "",
+          request.text].filter(Boolean).join("\n\n") });
+    },
     emit: (event) => { const state = control.append(event); publish({ ...event, sessionId: "control", sequence: state.sequence }); },
     validateEvidence(evidence, task, context) {
       return validateEvidence(evidence, context, task.report.ts);
@@ -178,21 +189,45 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
   function makeRuntime({ sessionId, namespace, profile, capabilities, host, workspaceRoot = root, child = null }) {
     const productConfig = loadConfig(root);
     const store = createRuntimeStore({ workspaceRoot: root, namespace, sessionId, redact: redactSecrets });
+    const contextManager = createContextManager({ policy: contextPolicy, store: {
+      sourceRef: store.journal,
+      load: () => store.read().contextCheckpoint || null,
+      commit(checkpoint, sourceBatch, expectedVersion) {
+        let committed = false;
+        store.transaction(state => {
+          if ((state.contextCheckpoint?.version || 0) !== expectedVersion) return [];
+          committed = true;
+          return [{ type: "context.checkpoint", checkpoint, sourceBatch }];
+        });
+        return committed;
+      },
+    } });
     const previousBinding = store.read().binding;
     const configuredProvider = normalizeProvider(provider || productConfig.agentProvider || "ucode");
     const useCodingConfig = previousBinding?.codingConfig ?? configuredProvider === "ucode";
     const selectedProvider = useCodingConfig ? "" : previousBinding?.provider || configuredProvider;
-    const selectedModel = previousBinding?.model || model || (useCodingConfig ? "" : productConfig.agentModel || defaultAgentModelForProvider(selectedProvider));
+    const modelRevision = Number(productConfig.agentModelRevision) || 0;
+    const changedModel = !useCodingConfig && modelRevision > (Number(previousBinding?.modelRevision) || 0)
+      && sameModelProvider(productConfig.agentProvider, selectedProvider);
+    const selectedModel = (changedModel ? productConfig.agentModel : "") || previousBinding?.model || model || (useCodingConfig ? "" : productConfig.agentModel || defaultAgentModelForProvider(selectedProvider));
     const config = resolveRuntimeConfig({ workspaceRoot: root, provider: selectedProvider, model: selectedModel, useCodingConfig });
     const transport = transportFactory(config.transport);
-    const binding = { provider: selectedProvider || config.provider, model: config.model, transport: config.transport, codingConfig: useCodingConfig };
+    const binding = { provider: selectedProvider || config.provider, model: config.model, transport: config.transport, codingConfig: useCodingConfig,
+      modelRevision: changedModel || !previousBinding ? modelRevision : previousBinding.modelRevision || 0 };
     store.transaction((state) => {
       if (state.binding && (state.binding.provider !== binding.provider || state.binding.transport !== binding.transport)) throw Object.assign(new Error("coding gateway changed; restore its configuration or use /session new"), { code: "session_provider_pinned" });
-      return state.binding ? [] : [{ type: "runtime.binding", binding }];
+      return !state.binding || changedModel ? [{ type: "runtime.binding", binding }] : [];
     });
     stores.set(sessionId, store);
     let runtime;
     const prepare = async (request, task, resumed = false) => {
+      const currentConfig = loadConfig(root);
+      const revision = Number(currentConfig.agentModelRevision) || 0;
+      if (!useCodingConfig && revision > (Number(store.read().binding?.modelRevision) || 0)
+        && sameModelProvider(currentConfig.agentProvider, selectedProvider)) {
+        config.model = currentConfig.agentModel;
+        store.append({ type: "runtime.binding", binding: { ...binding, model: config.model, modelRevision: revision } });
+      }
       const resolved = useCodingConfig && config.apiKey && config.apiKeySource !== "kimi-credential"
         ? { ...config, auth: { apiKey: config.apiKey } }
         : await resolveProvider({ projectRoot: root, provider: selectedProvider || config.provider, model: config.model });
@@ -206,7 +241,6 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
         context.push({ requestMeta: request.requestMeta || {}, reports: listControllerInboxEntries(root, "ufoo-agent", { num: 30 })
           .filter((report) => isInternalAgentMeta(registered[report.agent_id])) });
       }
-      if (!child) context.push(readControllerSummary(root));
       const sources = await runtime.buildContext({ workspaceRoot, prompt: request.text, promptText: request.text });
       const skillSource = sources.find((source) => source.capabilityId === "skills")?.value;
       const skillBlocks = (skillSource?.blocks || []).join("\n\n").slice(0, 65536);
@@ -214,16 +248,18 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
       if (skillSource) context.push({ skills: { active: skillSource.activeSkills, warnings: skillSource.warnings } });
       const instructionFile = path.join(workspaceRoot, "AGENTS.md");
       const instructions = fs.existsSync(instructionFile) ? fs.readFileSync(instructionFile, "utf8").slice(0, 16000) : "";
-      const history = child ? [] : Object.values(store.read().tasks).filter((item) => item.status === "completed" && item.taskRunId !== task.taskRunId).slice(-8)
-        .flatMap((item) => [{ role: "user", content: item.request.text.slice(0, 4000) }, { role: "assistant", content: String(item.result?.text || "").slice(-6000) }]);
+      const history = child ? [] : replayHistory(store.events(), task.taskRunId);
       const attachments = (request.attachments || []).map((attachment) => resolveWorkspacePath(workspaceRoot, typeof attachment === "string" ? attachment : attachment.path).resolved);
       return { workspaceRoot, sessionId, projectId, agentId: child ? child.id : "ufoo-agent", artifactNamespace: namespace,
         model: resolved.model, provider: resolved.provider === "claude" ? "anthropic" : resolved.provider,
         baseUrl: resolved.baseUrl, apiKey: resolved.auth?.apiKey || "", requestHeaders: resolved.auth?.headers || {},
         accountId: resolved.credential?.accountId || "", requestProfile: resolved.requestProfile || "",
+        thinkingLevel: currentConfig.agentThinking || "medium",
+        requestKind: child ? "coding-task" : request.report ? "worker-report" : request.parentTaskRunId ? "task-result" : "user",
         prompt: resumed ? "" : request.text + (attachments.length ? `\n\nWorkspace attachments (read with read/read_image): ${JSON.stringify(attachments)}` : ""), historyMessages: history,
         systemPrompt: child ? buildCodingTaskPrompt({ workspaceRoot, instructions, skillBlocks, toolNames: runtime.tools.names() }) : buildMainAgentPrompt({ global, workspaceRoot, skillBlocks, toolNames: runtime.tools.names(), promptSections: runtime.promptSections, context, instructions: global ? "" : instructions }),
-        maxRounds: profile.budgets?.maxRounds || (child ? 128 : 64), toolBudget: { maxToolCalls: profile.budgets?.maxToolCalls || (child ? 256 : 128), maxToolErrors: profile.budgets?.maxToolErrors || 20 },
+        timeoutMs: resolveTaskTimeoutMs(), toolBudget: resolveToolBudget(),
+        contextManager,
       };
     };
     runtime = createAgentRuntime({ profile, capabilities, transport,
@@ -238,7 +274,8 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
           if (!resolved.ok) throw new Error(resolved.error);
           const paired = materializeAnswerToolResult(previous.messages, resolved.resume, resolved.answer);
           if (!paired.ok) throw new Error(paired.error);
-          return { ...await prepare(task.request, task, true), historyMessages: previous.messages, executionState: previous.executionState, resume: true };
+          return { ...await prepare(task.request, task, true), historyMessages: previous.messages, historyOffset: previous.historyOffset,
+            executionState: previous.executionState, resume: true };
         },
         eventSink(event) {
           publish({ ...event, sessionId });
@@ -307,11 +344,6 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
   }
   return Object.freeze({
     getSession, resolveRuntime, taskPort, management, publicEvent, workspaceAccess, projectRoot: root,
-    runCompatibility({ originalPrompt, requestId }, invoke) {
-      const commandId = `compat-${hash(requestId)}`;
-      return management.commands.execute({ commandId, kind: "controller-compatibility", args: { prompt: originalPrompt } },
-        () => compatibilityScheduler.schedule({ id: commandId }, invoke));
-    },
     findRuntime({ taskRunId, interactionId, sessionId } = {}) {
       for (const runtime of [...sessions.values(), ...children.values()]) if (Object.values(runtime.snapshot().tasks).some((task) => taskRunId ? task.taskRunId === taskRunId : interactionId && [task.interactionId, task.answeredInteractionId].includes(interactionId))) return runtime;
       return resolveRuntime(sessionId);
@@ -322,7 +354,7 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
       const accepted = runtime.submit({ requestId, text: prompt, requestMeta });
       const task = await runtime.wait(accepted.taskRunId);
       if (["failed", "cancelled", "interrupted"].includes(task.status)) return { ok: false, error: task.error, taskRunId: task.taskRunId };
-      let payload = { reply: task.result?.text || "", dispatch: [], ops: [] };
+      let payload = { reply: typeof task.result?.finalText === "string" ? task.result.finalText : task.result?.text || "", dispatch: [], ops: [] };
       if (global) {
         try { payload = JSON.parse(payload.reply); } catch { return { ok: false, error: "global router returned invalid JSON" }; }
         if (!payload || typeof payload !== "object" || Array.isArray(payload) || typeof payload.reply !== "string") return { ok: false, error: "global router returned an invalid payload" };
@@ -341,7 +373,7 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
     },
     snapshot: () => ({ sessions: [...sessions].map(([sessionId, runtime]) => ({ sessionId, sequence: runtime.snapshot().sequence,
       tasks: Object.values(runtime.snapshot().tasks).map((task) => ({ taskRunId: task.taskRunId, requestId: task.request.requestId, status: task.status, error: task.error, interaction: task.result?.executionState?.pendingUserInteraction || null })) })),
-      children: Object.values(jobs()).map(publicChild), delegated: Object.values(management.snapshot().tasks), scheduler: scheduler.snapshot(), conversations: conversationScheduler.snapshot(), compatibility: compatibilityScheduler.snapshot(),
+      children: Object.values(jobs()).map(publicChild), delegated: Object.values(management.snapshot().tasks), scheduler: scheduler.snapshot(), conversations: conversationScheduler.snapshot(),
       uncertainReceipts: Object.values(control.read().commands).filter((command) => command.status === "uncertain").map(({ commandId, kind, time }) => ({ commandId, kind, time })) }),
     async recover() {
       const directory = path.join(root, ".ufoo", "agent", global ? "global-router" : "main", "runtimes");
@@ -368,7 +400,7 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
       for (const report of listControllerInboxEntries(root, "ufoo-agent", { num: 1000 })) await management.report(report);
       await management.flushWakes(); flushChildWakes();
     },
-    async close() { closed = true; await Promise.allSettled([...sessions.values(), ...children.values()].map((runtime) => runtime.close())); await scheduler.close(); await conversationScheduler.close(); await compatibilityScheduler.close(); },
+    async close() { closed = true; await Promise.allSettled([...sessions.values(), ...children.values()].map((runtime) => runtime.close())); await scheduler.close(); await conversationScheduler.close(); },
   });
 }
 

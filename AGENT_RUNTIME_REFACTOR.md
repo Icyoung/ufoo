@@ -1,7 +1,7 @@
 # 分层可插拔 Agent Runtime 改造方案
 
 日期：2026-10-08  
-状态：P0–P5 已落地，默认新会话使用共享 main runtime；实际 API、兼容窗口与恢复边界见第 11 节。  
+状态：P0–P5 已落地，主 agent 统一使用共享 main runtime；旧 router 配置与执行入口已删除，实际 API 与恢复边界见第 11 节。
 范围：提取 ucode 的执行能力供 ufoo 共用，使 ufoo 主 agent 能编码、路由、管理 agent，并处理协调任务。
 
 ## 1. 目标与边界
@@ -33,12 +33,10 @@
 | [src/code/sessionStore.js](src/code/sessionStore.js) | 会话元数据与投影检查点 | 注入存储 namespace 与 codec，避免固定 ucode 身份 |
 | [src/code/protocol/](src/code/protocol/) | 工具调用账本、协议校验、暂停恢复、状态转换 | 分离通用协议和业务状态转换；逐项验证成熟度 |
 | [src/code/runtime/](src/code/runtime/) | TaskRun、mailbox、任务推进、唤醒、写 lease | 提取通用任务机制；计划图执行保留为可选能力 |
-| [src/agents/controller/ufooAgent.js](src/agents/controller/ufooAgent.js) | 路由上下文、提示、模型调用、JSON 路由输出、简化历史 | 使用共享 runtime，并保留迁移期路由输出适配 |
-| [src/agents/controller/loopRuntime.js](src/agents/controller/loopRuntime.js) | Controller 多轮执行、预算、工具结果反馈、观测 | 通用机制进入 runtime；协调策略进入能力模块 |
 | [src/agents/controller/controllerToolExecutor.js](src/agents/controller/controllerToolExecutor.js) | Controller 工具调用及 daemon 操作接入 | 工具执行通过统一注册表与受限 host ports 接入 |
 | [src/agents/providers/](src/agents/providers/) 与 [src/code/providers/](src/code/providers/) | 上游认证、请求、模型协议、传输适配 | 保留 provider 身份差异，提取可共用的传输协议 |
 | [src/tools/](src/tools/) 与 [src/code/tools/](src/code/tools/) | 协调工具与编码工具 | 统一运行时描述协议；业务 handler 保留明确归属 |
-| [src/runtime/daemon/promptRequest.js](src/runtime/daemon/promptRequest.js) | 全局/项目入口、gate router、controller 执行选择 | 接入项目主 agent host，保留明确指定和快速路由 |
+| [src/runtime/daemon/promptRequest.js](src/runtime/daemon/promptRequest.js) | 全局/项目请求入口 | 统一使用 main agent host，保留强制项目转交 |
 
 需要明确的现状：
 
@@ -80,7 +78,7 @@ flowchart TD
 适配器将统一模型消息与工具定义转换为 provider 协议，并将输出归一化为文本、思考、工具调用、用量及错误事件。
 
 - 认证读取与必要刷新仍归 provider credential adapter。
-- Router 模型配置和 coding 模型配置可以不同，共用执行机制不要求同一个模型。
+- 主 agent 的编码与路由共用 `agentProvider` 和 `agentModel`；独立 ucode 保留自己的网关配置。
 - 不将 MCP capability handle 当作模型 provider 的认证凭据。
 - 不因 runtime 抽取写入用户全局 Codex/Claude 配置或替换其认证 header。
 - 工具调用、图像、暂停恢复等支持情况通过显式特性声明校验。缺少必需特性时返回明确错误。
@@ -183,7 +181,7 @@ MCP 是对外工具适配器。进程内调用直接使用同一业务 handler�
 
 副作用分类至少覆盖读取、文件修改、shell、消息投递和进程生命周期。分类用于恢复策略，不能据此推定 shell 是只读或安全的。结果不确定的写操作不自动重放，需查询可信状态或由用户显式处理。
 
-已有工具名、caller tiers、输入/输出 schema 优先保留。迁移期通过适配器接受现有 controller JSON 输出，先归一化为经过校验的决定，再执行；不要把所有最终 `ops` 转成隐式、不可追踪的工具调用。
+已有工具名、caller tiers、输入/输出 schema 保留。主 agent 通过共享 runtime 的原生工具调用执行协调操作，并记录工具及命令回执；不再接受旧 controller JSON 输出作为执行计划。
 
 ### 4.4 通用事件
 
@@ -243,7 +241,7 @@ ucode 当前独立入口可继续采用串行用户任务队列；共用 runtime
 - 以追加 journal 为会话事件真相来源，snapshot/transcript 是可重建投影。
 - 通用会话存储支持 namespace；旧 ucode 路径先通过 adapter 读取，早期不批量改写用户数据。
 - 能力状态有独立 namespace/version；禁用有未完成状态的能力时返回明确限制或执行迁移。
-- 旧 controller history 初期只作为标注来源的历史摘要读取，不伪造为已发生的工具调用。
+- 主 agent 使用独立 runtime namespace，不加载或迁移旧 controller history。
 
 已有共享文件事务和报告确认顺序继续有效：锁只保护同步本地事务，不跨网络或 `await`；报告持久化成功后才确认消费。
 
@@ -313,7 +311,7 @@ src/agents/prompts/           # 角色和能力提示构建
 3. 具体能力可依赖现有业务包；coding adapter 依赖 `code/tools` 属于明确的业务适配，不进入核心。
 4. Provider transport 不导入 `code/nativeRunner`、chat 或 daemon。
 5. Prompt builder 不导入 daemon/UI 实现，运行状态经参数提供。
-6. 不建立旧顶层 compatibility 目录。现有入口函数可在迁移期间代理到新实现，业务真相源保持唯一。
+6. 不建立旧顶层 compatibility 目录，不保留 controller 执行适配器，业务真相源保持唯一。
 
 ## 8. 分阶段实施
 
@@ -341,9 +339,9 @@ src/agents/prompts/           # 角色和能力提示构建
 ### P2：Controller 使用共享 Runtime
 
 - 接入协调工具注册表与 daemon ports。
-- 迁移路由上下文、历史摘要、memory 注入和 controller 观测。
-- 现有 JSON 路由结果通过显式适配器校验与执行。
-- 按项目/session 选择唯一执行路径，保留旧路径用于回退，不双重派发。
+- 将路由上下文、memory 注入和运行事件接入能力模块。
+- 主 agent 使用原生工具调用，协调操作经过统一授权和参数校验。
+- 全部主会话使用 main runtime，删除旧 controller JSON 适配器及执行分支。
 
 验收：当前 launch/dispatch/rename/close、全局/项目路由和快捷路径行为保持；controller 与 ucode 共用核心循环，恢复后的副作用不重复执行。
 
@@ -368,14 +366,14 @@ src/agents/prompts/           # 角色和能力提示构建
 ### P5：完整协调能力与默认切换
 
 - 接入 groups/scheduling，复用既有服务和任务身份。
-- 在显式选择/灰度路径上完成回归后切换默认 main runtime。
-- 旧 session 保持原执行路径，或经明确 checkpoint 迁移；不在运行中切换核心。
+- 主 agent 统一使用 main runtime 与一套 provider/model 设置。
+- 不迁移旧 controller 会话，不再提供旧执行模式。
 - 更新用户文档、prompt/skills、工具 schema、PROJECT/AGENTS。
-- 完成数据兼容窗口后删除旧的重复 loop；保留原入口需有明确原因。
+- 删除旧 controller loop、gate/shadow 入口、执行选择器和独立 router 设置。
 
-验收：默认路径无重复核心实现，groups/cron 不重复触发，旧数据可读，回退不引发写操作重放。
+验收：主 agent 无重复执行路径，groups/cron 不重复触发，未知副作用不重放。
 
-实施按 P1 提取、P2/P3 协调、P4/P5 产品接入逐批验证；当前工作树已完成全部阶段。旧兼容路径的保留原因和删除条件见第 11 节。
+实施按 P1 提取、P2/P3 协调、P4/P5 产品接入逐批验证；当前工作树已完成全部阶段，旧 controller 兼容路径已删除。
 
 ## 9. 验证与回退
 
@@ -403,8 +401,8 @@ src/agents/prompts/           # 角色和能力提示构建
 
 ### 9.3 回退约束
 
-- 新旧执行路径按 session/project 固定选择，业务副作用只允许一个路径执行。
-- 迁移初期保持旧数据路径 adapter；格式变更先保证旧路径可读或提供独立 namespace。
+- 主 agent 只有 main runtime 执行路径，业务副作用通过稳定命令回执提交。
+- 原 ucode 数据路径保留；main runtime 使用独立 namespace，不迁移旧 controller 数据。
 - Schema 迁移使用 checkpoint 和原始数据备份，不覆盖唯一历史。
 - 回退只能切换后续可安全执行的路径；正在运行、已执行或 outcome unknown 的调用先恢复/对账，不整轮重新发送。
 
@@ -415,10 +413,10 @@ src/agents/prompts/           # 角色和能力提示构建
 - 核心不存在对 coding、daemon 或 TUI 实现的反向依赖。
 - 主 agent 可以读代码、实现、委派、跟踪、验收，并保持主对话响应。
 - 工具定义、权限、事件和业务状态各有唯一所有者；MCP 与内部调用使用一致校验。
-- 旧会话、外部 agent 接入、投递确认和不确定副作用规则保持兼容。
+- 原 ucode 会话、外部 agent 接入、投递确认和不确定副作用规则保持兼容。
 - Node.js 18.17+、CommonJS、现有命令和 Rust TUI 入口继续可用。
 
-Scheduler、IPC 版本、跨进程目录 lease 和旧会话兼容策略已落实，见第 11 节。第三方插件安全沙箱、自动 checkpoint 迁移和不确定副作用的业务对账 UI 仍不属于本轮范围。
+Scheduler、IPC 版本和跨进程目录 lease 已落实，见第 11 节。第三方插件安全沙箱、自动 checkpoint 迁移和不确定副作用的业务对账 UI 仍不属于本轮范围。
 
 ## 11. 实施记录
 
@@ -448,7 +446,7 @@ P0/P1 批次尚未实现第 4 节提案中的 durable `submit`、公开 `resume/
 
 ### 2026-10-08：P2–P5
 
-项目 daemon 已接入 `src/runtime/daemon/agentHost.js`。新会话在 `controllerMode=main` 下默认使用 coding、main planning、skills 与协调能力组合；全局入口使用只读 global-router profile。旧 JSON controller loop 通过 `controllerJsonTransport` 和 coordination capability 运行同一核心，保留既有 schema、观测和预算行为。固定 CLI、明确 `@agent` 和跨项目转发保留原有快捷入口。
+项目 daemon 已接入 `src/runtime/daemon/agentHost.js`。主 agent 统一使用 coding、main planning、skills 与协调能力组合，编码与路由共用一套 provider/model 配置；全局入口使用只读 global-router profile。旧 JSON controller loop、gate/shadow 模式、执行选择器和独立 router 设置均已删除，不提供迁移适配。固定 CLI、明确 `@agent` 和跨项目转发保留原有快捷入口。
 
 新增能力为 agentManagement、agentRouting、projectDiscovery、sharedMemory、taskReports、taskExecution、groups、scheduling。`route_agent` 实际读取项目候选并形成预览；执行管理仍通过受限 daemon ports。`delegate_task/read_task_reports/accept_task/manage_tasks/resume_agents/manage_group` 在共享注册表定义一次，未绑定 host port 的工具不对模型公开。Caller tier、host grant、输入 schema 与项目范围在执行时验证；main prompt 包含拆分、归属、验收、交互与业务协调指导，子任务只获得自身 coding 上下文。
 
@@ -470,7 +468,7 @@ P0/P1 批次尚未实现第 4 节提案中的 durable `submit`、公开 `resume/
 
 `createRuntimeStore({ workspaceRoot, namespace, sessionId, redact? })` 提供追加 journal、同步锁事务和可重建快照。Journal 以 fsync 提交，权限为 0600；允许恢复尾部半行，损坏的已提交记录拒绝继续。Live PID 的单一 session owner 防止双重执行，死 owner 的运行任务转为 interrupted。能力版本、profile 和未完成任务的能力选择均受校验。Command store 在副作用前持久化 reservation，未知结果保留 receipt，不盲目重放。
 
-`createTaskScheduler({ maxConcurrent, maxQueued })` 提供优先级/FIFO、resource key 串行、独立资源并行、排队取消与资源释放。项目主对话默认并发 2，独立任务默认并发 2，队列上限 128；兼容 controller history 的提交串行。状态与取消 IPC 独立处理。独立任务有单独 runtime、journal、预算和上下文；父会话只获得摘要和必要报告。
+`createTaskScheduler({ maxConcurrent, maxQueued })` 提供优先级/FIFO、resource key 串行、独立资源并行、排队取消与资源释放。项目主对话默认并发 2，独立任务默认并发 2，队列上限 128。状态与取消 IPC 独立处理。独立任务有单独 runtime、journal、预算和上下文；父会话只获得摘要和必要报告。
 
 #### 工作区、传输与产品接入
 
@@ -480,13 +478,30 @@ Daemon 的 `agent_runtime` IPC 支持 submit/cancel/resume/status/tasks/events�
 
 Groups/resume 使用既有服务端口及稳定命令回执；command ID 按输入 request 作用域生成，不同请求可用相同业务标签。Cron 持久化 schedule ID 和 tick count，在每次投递前保留 occurrence ID；重启不重复发送已保留 tick，一次任务到期前不触发，尚未触发但过期的任务可恢复。写盘失败不投递，停止写盘失败则保留原调度。**Cron reservation 与实际外部投递之间崩溃可能漏发该次 occurrence；不会以重复投递换取“恰好一次”的虚假保证。** 已确认的注入不会因 UI/观测回调失败而恢复队列。
 
-#### 兼容与限制
+#### 运行与恢复边界
 
-- 原 ucode 会话路径、codec、计划图、skills 和 CLI/TUI host 保留。旧 controller history 作为有来源标记的有界摘要只读加载，不批量改写。
-- 新旧 executor 按 session 持久化唯一选择。检测到旧 history 的 `main-default` 保持 legacy；`/session new` 用当前 mode 创建新会话。显式要求运行中更换 executor 会拒绝。兼容入口为旧会话、shadow/loop 回退与既有 CLI 保留；核心循环只有共享实现，删除兼容入口需另设历史迁移窗口。
+- 原 ucode 会话路径、codec、计划图、skills 和 CLI/TUI host 保留。主 agent 仅使用 main runtime，不读取旧 controller history 或执行模式。
 - Provider/model/transport 绑定持久化，不保存 key。旧普通 provider 会话在设置变化后继续原绑定，新会话使用新设置；ucode 网关 provider/transport 改变时旧会话拒绝恢复，要求还原配置或创建新会话。
 - Codex/Claude/Kimi 凭据继续由各自 provider 模块读取和刷新；MCP handle 不进入模型认证，普通 provider 会话不继承 ucode 网关 key/URL。本次验证使用隔离凭据和模拟 HTTP，没有修改用户真实认证或部署到正在运行的 daemon。
 - 已接受但尚未开始的请求及 waiting_user 可恢复；运行中的模型/tool round 一律 interrupted。未知文件、shell、launch、dispatch 副作用需先检查实际状态再决定新请求；本轮没有自动 checkpoint 迁移或自动补跑未知工具的机制。
 - 仅装配仓库内受信任能力。权限和 lease 不构成第三方 JS 或 shell 安全沙箱；配置不可用的旧绑定会明确报错，不能改用其他 provider 的凭据继续。
 
-验收证据：durable runtime、capability 授权、独立任务调度、跨进程 lease、旧执行路径、主 Agent 真正写文件并运行 shell 校验、报告归属与验收、断线后台执行与补发、暂停交互重启、worktree 隔离、provider/model 绑定、Codex/Claude 隔离认证、group 幂等、cron 恢复和存储故障均有回归。最终验收：当前 Node.js 25.8.0 和最低支持版本 Node.js 18.17.0 分别通过完整 250 个测试套件、2768 个测试，`--detectOpenHandles` 均未发现未关闭句柄。`cargo test -p ufoo-tui` 通过 24 个测试，release 构建通过。真实安装的 Codex 与 Claude CLI 在隔离 HOME/配置和本机假模型端点下分别收到两次原生消息，Claude channel startup probe 成功；未调用真实模型端点。入口加载、依赖边界、本地文档链接、`git diff --check` 通过；生产依赖 audit 为 0。
+验收证据：durable runtime、capability 授权、独立任务调度、跨进程 lease、主 Agent 入口、主 Agent 真正写文件并运行 shell 校验、报告归属与验收、断线后台执行与补发、暂停交互重启、worktree 隔离、provider/model 绑定、Codex/Claude 隔离认证、group 幂等、cron 恢复和存储故障均有回归。P2–P5 批次验收时，Node.js 25.8.0 和最低支持版本 Node.js 18.17.0 分别通过完整 250 个测试套件、2768 个测试，`--detectOpenHandles` 均未发现未关闭句柄。`cargo test -p ufoo-tui` 通过 24 个测试，release 构建通过。真实安装的 Codex 与 Claude CLI 在隔离 HOME/配置和本机假模型端点下分别收到两次原生消息，Claude channel startup probe 成功；未调用真实模型端点。入口加载、依赖边界、本地文档链接、`git diff --check` 通过；生产依赖 audit 为 0。
+
+### 2026-10-09：统一主 Agent 设置和执行入口
+
+- 删除独立 router provider/model 设置、命令、补全及默认值；主 agent 的编码与路由统一使用 `agentProvider` 和 `agentModel`。独立 ucode 网关保留自己的配置入口。
+- 删除 legacy/shadow/loop controller 执行分支、gate router、执行选择器、JSON controller 适配器、旧历史摘要和 shadow 对比代码。主 agent 仅调用共享 native runtime，不做旧 controller 会话或设置迁移。
+- 全局项目选择仍使用只读 profile 和持久化项目转交回执。重复 request 不重复转交或执行目标项目任务。
+- 配置加载忽略已删除字段，保存时不再保留这些字段；不转换旧 router 模型为主 agent 模型。
+
+本批验收：完整 `npm test -- --runInBand --detectOpenHandles` 通过 237 个测试套件、2703 个测试，进程正常退出。回归包含同 provider 的主模型不被旧 router 模型覆盖、旧模式不改变实际执行入口、全局项目转交幂等和报告失败保留。真实 PTY 使用隔离 HOME/项目、本机假 Responses 端点，确认 settings 仅显示 agent/ucode、旧 router 命令不可用、主 agent 使用配置模型并同时获得 coding/routing 工具，最终回复实时进入终端。入口加载、本地文档链接及 `git diff --check` 通过。本批没有修改 Rust renderer。
+
+### 2026-10-11：清理已退出产品路径的实现
+
+- 面板和主 agent 管理的 worker 仅支持 internal `codex`、`claude`、`ucode`；启动、委派、恢复和 group 成员检查使用同一类型契约。Group 在启动任何成员前验证完整计划，internal `auto` 成员在其他 API provider 下使用 ucode，避免误走 Claude SDK。
+- 删除未使用的 PTY runner、终端镜像客户端、旧 agent 栏、旧 settings/dashboard 渲染模块和键盘映射；纯循环摘要格式化移入 `src/ui/format/loopSummary.js`。Rust 删除旧 AgentView 状态和终端接管协议，保留 main/side/multi、共享输入和 internal 窗口交互。
+- 删除 controller 独立请求发送器；凭据和运行配置解析保留在 `src/agents/providers/upstreamRuntime.js`，实际模型调用继续使用共享 native transports 或 worker SDK。移除已无调用的 xterm 依赖。
+- 新启动和恢复不再接受 `ufoo-code`、`ufoo` 原生类型别名；现有历史文件与会话路径不改写。包装器、MCP 互联、外部 CLI 消息注入和现用 provider 适配保留。
+
+本批验收：`npm test -- --runInBand --detectOpenHandles` 通过 243 个测试套件、2775 个测试；`cargo test -p ufoo-tui` 通过 70 个测试，`npm run pack:tui` 完成 release 构建并更新本机平台产物。入口加载、相对模块引用检查及 `git diff --check` 通过。

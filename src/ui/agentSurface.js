@@ -198,7 +198,7 @@ function createAgentSurface(options = {}) {
       if (event.status !== "in_progress") status = "Waiting for model…";
       return apply("tool.result", { id, summary: tool.summary, detail });
     }
-    if (["task_completed", "task_failed", "task_cancelled"].includes(type)) {
+    if (["task_completed", "task_failed", "task_cancelled", "task_paused"].includes(type)) {
       if (event.error) apply("transcript.append", { kind: "error", text: event.error });
       if (event.usage) accept({ type: "usage", usage: event.usage });
       apply("stream.done", { reason: type === "task_failed" ? "error" : "complete" });

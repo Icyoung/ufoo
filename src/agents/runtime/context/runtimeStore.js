@@ -32,6 +32,7 @@ function projectEvent(state, event) {
   if (event.type === "runtime.opened" && !state.capabilities) state.capabilities = event.owner.capabilities;
   if (event.type === "runtime.closed") state.owner = null;
   if (event.type === "runtime.binding") state.binding = event.binding;
+  if (event.type === "context.checkpoint") state.contextCheckpoint = event.checkpoint;
   if (event.type === "capability.state_committed") state.capabilityState[event.capabilityId] = { version: event.version, value: event.value };
   if (event.type === "command.started") state.commands[event.commandId] = { ...event, status: "uncertain" };
   if (event.type === "command.resolved") Object.assign(state.commands[event.commandId], { status: "resolved", result: event.result });
@@ -51,7 +52,7 @@ function projectEvent(state, event) {
     Object.assign(task, { status: "queued", answer: event.answer, answeredInteractionId: event.interactionId });
   }
   if (["task.completed", "task.failed", "task.cancelled", "task.interrupted"].includes(event.type)) {
-    const result = event.result ? { text: event.result.text, usage: event.result.usage, toolCallsExecuted: event.result.toolCallsExecuted,
+    const result = event.result ? { text: event.result.text, ...(typeof event.result.finalText === "string" ? { finalText: event.result.finalText } : {}), usage: event.result.usage, toolCallsExecuted: event.result.toolCallsExecuted,
       streamed: event.result.streamed } : null;
     // Full terminal transcripts remain in the journal; projections carry only summaries.
     Object.assign(task, { status: event.type.split(".")[1], result, error: event.error || "", interactionId: "" });

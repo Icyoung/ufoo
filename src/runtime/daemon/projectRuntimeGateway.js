@@ -17,6 +17,8 @@ const { CALLER_TIERS } = require("../../tools/types");
 const { ProjectRuntimeManager } = require("./projectRuntimeManager");
 
 const MCP_EXPOSED_SHARED_TOOLS = Object.freeze([
+  "read_agent_metrics",
+  "read_agent_trace",
   "read_project_registry",
   "read_bus_summary",
   "read_prompt_history",

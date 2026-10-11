@@ -3,6 +3,7 @@ const path = require("path");
 const { randomUUID } = require("crypto");
 const { runToolCall } = require("./dispatch");
 const { runNativeAgentTask } = require("./nativeRunner");
+const { resolveTaskTimeoutMs: resolveNlTaskTimeoutMs, DEFAULT_TASK_TIMEOUT_MS: DEFAULT_NL_TASK_TIMEOUT_MS } = require("../agents/runtime/core/executionBudget");
 const { runDecomposedTask } = require("./taskDecomposer");
 const { loadConfig, defaultAgentModelForProvider, sameModelProvider } = require("../config");
 const {
@@ -336,18 +337,6 @@ function computeExtendedTimeout(baseTimeoutMs) {
   return Math.min(43200000, Math.max(base * 2, base + 120000));
 }
 
-// Reasoning models routinely blew the old 10min budget across a multi-turn
-// tool loop. Total per-task budget defaults to 12h and can be raised per
-// call, via --timeout-ms, or via UFOO_UCODE_TASK_TIMEOUT_MS.
-const DEFAULT_NL_TASK_TIMEOUT_MS = 43200000;
-
-function resolveNlTaskTimeoutMs(value) {
-  if (Number.isFinite(value) && value > 0) return Math.max(1000, Math.floor(value));
-  const env = Number(process.env.UFOO_UCODE_TASK_TIMEOUT_MS);
-  if (Number.isFinite(env) && env > 0) return Math.max(1000, Math.floor(env));
-  return DEFAULT_NL_TASK_TIMEOUT_MS;
-}
-
 function enrichNativeError(errorMessage = "") {
   const text = String(errorMessage || "").trim();
   if (!text) return "nl task failed";
@@ -363,7 +352,7 @@ function enrichNativeError(errorMessage = "") {
     return `${text}. Network connection to provider failed. Check VPN/proxy/network and verify endpoint/key via /settings ucode show.`;
   }
   if (lower.includes("model is not configured")) {
-    return `${text}. Configure ucode with /settings ucode set provider=<openai|anthropic> model=<id> key=<apiKey> [url=<baseUrl>]`;
+    return `${text}. Configure ucode with /settings ucode set provider=openai model=<id> key=<apiKey> [url=<baseUrl>]`;
   }
   if (lower.includes("baseurl is not configured")) {
     return `${text}. Configure endpoint with /settings ucode set url=<baseUrl> (and key/model if missing).`;
@@ -675,6 +664,9 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
       onContextUsage: applyContextMeter,
       executionState: state.executionState || null,
       onArtifactPersisted: (persisted) => recordToolCallInSession(state, persisted, workspaceRoot),
+      contextPolicy: state.contextPolicy || {},
+      runtimeContext: options.runtimeContext || {},
+      onRuntimeEvent: options.onRuntimeEvent,
       onToolEvent: (event) => {
         toolEventsThisAttempt += 1;
         pushToolLog(event);
@@ -730,6 +722,13 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
         sessionId: String(state.sessionId || ""),
         state,
         systemBlocks: assembled.systemBlocks || null,
+        runtimeContext: options.runtimeContext || {},
+        onRuntimeEvent: options.onRuntimeEvent,
+        onStreamDelta: onStream,
+        onThinkingDelta,
+        onPhase,
+        onContextUsage: applyContextMeter,
+        contextPolicy: state.contextPolicy || {},
       });
 
       if (decomposedResult.ok) {
@@ -849,6 +848,7 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
       return {
         ok: true,
         summary: resolvedSummary || "Waiting for your reply",
+        finalText: typeof cliRes.finalText === "string" ? extractJsonSummary(cliRes.finalText) : undefined,
         artifacts: artifactIds,
         logs: logs.slice(),
         error: "",
@@ -864,6 +864,7 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
     return {
       ok: true,
       summary: resolvedSummary,
+      finalText: typeof cliRes.finalText === "string" ? extractJsonSummary(cliRes.finalText) : undefined,
       artifacts: artifactIds,
       logs: logs.slice(),
       error: "",
@@ -1193,6 +1194,9 @@ async function resumeAfterUserInteraction(answerText = "", state = {}, options =
     },
     maxToolCalls: state.maxToolCalls,
     onStreamDelta: trackingOnDelta,
+    contextPolicy: state.contextPolicy || {},
+    runtimeContext: options.runtimeContext || {},
+    onRuntimeEvent: options.onRuntimeEvent,
     onThinkingDelta: typeof options.onThinkingDelta === "function" ? options.onThinkingDelta : null,
     onPhase: typeof options.onPhase === "function" ? options.onPhase : null,
     onContextUsage: (meter) => {
@@ -1266,6 +1270,7 @@ async function resumeAfterUserInteraction(answerText = "", state = {}, options =
   return {
     ok: true,
     summary: String(cliRes.output || "").trim() || "continued",
+    finalText: typeof cliRes.finalText === "string" ? extractJsonSummary(cliRes.finalText) : undefined,
     logs,
     waitingUserInteraction: false,
     streamed: Boolean(cliRes.streamed),

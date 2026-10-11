@@ -222,11 +222,11 @@ describe("Injector", () => {
   });
 
   describe("inject", () => {
-    test("rejects inject for ufoo-code subscribers", async () => {
+    test("rejects inject for ucode subscribers", async () => {
       const injector = new Injector(busDir, null);
       await expect(
-        injector.inject("ufoo-code:abc123", "hello")
-      ).rejects.toThrow("Inject disabled for ufoo-code:abc123");
+        injector.inject("ucode:abc123", "hello")
+      ).rejects.toThrow("Inject disabled for ucode:abc123");
     });
 
     test.each(["codex", "claude-code", "agy", "grok"])(

@@ -45,7 +45,7 @@ test("native thread yields partial output before task finishes, and repeated too
       callbacks.onToolEvent({ phase: "start", tool: "bash", args: { command: "ls" } });
       callbacks.onToolEvent({ phase: "end", tool: "bash", args: { command: "ls" }, result: { stdout: `output-${n}` } });
     }
-    return { ok: true, streamed: true, summary: "partial" };
+    return { ok: true, streamed: true, summary: "partial", finalText: "Done. Checked both files." };
   } });
   const stream = thread.runStreamed("task");
   expect((await stream.next()).value.type).toBe("turn_started");
@@ -58,7 +58,7 @@ test("native thread yields partial output before task finishes, and repeated too
   expect(calls).toHaveLength(2);
   expect(calls[0].toolCallId).not.toBe(calls[1].toolCallId);
   expect(results.map((event) => event.toolCallId)).toEqual(calls.map((event) => event.toolCallId));
-  expect(events.at(-1).type).toBe("turn_completed");
+  expect(events.at(-1)).toMatchObject({ type: "turn_completed", finalText: "Done. Checked both files." });
   expect(events.filter((event) => event.type === "text_delta")).toHaveLength(0);
   await thread.close();
 });

@@ -8,7 +8,19 @@ use crate::protocol::Envelope;
 pub enum Action {
     Key(KeyEvent),
     Paste(String),
+    MousePress {
+        column: u16,
+        row: u16,
+    },
     MouseClick {
+        column: u16,
+        row: u16,
+    },
+    MouseDrag {
+        column: u16,
+        row: u16,
+    },
+    MouseRelease {
         column: u16,
         row: u16,
     },
@@ -25,6 +37,7 @@ pub enum Action {
 
 #[derive(Debug, Clone)]
 pub enum Effect {
+    CopyText(String),
     SendCommand {
         name: String,
         request_id: String,

@@ -198,6 +198,9 @@ function toolsToResponsesTools(tools = []) {
     result.push({
       type: "function",
       name,
+      // Responses otherwise normalizes compatible schemas to strict mode,
+      // making optional fields required. AJV remains the local authority.
+      strict: typeof fn.strict === "boolean" ? fn.strict : false,
       description: String(fn.description || ""),
       parameters: fn.parameters && typeof fn.parameters === "object"
         ? fn.parameters
@@ -298,16 +301,18 @@ function responseUsage(response = null) {
     ? response.usage
     : null;
   if (!usage) return null;
-  const inputDetails = usage.input_token_details && typeof usage.input_token_details === "object"
-    ? usage.input_token_details
+  const details = usage.input_tokens_details ?? usage.input_token_details;
+  const inputDetails = details && typeof details === "object"
+    ? details
     : {};
+  const cached = inputDetails.cached_tokens ?? usage.cached_input_tokens ?? usage.cache_read_input_tokens;
+  if (![usage.input_tokens, usage.prompt_tokens, usage.output_tokens, usage.completion_tokens, cached]
+    .some(value => value != null && Number.isFinite(Number(value)))) return null;
   return {
     input: Number(usage.input_tokens || usage.prompt_tokens || 0) || 0,
     output: Number(usage.output_tokens || usage.completion_tokens || 0) || 0,
-    cacheRead: Number(
-      inputDetails.cached_tokens || usage.cached_input_tokens || usage.cache_read_input_tokens || 0,
-    ) || 0,
-    cacheCreation: Number(usage.cache_creation_input_tokens || usage.cache_creation_tokens || 0) || 0,
+    cacheRead: cached != null && Number.isFinite(Number(cached)) ? Number(cached) : null,
+    cacheCreation: Number(inputDetails.cache_write_tokens ?? usage.cache_creation_input_tokens ?? usage.cache_creation_tokens ?? 0) || 0,
     inputIncludesCache: true,
   };
 }

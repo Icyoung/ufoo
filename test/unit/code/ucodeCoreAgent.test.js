@@ -8,6 +8,7 @@ jest.mock("../../../src/config", () => {
   return {
     ...actual,
     loadGlobalUcodeConfig: () => emptyUcode,
+    saveGlobalUcodeConfig: jest.fn(),
     loadConfig: (projectRoot) => {
       try {
         const _fs = require("fs");
@@ -163,7 +164,7 @@ describe("ucode core agent nl path", () => {
     });
     expect(runSingleCommand("/model too many tokens here", process.cwd())).toEqual({
       kind: "error",
-      output: "usage: /model [model-id] [off|low|medium|high|max]",
+      output: "usage: /model [model-id] [off|low|medium|high|xhigh|max]",
     });
   });
 
@@ -209,6 +210,28 @@ describe("ucode core agent nl path", () => {
     expect(set.ok).toBe(false);
     expect(state.model).toBe("gpt-old");
     expect(set.output).toContain("not-a-real-model");
+  });
+
+  test("ucode accepts a model omitted from a custom Claude URL's catalog", async () => {
+    const { applyUcodeModelCommand } = require("../../../src/code/modelCommand");
+    const previousBaseUrl = process.env.UFOO_UCODE_BASE_URL;
+    const previousModel = process.env.UFOO_UCODE_MODEL;
+    const state = { model: "claude-opus-4-5", provider: "claude" };
+    const fetchImpl = jest.fn(async () => new Response(JSON.stringify({ data: [{ id: "claude-opus-4-5" }] })));
+    try {
+      process.env.UFOO_UCODE_BASE_URL = "https://claude-gateway.test/v1";
+      const result = await applyUcodeModelCommand(state,
+        { action: "set", model: "claude-opus-5-5" }, { fetchImpl, skipCache: true });
+      expect(result.ok).toBe(true);
+      expect(state.model).toBe("claude-opus-5-5");
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(require("../../../src/config").saveGlobalUcodeConfig).toHaveBeenCalledWith({ ucodeModel: "claude-opus-5-5" });
+    } finally {
+      if (previousBaseUrl === undefined) delete process.env.UFOO_UCODE_BASE_URL;
+      else process.env.UFOO_UCODE_BASE_URL = previousBaseUrl;
+      if (previousModel === undefined) delete process.env.UFOO_UCODE_MODEL;
+      else process.env.UFOO_UCODE_MODEL = previousModel;
+    }
   });
 
   test("runSingleCommand parses background nl commands", () => {
@@ -441,16 +464,24 @@ describe("ucode core agent nl path", () => {
 
       const result = await runNaturalLanguageTask("fix with $demo", state, {
         forceDecomposition: true,
+        runtimeContext: { traceId: "root", taskId: "delegated-1", taskRunId: "worker-run", requestId: "bus-1" },
+        onRuntimeEvent: jest.fn(), onDelta: jest.fn(), onPhase: jest.fn(), onThinkingDelta: jest.fn(),
       });
 
       expect(result.ok).toBe(true);
       expect(runNativeAgentTask).toHaveBeenCalledTimes(4);
       for (const call of runNativeAgentTask.mock.calls) {
+        expect(call[0].runtimeContext).toMatchObject({ traceId: "root", taskId: "delegated-1", parentTaskRunId: "worker-run" });
+        expect(call[0].onRuntimeEvent).toEqual(expect.any(Function));
+        expect(call[0].onStreamDelta).toEqual(expect.any(Function));
+        expect(call[0].onThinkingDelta).toEqual(expect.any(Function));
+        expect(call[0].onPhase).toEqual(expect.any(Function));
         const sys = String(call[0].systemPrompt || "") + JSON.stringify(call[0].systemBlocks || []);
         expect(sys).toMatch(/Demo body|<active_skill>|<skill>/);
         expect(call[0].prompt).not.toContain("<skill>");
         expect(call[0].prompt).not.toContain("Demo body");
       }
+      expect(new Set(runNativeAgentTask.mock.calls.map(([params]) => params.runtimeContext.taskRunId)).size).toBe(4);
       expect(JSON.stringify(state.nlMessages || [])).not.toContain("<skill>");
       expect(JSON.stringify(state.nlMessages || [])).not.toContain("Demo body");
     } finally {
@@ -1062,7 +1093,7 @@ describe("ucode core agent nl path", () => {
   test("runUbusCommand auto-executes pending messages from pending.jsonl and replies", async () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-ubus-"));
     try {
-      const subscriberId = "ufoo-code:bus123";
+      const subscriberId = "ucode:bus123";
       const pendingFile = resolvePendingQueueFile(projectRoot, subscriberId);
       fs.mkdirSync(path.dirname(pendingFile), { recursive: true });
       fs.writeFileSync(pendingFile, `${JSON.stringify({
@@ -1135,14 +1166,14 @@ describe("ucode core agent nl path", () => {
 
     const result = await runUbusCommand(state, {
       workspaceRoot: process.cwd(),
-      subscriberId: "ufoo-code:direct123",
+      subscriberId: "ucode:direct123",
       execShell: shell,
       runNaturalLanguageTaskImpl: async () => ({ ok: true, summary: "done" }),
       formatNlResultImpl: () => "done",
     });
 
     expect(result.ok).toBe(true);
-    expect(result.subscriberId).toBe("ufoo-code:direct123");
+    expect(result.subscriberId).toBe("ucode:direct123");
     expect(shellCalls.some((cmd) => cmd.includes("ufoo bus whoami"))).toBe(false);
     // No pending.jsonl exists in this test; we fall back to shell check only if needed.
   });
@@ -1150,18 +1181,18 @@ describe("ucode core agent nl path", () => {
   test("pending queue helpers resolve and count pending lines", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-pending-"));
     try {
-      const pendingFile = resolvePendingQueueFile(projectRoot, "ufoo-code:abc123");
+      const pendingFile = resolvePendingQueueFile(projectRoot, "ucode:abc123");
       fs.mkdirSync(path.dirname(pendingFile), { recursive: true });
       fs.writeFileSync(pendingFile, `${JSON.stringify({ seq: 1 })}\n${JSON.stringify({ seq: 2 })}\n`);
       expect(countPendingQueueLines(pendingFile)).toBe(2);
-      expect(getPendingBusCount(projectRoot, "ufoo-code:abc123")).toBe(2);
+      expect(getPendingBusCount(projectRoot, "ucode:abc123")).toBe(2);
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
   });
 
   test("shouldAutoConsumeBus only enables native subscribers", () => {
-    expect(shouldAutoConsumeBus("ufoo-code:abc")).toBe(true);
+    expect(shouldAutoConsumeBus("ucode:abc")).toBe(true);
     expect(shouldAutoConsumeBus("ucode:abc")).toBe(true);
     expect(shouldAutoConsumeBus("codex:abc")).toBe(false);
   });
@@ -1169,7 +1200,7 @@ describe("ucode core agent nl path", () => {
   test("drainJsonlFile drains pending jsonl atomically", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-drain-"));
     try {
-      const pendingFile = resolvePendingQueueFile(projectRoot, "ufoo-code:abc123");
+      const pendingFile = resolvePendingQueueFile(projectRoot, "ucode:abc123");
       fs.mkdirSync(path.dirname(pendingFile), { recursive: true });
       fs.writeFileSync(pendingFile, `${JSON.stringify({ seq: 1, event: "message", publisher: "ufoo-agent", data: { message: "hi" } })}\n`);
       const res = drainJsonlFile(pendingFile);
@@ -1365,7 +1396,7 @@ describe("ucode core agent nl path", () => {
   test("extractAgentNickname extracts known agent base names", () => {
     expect(extractAgentNickname("ufoo-agent:abc")).toBe("ufoo");
     expect(extractAgentNickname("claude-code:xyz")).toBe("claude");
-    expect(extractAgentNickname("ufoo-code:123")).toBe("ucode");
+    expect(extractAgentNickname("ucode:123")).toBe("ucode");
     expect(extractAgentNickname("codex:abc")).toBe("codex");
     expect(extractAgentNickname("")).toBe("");
     expect(extractAgentNickname(null)).toBe("");

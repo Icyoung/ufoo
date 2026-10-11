@@ -3,11 +3,13 @@
 mod action;
 mod agent_surface;
 mod chat;
+mod clipboard;
 mod dispatch;
 mod draw;
 mod host;
 mod model;
 mod protocol;
+mod selection;
 
 use std::path::PathBuf;
 use std::process;

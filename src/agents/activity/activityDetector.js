@@ -161,7 +161,7 @@ class ActivityDetector {
   /**
    * @param {string} agentType - e.g. "claude-code", "codex"
    * @param {object} [options]
-   * @param {string} [options.mode] - launch mode ("terminal"/"tmux"/"iterm2"/"pty-runner")
+   * @param {string} [options.mode] - launch mode ("internal"/"terminal"/"tmux"/"iterm2")
    * @param {number} [options.bufferSize=4000] - rolling buffer size in chars
    * @param {number} [options.tailLines=10] - number of tail lines used for quiet-time prompt detection
    * @param {boolean} [options.startOnOutput=false] - allow STARTING -> WORKING on first output

@@ -58,7 +58,7 @@ describe("bin/ucode launch guards", () => {
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
 
     const resolved = {
-      agentType: "ufoo-code",
+      agentType: "ucode",
       command: "pi",
       args: ["--help", "--append-system-prompt", bootstrapFile],
       env: {
@@ -85,7 +85,7 @@ describe("bin/ucode launch guards", () => {
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
 
     const resolved = {
-      agentType: "ufoo-code",
+      agentType: "ucode",
       command: "pi",
       args: ["--help", "--append-system-prompt", bootstrapFile],
       env: {
@@ -113,7 +113,7 @@ describe("bin/ucode launch guards", () => {
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
 
     const resolved = {
-      agentType: "ufoo-code",
+      agentType: "ucode",
       command: "pi",
       args: ["--help", "--append-system-prompt", customFile],
       env: {

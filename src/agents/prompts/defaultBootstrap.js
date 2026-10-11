@@ -56,7 +56,7 @@ function buildDefaultStartupBootstrapPrompt({ agentType = "", projectRoot = "" }
     ? "Claude"
     : (normalizedAgent === "codex"
       ? "Codex"
-      : (normalizedAgent === "ufoo-code"
+      : (normalizedAgent === "ucode"
         ? "ucode"
         : (normalizedAgent === "agy"
           ? "Agy"

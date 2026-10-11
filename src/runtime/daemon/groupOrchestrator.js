@@ -13,6 +13,9 @@ const {
 } = require("../../orchestration/groups/bootstrap");
 const { validateTemplateTarget: validateGroupTemplateTarget } = require("../../orchestration/groups/templateValidation");
 const { getUfooPaths } = require("../../coordination/state/paths");
+const { associateAgentWithGroup } = require("./agentRecoveryGroups");
+const { reconcileGroupStatus } = require("./groupStatus");
+const { normalizeInternalAgentType } = require("../contracts/agentMode");
 const {
   normalizeNicknameSegment,
   buildProjectNicknamePrefix,
@@ -308,12 +311,13 @@ function pickRosterMembers(roster = [], nicknames = []) {
   return roster.filter((item) => wanted.has(item.nickname));
 }
 
-function resolveAutoAgentType(projectRoot, requestedType) {
+function resolveAutoAgentType(projectRoot, requestedType, internalOnly = false) {
   const normalizedRequested = asTrimmedString(requestedType);
   if (normalizedRequested && normalizedRequested !== "auto") return normalizedRequested;
 
   const provider = asTrimmedString(loadConfig(projectRoot).agentProvider);
   if (provider === "claude-cli") return "claude";
+  if (internalOnly) return provider === "codex-cli" ? "codex" : "ucode";
   if (provider === "ucode") return "ucode";
   if (provider === "agy-cli") return "agy";
   if (provider === "kimi-cli") return "kimi";
@@ -329,6 +333,7 @@ function buildExecutionPlan({
   plan,
   promptRegistry,
   promptProfiles,
+  internalOnly = false,
 }) {
   const profileByNickname = new Map();
   for (const item of promptProfiles || []) {
@@ -339,7 +344,7 @@ function buildExecutionPlan({
   const relationships = buildRelationshipMaps(templateDoc, plan);
 
   const roster = plan.map((item) => {
-    const resolvedType = resolveAutoAgentType(projectRoot, item.requested_type || item.type);
+    const resolvedType = resolveAutoAgentType(projectRoot, item.requested_type || item.type, internalOnly);
     const profile = profileByNickname.get(item.nickname) || null;
     const runtimeNickname = buildRuntimeNickname(projectNicknamePrefix, item.nickname);
     return {
@@ -365,7 +370,7 @@ function buildExecutionPlan({
     : {};
 
   const executionPlan = plan.map((item) => {
-    const resolvedType = resolveAutoAgentType(projectRoot, item.requested_type || item.type);
+    const resolvedType = resolveAutoAgentType(projectRoot, item.requested_type || item.type, internalOnly);
     const profile = profileByNickname.get(item.nickname) || null;
     const resolvedProfile = profile ? registryById.get(profile.resolved_profile) || null : null;
     const relation = relationships.get(item.nickname) || { upstream: [], downstream: [] };
@@ -809,7 +814,11 @@ function createGroupOrchestrator(options = {}) {
       plan,
       promptRegistry: validated.promptRegistry,
       promptProfiles: validated.promptProfiles,
+      internalOnly: params.internal_only === true,
     });
+
+    const unsupported = params.internal_only === true && compiled.executionPlan.find((item) => !normalizeInternalAgentType(item.type));
+    if (unsupported) return { ok: false, status: "failed", error: `unsupported internal agent type: ${unsupported.type}; use codex, claude or ucode` };
 
     if (dryRun) {
       return {
@@ -989,6 +998,11 @@ function createGroupOrchestrator(options = {}) {
       member.status = reused ? "reused" : "active";
       member.managed = !reused;
       member.subscriber_id = subscriberId || "";
+      associateAgentWithGroup(projectRoot, subscriberId, {
+        group_id: runtime.group_id,
+        group_member_id: item.id,
+        group_template_alias: runtime.template_alias,
+      });
       member.launched_at = nowIso();
       member.launch = launchResult;
       member.bootstrap_error = "";
@@ -1212,10 +1226,11 @@ function createGroupOrchestrator(options = {}) {
       if (!group) {
         return { ok: false, error: `group not found: ${groupId}` };
       }
-      return { ok: true, group };
+      return { ok: true, group: reconcileGroupStatus(group, readBusAgents(projectRoot)) };
     }
 
-    const groups = listGroupStates(projectRoot).map((runtime) => summarizeGroup(runtime));
+    const agents = readBusAgents(projectRoot);
+    const groups = listGroupStates(projectRoot).map((runtime) => summarizeGroup(reconcileGroupStatus(runtime, agents)));
     groups.sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
     return { ok: true, count: groups.length, groups };
   }

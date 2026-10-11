@@ -140,7 +140,7 @@ function resolveUcodeLaunch({
   const effectiveModel = readLastArgValue(finalArgs, "--model");
 
   return {
-    agentType: "ufoo-code",
+    agentType: "ucode",
     command,
     args: finalArgs,
     env: {

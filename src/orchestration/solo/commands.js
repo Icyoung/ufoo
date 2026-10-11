@@ -9,7 +9,9 @@ function resolveSoloAgentType(config = {}, requestedAgent = "") {
   if (requested === "claude" || requested === "uclaude" || requested === "claude-code") return "claude";
   if (requested === "codex" || requested === "ucodex" || requested === "openai") return "codex";
   if (requested === "grok" || requested === "ugrok" || requested === "grok-build" || requested === "xai") return "grok";
-  if (requested === "ucode" || requested === "ufoo" || requested === "ufoo-code") return "ucode";
+  if (requested === "ucode") return "ucode";
+
+  if (requested) return "";
 
   const provider = asTrimmedString(config && config.agentProvider).toLowerCase();
   if (provider === "claude-cli") return "claude";

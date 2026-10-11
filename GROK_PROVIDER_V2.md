@@ -33,7 +33,7 @@ OpenAI-compatible Chat Completions provider.
 
 ### Shared Responses protocol
 
-`src/code/providers/responsesProtocol.js` is the single protocol seam for
+`src/agents/providers/transports/responsesProtocol.js` is the single protocol seam for
 native and direct upstream code. It owns:
 
 - `/responses` URL resolution;
@@ -45,7 +45,7 @@ native and direct upstream code. It owns:
 - Grok `keepalive` filtering;
 - raw Responses usage extraction and normalized usage for native metrics.
 
-`src/code/providers/openaiResponsesTransport.js` is the public provider
+`src/agents/providers/transports/openaiResponsesTransport.js` is the public provider
 transport adapter. It never stores private Responses event metadata in the
 canonical conversation. It returns only newly produced public assistant/tool
 items, which keeps it aligned with Session Journal v3.
@@ -94,8 +94,10 @@ must never become assistant text or a terminal event.
 
 ### Existing provider protocol update
 
-The old direct-provider layer in `src/agents/providers/upstreamTransport.js`
-now follows the latest protocol split:
+Credential and endpoint resolution lives in `src/agents/providers/upstreamRuntime.js`.
+Model requests use the shared native transports in `src/agents/providers/nativeTransport.js`
+and `src/agents/providers/transports/`; the retired standalone controller sender has
+been removed. The current protocol split is:
 
 | Provider | Current transport | Current changes |
 | --- | --- | --- |

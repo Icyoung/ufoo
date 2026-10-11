@@ -15,6 +15,7 @@ const { buildMessageData } = require("./messageMeta");
 const { getUfooPaths } = require("../state/paths");
 const { applyProjectNicknamePrefix } = require("../../runtime/daemon/nicknameScope");
 const { QUEUE_TYPES, normalizeQueueEnvelope } = require("./deliveryQueue");
+const { isInternalAgentMeta } = require("../../runtime/contracts/agentMode");
 
 const SEQ_LOCK_TIMEOUT_MS = 5000;
 const SEQ_LOCK_POLL_MS = 25;
@@ -523,13 +524,26 @@ class MessageManager {
   }
 
   /**
-   * 确认消息（清空待处理队列）
+   * Internal runners own delivery claims and complete them after execution.
+   * Model-issued acknowledgements must never claim future internal tasks.
    */
+  isRunnerManaged(subscriber) {
+    return isInternalAgentMeta(this.busData?.agents?.[subscriber]);
+  }
+
   async ack(subscriber) {
+    if (this.isRunnerManaged(subscriber)) return 0;
     return this.queueManager.ackPending(subscriber);
   }
 
   async ackThrough(subscriber, throughSeq) {
+    if (this.isRunnerManaged(subscriber)) {
+      const limit = Number(throughSeq);
+      if (!Number.isFinite(limit) || limit <= 0) {
+        throw new Error("ack --through requires a positive sequence");
+      }
+      return 0;
+    }
     return this.queueManager.ackPendingThrough(subscriber, throughSeq);
   }
 

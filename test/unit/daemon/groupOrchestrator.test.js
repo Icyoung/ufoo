@@ -250,6 +250,9 @@ function createTestOrchestrator(handleOps) {
         upstream: ["pm"],
       })
     );
+    const agents = JSON.parse(fs.readFileSync(getUfooPaths(projectRoot).agentsFile, "utf8")).agents;
+    expect(agents["codex:pm1"]).toMatchObject({ group_id: "grp-dev", group_member_id: "pm", group_template_alias: "dev-basic" });
+    expect(agents["claude-code:arch1"]).toMatchObject({ group_id: "grp-dev", group_member_id: "architect" });
   });
 
   test("runGroup forwards host launch context to member launches", async () => {
@@ -448,7 +451,7 @@ function createTestOrchestrator(handleOps) {
     const handleOps = jest.fn(async (_root, ops) => {
       const op = ops[0];
       if (op.action === "launch") {
-        return [{ action: "launch", ok: true, subscriber_ids: ["ufoo-code:uc1"], mode: "internal" }];
+        return [{ action: "launch", ok: true, subscriber_ids: ["ucode:uc1"], mode: "internal" }];
       }
       throw new Error(`unexpected op: ${JSON.stringify(op)}`);
     });
@@ -712,12 +715,14 @@ function createTestOrchestrator(handleOps) {
   });
 
   test("getStatus lists summary and resolves single group", async () => {
+    upsertAgentMeta(projectRoot, "codex:one", { status: "active", pid: process.pid });
+    upsertAgentMeta(projectRoot, "codex:reused", { status: "active", pid: process.pid });
     writeJson(path.join(getUfooPaths(projectRoot).groupsDir, "one.json"), {
       group_id: "one",
       status: "active",
       template_alias: "dev-basic",
       updated_at: "2026-03-03T00:00:00.000Z",
-      members: [{ status: "active" }, { status: "reused" }],
+      members: [{ status: "active", subscriber_id: "codex:one" }, { status: "reused", subscriber_id: "codex:reused" }],
     });
     writeJson(path.join(getUfooPaths(projectRoot).groupsDir, "two.json"), {
       group_id: "two",
@@ -733,10 +738,35 @@ function createTestOrchestrator(handleOps) {
     expect(list.ok).toBe(true);
     expect(list.count).toBe(2);
     expect(list.groups[0].group_id).toBe("one");
+    expect(list.groups[0]).toMatchObject({ status: "active", members_active: 2 });
 
     const single = orchestrator.getStatus({ group_id: "two" });
     expect(single.ok).toBe(true);
     expect(single.group.group_id).toBe("two");
+  });
+
+  test("status checks the exact live member IDs without rewriting group history", () => {
+    const file = path.join(getUfooPaths(projectRoot).groupsDir, "build-lane.json");
+    const runtime = { group_id: "build-lane", status: "active", members: [
+      { status: "active", subscriber_id: "codex:architect", nickname: "architect" },
+      { status: "active", subscriber_id: "codex:builder", nickname: "builder" },
+      { status: "reused", subscriber_id: "codex:reviewer", nickname: "reviewer", managed: false },
+    ] };
+    writeJson(file, runtime);
+    upsertAgentMeta(projectRoot, "codex:architect", { status: "active", pid: process.pid });
+    upsertAgentMeta(projectRoot, "codex:builder", { status: "inactive", pid: process.pid });
+    // A new agent with the same nickname must not revive a departed member ID.
+    upsertAgentMeta(projectRoot, "codex:other-reviewer", { status: "active", nickname: "reviewer", pid: process.pid });
+    const orchestrator = createTestOrchestrator(jest.fn());
+    const partial = orchestrator.getStatus({ group_id: "build-lane" });
+    expect(partial.group.status).toBe("partial");
+    expect(partial.group.members.map((member) => member.status)).toEqual(["active", "inactive", "inactive"]);
+    expect(orchestrator.getStatus().groups[0]).toMatchObject({ status: "partial", members_active: 1 });
+
+    upsertAgentMeta(projectRoot, "codex:architect", { status: "inactive" });
+    expect(orchestrator.getStatus({ group_id: "build-lane" }).group.status).toBe("inactive");
+    expect(orchestrator.getStatus().groups[0].members_active).toBe(0);
+    expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual(runtime);
   });
 
   test("rejects invalid group_id for status and stop", async () => {
@@ -851,4 +881,27 @@ function createTestOrchestrator(handleOps) {
       }),
     );
   });
+  test("internal groups validate every member before starting any worker", async () => {
+    const template = buildTemplate("dev-basic");
+    template.agents[1].type = "kimi";
+    writeJson(path.join(builtinDir, "dev-basic.json"), template);
+    const handleOps = jest.fn();
+    const orchestrator = createTestOrchestrator(handleOps);
+    const result = await orchestrator.runGroup({ alias: "dev-basic", internal_only: true });
+    expect(result).toMatchObject({ ok: false, status: "failed" });
+    expect(result.error).toContain("unsupported internal agent type: kimi");
+    expect(handleOps).not.toHaveBeenCalled();
+    expect(orchestrator.getStatus().groups).toHaveLength(0);
+  });
+  test("internal auto workers use ucode for API providers instead of inventing Kimi workers", async () => {
+    const template = buildTemplate("dev-basic");
+    template.agents.forEach((member) => { member.type = "auto"; });
+    writeJson(path.join(builtinDir, "dev-basic.json"), template);
+    writeProjectConfig(projectRoot, { agentProvider: "kimi-cli" });
+    const orchestrator = createTestOrchestrator(jest.fn());
+    const result = await orchestrator.runGroup({ alias: "dev-basic", internal_only: true, dry_run: true });
+    expect(result.ok).toBe(true);
+    expect(result.members.map((member) => member.type)).toEqual(["ucode", "ucode"]);
+  });
+
 });

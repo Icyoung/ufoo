@@ -16,6 +16,8 @@ const {
 } = require("../terminal/adapters/hostAdapter");
 const { resolveDefaultManualBootstrap } = require("../../agents/prompts/defaultBootstrap");
 const { detectLaunchEnvironment } = require("../../agents/launch/launchEnvironment");
+const { isInternalAgentMeta, normalizeInternalAgentType } = require("../contracts/agentMode");
+const { loadRecoveryGroups, resolveRecoveryGroup, associateAgentWithGroup, recordGroupMemberResume } = require("./agentRecoveryGroups");
 
 function normalizeLaunchAgent(agent = "") {
   const value = String(agent || "").trim().toLowerCase();
@@ -24,7 +26,7 @@ function normalizeLaunchAgent(agent = "") {
   if (value === "agy" || value === "antigravity") return "agy";
   if (value === "grok" || value === "ugrok" || value === "grok-build" || value === "xai") return "grok";
   if (value === "kimi" || value === "kimi-cli" || value === "kimi-code") return "kimi";
-  if (value === "ufoo" || value === "ucode" || value === "ufoo-code") return "ufoo";
+  if (value === "ucode") return "ucode";
   return "";
 }
 
@@ -34,7 +36,7 @@ function toBusAgentType(agent = "") {
   if (agent === "agy") return "agy";
   if (agent === "grok") return "grok";
   if (agent === "kimi") return "kimi";
-  if (agent === "ufoo") return "ufoo-code";
+  if (agent === "ucode") return "ucode";
   return "";
 }
 
@@ -44,7 +46,7 @@ function toTerminalBinary(agent = "") {
   if (agent === "agy") return "uagy";
   if (agent === "grok") return "ugrok";
   if (agent === "kimi") return "ukimi";
-  if (agent === "ufoo") return "ucode";
+  if (agent === "ucode") return "ucode";
   return "";
 }
 
@@ -54,13 +56,13 @@ function toTmuxBinary(agent = "") {
   if (agent === "agy") return "uagy";
   if (agent === "grok") return "ugrok";
   if (agent === "kimi") return "ukimi";
-  if (agent === "ufoo") return "ucode";
+  if (agent === "ucode") return "ucode";
   return "";
 }
 
 function applyDefaultManagedBootstrap(projectRoot, normalizedAgent, args = [], extraEnv = {}) {
   const agentType = toBusAgentType(normalizedAgent);
-  if (!agentType || agentType === "ufoo-code") {
+  if (!agentType || agentType === "ucode") {
     return {
       args: Array.isArray(args) ? args.slice() : [],
       extraEnv: extraEnv && typeof extraEnv === "object" ? { ...extraEnv } : {},
@@ -606,7 +608,7 @@ async function spawnManagedHostAgent(
     if (bus.subscriberManager) {
       const sessionToken = crypto.randomBytes(4).toString("hex");
       subscriberId = `${agentType}:${sessionToken}`;
-      const defaultNickname = agentType === "ufoo-code" ? "ucode" : normalizedAgent;
+      const defaultNickname = normalizedAgent;
       const finalNickname = nickname || defaultNickname;
       const registration = await require("./controlPlaneService").registerAgentFull(projectRoot, {
         sessionId: sessionToken, agentType, nickname: finalNickname, launchMode: "host",
@@ -686,6 +688,7 @@ async function spawnInternalAgent(
   extraArgs = [],
   options = {}
 ) {
+  if (!normalizeInternalAgentType(agent)) throw new Error(`unsupported internal agent type: ${agent}; use codex, claude or ucode`);
   const runner = resolveUfooRunnerPath();
   const logDir = getUfooPaths(projectRoot).runDir;
   fs.mkdirSync(logDir, { recursive: true });
@@ -989,6 +992,7 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
   }
 
   if (mode === "internal") {
+    if (!normalizeInternalAgentType(normalizedAgent)) throw new Error(`unsupported internal agent type: ${agent}; use codex, claude or ucode`);
     const result = await spawnInternalAgent(
       projectRoot,
       normalizedAgent,
@@ -1038,8 +1042,7 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
       && tmuxLayoutContext
       && tmuxLayoutContext.mode === "group-right-column";
     for (let i = 0; i < count; i += 1) {
-      // Use "ucode" as default nickname for ufoo/ucode agents
-      const defaultNick = normalizedAgent === "ufoo" ? "ucode" : normalizedAgent;
+      const defaultNick = normalizedAgent;
       const nick = count > 1 ? `${nickname || defaultNick}-${i + 1}` : (nickname || "");
       if (useSeparateWindow) {
         // eslint-disable-next-line no-await-in-loop
@@ -1086,7 +1089,7 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
     const subscriberIds = [];
     const hostContext = resolveHostLaunchContext(options);
     for (let i = 0; i < count; i += 1) {
-      const defaultNick = normalizedAgent === "ufoo" ? "ucode" : normalizedAgent;
+      const defaultNick = normalizedAgent;
       const nick = count > 1 ? `${nickname || defaultNick}-${i + 1}` : (nickname || "");
       // eslint-disable-next-line no-await-in-loop
       const result = await spawnManagedHostAgent(
@@ -1109,8 +1112,7 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
 
   const subscriberIds = [];
   for (let i = 0; i < count; i += 1) {
-    // Use "ucode" as default nickname for ufoo/ucode agents
-    const defaultNick = normalizedAgent === "ufoo" ? "ucode" : normalizedAgent;
+    const defaultNick = normalizedAgent;
     const nick = count > 1 ? `${nickname || defaultNick}-${i + 1}` : (nickname || "");
     // eslint-disable-next-line no-await-in-loop
     const result = await spawnManagedTerminalAgent(
@@ -1133,7 +1135,7 @@ function normalizeAgentType(agentType) {
   if (agentType === "claude-code") return "claude";
   if (agentType === "codex") return "codex";
   if (agentType === "grok") return "grok";
-  if (agentType === "ufoo-code") return "ufoo";
+  if (agentType === "ucode") return "ucode";
   return agentType;
 }
 
@@ -1147,6 +1149,7 @@ function buildResumeArgs(agent, sessionId) {
   if (agent === "grok") return ["--resume", sessionId];
   // kimi resumes a session by id via `-S, --session <id>`.
   if (agent === "kimi") return ["--session", sessionId];
+  if (agent === "ucode") return ["--session-id", sessionId];
   return [];
 }
 
@@ -1156,17 +1159,23 @@ function isActiveAgent(meta) {
   return true;
 }
 
-function collectRecoverableAgents(projectRoot, target = "") {
+function collectRecoverableAgents(projectRoot, target = "", options = {}) {
   const config = loadConfig(projectRoot);
   const mode = config.launchMode || "terminal";
   const filePath = getUfooPaths(projectRoot).agentsFile;
   const data = loadAgentsData(filePath);
   const entries = Object.entries(data.agents || {});
+  const groups = loadRecoveryGroups(projectRoot);
+  const associations = new Map(entries.map(([id, meta]) => [id, resolveRecoveryGroup(groups, id, meta)]));
 
   let targets = entries;
   if (target) {
     const scopedTarget = applyProjectNicknamePrefix(projectRoot, target);
-    if (target.includes(":")) {
+    if (target.startsWith("group:")) {
+      targets = entries.filter(([id]) => associations.get(id).group_id === target.slice(6));
+      const group = groups.find((item) => item.group_id === target.slice(6));
+      if (group) targets.sort(([a], [b]) => group.members.findIndex((item) => item?.subscriber_id === a) - group.members.findIndex((item) => item?.subscriber_id === b));
+    } else if (target.includes(":")) {
       targets = entries.filter(([id]) => id === target);
     } else {
       targets = entries.filter(([id, meta]) =>
@@ -1190,6 +1199,10 @@ function collectRecoverableAgents(projectRoot, target = "") {
   }
 
   for (const [id, meta] of targets) {
+    if (options.internalOnly && !isInternalAgentMeta(meta)) {
+      if (target) skipped.push({ id, reason: "non-internal agent" });
+      continue;
+    }
     if (!meta || !meta.provider_session_id) {
       skipped.push({ id, reason: "no provider session" });
       continue;
@@ -1199,12 +1212,12 @@ function collectRecoverableAgents(projectRoot, target = "") {
       continue;
     }
     const agent = normalizeAgentType(meta.agent_type);
-    if (agent !== "codex" && agent !== "claude" && agent !== "agy" && agent !== "grok" && agent !== "kimi") {
+    if (agent !== "codex" && agent !== "claude" && agent !== "agy" && agent !== "grok" && agent !== "kimi" && agent !== "ucode") {
       skipped.push({ id, reason: "unsupported agent type" });
       continue;
     }
 
-    recoverableEntries.push({ id, meta, agent });
+    recoverableEntries.push({ id, meta, agent, association: associations.get(id) });
   }
 
   return {
@@ -1215,8 +1228,8 @@ function collectRecoverableAgents(projectRoot, target = "") {
   };
 }
 
-function getRecoverableAgents(projectRoot, target = "") {
-  const { mode, recoverableEntries, skipped } = collectRecoverableAgents(projectRoot, target);
+function getRecoverableAgents(projectRoot, target = "", options = {}) {
+  const { mode, recoverableEntries, skipped } = collectRecoverableAgents(projectRoot, target, options);
   const recoverable = recoverableEntries.map((item) => ({
     id: item.id,
     nickname: resolveDisplayNickname(projectRoot, item.meta),
@@ -1225,12 +1238,19 @@ function getRecoverableAgents(projectRoot, target = "") {
     sessionId: item.meta.provider_session_id || "",
     launchMode: item.meta.launch_mode || "",
     lastSeen: item.meta.last_seen || "",
+    ...item.association,
   }));
-  return { ok: true, mode, recoverable, skipped };
+  const groups = new Map();
+  for (const item of recoverable) {
+    if (!item.group_id) continue;
+    if (!groups.has(item.group_id)) groups.set(item.group_id, { group_id: item.group_id, template_alias: item.group_template_alias, members: [] });
+    groups.get(item.group_id).members.push(item);
+  }
+  return { ok: true, mode, recoverable, groups: [...groups.values()], skipped };
 }
 
-async function resumeAgents(projectRoot, target = "", processManager = null) {
-  const { mode, data, recoverableEntries, skipped } = collectRecoverableAgents(projectRoot, target);
+async function resumeAgents(projectRoot, target = "", processManager = null, options = {}) {
+  const { mode, recoverableEntries, skipped } = collectRecoverableAgents(projectRoot, target, options);
 
   if (recoverableEntries.length === 0) {
     return { ok: true, resumed: [], skipped };
@@ -1243,7 +1263,7 @@ async function resumeAgents(projectRoot, target = "", processManager = null) {
     const args = buildResumeArgs(item.agent, sessionId);
     let reused = false;
     let resumedId = item.id;
-    if (mode === "internal") {
+    if (options.internalOnly || isInternalAgentMeta(item.meta) || mode === "internal") {
       // Internal agents have no terminal/pane to reattach. Start a fresh
       // daemon-managed runner and replace the old recoverable registration.
       // The provider session is still reused via the normal provider args.
@@ -1254,13 +1274,15 @@ async function resumeAgents(projectRoot, target = "", processManager = null) {
         1,
         nickname,
         processManager,
-        { UFOO_SKIP_SESSION_RESOLVE: "1" },
+        { UFOO_SKIP_SESSION_RESOLVE: "1", UFOO_SCOPED_NICKNAME: item.meta.scoped_nickname || "" },
         args,
         { replaceAgentId: item.id, providerSessionId: sessionId }
       );
       resumedId = launchResult.subscriberIds && launchResult.subscriberIds[0]
         ? launchResult.subscriberIds[0]
         : item.id;
+      associateAgentWithGroup(projectRoot, resumedId, item.association);
+      recordGroupMemberResume(projectRoot, item.association, item.id, resumedId);
     } else {
       reused = await tryReuseTerminal(projectRoot, item.id, item.meta, item.agent, sessionId);
       if (!reused) {
@@ -1281,6 +1303,7 @@ async function resumeAgents(projectRoot, target = "", processManager = null) {
       agent: item.agent,
       sessionId,
       reused,
+      ...item.association,
     });
   }
 

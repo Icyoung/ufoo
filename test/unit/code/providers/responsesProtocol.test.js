@@ -4,9 +4,23 @@ const {
   buildResponsesPayload,
   messagesToResponsesInput,
   parseResponsesSsePayload,
+  responseUsage,
 } = require("../../../../src/code/providers/responsesProtocol");
 
 describe("Responses protocol projection", () => {
+  test("reads official cached and written token fields without double counting input", () => {
+    const response = { usage: { input_tokens: 1000, output_tokens: 20,
+      input_tokens_details: { cached_tokens: 800, cache_write_tokens: 200 } } };
+    expect(responseUsage(response)).toEqual({ input: 1000, output: 20, cacheRead: 800, cacheCreation: 200, inputIncludesCache: true });
+    const frames = `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response })}\n\n`;
+    expect(parseResponsesSsePayload(frames).usage).toMatchObject({ cacheRead: 800, cacheCreation: 200 });
+    expect(responseUsage({ usage: { ...response.usage, input_tokens_details: { cached_tokens: 0 }, cached_input_tokens: 800 } }).cacheRead).toBe(0);
+  });
+  test("distinguishes missing cache evidence from explicitly reported zero hits", () => {
+    expect(responseUsage({ usage: { input_tokens: 100, output_tokens: 20 } }).cacheRead).toBeNull();
+    expect(responseUsage({ usage: { input_tokens: 100, input_tokens_details: { cached_tokens: 0 } } }).cacheRead).toBe(0);
+    expect(responseUsage({ usage: {} })).toBeNull();
+  });
   test("defaults output to 32K and preserves explicit overrides", () => {
     expect(buildResponsesPayload({ model: "test" }).max_output_tokens).toBe(32768);
     expect(buildResponsesPayload({ model: "test", maxOutputTokens: 8192 }).max_output_tokens).toBe(8192);

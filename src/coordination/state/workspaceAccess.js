@@ -23,7 +23,7 @@ function createWorkspaceAccess({ projectRoot, externalWriters = () => [] } = {})
       if (!["write", "edit", "bash"].includes(context.tool)) return operation();
       const workspace = key(context.workspaceRoot);
       const writers = workspace === root ? externalWriters(context) : [];
-      if (writers.length) return { ok: false, code: "workspace_busy", error: "external workers own or may write this workspace", owners: writers };
+      if (writers.length) return { ok: false, code: "workspace_busy", error: "Workers own or may write this workspace. Delegate to them, wait, read files, or use an isolated worktree. Do not close workers to bypass this lease.", owners: writers };
       return leases.run({ key: workspace, ownerId: context.taskRunId || context.sessionId || `process-${process.pid}`, signal: context.signal }, operation);
     },
     async runTask(context, operation) {

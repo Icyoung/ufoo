@@ -329,6 +329,7 @@ class EventBus {
       if (options.envelope === false) data.envelope = false;
       const result = eventName === "message"
         ? await this.messageManager.send(target, message, publisher, {
+          ...options,
           data,
           injectionMode: options.injectionMode,
           source: options.source,
@@ -406,7 +407,11 @@ class EventBus {
       console.log();
     }
 
-    console.log(`${colors.cyan}After handling, run: ufoo bus ack ${subscriber}${colors.reset}`);
+    if (this.messageManager.isRunnerManaged(subscriber)) {
+      console.log(`${colors.cyan}Internal runner confirms completed tasks automatically; queued messages are retained.${colors.reset}`);
+    } else {
+      console.log(`${colors.cyan}After handling, run: ufoo bus ack ${subscriber}${colors.reset}`);
+    }
 
     if (autoAck) {
       await this.ack(subscriber);
@@ -499,7 +504,9 @@ class EventBus {
 
     const count = await this.messageManager.ack(subscriber);
 
-    if (count > 0) {
+    if (this.messageManager.isRunnerManaged(subscriber)) {
+      logOk("Internal runner confirms completed tasks automatically; queued messages are retained");
+    } else if (count > 0) {
       logOk(`Acknowledged and cleared ${count} message(s)`);
     } else {
       logOk("No pending messages to acknowledge");
@@ -517,7 +524,9 @@ class EventBus {
 
     const count = await this.messageManager.ackThrough(subscriber, throughSeq);
 
-    if (count > 0) {
+    if (this.messageManager.isRunnerManaged(subscriber)) {
+      logOk("Internal runner confirms completed tasks automatically; queued messages are retained");
+    } else if (count > 0) {
       logOk(`Acknowledged ${count} message(s) through seq=${throughSeq}`);
     } else {
       logOk(`No pending messages through seq=${throughSeq}`);

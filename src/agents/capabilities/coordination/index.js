@@ -27,7 +27,7 @@ function createCoordinationCapability({ host, id = "coordination", toolNames = n
         const invoke = ports.execute || executeControllerTool;
         return invoke({ ...ports, projectRoot: context.workspaceRoot || ports.projectRoot,
           subscriber: "ufoo-agent", turnId: context.turnId, taskId: context.taskId,
-          requestId: context.requestId, taskRunId: context.taskRunId, sessionId: context.sessionId },
+          requestId: context.requestId, taskRunId: context.taskRunId, sessionId: context.sessionId, traceId: context.traceId },
         { name: tool.name, arguments: args, id: context.toolCallId });
       },
     })),

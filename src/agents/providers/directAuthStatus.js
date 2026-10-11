@@ -362,7 +362,7 @@ async function inspectGrokDirectAuth({
 async function inspectDirectAuthStatus(options = {}) {
   const { projectRoot, loadConfigImpl = loadConfig, provider = "" } = options;
   const config = loadConfigImpl(projectRoot) || {};
-  const selected = normalizeDirectAuthProvider(provider || config.agentProvider || config.routerProvider || "");
+  const selected = normalizeDirectAuthProvider(provider || config.agentProvider || "");
   const nextOptions = {
     ...options,
     loadConfigImpl: () => config,

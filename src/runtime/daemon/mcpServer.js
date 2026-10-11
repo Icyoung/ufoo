@@ -408,7 +408,7 @@ async function ensureGlobalControllerDaemon(options = {}) {
     await suppressConsoleToStderr(() => init.init({
       targets: "context,bus",
       project: root,
-      controllerMode: true,
+      globalController: true,
     }));
   }
 

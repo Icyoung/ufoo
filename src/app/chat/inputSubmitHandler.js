@@ -18,10 +18,8 @@ function createInputSubmitHandler(options = {}) {
     markPendingDelivery = () => {},
     clearTargetAgent = () => {},
     setTargetAgent = () => {},
-    enterAgentView = () => {},
-    getAgentAdapter = () => null,
-    activateAgent = async () => {},
-    // When /multi is on: focus the in-window TUI pane instead of OS activate.
+    activateInternalAgent = () => {},
+    // In the all-children layout, focus an existing in-window TUI pane.
     // Return true if handled.
     focusMultiPane = null,
     commitInputHistory = () => {},
@@ -51,38 +49,14 @@ function createInputSubmitHandler(options = {}) {
           return true;
         }
       } catch {
-        // Fall through to OS activate / internal view.
+        // Try the host's internal side pane.
       }
     }
 
-    const adapter = getAgentAdapter(agentId);
-    const capabilities = adapter && adapter.capabilities ? adapter.capabilities : null;
-    const supportsActivate = Boolean(capabilities && capabilities.supportsActivate);
-    const supportsInternalQueue = Boolean(capabilities && capabilities.supportsInternalQueueLoop);
-
-    if (supportsActivate) {
-      clearTargetAgent();
-      try {
-        // Always use the host-wired activator. Bare adapterRouter adapters
-        // expose activate() that no-ops unless activateTerminal/activateTmux
-        // were injected — which chat hosts do not do.
-        const pendingActivation = activateAgent(agentId);
-        if (pendingActivation && typeof pendingActivation.catch === "function") {
-          pendingActivation.catch(() => {});
-        }
-      } catch {
-        // Best-effort activation.
-      }
-      return true;
-    }
-
-    if (supportsInternalQueue) {
-      clearTargetAgent();
-      enterAgentView(agentId, { useBus: true });
-      return true;
-    }
-
-    return false;
+    const result = await activateInternalAgent(agentId);
+    if (!result || result.ok === false) return false;
+    clearTargetAgent();
+    return true;
   }
 
   async function handleSubmit(value) {

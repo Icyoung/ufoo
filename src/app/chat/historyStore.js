@@ -7,7 +7,6 @@
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
-const { stripBlessedTags } = require("../../ui/chatLogModel");
 
 function projectRootToId(projectRoot) {
   try {
@@ -44,11 +43,6 @@ function chatHistoryFilePath(projectRoot, options = {}) {
   return path.join(getUfooPaths(projectRoot || process.cwd()).ufooDir, "chat", "history.jsonl");
 }
 
-function normalizeHistoryLogLines(text = "") {
-  const clean = stripBlessedTags(text);
-  return clean.split(/\r?\n/);
-}
-
 function loadChatHistory(projectRoot, cap = 200, options = {}) {
   const file = chatHistoryFilePath(projectRoot, options);
   try {
@@ -56,56 +50,26 @@ function loadChatHistory(projectRoot, cap = 200, options = {}) {
     const raw = fs.readFileSync(file, "utf8");
     const lines = raw.split(/\r?\n/).filter(Boolean);
     const out = [];
-    const pushLine = (line = "", sourceType = "") => {
-      const value = String(line || "");
-      if (!value.trim()) {
-        if (out.length > 0) {
-          const last = out[out.length - 1];
-          const lastText = typeof last === "object" ? last.text : last;
-          if (lastText !== "") out.push({ text: "", sourceType: sourceType || "system" });
-        }
-        return;
-      }
-      out.push(sourceType ? { text: value, sourceType } : value);
-    };
     for (const line of lines) {
       try {
         const entry = JSON.parse(line);
-        if (!entry) continue;
-        if (entry.type === "spacer") {
-          pushLine("", "system");
-          continue;
-        }
-        const text = String(entry.text || "");
-        if (!text) continue;
-        const sourceType = String(entry.type || "");
-        const stripped = text.replace(/\{[^{}]+\}/g, "");
-        for (const renderedLine of normalizeHistoryLogLines(stripped)) {
-          pushLine(renderedLine, sourceType);
-        }
+        if (!entry || typeof entry !== "object") continue;
+        const sourceType = String(entry.type || entry.kind || "system");
+        const text = sourceType === "spacer" ? "" : String(entry.text || "").replace(/\r\n?/g, "\n");
+        if (!text && sourceType !== "spacer") continue;
+        if (!text.trim() && (!out.length || !out[out.length - 1].text.trim())) continue;
+        // A transcript block is the persistence unit. Splitting it into lines
+        // loses tool/thinking folds, speakers, paragraphs and fenced code.
+        out.push({ ...entry, text, sourceType,
+          meta: entry.meta && typeof entry.meta === "object" ? entry.meta : {},
+        });
       } catch {
         // ignore malformed lines
       }
     }
-    while (out.length > 0) {
-      const first = out[0];
-      const firstText = typeof first === "object" ? first.text : first;
-      if (firstText !== "") break;
-      out.shift();
-    }
-    while (out.length > 0) {
-      const last = out[out.length - 1];
-      const lastText = typeof last === "object" ? last.text : last;
-      if (lastText !== "") break;
-      out.pop();
-    }
+    while (out.length > 0 && !out[out.length - 1].text.trim()) out.pop();
     const capped = out.slice(-cap);
-    while (capped.length > 0) {
-      const first = capped[0];
-      const firstText = typeof first === "object" ? first.text : first;
-      if (firstText !== "") break;
-      capped.shift();
-    }
+    while (capped.length > 0 && !capped[0].text.trim()) capped.shift();
     return capped;
   } catch {
     return [];

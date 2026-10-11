@@ -76,7 +76,7 @@ describe("resolveCodexSessionFromFile", () => {
   const origHomedir = os.homedir;
 
   beforeEach(() => {
-    fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-codex-sess-"));
+    fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ucodex-sess-"));
     os.homedir = () => fakeHome;
   });
 

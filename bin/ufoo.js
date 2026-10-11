@@ -120,7 +120,7 @@ async function main() {
             inOnlineSection = false;
             continue;
           }
-          // Parse agent line: "ufoo-code:abc123 (nickname)"
+          // Parse agent line: "ucode:abc123 (nickname)"
           const agentMatch = trimmedLine.match(/^[-\s]*([a-z-]+:[a-f0-9]+|[a-z-]+)(?:\s+\(([^)]+)\))?/i);
           if (agentMatch) {
             const subscriberId = agentMatch[1];
@@ -150,7 +150,7 @@ async function main() {
       let scriptName = "";
       let displayName = "";
 
-      if (agentType === "ufoo-code") {
+      if (agentType === "ucode") {
         scriptName = "ucode.js";
         displayName = "ucode";
       } else if (agentType === "claude-code") {
@@ -198,7 +198,7 @@ async function main() {
     const targetLower = target.toLowerCase();
     let scriptName = "";
 
-    if (targetLower === "ucode" || targetLower === "ufoo-code" || targetLower === "ufoo") {
+    if (targetLower === "ucode") {
       scriptName = "ucode.js";
     } else if (targetLower === "uclaude" || targetLower === "claude-code" || targetLower === "claude") {
       scriptName = "uclaude.js";

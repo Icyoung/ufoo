@@ -95,11 +95,12 @@ function createUiHostServer({
     const entries = [...pending.entries()];
     pending.clear();
     for (let i = 0; i < entries.length; i += 1) {
-      const [key, env] = entries[i];
+      const [, env] = entries[i];
       try {
         const ok = client.write(encodeMessage(env));
         if (ok === false) {
-          pending.set(key, env);
+          // false means this frame was queued, not rejected. Retrying it on
+          // drain would resend a large frame forever and starve other panes.
           for (let j = i + 1; j < entries.length; j += 1) {
             pending.set(entries[j][0], entries[j][1]);
           }
@@ -141,12 +142,8 @@ function createUiHostServer({
         if (ok === false && lossy) {
           client.__ufooBackpressure = true;
           ensureDrainHook(client);
-          let pending = lossyPendingByClient.get(client);
-          if (!pending) {
-            pending = new Map();
-            lossyPendingByClient.set(client, pending);
-          }
-          pending.set(lossyKey(envelope), envelope);
+          // The socket owns this accepted frame. Only later updates belong
+          // in the per-agent pending map until it drains.
         }
       } catch {
         clients.delete(client);

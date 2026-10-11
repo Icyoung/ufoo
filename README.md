@@ -287,9 +287,9 @@ tasks. The global profile selects projects before coding begins. Long tasks run
 in the daemon; disconnecting chat does not cancel them, and reconnecting replays
 runtime events.
 
-Existing controller conversations retain their executor. Use `/session new` to
-start a main conversation with current settings; existing provider/model bindings
-stay pinned. A crash during an active round marks it interrupted: inspect actual
+All main conversations use the shared runtime. Use `/session new` to start a
+conversation with current settings; existing provider/model bindings stay pinned.
+A crash during an active round marks it interrupted: inspect actual
 effects before resubmitting. Writes, shell commands, launches, and uncertain
 deliveries are not automatically replayed. Managed writers share directory
 leases; verified git worktrees can run independently. These checks are not an OS
@@ -312,42 +312,57 @@ sandbox for shell commands. See the [runtime implementation record](AGENT_RUNTIM
 /session show
 /session new
 /settings
-/multi
-/multi on
-/multi off
-/multi @reviewer
-/resume list
+/window main
+/window side
+/window multi
+/resume
 /project list
 /project switch 2
 /open /path/to/project
 ```
 
-The dashboard keeps three layouts: main agent only, main plus one selected
-internal agent, and main plus all internal agents. Wrapper and MCP agents stay
+The dashboard keeps three layouts: `main` (main agent only), `side` (main plus
+one selected internal agent), and `multi` (main plus all internal agents). Wrapper and MCP agents stay
 outside the dashboard. Dashboard child launches use internal mode and never
 open an external terminal. A project with no chat or input history shows the
 existing compact ufoo banner as its welcome screen.
-`/multi` or `Ctrl+T` toggles the all-agent layout; from a single-agent layout it
-expands to all agents. `/multi @reviewer` opens just that internal agent.
-`Ctrl+M` opens the all-agent layout and leaves it open when pressed again.
-It requires a terminal that reports modified keys separately from Enter; the
-dashboard requests the enhanced keyboard protocol automatically. In legacy
-terminals where Ctrl+M and Enter share the same encoding, Enter keeps submitting
-input and `/multi` or `Ctrl+T` remains available.
-In either split layout, `Esc` first returns child focus to the main agent;
-when the main agent has focus, `Esc` closes the split. Drafts and running tasks
-are preserved. `Ctrl+Q` or `/multi off` closes either split directly.
-At the main-only root, `Esc` never exits the application; use `Ctrl+C`.
+`Ctrl+W` cycles `main → side → multi → main`.
+`/window main`, `/window side` and `/window multi`
+select each layout directly. The one-child layout selects the most recently
+activated live internal agent, or the first agent when none has been activated.
+With no children, split modes remain selected while showing only the full-width
+main pane; new children appear automatically when they become available.
+In either split layout, `Esc` and `Ctrl+C` first leave the footer if it has focus,
+then return child focus to the main agent, then close the split. Drafts and
+running tasks are preserved while moving through these layers. Both keys also
+dismiss command completion and follow the main input's cancellation and project
+return layers. At the main-only root, `Esc` keeps the application open and only
+`Ctrl+C` exits. `Ctrl+Q` or `/window main` closes either split directly.
+Drag over visible text in the main or an internal agent pane to select it;
+releasing the mouse copies it to the clipboard. Selection stays within that pane,
+excluding its border and adjacent agents. Local macOS uses the system clipboard;
+other terminals use OSC 52 and require terminal clipboard support.
+`/resume` opens a second-level menu of recoverable internal sessions. Independent
+agents appear individually; group members appear together as `group:<group-id>`.
+Selecting a group resumes its inactive members with saved sessions, skips members
+that are already active, and updates the group's member identities. Native
+coding agents register as `agent_type: ucode` with `ucode:<session>` identities;
+their saved conversations remain under `.ufoo/agent/ucode/`.
 `Tab` cycles keyboard focus through the main agent and the visible child panes;
 all agents share one bottom input, which follows the selected agent while
 preserving each draft. Each agent's live status sits in its pane's bottom border;
 the main agent's input is labelled `main`, and its status stays independent of
 child selection, focus changes and child activity.
+Internal Codex enables network access within its workspace sandbox, including
+local services such as ADB and Gradle. Peer replies contain the final answer;
+progress and tool output stay visible in the agent's pane. Reports and handoffs
+default to 1-4 short lines with checks and blockers; longer evidence is saved in
+a referenced workspace file.
 The selected pane's body uses the terminal's default foreground. In the main-only
 layout, `Tab` selects the first agent in the bottom bar, then advances through
 the agents and wraps to the first. `Esc` returns to
 the main input. Command completion keeps its existing `Tab` behavior in the
-main-only layout.
+main-only layout. An open completion menu also owns `Tab` in split layouts.
 Layout commands also work from an internal child's input. Switching layouts
 keeps unsent child drafts and does not stop running agents.
 With a child active, `Down` from an empty input or a footer click opens the Agents
@@ -480,10 +495,26 @@ ufoo history prompt 30
 ufoo report start "Implement README refresh" --task docs-readme --agent builder
 ufoo report done "README updated" --task docs-readme --agent builder
 ufoo report list
+
+ufoo trace <task-id> --json
+ufoo trace --agent <id-or-nickname> --follow
+ufoo trace --details --limit 2000
 ```
 
 Use decisions only for plan-level constraints. Durable project facts belong in
 memory.
+
+`trace` links parent/worker model and tool events, reports, queue claims and
+context compression without starting a daemon or calling a model. MCP exposes
+the same read-only view as `read_agent_trace`. Parameters and results are
+redacted; bounded or incomplete source reads are explicitly marked in JSON.
+
+`ufoo metrics --json` summarizes observed outcomes, latency, tokens, tool
+errors/repetition, report size and delegation acceptance. Save a report and use
+`ufoo metrics --baseline baseline.json --json` to compare later samples. MCP
+provides `read_agent_metrics`; metric definitions and an optimization workflow
+are in [OBSERVABILITY.md](OBSERVABILITY.md). Missing evidence stays unknown,
+and execution completion is separate from acceptance.
 
 ### Groups
 
@@ -547,27 +578,54 @@ Common project settings:
 {
   "launchMode": "auto",
   "agentProvider": "codex-cli",
-  "controllerMode": "main",
-  "codexInternalThreadMode": "api",
   "codexAuthPath": "",
   "codexOauthRefreshWindowSec": 300,
   "claudeOauthProfile": "",
   "claudeOauthTokenPath": "",
   "claudeOauthRefreshWindowSec": 300,
-  "routerProvider": "",
-  "routerModel": "",
   "agentModel": "",
   "autoResume": false
 }
 ```
 
+Internal Codex and Claude always use their SDKs; there is no thread-mode setting.
+
 Supported `launchMode` values: `auto`, `internal`, `tmux`, `terminal`, and
-`host`. `controllerMode` accepts `main`, `shadow`, `loop`, and legacy
-compatibility values.
+`host`. The dashboard supports internal Codex, Claude and ucode workers only; provider selections remain independent.
+
+The dashboard always uses internal children and has no `/mode` command;
+the binary has no `ufoo mode` command either.
+Manual `ucodex` and `uclaude` wrappers detect tmux, host sessions, Terminal.app
+and iTerm2 from their environment, then register the actual terminal type, TTY
+and delivery channels with the daemon. Their event-bus communication works
+without a dashboard. MCP agents communicate through MCP message interfaces
+without requiring a terminal adapter.
+The main agent uses one runtime for coding and routing, configured by
+`agentProvider` and `agentModel`. `/settings agent` manages these settings;
+`/settings ucode` manages the independent ucode gateway settings.
+
+The bottom Settings bar includes `custom`, `model`, and `thinking`. Select
+`custom` to enter an API URL and hidden API key, then choose its model and
+thinking intensity. `/settings agent custom`, `/settings agent model`, and
+`/settings agent thinking` open the same controls. Model menus fetch the current
+provider's complete selectable catalog, including paginated results; Codex
+menus omit entries marked hidden by the provider. Endpoints without a
+models route also allow a manually entered model ID. Changing model or thinking
+applies to the next request and keeps the current conversation. Changing provider
+starts a new conversation, retaining the old one in runtime storage.
+OpenAI thinking choices include separate `xhigh` and `max` values, preserved in
+requests. When a provider uses a configured gateway, the model list comes from
+that gateway; upgrading an agent SDK does not change the gateway's catalog.
+
+Custom main-agent settings use `agentProvider: "custom"`, `agentBaseUrl`,
+`agentApiKey`, `agentModel`, and `agentThinking` in `.ufoo/config.json`.
+Custom APIs use OpenAI Chat Completions by default, or Responses when the URL
+ends in `/responses`. There is no Anthropic protocol selector for custom APIs.
+Internal Claude retains its native provider transport and credentials.
 
 Ordinary provider sessions authenticate through their provider-owned adapters;
-MCP `agent_handle` is never model authentication. Select `agentProvider=ucode`
-to use the ucode gateway settings below.
+MCP `agent_handle` is never model authentication. Standalone and internal ucode
+use the independent gateway settings below.
 
 Global `ucode` settings:
 

@@ -38,7 +38,7 @@ test("a group member streams peer work into an already open pane without daemon 
   let running;
   const frame = () => frames.filter((item) => item.agent_id === reviewer).at(-1);
   try {
-    session.setLayout("all");
+    session.setLayout("multi");
     await waitFor(() => ids.every((id) => frames.some((item) => item.agent_id === id)));
     expect(frame().entries).toEqual([]);
     running = handleEvent(root, "codex", "codex-cli", "", reviewer, "reviewer",
@@ -69,7 +69,7 @@ test("a group member streams peer work into an already open pane without daemon 
     expect(frame().entries.find((entry) => entry.kind === "tool").detail).not.toContain("[exit 0]");
     expect(frames.filter((item) => item.agent_id === architect).at(-1).entries).toEqual([]);
     session.setLayout("main");
-    session.setLayout("single", reviewer);
+    session.setLayout("side", reviewer);
     await waitFor(() => frame()?.entries.some((entry) => entry.text === "REVIEW_FINISHED"));
   } finally {
     release(); if (running) await running;
@@ -133,6 +133,7 @@ test("peer task output reaches the hidden surface before completion, survives la
           yield { type: "tool_call", toolCallId: "cmd", name: "bash", args: { command: "ls" } };
           yield { type: "tool_result", toolCallId: "cmd", output: "a.js\nb.js" };
           yield { type: "text_delta", delta: "FINISHED" };
+          yield { type: "turn_completed", finalText: "FINISHED" };
         } },
       });
     // Flush the observation writer while the provider is deliberately paused.
@@ -140,7 +141,7 @@ test("peer task output reaches the hidden surface before completion, survives la
     await sender.flush();
     await bridge.refresh();
     expect(session.isActive()).toBe(false);
-    session.setLayout("single", child);
+    session.setLayout("side", child);
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(frames.at(-1)).toMatchObject({ busy: true, entries: expect.arrayContaining([
       expect.objectContaining({ kind: "assistant", text: "VISIBLE_BEFORE_DONE" }),
@@ -150,7 +151,7 @@ test("peer task output reaches the hidden surface before completion, survives la
     release(); await running;
     await bridge.refresh();
     session.setLayout("main");
-    session.setLayout("all");
+    session.setLayout("multi");
     await new Promise((resolve) => setTimeout(resolve, 100));
     const childFrame = frames.filter((frame) => frame.agent_id === child).at(-1);
     expect(childFrame.busy).toBe(false);
@@ -159,10 +160,10 @@ test("peer task output reaches the hidden surface before completion, survives la
     expect(onMessage).not.toHaveBeenCalled();
     const replies = DeliveryQueue.forSubscriber(path.join(root, ".ufoo/bus"), peer).readPending();
     expect(replies).toHaveLength(1);
-    expect(replies[0].data.message).toBe("VISIBLE_BEFORE_DONEFINISHED");
+    expect(replies[0].data.message).toBe("FINISHED");
     // A new host reconstructs the same semantic history from the durable log.
     session.stop({ clearDrafts: true });
-    session.setLayout("single", child);
+    session.setLayout("side", child);
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(frames.at(-1).entries).toEqual(childFrame.entries);
   } finally {

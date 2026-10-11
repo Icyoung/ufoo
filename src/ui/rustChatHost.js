@@ -16,6 +16,7 @@ const { createToolMergePublisher } = require("./toolMergeBridge");
 const { createRustMultiSession } = require("./rustMultiSession");
 const { writeMultiPaneBusEvent } = require("./multiPaneBusMirror");
 const { buildSettingsSnapshot, applySettingsPatch } = require("./settingsBridge");
+const { createAgentSettingsController } = require("./agentSettingsController");
 const fmt = require("./format");
 const { buildUfooStartupEntries } = require("./format/startupBanner");
 const {
@@ -30,6 +31,7 @@ const {
   createEnvelope,
   encodeMessage,
   MULTI_FRAMES_CAPABILITY,
+  WINDOW_MODES_CAPABILITY,
 } = require("../runtime/contracts/uiProtocol");
 const { IPC_REQUEST_TYPES, IPC_RESPONSE_TYPES } = require("../runtime/contracts/eventContract");
 const { createDaemonMessageRouter } = require("../app/chat/daemonMessageRouter");
@@ -39,61 +41,81 @@ const {
 } = require("../runtime/daemon/endpoint");
 const PACKAGE_VERSION = require("../../package.json").version;
 
+async function loadResumeCompletionSources(root, request = require("../app/chat/transport").requestDaemon) {
+  const result = await request(root, { type: IPC_REQUEST_TYPES.LIST_RECOVERABLE_AGENTS, internal_only: true }, {
+    retries: 1, timeoutMs: 5000,
+  });
+  const recovery = result.recoverable || {};
+  const agents = (recovery.recoverable || []).filter((item) => !item.group_id);
+  agents.sort((a, b) => String(b.lastSeen || "").localeCompare(String(a.lastSeen || "")) || a.id.localeCompare(b.id));
+  return [
+    ...agents.map((item) => ({ id: item.id, label: item.display_nickname || item.nickname || item.id,
+      desc: `${item.agent} · session ${item.sessionId}` })),
+    ...(recovery.groups || []).map((group) => ({ id: `group:${group.group_id}`,
+      desc: `Group · ${group.template_alias || group.group_id} · ${group.members.length} recoverable agents` })),
+  ];
+}
+
+function parseWindowModeArgs(args = []) {
+  const text = args.map((value) => String(value).trim()).join(" ").toLowerCase();
+  return ["main", "side", "multi"].includes(text) ? text : "";
+}
+
+function resolveSubmittedInputTarget(payload, currentTarget, isInternalAgent) {
+  const target = String(payload.target_agent || payload.targetAgent || "").trim();
+  if ((payload.has_target && !target) || (target && !isInternalAgent(target))) {
+    return { ok: false, error: "Unknown internal target" };
+  }
+  return { ok: true, target: target || (payload.input_target === "main" ? null : currentTarget) };
+}
+
 function stripTags(value) {
   return String(value || "").replace(/\{[^}]+\}/g, "");
 }
 
 function historyToEntries(rows) {
   const list = Array.isArray(rows) ? rows : [];
-  const markdownState = { inCodeBlock: false };
   const MARKDOWN_KINDS = new Set(["assistant", "agent", "report", "error"]);
-  const out = [];
-  list.forEach((row, index) => {
-    if (typeof row === "string") {
-      out.push({
-        id: `hist-${index}`,
-        kind: "system",
-        text: stripTags(row),
-        speaker: "",
-      });
-      return;
-    }
-    const sourceType = String(row && (row.sourceType || row.type || row.kind) || "system");
-    const kind = sourceType === "user" || sourceType === "assistant" || sourceType === "error"
-      || sourceType === "agent" || sourceType === "report"
-      ? sourceType
-      : "system";
-    const raw = String(row && (row.text || row.content || ""));
-    const speaker = String(row && row.speaker || "");
-    if (MARKDOWN_KINDS.has(kind)) {
-      let lines;
+  const KINDS = new Set(["system", "user", "assistant", "error", "agent", "report",
+    "thinking", "tool", "spacer", "meta", "bus", "success", "banner"]);
+  const cleanText = (text) => String(text || "")
+    // Strip presentation tags without eating code such as { value: 1 }.
+    .replace(/\{\/?(?:[a-z]+(?:-[a-z]+)*-(?:fg|bg)|#[\da-f]{3,8}-(?:fg|bg)|bold|italic|underline|blink|inverse|invisible|normal|reset|escape)\}/gi, "")
+    .replace(/\{open\}/g, "{").replace(/\{close\}/g, "}");
+  return list.map((row, index) => {
+    const source = row && typeof row === "object" ? row : { text: row };
+    const meta = source.meta && typeof source.meta === "object" ? source.meta : {};
+    const sourceType = String(source.sourceType || source.type || source.kind || "system");
+    const streamed = sourceType === "bus" && meta.stream_done === true;
+    const kind = streamed || sourceType === "reply" ? "assistant"
+      : KINDS.has(sourceType) ? sourceType : "system";
+    let text = cleanText(source.text || source.content || "");
+    let speaker = String(source.speaker || meta.speaker || "");
+    if (streamed) {
+      // Stream persistence prefixes the display name, whereas the live TUI
+      // receives it separately. Restore that same identity and raw body.
+      const match = text.match(/^([^\n]+?): ([\s\S]*)$/);
+      if (match) { speaker = speaker || match[1]; text = match[2]; }
+    } else if (MARKDOWN_KINDS.has(kind)) {
       try {
-        lines = fmt.renderLogLinesWithMarkdownAnsi(raw, markdownState);
-        if (!Array.isArray(lines) || lines.length === 0) lines = raw.split(/\r?\n/);
+        const lines = fmt.renderLogLinesWithMarkdownAnsi(text, { inCodeBlock: false });
+        if (Array.isArray(lines) && lines.length > 0) text = lines.map((line) => String(line || "")).join("\n");
       } catch {
-        lines = raw.split(/\r?\n/);
+        // Keep the original complete block if markdown rendering fails.
       }
-      lines.forEach((line, lineIdx) => {
-        out.push({
-          id: `hist-${index}-${lineIdx}`,
-          kind,
-          text: String(line || ""),
-          speaker: lineIdx === 0 ? speaker : "",
-        });
-      });
-      return;
     }
-    out.push({
-      id: `hist-${index}`,
+    return {
+      id: String(source.id || `hist-${index}`),
       kind,
-      text: stripTags(raw),
+      text,
       speaker,
-    });
+      detail: cleanText(source.detail || source.expanded_text || meta.detail || meta.expanded_text || ""),
+      expanded: false,
+    };
   });
-  return out;
 }
 
-/** Ink parity: `/group run` / `/solo run` dynamic argument lists. */
+/** Completion sources: `/group run` / `/solo run` dynamic argument lists. */
 function loadDynamicCompletionSources(root) {
   const sources = { groupTemplates: [], soloProfiles: [] };
   try {
@@ -144,7 +166,7 @@ async function runChatRust(projectRoot, options = {}) {
     await init.init({
       targets: "context,bus",
       project: projectRoot,
-      controllerMode: env.globalMode,
+      globalController: env.globalMode,
     });
   }
   await ensureSubscriberId(projectRoot);
@@ -172,6 +194,7 @@ async function runChatRust(projectRoot, options = {}) {
 
   let entrySeq = 0;
   const streamIds = new Map();
+  const streamLabels = new Map();
   let mainSubmissionRev = 0;
   let hostRef = null;
   let daemonSend = () => {};
@@ -191,6 +214,44 @@ async function runChatRust(projectRoot, options = {}) {
       return {};
     }
   })();
+
+  async function applyAgentSettings(patch) {
+    const model = patch.agent_model ?? patch.agentModel;
+    if (model) {
+      const current = loadConfig(activeProjectRoot);
+      const provider = patch.agent_provider ?? patch.agentProvider ?? current.agentProvider;
+      const confirmation = await require("../agents/providers/modelSettings").confirmAgentModel(activeProjectRoot, model,
+        { config: { ...current, agentProvider: provider } });
+      if (!confirmation.allowed) return { ok: false, error: confirmation.error };
+    }
+    const applied = applySettingsPatch(activeProjectRoot, patch);
+    if (!applied.ok) return applied;
+    Object.assign(settings, loadConfig(activeProjectRoot));
+    publish("settings.snapshot", applied.settings);
+    if (applied.providerChanged) appendLocal("system", `Provider: ${applied.settings.agent_provider} · new conversation`);
+    if (patch.agent_model != null || patch.agentModel != null) appendLocal("system", `Model: ${applied.settings.agent_model}`);
+    if (patch.agent_thinking != null || patch.agentThinking != null) appendLocal("system", `Thinking: ${applied.settings.agent_thinking}`);
+    const restart = applied.providerChanged || patch.agent_base_url != null || patch.agent_api_key != null
+      || patch.agentBaseUrl != null || patch.agentApiKey != null;
+    if (restart && daemonCoordinator?.restart) {
+      publish("status.set", { text: "settings saved · restarting daemon…" });
+      await daemonCoordinator.restart();
+    }
+    publish("status.set", { text: "settings saved", busy: false });
+    publish("prompt.restore", {});
+    return applied;
+  }
+  const agentSettings = createAgentSettingsController({ getProjectRoot: () => activeProjectRoot,
+    applyPatch: applyAgentSettings, publish: (...args) => publish(...args), logMessage: (...args) => appendLocal(...args),
+    focusMain() {
+      if (multiSession?.isActive()) {
+        multiSession.handleFocus({ target: "chat" });
+        publish("window.set", multiSession.getSnapshot());
+      }
+      controller.session.targetAgent = null;
+      publish("prompt.set_prefix", { prefix: "› " });
+    },
+  });
 
   function historyOptions() {
     const { chatHistoryOptionsForScope } = require("../app/chat/historyStore");
@@ -443,20 +504,20 @@ async function runChatRust(projectRoot, options = {}) {
     isInternalAgent(agentId) {
       return isInternalAgentMeta(controller.session.metaMap.get(String(agentId || "").trim()));
     },
-    /** Internal activate: split like multi-with-1-agent (kind=side). Not /multi. */
+    /** Activate an internal child in the one-child window mode. */
     startSide(agentId) {
       const id = String(agentId || "").trim();
       if (!hostApi.isInternalAgent(id)) return { ok: false, error: "Dashboard supports internal agents only" };
       if (!multiSession) return { ok: false, error: "split session not initialised" };
       // Prefer capability check, but do not hard-fail — connected Rust child
-      // may be mid-handshake; multi.set is still the right wire.
+      // may be mid-handshake; window.set is still the right wire.
       const caps = hostRef && typeof hostRef.getClientCapabilities === "function"
         ? hostRef.getClientCapabilities()
         : [];
-      if (caps.length > 0 && !caps.includes(MULTI_FRAMES_CAPABILITY)) {
+      if (caps.length > 0 && !caps.includes(WINDOW_MODES_CAPABILITY)) {
         return {
           ok: false,
-          error: `Rust TUI lacks ${MULTI_FRAMES_CAPABILITY}; rebuild ufoo-tui`,
+          error: `Rust TUI lacks ${WINDOW_MODES_CAPABILITY}; rebuild ufoo-tui`,
         };
       }
       const result = multiSession.start({
@@ -472,7 +533,7 @@ async function runChatRust(projectRoot, options = {}) {
       }
       return result || { ok: false, error: "side start failed" };
     },
-    enterAgentView(agentId) {
+    activateInternalAgent(agentId) {
       const id = String(agentId || "").trim();
       if (!hostApi.isInternalAgent(id)) return { ok: false, error: "Dashboard supports internal agents only" };
       if (multiSession && multiSession.isMultiKind()) {
@@ -483,44 +544,12 @@ async function runChatRust(projectRoot, options = {}) {
       const result = hostApi.startSide(id);
       return result && result.ok ? { ...result, mode: "side", agent_id: id } : result;
     },
-    getAgentAdapter(agentId) {
-      try {
-        const { createTerminalAdapterRouter } = require("../runtime/terminal/adapterRouter");
-        const meta = controller.session.metaMap.get(agentId) || {};
-        if (!isInternalAgentMeta(meta)) return null;
-        const launchMode = "internal";
-        return createTerminalAdapterRouter().getAdapter({ launchMode, agentId, meta });
-      } catch {
-        return null;
-      }
-    },
   };
 
   function appendLocal(kind, text, speaker = "") {
-    const MARKDOWN_KINDS = new Set(["assistant", "agent", "report", "error"]);
     const raw = String(text == null ? "" : text);
-    let lines = [raw];
-    if (MARKDOWN_KINDS.has(kind)) {
-      try {
-        if (!appendLocal._mdState) appendLocal._mdState = { inCodeBlock: false };
-        lines = fmt.renderLogLinesWithMarkdownAnsi(raw, appendLocal._mdState);
-        if (!Array.isArray(lines) || lines.length === 0) lines = raw.split(/\r?\n/);
-      } catch {
-        lines = raw.split(/\r?\n/);
-      }
-    }
-    let last = null;
-    for (let i = 0; i < lines.length; i += 1) {
-      entrySeq += 1;
-      const line = String(lines[i] || "");
-      last = {
-        id: `live-${entrySeq}`,
-        kind,
-        text: /\x1b\[/.test(line) ? line : stripTags(line),
-        speaker: i === 0 ? speaker : "",
-      };
-      publish("transcript.append", last);
-    }
+    const last = { ...historyToEntries([{ kind, text: raw, speaker }])[0], id: `live-${++entrySeq}` };
+    publish("transcript.append", last);
     try {
       const { appendChatHistory } = require("../app/chat/historyStore");
       appendChatHistory(
@@ -536,38 +565,23 @@ async function runChatRust(projectRoot, options = {}) {
     return last;
   }
 
-  function changeMultiLayout(args = []) {
-    if (!multiSession) return { ok: false, error: "Multi-window session not initialised" };
-    const values = Array.isArray(args) ? args : [];
-    if (values.length > 1) {
-      appendLocal("error", "Usage: /multi [on|off|@agent]");
-      return { ok: false, error: "invalid layout arguments" };
+  function changeWindowLayout(mode) {
+    if (!multiSession) return { ok: false, error: "Window session not initialised" };
+    if (!["main", "side", "multi", "cycle"].includes(mode)) {
+      const error = "Usage: /window main | /window side | /window multi";
+      appendLocal("error", error);
+      return { ok: false, error };
     }
-    const value = String(values[0] || "").trim();
-    const layout = !value ? "toggle" : value === "on" ? "all" : value === "off" ? "main" : "single";
-    if (layout === "single") {
-      const label = value.replace(/^@/, "");
-      const matches = getActiveAgentIds().filter((id) => {
-        const meta = getAgentMetaForMulti(id);
-        return [id, meta.nickname, meta.scoped_nickname, meta.display_nickname].includes(label);
-      });
-      if (matches.length !== 1 || !hostApi.isInternalAgent(matches[0])) {
-        const error = matches.length > 1 ? `Ambiguous agent: ${label}` : `Internal agent not found: ${label}`;
-        appendLocal("error", error);
-        return { ok: false, error };
-      }
-      return hostApi.startSide(matches[0]);
-    }
-    if (layout !== "main" && !(layout === "toggle" && multiSession.isMultiKind())) {
+    if (mode !== "main") {
       const caps = hostRef && typeof hostRef.getClientCapabilities === "function"
         ? hostRef.getClientCapabilities() : [];
-      if (!caps.includes(MULTI_FRAMES_CAPABILITY)) {
-        const error = `Rust TUI lacks ${MULTI_FRAMES_CAPABILITY}; upgrade ufoo-tui`;
+      if (!caps.includes(WINDOW_MODES_CAPABILITY)) {
+        const error = `Rust TUI lacks ${WINDOW_MODES_CAPABILITY}; upgrade ufoo-tui`;
         appendLocal("error", error);
         return { ok: false, error };
       }
     }
-    const result = multiSession.setLayout(layout);
+    const result = multiSession.setLayout(mode);
     if (!result.ok) {
       appendLocal("error", result.error || "Layout switch failed");
       return result;
@@ -575,16 +589,12 @@ async function runChatRust(projectRoot, options = {}) {
     reconcileMultiInternalWatches();
     controller.session.targetAgent = null;
     publish("prompt.set_prefix", { prefix: "› " });
-    appendLocal("system", multiSession.isActive()
-      ? "Showing all agents."
-      : "Showing main agent.");
     return result;
   }
 
   const controller = createChatController({
     projectRoot,
     globalMode: env.globalMode,
-    internalOnly: true,
     ports: {
       publish,
       logMessage: (kind, text) => {
@@ -628,27 +638,24 @@ async function runChatRust(projectRoot, options = {}) {
         const { isRunning } = require("../runtime/daemon");
         return isRunning(root || activeProjectRoot || projectRoot);
       },
-      enterAgentView: (...args) => hostApi.enterAgentView(...args),
-      getAgentAdapter: (...args) => hostApi.getAgentAdapter(...args),
+      activateInternalAgent: (...args) => hostApi.activateInternalAgent(...args),
       focusMultiPane: async (agentId) => {
         // Focus a visible internal pane.
         if (multiSession && multiSession.isMultiKind && multiSession.isMultiKind()) {
           try { multiSession.syncAgents(); } catch { /* ignore */ }
           const focused = multiSession.focusAgent(agentId);
           if (focused && focused.ok) {
-            appendLocal("system", `Multi focus → ${agentId}`);
             return true;
           }
           return false;
         }
-        // Non-multi internal → side split (not user-facing /multi).
+        // Activate the child in a one-child layout.
         if (hostApi.isInternalAgent(agentId)) {
           const side = hostApi.startSide(agentId);
           return Boolean(side && side.ok);
         }
         return false;
       },
-      activateAgent: async (agentId) => hostApi.enterAgentView(agentId),
       listProjects: () => listProjectsForCommands(),
       getCurrentProject: () => ({ project_root: activeProjectRoot }),
       getActiveProjectRoot: () => activeProjectRoot,
@@ -667,6 +674,7 @@ async function runChatRust(projectRoot, options = {}) {
           const speaker = String(action.publisher || "");
           const id = `stream-${speaker || "agent"}-${Date.now()}`;
           streamIds.set(speaker, id);
+          streamLabels.set(speaker, action.displayName || speaker);
           publish("stream.start", { id, speaker: action.displayName || speaker });
           return;
         }
@@ -678,7 +686,7 @@ async function runChatRust(projectRoot, options = {}) {
             streamIds.set(key, id);
             publish("stream.start", { id, speaker: key });
           }
-          publish("stream.delta", { id, text: String(action.delta || ""), speaker: key });
+          publish("stream.delta", { id, text: String(action.delta || ""), speaker: streamLabels.get(key) || key });
           return;
         }
         if (action.type === "stream/end") {
@@ -687,6 +695,7 @@ async function runChatRust(projectRoot, options = {}) {
             if (action.publisher && key !== action.publisher) continue;
             publish("stream.done", { id });
             streamIds.delete(key);
+            streamLabels.delete(key);
           }
           publish("status.set", { text: "ready", busy: false });
           return;
@@ -695,9 +704,18 @@ async function runChatRust(projectRoot, options = {}) {
           publish("transcript.reset", {});
         }
       },
-      toggleMultiWindow: (args) => changeMultiLayout(args).ok,
+      setWindowLayout: (args) => changeWindowLayout(parseWindowModeArgs(args)).ok,
+      openAgentSettings: (section) => agentSettings.open(section),
+      applyAgentModel: (...args) => agentSettings.applyModel(...args),
+      applyAgentSettings,
+      openResumeMenu: () => {
+        if (multiSession?.isActive()) {
+          multiSession.handleFocus({ target: "chat" });
+          publish("window.set", multiSession.getSnapshot());
+        }
+        publish("prompt.set_text", { text: "/resume ", if_empty: true });
+      },
       applyChatSettings: (patch = {}) => {
-        if (patch.launchMode != null) settings.launchMode = patch.launchMode;
         if (patch.agentProvider != null) settings.agentProvider = patch.agentProvider;
         publish("settings.snapshot", buildSettingsSnapshot(settings));
       },
@@ -735,19 +753,19 @@ async function runChatRust(projectRoot, options = {}) {
   }
 
   function resolveMultiPaneOptions(agentId) {
-    let initialLines = [];
+    let initialEntries = [];
     try {
-      const { loadInternalAgentLogHistory } = require("../app/chat/internalAgentLogHistory");
-      initialLines = loadInternalAgentLogHistory(activeProjectRoot, agentId, {
+      const { loadInternalAgentTranscript } = require("../app/chat/internalAgentLogHistory");
+      initialEntries = loadInternalAgentTranscript(activeProjectRoot, agentId, {
         maxEvents: 200,
-        maxLines: 200,
+        maxEntries: 200,
       }) || [];
     } catch {
-      initialLines = [];
+      initialEntries = [];
     }
     return {
       mode: "internal",
-      initialLines,
+      initialEntries,
     };
   }
 
@@ -759,8 +777,8 @@ async function runChatRust(projectRoot, options = {}) {
     resolvePaneOptions: resolveMultiPaneOptions,
     onInternalSubmit: (agentId, message) => {
       // Layout commands belong to the workspace even when a child has focus.
-      if (/^\/multi(?:\s|$)/.test(String(message || "").trim())) {
-        changeMultiLayout(String(message).trim().split(/\s+/).slice(1));
+      if (/^\/window(?:\s|$)/.test(String(message || "").trim())) {
+        changeWindowLayout(parseWindowModeArgs(String(message).trim().split(/\s+/).slice(1)));
         return;
       }
       const requestId = `pane-send-${require("crypto").randomUUID()}`;
@@ -812,9 +830,7 @@ async function runChatRust(projectRoot, options = {}) {
       input_history: Array.isArray(inputHistory) ? inputHistory.filter(Boolean) : [],
       agents: agents.agents,
       settings: settingsSnap,
-      launch_mode: settingsSnap.launch_mode,
       agent_provider: settingsSnap.agent_provider,
-      mode_options: settingsSnap.mode_options,
       provider_options: settingsSnap.provider_options,
       global_mode: Boolean(env.globalMode),
       controller_root: projectRoot,
@@ -824,7 +840,7 @@ async function runChatRust(projectRoot, options = {}) {
       cron: agents.cron && agents.cron.tasks ? agents.cron.tasks : [],
       loop: agents.loop || null,
       loop_summary: require("./dashboardBridge").formatLoopSummary(agents.loop || null),
-      multi: multiSession ? multiSession.getSnapshot() : { active: false },
+      window: multiSession ? multiSession.getSnapshot() : { active: false, mode: "main" },
     };
   }
 
@@ -837,7 +853,7 @@ async function runChatRust(projectRoot, options = {}) {
   const host = createUiHostServer({
     socketPath: uiSocketPath,
     authToken: uiAuthToken,
-    capabilities: ["chat", "scrollback", "prompt", MULTI_FRAMES_CAPABILITY],
+    capabilities: ["chat", "scrollback", "prompt", MULTI_FRAMES_CAPABILITY, WINDOW_MODES_CAPABILITY],
     onClientReady(socket) {
       const snap = createEnvelope({
         kind: "snapshot",
@@ -847,6 +863,7 @@ async function runChatRust(projectRoot, options = {}) {
         payload: buildSnapshot({ startup: true }),
       });
       socket.write(encodeMessage(snap));
+      multiSession?.publishFrames();
       if (env.globalMode) publishProjects();
     },
     async onCommand(cmd) {
@@ -857,28 +874,45 @@ async function runChatRust(projectRoot, options = {}) {
       }
       if (name === "ui.resync.request") {
         publish("app.snapshot", buildSnapshot());
+        multiSession?.publishFrames();
         return { ok: true };
       }
       if (name === "completion.request") {
         const fmt = require("./format");
-        const { COMMAND_TREE, COMMAND_REGISTRY } = require("../app/chat/commands");
+        const { getChatCommandCatalog } = require("../app/chat/commands");
         const agents = controller.session.agents.slice();
         const agentLabels = agents.map((id) => {
           const meta = controller.session.metaMap.get(id) || {};
           return meta.display_nickname || meta.nickname || id;
         });
         const dynamic = loadDynamicCompletionSources(activeProjectRoot);
+        const completionRoot = activeProjectRoot;
+        const resumeQuery = /^\/resume(?:\s|$)/.test(String(payload.text || "").trimStart());
+        let resumeTargets = [];
+        if (resumeQuery) {
+          try { resumeTargets = await loadResumeCompletionSources(completionRoot); }
+          catch (error) {
+            appendLocal("error", `Could not load recoverable sessions: ${error.message}`);
+          }
+          if (completionRoot !== activeProjectRoot) return { ok: true, stale: true };
+        }
+        const settingsLists = /^\/settings\s+agent\s+(?:model|thinking)(?:\s|$)/.test(String(payload.text || "").trimStart())
+          ? await agentSettings.completions(String(payload.text || "")) : {};
+        if (completionRoot !== activeProjectRoot) return { ok: true, stale: true };
         const items = fmt.buildCompletions({
           text: String(payload.text || ""),
           agents,
           agentLabels,
-          commands: COMMAND_REGISTRY,
-          commandTree: COMMAND_TREE,
+          ...getChatCommandCatalog({ globalMode: env.globalMode }),
           groupTemplates: dynamic.groupTemplates,
           soloProfiles: dynamic.soloProfiles,
-          limit: 20,
+          argumentLists: { ...settingsLists, ...(resumeQuery ? { "/resume": resumeTargets } : {}) },
+          limit: Math.max(20, resumeTargets.length, ...Object.values(settingsLists).map((list) => list.length)),
         });
         publish("completions.set", { items, text: String(payload.text || "") });
+        if (resumeQuery && resumeTargets.length === 0 && String(payload.text || "").trim() === "/resume") {
+          appendLocal("system", "No recoverable internal agent sessions or groups.");
+        }
         return { ok: true, count: items.length };
       }
       if (name === "task.cancel") {
@@ -899,21 +933,15 @@ async function runChatRust(projectRoot, options = {}) {
         }
         return { ok: true, agent_id: agentId };
       }
-      if (name === "agent.open" || name === "ui.suspend.request") {
+      if (name === "agent.open") {
         const agentId = String(payload.agent_id || payload.agentId || "").trim();
-        if (name === "agent.open") {
-          return hostApi.enterAgentView(agentId, payload) || { ok: true, agent_id: agentId };
-        }
-        // Suspend handoff removed (no PTY mirror). Ignore explicit suspend.
-        appendLocal("system", "ui.suspend ignored (PTY handoff removed)");
-        return { ok: true, suspend: false, agent_id: agentId };
+        return hostApi.activateInternalAgent(agentId) || { ok: true, agent_id: agentId };
       }
-      if (name === "multi.exit" || name === "multi.open" || name === "multi.toggle") {
-        if (payload.session_id && (!multiSession || payload.session_id !== multiSession.getSessionId())) {
+      if (name === "window.set" || name === "window.cycle") {
+        if (name === "window.set" && payload.session_id && (!multiSession || payload.session_id !== multiSession.getSessionId())) {
           return { ok: false, error: "stale session_id" };
         }
-        const args = name === "multi.exit" ? ["off"] : name === "multi.open" ? ["on"] : [];
-        return changeMultiLayout(args);
+        return changeWindowLayout(name === "window.cycle" ? "cycle" : payload.mode);
       }
       if (name === "multi.focus") {
         return multiSession
@@ -1013,57 +1041,17 @@ async function runChatRust(projectRoot, options = {}) {
           return { ok: false, error: err && err.message ? err.message : String(err) };
         }
       }
+      if (name === "settings.open") return agentSettings.open(payload.section || "model");
       if (name === "settings.set") {
-        try {
-          const applied = applySettingsPatch(projectRoot, payload);
-          if (!applied.ok) return applied;
-          Object.assign(settings, {
-            launchMode: applied.settings.launch_mode,
-            agentProvider: applied.settings.agent_provider,
-          });
-          publish("settings.snapshot", applied.settings);
-          if (payload.launch_mode || payload.launchMode) {
-            appendLocal("system", `Launch mode: ${applied.settings.launch_mode}`);
-          }
-          if (payload.agent_provider || payload.agentProvider) {
-            const label = applied.settings.provider_options.find(
-              (opt) => opt.value === applied.settings.agent_provider
-            );
-            appendLocal(
-              "system",
-              `ufoo-agent: ${(label && label.label) || applied.settings.agent_provider}`
-            );
-            try {
-              const { getUfooPaths } = require("../coordination/state/paths");
-              const fs = require("fs");
-              const pathMod = require("path");
-              const agentDir = getUfooPaths(projectRoot).agentDir;
-              fs.rmSync(pathMod.join(agentDir, "ufoo-agent.json"), { force: true });
-              fs.rmSync(pathMod.join(agentDir, "ufoo-agent.history.jsonl"), { force: true });
-            } catch {
-              // ignore
-            }
-          }
-          publish("status.set", { text: "settings saved · restarting daemon…" });
-          try {
-            if (daemonCoordinator && typeof daemonCoordinator.restart === "function") {
-              await daemonCoordinator.restart();
-            }
-          } catch (err) {
-            appendLocal("error", `Daemon restart failed: ${err && err.message ? err.message : err}`);
-          }
-          try {
-            daemonSend({ type: IPC_REQUEST_TYPES.STATUS });
-          } catch {
-            // ignore
-          }
-          publish("status.set", { text: "settings saved" });
-          return { ok: true, settings: applied.settings };
-        } catch (err) {
-          return { ok: false, error: err && err.message ? err.message : String(err) };
+        try { return await applyAgentSettings(payload); }
+        catch (error) {
+          appendLocal("error", `Settings failed: ${error.message}`);
+          return { ok: false, error: error.message };
         }
       }
       if (name === "interaction.respond") {
+        const settingsReply = await agentSettings.respond(payload);
+        if (settingsReply) return settingsReply;
         appendLocal("system", payload.cancelled
           ? "interaction cancelled"
           : `interaction answer: ${String(payload.text || "").slice(0, 200)}`);
@@ -1072,22 +1060,23 @@ async function runChatRust(projectRoot, options = {}) {
       }
       if (name === "input.submit") {
         const text = String(payload.text || "");
-        const payloadTarget = String(payload.target_agent || payload.targetAgent || "").trim();
-        const childOrLayout = Boolean(controller.session.targetAgent || payloadTarget)
-          || text.trimStart().startsWith("@") || /^\/multi(?:\s|$)/.test(text.trim());
-        if (payloadTarget && !controller.session.targetAgent) {
-          controller.session.targetAgent = payloadTarget;
-        }
+        // The submitted identity wins over mutable footer/focus state. Never
+        // send an unresolved explicit child target to the main agent.
+        const routing = resolveSubmittedInputTarget(payload, controller.session.targetAgent, hostApi.isInternalAgent);
+        if (!routing.ok) return routing;
+        controller.session.targetAgent = routing.target;
+        const childOrLayout = Boolean(routing.target)
+          || text.trimStart().startsWith("@") || /^\/window(?:\s|$)/.test(text.trim());
         // Empty ›@ Enter for internal: open side split directly (do not
         // depend solely on tryActivate → focusMultiPane chain).
         if (!text.trim()) {
-          const target = controller.session.targetAgent || payloadTarget;
+          const target = routing.target;
           if (target && hostApi.isInternalAgent(target)
               && !(multiSession && multiSession.isMultiKind && multiSession.isMultiKind())) {
             const side = hostApi.startSide(target);
             if (!side || !side.ok) {
               appendLocal("error", `side failed: ${(side && side.error) || "unknown"}`);
-              // Fall through to submitInput for bus AgentView fallback.
+              // Preserve the target and let the input handler report the failed focus.
             } else {
               return { ok: true, routed: "side", agent_id: target };
             }
@@ -1265,14 +1254,7 @@ async function runChatRust(projectRoot, options = {}) {
     });
   }
 
-  // PTY suspend handoff removed. If an old ufoo-tui still exits 75, respawn once.
-  const EXIT_SUSPEND = 75;
-  let exitCode = await spawnTuiOnce();
-  if (exitCode === EXIT_SUSPEND) {
-    appendLocal("system", "Suspend exit ignored (PTY handoff removed); resuming chat.");
-    publish("ui.resume", { ok: true });
-    exitCode = await spawnTuiOnce();
-  }
+  const exitCode = await spawnTuiOnce();
 
   if (multiSession && multiSession.isActive()) {
     try { multiSession.stop(); } catch {}
@@ -1289,4 +1271,7 @@ module.exports = {
   runChatRust,
   historyToEntries,
   loadDynamicCompletionSources,
+  loadResumeCompletionSources,
+  parseWindowModeArgs,
+  resolveSubmittedInputTarget,
 };

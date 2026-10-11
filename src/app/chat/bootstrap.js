@@ -1,8 +1,7 @@
 "use strict";
 
 /**
- * Chat bootstrap helpers (Phase 0B extraction from ChatApp).
- * Headless — safe for ChatController and unit tests without Ink.
+ * Headless chat bootstrap helpers shared by ChatController and tests.
  */
 
 const path = require("path");

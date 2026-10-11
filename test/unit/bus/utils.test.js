@@ -354,10 +354,10 @@ describe('Bus Utils', () => {
       expect(normalizeAgentTypeAlias("xai")).toBe("grok");
     });
 
-    it('normalizes ufoo variants', () => {
-      expect(normalizeAgentTypeAlias("ufoo")).toBe("ufoo-code");
-      expect(normalizeAgentTypeAlias("ucode")).toBe("ufoo-code");
-      expect(normalizeAgentTypeAlias("ufoo-code")).toBe("ufoo-code");
+    it('keeps only the canonical native type', () => {
+      expect(normalizeAgentTypeAlias("ufoo")).toBe("ufoo");
+      expect(normalizeAgentTypeAlias("ucode")).toBe("ucode");
+      expect(normalizeAgentTypeAlias("ucode")).toBe("ucode");
     });
 
     it('returns empty for empty input', () => {

@@ -1,6 +1,6 @@
 /**
  * End-to-end test for activity_state visibility in the dashboard.
- * Simulates: ptyRunner writes → daemon saveBusData preserves → buildStatus reads → dashboardView renders
+ * Simulates: agent runner writes → daemon saveBusData preserves → buildStatus reads → Rust snapshot projects
  */
 const fs = require("fs");
 const os = require("os");
@@ -9,7 +9,7 @@ const path = require("path");
 const { saveAgentsData, loadAgentsData } = require("../../../src/coordination/state/agentsStore");
 const { writeActivityState } = require("../../../src/agents/activity/activityStateWriter");
 const { buildStatus } = require("../../../src/runtime/daemon/status");
-const { computeDashboardContent } = require("../../../src/app/chat/dashboardView");
+const { normalizeStatusToAgentsSnapshot } = require("../../../src/app/chat/agentDirectory");
 const { buildAgentMaps } = require("../../../src/app/chat/agentDirectory");
 
 function makeTmpProject() {
@@ -54,7 +54,7 @@ describe("activity_state end-to-end pipeline", () => {
       created_at: "2026-03-08T00:00:00.000Z",
       agents: {
         "claude-code:abc123": {
-          agent_type: "claude-code",
+          agent_type: "claude-code", launch_mode: "internal",
           nickname: "builder",
           status: "active",
           activity_state: "starting",
@@ -65,7 +65,7 @@ describe("activity_state end-to-end pipeline", () => {
       },
     }, null, 2));
 
-    // ptyRunner marks working
+    // agent runner marks working
     const changed = writeActivityState(agentsFile, "claude-code:abc123", "working", {
       since: Date.now(),
       force: true,
@@ -77,12 +77,12 @@ describe("activity_state end-to-end pipeline", () => {
   });
 
   test("Step 2: daemon saveBusData does NOT overwrite newer disk activity_state", () => {
-    // Disk has working state (written by ptyRunner)
+    // Disk has working state (written by agent runner)
     fs.writeFileSync(agentsFile, JSON.stringify({
       created_at: "2026-03-08T00:00:00.000Z",
       agents: {
         "claude-code:abc123": {
-          agent_type: "claude-code",
+          agent_type: "claude-code", launch_mode: "internal",
           nickname: "builder",
           status: "active",
           activity_state: "working",
@@ -98,7 +98,7 @@ describe("activity_state end-to-end pipeline", () => {
       created_at: "2026-03-08T00:00:00.000Z",
       agents: {
         "claude-code:abc123": {
-          agent_type: "claude-code",
+          agent_type: "claude-code", launch_mode: "internal",
           nickname: "builder",
           status: "active",
           activity_state: "starting",
@@ -123,7 +123,7 @@ describe("activity_state end-to-end pipeline", () => {
       created_at: "2026-03-08T00:00:00.000Z",
       agents: {
         "claude-code:abc123": {
-          agent_type: "claude-code",
+          agent_type: "claude-code", launch_mode: "internal",
           nickname: "builder",
           status: "active",
           activity_state: "working",
@@ -159,68 +159,13 @@ describe("activity_state end-to-end pipeline", () => {
     expect(meta.activity_state).toBe("working");
   });
 
-  test("Step 5: dashboardView renders activity prefix in summary line", () => {
-    const result = computeDashboardContent({
-      focusMode: "input",
-      activeAgents: ["claude-code:abc123"],
-      getAgentLabel: () => "builder",
-      getAgentState: () => "working",
-    });
-    expect(result.content).toContain("*@builder");
-  });
-
-  test("Step 5b: dashboardView renders ? for waiting_input", () => {
-    const result = computeDashboardContent({
-      focusMode: "input",
-      activeAgents: ["claude-code:abc123"],
-      getAgentLabel: () => "builder",
-      getAgentState: () => "waiting_input",
-    });
-    expect(result.content).toContain("?@builder");
-  });
-
-  test("Step 5c: dashboardView renders ! for blocked", () => {
-    const result = computeDashboardContent({
-      focusMode: "input",
-      activeAgents: ["claude-code:abc123"],
-      getAgentLabel: () => "builder",
-      getAgentState: () => "blocked",
-    });
-    expect(result.content).toContain("!@builder");
-  });
-
-  test("Step 5d: dashboardView detail line renders prefix in dashboard mode", () => {
-    const result = computeDashboardContent({
-      focusMode: "dashboard",
-      dashboardView: "agents",
-      activeAgents: ["claude-code:abc123"],
-      selectedAgentIndex: 0,
-      getAgentLabel: () => "builder",
-      getAgentState: () => "blocked",
-    });
-    expect(result.content).toContain("!@builder");
-  });
-
-  test("Step 5e: no prefix for idle/ready/starting", () => {
-    for (const state of ["idle", "ready", "starting", ""]) {
-      const result = computeDashboardContent({
-        focusMode: "input",
-        activeAgents: ["claude-code:abc123"],
-        getAgentLabel: () => "builder",
-        getAgentState: () => state,
-      });
-      expect(result.content).toContain("@builder");
-      expect(result.content).not.toMatch(/[*?!]@builder/);
-    }
-  });
-
-  test("Full pipeline: ptyRunner write → daemon overwrite → buildStatus → dashboard render", () => {
+  test("Full pipeline: agent runner write → daemon overwrite → buildStatus → dashboard render", () => {
     // 1. Agent joins (daemon sets starting in-memory)
     const daemonMemory = {
       created_at: "2026-03-08T00:00:00.000Z",
       agents: {
         "claude-code:abc123": {
-          agent_type: "claude-code",
+          agent_type: "claude-code", launch_mode: "internal",
           nickname: "builder",
           status: "active",
           activity_state: "starting",
@@ -233,7 +178,7 @@ describe("activity_state end-to-end pipeline", () => {
     };
     saveAgentsData(agentsFile, daemonMemory);
 
-    // 2. ptyRunner detects ready then working
+    // 2. agent runner detects ready then working
     writeActivityState(agentsFile, "claude-code:abc123", "ready", { force: true });
     writeActivityState(agentsFile, "claude-code:abc123", "working", { since: Date.now(), force: true });
 
@@ -252,15 +197,8 @@ describe("activity_state end-to-end pipeline", () => {
     expect(meta.activity_state).toBe("working");
 
     // 6. Dashboard renders
-    const dashboard = computeDashboardContent({
-      focusMode: "input",
-      activeAgents: status.active,
-      getAgentLabel: (id) => maps.labelMap.get(id) || id,
-      getAgentState: (id) => {
-        const m = maps.metaMap.get(id);
-        return m && typeof m.activity_state === "string" ? m.activity_state : "";
-      },
-    });
-    expect(dashboard.content).toContain("*@builder");
+    const dashboard = normalizeStatusToAgentsSnapshot(status, { internalOnly: true });
+    expect(dashboard.agents[0].activity_state).toBe("working");
+    expect(dashboard.footer).toContain("*builder");
   });
 });

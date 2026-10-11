@@ -38,6 +38,9 @@ function toNonNegativeInt(value) {
 function normalizeClaudeUsage(usage = null) {
   if (!usage || typeof usage !== "object") return null;
   const item = toObject(usage);
+  if (![item.input_tokens, item.output_tokens, item.cache_creation_tokens, item.cache_creation_input_tokens,
+    item.cache_read_tokens, item.cache_read_input_tokens, item.cache_creation?.input_tokens, item.cache_read?.input_tokens]
+    .some(value => value != null && Number.isFinite(Number(value)))) return null;
   return {
     ...item,
     input_tokens: toNonNegativeInt(item.input_tokens),

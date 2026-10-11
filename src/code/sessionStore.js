@@ -74,9 +74,8 @@ function normalizeContextPolicy(value = {}) {
   return {
     ...defaults,
     ...source,
-    transcriptWindow: Number.isFinite(source.transcriptWindow)
-      ? Math.max(1, Math.floor(source.transcriptWindow))
-      : defaults.transcriptWindow,
+    maxMessages: Number.isFinite(source.maxMessages) ? Math.max(1, Math.floor(source.maxMessages)) : defaults.maxMessages,
+    keepRecentUnits: Number.isFinite(source.keepRecentUnits) ? Math.max(1, Math.floor(source.keepRecentUnits)) : defaults.keepRecentUnits,
   };
 }
 
@@ -268,6 +267,7 @@ function deleteSessionData(workspaceRoot = process.cwd(), sessionId = "") {
     deleteTranscript(workspaceRoot, normalizedId);
     deleteSessionArtifacts(workspaceRoot, normalizedId);
     deleteSessionCommitLog(workspaceRoot, normalizedId);
+    require("../agents/runtime/context/checkpointStore").createCheckpointStore({ workspaceRoot, namespace: "ucode", sessionId: normalizedId }).remove();
     return { ok: true, error: "" };
   } catch (err) {
     return {

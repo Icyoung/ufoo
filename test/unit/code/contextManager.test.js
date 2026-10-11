@@ -102,7 +102,7 @@ describe("ucode context manager", () => {
     expect(loaded.events.length).toBe(2);
   });
 
-  test("assembler windows transcript for model input", () => {
+  test("assembler retains full transcript for shared semantic checkpointing", () => {
     const session = {
       sessionId: "sess-window",
       workspaceRoot,
@@ -117,8 +117,9 @@ describe("ucode context manager", () => {
     }
     session.transcriptEvents = loadTranscript(workspaceRoot, session.sessionId).events;
     const assembled = assembleModelContext(session, { workspaceRoot });
-    expect(assembled.messages.length).toBeLessThanOrEqual(12);
-    expect(assembled.summary).toContain("omitted");
+    expect(assembled.messages).toHaveLength(20);
+    expect(assembled.messages[0].content).toBe("message 0");
+    expect(assembled.summary).toBe("");
   });
 
   test("layered prompt exposes cacheable blocks", () => {

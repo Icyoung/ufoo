@@ -93,7 +93,7 @@ npm test -- --runTestsByPath test/unit/ui/tuiLauncher.test.js
 npm test -- --runTestsByPath test/unit/tools/registry.test.js
 npm test -- --runTestsByPath test/unit/agent/internalRunner.test.js
 npm test -- --runTestsByPath test/unit/agent/durableRuntime.test.js test/unit/agent/resourceLease.test.js
-npm test -- --runTestsByPath test/unit/daemon/agentHost.test.js test/unit/daemon/executionPaths.test.js
+npm test -- --runTestsByPath test/unit/daemon/agentHost.test.js test/unit/daemon/promptRequest.test.js test/unit/daemon/multiProjectRuntimeHost.test.js
 node -e "require('./src/app/chat'); require('./src/ui/rustChatHost'); require('./src/code/tui'); console.log('ok')"
 ```
 

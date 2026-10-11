@@ -101,7 +101,7 @@ describe("daemon status", () => {
     try {
       const paths = getUfooPaths(projectRoot);
       fs.mkdirSync(path.dirname(paths.agentsFile), { recursive: true });
-      fs.writeFileSync(paths.agentsFile, JSON.stringify({ agents: {} }, null, 2));
+      fs.writeFileSync(paths.agentsFile, JSON.stringify({ agents: { "codex:member": { status: "active", pid: process.pid } } }, null, 2));
 
       const groupsDir = path.join(projectRoot, ".ufoo", "groups");
       fs.mkdirSync(groupsDir, { recursive: true });
@@ -112,7 +112,7 @@ describe("daemon status", () => {
           status: "active",
           template_alias: "build-lane",
           updated_at: "2024-01-01T00:00:00Z",
-          members: [{ status: "active" }, { status: "stopped" }],
+          members: [{ status: "active", subscriber_id: "codex:member" }, { status: "stopped" }],
         })
       );
 
@@ -121,6 +121,34 @@ describe("daemon status", () => {
       expect(status.groups.active).toBe(1);
       expect(status.groups.items[0].members_total).toBe(2);
       expect(status.groups.items[0].members_active).toBe(1);
+      expect(status.groups.items[0].status).toBe("partial");
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("an active group file cannot keep departed members online", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-status-"));
+    try {
+      const paths = getUfooPaths(projectRoot);
+      fs.mkdirSync(path.dirname(paths.agentsFile), { recursive: true });
+      fs.writeFileSync(paths.agentsFile, JSON.stringify({ agents: {
+        "codex:closed": { status: "inactive", pid: process.pid },
+        "codex:dead": { status: "active", pid: 2147483647, last_seen: new Date().toISOString() },
+      } }));
+      fs.mkdirSync(paths.groupsDir, { recursive: true });
+      const file = path.join(paths.groupsDir, "build-lane.json");
+      const runtime = { group_id: "build-lane", status: "active", members: [
+        { subscriber_id: "codex:missing", status: "active" },
+        { subscriber_id: "codex:closed", status: "active" },
+        { subscriber_id: "codex:dead", status: "reused" },
+      ] };
+      fs.writeFileSync(file, JSON.stringify(runtime));
+
+      const status = buildStatus(projectRoot);
+      expect(status.groups.active).toBe(0);
+      expect(status.groups.items[0]).toMatchObject({ status: "inactive", members_total: 3, members_active: 0 });
+      expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual(runtime);
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
@@ -144,60 +172,6 @@ describe("daemon status", () => {
       const status = buildStatus(projectRoot);
       // ufoo-agent should be filtered from active list
       expect(status.active).not.toContain("ufoo-agent");
-    } finally {
-      fs.rmSync(projectRoot, { recursive: true, force: true });
-    }
-  });
-
-  test("includes recent loop observability summary", () => {
-    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-status-"));
-    try {
-      const paths = getUfooPaths(projectRoot);
-      fs.mkdirSync(path.dirname(paths.agentsFile), { recursive: true });
-      fs.writeFileSync(paths.agentsFile, JSON.stringify({ agents: {} }, null, 2));
-      fs.mkdirSync(paths.agentDir, { recursive: true });
-      fs.writeFileSync(
-        path.join(paths.agentDir, "ufoo-agent.loop-events.jsonl"),
-        [
-          JSON.stringify({
-            event: "model_call",
-            ts: "2026-04-20T10:00:00.000Z",
-            round: 1,
-            input_tokens: 120,
-            output_tokens: 45,
-            cache_read_tokens: 11,
-            cache_creation_tokens: 3,
-            latency_ms: 900,
-            first_token_ms: 150,
-          }),
-          JSON.stringify({
-            event: "tool_call",
-            ts: "2026-04-20T10:00:01.000Z",
-            tool_name: "dispatch_message",
-          }),
-          JSON.stringify({
-            event: "loop_terminal",
-            ts: "2026-04-20T10:00:02.000Z",
-            rounds: 1,
-            tool_calls: 1,
-            total_tokens: 165,
-            total_latency_ms: 900,
-            terminal_reason: "final_answer",
-          }),
-        ].join("\n")
-      );
-
-      const status = buildStatus(projectRoot);
-      expect(status.loop).toEqual(expect.objectContaining({
-        status: "completed",
-        rounds: 1,
-        tool_calls: 1,
-        total_tokens: 165,
-        cache_read_tokens: 11,
-        cache_creation_tokens: 3,
-        terminal_reason: "final_answer",
-      }));
-      expect(status.loop.tools).toEqual([{ name: "dispatch_message", count: 1 }]);
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }

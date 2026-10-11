@@ -11,6 +11,8 @@ const {
   renderActiveSkillBlock,
 } = require("./skills");
 const { sanitizeSkillContent } = require("./skills/injection");
+const { randomUUID } = require("crypto");
+const { normalizeTraceContext } = require("../agents/runtime/protocol/traceContext");
 
 function renderActiveSkillBodiesFromState(state = {}) {
   const skills = Array.isArray(state.activeSkills) ? state.activeSkills : [];
@@ -162,6 +164,13 @@ async function runDecomposedTask({
   sessionId = "",
   state = null,
   systemBlocks = null,
+  runtimeContext = {},
+  onRuntimeEvent = null,
+  onStreamDelta = null,
+  onThinkingDelta = null,
+  onPhase = null,
+  onContextUsage = null,
+  contextPolicy = {},
 }) {
   const steps = decomposeBugFixTask(task);
   const results = [];
@@ -211,6 +220,7 @@ async function runDecomposedTask({
         stepSystemPrompt = assembled.systemPrompt;
         stepSystemBlocks = assembled.systemBlocks;
       }
+      const inherited = normalizeTraceContext(runtimeContext);
       const stepResult = await runNativeAgentTask({
         workspaceRoot,
         provider,
@@ -223,6 +233,14 @@ async function runDecomposedTask({
         timeoutMs: step.timeoutMs,
         maxToolCalls: state ? state.maxToolCalls : undefined,
         onToolEvent,
+        runtimeContext: inherited.taskRunId ? { ...inherited, parentTaskRunId: inherited.taskRunId,
+          taskRunId: `segment-${randomUUID()}`, requestId: `${inherited.requestId || "step"}:${step.id}`, attemptId: `attempt-${randomUUID()}` } : inherited,
+        onRuntimeEvent,
+        onStreamDelta,
+        onThinkingDelta,
+        onPhase,
+        onContextUsage,
+        contextPolicy,
         signal,
         onArtifactPersisted: state
           ? (persisted) => recordToolCallInSession(state, persisted, workspaceRoot)

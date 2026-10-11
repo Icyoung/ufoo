@@ -1,6 +1,6 @@
 "use strict";
 
-const { createToolMergePublisher, EXIT_SUSPEND } = require("../../../src/ui/toolMergeBridge");
+const { createToolMergePublisher } = require("../../../src/ui/toolMergeBridge");
 
 describe("toolMergeBridge", () => {
   test("publishes collapsed tool.group on flush", () => {
@@ -10,7 +10,6 @@ describe("toolMergeBridge", () => {
     tools.pushTool({ tool: "read", detail: "a.js" });
     tools.pushTool({ tool: "bash", detail: "ls" });
     tools.flush();
-    expect(EXIT_SUSPEND).toBe(75);
     expect(events.some((e) => e.name === "tool.start")).toBe(true);
     const live = events.filter((e) => e.name === "tool.start").at(-1);
     expect(live.payload.count).toBe(2);

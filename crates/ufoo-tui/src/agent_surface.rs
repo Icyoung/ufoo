@@ -74,6 +74,7 @@ pub(crate) fn wrap_entry_visual_lines(
     first_prefix: &str,
     continuation_prefix: &str,
     content_width: usize,
+    word_wrap: bool,
 ) -> Vec<String> {
     let mut out = Vec::new();
     for (line_idx, line) in body.lines().enumerate() {
@@ -100,9 +101,18 @@ pub(crate) fn wrap_entry_visual_lines(
                 used += w;
                 cut = idx + ch.len_utf8();
             }
+            if word_wrap && cut < rest.len() {
+                if let Some((boundary, _)) = rest[..cut]
+                    .char_indices()
+                    .filter(|(idx, ch)| *idx > 0 && ch.is_whitespace())
+                    .last()
+                {
+                    cut = boundary;
+                }
+            }
             let (chunk, next) = rest.split_at(cut);
             out.push(format!("{prefix}{chunk}"));
-            rest = next;
+            rest = if word_wrap { next.trim_start() } else { next };
             prefix = continuation_prefix;
             if cut == 0 {
                 break;
@@ -341,10 +351,11 @@ pub(crate) fn build_transcript_lines_with_text_color(
         let content_width = width.saturating_sub(pad.width()).max(1);
         if entry.kind == "thinking" {
             let continuation = " ".repeat(prefix.width());
-            let mut lines = wrap_entry_visual_lines(&body, &prefix, &continuation, content_width);
+            let mut lines =
+                wrap_entry_visual_lines(&body, &prefix, &continuation, content_width, false);
             if !entry.expanded && lines.len() > 4 {
                 let gutter = "  ";
-                lines = wrap_entry_visual_lines(&body, gutter, gutter, content_width);
+                lines = wrap_entry_visual_lines(&body, gutter, gutter, content_width, false);
                 if lines.len() > 4 {
                     lines = lines.split_off(lines.len() - 4);
                 }
@@ -452,11 +463,42 @@ pub(crate) fn build_transcript_lines_with_text_color(
             }
             continue;
         }
+        // Follow-up rows align with the speaker name, after any role marker.
+        let continuation_width = if entry.speaker.is_empty() {
+            prefix.width()
+        } else if matches!(entry.kind.as_str(), "user" | "assistant") {
+            2
+        } else {
+            0
+        };
+        let continuation = " ".repeat(continuation_width);
+        let mut fence: Option<(char, usize)> = None;
         for (line_idx, line) in body.lines().enumerate() {
+            let trimmed = line.trim();
+            let marker = trimmed.chars().next().unwrap_or(' ');
+            let marker_count = trimmed.chars().take_while(|ch| *ch == marker).count();
+            let in_code = fence.is_some();
+            let fence_line = matches!(marker, '`' | '~') && marker_count >= 3;
+            if fence_line {
+                if let Some((open_marker, open_count)) = fence {
+                    if marker == open_marker
+                        && marker_count >= open_count
+                        && trimmed[marker_count..].trim().is_empty()
+                    {
+                        fence = None;
+                    }
+                } else {
+                    fence = Some((marker, marker_count));
+                }
+            }
+            if line.is_empty() {
+                out.push(Line::from(""));
+                continue;
+            }
             let head = if line_idx == 0 {
                 format!("{prefix}{line}")
             } else {
-                format!("{:width$}{line}", "", width = prefix.width())
+                format!("{continuation}{line}")
             };
             // Speaker-stream rows always use zebra flat paint (no ANSI path).
             if !speaker_stream && head.contains('\u{1b}') {
@@ -471,36 +513,24 @@ pub(crate) fn build_transcript_lines_with_text_color(
                     continue;
                 }
             }
-            let mut rest = head;
-            while !rest.is_empty() {
-                let mut used = 0usize;
-                let mut cut = rest.len();
-                for (idx, ch) in rest.char_indices() {
-                    let w = ch.width().unwrap_or(1);
-                    if used + w > content_width && used > 0 {
-                        cut = idx;
-                        break;
-                    }
-                    used += w;
-                    cut = idx + ch.len_utf8();
-                }
-                let (chunk, next) = rest.split_at(cut);
-                let content = if entry.kind == "banner" {
-                    // A banner is literal terminal content, not a styled log span.
-                    Span::raw(chunk.to_string())
-                } else {
-                    Span::styled(chunk.to_string(), kind_style)
-                };
-                let mut spans = Vec::with_capacity(2);
-                if entry.kind != "banner" {
-                    spans.push(Span::raw(pad.to_string()));
-                }
-                spans.push(content);
-                out.push(Line::from(spans));
-                rest = next.to_string();
-                if cut == 0 {
-                    break;
-                }
+            let word_wrap = matches!(entry.kind.as_str(), "user" | "assistant")
+                && !in_code
+                && !fence_line
+                && !line.starts_with("    ")
+                && !line.starts_with('\t')
+                && !trimmed.starts_with('|');
+            let first_prefix = if line_idx == 0 {
+                prefix.as_str()
+            } else {
+                continuation.as_str()
+            };
+            for visual_line in wrap_entry_visual_lines(
+                line, first_prefix, &continuation, content_width, word_wrap,
+            ) {
+                out.push(Line::from(vec![
+                    Span::raw(pad.to_string()),
+                    Span::styled(visual_line, kind_style),
+                ]));
             }
         }
         if append_block_gap {
@@ -520,7 +550,7 @@ pub(crate) fn draw_input(
     padded: bool,
 ) -> Option<(u16, u16)> {
     let block = Block::default()
-        .title(Span::styled(title, border_style))
+        .title(Span::styled(format!("{} ", title.trim_end()), border_style))
         .borders(Borders::ALL)
         .border_style(border_style);
     let inner = if padded {

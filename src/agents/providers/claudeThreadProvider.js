@@ -16,7 +16,6 @@ function createThreadId() {
 
 function resolveAnthropicSdk() {
   try {
-    // Optional dependency during Phase 1b seam work.
     // eslint-disable-next-line global-require, import/no-extraneous-dependencies
     return require("@anthropic-ai/sdk");
   } catch (err) {
@@ -252,7 +251,8 @@ function buildClaudeAgentOptions({
   }
   if (opts && opts.signal && options.abortController === undefined) {
     const controller = new AbortController();
-    opts.signal.addEventListener("abort", () => controller.abort(opts.signal.reason), { once: true });
+    if (opts.signal.aborted) controller.abort(opts.signal.reason);
+    else opts.signal.addEventListener("abort", () => controller.abort(opts.signal.reason), { once: true });
     options.abortController = controller;
   }
   return options;
@@ -446,6 +446,7 @@ class ClaudeApiThread {
             turnId: state.turnId || message.uuid || "",
             usage: normalizeClaudeUsage(message.usage || null),
             stopReason: String(message.stop_reason || ""),
+            ...(typeof message.result === "string" ? { finalText: message.result } : {}),
           });
         }
       }

@@ -11,7 +11,7 @@ jest.mock("child_process", () => ({
 }));
 
 const { spawn } = require("child_process");
-const { resumeAgents } = require("../../../src/runtime/daemon/ops");
+const { resumeAgents, getRecoverableAgents } = require("../../../src/runtime/daemon/ops");
 const { getUfooPaths } = require("../../../src/coordination/state/paths");
 
 describe("daemon resumeAgents", () => {
@@ -147,5 +147,68 @@ describe("daemon resumeAgents", () => {
         }),
       })
     );
+  });
+
+  test.each(["ucode"])("restores %s sessions with canonical ucode identity even when configuration is auto", async (type) => {
+    writeConfig({ launchMode: "auto" });
+    writeAgents({ [`${type}:old`]: {
+      agent_type: type, nickname: "coder", status: "inactive", launch_mode: "internal", provider_session_id: "ucode-existing-session",
+    } });
+    const result = await resumeAgents(projectRoot, `${type}:old`, null, { internalOnly: true });
+    expect(result.resumed).toHaveLength(1);
+    const restored = result.resumed[0];
+    expect(restored).toMatchObject({ previous_id: `${type}:old`, agent: "ucode", sessionId: "ucode-existing-session" });
+    expect(restored.id).toMatch(/^ucode:[0-9a-f]{8}$/);
+    expect(spawn).toHaveBeenCalledWith(process.execPath,
+      [path.resolve(__dirname, "../../../bin/ufoo.js"), "agent-runner", "ucode", "--session-id", "ucode-existing-session"],
+      expect.objectContaining({ env: expect.objectContaining({ UFOO_PROVIDER_SESSION_ID: "ucode-existing-session", UFOO_LAUNCH_MODE: "internal" }) }));
+    const saved = JSON.parse(fs.readFileSync(getUfooPaths(projectRoot).agentsFile, "utf8"));
+    expect(saved.agents[restored.id].agent_type).toBe("ucode");
+  });
+
+  test.each(["ufoo-code", "ufoo", "kimi", "agy", "grok"])("internal recovery refuses retired or unsupported type %s", async (type) => {
+    writeConfig({ launchMode: "auto" });
+    writeAgents({ [`${type}:old`]: { agent_type: type, status: "inactive", launch_mode: "internal", provider_session_id: "old-session" } });
+    const result = await resumeAgents(projectRoot, `${type}:old`, null, { internalOnly: true });
+    expect(result.resumed).toHaveLength(0);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  test("group recovery uses persisted membership, restores only that group and updates member identities", async () => {
+    writeConfig({ launchMode: "auto" });
+    const inactive = { status: "inactive", launch_mode: "internal" };
+    writeAgents({
+      "ucode:solo": { ...inactive, agent_type: "ucode", nickname: "solo", provider_session_id: "solo-session" },
+      "ucode:coder": { ...inactive, agent_type: "ucode", nickname: "coder", provider_session_id: "coder-session" },
+      "codex:review": { ...inactive, agent_type: "codex", nickname: "review", provider_session_id: "review-session" },
+      "claude-code:live": { agent_type: "claude-code", nickname: "live", status: "active", launch_mode: "internal", provider_session_id: "live-session" },
+      "codex:outside": { ...inactive, agent_type: "codex", nickname: "outside", launch_mode: "terminal", provider_session_id: "outside-session" },
+    });
+    const file = path.join(getUfooPaths(projectRoot).groupsDir, "dev-team.json");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ group_id: "dev-team", template_alias: "dev-basic", status: "stopped", members: [
+      { id: "coder", subscriber_id: "ucode:coder", bootstrapped_subscriber_id: "ucode:coder", status: "stopped" },
+      { id: "review", subscriber_id: "codex:review", status: "stopped" },
+      { id: "live", subscriber_id: "claude-code:live", status: "active" },
+    ] }));
+    const list = getRecoverableAgents(projectRoot, "", { internalOnly: true });
+    expect(list.recoverable.map((item) => item.id)).toEqual(["ucode:solo", "ucode:coder", "codex:review"]);
+    expect(list.groups).toHaveLength(1);
+    expect(list.groups[0].members.map((item) => item.id)).toEqual(["ucode:coder", "codex:review"]);
+    const result = await resumeAgents(projectRoot, "group:dev-team", null, { internalOnly: true });
+    expect(result.resumed).toHaveLength(2);
+    expect(result.resumed.map((item) => item.group_id)).toEqual(["dev-team", "dev-team"]);
+    expect(result.skipped).toContainEqual({ id: "claude-code:live", reason: "already active" });
+    const group = JSON.parse(fs.readFileSync(file, "utf8"));
+    expect(group.status).toBe("active");
+    expect(group.members.slice(0, 2).map((item) => item.subscriber_id)).toEqual(result.resumed.map((item) => item.id));
+    expect(group.members[0].bootstrapped_subscriber_id).toBe(result.resumed[0].id);
+    const saved = JSON.parse(fs.readFileSync(getUfooPaths(projectRoot).agentsFile, "utf8"));
+    expect(saved.agents["ucode:solo"].status).toBe("inactive");
+    expect(saved.agents["codex:outside"].status).toBe("inactive");
+    expect(saved.agents[result.resumed[0].id]).toMatchObject({ agent_type: "ucode", group_id: "dev-team", group_member_id: "coder" });
+    const again = await resumeAgents(projectRoot, "group:dev-team", null, { internalOnly: true });
+    expect(again.resumed).toEqual([]);
+    expect(spawn).toHaveBeenCalledTimes(2);
   });
 });

@@ -25,12 +25,16 @@ function createPaneManager(options = {}) {
       scrollOffset: Number(options.scrollOffset) || 0,
       internalInput: String(options.initialInput || ""),
       internalCursor: Math.max(0, Math.min(String(options.initialInput || "").length, Number(options.initialCursor) || 0)),
+      inputRevision: Number(options.inputRevision) || 0,
     };
     panes.set(agentId, pane);
     const initialOutput = Array.isArray(options.initialLines)
       ? options.initialLines.join("\r\n")
       : String(options.initialOutput || "");
-    if (initialOutput && !options.surface) surface.apply("transcript.append", { kind: "system", text: initialOutput });
+    if (!options.surface) {
+      if (Array.isArray(options.initialEntries)) surface.apply("transcript.reset", { entries: options.initialEntries });
+      else if (initialOutput) surface.apply("transcript.append", { kind: "system", text: initialOutput });
+    }
     onPaneOutput(pane.agentId);
     if (!focusedAgent) focusedAgent = agentId;
   }
@@ -77,14 +81,17 @@ function createPaneManager(options = {}) {
     if (!raw) return;
     if (raw === "\r") {
       const message = String(pane.internalInput || "").trim();
+      const submittedRevision = pane.inputRevision;
       pane.internalInput = "";
       pane.internalCursor = 0;
       if (message) {
         pane.surface.apply("transcript.append", { kind: "user", text: message });
-        if (!/^\/multi(?:\s|$)/.test(message)) pane.surface.accept({ type: "task_submitted", message });
+        if (!/^\/window(?:\s|$)/.test(message)) pane.surface.accept({ type: "task_submitted", message });
         const failed = (error) => {
           pane.surface.accept({ type: "submission_failed", message, error: `Message delivery failed: ${error?.message || error}` });
-          if (!pane.internalInput) { pane.internalInput = message; pane.internalCursor = message.length; }
+          if (!pane.internalInput && pane.inputRevision === submittedRevision) {
+            pane.internalInput = message; pane.internalCursor = message.length;
+          }
           onPaneOutput(pane.agentId);
         };
         try {

@@ -6,21 +6,65 @@ const {
   loadConfig,
   normalizeAgentProvider,
   normalizeDaemonTopology,
-  normalizeControllerMode,
   normalizeMcpPort,
-  normalizeCodexInternalThreadMode,
   normalizeCodexAuthPath,
   normalizeCodexOauthRefreshWindowSec,
   normalizeClaudeOauthProfile,
   normalizeClaudeOauthTokenPath,
   normalizeClaudeOauthRefreshWindowSec,
   defaultAgentModelForProvider,
-  defaultRouterModelForProvider,
   loadGlobalDaemonConfig,
   saveGlobalDaemonConfig,
+  saveGlobalUcodeConfig,
 } = require("../../src/config");
 
 describe("config save/load", () => {
+  test("removed router fields are neither read nor persisted", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-config-main-"));
+    const file = path.join(root, ".ufoo", "config.json");
+    const removed = { controllerMode: "shadow", routerProvider: "claude", routerModel: "obsolete", routerTimeoutMs: 10, routerConfidenceThreshold: 0.8 };
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify({ ...removed, agentProvider: "codex-cli", agentModel: "configured-model" }));
+      const loaded = loadConfig(root);
+      expect(loaded).toMatchObject({ agentProvider: "codex-cli", agentModel: "configured-model" });
+      for (const key of Object.keys(removed)) expect(loaded).not.toHaveProperty(key);
+      saveConfig(root, { ...removed, agentModel: "new-model" });
+      const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+      expect(saved.agentModel).toBe("new-model");
+      for (const key of Object.keys(removed)) expect(saved).not.toHaveProperty(key);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+  test.each(["ucode", "daemon"])("saving global %s settings drops router fields and preserves other settings", (kind) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-config-main-global-"));
+    const homedirSpy = jest.spyOn(os, "homedir").mockReturnValue(home);
+    const file = path.join(home, ".ufoo", "config.json");
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify({
+        controllerMode: "loop",
+        routerProvider: "claude",
+        routerModel: "unused-model",
+        agentProvider: "claude-cli",
+        agentModel: "main-model",
+        ucodeApiKey: "isolated-config-key",
+      }));
+      if (kind === "ucode") saveGlobalUcodeConfig({ ucodeModel: "gateway-model" });
+      else saveGlobalDaemonConfig({ daemonTopology: "global" });
+      const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+      expect(saved).not.toHaveProperty("controllerMode");
+      expect(saved).not.toHaveProperty("routerProvider");
+      expect(saved).not.toHaveProperty("routerModel");
+      expect(saved).toMatchObject({
+        agentProvider: "claude-cli",
+        agentModel: "main-model",
+        ucodeApiKey: "isolated-config-key",
+      });
+    } finally {
+      homedirSpy.mockRestore();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
   test("partial saves preserve unreadable configuration for repair", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-config-broken-"));
     const file = path.join(root, ".ufoo", "config.json");
@@ -100,32 +144,27 @@ describe("config save/load", () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  test("loadConfig applies provider-aware default agent and router models", () => {
+  test("loadConfig applies provider-aware default main agent models", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-config-default-models-"));
 
     expect(loadConfig(projectRoot)).toMatchObject({
       agentProvider: "codex-cli",
-      agentModel: "gpt-5.5",
-      routerProvider: "codex",
-      routerModel: "gpt-5.3-codex-spark",
+      agentModel: "gpt-6.1-sol",
+      agentThinking: "medium",
     });
 
-    saveConfig(projectRoot, { agentProvider: "claude-cli", agentModel: "", routerProvider: "", routerModel: "" });
+    saveConfig(projectRoot, { agentProvider: "claude-cli", agentModel: "" });
     expect(loadConfig(projectRoot)).toMatchObject({
       agentProvider: "claude-cli",
-      agentModel: "opus-4.7",
-      routerProvider: "claude",
-      routerModel: "sonnet-4.7",
+      agentModel: "claude-opus-5-5",
     });
 
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
   test("default model helpers normalize provider aliases", () => {
-    expect(defaultAgentModelForProvider("codex")).toBe("gpt-5.5");
-    expect(defaultAgentModelForProvider("claude")).toBe("opus-4.7");
-    expect(defaultRouterModelForProvider("openai")).toBe("gpt-5.3-codex-spark");
-    expect(defaultRouterModelForProvider("anthropic")).toBe("sonnet-4.7");
+    expect(defaultAgentModelForProvider("codex")).toBe("gpt-6.1-sol");
+    expect(defaultAgentModelForProvider("claude")).toBe("claude-opus-5-5");
   });
 
   test("saveConfig preserves internal launch mode", () => {
@@ -148,22 +187,6 @@ describe("config save/load", () => {
 
     const loaded = loadConfig(projectRoot);
     expect(loaded.launchMode).toBe("host");
-
-    fs.rmSync(projectRoot, { recursive: true, force: true });
-  });
-
-  test("saveConfig/loadConfig normalizes controllerMode", () => {
-    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-config-controller-"));
-    fs.mkdirSync(path.join(projectRoot, ".ufoo"), { recursive: true });
-
-    saveConfig(projectRoot, { controllerMode: "main" });
-    expect(loadConfig(projectRoot).controllerMode).toBe("main");
-
-    saveConfig(projectRoot, { controllerMode: "router-api" });
-    expect(loadConfig(projectRoot).controllerMode).toBe("main");
-
-    saveConfig(projectRoot, { controllerMode: "invalid-mode" });
-    expect(loadConfig(projectRoot).controllerMode).toBe("legacy");
 
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
@@ -210,15 +233,6 @@ describe("config save/load", () => {
     // never passes one on the command line. SETTINGS_MODEL_DEFAULTS reserves
     // "" for kimi and the lookup helpers degrade gracefully to codex.
     expect(defaultAgentModelForProvider("kimi-cli")).toBe(defaultAgentModelForProvider("codex"));
-    expect(defaultRouterModelForProvider("kimi")).toBe(defaultRouterModelForProvider("codex"));
-  });
-
-  test("defaultRouterProviderForAgentProvider falls back to codex for kimi", () => {
-    const { defaultRouterProviderForAgentProvider } = require("../../src/config");
-    expect(defaultRouterProviderForAgentProvider("kimi-cli")).toBe("codex");
-    expect(defaultRouterProviderForAgentProvider("kimi")).toBe("codex");
-    // Sanity: claude still routes via claude.
-    expect(defaultRouterProviderForAgentProvider("claude-cli")).toBe("claude");
   });
 
   test("providerKey maps agy aliases to the agy bucket", () => {
@@ -237,48 +251,17 @@ describe("config save/load", () => {
     // command line. SETTINGS_MODEL_DEFAULTS reserves "" for agy and the
     // lookup helpers degrade gracefully to the codex default.
     expect(defaultAgentModelForProvider("agy-cli")).toBe(defaultAgentModelForProvider("codex"));
-    expect(defaultRouterModelForProvider("agy")).toBe(defaultRouterModelForProvider("codex"));
   });
 
-  test("normalizeControllerMode supports all phase flags", () => {
-    expect(normalizeControllerMode("legacy")).toBe("legacy");
-    expect(normalizeControllerMode("shadow")).toBe("shadow");
-    expect(normalizeControllerMode("main")).toBe("main");
-    expect(normalizeControllerMode("router-api")).toBe("main");
-    expect(normalizeControllerMode("loop")).toBe("loop");
-    expect(normalizeControllerMode("unknown")).toBe("legacy");
-  });
-
-  test("loadConfig defaults controllerMode to main when config is absent", () => {
-    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-config-default-main-"));
-    expect(loadConfig(projectRoot).controllerMode).toBe("main");
-    fs.rmSync(projectRoot, { recursive: true, force: true });
-  });
-
-  test("saveConfig/loadConfig normalizes codexInternalThreadMode", () => {
+  test("removed internal mode settings are neither read nor persisted", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-config-codex-thread-"));
     fs.mkdirSync(path.join(projectRoot, ".ufoo"), { recursive: true });
-
-    expect(loadConfig(projectRoot).codexInternalThreadMode).toBe("api");
-
-    saveConfig(projectRoot, { codexInternalThreadMode: "sdk" });
-    expect(loadConfig(projectRoot).codexInternalThreadMode).toBe("api");
-
-    saveConfig(projectRoot, { codexInternalThreadMode: "direct-api" });
-    expect(loadConfig(projectRoot).codexInternalThreadMode).toBe("api");
-
-    saveConfig(projectRoot, { codexInternalThreadMode: "invalid-mode" });
-    expect(loadConfig(projectRoot).codexInternalThreadMode).toBe("legacy");
-
+    const file = path.join(projectRoot, ".ufoo/config.json");
+    fs.writeFileSync(file, JSON.stringify({ codexInternalThreadMode: "legacy", agentProvider: "codex-cli" }));
+    expect(loadConfig(projectRoot)).not.toHaveProperty("codexInternalThreadMode");
+    saveConfig(projectRoot, { codexInternalThreadMode: "legacy" });
+    expect(JSON.parse(fs.readFileSync(file, "utf8"))).not.toHaveProperty("codexInternalThreadMode");
     fs.rmSync(projectRoot, { recursive: true, force: true });
-  });
-
-  test("normalizeCodexInternalThreadMode supports direct API aliases", () => {
-    expect(normalizeCodexInternalThreadMode("legacy")).toBe("legacy");
-    expect(normalizeCodexInternalThreadMode("sdk")).toBe("api");
-    expect(normalizeCodexInternalThreadMode("api")).toBe("api");
-    expect(normalizeCodexInternalThreadMode("direct")).toBe("api");
-    expect(normalizeCodexInternalThreadMode("unknown")).toBe("legacy");
   });
 
   test("saveConfig/loadConfig normalizes codex auth path", () => {

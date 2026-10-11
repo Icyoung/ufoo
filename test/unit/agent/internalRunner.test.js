@@ -24,13 +24,11 @@ const {
   createThreadRuntime,
   resolveInternalModel,
   resolveInternalCodexEffort,
-  getCodexThreadMode,
   getWorkerThreadToolMode,
   buildWorkerThreadToolRuntime,
   normalizeWorkerThreadToolMode,
-  getClaudeThreadMode,
   buildClaudeAuthProvider,
-  parseAgentViewRawInput,
+  parseInternalRawInput,
   createInteractiveInputSession,
   resolveInternalBootstrap,
   persistProviderSessionId,
@@ -38,6 +36,24 @@ const {
 const { SHARED_UFOO_PROTOCOL } = require("../../../src/agents/prompts/groupBootstrap");
 
 describe("agent internalRunner stream forwarding", () => {
+  test.each([["codex", "codex-cli"], ["claude-code", "claude-cli"], ["ucode", "ucode"]])(
+    "%s silent completion ends the pane turn without producing another peer message", async (agentType, provider) => {
+      const { createAgentSurface } = require("../../../src/ui/agentSurface");
+      const surface = createAgentSurface();
+      surface.accept({ type: "task_started", task_id: "receipt" });
+      const sender = { enqueue: jest.fn(), flush: jest.fn(async () => {}) };
+      const result = await handleThreadedEvent({ agentType, provider, publisher: "codex:peer",
+        prompt: "已收到，无后续动作。", busSender: sender, streamToPublisher: false,
+        emitSurface: surface.accept, threadRuntime: { thread: { runStreamed: async function* () {
+          yield { type: "turn_started" };
+          yield { type: "turn_completed", finalText: "" };
+        } } } });
+      expect(result.ok).toBe(true);
+      expect(sender.enqueue).not.toHaveBeenCalled();
+      expect(surface.snapshot()).toMatchObject({ status: "ready", busy: false });
+    }
+  );
+
   test("a provider failure stops the surface even if rebuilding the thread also fails", async () => {
     const view = require("../../../src/ui/agentSurface").createAgentSurface();
     view.accept({ type: "task_started", task_id: "one" });
@@ -86,6 +102,34 @@ describe("agent internalRunner stream forwarding", () => {
     return projectRoot;
   }
 
+  test.each(["initialization", "provider", "cancelled"])("%s failure reports the exact delegated task and releases the pane", async failure => {
+    const projectRoot = makeProjectWithAgent("codex:worker");
+    const report = jest.fn(async () => {});
+    const surfaces = [];
+    const sender = { report, surface: event => surfaces.push(event), enqueue: jest.fn(), flush: async () => {} };
+    const controller = new AbortController();
+    const rebuildThread = jest.fn(async () => {});
+    const runtime = failure === "initialization" ? { enabled: false, error: new Error("init failed") } : {
+      enabled: true, rebuildThread, thread: { runStreamed: jest.fn(async function* (_prompt, options) {
+        expect(options.runtimeContext).toMatchObject({ taskId: "delegated-1", traceId: "root", parentTaskRunId: "parent" });
+        if (failure === "cancelled") { controller.abort(); throw Object.assign(new Error("stopped"), { name: "AbortError" }); }
+        throw new Error("ECONNREFUSED");
+      }) },
+    };
+    const log = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const result = await handleEvent(projectRoot, "codex", "codex-cli", "test", "codex:worker", "worker",
+        { seq: 42, publisher: "ufoo-agent", data: { message: "修复", task_id: "delegated-1", runtime_context: { traceId: "root", parentTaskRunId: "parent" } } },
+        sender, [], runtime, "", null, controller.signal);
+      expect(result.ok).toBe(false);
+      expect(report.mock.calls.map(([entry]) => entry.phase)).toEqual(["start", "error"]);
+      expect(report.mock.calls.every(([entry]) => entry.task_id === "delegated-1" && entry.scope === "private" && entry.meta.traceId === "root")).toBe(true);
+      expect(surfaces[0]).toMatchObject({ type: "task_started", task_id: "delegated-1", queueSequence: 42, parentTaskRunId: "parent" });
+      expect(surfaces.at(-1).type).toBe(failure === "cancelled" ? "task_cancelled" : "task_failed");
+      if (failure === "cancelled") { expect(report.mock.calls[1][0].meta.cancelled).toBe(true); expect(rebuildThread).not.toHaveBeenCalled(); }
+    } finally { log.mockRestore(); fs.rmSync(projectRoot, { recursive: true, force: true }); }
+  });
+
   test("skips event with no data or message", async () => {
     const busSender = { enqueue: jest.fn(), flush: jest.fn(async () => {}) };
 
@@ -96,7 +140,7 @@ describe("agent internalRunner stream forwarding", () => {
     expect(busSender.enqueue).not.toHaveBeenCalled();
   });
 
-  test("reports missing thread runtime instead of using cli fallback", async () => {
+  test("reports an uninitialized agent runtime", async () => {
     const busSender = { enqueue: jest.fn(), flush: jest.fn(async () => {}) };
     const evt = { publisher: "chat:4", data: { message: "do" } };
 
@@ -105,7 +149,7 @@ describe("agent internalRunner stream forwarding", () => {
     expect(busSender.enqueue.mock.calls[0][0]).toBe("chat:4");
     expect(JSON.parse(busSender.enqueue.mock.calls[0][1])).toEqual({
       stream: true,
-      delta: expect.stringContaining("cliRunner fallback has been removed"),
+      delta: expect.stringContaining("agent runtime not initialized"),
     });
     expect(busSender.enqueue).toHaveBeenCalledWith(
       "chat:4",
@@ -141,7 +185,7 @@ describe("agent internalRunner stream forwarding", () => {
 
     expect(threadRuntime.thread.runStreamed).toHaveBeenCalledWith(
       expect.stringContaining("ufoo protocol bootstrap\n\n"),
-      {}
+      expect.objectContaining({ runtimeContext: expect.objectContaining({ taskId: expect.any(String), taskRunId: expect.any(String) }) })
     );
     expect(threadRuntime.thread.runStreamed.mock.calls[0][0]).toContain("task body");
   });
@@ -189,7 +233,7 @@ describe("agent internalRunner stream forwarding", () => {
     const projectRoot = makeProjectWithAgent("codex:target");
     const busSender = { enqueue: jest.fn(), flush: jest.fn(async () => {}) };
     const evt = {
-      __agentViewRaw: true,
+      __internalRawInput: true,
       publisher: "ufoo-agent",
       target: "codex:target",
       data: { message: "typed body", source: "chat-internal-agent-view" },
@@ -530,7 +574,7 @@ describe("agent internalRunner stream forwarding", () => {
     );
   });
 
-  test.each(["chat-agent-view", "rust-multi-window", "ufoo-agent", "ufoo-agent-gate-router"])(
+  test.each(["chat-agent-view", "rust-multi-window", "ufoo-agent"])(
     "thread runtime streams replies for %s source through managed ufoo-agent",
     async (source) => {
       const busSender = {
@@ -667,6 +711,26 @@ describe("agent internalRunner stream forwarding", () => {
 });
 
 describe("internalRunner bootstrap resolution", () => {
+  test.each(["codex", "claude-code"])("stored %s role bootstrap receives language and silence rules exactly once", (agentType) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-stored-bootstrap-"));
+    try {
+      const old = "role prompt with ufoo protocol:\nufoo ctx decisions -l";
+      const args = (prompt) => {
+        if (agentType === "codex") return ["--json", prompt];
+        const file = path.join(root, "role.md");
+        fs.writeFileSync(file, prompt);
+        return ["--append-system-prompt", file];
+      };
+      const first = resolveInternalBootstrap({ projectRoot: root, agentType, extraArgs: args(old), env: {} });
+      const resumed = resolveInternalBootstrap({ projectRoot: root, agentType, extraArgs: args(first.promptText), env: {} });
+      expect(resumed.promptText).toContain(old);
+      expect(resumed.promptText.match(/Response language:/g)).toHaveLength(1);
+      expect(resumed.promptText.match(/ufoo cooperation — prevent reply loops:/g)).toHaveLength(1);
+      expect(resumed.promptText).toContain("Silence means an empty final response");
+      expect(resumed.promptText).toContain("same natural language as the user's prompt");
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
   test("builds a default ufoo protocol prompt when no role prompt exists", () => {
     const resolved = resolveInternalBootstrap({
       projectRoot: process.cwd(),
@@ -709,6 +773,9 @@ describe("internalRunner bootstrap resolution", () => {
     });
 
     expect(resolved.promptText).toContain("role prompt");
+    expect(resolved.promptText).toContain("1-4 short lines, at most 600 characters");
+    expect(resolved.promptText).toContain("required acceptance evidence");
+    expect(resolved.promptText).toContain("the runner delivers and confirms each task automatically after execution");
     expect(resolved.extraArgs).toEqual(["--json"]);
   });
 
@@ -788,19 +855,6 @@ describe("internalRunner codex thread mode", () => {
     jest.clearAllMocks();
   });
 
-  test("defaults to direct API mode", () => {
-    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-config-"));
-    expect(getCodexThreadMode(projectRoot)).toBe("api");
-    fs.rmSync(projectRoot, { recursive: true, force: true });
-  });
-
-  test("env override keeps sdk as a compatibility alias for api mode", () => {
-    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-config-env-"));
-    process.env.UFOO_CODEX_INTERNAL_THREAD_MODE = "sdk";
-    expect(getCodexThreadMode(projectRoot)).toBe("api");
-    fs.rmSync(projectRoot, { recursive: true, force: true });
-  });
-
   test("worker tool mode stays disabled by default and normalizes explicit enablement", () => {
     expect(getWorkerThreadToolMode()).toBe("disabled");
     expect(normalizeWorkerThreadToolMode("worker-tier01")).toBe("worker-tier01");
@@ -808,9 +862,13 @@ describe("internalRunner codex thread mode", () => {
     expect(normalizeWorkerThreadToolMode("legacy")).toBe("disabled");
   });
 
-  test("createThreadRuntime stays disabled for legacy mode", () => {
+  test("old project and environment legacy flags still create a Codex SDK thread", async () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-legacy-"));
+    fs.mkdirSync(path.join(projectRoot, ".ufoo"));
+    fs.writeFileSync(path.join(projectRoot, ".ufoo/config.json"), JSON.stringify({ codexInternalThreadMode: "legacy" }));
     process.env.UFOO_CODEX_INTERNAL_THREAD_MODE = "legacy";
+    const runStreamed = jest.fn(async function* () { yield { type: "text_delta", delta: "SDK ran" }; });
+    createCodexThreadProvider.mockReturnValue({ startThread: jest.fn(() => ({ runStreamed })) });
     const runtime = createThreadRuntime({
       projectRoot,
       provider: "codex-cli",
@@ -819,8 +877,13 @@ describe("internalRunner codex thread mode", () => {
       subscriber: "codex:legacy",
     });
 
-    expect(runtime.enabled).toBe(false);
-    expect(createCodexThreadProvider).not.toHaveBeenCalled();
+    expect(runtime.enabled).toBe(true);
+    const busSender = { enqueue: jest.fn(), flush: jest.fn(async () => {}) };
+    const result = await handleEvent(projectRoot, "codex", "codex-cli", "gpt-6.1-sol", "codex:legacy", "peer",
+      { publisher: "chat:test", data: { message: "work" } }, busSender, [], runtime);
+    expect(result.ok).toBe(true);
+    expect(runStreamed).toHaveBeenCalledTimes(1);
+    expect(busSender.enqueue).toHaveBeenCalledWith("chat:test", JSON.stringify({ stream: true, delta: "SDK ran" }));
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
@@ -855,7 +918,7 @@ describe("internalRunner codex thread mode", () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  test("createThreadRuntime falls back to disabled when Codex seam creation throws", () => {
+  test("Codex initialization failures retain their actual cause", async () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-sdk-fallback-"));
     process.env.UFOO_CODEX_INTERNAL_THREAD_MODE = "api";
     createCodexThreadProvider.mockImplementation(() => {
@@ -871,6 +934,14 @@ describe("internalRunner codex thread mode", () => {
     });
 
     expect(runtime.enabled).toBe(false);
+    expect(runtime.error.message).toBe("sdk missing");
+    const log = jest.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const busSender = { enqueue: jest.fn(), flush: jest.fn(async () => {}) };
+      await handleEvent(projectRoot, "codex", "codex-cli", "", "codex:sdk-fallback", "peer",
+        { publisher: "chat:test", data: { message: "work" } }, busSender, [], runtime);
+      expect(busSender.enqueue).toHaveBeenCalledWith("chat:test", JSON.stringify({ stream: true, delta: "[internal:codex] error: sdk missing" }));
+    } finally { log.mockRestore(); }
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
@@ -1055,10 +1126,10 @@ describe("internalRunner codex thread mode", () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  test("parseAgentViewRawInput accepts internal view raw envelopes only", () => {
-    expect(parseAgentViewRawInput(JSON.stringify({ raw: true, data: "h" }))).toBe("h");
-    expect(parseAgentViewRawInput(JSON.stringify({ raw: false, data: "h" }))).toBeNull();
-    expect(parseAgentViewRawInput("plain")).toBeNull();
+  test("parseInternalRawInput accepts internal view raw envelopes only", () => {
+    expect(parseInternalRawInput(JSON.stringify({ raw: true, data: "h" }))).toBe("h");
+    expect(parseInternalRawInput(JSON.stringify({ raw: false, data: "h" }))).toBeNull();
+    expect(parseInternalRawInput("plain")).toBeNull();
   });
 
   test("createInteractiveInputSession echoes line editing and returns submitted prompts", () => {
@@ -1095,16 +1166,6 @@ describe("internalRunner codex thread mode", () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  test("claude thread mode defaults to api", () => {
-    delete process.env.UFOO_CLAUDE_INTERNAL_THREAD_MODE;
-    expect(getClaudeThreadMode()).toBe("api");
-  });
-
-  test("env override enables Claude API thread mode", () => {
-    process.env.UFOO_CLAUDE_INTERNAL_THREAD_MODE = "api";
-    expect(getClaudeThreadMode()).toBe("api");
-  });
-
   test("buildClaudeAuthProvider uses oauth reader config seam", async () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-claude-auth-"));
     resolveClaudeUpstreamCredentials.mockResolvedValue({
@@ -1118,8 +1179,13 @@ describe("internalRunner codex thread mode", () => {
     await expect(authProvider()).resolves.toEqual({
       headers: {
         authorization: "Bearer oauth-token",
+        "anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
       },
     });
+    resolveClaudeUpstreamCredentials.mockResolvedValueOnce({
+      provider: "claude", credentialKind: "api-key", apiKey: "provider-api-key",
+    });
+    await expect(authProvider()).resolves.toEqual({ apiKey: "provider-api-key" });
     expect(resolveClaudeUpstreamCredentials).toHaveBeenCalledWith(expect.objectContaining({
       profile: "",
       tokenPath: "",
@@ -1129,9 +1195,10 @@ describe("internalRunner codex thread mode", () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  test("createThreadRuntime stays disabled for explicit Claude legacy mode", () => {
+  test("old Claude legacy flags cannot disable its SDK runtime", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-claude-legacy-"));
     process.env.UFOO_CLAUDE_INTERNAL_THREAD_MODE = "legacy";
+    createClaudeThreadProvider.mockReturnValue({ startThread: jest.fn(() => ({ runStreamed: async function* () {} })) });
 
     const runtime = createThreadRuntime({
       projectRoot,
@@ -1140,9 +1207,9 @@ describe("internalRunner codex thread mode", () => {
       extraArgs: [],
     });
 
-    expect(runtime.enabled).toBe(false);
+    expect(runtime.enabled).toBe(true);
     delete process.env.UFOO_CLAUDE_INTERNAL_THREAD_MODE;
-    expect(createClaudeThreadProvider).not.toHaveBeenCalled();
+    expect(createClaudeThreadProvider).toHaveBeenCalled();
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
@@ -1174,7 +1241,7 @@ describe("internalRunner codex thread mode", () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  test("createThreadRuntime falls back to disabled when Claude seam creation throws", () => {
+  test("Claude initialization failures retain their actual cause", () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ir-claude-fallback-"));
     process.env.UFOO_CLAUDE_INTERNAL_THREAD_MODE = "api";
     createClaudeThreadProvider.mockImplementation(() => {
@@ -1189,6 +1256,7 @@ describe("internalRunner codex thread mode", () => {
     });
 
     expect(runtime.enabled).toBe(false);
+    expect(runtime.error.message).toBe("sdk missing");
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 });

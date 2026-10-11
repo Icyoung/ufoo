@@ -1,4 +1,5 @@
 "use strict";
+const { INTERNAL_AGENT_TYPES } = require("../runtime/contracts/agentMode");
 
 const string = { type: "string", minLength: 1 };
 const command = { type: "string", pattern: "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,100}$" };
@@ -7,8 +8,11 @@ const schema = (name, description, required, properties) => Object.freeze({ name
   allowed_tiers: ["controller"], input_schema: { type: "object", required, properties, additionalProperties: false },
   output_schema: { type: "object" } });
 const CONTROLLER_TOOL_SCHEMAS = Object.freeze({
-  delegate_task: schema("delegate_task", "Delegate to a concrete worker, or durably launch and bind one first. Reuse command_id on retries. Returns queue persistence, not completion.",
-    ["command_id", "objective"], { command_id: command, objective: string, target: string, agent: { type: "string", enum: ["codex", "claude", "ucode", "grok", "kimi", "agy"] }, nickname: string, acceptance_criteria: strings }),
+  delegate_task: schema("delegate_task", "Assign work with a stable command_id. To create a worker, pass agent and optional nickname; OMIT target. To reuse an active worker, pass its concrete subscriber ID or unique registered nickname in target. Never put an unregistered new nickname or a placeholder in target. Returns queue persistence, not completion.",
+    ["command_id", "objective"], { command_id: command, objective: string,
+      target: { ...string, description: "Optional EXISTING active worker subscriber ID or unique registered nickname. Omit when creating a worker." },
+      agent: { type: "string", enum: INTERNAL_AGENT_TYPES, description: "Internal worker type to create when target is omitted; independent of the main model provider." },
+      nickname: { ...string, description: "Optional name for a NEW worker; it is not an existing target." }, acceptance_criteria: strings }),
   read_task_reports: schema("read_task_reports", "Read delegated task ownership, delivery and report status. A terminal report still requires validation and acceptance.", [], { task_id: string }),
   accept_task: schema("accept_task", "Accept or reject an unreviewed terminal worker report. Acceptance requires validation evidence and a reason; ordinary replies do not complete tasks.",
     ["task_id", "outcome", "reason"], { task_id: string, outcome: { type: "string", enum: ["accepted", "rejected"] }, reason: string, evidence: strings }),

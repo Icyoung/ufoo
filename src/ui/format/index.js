@@ -1115,8 +1115,11 @@ function buildCompletions({
 
   if (trimmed.startsWith("/")) {
     const tokenParts = trimmed.trimEnd().split(/\s+/).filter(Boolean);
-    const head = tokenParts[0] || ""; // "/launch"
-    const tail = tokenParts.slice(1);
+    const dynamicHead = Object.keys(argumentLists || {}).filter((key) => key.includes(" ")
+      && !key.endsWith("/thinking") && tokenParts.slice(0, key.split(/\s+/).length).join(" ") === key)
+      .sort((a, b) => b.length - a.length)[0];
+    const head = dynamicHead || tokenParts[0] || "";
+    const tail = tokenParts.slice(head.split(/\s+/).length);
     const headKey = head.startsWith("/") ? head : `/${head}`;
     const headNode = commandTree && typeof commandTree === "object" ? commandTree[headKey] : null;
     const argListForHead = argumentLists && typeof argumentLists === "object"
@@ -1227,7 +1230,7 @@ function buildCompletions({
       const secondaryList = argumentLists && typeof argumentLists === "object"
         ? argumentLists[`${headKey}/thinking`] || argumentLists[`${headKey}/think`]
         : null;
-      const supportsThinkingMenu = head === "/model" && Array.isArray(secondaryList) && secondaryList.length > 0;
+      const supportsThinkingMenu = Array.isArray(secondaryList) && secondaryList.length > 0;
 
       // Secondary menu: "/model <id> " or "/model <id> <partial>"
       if (supportsThinkingMenu && (
@@ -1237,6 +1240,9 @@ function buildCompletions({
         if (tail.length > 2) return [];
         const modelId = String(tail[0] || "").trim();
         if (!modelId) return [];
+        const modelEntry = argListForHead.find((item) =>
+          String((item && (item.alias || item.cmd || item.id || item.name)) || item || "") === modelId);
+        if (modelEntry && modelEntry.hasChildren === false) return [];
         const partial = tail.length >= 2 && !endsWithWhitespace
           ? String(tail[1] || "").toLowerCase()
           : "";
@@ -1268,17 +1274,15 @@ function buildCompletions({
       for (const item of argListForHead) {
         const id = String((item && (item.alias || item.cmd || item.id || item.name)) || item || "");
         if (!id) continue;
-        if (partial && !id.toLowerCase().startsWith(partial)) continue;
+        const label = String((item && item.label) || id);
+        if (partial && !id.toLowerCase().startsWith(partial) && !label.toLowerCase().startsWith(partial)) continue;
         const desc = String((item && (item.desc || item.summary || item.description || item.source)) || "");
-        const hasChildren = Boolean(
-          (item && item.hasChildren)
-          || supportsThinkingMenu
-        );
+        const hasChildren = item && typeof item.hasChildren === "boolean" ? item.hasChildren : supportsThinkingMenu;
         out.push({
           kind: "argument",
-          label: `${head} ${id}`,
+          label: `${head} ${label}`,
           // Trailing space keeps the popup open for the thinking submenu.
-          replace: hasChildren ? `${head} ${id} ` : `${head} ${id} `,
+          replace: `${head} ${id} `,
           description: desc,
           hasChildren,
         });

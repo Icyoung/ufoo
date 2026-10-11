@@ -83,7 +83,7 @@ function clampAgentWindowWithSelection({
 
 /**
  * Normalize daemon STATUS payload into agents list + footer string.
- * Shared by Ink dashboard and Rust `agents.snapshot`.
+ * Used by Rust `agents.snapshot`.
  */
 function normalizeStatusToAgentsSnapshot(data = {}, { internalOnly = false } = {}) {
   let activeIds = Array.isArray(data.active) ? data.active : [];
@@ -132,20 +132,6 @@ function normalizeStatusToAgentsSnapshot(data = {}, { internalOnly = false } = {
   };
 }
 
-/**
- * Ink chatReducer expects `id` as the short agent id and `fullId` as the key.
- * Shared so ChatController and ChatApp stay aligned.
- */
-function toInkAgentsDispatchList(snapshot = {}) {
-  const agents = Array.isArray(snapshot.agents) ? snapshot.agents : [];
-  return agents.map((row) => ({
-    ...row,
-    fullId: row.fullId || row.id,
-    id: row.agentId || row.id,
-    nickname: row.label || row.nickname,
-  }));
-}
-
 module.exports = {
   buildAgentMaps,
   getAgentLabel,
@@ -153,5 +139,4 @@ module.exports = {
   resolveAgentDisplayName,
   clampAgentWindowWithSelection,
   normalizeStatusToAgentsSnapshot,
-  toInkAgentsDispatchList,
 };

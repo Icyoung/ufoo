@@ -1,3 +1,4 @@
+const { INTERNAL_AGENT_TYPES } = require("../runtime/contracts/agentMode");
 const SCHEMA_VERSION = "1.0";
 
 const CALLER_TIERS_READ_COORD = Object.freeze(["controller", "worker"]);
@@ -235,7 +236,7 @@ const ACK_BUS_SCHEMA = Object.freeze({
   name: "ack_bus",
   tier: "tier1-coordination",
   allowed_tiers: CALLER_TIERS_READ_COORD,
-  description: "Acknowledge pending bus messages for the caller-owned queue only.",
+  description: "Acknowledge pending bus messages for the caller-owned queue only. Internal runners confirm completed tasks automatically; calls for internal agents acknowledge zero messages and preserve queued work.",
   input_schema: Object.freeze({
     type: "object",
     properties: Object.freeze({
@@ -474,7 +475,7 @@ const LAUNCH_AGENT_SCHEMA = Object.freeze({
     properties: Object.freeze({
       agent: Object.freeze({
         type: "string",
-        enum: Object.freeze(["codex", "claude", "ucode", "agy", "kimi"]),
+        enum: INTERNAL_AGENT_TYPES,
       }),
       count: Object.freeze({ type: "integer", minimum: 1 }),
       nickname: Object.freeze({ type: "string" }),
@@ -601,7 +602,28 @@ const MANAGE_CRON_SCHEMA = Object.freeze({
   }),
 });
 
+const READ_AGENT_TRACE_SCHEMA = Object.freeze({ name: "read_agent_trace", schema_version: SCHEMA_VERSION,
+  tier: "tier0-read", allowed_tiers: CALLER_TIERS_READ_COORD,
+  description: "Read a task timeline across main/worker model and tool events, reports, queue state and context compaction, with an observed performance summary. Default shows the latest events with concise summaries; details includes redacted parameters/results. This is observation only, not acceptance or delivery acknowledgement.",
+  input_schema: { type: "object", properties: {
+    task_id: { type: "string", description: "Exact delegated task ID or parent taskRunId; includes related descendants." },
+    agent_id: { type: "string", description: "Worker subscriber ID or registered nickname." }, session_id: { type: "string" },
+    since: { type: "string", description: "ISO timestamp lower bound." }, limit: { type: "integer", minimum: 1, maximum: 2000 },
+    offset: { type: "integer", minimum: 0, description: "Explicit oldest-first pagination offset. Omit for the newest page." }, details: { type: "boolean" },
+  }, additionalProperties: false }, output_schema: { type: "object" } });
+
+const READ_AGENT_METRICS_SCHEMA = Object.freeze({ name: "read_agent_metrics", schema_version: SCHEMA_VERSION,
+  tier: "tier0-read", allowed_tiers: CALLER_TIERS_READ_COORD,
+  description: "Read observed agent execution outcomes, latency, usage, tool errors/repetition, report size and delegation acceptance, grouped by provider/model/configuration. Time filters select run starts and retain full observed lifecycles. Missing evidence is unknown; execution completion is not acceptance or a quality score. No model calls or state mutations.",
+  input_schema: { type: "object", properties: {
+    task_id: { type: "string" }, agent_id: { type: "string" }, session_id: { type: "string" },
+    since: { type: "string", description: "ISO inclusive run-start lower bound." }, until: { type: "string", description: "ISO exclusive run-start upper bound." },
+    provider: { type: "string" }, model: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 100 },
+  }, additionalProperties: false }, output_schema: { type: "object" } });
+
 const PHASE0_TOOL_SCHEMAS = Object.freeze({
+  read_agent_metrics: READ_AGENT_METRICS_SCHEMA,
+  read_agent_trace: READ_AGENT_TRACE_SCHEMA,
   read_bus_summary: READ_BUS_SUMMARY_SCHEMA,
   read_prompt_history: READ_PROMPT_HISTORY_SCHEMA,
   read_open_decisions: READ_OPEN_DECISIONS_SCHEMA,
@@ -623,6 +645,8 @@ const PHASE0_TOOL_SCHEMAS = Object.freeze({
 });
 
 module.exports = {
+  READ_AGENT_METRICS_SCHEMA,
+  READ_AGENT_TRACE_SCHEMA,
   ...require("./controllerSchemas"),
   SCHEMA_VERSION,
   READ_BUS_SUMMARY_SCHEMA,

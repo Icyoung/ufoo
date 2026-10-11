@@ -1,6 +1,14 @@
 "use strict";
 
 const crypto = require("crypto");
+const { REPORTING_GUIDANCE } = require("./reporting");
+const { RESPONSE_LANGUAGE_GUIDANCE } = require("../runtime/prompts/responseLanguage");
+const { COOPERATION_GUIDANCE } = require("./cooperation");
+
+const INTERNAL_BUS_DELIVERY_GUIDANCE = [
+  "When `UFOO_LAUNCH_MODE=internal`, the runner delivers and confirms each task automatically after execution.",
+  "Do not run `ufoo bus check`, `ufoo bus ack`, or MCP `ack_bus` to consume your inbox; later queued messages belong to future tasks and must remain pending.",
+].join(" ");
 
 const SILENT_BOOTSTRAP_INSTRUCTION = [
   "Bootstrap silence:",
@@ -14,6 +22,8 @@ const SHARED_UFOO_PROTOCOL = [
   "Session harness: ufoo",
   "",
   "Use ufoo as an internal coordination layer. Do not mention it unless asked.",
+  "",
+  RESPONSE_LANGUAGE_GUIDANCE,
   "",
   "START",
   "If shell and ufoo are available, sync decisions:",
@@ -38,6 +48,8 @@ const SHARED_UFOO_PROTOCOL = [
   "coordination — never for greetings, acknowledgments, or emoji alone.",
   "Those create reply loops between agents.",
   "",
+  COOPERATION_GUIDANCE,
+  "",
   "A nonempty `UFOO_SUBSCRIBER_ID` in this Agent's inherited launch environment means the ufoo wrapper/daemon already",
   "registered this Agent and can inject into its monitored session. Reuse that",
   "identity; never call MCP `register_agent`, run bare `ufoo bus join`, or",
@@ -56,21 +68,24 @@ const SHARED_UFOO_PROTOCOL = [
   "for a reply. Continue the current task; any follow-up message will be",
   "automatically injected into your prompt/session.",
   "",
-  "On received bus work: execute it, then `ufoo bus ack \"$UFOO_SUBSCRIBER_ID\"`.",
-  "With MCP, use `ack_bus` instead, with `through_seq` when the delivered batch supplies a sequence.",
+  INTERNAL_BUS_DELIVERY_GUIDANCE,
+  "For wrapper/external agents, execute received bus work, then `ufoo bus ack \"$UFOO_SUBSCRIBER_ID\"`.",
+  "For those agents with MCP, use `ack_bus` instead, with `through_seq` when the delivered batch supplies a sequence.",
   "Reply only if you have a concrete result, answer, or follow-up the sender",
-  "needs. Default is ack-only; silence is a valid response.",
+  "needs. No reply is needed by default; silence is a valid response.",
   "",
   "REPORT",
-  "You MUST report after handling work that arrived from chat",
-  "(`[manual]<to:...>`) or bus (`[ufoo]<from:...>`). The controller handles",
-  "dedup, so don't worry about report loops.",
+  "Report after handling actual assigned work that arrived from chat",
+  "(`[manual]<to:...>`) or bus (`[ufoo]<from:...>`), or a material change to its status.",
+  "Acknowledgement-only inputs and repeated status notices require no report and no reply.",
   "",
   "`ufoo report start|progress|done|error \"<short summary>\"`",
   "Reuse one task ID for all report phases via `--task <id>` or MCP `task_id`; concurrent tasks require an explicit ID.",
   "With MCP, use `report_agent_status` instead with the same identity, task id, phase, and summary.",
   "Do not emulate report failures with `ufoo bus send ufoo-agent ...`.",
   "If `ufoo report` fails, continue without a fallback bus report.",
+  "",
+  REPORTING_GUIDANCE,
   "",
   "Then continue the active task.",
 ].join("\n");
@@ -91,7 +106,7 @@ const SHARED_GROUP_PREFIX = [
   "- Prefer concise handoffs over long essays.",
   "- Surface uncertainty explicitly.",
   "- If another agent owns the next step, hand off instead of doing their job for them.",
-  "- When reporting, separate facts, inferences, and recommendations.",
+  "- Distinguish facts from uncertainty briefly where it affects the next action; do not expand every report into a multi-section essay.",
   "- Preserve continuity with the group's current task rather than restarting analysis from scratch.",
   "",
   SHARED_UFOO_PROTOCOL,
@@ -230,6 +245,7 @@ function computeBootstrapFingerprint({
 }
 
 module.exports = {
+  INTERNAL_BUS_DELIVERY_GUIDANCE,
   SILENT_BOOTSTRAP_INSTRUCTION,
   SHARED_UFOO_PROTOCOL,
   hasSharedUfooProtocolPrompt,

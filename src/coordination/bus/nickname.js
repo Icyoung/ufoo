@@ -14,7 +14,7 @@ const AUTO_NICKNAME_PREFIXES = new Set([
 function resolveAutoNicknamePrefix(agentType = "") {
   const normalized = String(agentType || "").trim().toLowerCase();
   if (normalized === "claude" || normalized === "claude-code") return "claude";
-  if (normalized === "ufoo" || normalized === "ucode" || normalized === "ufoo-code") return "ucode";
+  if (normalized === "ucode") return "ucode";
   return normalized;
 }
 

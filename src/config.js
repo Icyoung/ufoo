@@ -15,8 +15,8 @@ const UCODE_FIELDS = [
 
 const SETTINGS_MODEL_DEFAULTS = Object.freeze({
   agent: Object.freeze({
-    codex: "gpt-5.5",
-    claude: "opus-4.7",
+    codex: "gpt-6.1-sol",
+    claude: "claude-opus-5-5",
     // agy (Antigravity CLI) only supports model selection via in-REPL
     // `/model` slash command, which persists across launches. There is no
     // command-line flag for model, so the value here is a placeholder for
@@ -27,30 +27,23 @@ const SETTINGS_MODEL_DEFAULTS = Object.freeze({
     kimi: "",
     "grok-build": "grok-4.6",
   }),
-  router: Object.freeze({
-    codex: "gpt-5.3-codex-spark",
-    claude: "sonnet-4.7",
-    agy: "",
-    kimi: "",
-    "grok-build": "grok-4.6",
-  }),
 });
 
 const DEFAULT_CONFIG = {
   launchMode: "auto",
   daemonTopology: "global",
   agentProvider: "codex-cli",
-  controllerMode: "main",
   mcpPort: 47631,
-  codexInternalThreadMode: "api",
   codexAuthPath: "",
   codexOauthRefreshWindowSec: 300,
   claudeOauthProfile: "",
   claudeOauthTokenPath: "",
   claudeOauthRefreshWindowSec: 300,
   agentModel: "",
-  routerProvider: "",
-  routerModel: "",
+  agentBaseUrl: "",
+  agentApiKey: "",
+  agentThinking: "medium",
+  agentModelRevision: 0,
   autoResume: false,
 };
 
@@ -81,6 +74,7 @@ function normalizeDaemonTopology(value) {
 }
 
 function normalizeAgentProvider(value) {
+  if (value === "custom") return "custom";
   if (value === "claude-cli") return "claude-cli";
   if (value === "agy-cli" || value === "agy" || value === "antigravity") return "agy-cli";
   if (value === "kimi-cli" || value === "kimi") return "kimi-cli";
@@ -90,6 +84,7 @@ function normalizeAgentProvider(value) {
 
 function providerKey(value = "") {
   const text = String(value || "").trim().toLowerCase();
+  if (text === "custom" || text === "openai") return "openai";
   if (text === "claude" || text === "claude-cli" || text === "claude-code" || text === "anthropic") return "claude";
   if (text === "agy" || text === "agy-cli" || text === "antigravity") return "agy";
   if (text === "kimi" || text === "kimi-cli" || text === "kimi-code") return "kimi";
@@ -104,43 +99,13 @@ function sameModelProvider(left = "", right = "") {
 }
 
 function defaultAgentModelForProvider(value = "") {
+  if (value === "custom") return "";
   return SETTINGS_MODEL_DEFAULTS.agent[providerKey(value)] || SETTINGS_MODEL_DEFAULTS.agent.codex;
-}
-
-function defaultRouterProviderForAgentProvider(value = "") {
-  const key = providerKey(value);
-  if (key === "claude") return "claude";
-  // agy has no router-model API; fall back to codex (the controller still
-  // routes via codex/claude regardless of which agent provider runs).
-  if (key === "agy") return "codex";
-  // kimi likewise manages its own models; router falls back to codex.
-  if (key === "kimi") return "codex";
-  return "codex";
-}
-
-function defaultRouterModelForProvider(value = "") {
-  return SETTINGS_MODEL_DEFAULTS.router[providerKey(value)] || SETTINGS_MODEL_DEFAULTS.router.codex;
 }
 
 function normalizeModel(value, fallback = "") {
   const text = typeof value === "string" ? value.trim() : "";
   return text || fallback;
-}
-
-function normalizeControllerMode(value) {
-  const raw = String(value || "").trim().toLowerCase();
-  if (raw === "shadow") return "shadow";
-  if (raw === "router-api") return "main";
-  if (raw === "main") return "main";
-  if (raw === "loop") return "loop";
-  return "legacy";
-}
-
-function normalizeCodexInternalThreadMode(value) {
-  const raw = String(value || "").trim().toLowerCase();
-  if (raw === "api" || raw === "direct" || raw === "direct-api" || raw === "upstream") return "api";
-  if (raw === "sdk") return "api";
-  return "legacy";
 }
 
 function normalizeMcpPort(value) {
@@ -200,15 +165,19 @@ function loadJsonForUpdate(filePath) {
   }
 }
 
+function withoutRemovedSettings(config) {
+  const next = { ...config };
+  for (const key of ["controllerMode", "routerProvider", "routerModel", "routerTimeoutMs", "routerConfidenceThreshold", "codexInternalThreadMode"]) {
+    delete next[key];
+  }
+  return next;
+}
+
 function loadConfig(projectRoot) {
   try {
-    const raw = loadJsonSafe(configPath(projectRoot));
+    const raw = withoutRemovedSettings(loadJsonSafe(configPath(projectRoot)));
     const globalRaw = loadJsonSafe(globalConfigPath());
     const agentProvider = normalizeAgentProvider(raw.agentProvider);
-    const routerProvider = normalizeModel(
-      raw.routerProvider,
-      defaultRouterProviderForAgentProvider(agentProvider)
-    );
     return {
       ...DEFAULT_CONFIG,
       ...raw,
@@ -220,15 +189,7 @@ function loadConfig(projectRoot) {
       ),
       agentProvider,
       agentModel: normalizeModel(raw.agentModel, defaultAgentModelForProvider(agentProvider)),
-      routerProvider,
-      routerModel: normalizeModel(raw.routerModel, defaultRouterModelForProvider(routerProvider)),
-      controllerMode: Object.prototype.hasOwnProperty.call(raw, "controllerMode")
-        ? normalizeControllerMode(raw.controllerMode)
-        : DEFAULT_CONFIG.controllerMode,
       mcpPort: normalizeMcpPort(raw.mcpPort),
-      codexInternalThreadMode: Object.prototype.hasOwnProperty.call(raw, "codexInternalThreadMode")
-        ? normalizeCodexInternalThreadMode(raw.codexInternalThreadMode)
-        : DEFAULT_CONFIG.codexInternalThreadMode,
       codexAuthPath: normalizeCodexAuthPath(raw.codexAuthPath),
       codexOauthRefreshWindowSec: normalizeCodexOauthRefreshWindowSec(raw.codexOauthRefreshWindowSec),
       claudeOauthProfile: normalizeClaudeOauthProfile(raw.claudeOauthProfile),
@@ -240,12 +201,9 @@ function loadConfig(projectRoot) {
     };
   } catch {
     const agentProvider = DEFAULT_CONFIG.agentProvider;
-    const routerProvider = defaultRouterProviderForAgentProvider(agentProvider);
     return {
       ...DEFAULT_CONFIG,
       agentModel: defaultAgentModelForProvider(agentProvider),
-      routerProvider,
-      routerModel: defaultRouterModelForProvider(routerProvider),
       ...DEFAULT_UCODE_CONFIG,
     };
   }
@@ -263,11 +221,11 @@ function saveConfig(projectRoot, config) {
         projectUpdates[k] = v;
       }
     }
-    const merged = {
+    const merged = withoutRemovedSettings({
       ...DEFAULT_CONFIG,
       ...existing,
       ...projectUpdates,
-    };
+    });
     const hasProjectDaemonTopology =
       Object.prototype.hasOwnProperty.call(existing, "daemonTopology")
       || Object.prototype.hasOwnProperty.call(projectUpdates, "daemonTopology");
@@ -286,11 +244,7 @@ function saveConfig(projectRoot, config) {
     }
     merged.agentProvider = normalizeAgentProvider(merged.agentProvider);
     merged.agentModel = typeof merged.agentModel === "string" ? merged.agentModel.trim() : "";
-    merged.routerProvider = typeof merged.routerProvider === "string" ? merged.routerProvider.trim() : "";
-    merged.routerModel = typeof merged.routerModel === "string" ? merged.routerModel.trim() : "";
-    merged.controllerMode = normalizeControllerMode(merged.controllerMode);
     merged.mcpPort = normalizeMcpPort(merged.mcpPort);
-    merged.codexInternalThreadMode = normalizeCodexInternalThreadMode(merged.codexInternalThreadMode);
     merged.codexAuthPath = normalizeCodexAuthPath(merged.codexAuthPath);
     merged.codexOauthRefreshWindowSec = normalizeCodexOauthRefreshWindowSec(merged.codexOauthRefreshWindowSec);
     merged.claudeOauthProfile = normalizeClaudeOauthProfile(merged.claudeOauthProfile);
@@ -319,7 +273,7 @@ function saveGlobalUcodeConfig(updates = {}) {
   return withFileLock(target, () => {
     fs.mkdirSync(path.dirname(target), { recursive: true });
     const existing = loadJsonForUpdate(target);
-    const merged = { ...existing };
+    const merged = withoutRemovedSettings(existing);
     for (const [k, v] of Object.entries(updates)) {
       if (UCODE_FIELDS.includes(k)) {
         merged[k] = typeof v === "string" ? v : "";
@@ -342,7 +296,7 @@ function saveGlobalDaemonConfig(updates = {}) {
   return withFileLock(target, () => {
     fs.mkdirSync(path.dirname(target), { recursive: true });
     const existing = loadJsonForUpdate(target);
-    const merged = { ...existing };
+    const merged = withoutRemovedSettings(existing);
     if (Object.prototype.hasOwnProperty.call(updates, "daemonTopology")) {
       merged.daemonTopology = normalizeDaemonTopology(updates.daemonTopology);
     }
@@ -365,11 +319,7 @@ module.exports = {
   providerKey,
   sameModelProvider,
   defaultAgentModelForProvider,
-  defaultRouterProviderForAgentProvider,
-  defaultRouterModelForProvider,
-  normalizeControllerMode,
   normalizeMcpPort,
-  normalizeCodexInternalThreadMode,
   normalizeCodexAuthPath,
   normalizeCodexOauthRefreshWindowSec,
   normalizeClaudeOauthProfile,

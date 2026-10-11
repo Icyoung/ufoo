@@ -171,12 +171,8 @@ function createChatStreamState({
   };
 }
 
-/** @deprecated Prefer createChatStreamState. */
-const createInkStreamState = createChatStreamState;
-
 module.exports = {
   STREAM_FLUSH_INTERVAL_MS,
   createThrottledSender,
   createChatStreamState,
-  createInkStreamState,
 };

@@ -6,7 +6,7 @@ const net = require("net");
 const path = require("path");
 const EventBus = require("../../coordination/bus");
 const { isMismatchedAutoNickname } = require("../../coordination/bus/nickname");
-const { isAgentPidAlive } = require("../../coordination/bus/utils");
+const { isAgentPidAlive, normalizeAgentTypeAlias } = require("../../coordination/bus/utils");
 const { showBanner } = require("../../ui/format/banner");
 const AgentNotifier = require("./notifier");
 const { ActivityDetector } = require("../activity/activityDetector");
@@ -192,7 +192,7 @@ function findPreviousSession(cwd, agentType, tty, tmuxPane) {
       if (!meta) continue;
 
       // 必须是同类型 agent
-      if (meta.agent_type !== agentType) continue;
+      if (normalizeAgentTypeAlias(meta.agent_type) !== normalizeAgentTypeAlias(agentType)) continue;
 
       // tmux 模式：必须匹配 tmux_pane（更精确）
       if (tmuxPane) {
@@ -386,7 +386,7 @@ class AgentLauncher {
     if (!subscriberId) return null;
     const parts = subscriberId.split(":");
     if (parts.length !== 2) return null;
-    if (parts[0] !== this.agentType) return null;
+    if (normalizeAgentTypeAlias(parts[0]) !== normalizeAgentTypeAlias(this.agentType)) return null;
     try {
       const bus = new EventBus(this.cwd);
       bus.loadBusData();
@@ -396,7 +396,7 @@ class AgentLauncher {
       if (Number.isFinite(pidValue) && pidValue > 0 && !isAgentPidAlive(pidValue)) {
         return null;
       }
-      if (meta.agent_type && meta.agent_type !== this.agentType) return null;
+      if (meta.agent_type && normalizeAgentTypeAlias(meta.agent_type) !== normalizeAgentTypeAlias(this.agentType)) return null;
       return {
         subscriberId,
         sessionId: parts[1],
@@ -795,8 +795,8 @@ class AgentLauncher {
         });
       }
 
-      // 6. 启动消息通知监听器（ufoo-code 改为内部 bus 轮询消费）
-      const shouldStartNotifier = String(this.agentType || "").trim().toLowerCase() !== "ufoo-code";
+      // 6. 启动消息通知监听器（ucode 自行消费内部 bus 队列）
+      const shouldStartNotifier = !(String(this.agentType || "").trim().toLowerCase() === "ucode");
       let notifier = null;
       if (shouldStartNotifier) {
         notifier = new AgentNotifier(this.cwd, subscriberId);
@@ -1064,8 +1064,8 @@ class AgentLauncher {
                   const req = JSON.parse(line);
                   if (req.type === "inject" && req.command) {
                     const normalizedAgentType = String(this.agentType || "").trim().toLowerCase();
-                    if (normalizedAgentType === "ufoo-code" || normalizedAgentType === "ucode" || normalizedAgentType === "ufoo") {
-                      client.write(JSON.stringify({ ok: false, error: "inject disabled for ufoo-code (internal bus loop)" }) + "\n");
+                    if (normalizedAgentType === "ucode") {
+                      client.write(JSON.stringify({ ok: false, error: "inject disabled for ucode (internal bus loop)" }) + "\n");
                       continue;
                     }
                     if (nativeMessages) {

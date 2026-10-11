@@ -51,6 +51,19 @@ describe("native system prompt assembly", () => {
     expect(context).not.toContain("__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__");
   });
 
+  test("native system context shares task-language and cooperation silence rules", () => {
+    const sections = getSystemPrompt({ workspaceRoot: "/repo" });
+    const system = findSection(sections, "# System");
+    const ufoo = findSection(sections, "# ufoo integration");
+    expect(system).toContain("same natural language as the user's prompt");
+    expect(system).toContain("acknowledgements, progress updates, report summaries");
+    expect(system).toContain("explicitly pass the required response language to the worker");
+    expect(ufoo).toContain("no bus reply, no lifecycle report, and no final response text");
+    expect(ufoo).toContain("Silence means an empty final response");
+    expect(ufoo).toContain("assigned validation or acceptance step");
+    expect(ufoo).not.toContain("dedup, so don't worry about report loops");
+  });
+
   test("environment section shows bus identity from env and hides it when absent", () => {
     const savedId = process.env.UFOO_SUBSCRIBER_ID;
     const savedNick = process.env.UFOO_NICKNAME;

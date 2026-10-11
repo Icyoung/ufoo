@@ -7,10 +7,15 @@ const path = require("path");
 const { getUfooPaths } = require("../../coordination/state/paths");
 const { spawnSync } = require("child_process");
 const EventBus = require("../../coordination/bus");
+const { normalizeInternalAgentType } = require("../../runtime/contracts/agentMode");
 const { readJSON } = require("../../coordination/bus/utils");
 const { createActivityStatePublisher } = require("../activity/activityStatePublisher");
 const { createActivityTracker } = require("../activity/activityTracker");
-const { loadConfig, normalizeCodexInternalThreadMode, defaultAgentModelForProvider, sameModelProvider } = require("../../config");
+const { normalizeTraceContext } = require("../runtime/protocol/traceContext");
+const { buildRunObservation, observationFingerprint } = require("../runtime/protocol/runObservation");
+const { getTaskIdFromEvent } = require("../../coordination/bus/messageMeta");
+const { enqueueAgentReport } = require("../../runtime/daemon/reportControlBus");
+const { loadConfig, defaultAgentModelForProvider, sameModelProvider } = require("../../config");
 const { createCodexThreadProvider } = require("../providers/codexThreadProvider");
 const { createClaudeThreadProvider } = require("../providers/claudeThreadProvider");
 const { resolveClaudeUpstreamCredentials } = require("../providers/credentials/claude");
@@ -25,7 +30,13 @@ const {
   buildDefaultStartupBootstrapPrompt,
   isValueForCodexOption,
 } = require("../prompts/defaultBootstrap");
-const { hasSharedUfooProtocolPrompt } = require("../prompts/groupBootstrap");
+const {
+  hasSharedUfooProtocolPrompt,
+  INTERNAL_BUS_DELIVERY_GUIDANCE,
+} = require("../prompts/groupBootstrap");
+const { REPORTING_GUIDANCE } = require("../prompts/reporting");
+const { RESPONSE_LANGUAGE_GUIDANCE } = require("../runtime/prompts/responseLanguage");
+const { COOPERATION_GUIDANCE } = require("../prompts/cooperation");
 const { buildPromptInjectionText } = require("../../coordination/bus/promptEnvelope");
 
 function sleep(ms) {
@@ -149,6 +160,11 @@ function resolveInternalBootstrap({
     promptText = [defaultPrompt, promptText.trim()].filter(Boolean).join("\n\n");
   }
 
+  // Stored group/resume bootstraps may predate current runtime guidance.
+  if (!promptText.includes(REPORTING_GUIDANCE)) promptText = [promptText, REPORTING_GUIDANCE].join("\n\n");
+  if (!promptText.includes(INTERNAL_BUS_DELIVERY_GUIDANCE)) promptText = [promptText, INTERNAL_BUS_DELIVERY_GUIDANCE].join("\n\n");
+  if (!promptText.includes(RESPONSE_LANGUAGE_GUIDANCE)) promptText = [promptText, RESPONSE_LANGUAGE_GUIDANCE].join("\n\n");
+  if (!promptText.includes(COOPERATION_GUIDANCE)) promptText = [promptText, COOPERATION_GUIDANCE].join("\n\n");
   return {
     promptText,
     extraArgs: nextArgs,
@@ -174,7 +190,7 @@ function readAgentsMap(projectRoot) {
 
 function buildInternalPromptMessage(projectRoot, subscriber, evt = {}) {
   const message = String((evt.data && evt.data.message) || "");
-  if (evt.__agentViewRaw) return message;
+  if (evt.__internalRawInput) return message;
   return buildPromptInjectionText(evt, subscriber, readAgentsMap(projectRoot));
 }
 
@@ -201,7 +217,8 @@ function createBusSender(projectRoot, subscriber) {
     }
   }
 
-  return { enqueue, flush, surface: surface.enqueue };
+  return { enqueue, flush, surface: surface.enqueue,
+    report: report => enqueueAgentReport(projectRoot, { ...report, agent_id: subscriber, source: "runtime" }) };
 }
 
 function isChatUiSource(source = "") {
@@ -214,7 +231,7 @@ function isChatUiSource(source = "") {
 
 function isUfooAgentDispatchSource(source = "") {
   const value = String(source || "").trim();
-  return value === "ufoo-agent" || value === "ufoo-agent-gate-router";
+  return value === "ufoo-agent";
 }
 
 function shouldStreamReplyToPublisher(projectRoot, publisher, evt = {}) {
@@ -235,7 +252,7 @@ function claimQueuedEvents(queueFile) {
   return claims;
 }
 
-function parseAgentViewRawInput(message) {
+function parseInternalRawInput(message) {
   if (typeof message !== "string" || !message.trim()) return null;
   try {
     const parsed = JSON.parse(message);
@@ -243,7 +260,7 @@ function parseAgentViewRawInput(message) {
       return parsed.data;
     }
   } catch {
-    // Not a raw agent-view envelope.
+    // Not a raw internal-input envelope.
   }
   return null;
 }
@@ -314,7 +331,8 @@ async function handleEvent(
   extraArgs = [],
   threadRuntime = null,
   bootstrapText = "",
-  tracker = null
+  tracker = null,
+  signal = null
 ) {
   if (!evt || !evt.data || !evt.data.message) return;
   const memoryPrefix = buildMemoryPrefix(projectRoot);
@@ -325,9 +343,27 @@ async function handleEvent(
     .join("\n\n");
   const publisher = evt.publisher || "unknown";
   const streamToPublisher = shouldStreamReplyToPublisher(projectRoot, publisher, evt);
-  const emitSurface = typeof busSender.surface === "function"
-    ? busSender.surface : () => {};
-  emitSurface({ type: "task_started", task_id: randomUUID(), message: evt.data.message, publisher });
+  const inherited = normalizeTraceContext(evt.data.runtime_context);
+  const taskId = getTaskIdFromEvent(evt) || inherited.taskId || `worker-${randomUUID()}`;
+  const runtimeContext = { ...inherited, taskId, traceId: inherited.traceId || taskId,
+    taskRunId: `worker-run-${randomUUID()}`, requestId: `bus-${evt.seq || randomUUID()}`, attemptId: `attempt-${randomUUID()}`,
+    requestKind: publisher === "ufoo-agent" && getTaskIdFromEvent(evt) ? "worker-task" : "bus-message" };
+  const emitSurface = event => busSender.surface?.({ ...runtimeContext, task_id: taskId, agentId: subscriber,
+    provider, model, sessionId: threadRuntime?.thread?.id || "", ...event });
+  const delegated = publisher === "ufoo-agent" && Boolean(getTaskIdFromEvent(evt));
+  const reportLifecycle = async (phase, error = "", meta = {}) => {
+    if (!delegated || typeof busSender.report !== "function") return;
+    await busSender.report({ task_id: taskId, phase, scope: "private", controller_id: "ufoo-agent", error,
+      meta: { ...runtimeContext, ...meta } });
+  };
+  emitSurface({ type: "task_started", message: evt.data.message, publisher, queueSequence: evt.seq });
+  if (provider !== "ucode") emitSurface({ type: "run_config", configuration: buildRunObservation({ provider, model,
+    executionKind: "sdk", systemPrompt: bootstrapText, prompt: evt.data.message,
+    requestKind: runtimeContext.requestKind,
+    engineFingerprint: observationFingerprint(handleThreadedEvent.toString()),
+    tools: threadRuntime?.toolRuntime?.tools || [],
+    thinkingLevel: String(threadRuntime?.thread?.threadOptions?.modelReasoningEffort || threadRuntime?.thread?.agentOptions?.effort || "") }) });
+  await reportLifecycle("start");
 
   const emitStreamDelta = (delta) => {
     const text = String(delta || "");
@@ -350,11 +386,15 @@ async function handleEvent(
       threadRuntime,
       tracker,
       emitSurface,
+      runtimeContext,
+      reportLifecycle,
+      signal,
     });
   }
 
-  const errorText = `[internal:${agentType}] error: no thread runtime available for provider ${provider}; cliRunner fallback has been removed`;
+  const errorText = `[internal:${agentType}] error: ${threadRuntime?.error?.message || `agent runtime not initialized for provider ${provider}`}`;
   emitSurface({ type: "task_failed", error: errorText });
+  await reportLifecycle("error", errorText);
   // eslint-disable-next-line no-console
   console.error(errorText);
   if (streamToPublisher) {
@@ -364,6 +404,7 @@ async function handleEvent(
     busSender.enqueue(publisher, errorText);
   }
   await busSender.flush();
+  return { ok: false, error: errorText };
 }
 
 function compactToolDetail(value = "", maxLength = 120) {
@@ -394,7 +435,7 @@ function toNonNegativeInt(value) {
 }
 
 // Normalizes provider usage payloads (claude/codex thread events) onto the
-// metric fields read by extractModelMetrics in agents/controller/loopRuntime.js.
+// metric fields used by provider usage summaries.
 function normalizeTurnUsage(usage = null) {
   const item = usage && typeof usage === "object" ? usage : {};
   return {
@@ -426,18 +467,24 @@ async function handleThreadedEvent({
   threadRuntime,
   tracker = null,
   emitSurface = () => {},
+  runtimeContext = {},
+  reportLifecycle = async () => {},
+  signal = null,
 }) {
   try {
     const plainReplyParts = [];
+    let finalReply;
     let turnUsage = null;
     let stopReason = "";
     let waitingForUser = false;
     if (tracker && typeof tracker.notifyTurnStart === "function") {
       tracker.notifyTurnStart();
     }
-    for await (const event of threadRuntime.thread.runStreamed(prompt, provider === "ucode" ? { userInput: userMessage } : {})) {
+    const started = Date.now();
+    for await (const event of threadRuntime.thread.runStreamed(prompt, { ...(signal ? { signal } : {}), runtimeContext, ...(provider === "ucode" ? { userInput: userMessage } : {}) })) {
       if (!event || typeof event !== "object") continue;
-      emitSurface(event);
+      emitSurface(event.type === "tool_call" && event.args !== undefined
+        ? { ...event, argumentFingerprint: observationFingerprint(event.args) } : event);
       if (["usage", "turn_completed"].includes(event.type) && event.usage && provider !== "ucode") {
         emitSurface({ type: "context_usage", meter: contextMeterForUsage(event.usage, model || threadRuntime.thread.model, provider) });
       }
@@ -468,6 +515,7 @@ async function handleThreadedEvent({
       } else if (event.type === "usage" && event.usage) {
         turnUsage = normalizeTurnUsage(event.usage);
       } else if (event.type === "turn_completed") {
+        if (typeof event.finalText === "string") finalReply = event.finalText;
         if (event.usage) turnUsage = normalizeTurnUsage(event.usage);
         if (event.stopReason) stopReason = String(event.stopReason);
       } else if (event.type === "turn_failed") {
@@ -477,7 +525,9 @@ async function handleThreadedEvent({
     if (typeof threadRuntime.syncProviderSessionId === "function") {
       threadRuntime.syncProviderSessionId();
     }
-    emitSurface({ type: "task_completed", usage: turnUsage });
+    const reply = (finalReply === undefined ? plainReplyParts.join("") : finalReply).trim();
+    emitSurface({ type: waitingForUser ? "task_paused" : "task_completed", usage: turnUsage, durationMs: Date.now() - started,
+      finalTextCharacters: [...reply].length });
     if (waitingForUser && tracker?.requestUserInput) tracker.requestUserInput("reply");
 
     if (streamToPublisher) {
@@ -485,7 +535,8 @@ async function handleThreadedEvent({
       if (turnUsage) doneEnvelope.usage = turnUsage;
       busSender.enqueue(publisher, JSON.stringify(doneEnvelope));
     } else {
-      const reply = plainReplyParts.join("").trim();
+      // Live progress belongs to the worker pane. Peers receive only the final
+      // answer, including an explicitly empty ack-only result.
       if (reply) busSender.enqueue(publisher, reply);
     }
     await busSender.flush();
@@ -501,9 +552,11 @@ async function handleThreadedEvent({
       tracker.markIdle();
     }
     const errorText = `[internal:${agentType}] error: ${err && err.message ? err.message : "unknown error"}`;
-    emitSurface(err?.code === "cancelled" || err?.name === "AbortError"
+    const cancelled = signal?.aborted || err?.code === "cancelled" || err?.name === "AbortError";
+    emitSurface(cancelled
       ? { type: "task_cancelled" } : { type: "task_failed", error: errorText });
-    if (threadRuntime && typeof threadRuntime.rebuildThread === "function") {
+    await reportLifecycle("error", errorText, { cancelled });
+    if (!cancelled && threadRuntime && typeof threadRuntime.rebuildThread === "function") {
       try { await threadRuntime.rebuildThread(); }
       catch (recoveryError) { console.error(`[internal:${agentType}] recovery failed: ${recoveryError?.message || "unknown error"}`); }
     }
@@ -524,14 +577,6 @@ async function handleThreadedEvent({
     await busSender.flush();
     return { ok: false, error: errorText };
   }
-}
-
-function getCodexThreadMode(projectRoot) {
-  const envValue = process.env.UFOO_CODEX_INTERNAL_THREAD_MODE;
-  if (typeof envValue === "string" && envValue.trim()) {
-    return normalizeCodexInternalThreadMode(envValue);
-  }
-  return loadConfig(projectRoot).codexInternalThreadMode;
 }
 
 function getWorkerThreadToolMode() {
@@ -620,14 +665,6 @@ function buildWorkerThreadToolRuntime({ projectRoot, subscriber, observer }) {
       }
     },
   };
-}
-
-function getClaudeThreadMode() {
-  const envValue = process.env.UFOO_CLAUDE_INTERNAL_THREAD_MODE;
-  const raw = String(envValue || "").trim().toLowerCase();
-  if (raw === "legacy" || raw === "off" || raw === "disabled" || raw === "0") return "legacy";
-  if (raw === "api") return "api";
-  return "api";
 }
 
 function buildClaudeAuthProvider(projectRoot) {
@@ -723,10 +760,6 @@ function createThreadRuntime({ projectRoot, provider, model, extraArgs = [], sub
   }
 
   if (provider === "codex-cli") {
-    if (getCodexThreadMode(projectRoot) !== "api") {
-      return disabledRuntime;
-    }
-
     try {
       const toolRuntime = buildWorkerThreadToolRuntime({
         projectRoot,
@@ -773,15 +806,12 @@ function createThreadRuntime({ projectRoot, provider, model, extraArgs = [], sub
           }
         },
       };
-    } catch {
-      return disabledRuntime;
+    } catch (error) {
+      return { ...disabledRuntime, error };
     }
   }
 
   if (provider === "claude-cli") {
-    if (getClaudeThreadMode() !== "api") {
-      return disabledRuntime;
-    }
     if (typeof createClaudeThreadProvider !== "function") {
       return disabledRuntime;
     }
@@ -823,8 +853,8 @@ function createThreadRuntime({ projectRoot, provider, model, extraArgs = [], sub
           }
         },
       };
-    } catch {
-      return disabledRuntime;
+    } catch (error) {
+      return { ...disabledRuntime, error };
     }
   }
 
@@ -832,15 +862,15 @@ function createThreadRuntime({ projectRoot, provider, model, extraArgs = [], sub
 }
 
 async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs = [] }) {
+  const normalizedAgentType = normalizeInternalAgentType(agentType);
+  if (!normalizedAgentType) throw new Error(`unsupported internal agent type: ${agentType}; use codex, claude or ucode`);
   // Internal runner 必须由 daemon 启动，UFOO_SUBSCRIBER_ID 应该已经设置
   const { subscriber, agentType: parsedAgentType, sessionId } = parseSubscriberId();
   const nickname = process.env.UFOO_NICKNAME || "";
 
   const queueDir = path.join(getUfooPaths(projectRoot).busQueuesDir, safeSubscriber(subscriber));
   const queueFile = path.join(queueDir, "pending.jsonl");
-  const normalizedAgentType = String(agentType || "").trim().toLowerCase();
-  const provider = ["ufoo", "ucode", "ufoo-code"].includes(normalizedAgentType)
-    ? "ucode" : normalizedAgentType === "codex" ? "codex-cli" : "claude-cli";
+  const provider = { ucode: "ucode", codex: "codex-cli", claude: "claude-cli" }[normalizedAgentType];
   const model = resolveInternalModel({ projectRoot, provider, extraArgs });
   const bootstrap = resolveInternalBootstrap({
     projectRoot,
@@ -863,9 +893,14 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
   let processing = false;
   let lastHeartbeat = 0;
   const HEARTBEAT_INTERVAL = 30000; // 30秒心跳间隔
+  const runnerAbort = new AbortController();
 
   const stop = () => {
     running = false;
+    runnerAbort.abort("runner_stopped");
+    // Closing the provider aborts an in-flight turn, which records cancellation
+    // and queues a terminal report before the runner drains and exits.
+    threadRuntime.close().catch(error => console.error(`[internal] stop failed: ${error.message}`));
   };
 
   process.on("SIGTERM", stop);
@@ -928,7 +963,7 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
           for (const claim of claims) {
             const evt = claim.event;
             const runnableEvents = [];
-            const rawInput = parseAgentViewRawInput(evt && evt.data ? evt.data.message : "");
+            const rawInput = parseInternalRawInput(evt && evt.data ? evt.data.message : "");
             if (rawInput === null) {
               runnableEvents.push(evt);
             } else {
@@ -937,7 +972,7 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
               for (const message of submissions) {
                 runnableEvents.push({
                   ...evt,
-                  __agentViewRaw: true,
+                  __internalRawInput: true,
                   data: {
                     ...(evt.data || {}),
                     message,
@@ -965,9 +1000,10 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
                   bootstrap.extraArgs,
                   threadRuntime,
                   bootstrap.promptText,
-                  activityTracker
+                  activityTracker,
+                  runnerAbort.signal
                 );
-                if (runnableEvent.__agentViewRaw) {
+                if (runnableEvent.__internalRawInput) {
                   getInteractiveSession(runnableEvent.publisher || "unknown").writeResponsePrompt();
                 }
               }
@@ -1005,13 +1041,11 @@ module.exports = {
   createThreadRuntime,
   resolveInternalModel,
   resolveInternalCodexEffort,
-  getCodexThreadMode,
   getWorkerThreadToolMode,
   buildWorkerThreadToolRuntime,
   normalizeWorkerThreadToolMode,
-  getClaudeThreadMode,
   buildClaudeAuthProvider,
-  parseAgentViewRawInput,
+  parseInternalRawInput,
   createInteractiveInputSession,
   resolveInternalBootstrap,
   persistProviderSessionId,

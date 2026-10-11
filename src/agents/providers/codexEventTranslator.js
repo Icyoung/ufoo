@@ -11,7 +11,7 @@ function getTextFromItem(item) {
 }
 
 function createCodexEventState() {
-  return { items: new Map() };
+  return { items: new Map(), finalText: "" };
 }
 
 function normalizeCodexEvent(event = {}, state = createCodexEventState()) {
@@ -23,6 +23,7 @@ function normalizeCodexEvent(event = {}, state = createCodexEventState()) {
   }
 
   if (type === "turn.started") {
+    state.finalText = "";
     return { type: "turn_started", turnId: event.turn_id || event.turnId || "" };
   }
 
@@ -31,6 +32,7 @@ function normalizeCodexEvent(event = {}, state = createCodexEventState()) {
       type: "turn_completed",
       turnId: event.turn_id || event.turnId || "",
       usage: event.usage || null,
+      finalText: state.finalText,
     };
   }
 
@@ -56,6 +58,7 @@ function normalizeCodexEvent(event = {}, state = createCodexEventState()) {
     if (itemType === "todo_list") return { type: "plan", items: item.items || [] };
 
     if (["message", "assistant_message", "agent_message"].includes(itemType)) {
+      if (type === "item.completed" && item.phase !== "commentary") state.finalText = text;
       const delta = text.startsWith(previous.text || "") ? text.slice((previous.text || "").length) : text;
       remember({ text });
       if (!delta) return type === "item.started" ? { type: "phase", phase: { type: "text_delta" } } : null;
@@ -74,11 +77,29 @@ function normalizeCodexEvent(event = {}, state = createCodexEventState()) {
     }
 
     if (["tool_call", "command_execution", "mcp_tool_call", "file_change", "web_search", "todo_list"].includes(itemType)) {
+      // A message before another tool is progress, not the final answer.
+      state.finalText = "";
+      if (previous.completed) return null;
+      if (["file_change", "web_search"].includes(itemType)) {
+        const tool = itemType === "file_change"
+          ? { name: "apply_patch", args: { path: (item.changes || []).map(change => change.path).join(", ") } }
+          : { name: "web_search", args: { query: item.query || "" } };
+        const started = { type: "tool_call", toolCallId: key, ...tool };
+        if (type === "item.completed") {
+          remember({ started: true, completed: true });
+          const completed = { type: "tool_result", toolCallId: key, status: item.status || "completed",
+            is_error: item.status === "failed", output: itemType === "file_change" ? { changes: item.changes || [] } : { query: item.query || "", result: item.result || "" } };
+          return previous.started ? completed : [started, completed];
+        }
+        if (previous.started) return null;
+        remember({ started: true });
+        return started;
+      }
       if (previous.started && ["command_execution", "mcp_tool_call"].includes(itemType)) {
         const output = itemType === "command_execution" ? String(item.aggregated_output || "") : item.result || item.error || "";
         const delta = typeof output === "string" && output.startsWith(previous.output || "")
           ? output.slice((previous.output || "").length) : output;
-        remember({ output });
+        remember({ output, completed: type === "item.completed" });
         if (!delta && type !== "item.completed") return null;
         return { type: "tool_result", toolCallId: key, output: delta,
           ...(item.exit_code !== undefined ? { exitCode: item.exit_code } : {}), status: item.status || "" };

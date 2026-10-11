@@ -24,13 +24,13 @@ describe("context sync", () => {
     const entry = manager.write({
       from: "codex-1",
       for: "codex-3",
-      message: "Implemented assistant-call prompt loop",
+      message: "Implemented main agent runtime",
       decision: "0071",
-      file: "src/runtime/daemon/promptLoop.js",
-      tests: "test/unit/daemon/promptLoop.test.js",
-      verification: "npm test -- test/unit/daemon/promptLoop.test.js",
+      file: "src/runtime/daemon/agentHost.js",
+      tests: "test/unit/daemon/agentHost.test.js",
+      verification: "npm test -- test/unit/daemon/agentHost.test.js",
       risk: "low",
-      next: "wire assistant_call schema",
+      next: "verify main agent runtime events",
     });
 
     const syncFile = path.join(projectRoot, ".ufoo", "context", "sync.jsonl");
@@ -41,13 +41,13 @@ describe("context sync", () => {
     expect(saved.type).toBe("sync");
     expect(saved.from).toBe("codex-1");
     expect(saved.for).toBe("codex-3");
-    expect(saved.message).toBe("Implemented assistant-call prompt loop");
+    expect(saved.message).toBe("Implemented main agent runtime");
     expect(saved.decision).toBe("0071");
-    expect(saved.file).toBe("src/runtime/daemon/promptLoop.js");
-    expect(saved.tests).toBe("test/unit/daemon/promptLoop.test.js");
-    expect(saved.verification).toBe("npm test -- test/unit/daemon/promptLoop.test.js");
+    expect(saved.file).toBe("src/runtime/daemon/agentHost.js");
+    expect(saved.tests).toBe("test/unit/daemon/agentHost.test.js");
+    expect(saved.verification).toBe("npm test -- test/unit/daemon/agentHost.test.js");
     expect(saved.risk).toBe("low");
-    expect(saved.next).toBe("wire assistant_call schema");
+    expect(saved.next).toBe("verify main agent runtime events");
     expect(saved.ts).toBe(entry.ts);
   });
 

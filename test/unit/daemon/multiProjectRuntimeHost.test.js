@@ -10,8 +10,8 @@ const {
 } = require("../../../src/runtime/daemon");
 const { getUfooPaths } = require("../../../src/coordination/state/paths");
 
-function initializeProject(name) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), `ufoo-host-${name}-`));
+function initializeProject(name, directory) {
+  const root = directory || fs.mkdtempSync(path.join(os.tmpdir(), `ufoo-host-${name}-`));
   const paths = getUfooPaths(root);
   fs.mkdirSync(paths.busQueuesDir, { recursive: true });
   fs.mkdirSync(paths.busEventsDir, { recursive: true });
@@ -47,6 +47,74 @@ async function waitForSocket(sockPath, timeoutMs = 3000) {
 }
 
 describe("multi-project daemon runtime host", () => {
+  test("global project handoffs use the main runtime and do not repeat a completed request", async () => {
+    const root = initializeProject("handoff-target");
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-handoff-home-"));
+    initializeProject("handoff-controller", home);
+    const homeSpy = jest.spyOn(os, "homedir").mockReturnValue(home);
+    const previousFetch = global.fetch;
+    const frames = [];
+    const socket = { destroyed: false, write: (line) => frames.push(JSON.parse(line)) };
+    let projectDaemon;
+    let globalDaemon;
+    try {
+      fs.writeFileSync(path.join(home, ".ufoo/config.json"), JSON.stringify({
+        ucodeProvider: "openai",
+        ucodeApiKey: "isolated-handoff-key",
+        ucodeModel: "test",
+      }));
+      global.fetch = jest.fn().mockImplementation(async () => new Response(JSON.stringify({
+        choices: [{ message: { content: "Target main completed the task." } }],
+      }), { headers: { "content-type": "application/json" } }));
+      const options = { provider: "ucode", model: "test", resumeMode: "none", manageProcessState: false, listenProjectSocket: false };
+      projectDaemon = startDaemon({ ...options, projectRoot: root });
+      const requestProject = jest.fn(async (targetRoot, request) => {
+        expect(targetRoot).toBe(root);
+        const responses = [];
+        await projectDaemon.handleRequest(request, {
+          destroyed: false,
+          write: (line) => responses.push(JSON.parse(line)),
+        });
+        const response = responses.find((frame) => frame.type === "response");
+        return { ok: Boolean(response), payload: response?.data, opsResults: response?.opsResults };
+      });
+      globalDaemon = startDaemon({ ...options, projectRoot: home, globalRuntimeRouter: { request: requestProject } });
+      const request = {
+        type: "prompt",
+        request_id: "global-handoff-once",
+        text: "Implement in the selected project.",
+        request_meta: { force_project_root: root, force_project_name: "selected-project" },
+      };
+      await globalDaemon.handleRequest({ ...request }, socket);
+      await globalDaemon.handleRequest({ ...request }, socket);
+
+      expect(frames.filter((frame) => frame.type === "error")).toEqual([]);
+      const replies = frames.filter((frame) => frame.type === "response");
+      expect(replies).toHaveLength(2);
+      expect(replies[0].data).toMatchObject({
+        reply: "Target main completed the task.",
+        routed_project: { project_root: root, project_name: "selected-project" },
+        runtime: { status: "completed" },
+      });
+      expect(replies[1]).toEqual(replies[0]);
+      expect(requestProject).toHaveBeenCalledTimes(1);
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      expect(globalDaemon.runtime.resource("agentHost").snapshot().sessions).toEqual([]);
+    } finally {
+      for (const daemon of [globalDaemon, projectDaemon]) {
+        if (daemon) {
+          await daemon.runtime.resource("agentHost").close();
+          daemon.cleanup("test-global-handoff");
+        }
+      }
+      await new Promise((resolve) => setImmediate(resolve));
+      global.fetch = previousFetch;
+      homeSpy.mockRestore();
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test("the default prompt and runtime IPC share one durable coding run across client disconnects", async () => {
     const root = initializeProject("native-ipc");
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-host-home-"));
@@ -56,10 +124,11 @@ describe("multi-project daemon runtime host", () => {
     const frames = [];
     const socket = { destroyed: false, write: (line) => frames.push(JSON.parse(line)) };
     try {
-      fs.writeFileSync(path.join(root, ".ufoo/config.json"), JSON.stringify({ controllerMode: "main", ucodeProvider: "openai", ucodeApiKey: "isolated-test-key", ucodeModel: "test" }));
+      fs.writeFileSync(path.join(root, ".ufoo/config.json"), JSON.stringify({ controllerMode: "shadow", routerProvider: "claude", routerModel: "unused-router-model", ucodeProvider: "openai", ucodeApiKey: "isolated-test-key", ucodeModel: "test" }));
       fs.mkdirSync(path.join(home, ".ufoo"), { recursive: true });
       fs.writeFileSync(path.join(home, ".ufoo/config.json"), JSON.stringify({ ucodeProvider: "openai", ucodeApiKey: "isolated-test-key", ucodeModel: "test" }));
       global.fetch = jest.fn().mockImplementation(async () => new Response(JSON.stringify({ choices: [{ message: { content: "IPC native main completed." } }] }), { headers: { "content-type": "application/json" } }));
+      fs.writeFileSync(path.join(root, ".ufoo/agent/ufoo-agent.history.jsonl"), JSON.stringify({ prompt: "OLD_CONTROLLER_TRANSCRIPT", reply: "old reply" }) + "\n");
       daemon = startDaemon({ projectRoot: root, provider: "ucode", model: "test", resumeMode: "none", manageProcessState: false, listenProjectSocket: false });
       await daemon.handleRequest({ type: "prompt", request_id: "ipc-native", text: "inspect project" }, socket);
       expect(frames.find((frame) => frame.type === "error")).toBeUndefined();
@@ -76,6 +145,7 @@ describe("multi-project daemon runtime host", () => {
       expect(JSON.stringify(replay)).not.toContain("isolated-test-key");
       await daemon.handleRequest({ type: "prompt", request_id: "ipc-native", text: "inspect project" }, socket);
       expect(global.fetch).toHaveBeenCalledTimes(2);
+      expect(global.fetch.mock.calls.map(([, options]) => options.body).join("\n")).not.toContain("OLD_CONTROLLER_TRANSCRIPT");
     } finally {
       if (daemon) { await daemon.runtime.resource("agentHost").close(); daemon.cleanup("test-native-ipc"); }
       await new Promise((resolve) => setImmediate(resolve));

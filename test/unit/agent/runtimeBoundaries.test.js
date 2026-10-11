@@ -26,7 +26,7 @@ describe("shared runtime dependency boundaries", () => {
   });
 
   test("provider adapters no longer depend on coding runner or coding transport implementations", () => {
-    for (const file of ["runtimeConfig.js", "nativeTransport.js", "upstreamTransport.js"]) {
+    for (const file of ["runtimeConfig.js", "nativeTransport.js", "upstreamRuntime.js"]) {
       expect(importsFrom(path.join(root, "src/agents/providers", file)).filter((dependency) => dependency.includes("/code/"))).toEqual([]);
     }
   });

@@ -1,7 +1,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { loadInternalAgentLogHistory } = require("../../../src/app/chat/internalAgentLogHistory");
+const { loadInternalAgentTranscript } = require("../../../src/app/chat/internalAgentLogHistory");
 const { getUfooPaths } = require("../../../src/coordination/state/paths");
 
 function writeJsonl(filePath, events) {
@@ -48,10 +48,9 @@ describe("internal agent log history", () => {
       },
     ]);
 
-    expect(loadInternalAgentLogHistory(projectRoot, "codex:1")).toEqual([
-      "> assigned task",
-      "• done",
-      "  with detail",
+    expect(loadInternalAgentTranscript(projectRoot, "codex:1")).toEqual([
+      { id: "history-1", kind: "user", text: "assigned task" },
+      { id: "history-2", kind: "assistant", text: "done\nwith detail" },
     ]);
   });
 
@@ -75,7 +74,9 @@ describe("internal agent log history", () => {
       },
     ]);
 
-    expect(loadInternalAgentLogHistory(projectRoot, "codex:1")).toEqual(["• hel"]);
+    expect(loadInternalAgentTranscript(projectRoot, "codex:1")).toEqual([
+      { id: "history-1", kind: "assistant", text: "hel" },
+    ]);
   });
 
   test("nickname and scoped nickname messages stay isolated per agent", () => {
@@ -101,8 +102,12 @@ describe("internal agent log history", () => {
       },
     ]);
 
-    expect(loadInternalAgentLogHistory(projectRoot, "codex:1")).toEqual(["> for builder nickname"]);
-    expect(loadInternalAgentLogHistory(projectRoot, "codex:2")).toEqual(["> for reviewer scoped nickname"]);
+    expect(loadInternalAgentTranscript(projectRoot, "codex:1")).toEqual([
+      { id: "history-1", kind: "user", text: "for builder nickname" },
+    ]);
+    expect(loadInternalAgentTranscript(projectRoot, "codex:2")).toEqual([
+      { id: "history-2", kind: "user", text: "for reviewer scoped nickname" },
+    ]);
   });
 
   test("multiple stream deltas replay like live internal output", () => {
@@ -132,9 +137,8 @@ describe("internal agent log history", () => {
       },
     ]);
 
-    expect(loadInternalAgentLogHistory(projectRoot, "codex:1")).toEqual([
-      "• hello",
-      "  world",
+    expect(loadInternalAgentTranscript(projectRoot, "codex:1")).toEqual([
+      { id: "history-1", kind: "assistant", text: "hello\nworld" },
     ]);
   });
 
@@ -153,15 +157,8 @@ describe("internal agent log history", () => {
       ]);
     }
 
-    expect(loadInternalAgentLogHistory(projectRoot, "codex:1")).toEqual([
-      "> day 2",
-      "> day 3",
-      "> day 4",
-      "> day 5",
-      "> day 6",
-      "> day 7",
-      "> day 8",
-    ]);
+    expect(loadInternalAgentTranscript(projectRoot, "codex:1").map((entry) => entry.text))
+      .toEqual(["day 2", "day 3", "day 4", "day 5", "day 6", "day 7", "day 8"]);
   });
 
   test("history replay stops at maxEvents newest matching events", () => {
@@ -178,9 +175,36 @@ describe("internal agent log history", () => {
     }
     writeJsonl(path.join(paths.busEventsDir, "2026-05-16.jsonl"), events);
 
-    const history = loadInternalAgentLogHistory(projectRoot, "codex:1", { maxEvents: 400, maxLines: 500 });
+    const history = loadInternalAgentTranscript(projectRoot, "codex:1", { maxEvents: 400, maxEntries: 500 });
     expect(history).toHaveLength(400);
-    expect(history[0]).toBe("> event 6");
-    expect(history[399]).toBe("> event 405");
+    expect(history[0]).toMatchObject({ kind: "user", text: "event 6" });
+    expect(history[399]).toMatchObject({ kind: "user", text: "event 405" });
+  });
+
+  test("keeps message boundaries, paragraphs and code indentation while removing terminal escapes", () => {
+    const { projectRoot, paths } = createProject({ "claude-code:1": {} });
+    writeJsonl(path.join(paths.busEventsDir, "2026-10-09.jsonl"), [
+      { seq: 1, event: "message", publisher: "ufoo-agent", target: "claude-code:1", data: { message: "first task" } },
+      { seq: 2, event: "message", publisher: "claude-code:1", data: { message: "\x1b[32mFirst paragraph\x1b[0m\n\nSecond paragraph\n```js\n  const value = 1;\n```" } },
+      { seq: 3, event: "message", publisher: "ufoo-agent", target: "claude-code:1", data: { message: "second task\nwith detail" } },
+    ]);
+    expect(loadInternalAgentTranscript(projectRoot, "claude-code:1", { maxEntries: 2 })).toEqual([
+      { id: "history-2", kind: "assistant", text: "First paragraph\n\nSecond paragraph\n```js\n  const value = 1;\n```" },
+      { id: "history-3", kind: "user", text: "second task\nwith detail" },
+    ]);
+  });
+
+  test("stream completion separates consecutive assistant replies and ignores empty messages", () => {
+    const { projectRoot, paths } = createProject({ "ucode:1": {} });
+    const stream = (seq, content) => ({ seq, event: "message", publisher: "ucode:1", data: { message: JSON.stringify({ stream: true, ...content }) } });
+    writeJsonl(path.join(paths.busEventsDir, "2026-10-09.jsonl"), [
+      stream(1, { delta: "first" }), stream(2, { done: true }), stream(3, { delta: "second" }),
+      { seq: 4, event: "message", publisher: "ucode:1", data: { message: "" } },
+      { seq: 5, event: "message", publisher: "other", target: "other", data: { message: "unrelated" } },
+    ]);
+    expect(loadInternalAgentTranscript(projectRoot, "ucode:1")).toEqual([
+      { id: "history-1", kind: "assistant", text: "first" },
+      { id: "history-3", kind: "assistant", text: "second" },
+    ]);
   });
 });

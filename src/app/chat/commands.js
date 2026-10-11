@@ -1,3 +1,6 @@
+const { SETTINGS_MODEL_DEFAULTS } = require("../../config");
+const { DEFAULT_THINKING_LEVEL } = require("../../agents/providers/thinkingLevels");
+
 const COMMAND_TREE = {
   "/bus": {
     desc: "Event bus operations",
@@ -35,13 +38,6 @@ const COMMAND_TREE = {
       stop: { desc: "Stop cron task by id or all" },
     },
   },
-  "/mode": {
-    desc: "Show internal dashboard launch mode",
-    children: {
-      show: { desc: "Show current launch mode", order: 1 },
-      internal: { desc: "Launch as internal agent", order: 2 },
-    },
-  },
   "/provider": {
     desc: "Set ufoo-agent provider",
     children: {
@@ -50,6 +46,7 @@ const COMMAND_TREE = {
       claude: { desc: "Use Claude", order: 3 },
       agy: { desc: "Use Antigravity (agy)", order: 4 },
       kimi: { desc: "Use Kimi Code", order: 5 },
+      custom: { desc: "Configure a custom OpenAI API endpoint", order: 6 },
     },
   },
   "/clear": { desc: "Clear chat log on screen" },
@@ -65,12 +62,12 @@ const COMMAND_TREE = {
     },
   },
   "/init": { desc: "Initialize workspace" },
-  "/multi": {
-    desc: "Toggle all agent panes; /multi @agent opens one",
-    optionalArguments: true,
+  "/window": {
+    desc: "Choose the main, side or multi window layout",
     children: {
-      on: { desc: "Show all agent panes" },
-      off: { desc: "Return to the main agent" },
+      main: { desc: "Show only the main agent", order: 1 },
+      side: { desc: "Show the main agent and the most recently activated child, or the first child", order: 2 },
+      multi: { desc: "Show the main agent and all internal children", order: 3 },
     },
   },
   "/mcp": {
@@ -81,20 +78,18 @@ const COMMAND_TREE = {
       help: { desc: "Show MCP setup hints", order: 3 },
     },
   },
-  "/open": { desc: "Open project path in global mode" },
+  "/open": { desc: "Open project path in global mode", globalOnly: true },
   "/launch": {
     desc: "Launch new agent",
     children: {
       claude: { desc: "Launch Claude agent", order: 1 },
       codex: { desc: "Launch Codex agent", order: 2 },
-      agy: { desc: "Launch Antigravity (agy) agent", order: 3 },
-      grok: { desc: "Launch Grok Build agent", order: 4 },
       ucode: { desc: "Launch ucode core agent", order: 5 },
-      kimi: { desc: "Launch Kimi Code agent", order: 6 },
     },
   },
   "/project": {
     desc: "Project switch operations (spike)",
+    globalOnly: true,
     children: {
       current: { desc: "Show current chat project" },
       list: { desc: "List running projects from registry" },
@@ -116,10 +111,8 @@ const COMMAND_TREE = {
     },
   },
   "/resume": {
-    desc: "Resume agents (optional nickname) or list recoverable targets",
-    children: {
-      list: { desc: "List recoverable agents (optional target)" },
-    },
+    desc: "Resume an internal agent session or a group",
+    hasArguments: true,
   },
   "/settings": {
     desc: "Settings operations",
@@ -129,29 +122,17 @@ const COMMAND_TREE = {
         order: 1,
       },
       agent: {
-        desc: "Manage main ufoo-agent/router provider/model",
+        desc: "Manage ufoo main agent provider/model",
         order: 2,
         children: {
           show: { desc: "Show main agent provider/model", order: 1 },
           set: { desc: "Set provider=<codex|claude> model=<id>", order: 2 },
           clear: { desc: "Clear agent model or reset provider", order: 3 },
-          codex: { desc: "Use Codex default model (gpt-5.5)", order: 4 },
-          claude: { desc: "Use Claude default model (opus-4.7)", order: 5 },
-        },
-      },
-      router: {
-        desc: "Manage gate router mode/provider/model",
-        order: 3,
-        children: {
-          show: { desc: "Show gate router mode/provider/model", order: 1 },
-          set: { desc: "Set mode/provider/model", order: 2 },
-          clear: { desc: "Clear gate router provider/model or reset mode", order: 3 },
-          main: { desc: "Set router mode to main", order: 4 },
-          loop: { desc: "Set router mode to loop", order: 5 },
-          legacy: { desc: "Set router mode to legacy", order: 6 },
-          shadow: { desc: "Set router mode to shadow", order: 7 },
-          codex: { desc: "Use Codex gate model (gpt-5.3-codex-spark)", order: 8 },
-          claude: { desc: "Use Claude gate model (sonnet-4.7)", order: 9 },
+          codex: { desc: `Use Codex default (${SETTINGS_MODEL_DEFAULTS.agent.codex} · ${DEFAULT_THINKING_LEVEL})`, order: 4 },
+          claude: { desc: `Use Claude default model (${SETTINGS_MODEL_DEFAULTS.agent.claude})`, order: 5 },
+          custom: { desc: "Configure custom API URL and key", order: 6 },
+          model: { desc: "Select a model for the current provider", hasArguments: true, order: 7 },
+          thinking: { desc: "Select thinking intensity", hasArguments: true, order: 8 },
         },
       },
       ucode: {
@@ -231,6 +212,16 @@ function buildCommandRegistry(tree) {
 
 const COMMAND_REGISTRY = buildCommandRegistry(COMMAND_TREE);
 
+function getChatCommandCatalog({ globalMode = false } = {}) {
+  if (globalMode) {
+    return { commands: COMMAND_REGISTRY, commandTree: COMMAND_TREE };
+  }
+  const commandTree = Object.fromEntries(
+    Object.entries(COMMAND_TREE).filter(([, node]) => !node.globalOnly)
+  );
+  return { commands: buildCommandRegistry(commandTree), commandTree };
+}
+
 function parseCommand(text) {
   if (!text.startsWith("/")) return null;
 
@@ -267,7 +258,7 @@ function normalizeAgentLabel(value = "") {
   if (raw === "agy" || raw === "antigravity" || raw === "uagy") return "agy";
   if (raw === "grok" || raw === "ugrok" || raw === "grok-build" || raw === "xai") return "grok";
   if (raw === "kimi" || raw === "kimi-cli" || raw === "kimi-code" || raw === "ukimi") return "kimi";
-  if (raw === "ucode" || raw === "ufoo") return "ufoo";
+  if (raw === "ucode") return "ucode";
   return raw || "agent";
 }
 
@@ -345,11 +336,6 @@ function describeCommandForChat(text) {
     return "Managing cron tasks";
   }
 
-  if (command === "mode") {
-    if (!sub || sub === "show" || sub === "status") return "Showing launch mode";
-    return `Setting launch mode to ${sub}`;
-  }
-
   if (command === "provider") {
     if (!sub || sub === "show" || sub === "status") return "Showing agent provider";
     return `Setting agent provider to ${sub}`;
@@ -368,7 +354,7 @@ function describeCommandForChat(text) {
   if (command === "clear") return "Clearing the chat log";
   if (command === "multi") return "Toggling multi-pane view";
   if (command === "open") return `Opening project ${args[0] || ""}`.trim();
-  if (command === "resume") return args[0] === "list" ? "Listing recoverable agents" : `Resuming ${args[0] || "agents"}`;
+  if (command === "resume") return args[0] ? `Resuming ${args[0]}` : "Choose an agent or group to resume";
   if (command === "init") return "Initializing ufoo workspace";
 
   return `Running /${command}`;
@@ -398,6 +384,7 @@ module.exports = {
   COMMAND_REGISTRY,
   sortCommands,
   buildCommandRegistry,
+  getChatCommandCatalog,
   parseCommand,
   describeCommandForChat,
   shouldEchoCommandInChat,

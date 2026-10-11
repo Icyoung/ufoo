@@ -174,4 +174,15 @@ describe("rustUcodeHost helpers", () => {
     expect(labels.some((label) => label.includes("custom-remote-model"))).toBe(true);
     expect(items.some((item) => /models route/i.test(String(item.description || "")))).toBe(true);
   });
+
+  test("unavailable Claude catalogs do not invent a fixed list of old models", async () => {
+    const items = await buildUcodeCompletionItems({
+      text: "/model ", workspaceRoot: "/tmp/ws", state: { model: "", provider: "claude" },
+    });
+    expect(items).toEqual([]);
+    const current = await buildUcodeCompletionItems({
+      text: "/model ", workspaceRoot: "/tmp/ws", state: { model: "configured-model", provider: "claude" },
+    });
+    expect(current.map(item => item.replace)).toEqual(["/model configured-model "]);
+  });
 });

@@ -221,9 +221,7 @@ function extractTaskFromBusEvent(evt) {
 function shouldAutoConsumeBus(subscriberId = "") {
   const id = String(subscriberId || "").trim().toLowerCase();
   if (!id) return false;
-  return id.startsWith("ufoo-code:")
-    || id.startsWith("ucode:")
-    || id.startsWith("ufoo:");
+  return id.startsWith("ucode:");
 }
 
 function extractBusMessageTask(contentRaw = "") {

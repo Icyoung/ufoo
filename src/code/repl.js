@@ -79,7 +79,6 @@ function extractAgentNickname(agentId = "") {
   // Common agent nickname mappings
   if (base === "ufoo-agent") return "ufoo";
   if (base === "claude-code") return "claude";
-  if (base === "ufoo-code") return "ucode";
 
   // Return base name as-is for others
   return base;
@@ -142,7 +141,7 @@ function runSingleCommand(line = "", workspaceRoot = process.cwd()) {
     if (!modelId || parts.length > 2) {
       return {
         kind: "error",
-        output: "usage: /model [model-id] [off|low|medium|high|max]",
+        output: "usage: /model [model-id] [off|low|medium|high|xhigh|max]",
       };
     }
     return {
@@ -318,7 +317,6 @@ async function runUcodeCoreAgent({
     currentThinkingLevel,
   } = require("./modelCommand");
   const {
-    resolveThinkingFromEnvAndConfig,
     applyThinkingLevelToEnv,
   } = require("./thinkingLevels");
   const { loadGlobalUcodeConfig } = require("../config");
@@ -328,10 +326,6 @@ async function runUcodeCoreAgent({
   } catch {
     initialThinking = "";
   }
-  const thinkingResolved = resolveThinkingFromEnvAndConfig({
-    env: process.env,
-    configLevel: initialThinking,
-  });
   const state = {
     workspaceRoot: resolvedWorkspaceRoot,
     provider: resolvedUcode.provider,
@@ -351,10 +345,7 @@ async function runUcodeCoreAgent({
     maxToolCalls,
     jsonOutput,
   };
-  // Named levels sync into env; leave an explicit numeric budget override alone.
-  if (thinkingResolved.source !== "env-budget") {
-    applyThinkingLevelToEnv(state.thinking, process.env);
-  }
+  applyThinkingLevelToEnv(state.thinking, process.env);
   persistSessionState(state);
 
   if (shouldUseUcodeTui({

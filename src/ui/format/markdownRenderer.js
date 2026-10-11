@@ -1,7 +1,7 @@
 /**
  * Shared markdown renderer for TUI log output.
  *
- * Produces either blessed tags (chat / legacy) or chalk ANSI (Ink ucode).
+ * Produces markup tags for chat history or ANSI styles for terminal surfaces.
  * Terminals cannot change font size, so headings/emphasis use color + weight
  * instead of literal `#` / `**` markers. GFM pipe tables are aligned into a
  * compact spreadsheet-like grid.
@@ -160,9 +160,8 @@ function createBlessedAdapters(escapeFn = (value) => String(value || "")) {
 }
 
 function createAnsiAdapters() {
-  // Ink always paints into a TTY-capable stdout; force color so bold/heading
-  // styles survive even when chalk's autodetection thinks we're non-TTY
-  // (e.g. piped test harnesses that still render Ink).
+  // Surface renderers consume ANSI styles even when the host's stdout is
+  // piped, so preserve heading and emphasis colors independently of detection.
   const paint = typeof chalk.Instance === "function"
     ? new chalk.Instance({ level: Math.max(Number(chalk.level) || 0, 2) })
     : chalk;

@@ -21,6 +21,28 @@ describe("agent management and report capabilities", () => {
       dispatch: jest.fn().mockResolvedValue({ ok: true, seq: 42 }), ...ports });
   }
   const args = { command_id: "delegate-1", agent: "codex", objective: "fix the parser", acceptance_criteria: ["parser test passes"] };
+  test("invalid new nicknames cause a correctable result before effects; corrected creation is dispatched with trace context", async () => {
+    const launch = jest.fn().mockResolvedValue({ ok: true, agent_id: "codex:worker" });
+    const dispatch = jest.fn().mockResolvedValue({ ok: true, seq: 42 });
+    const manager = service({ launch, dispatch, resolveTarget: () => "" });
+    expect(await manager.delegate({ ...args, target: "new-worker" })).toMatchObject({ ok: false, code: "invalid_target" });
+    expect(manager.snapshot().tasks).toEqual({});
+    expect(launch).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
+    const result = await manager.delegate(args, { traceId: "root", taskRunId: "parent", requestId: "request", sessionId: "main" });
+    expect(result.ok).toBe(true);
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(dispatch.mock.calls[0][0].runtimeContext).toMatchObject({ traceId: "root", taskId: result.task.taskId, parentTaskRunId: "parent", parentRequestId: "request" });
+  });
+  test("a confirmed launch failure remains terminal and cannot be mistaken for a queued task", async () => {
+    const launch = jest.fn().mockResolvedValue({ ok: false, code: "launch_rejected", error: "unavailable" });
+    const manager = service({ launch });
+    const result = await manager.delegate(args);
+    expect(result).toMatchObject({ ok: false, code: "launch_rejected" });
+    expect(manager.snapshot().tasks[result.taskId].status).toBe("failed");
+    expect(await manager.delegate(args)).toMatchObject({ ok: false, code: "launch_rejected" });
+    expect(launch).toHaveBeenCalledTimes(1);
+  });
   test("binds launch and dispatch once with explicit parent and worker IDs", async () => {
     const launch = jest.fn().mockResolvedValue({ ok: true, agent_id: "codex:worker" });
     const dispatch = jest.fn().mockResolvedValue({ ok: true, seq: 42 });
@@ -29,6 +51,9 @@ describe("agent management and report capabilities", () => {
     expect(result.task).toMatchObject({ workerId: "codex:worker", parentTaskRunId: "parent-task", parentSessionId: "main-session", status: "queued" });
     expect(dispatch.mock.calls[0][0]).toMatchObject({ target: "codex:worker", taskId: result.task.taskId });
     expect(dispatch.mock.calls[0][0].message).toContain(result.task.taskId);
+    expect(dispatch.mock.calls[0][0].message).toContain("1-4 short lines, at most 600 characters");
+    expect(dispatch.mock.calls[0][0].message).toContain("parser test passes");
+    expect(dispatch.mock.calls[0][0].message).toContain("required acceptance evidence");
     await service({ launch, dispatch }).delegate(args);
     expect(launch).toHaveBeenCalledTimes(1);
     expect(dispatch).toHaveBeenCalledTimes(1);
@@ -55,8 +80,8 @@ describe("agent management and report capabilities", () => {
     expect(wake).toHaveBeenCalledTimes(1);
     expect(wake.mock.calls[0][0]).toMatchObject({ parentTaskRunId: "parent-task", taskId: report.task_id });
     expect(manager.snapshot().tasks[report.task_id].status).toBe("reported");
-    expect(() => manager.accept({ task_id: report.task_id, outcome: "accepted", reason: "looks good" })).toThrow("validation evidence");
-    expect(() => manager.accept({ task_id: report.task_id, outcome: "accepted", reason: "validated", evidence: ["fabricated"] })).toThrow("host did not verify");
+    expect(manager.accept({ task_id: report.task_id, outcome: "accepted", reason: "looks good" })).toMatchObject({ ok: false, code: "acceptance_required" });
+    expect(manager.accept({ task_id: report.task_id, outcome: "accepted", reason: "validated", evidence: ["fabricated"] })).toMatchObject({ ok: false, code: "invalid_evidence" });
     expect(manager.accept({ task_id: report.task_id, outcome: "accepted", reason: "validated parser behavior", evidence: ["test-call-1"] }).task.status).toBe("accepted");
   });
   test("durably retries a report wake after the host was unavailable using the same request ID", async () => {
@@ -106,4 +131,12 @@ describe("agent management and report capabilities", () => {
     expect(runGroup).toHaveBeenCalledTimes(2);
     expect(runGroup.mock.calls[0][0].instance).not.toBe(runGroup.mock.calls[1][0].instance);
   });
+  test.each(["grok", "agy", "kimi"])("delegation rejects unsupported internal worker %s before recording effects", async (agent) => {
+    const launch = jest.fn(); const dispatch = jest.fn();
+    const management = service({ launch, dispatch });
+    expect(await management.delegate({ ...args, agent })).toMatchObject({ ok: false, code: "invalid_arguments" });
+    expect(launch).not.toHaveBeenCalled(); expect(dispatch).not.toHaveBeenCalled();
+    expect(management.snapshot().tasks).toEqual({});
+  });
+
 });

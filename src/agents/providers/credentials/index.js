@@ -87,6 +87,8 @@ function buildUpstreamAuthFromCredential(descriptor = {}) {
     return {
       headers: {
         authorization: `${tokenType} ${accessToken}`,
+        ...(descriptor.provider === "claude" || descriptor.provider === "anthropic"
+          ? { "anthropic-beta": "claude-code-20250219,oauth-2025-04-20" } : {}),
       },
     };
   }

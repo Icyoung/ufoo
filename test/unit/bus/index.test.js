@@ -151,6 +151,15 @@ describe("EventBus", () => {
   });
 
   describe("send and check", () => {
+    test("preserves explicit task, trace, tags and report routing through the public bus API", async () => {
+      const bus = initBus();
+      const sender = await bus.join("sender", "codex", "sender");
+      const worker = await bus.join("worker", "codex", "worker");
+      const receipt = await bus.send(worker, "work", sender, { taskId: "delegated-1", reportTo: "ufoo-agent", tags: ["report"],
+        data: { runtime_context: { traceId: "root", parentTaskRunId: "parent" } }, silent: true });
+      const events = await bus.check(worker);
+      expect(events.find(event => event.seq === receipt.seq).data).toMatchObject({ task_id: "delegated-1", report_to: "ufoo-agent", tags: ["report"], runtime_context: { traceId: "root", parentTaskRunId: "parent" } });
+    });
     test("sends message and checks pending", async () => {
       const bus = initBus();
       const sub1 = await bus.join("sender1", "codex", "sender");
@@ -199,7 +208,7 @@ describe("EventBus", () => {
       );
     });
 
-    test.each(["codex", "claude-code", "agy", "kimi", "ufoo-code", "cursor"])(
+    test.each(["codex", "claude-code", "agy", "kimi", "ucode", "cursor"])(
       "does not use agent type %s as a resident-poll admission policy",
       async (agentType) => {
         const bus = initBus();
@@ -244,7 +253,8 @@ describe("EventBus", () => {
       await bus.send(sub, "msg1", "codex:other");
 
       const count = await bus.ack(sub);
-      expect(count).toBeGreaterThanOrEqual(0);
+      expect(count).toBe(1);
+      expect(await bus.queueManager.peekPending(sub)).toEqual([]);
     });
 
     test("returns 0 when no pending messages", async () => {
@@ -253,6 +263,28 @@ describe("EventBus", () => {
 
       const count = await bus.ack(sub);
       expect(count).toBe(0);
+    });
+
+    test("manual check with autoAck preserves internal tasks and explains runner ownership", async () => {
+      const bus = initBus();
+      const sub = await bus.join("internal-check", "codex", null, { launchMode: "internal" });
+      await bus.queueManager.appendPending(sub, { seq: 1, type: "message", event: "message",
+        publisher: "user", data: { message: "not executed yet" } });
+      consoleLogSpy.mockClear();
+
+      await bus.check(sub, true);
+
+      expect(await bus.queueManager.peekPending(sub)).toHaveLength(1);
+      const output = consoleLogSpy.mock.calls.flat().join("\n");
+      expect(output).toContain("Internal runner confirms completed tasks automatically");
+      expect(output).not.toContain("After handling, run: ufoo bus ack");
+      expect(output).not.toContain("No pending messages to acknowledge");
+    });
+
+    test("invalid through sequence is rejected even for internal agents", async () => {
+      const bus = initBus();
+      const sub = await bus.join("internal-invalid", "ucode", null, { launchMode: "internal" });
+      await expect(bus.ackThrough(sub, 0)).rejects.toThrow("positive sequence");
     });
   });
 

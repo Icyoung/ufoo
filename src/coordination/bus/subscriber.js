@@ -1,6 +1,6 @@
 const fs = require("fs");
 const path = require("path");
-const { getTimestamp, isAgentPidAlive, isMetaActive, isValidTty, getTtyProcessInfo } = require("./utils");
+const { getTimestamp, isAgentPidAlive, isMetaActive, isValidTty, getTtyProcessInfo, normalizeAgentTypeAlias } = require("./utils");
 const NicknameManager = require("./nickname");
 const { isMismatchedAutoNickname } = require("./nickname");
 const { spawnSync } = require("child_process");
@@ -184,7 +184,7 @@ class SubscriberManager {
         : (await this.queueManager.readTty(id));
       if (!metaTty) continue;
       if (metaTty === ttyPath) {
-        const sameAgentType = !currentAgentType || meta?.agent_type === currentAgentType;
+        const sameAgentType = !currentAgentType || normalizeAgentTypeAlias(meta?.agent_type) === normalizeAgentTypeAlias(currentAgentType);
         // Inherit user-set nickname only when replacing the same agent type.
         if (
           sameAgentType
@@ -229,6 +229,7 @@ class SubscriberManager {
    * 加入总线
    */
   async join(sessionId, agentType, nickname = null, options = {}) {
+    if (normalizeAgentTypeAlias(agentType) === "ucode") agentType = "ucode";
     // Special case: ufoo-agent uses fixed ID without suffix
     const subscriber = (sessionId === "ufoo-agent")
       ? "ufoo-agent"

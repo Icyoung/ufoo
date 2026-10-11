@@ -1,6 +1,7 @@
 "use strict";
 
 const os = require("os");
+const { resolveCodexUserAgent, resolveGrokClientVersion } = require("./clientIdentity");
 const { randomUUID } = require("crypto");
 const { Agent: UndiciAgent } = require("undici");
 const { normalizeProvider, normalizeKimiModel, resolveCompletionUrl, resolveResponsesUrl, resolveAnthropicMessagesUrl } = require("./runtimeConfig");
@@ -68,24 +69,6 @@ function resolveMaxTokens(fallback) {
   return normalizePositiveInt(process.env.UFOO_UCODE_MAX_TOKENS, fallback);
 }
 
-function resolveThinkingBudgetTokens(options = {}) {
-  const { resolveThinkingFromEnvAndConfig } = require("./thinkingLevels");
-  const { loadGlobalUcodeConfig } = require("../../config");
-  let configLevel = String(options.configLevel || "").trim();
-  if (!configLevel) {
-    try {
-      configLevel = String((loadGlobalUcodeConfig() || {}).ucodeThinking || "").trim();
-    } catch {
-      configLevel = "";
-    }
-  }
-  const resolved = resolveThinkingFromEnvAndConfig({
-    env: options.env || process.env,
-    configLevel,
-  });
-  return resolved.budgetTokens;
-}
-
 function resolveReasoningEffort(options = {}) {
   const { resolveThinkingFromEnvAndConfig } = require("./thinkingLevels");
   const { loadGlobalUcodeConfig } = require("../../config");
@@ -102,6 +85,10 @@ function resolveReasoningEffort(options = {}) {
     configLevel,
   });
   return resolved.reasoningEffort || "";
+}
+
+function thinkingOptions(thinkingLevel) {
+  return thinkingLevel ? { configLevel: thinkingLevel, env: {} } : {};
 }
 
 function toUsageInt(value) {
@@ -134,14 +121,15 @@ function addUsageTotals(totals, usage = null) {
 // totals (prompt_tokens_details.cached_tokens counts the cache hits).
 function readOpenAiUsage(raw) {
   if (!raw || typeof raw !== "object") return null;
+  if (![raw.prompt_tokens, raw.completion_tokens, raw.prompt_tokens_details?.cached_tokens].some(value => value != null && Number.isFinite(Number(value)))) return null;
   const details = raw.prompt_tokens_details && typeof raw.prompt_tokens_details === "object"
     ? raw.prompt_tokens_details
     : {};
   return {
     input: toUsageInt(raw.prompt_tokens),
     output: toUsageInt(raw.completion_tokens),
-    cacheRead: toUsageInt(details.cached_tokens),
-    cacheCreation: toUsageInt(details.created_cache_tokens),
+    cacheRead: details.cached_tokens != null && Number.isFinite(Number(details.cached_tokens)) ? toUsageInt(details.cached_tokens) : null,
+    cacheCreation: toUsageInt(details.cache_write_tokens ?? details.created_cache_tokens),
     inputIncludesCache: true,
   };
 }
@@ -150,6 +138,7 @@ function readOpenAiUsage(raw) {
 // arrive per message_delta. The non-streaming body carries the full totals.
 function readAnthropicUsage(raw, { includeOutput = false } = {}) {
   if (!raw || typeof raw !== "object") return null;
+  if (!["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"].some(key => raw[key] != null && Number.isFinite(Number(raw[key])))) return null;
   return {
     input: toUsageInt(raw.input_tokens),
     output: includeOutput ? toUsageInt(raw.output_tokens) : 0,
@@ -380,8 +369,10 @@ async function runOpenAiLikeTurn({
   requestHeaders = {},
   model = "",
   provider = "",
+  thinkingLevel = "",
   messages = [],
   tools = [],
+  maxOutputTokens = null,
   onTextDelta = null,
   onThinkingDelta = null,
   onPhase = null,
@@ -391,21 +382,21 @@ async function runOpenAiLikeTurn({
   const normalizedProvider = normalizeProvider(provider);
   const payload = {
     model: normalizedProvider === "kimi" ? normalizeKimiModel(model) : model,
-    max_tokens: resolveMaxTokens(DEFAULT_OPENAI_MAX_TOKENS),
+    max_tokens: maxOutputTokens || resolveMaxTokens(DEFAULT_OPENAI_MAX_TOKENS),
     messages,
-    tools,
-    tool_choice: "auto",
+    ...(tools.length ? { tools, tool_choice: "auto" } : {}),
     stream: true,
     // Ask for the terminal usage chunk so token/cache accounting works.
     stream_options: { include_usage: true },
     // Kimi k3 rejects any temperature other than 1.
     temperature: normalizedProvider === "kimi" ? 1 : 0,
   };
-  const reasoningEffort = resolveReasoningEffort();
+  const reasoningEffort = thinkingLevel === "off" ? "none" : resolveReasoningEffort(thinkingOptions(thinkingLevel));
   if (reasoningEffort) {
     // OpenAI-compatible gateways that support reasoning models accept this;
     // unknown fields are typically ignored by plain chat models.
     payload.reasoning_effort = reasoningEffort;
+    if (thinkingLevel && normalizedProvider === "openai" && reasoningEffort !== "none") delete payload.temperature;
   }
 
   const headers = normalizedProvider === "kimi"
@@ -550,7 +541,7 @@ async function runOpenAiLikeTurn({
 }
 
 function currentGrokClientVersion() {
-  return String(process.env.UFOO_GROK_CLIENT_VERSION || "0.2.120").trim() || "0.2.120";
+  return resolveGrokClientVersion();
 }
 
 function isGrokCliProxyUrl(url = "") {
@@ -595,10 +586,7 @@ function buildResponsesHeaders({ provider = "", apiKey = "", sessionId = "", acc
   if (apiKey) headers.authorization = `Bearer ${apiKey}`;
 
   if (normalizedProvider === "codex") {
-    headers["User-Agent"] = String(
-      process.env.UFOO_CODEX_USER_AGENT
-        || "codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)"
-    );
+    headers["User-Agent"] = resolveCodexUserAgent();
     headers.Originator = "codex-tui";
     headers["Session-Id"] = String(sessionId || randomUUID());
     if (accountId) headers["Chatgpt-Account-Id"] = String(accountId);
@@ -629,9 +617,11 @@ async function runResponsesTurn({
   requestProfile = "",
   model = "",
   provider = "",
+  thinkingLevel = "",
   systemPrompt = "",
   messages = [],
   tools = [],
+  maxOutputTokens = null,
   sessionId = "",
   accountId = "",
   onTextDelta = null,
@@ -645,8 +635,8 @@ async function runResponsesTurn({
     instructions: systemPrompt,
     messages,
     tools,
-    maxOutputTokens: resolveMaxTokens(DEFAULT_OPENAI_MAX_TOKENS),
-    reasoningEffort: resolveReasoningEffort(),
+    maxOutputTokens: maxOutputTokens || resolveMaxTokens(DEFAULT_OPENAI_MAX_TOKENS),
+    reasoningEffort: thinkingLevel === "off" ? "none" : resolveReasoningEffort(thinkingOptions(thinkingLevel)),
     provider: normalizeProvider(provider),
   });
   const headers = buildResponsesHeaders({ provider, apiKey, sessionId, accountId, url });
@@ -820,10 +810,12 @@ async function runAnthropicTurn({
   apiKey = "",
   requestHeaders = {},
   model = "",
+  thinkingLevel = "",
   systemPrompt = "",
   systemBlocks = null,
   messages = [],
   tools = [],
+  maxOutputTokens = null,
   onTextDelta = null,
   onThinkingDelta = null,
   onPhase = null,
@@ -832,14 +824,28 @@ async function runAnthropicTurn({
 } = {}) {
   const payload = {
     model,
-    max_tokens: resolveMaxTokens(DEFAULT_ANTHROPIC_MAX_TOKENS),
+    max_tokens: maxOutputTokens || resolveMaxTokens(DEFAULT_ANTHROPIC_MAX_TOKENS),
     messages: withAnthropicCacheBreakpoint(messages),
     tools: tools.map((spec) => ({ name: spec.function.name, description: spec.function.description, input_schema: spec.function.parameters })),
     stream: true,
   };
-  const thinkingBudget = Math.min(resolveThinkingBudgetTokens(), payload.max_tokens - 1);
-  if (thinkingBudget >= 1024) {
-    payload.thinking = { type: "enabled", budget_tokens: thinkingBudget };
+  const isOpus55 = /^(?:claude-)?opus-5[.-]5(?:$|-)/i.test(model);
+  const supportsAdaptiveThinking = /^(?:claude-)?(?:(?:opus|sonnet)-(?:4[.-][678]|5(?:[.-]5)?)|haiku-5[.-]5)(?:$|-)/i.test(model);
+  const reasoningEffort = thinkingLevel === "off" ? "" : resolveReasoningEffort(thinkingOptions(thinkingLevel));
+  if (isOpus55) {
+    // Opus 5.5 always uses adaptive thinking and rejects manual budgets.
+    // Summaries keep its progress visible in the shared agent transcript.
+    payload.thinking = { type: "adaptive", display: "summarized" };
+    payload.output_config = {
+      // This model cannot disable thinking; low is the smallest supported effort.
+      effort: thinkingLevel === "off" ? "low" : (reasoningEffort || "medium"),
+    };
+  } else if (supportsAdaptiveThinking && reasoningEffort) {
+    payload.thinking = { type: "adaptive" };
+    payload.output_config = {
+      // The 4.6 models predate xhigh effort.
+      effort: /-4[.-]6(?:$|-)/i.test(model) && reasoningEffort === "xhigh" ? "high" : reasoningEffort,
+    };
   }
   if (Array.isArray(systemBlocks) && systemBlocks.length > 0) {
     payload.system = systemBlocksToAnthropicPayload(systemBlocks);
@@ -869,6 +875,7 @@ async function runAnthropicTurn({
   let responseText = "";
   let nextSyntheticBlockIndex = 0;
   let lastBlockIndex = -1;
+  let usageObserved = false;
   const turnUsage = {
     input: 0,
     output: 0,
@@ -893,12 +900,14 @@ async function runAnthropicTurn({
       if (text && typeof onTextDelta === "function") {
         onTextDelta(text);
       }
-      addUsageTotals(turnUsage, readAnthropicUsage(data && data.usage, { includeOutput: true }));
+      const usage = readAnthropicUsage(data && data.usage, { includeOutput: true });
+      usageObserved = Boolean(usage);
+      addUsageTotals(turnUsage, usage);
       return {
         text,
         assistantContent: content,
         toolCalls: extractAnthropicToolCalls(content),
-        usage: turnUsage,
+        usage: usageObserved ? turnUsage : null,
       };
     },
     onEvent: ({ event, data }) => {
@@ -919,6 +928,7 @@ async function runAnthropicTurn({
             : null
         );
         if (messageUsage) {
+          usageObserved = true;
           turnUsage.input = messageUsage.input;
           turnUsage.cacheRead = messageUsage.cacheRead;
           turnUsage.cacheCreation = messageUsage.cacheCreation;
@@ -930,6 +940,7 @@ async function runAnthropicTurn({
         const deltaUsage = payloadChunk.usage && typeof payloadChunk.usage === "object"
           ? payloadChunk.usage
           : {};
+        if (deltaUsage.output_tokens != null && Number.isFinite(Number(deltaUsage.output_tokens))) usageObserved = true;
         turnUsage.output += toUsageInt(deltaUsage.output_tokens);
         return;
       }
@@ -1090,7 +1101,7 @@ async function runAnthropicTurn({
         text: responseText,
         assistantContent,
         toolCalls: extractAnthropicToolCalls(assistantContent),
-        usage: turnUsage,
+        usage: usageObserved ? turnUsage : null,
       };
     },
   });
@@ -1130,6 +1141,6 @@ const TRANSPORTS = {
 
 module.exports = {
   getNativeTransport: (name) => TRANSPORTS[name] || TRANSPORTS["openai-chat"],
-  createNativeSseDispatcher, resolveThinkingBudgetTokens, resolveReasoningEffort,
+  createNativeSseDispatcher, resolveReasoningEffort,
   normalizeTimeoutMs, createUsageTotals, cloneMessageList,
 };

@@ -2,9 +2,15 @@ const {
   CodexSdkThread,
   CodexThreadProvider,
   defaultCodexStreamFactory,
+  buildThreadOptions,
 } = require("../../../src/agents/providers/codexThreadProvider");
 
 describe("agent codexThreadProvider", () => {
+  test("local service access defaults on without changing sandbox or explicit permission options", () => {
+    expect(buildThreadOptions()).toMatchObject({ sandboxMode: "workspace-write", networkAccessEnabled: true });
+    expect(buildThreadOptions({ threadOptions: { networkAccessEnabled: false, sandboxMode: "read-only" } }))
+      .toMatchObject({ sandboxMode: "read-only", networkAccessEnabled: false });
+  });
   function makeEvents(events) {
     return (async function* eventStream() {
       for (const event of events) yield event;
@@ -26,7 +32,9 @@ describe("agent codexThreadProvider", () => {
     for await (const event of thread.runStreamed("work")) events.push(event);
     expect(events.filter(event => event.type === "text_delta").map(event => event.delta).join("")).toBe("reading files");
     expect(events.find(event => event.type === "tool_call")).toMatchObject({ name: "bash", args: { command: "npm test" } });
-    expect(events.filter(event => event.type === "tool_result").map(event => event.output).join("")).toBe("first\nsecond\n");
+    expect(events.filter(event => event.type === "tool_result" && typeof event.output === "string").map(event => event.output).join("")).toBe("first\nsecond\n");
+    expect(events.filter(event => event.type === "tool_call" && event.name === "apply_patch")).toHaveLength(1);
+    expect(events.find(event => event.type === "tool_result" && event.output?.changes)).toMatchObject({ status: "completed" });
     expect(events.find(event => event.name === "apply_patch")).toMatchObject({ args: { path: "src/app.js" } });
     expect(events.at(-1).type).toBe("turn_completed");
   });
@@ -67,6 +75,7 @@ describe("agent codexThreadProvider", () => {
       workingDirectory: process.cwd(),
       skipGitRepoCheck: true,
       sandboxMode: "workspace-write",
+      networkAccessEnabled: true,
     }));
     expect(sdkThread.runStreamed).toHaveBeenCalledWith("hi", {
       outputSchema: { type: "object" },
@@ -75,7 +84,7 @@ describe("agent codexThreadProvider", () => {
     expect(events).toEqual([
       { type: "thread_started", threadId: "thread-42" },
       { type: "text_delta", delta: "hello", itemType: "agent_message" },
-      { type: "turn_completed", turnId: "turn-1", usage: null },
+      { type: "turn_completed", turnId: "turn-1", usage: null, finalText: "hello" },
     ]);
   });
 
@@ -107,10 +116,11 @@ describe("agent codexThreadProvider", () => {
     expect(codexClient.resumeThread).toHaveBeenCalledWith("thread-prev", expect.objectContaining({
       model: "gpt-5-codex",
       workingDirectory: process.cwd(),
+      networkAccessEnabled: true,
     }));
     expect(events).toEqual([
       { type: "thread_started", threadId: "thread-prev" },
-      { type: "turn_completed", turnId: "turn-resume", usage: null },
+      { type: "turn_completed", turnId: "turn-resume", usage: null, finalText: "" },
     ]);
   });
 
@@ -132,7 +142,7 @@ describe("agent codexThreadProvider", () => {
     expect(streamFactory).toHaveBeenCalled();
     expect(events).toEqual([
       { type: "thread_started", threadId: "thread-direct" },
-      { type: "turn_completed", turnId: "turn-direct", usage: null },
+      { type: "turn_completed", turnId: "turn-direct", usage: null, finalText: "" },
     ]);
   });
 
@@ -208,7 +218,7 @@ describe("agent codexThreadProvider", () => {
         name: "dispatch_message",
         args: { target: "codex:worker", message: "handle this" },
       },
-      { type: "turn_completed", turnId: "turn-2", usage: null },
+      { type: "turn_completed", turnId: "turn-2", usage: null, finalText: "" },
     ]);
   });
 

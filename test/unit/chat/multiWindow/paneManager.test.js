@@ -90,7 +90,7 @@ describe("paneManager", () => {
   test("layout commands do not leave a child spinner running", () => {
     const manager = createPaneManager();
     manager.addAgent("codex:1", 40, 8);
-    manager.sendInput("/multi off"); manager.sendInput("\r");
+    manager.sendInput("/window main"); manager.sendInput("\r");
     expect(manager.getPane("codex:1").surface.snapshot().busy).toBe(false);
   });
 

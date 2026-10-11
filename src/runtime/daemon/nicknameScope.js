@@ -25,7 +25,7 @@ function normalizeAutoNicknamePrefix(agentType = "") {
   if (normalized === "agy") return "agy";
   if (normalized === "grok") return "grok";
   if (normalized === "kimi" || normalized === "kimi-cli" || normalized === "kimi-code") return "kimi";
-  if (normalized === "ufoo" || normalized === "ucode" || normalized === "ufoo-code") return "ucode";
+  if (normalized === "ucode") return "ucode";
   return "";
 }
 

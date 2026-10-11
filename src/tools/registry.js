@@ -3,6 +3,8 @@ const readBusSummary = require("./tier0/readBusSummary");
 const readOpenDecisions = require("./tier0/readOpenDecisions");
 const readProjectRegistry = require("./tier0/readProjectRegistry");
 const readPromptHistory = require("./tier0/readPromptHistory");
+const readAgentTrace = require("./tier0/readAgentTrace");
+const readAgentMetrics = require("./tier0/readAgentMetrics");
 const ackBus = require("./tier1/ackBus");
 const dispatchMessage = require("./tier1/dispatchMessage");
 const editMemory = require("./tier1/editMemory");
@@ -25,6 +27,8 @@ const {
 } = require("./types");
 
 const SHARED_TOOL_REGISTRY = Object.freeze([
+  readAgentMetrics,
+  readAgentTrace,
   readBusSummary,
   readPromptHistory,
   readOpenDecisions,

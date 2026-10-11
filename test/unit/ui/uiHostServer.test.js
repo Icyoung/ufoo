@@ -67,6 +67,60 @@ function readLine(socket, timeoutMs = 2000) {
 }
 
 describe("uiHostServer", () => {
+  test("large pane frames drain once, coalesce updates by agent and reach every pane", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ui-backpressure-"));
+    const socketPath = path.join(dir, "ui.sock");
+    const authToken = createAuthToken();
+    const frames = [];
+    let buffer = "";
+    let resolveFrames;
+    const received = new Promise(resolve => { resolveFrames = resolve; });
+    const host = createUiHostServer({ socketPath, authToken, onClientReady() {
+      const frame = (agent, revision) => host.broadcast(host.createLossyEvent("multi.pane.frame", {
+        agent_id: agent, revision, entries: [{ kind: "assistant", text: `${agent} ${revision} ` + "x".repeat(256 * 1024) }],
+      }));
+      frame("architect", 1);
+      frame("builder", 1); frame("reviewer", 1);
+      frame("builder", 2); frame("reviewer", 2);
+    } });
+    await host.listen();
+    const socket = net.createConnection(socketPath);
+    let timer;
+    try {
+      socket.on("data", chunk => {
+        buffer += chunk.toString("utf8");
+        let newline;
+        while ((newline = buffer.indexOf("\n")) >= 0) {
+          const message = JSON.parse(buffer.slice(0, newline));
+          buffer = buffer.slice(newline + 1);
+          if (message.name === "multi.pane.frame") {
+            frames.push({ agent: message.payload.agent_id, revision: message.payload.revision });
+            if (frames.length === 3) resolveFrames();
+          }
+        }
+      });
+      await new Promise((resolve, reject) => { socket.once("connect", resolve); socket.once("error", reject); });
+      socket.pause();
+      socket.write(encodeMessage(createEnvelope({ kind: "hello", payload: { auth_token: authToken } })));
+      await new Promise(resolve => setTimeout(resolve, 20));
+      socket.resume();
+      await Promise.race([received, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Other agent panes were starved by the first frame")), 2000);
+      })]);
+      expect(frames).toEqual([
+        { agent: "architect", revision: 1 },
+        { agent: "builder", revision: 2 },
+        { agent: "reviewer", revision: 2 },
+      ]);
+      await new Promise(resolve => setTimeout(resolve, 30));
+      expect(frames).toHaveLength(3);
+    } finally {
+      clearTimeout(timer);
+      socket.destroy(); await host.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("chmod socket to 0o600 and reject hello without auth token", async () => {
     const socketPath = path.join(
       os.tmpdir(),

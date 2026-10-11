@@ -793,7 +793,7 @@ async function runUcodeRust(props = {}) {
           state: props.state || {},
           selfSubscriberId,
           remoteModels,
-          limit: 20,
+          limit: Math.max(20, remoteModels.length + 1),
         });
         publish("completions.set", { items });
         return { ok: true, count: items.length };

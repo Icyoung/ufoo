@@ -20,6 +20,9 @@ describe("group bootstrap", () => {
     expect(SHARED_UFOO_PROTOCOL).toContain("ufoo ctx decisions -l");
     expect(SHARED_UFOO_PROTOCOL).toContain("ufoo ctx decisions new");
     expect(SHARED_UFOO_PROTOCOL).toContain("ufoo bus send <target>");
+    expect(SHARED_UFOO_PROTOCOL).toContain("same natural language as the user's prompt");
+    expect(SHARED_UFOO_PROTOCOL).toContain("no bus reply, no lifecycle report, and no final response text");
+    expect(SHARED_UFOO_PROTOCOL).not.toContain("dedup, so don't worry about report loops");
     expect(SHARED_UFOO_PROTOCOL).toContain("A nonempty `UFOO_SUBSCRIBER_ID`");
     expect(SHARED_UFOO_PROTOCOL).toContain("never call MCP `register_agent`");
     expect(SHARED_UFOO_PROTOCOL).toContain("start resident `ufoo bus poll`");
@@ -27,7 +30,12 @@ describe("group bootstrap", () => {
     expect(SHARED_UFOO_PROTOCOL).toContain("sleep, or wait");
     expect(SHARED_UFOO_PROTOCOL).toContain("automatically injected into your prompt/session");
     expect(SHARED_UFOO_PROTOCOL).toContain("ufoo bus ack \"$UFOO_SUBSCRIBER_ID\"");
+    expect(SHARED_UFOO_PROTOCOL).toContain("When `UFOO_LAUNCH_MODE=internal`");
+    expect(SHARED_UFOO_PROTOCOL).toContain("Do not run `ufoo bus check`, `ufoo bus ack`, or MCP `ack_bus`");
     expect(SHARED_UFOO_PROTOCOL).toContain("ufoo report start|progress|done|error");
+    expect(SHARED_UFOO_PROTOCOL).toContain("1-4 short lines, at most 600 characters");
+    expect(SHARED_UFOO_PROTOCOL).toContain("exact path");
+    expect(SHARED_UFOO_PROTOCOL).toContain("required acceptance evidence");
     expect(SHARED_UFOO_PROTOCOL).toContain("Do not emulate report failures");
     expect(SHARED_UFOO_PROTOCOL).not.toContain("SESSION MARKER");
     expect(SHARED_UFOO_PROTOCOL).not.toContain("/ufoo <marker>");

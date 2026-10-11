@@ -15,7 +15,7 @@ describe("tier2 tool handlers", () => {
   });
 
   test("launch_agent forwards a launch op through handleOps", async () => {
-    const handleOps = jest.fn().mockResolvedValue([{ action: "launch", ok: true }]);
+    const handleOps = jest.fn().mockResolvedValue([{ action: "launch", internal_only: true, ok: true }]);
 
     const result = await launchAgentHandler(
       controllerCtx({ handleOps }),
@@ -23,7 +23,7 @@ describe("tier2 tool handlers", () => {
     );
 
     expect(handleOps).toHaveBeenCalledWith("/tmp/project", [{
-      action: "launch",
+      action: "launch", internal_only: true,
       agent: "codex",
       count: 2,
       nickname: "worker-1",
@@ -31,7 +31,7 @@ describe("tier2 tool handlers", () => {
     }], null);
     expect(result).toEqual(expect.objectContaining({
       ok: true,
-      operation: expect.objectContaining({ action: "launch", agent: "codex" }),
+      operation: expect.objectContaining({ action: "launch", internal_only: true, agent: "codex" }),
       audit: expect.objectContaining({
         turn_id: "turn-1",
         tool_call_id: "call-1",
@@ -177,7 +177,7 @@ describe("tier2 tool handlers", () => {
     });
 
     test("defaults to controller when caller_tier is omitted (back-compat)", async () => {
-      handleOps.mockResolvedValue([{ action: "launch", ok: true }]);
+      handleOps.mockResolvedValue([{ action: "launch", internal_only: true, ok: true }]);
       const result = await launchAgentHandler(
         { projectRoot: "/tmp/project", handleOps },
         { agent: "codex" }

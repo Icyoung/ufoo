@@ -2,7 +2,6 @@ const fs = require("fs");
 const path = require("path");
 const net = require("net");
 const { spawn, spawnSync } = require("child_process");
-const { runUfooAgent, runUfooRouteAgent } = require("../../agents/controller/ufooAgent");
 const { launchAgent, closeAgent, getRecoverableAgents, resumeAgents } = require("./ops");
 const { buildStatus } = require("./status");
 const EventBus = require("../../coordination/bus");
@@ -25,7 +24,6 @@ const { createDaemonCronController } = require("./cronOps");
 const { createGroupOrchestrator } = require("./groupOrchestrator");
 const { DeliveryScheduler } = require("./deliveryScheduler");
 const { normalizeFormat, renderGroupDiagramFromTemplate, renderGroupDiagramFromRuntime } = require("../../orchestration/groups/diagram");
-const { runPromptWithAssistant } = require("./promptLoop");
 const { handlePromptRequest } = require("./promptRequest");
 const { recordAgentReport } = require("./reporting");
 const { startBusBridge } = require("./busBridge");
@@ -77,7 +75,7 @@ function normalizeBusAgentType(agentType = "") {
   if (value === "agy" || value === "antigravity") return "agy";
   if (value === "grok" || value === "ugrok" || value === "grok-build" || value === "xai") return "grok";
   if (value === "kimi" || value === "kimi-cli" || value === "kimi-code") return "kimi";
-  if (value === "ufoo" || value === "ucode" || value === "ufoo-code") return "ufoo-code";
+  if (value === "ucode") return "ucode";
   return value;
 }
 
@@ -88,7 +86,7 @@ function normalizeLaunchAgent(agent = "") {
   if (value === "agy" || value === "antigravity") return "agy";
   if (value === "grok" || value === "ugrok" || value === "grok-build" || value === "xai") return "grok";
   if (value === "kimi" || value === "kimi-cli" || value === "kimi-code") return "kimi";
-  if (value === "ufoo" || value === "ucode" || value === "ufoo-code") return "ufoo";
+  if (value === "ucode") return "ucode";
   return "";
 }
 
@@ -856,6 +854,8 @@ async function dispatchMessages(projectRoot, dispatch = [], { strict = false } =
     const sendOptions = {
       injectionMode: item.injection_mode,
       source: item.source,
+      ...(item.task_id ? { taskId: item.task_id } : {}),
+      ...(item.runtime_context ? { data: { runtime_context: item.runtime_context } } : {}),
     };
     try {
       if (target === "broadcast") {
@@ -1156,15 +1156,13 @@ function startDaemon({
       dispatchMessages: (root, messages) => dispatchMessages(root, messages, { strict: true }),
       ackBus: async (root, subscriber) => new EventBus(root).ack(subscriber),
       markPending: (target) => busBridge.markPending(target), groups: daemonGroupOrchestrator,
-      agentLifecycle: { inspect: (target) => getRecoverableAgents(projectRoot, target), resume: (target) => resumeAgents(projectRoot, target, processManager) } },
+      agentLifecycle: { inspect: (target) => getRecoverableAgents(projectRoot, target, { internalOnly: true }), resume: (target) => resumeAgents(projectRoot, target, processManager, { internalOnly: true }) } },
     onEvent: (event) => ipcServer.sendToSockets({ type: IPC_RESPONSE_TYPES.RUNTIME_EVENT, data: event }),
   }));
   void mainAgentHost.recover().catch((error) => log(`main runtime recovery failed: ${error.message}`));
   runtimeServices.workspaceAccess = mainAgentHost.workspaceAccess;
-  const selectExecutionPath = require("./executionPaths").createExecutionPathSelector(projectRoot);
   projectRuntime.canSuspendHook = () => !mainAgentHost.snapshot().sessions.some((session) => session.tasks.some((task) => ["queued", "running"].includes(task.status)))
-    && !mainAgentHost.snapshot().children.some((task) => ["queued", "running"].includes(task.status))
-    && !mainAgentHost.snapshot().compatibility.active && !mainAgentHost.snapshot().compatibility.queued;
+    && !mainAgentHost.snapshot().children.some((task) => ["queued", "running"].includes(task.status));
   const deliveryScheduler = new DeliveryScheduler(projectRoot, {
     log,
     emitDelivery: async ({ subscriber, event, status, error, errorCode } = {}) => {
@@ -1266,6 +1264,7 @@ function startDaemon({
         }
         else if (req.operation === "tasks") result = await mainAgentHost.taskPort.execute(req.arguments || {}, { sessionId: req.session_id || "main-default", requestId: req.request_id });
         else if (req.operation === "status") result = mainAgentHost.snapshot();
+        else if (req.operation === "trace") result = require("../../coordination/history/agentTrace").readAgentTrace(projectRoot, req.arguments || {});
         else throw new Error("unknown agent_runtime operation");
         if (!socket.destroyed) socket.write(`${JSON.stringify({ type: IPC_RESPONSE_TYPES.RUNTIME_RESULT, request_id: req.request_id, data: result })}\n`);
       } catch (error) {
@@ -1317,41 +1316,17 @@ function startDaemon({
     }
     if (req.type === IPC_REQUEST_TYPES.PROMPT) {
       req.request_id = req.request_id || require("crypto").randomUUID();
-      let effectIndex = 0;
-      const effect = async (kind, args, invoke) => {
-        const result = await mainAgentHost.management.commands.execute({ commandId: `prompt-${require("crypto").createHash("sha256").update(`${req.request_id}:${effectIndex++}`).digest("hex").slice(0, 32)}`, kind, args }, invoke);
-        if (result?.code === "uncertain_effect") throw Object.assign(new Error("effect outcome is unknown; inspect its receipt before retrying"), { code: "uncertain_effect" });
+      const forwardEffect = async (args, invoke) => {
+        const commandId = `project-forward-${require("crypto").createHash("sha256").update(req.request_id).digest("hex").slice(0, 32)}`;
+        const result = await mainAgentHost.management.commands.execute({ commandId, kind: "project-forward", args }, invoke);
+        if (result?.code === "uncertain_effect") throw Object.assign(new Error("project handoff outcome is unknown; inspect its receipt before retrying"), { code: "uncertain_effect" });
         return result;
       };
       await handlePromptRequest({
         projectRoot,
         req,
         socket,
-        provider,
-        model,
-        processManager,
-        runPromptWithAssistant,
-        runUfooAgent,
-        runUfooRouteAgent,
-        selectExecutionPath,
         runMainAgent: ({ originalPrompt, requestId, sessionId, requestMeta }) => mainAgentHost.runPrompt({ prompt: originalPrompt, requestId, sessionId, requestMeta }),
-        runCompatibility: (request, invoke) => mainAgentHost.runCompatibility(request, invoke),
-        dispatchMessages: (root, messages) => effect("prompt-dispatch", { root, messages }, () => dispatchMessages(root, messages, { strict: true })),
-        handleOps: (root, ops, manager) => effect("prompt-ops", { root, ops }, () => handleRuntimeOps(root, ops, manager)),
-        markPending: (target) => busBridge.markPending(target),
-        reportTaskStatus: async (report) => {
-          await recordAgentReport({
-            projectRoot,
-            report,
-            onStatus: (status) => {
-              ipcServer.sendToSockets({
-                type: IPC_RESPONSE_TYPES.STATUS,
-                data: status,
-              });
-            },
-            log,
-          });
-        },
         forwardProjectPrompt: async ({
           targetProjectRoot,
           targetProjectName,
@@ -1363,7 +1338,7 @@ function startDaemon({
           if (!root) {
             return { ok: false, error: "target project root is required" };
           }
-          return effect("project-forward", { root, prompt, requestMeta }, async () => {
+          return forwardEffect({ root, prompt, requestMeta }, async () => {
           if (!fs.existsSync(root)) {
             return { ok: false, error: `target project not found: ${root}` };
           }
@@ -1669,9 +1644,9 @@ function startDaemon({
             : null,
       };
       let soloLaunchBootstrap = null;
-      if (requestedProfile && (normalizedAgent === "ufoo" || normalizedAgent === "claude" || normalizedAgent === "codex" || normalizedAgent === "agy" || normalizedAgent === "grok" || normalizedAgent === "kimi")) {
-        const agentTypeMap = { ufoo: "ufoo-code", claude: "claude-code", codex: "codex", agy: "agy", grok: "grok", kimi: "kimi" };
-        const defaultNickMap = { ufoo: "ucode", claude: "claude", codex: "codex", agy: "agy", grok: "grok", kimi: "kimi" };
+      if (requestedProfile && (normalizedAgent === "ucode" || normalizedAgent === "claude" || normalizedAgent === "codex" || normalizedAgent === "agy" || normalizedAgent === "grok" || normalizedAgent === "kimi")) {
+        const agentTypeMap = { ucode: "ucode", claude: "claude-code", codex: "codex", agy: "agy", grok: "grok", kimi: "kimi" };
+        const defaultNickMap = { ucode: "ucode", claude: "claude", codex: "codex", agy: "agy", grok: "grok", kimi: "kimi" };
         const agentTypeForBootstrap = agentTypeMap[normalizedAgent];
         const soloNickname = explicitNickname || defaultNickMap[normalizedAgent];
         const profileResult = resolveSoloPromptProfile(projectRoot, requestedProfile);
@@ -1693,7 +1668,7 @@ function startDaemon({
         });
         if (built.required) {
           try {
-            if (normalizedAgent === "ufoo") {
+            if (normalizedAgent === "ucode") {
               // ucode: bootstrap via env var pointing to file
               const prepared = prepareSoloUcodeBootstrap(projectRoot, soloNickname, built.promptText);
               op.extra_env = {
@@ -2253,7 +2228,7 @@ function startDaemon({
     if (req.type === IPC_REQUEST_TYPES.RESUME_AGENTS) {
       const target = req.target || "";
       try {
-        const result = await resumeAgents(projectRoot, target, processManager);
+        const result = await resumeAgents(projectRoot, target, processManager, { internalOnly: req.internal_only === true });
         const resumedCount = result.resumed.length;
         const skippedCount = result.skipped.length;
         const reply = resumedCount > 0
@@ -2283,7 +2258,7 @@ function startDaemon({
     if (req.type === IPC_REQUEST_TYPES.LIST_RECOVERABLE_AGENTS) {
       const target = req.target || "";
       try {
-        const result = getRecoverableAgents(projectRoot, target);
+        const result = getRecoverableAgents(projectRoot, target, { internalOnly: req.internal_only === true });
         const count = result.recoverable.length;
         const reply = count > 0 ? `Found ${count} recoverable agent(s)` : "No recoverable agents";
         socket.write(
@@ -2488,7 +2463,7 @@ function startDaemon({
     const runnerProcesses = [];
 
     for (const line of lines) {
-      if (line.includes("agent-pty-runner") || line.includes("agent-runner")) {
+      if (line.includes("agent-runner")) {
         const parts = line.trim().split(/\s+/);
         if (parts.length >= 2) {
           const pid = parseInt(parts[1], 10);

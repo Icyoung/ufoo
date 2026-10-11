@@ -188,8 +188,8 @@ describe("_findPreviousSession tty_shell_pid guard", () => {
 
   it("reuses the session without inheriting another agent type's auto nickname", () => {
     writeAgents({
-      "ufoo-code:legacyucode": {
-        agent_type: "ufoo-code",
+      "ucode:native001": {
+        agent_type: "ucode",
         tty: "/dev/ttys999",
         pid: null,
         tty_shell_pid: process.pid,
@@ -200,13 +200,13 @@ describe("_findPreviousSession tty_shell_pid guard", () => {
 
     const result = AgentLauncher._findPreviousSession(
       tmpDir,
-      "ufoo-code",
+      "ucode",
       "/dev/ttys999",
       null,
     );
     expect(result).toEqual({
-      sessionId: "legacyucode",
-      subscriberId: "ufoo-code:legacyucode",
+      sessionId: "native001",
+      subscriberId: "ucode:native001",
       nickname: "",
       providerSessionId: "ucode-session",
     });

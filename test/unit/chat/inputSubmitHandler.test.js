@@ -1,5 +1,4 @@
 const { createInputSubmitHandler } = require("../../../src/app/chat/inputSubmitHandler");
-const { createTerminalAdapterRouter } = require("../../../src/runtime/terminal/adapterRouter");
 
 function createHarness(stateOverrides = {}, optionOverrides = {}) {
   const state = {
@@ -9,16 +8,9 @@ function createHarness(stateOverrides = {}, optionOverrides = {}) {
     ...stateOverrides,
   };
 
-  const adapterRouter = createTerminalAdapterRouter();
-
   const options = {
     state,
     parseAtTarget: jest.fn(() => null),
-    getAgentAdapter: jest.fn((agentId) => {
-      const meta = state.activeAgentMetaMap.get(agentId) || {};
-      const launchMode = meta.launch_mode || "";
-      return adapterRouter.getAdapter({ launchMode, agentId });
-    }),
     resolveAgentId: jest.fn(() => null),
     executeCommand: jest.fn(() => Promise.resolve(true)),
     queueStatusLine: jest.fn(),
@@ -30,10 +22,7 @@ function createHarness(stateOverrides = {}, optionOverrides = {}) {
     clearTargetAgent: jest.fn(() => {
       state.targetAgent = null;
     }),
-    enterAgentView: jest.fn(),
-    activateAgent: jest.fn(() => Promise.resolve()),
-    getInjectSockPath: jest.fn((id) => `/tmp/${id}.sock`),
-    existsSync: jest.fn(() => false),
+    activateInternalAgent: jest.fn(() => ({ ok: true })),
     commitInputHistory: jest.fn(),
     focusInput: jest.fn(),
     ...optionOverrides,
@@ -48,57 +37,12 @@ describe("chat inputSubmitHandler", () => {
     expect(() => createInputSubmitHandler({})).toThrow(/requires a mutable state object/);
   });
 
-  test("empty submit with target agent enters PTY view when socket exists", async () => {
-    const { state, options, handler } = createHarness(
-      {
-        targetAgent: "codex:1",
-        activeAgentMetaMap: new Map([["codex:1", { launch_mode: "internal" }]]),
-      },
-      {
-        existsSync: jest.fn(() => true),
-      }
-    );
-
-    await handler.handleSubmit("   ");
-
-    expect(options.clearTargetAgent).toHaveBeenCalled();
-    expect(options.enterAgentView).toHaveBeenCalledWith("codex:1", { useBus: true });
-    expect(options.focusInput).not.toHaveBeenCalled();
-    expect(state.targetAgent).toBeNull();
-  });
-
-  test("empty submit with terminal target activates via host activator", async () => {
-    const { state, options, handler } = createHarness({
-      targetAgent: "codex:1",
-      activeAgentMetaMap: new Map([["codex:1", { launch_mode: "terminal" }]]),
-    });
-
-    await handler.handleSubmit("");
-
-    expect(options.activateAgent).toHaveBeenCalledWith("codex:1");
-    expect(options.clearTargetAgent).toHaveBeenCalled();
-    expect(options.enterAgentView).not.toHaveBeenCalled();
-    expect(state.targetAgent).toBeNull();
-  });
-
-  test("empty submit with tmux target activates via host activator", async () => {
-    const { options, handler } = createHarness({
-      targetAgent: "codex:tmux",
-      activeAgentMetaMap: new Map([["codex:tmux", { launch_mode: "tmux" }]]),
-    });
-
-    await handler.handleSubmit("  ");
-
-    expect(options.activateAgent).toHaveBeenCalledWith("codex:tmux");
-    expect(options.enterAgentView).not.toHaveBeenCalled();
-  });
-
-  test("empty submit prefers multi pane focus over OS activate", async () => {
+  test("empty submit focuses an existing internal pane before opening a side pane", async () => {
     const focusMultiPane = jest.fn(async () => true);
     const { options, handler } = createHarness(
       {
         targetAgent: "codex:1",
-        activeAgentMetaMap: new Map([["codex:1", { launch_mode: "terminal" }]]),
+        activeAgentMetaMap: new Map([["codex:1", { launch_mode: "internal" }]]),
       },
       { focusMultiPane }
     );
@@ -106,25 +50,35 @@ describe("chat inputSubmitHandler", () => {
     await handler.handleSubmit("");
 
     expect(focusMultiPane).toHaveBeenCalledWith("codex:1");
-    expect(options.activateAgent).not.toHaveBeenCalled();
+    expect(options.activateInternalAgent).not.toHaveBeenCalled();
     expect(options.clearTargetAgent).toHaveBeenCalled();
   });
 
-  test("empty submit with internal target uses enterAgentView when focusMultiPane declines", async () => {
+  test("empty submit with internal target uses internal side pane when focusMultiPane declines", async () => {
     const focusMultiPane = jest.fn(async () => false);
     const { options, handler } = createHarness(
       {
-        targetAgent: "ufoo:1",
-        activeAgentMetaMap: new Map([["ufoo:1", { launch_mode: "internal" }]]),
+        targetAgent: "ucode:1",
+        activeAgentMetaMap: new Map([["ucode:1", { launch_mode: "internal" }]]),
       },
       { focusMultiPane }
     );
 
     await handler.handleSubmit("");
 
-    expect(focusMultiPane).toHaveBeenCalledWith("ufoo:1");
-    expect(options.enterAgentView).toHaveBeenCalledWith("ufoo:1", { useBus: true });
-    expect(options.activateAgent).not.toHaveBeenCalled();
+    expect(focusMultiPane).toHaveBeenCalledWith("ucode:1");
+    expect(options.activateInternalAgent).toHaveBeenCalledWith("ucode:1");
+  });
+  test("a failed internal activation preserves the selected target", async () => {
+    const { state, options, handler } = createHarness({ targetAgent: "codex:1" }, {
+      focusMultiPane: async () => false,
+      activateInternalAgent: jest.fn(() => ({ ok: false, error: "agent offline" })),
+    });
+    await handler.handleSubmit("");
+    expect(state.targetAgent).toBe("codex:1");
+    expect(options.clearTargetAgent).not.toHaveBeenCalled();
+    expect(options.send).not.toHaveBeenCalled();
+    expect(options.focusInput).toHaveBeenCalled();
   });
 
   test("targeted text sends bus message and clears target", async () => {

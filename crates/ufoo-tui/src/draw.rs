@@ -24,6 +24,7 @@ const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧
 
 /// Draw UI and return hardware cursor position (x, y) for IME, if any.
 pub fn draw(frame: &mut Frame, state: &mut AppState) -> Option<(u16, u16)> {
+    state.text_selection.begin_frame();
     let area = frame.area();
     let child_focused = focused_child(state).is_some();
     let status_h = if state.surface == "chat" { 0 } else { 1 };
@@ -70,7 +71,7 @@ pub fn draw(frame: &mut Frame, state: &mut AppState) -> Option<(u16, u16)> {
             Constraint::Length(attach_h),
             Constraint::Length(status_h), // chat status lives in each pane's border
             Constraint::Length(prompt_height(state, area.width)),
-            Constraint::Length(1), // agents / mode / provider / cron
+            Constraint::Length(1), // agents / provider / cron
         ])
         .split(area);
 
@@ -80,6 +81,8 @@ pub fn draw(frame: &mut Frame, state: &mut AppState) -> Option<(u16, u16)> {
     if state.multi.active && !state.multi.panes.is_empty() {
         draw_multi_content(frame, chunks[1], state);
     } else {
+        state.multi.chat_rect = None;
+        state.multi.pane_rects.clear();
         draw_scrollback(frame, chunks[1], state);
     }
     if completion_h > 0 {
@@ -99,6 +102,7 @@ pub fn draw(frame: &mut Frame, state: &mut AppState) -> Option<(u16, u16)> {
     }
     let cursor = draw_prompt(frame, chunks[7], state);
     draw_footer(frame, chunks[8], state);
+    state.text_selection.finish_frame(frame.buffer_mut());
     cursor
 }
 
@@ -153,7 +157,6 @@ fn prompt_accepts_typing(state: &AppState) -> bool {
     // Footer / project focus still routes printable keys into the draft, so the
     // hardware caret must stay inside the prompt box (IME / CJK preedit).
     match state.focus {
-        FocusPane::AgentView => !state.agent_bar_focused,
         FocusPane::Completions => false,
         _ => true,
     }
@@ -216,6 +219,12 @@ fn draw_scrollback(frame: &mut Frame, area: Rect, state: &mut AppState) {
     let max_rows = content.height as usize;
     let lines = build_scrollback_lines(state, content.width as usize);
     let total = lines.len();
+    let selection_area = if state.surface == "ucode" && total > max_rows {
+        Rect { width: content.width.saturating_sub(1), ..content }
+    } else {
+        content
+    };
+    state.text_selection.register(selection_area);
     let max_off = total.saturating_sub(max_rows);
     state.scroll_max_off = max_off;
     if state.follow_tail {
@@ -227,9 +236,7 @@ fn draw_scrollback(frame: &mut Frame, area: Rect, state: &mut AppState) {
 
     // Keep the same brand title as single-pane mode (🛸 UFOO); only the
     // border/title color changes when multi focuses the ufoo chat side.
-    let title = if !state.viewing_agent_id.is_empty() {
-        format!(" agent · {} ", state.viewing_agent_label)
-    } else if state.follow_tail {
+    let title = if state.follow_tail {
         state.title.clone()
     } else {
         format!("{}↑{} ", state.title.trim_end(), state.scroll_offset)
@@ -307,12 +314,29 @@ fn build_scrollback_lines(state: &AppState, width: usize) -> Vec<Line<'static>> 
     }
 }
 
-fn draw_completions(frame: &mut Frame, area: Rect, state: &AppState) {
+fn draw_completions(frame: &mut Frame, area: Rect, state: &mut AppState) {
     let block = Block::default().title("completions").borders(Borders::ALL);
+    let visible_rows = block.inner(area).height as usize;
+    if visible_rows == 0 || state.completions.is_empty() {
+        state.completion_scroll = 0;
+        frame.render_widget(block, area);
+        return;
+    }
+    state.completion_index = state.completion_index.min(state.completions.len() - 1);
+    let max_scroll = state.completions.len().saturating_sub(visible_rows);
+    let mut scroll = state.completion_scroll.min(max_scroll);
+    if state.completion_index < scroll {
+        scroll = state.completion_index;
+    } else if state.completion_index >= scroll + visible_rows {
+        scroll = state.completion_index + 1 - visible_rows;
+    }
+    state.completion_scroll = scroll;
     let lines: Vec<Line> = state
         .completions
         .iter()
         .enumerate()
+        .skip(scroll)
+        .take(visible_rows)
         .map(|(i, item)| {
             let selected = i == state.completion_index;
             let mark = if selected { "› " } else { "  " };
@@ -410,21 +434,7 @@ fn shared_prompt(state: &AppState) -> PromptState {
     let Some(pane) = focused_child(state) else {
         return state.prompt.clone();
     };
-    // Child drafts are Node-owned and use UTF-16 offsets; Rust prompts use scalars.
-    let mut units = 0;
-    let cursor = pane
-        .input
-        .chars()
-        .take_while(|ch| {
-            units += ch.len_utf16();
-            units <= pane.input_cursor
-        })
-        .count();
-    PromptState {
-        text: pane.input.clone(),
-        cursor,
-        ..Default::default()
-    }
+    pane.draft()
 }
 
 fn draw_prompt(frame: &mut Frame, area: Rect, state: &AppState) -> Option<(u16, u16)> {
@@ -447,20 +457,7 @@ fn draw_prompt(frame: &mut Frame, area: Rect, state: &AppState) -> Option<(u16, 
         );
     }
 
-    let title = if state.focus == FocusPane::AgentView {
-        if state.agent_bar_focused {
-            "› agent bar".to_string()
-        } else {
-            format!(
-                "› {}",
-                if state.viewing_agent_label.is_empty() {
-                    state.viewing_agent_id.as_str()
-                } else {
-                    state.viewing_agent_label.as_str()
-                }
-            )
-        }
-    } else if state.focus == FocusPane::Input || state.focus == FocusPane::Interaction {
+    let title = if state.focus == FocusPane::Input || state.focus == FocusPane::Interaction {
         if state.surface == "chat" && !state.prompt_prefix.contains('@') {
             "› main".into()
         } else {
@@ -475,17 +472,22 @@ fn draw_prompt(frame: &mut Frame, area: Rect, state: &AppState) -> Option<(u16, 
     } else {
         match state.focus {
             FocusPane::Completions => "› completions".into(),
-            FocusPane::Mode => "› mode".into(),
             FocusPane::Provider => "› provider".into(),
             FocusPane::Cron => "› cron".into(),
             FocusPane::Projects => "› projects".into(),
             _ => "›".into(),
         }
     };
+    let masked;
+    let prompt = if state.interaction.as_ref().is_some_and(|interaction| interaction.secret) {
+        masked = PromptState { text: state.prompt.text.chars().map(|ch| if ch == '\n' { '\n' } else { '*' }).collect(),
+            cursor: state.prompt.cursor, ..PromptState::default() };
+        &masked
+    } else { &state.prompt };
     draw_input(
         frame,
         area,
-        &state.prompt,
+        prompt,
         title,
         if state.multi.active {
             pane_border_style(true)
@@ -560,8 +562,6 @@ fn main_status_text(state: &AppState) -> String {
     };
     let ask = if let Some(interaction) = state.interaction.as_ref() {
         format!(" | {}: {}", interaction.kind, interaction.prompt)
-    } else if state.surface != "chat" && !state.agent_view_status.is_empty() {
-        format!(" | {}", state.agent_view_status)
     } else {
         String::new()
     };
@@ -645,6 +645,7 @@ fn draw_multi_pane(frame: &mut Frame, area: Rect, state: &mut AppState, idx: usi
         .borders(Borders::ALL)
         .border_style(border_style);
     let inner = pane_content_area(block.inner(area));
+    state.text_selection.register(inner);
     let plan_height = (pane.plan.len() as u16)
         .min(3)
         .min(inner.height.saturating_sub(2));
@@ -837,6 +838,9 @@ pub(crate) fn footer_focus_at(
                 return Some((FocusPane::Provider, Some(index)));
             }
         }
+        for (offset, label) in ["model", "thinking"].iter().enumerate() {
+            if hits(label) { return Some((FocusPane::Provider, Some(state.provider_options.len() + offset))); }
+        }
         return Some((FocusPane::Provider, None));
     }
     if state.focus == FocusPane::Cron {
@@ -884,21 +888,15 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &AppState) {
     } else {
         base
     };
-    // Ink-style: plain caption row; only highlight when a dashboard pane is focused.
+    // Footer: plain caption row; only highlight when a dashboard pane is focused.
     let style = match state.focus {
-        FocusPane::Agents | FocusPane::Mode | FocusPane::Provider | FocusPane::Cron => {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
-        }
-        FocusPane::Projects => Style::default()
+        FocusPane::Agents | FocusPane::Provider | FocusPane::Cron => Style::default()
             .fg(Color::Black)
             .bg(Color::Yellow)
             .add_modifier(Modifier::BOLD),
-        FocusPane::AgentView => Style::default()
+        FocusPane::Projects => Style::default()
             .fg(Color::Black)
-            .bg(Color::Magenta)
+            .bg(Color::Yellow)
             .add_modifier(Modifier::BOLD),
         _ => Style::default().fg(Color::Cyan),
     };
@@ -909,6 +907,137 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn custom_api_keys_are_masked_in_the_shared_input() {
+        let mut state = AppState::new("ufoo", "chat");
+        state.focus = FocusPane::Interaction;
+        state.interaction = Some(crate::model::InteractionPrompt { id: "settings-key".into(),
+            prompt: "API key".into(), secret: true, ..Default::default() });
+        state.prompt.set_text("isolated-secret-key".into());
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|frame| { draw(frame, &mut state); }).unwrap();
+        let buffer = terminal.backend().buffer();
+        let screen = (0..40).map(|y| (0..120).map(|x| buffer.cell((x, y)).unwrap().symbol()).collect::<String>()).collect::<Vec<_>>().join("\n");
+        assert!(!screen.contains("isolated-secret-key"));
+        assert!(screen.contains("*******************"));
+    }
+    use crate::action::Action;
+    use crate::dispatch::dispatch;
+    use crate::model::CompletionItem;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn completion_state(surface: &str) -> AppState {
+        let mut state = AppState::new("ufoo", surface);
+        state.focus = FocusPane::Completions;
+        state.prompt.set_text("/".into());
+        state.completions = (0..20)
+            .map(|index| CompletionItem {
+                label: format!("/cmd-{index:02}"),
+                replace: format!("/cmd-{index:02} "),
+                description: String::new(),
+                has_children: false,
+            })
+            .collect();
+        state
+    }
+
+    #[test]
+    fn completion_viewport_follows_keyboard_selection_in_both_directions_and_wraps() {
+        for surface in ["chat", "ucode"] {
+            let mut state = completion_state(surface);
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 10)).unwrap();
+            let mut paint = |state: &mut AppState| {
+                terminal
+                    .draw(|frame| draw_completions(frame, frame.area(), state))
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                (1..9)
+                    .map(|y| {
+                        (0..80)
+                            .map(|x| buffer.cell((x, y)).unwrap().symbol())
+                            .collect::<String>()
+                    })
+                    .collect::<Vec<_>>()
+            };
+            paint(&mut state);
+            for (key, presses, selected, first, last) in [
+                (KeyCode::Down, 8, 8, 1, 8),
+                (KeyCode::Up, 1, 7, 1, 8),
+                (KeyCode::Up, 7, 0, 0, 7),
+                (KeyCode::Up, 1, 19, 12, 19),
+                (KeyCode::Down, 1, 0, 0, 7),
+            ] {
+                for _ in 0..presses {
+                    assert!(dispatch(
+                        &mut state,
+                        Action::Key(KeyEvent::new(key, KeyModifiers::NONE))
+                    )
+                    .is_empty());
+                    paint(&mut state);
+                }
+                let rows = paint(&mut state);
+                assert!(rows[0].contains(&format!("/cmd-{first:02}")));
+                assert!(rows[7].contains(&format!("/cmd-{last:02}")));
+                assert!(rows
+                    .iter()
+                    .any(|row| row.contains(&format!("› /cmd-{selected:02}"))));
+                assert_eq!(state.prompt.text, "/");
+            }
+        }
+    }
+
+    #[test]
+    fn completion_viewport_resizes_and_resets_when_the_candidate_list_changes() {
+        let mut state = completion_state("chat");
+        state.completion_index = 19;
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 40)).unwrap();
+        for height in [40, 12, 20, 40] {
+            terminal.backend_mut().resize(80, height);
+            terminal.resize(Rect::new(0, 0, 80, height)).unwrap();
+            terminal
+                .draw(|frame| {
+                    draw(frame, &mut state);
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            assert!(
+                (0..height).any(|y| {
+                    let row: String = (0..80)
+                        .map(|x| buffer.cell((x, y)).unwrap().symbol())
+                        .collect();
+                    row.contains("› /cmd-19")
+                }),
+                "selected completion must stay visible at height {height}"
+            );
+        }
+        let event = serde_json::from_value(serde_json::json!({
+            "protocol": crate::protocol::PROTOCOL,
+            "kind": "event", "name": "completions.set",
+            "payload": { "text": "/", "items": [
+                { "label": "/new-first" }, { "label": "/new-second" }
+            ] }
+        }))
+        .unwrap();
+        dispatch(&mut state, Action::Host(event));
+        terminal
+            .draw(|frame| {
+                draw(frame, &mut state);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let rows: Vec<String> = (0..40)
+            .map(|y| {
+                (0..80)
+                    .map(|x| buffer.cell((x, y)).unwrap().symbol())
+                    .collect()
+            })
+            .collect();
+        assert!(rows.iter().any(|row| row.contains("› /new-first")));
+        assert!(rows.iter().any(|row| row.contains("/new-second")));
+        assert!(!rows.iter().any(|row| row.contains("/cmd-")));
+    }
 
     #[test]
     fn main_input_title_and_status_are_independent_of_child_status() {
@@ -916,7 +1045,6 @@ mod tests {
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
         let mut state = AppState::new("ufoo", "chat");
         state.status = "Thinking…".into();
-        state.agent_view_status = "child task".into();
         for split in [false, true] {
             state.multi.active = split;
             state.multi.focus = MultiFocus::Chat;
@@ -959,7 +1087,11 @@ mod tests {
                 activity_state: String::new(),
             },
         ];
+        state.apply_settings_payload(&serde_json::json!({
+            "launch_mode": "internal", "mode_options": ["internal"]
+        }));
         state.rebuild_footer();
+        assert!(!state.footer.contains("internal"));
         for (needle, index) in [("@coder,", 0), ("@coder-review", 1), ("@中文", 2)] {
             let start = state.footer.find(needle).unwrap();
             let column = (1 + state.footer[..start].width()) as u16;
@@ -1130,6 +1262,10 @@ mod tests {
         assert_eq!(buffer.cell((117, 1)).unwrap().symbol(), "Z");
         assert_eq!(buffer.cell((118, 1)).unwrap().symbol(), " ");
         assert_eq!(buffer.cell((1, y - 1)).unwrap().symbol(), "›");
+        let input_title: String = (0..120)
+            .map(|x| buffer.cell((x, y - 1)).unwrap().symbol())
+            .collect();
+        assert!(input_title.contains("› @coder ─"));
         assert_eq!(buffer.cell((41, y - 1)).unwrap().symbol(), "─");
         let status: String = (41..120)
             .map(|x| buffer.cell((x, y - 2)).unwrap().symbol())
@@ -1147,6 +1283,10 @@ mod tests {
             .unwrap();
         assert!(cursor.unwrap().0 < 40);
         let buffer = terminal.backend().buffer();
+        let input_title: String = (0..120)
+            .map(|x| buffer.cell((x, cursor.unwrap().1 - 1)).unwrap().symbol())
+            .collect();
+        assert!(input_title.contains("› main ─"));
         assert_eq!(buffer.cell((2, 1)).unwrap().fg, Color::Reset);
         assert_eq!(
             buffer.cell((43, 1)).unwrap().fg,
@@ -1339,6 +1479,48 @@ mod tests {
         assert_eq!(rendered[1], "   - markdown item");
         assert_eq!(rendered[2], "   last line");
         assert_eq!(rendered[3], "");
+    }
+
+    #[test]
+    fn recovered_messages_wrap_at_words_with_role_indent_and_message_gaps() {
+        let mut state = AppState::new("ufoo", "chat");
+        let event = serde_json::from_value(serde_json::json!({
+            "protocol": crate::protocol::PROTOCOL, "kind": "event", "name": "transcript.reset",
+            "payload": { "entries": [
+                { "id": "history-1", "kind": "user", "text": "Review the camera and verify mobile framing." },
+                { "id": "history-2", "kind": "assistant", "text": "Camera is clear." }
+            ] }
+        })).unwrap();
+        dispatch(&mut state, Action::Host(event));
+        let lines = build_scrollback_lines(&state, 20);
+        let rendered: Vec<String> = lines.iter().map(|line| {
+            line.spans.iter().map(|span| span.content.as_ref()).collect()
+        }).collect();
+        assert_eq!(rendered, vec![
+            "❯ Review the camera", "  and verify mobile", "  framing.",
+            "", "• Camera is clear.", ""
+        ]);
+        assert_eq!(lines[0].spans[1].style.fg, Some(Color::Cyan));
+    }
+
+    #[test]
+    fn transcript_preserves_paragraph_and_fenced_code_blank_lines() {
+        let mut state = AppState::new("ufoo", "chat");
+        let event = serde_json::from_value(serde_json::json!({
+            "protocol": crate::protocol::PROTOCOL, "kind": "event", "name": "transcript.reset",
+            "payload": { "entries": [
+                { "id": "history-1", "kind": "assistant", "text": "First paragraph\n\nSecond paragraph\n```js\n  return alpha beta;\n\n```\nAfter code" }
+            ] }
+        })).unwrap();
+        dispatch(&mut state, Action::Host(event));
+        let lines = build_scrollback_lines(&state, 80);
+        let rendered: Vec<String> = lines.iter().map(|line| {
+            line.spans.iter().map(|span| span.content.as_ref()).collect()
+        }).collect();
+        assert_eq!(rendered, vec![
+            "• First paragraph", "", "  Second paragraph", "  ```js",
+            "    return alpha beta;", "", "  ```", "  After code", ""
+        ]);
     }
 
     #[test]

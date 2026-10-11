@@ -3,6 +3,7 @@ const {
   assertControllerTier,
   extractAuditFields,
 } = require("./common");
+const { normalizeInternalAgentType } = require("../../runtime/contracts/agentMode");
 
 function normalizePositiveInt(value, fallback) {
   const num = Number.parseInt(value, 10);
@@ -38,11 +39,12 @@ async function runSingleOp(ctx, op, toolName) {
 async function launchAgentHandler(ctx = {}, args = {}) {
   assertControllerTier(ctx, "launch_agent");
   const audit = extractAuditFields(ctx);
-  const agent = String(args.agent || "").trim().toLowerCase();
-  if (!agent) guardInvalidArgs(ctx, "launch_agent", "requires agent");
+  const agent = normalizeInternalAgentType(args.agent);
+  if (!agent) guardInvalidArgs(ctx, "launch_agent", "requires internal codex, claude or ucode");
 
   const op = {
     action: "launch",
+    internal_only: true,
     agent,
     count: normalizePositiveInt(args.count, 1),
   };

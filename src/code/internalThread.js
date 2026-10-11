@@ -13,7 +13,10 @@ function createInternalCodingThread(options = {}) {
     context: agent.buildNlContext({ workspaceRoot, ...resolved }),
     nlMessages: [], sessionId: options.sessionId || `ucode-${randomUUID()}`,
   };
-  if (options.sessionId) agent.resumeSessionState(state, options.sessionId, workspaceRoot);
+  if (options.sessionId) {
+    const restored = agent.resumeSessionState(state, options.sessionId, workspaceRoot);
+    if (restored?.ok === false) throw new Error(restored.error || `Could not resume session: ${options.sessionId}`);
+  }
   let abort = null;
 
   async function* runStreamed(input, runOptions = {}) {
@@ -33,6 +36,8 @@ function createInternalCodingThread(options = {}) {
     const publishPlan = () => push({ type: "plan", ...buildPlanSetPayload(state.executionState) });
     const callbacks = {
       signal: controller.signal,
+      runtimeContext: runOptions.runtimeContext || {},
+      onRuntimeEvent: event => push({ type: "runtime_event", event }),
       onDelta: (delta) => push({ type: "text_delta", delta }),
       onThinkingDelta: (delta) => push({ type: "thinking_delta", delta }),
       onPhase: (phase) => push({ type: "phase", phase }),
@@ -41,7 +46,7 @@ function createInternalCodingThread(options = {}) {
         const key = JSON.stringify([event.tool, event.args || {}, event.origin || null]);
         const stack = activeTools.get(key) || [];
         if (event.phase === "start") {
-          const id = String(event.callId || event.toolCallId || event.id || `native-tool-${++toolSequence}`);
+          const id = String(event.callId || event.toolCallId || event.id || `native-tool-${randomUUID()}`);
           stack.push(id); activeTools.set(key, stack);
           push({ type: "tool_call", toolCallId: id, name: event.tool, args: event.args });
         } else if (event.phase === "end" || event.phase === "error") {
@@ -75,7 +80,9 @@ function createInternalCodingThread(options = {}) {
       if (!options.runTask) agent.persistSessionState(state);
       publishPlan();
       if (result?.contextMeter || state.contextMeter) push({ type: "context_usage", meter: result?.contextMeter || state.contextMeter });
-      push({ type: "turn_completed", usage: result?.usage || result?.metrics || null });
+      const finalText = result?.finalText ?? result?.summary;
+      push({ type: "turn_completed", usage: result?.usage || result?.metrics || null,
+        ...(typeof finalText === "string" ? { finalText } : {}) });
     }).catch((error) => { failure = error; }).finally(() => {
       done = true;
       if (wake) { wake(); wake = null; }

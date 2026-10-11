@@ -372,7 +372,7 @@ function normalizeAgentTypeAlias(value = "") {
   if (text === "agy") return "agy";
   if (text === "grok" || text === "ugrok" || text === "grok-build" || text === "xai") return "grok";
   if (text === "kimi" || text === "ukimi" || text === "kimi-cli" || text === "kimi-code") return "kimi";
-  if (text === "ufoo" || text === "ucode" || text === "ufoo-code") return "ufoo-code";
+  if (text === "ucode") return "ucode";
   return text;
 }
 

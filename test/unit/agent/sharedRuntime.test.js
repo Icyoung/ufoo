@@ -35,6 +35,36 @@ function runtimeFor(cap, transport, options = {}) {
 }
 
 describe("capability-composed shared agent runtime", () => {
+  test("observes repeated arguments and the loop guard without changing the returned stop reason", async () => {
+    let id = 0;
+    const events = [];
+    const runTurn = jest.fn(async () => ({ text: "", toolCalls: [call(`repeat-${++id}`)] }));
+    const runtime = runtimeFor(capability(), transportFor(runTurn));
+    try {
+      const result = await runtime.run({ prompt: "status", systemPrompt: "test instructions", model: "test", provider: "custom", baseUrl: "test", taskRunId: "observed", onEvent: event => events.push(event) });
+      expect(result.stopReason).toBe("repeated_tool_calls");
+      expect(events.find(e => e.type === "run.config").configuration).toMatchObject({ model: "test", provider: "custom", toolCount: 1 });
+      const starts = events.filter(e => e.type === "tool.started");
+      expect(new Set(starts.map(e => e.argumentFingerprint)).size).toBe(1);
+      expect(events.filter(e => e.type === "loop.warning")).toHaveLength(1);
+      expect(events.filter(e => e.type === "loop.stopped")).toHaveLength(1);
+    } finally { await runtime.close(); }
+  });
+  test("final answer stays separate from streamed progress across model and tool rounds", async () => {
+    const runTurn = jest.fn(async ({ onTextDelta }) => {
+      const first = runTurn.mock.calls.length === 1;
+      const text = first ? "Checking agents…" : "Two agents online";
+      onTextDelta(text);
+      return { text, toolCalls: first ? [call()] : [] };
+    });
+    const deltas = [];
+    const result = await runtimeFor(capability(), transportFor(runTurn)).run({
+      prompt: "status", model: "test", baseUrl: "test", onStreamDelta: text => deltas.push(text),
+    });
+    expect(result.text).toBe("Checking agents…Two agents online");
+    expect(result.finalText).toBe("Two agents online");
+    expect(deltas).toEqual(["Checking agents…", "Two agents online"]);
+  });
   test("runs a coordination-only tool using the provider transport with paired results", async () => {
     const cap = capability();
     const runTurn = jest.fn()

@@ -32,10 +32,69 @@ Grok/xAI provider work beyond the CLI wrapper is tracked in
 
 The layered, pluggable runtime migration is documented in
 [AGENT_RUNTIME_REFACTOR.md](AGENT_RUNTIME_REFACTOR.md). Native `ucode` uses the
-shared capability-composed loop alongside the project main agent and controller
-JSON adapter. The project main agent can code, delegate, manage independent tasks,
+shared capability-composed loop alongside the project main agent. The project
+main agent can code, delegate, manage independent tasks,
 and use group/cron services; the global profile only selects projects. The
 document records implemented APIs and conservative recovery boundaries.
+
+The main agent, independent coding tasks and native `ucode` share execution
+budgets from `src/agents/runtime/core/executionBudget.js`. Model rounds and tool
+calls are unlimited by default, with a 20-tool-error limit and a 12-hour task
+deadline. `UFOO_UCODE_MAX_TOOL_CALLS`, `UFOO_UCODE_MAX_TOOL_ERRORS` and
+`UFOO_UCODE_TASK_TIMEOUT_MS` configure those shared limits; standalone ucode's
+explicit CLI options take precedence.
+
+The main agent and native/internal `ucode` share checkpoint-based conversation
+compression in `src/agents/runtime/context/`. Before each model call, it checks
+estimated input tokens (calibrated by provider usage) and uncovered message
+count, reserving space for model output. Defaults trigger at 70% of the context
+limit or above 50 uncovered messages and retain at least six recent atomic
+message/tool units. `UFOO_CONTEXT_LIMIT_TOKENS` overrides model context estimates.
+The summarizer has no tools and receives complete batches that fit its input
+budget. Checkpoints preserve user text verbatim alongside a model summary;
+only a durable source-and-summary commit advances the model window. Main
+checkpoints live in its runtime journal; ucode checkpoints and source batches
+live in `.ufoo/agent/ucode/context/<sessionId>.jsonl`. Canonical transcripts and
+tool artifacts remain available. Provider context-overflow errors get one
+compression retry; failed compression never silently drops history. Codex and
+Claude SDK worker sessions retain their SDK-managed context behavior.
+
+Agent execution is observable through `ufoo trace [task-id] --json`,
+`ufoo trace --agent <id-or-nickname> --follow`, the read-only MCP tool
+`read_agent_trace`, and the `agent_runtime` IPC `trace` operation. The history
+reader in `src/coordination/history/agentTrace.js` combines main/control/native
+runtime journals, SDK worker surface events, reports and live queue claims.
+Task, run, request, attempt, session, parent and tool-call IDs follow a delegated
+message through the runner. Model events record timing, provider/model,
+usage and provider-exposed thinking summaries; compaction events record covered
+source counts, timing, usage and failures. The query includes tool pairing and
+error counts. SDK lifecycle events are labelled `sdk-turn` and counted separately
+from direct API calls; SDK-internal requests are not inferred. Default output is
+concise; `--details` includes redacted arguments
+and results. Explicit `--offset` pages from the oldest retained event; otherwise
+the latest page is returned. Reads are bounded to 200 runtime journals, 14 bus
+days, 2 MiB per file and 32 MiB total; truncation, unavailable sources and torn
+records are reported in `warnings`/`incomplete`, never treated as complete
+evidence. Observation neither acknowledges delivery nor accepts a task.
+
+`ufoo metrics [task-id] --json` and read-only MCP `read_agent_metrics` derive
+performance summaries from those same sources. They report execution outcomes,
+latency/first output, model and tool usage, retries/repetition, compaction cost,
+report size and delegation acceptance, with coverage for missing evidence.
+`--since`/`--until` select run starts without clipping their observed lifecycles;
+`--baseline <metrics.json>` compares saved samples. New runs record hashed
+prompt/tool/engine configuration and request kind for provider/model cohorts.
+API calls and SDK turns remain separate, and execution completion never implies
+acceptance. See [OBSERVABILITY.md](OBSERVABILITY.md) for metric definitions,
+privacy boundaries and a repeatable optimization workflow.
+
+New delegation omits `target`; an existing target must resolve to a live worker.
+Responses tools explicitly use `strict: false` unless their schema opts into
+strict mode, preserving optional fields. Correctable delegation/acceptance
+errors return tool results, while unknown side effects retain their uncertain
+receipts. Runners emit private framework start/error reports for assigned tasks
+even if provider initialization or execution fails. Worker done reports still
+require independent evidence and explicit acceptance by the parent.
 
 ## Runtime Shape
 
@@ -46,8 +105,8 @@ ufoo / ufoo chat
   -> ProjectRuntimeManager selects an isolated project runtime
   -> src/runtime/daemon owns launch/resume/recover/reports/cron/groups
   -> src/runtime/daemon/agentHost composes project main and global-router profiles
-  -> src/orchestration retains controller compatibility, group, and solo policy
-  -> src/agents runs launchers, providers, prompts, internal runners, controller loop
+  -> src/orchestration owns launch routing, group, and solo policy
+  -> src/agents runs launchers, providers, prompts, internal runners, shared runtime
   -> src/code composes native ucode using src/agents/runtime + capabilities
   -> src/coordination stores bus/context/memory/history/report/state/status
   -> src/tools exposes shared controller/worker tools
@@ -69,6 +128,13 @@ be suspended and lazily reactivated.
 
 Important boundaries:
 
+- Runtime response-language guidance lives in
+  `src/agents/runtime/prompts/responseLanguage.js`. Main/global, native ucode,
+  and SDK worker prompts follow the user's task language for replies, progress,
+  reports, and delegated handoffs. `src/agents/prompts/cooperation.js` provides
+  shared loop prevention: acknowledgement-only inputs produce no peer reply,
+  lifecycle report, or final text. Stored SDK bootstraps receive both rules on
+  launch/resume, and only substantive tasks or changes require reports.
 - A persistent dashboard socket subscribes to its selected project runtime.
   Global routing moves that subscription between projects and the controller;
   project event streams and status pushes must reach the selected client without
@@ -76,20 +142,95 @@ Important boundaries:
 - UI code may render state and call injected callbacks; it should not directly
   write bus queues, launch processes, or own daemon state.
 - The ufoo dashboard and main-agent roster manage only explicitly internal
-  children. Wrapper/MCP agents remain in the shared registry for cooperation,
+  Codex, Claude and ucode children. Provider choices do not add worker types.
+  Wrapper/MCP agents remain in the shared registry for cooperation,
   but cannot enter dashboard lists, panes, watches, or automatic main-agent
   messages. Dashboard and main-agent launches force internal mode independently
   of wrapper launch settings. The welcome banner reuses the compact CLI logo
   and appears only when a project has no chat or input history.
+- `Ctrl+W` cycles the dashboard through main-only, main plus one internal child,
+  and main plus all children. `/window main`, `/window side` and
+  `/window multi` select those modes. A split mode stays selected with
+  zero children and shows the main pane at full width. The one-child mode uses
+  the most recently activated live child, or the first child. `window.set` and
+  `app.snapshot.window` carry explicit `main|side|multi` modes over `ufoo-ui/1`;
+  `window.cycle` is evaluated by the host, independently of stale session IDs.
+  `Esc` and `Ctrl+C` share the back stack: footer, child focus, split layout,
+  then the main input's cancellation and project return layers. At the root,
+  only `Ctrl+C` exits; `Esc` preserves the workspace and draft.
 - Internal Codex, Claude and ucode use a shared transcript and status surface.
+  Their runner owns inbox claims and confirms each claim after execution.
+  Model-issued CLI/MCP acknowledgements cannot consume later queued tasks.
+  Codex and Claude always use their SDK thread runtimes, with no thread-mode
+  setting or environment switch. Initialization
+  failures retain the underlying provider error for the agent surface.
   One bottom input follows the selected agent; each draft stays independent.
+  Internal Codex keeps `workspace-write` with SDK network access enabled for
+  local services such as ADB, Gradle and development servers; an explicit
+  `networkAccessEnabled: false` thread option remains authoritative.
+  Child drafts update locally and carry per-agent input revisions and explicit
+  identities over `multi.raw`; stale output frames cannot clear newer edits.
+  Client ready/resync replays all visible transcripts, including quiet agents.
+  The UI socket coalesces pending frames per agent under backpressure. A false
+  socket write has already queued its frame: drain sends only unsent frames so
+  a large transcript cannot be repeated indefinitely or starve another pane.
+  Successful window/focus switches update UI state without main-log messages.
+  Main history replay retains whole transcript blocks and their speaker/tool
+  metadata. Limits count messages rather than physical lines, and restored
+  tool/thinking blocks start folded, preserving live paragraph/code layout.
   Each agent's status is embedded in its own pane's bottom border.
+  `crates/ufoo-tui/src/selection.rs` owns pane-local mouse text selection;
+  mouse release copies visible transcript cells through `clipboard.rs` (local
+  macOS system clipboard, OSC 52 elsewhere). Selection excludes pane chrome and
+  freezes only the selected transcript during dragging while streams keep updating.
   The main input is labelled `main`; child activity and focus changes do not
-  replace the main agent's status. Footer selection and provider settings stay
+  replace the main agent's status. The footer omits the fixed internal launch
+  mode and has no `/mode` command or launch-mode settings protocol. Footer selection and provider settings stay
   available with an internal child focused.
+  `/resume` offers standalone recoverable internal agents and whole groups,
+  without a `list` subcommand. Group launches persist `group_id`,
+  `group_member_id` and `group_template_alias` on agent registrations; recovery
+  also reads exact member IDs from existing `.ufoo/groups/` records. Group
+  recovery updates those member IDs before subsequent routing or stopping.
+  Internal group launches validate every member before starting workers; auto
+  members use ucode with API providers. Group status reconciles the stored roster
+  against live registrations:
+  groups with some live members report `partial`, and those with none report
+  `inactive`. Main-agent dispatch rejects missing or inactive workers and
+  targets only internal children. A workspace lease denial directs the main
+  agent to delegate, wait, read, or use a separate worktree; it does not
+  authorize closing an existing group to take over its directory.
+  New native coding registrations and launch operations use `ucode`, with
+  `ucode:<session>` subscriber IDs. The retired `ufoo-code` and `ufoo` type
+  aliases are not launch or recovery inputs; native journal/session paths stay
+  under `.ufoo/agent/ucode/`.
   Native ucode's headless thread calls the same coding runner, tools, context and
   session code as standalone ucode. Presentation adapters
   live in `src/ui/agentSurface.js` and `src/ui/agentPresentation.js`.
+- Dashboard Settings exposes custom OpenAI gateways plus model/thinking menus.
+  Codex defaults to `gpt-6.1-sol` with `medium` effort; Claude defaults to
+  `claude-opus-5-5`. Anthropic requests use model-supported adaptive thinking
+  and effort, without manual token budgets. Opus 5.5 requests enable thinking
+  summaries so its progress remains visible in agent panes.
+  `src/ui/agentSettingsController.js` owns settings input and menu presentation;
+  `src/agents/providers/modelSettings.js` resolves each provider's model catalog
+  with its own credentials. The shared catalog lives in
+  `src/agents/providers/modelsCatalog.js`; native ucode forwards to it.
+  For custom API URLs, including native-provider URL overrides, model catalogs
+  provide suggestions only. Manual model IDs are accepted without a catalog
+  check, and the selected ID remains available in the model menu.
+  `src/agents/providers/clientIdentity.js` resolves read-only installed-client
+  version metadata for model catalogs and inference headers. Codex versions
+  follow its cache/install metadata, rather than a pinned old release; internal
+  hidden models are excluded from selection. Provider adapters remain direct
+  transports, with CLIProxyAPI used as a protocol reference rather than a
+  runtime dependency. Claude OAuth carries its provider-specific beta flags;
+  API-key authentication remains separate.
+  Custom main credentials are project-local and never included in UI snapshots
+  or input history. `agentModelRevision` records explicit model selections so
+  existing main conversations adopt them on the next request; ordinary recovery
+  retains its provider binding. Provider selection saves `agentConversationId`
+  for the new conversation, which the dashboard also uses after reopening.
 - Runtime code may call orchestration, coordination, and agent launchers; it
   should not import TUI render components (`crates/ufoo-tui` is a separate process).
 - Prompt builders should not import UI or daemon implementations.
@@ -199,7 +340,7 @@ remain intact. Wrappers still own terminal rendering, activity, and lifecycle.
 | `src/runtime/projects/` | Project registry | Project identity and runtime registry. |
 | `src/runtime/terminal/` | Terminal adapters | Host, tmux, internal, external, Terminal.app, iTerm2. |
 | `src/runtime/contracts/` | Runtime contracts | Daemon IPC, PTY socket, MCP/JSON-RPC, and `ufoo-ui/1` host↔TUI protocol. |
-| `src/runtime/privacy/` | Privacy helpers | Secret redaction and shadow-diff helpers. |
+| `src/runtime/privacy/` | Privacy helpers | Secret redaction. |
 | `src/runtime/process/` | Process helpers | Node executable resolution and similar runtime process utilities. |
 | `src/coordination/bus/` | Event bus | Queues, envelopes, injection helpers, nicknames, and subscribers. |
 | `src/coordination/context/` | Decisions | Decision files, sync, and context doctor. |
@@ -208,15 +349,15 @@ remain intact. Wrappers still own terminal rendering, activity, and lifecycle.
 | `src/coordination/report/` | Reports | Agent report store and controller inbox records. |
 | `src/coordination/state/` | `.ufoo` state | Path resolution, agent registry persistence, registry diagnostics. |
 | `src/coordination/status/` | Status | Project and coordination status summaries. |
-| `src/orchestration/controller/` | Router/controller policy | Gate/main/global/loop routing, flags, launch routing, finalization, shadow guard. |
+| `src/orchestration/controller/` | Launch routing policy | Agent launch selection and normalization. |
 | `src/orchestration/groups/` | Groups | Templates, diagrams, validation, prompt profiles, bootstrap planning. |
 | `src/orchestration/solo/` | Solo roles | Solo role command helpers. |
 | `src/agents/prompts/` | Prompts | Bootstrap prompts, group prompts, profile prompts, native `ucode` prompt sections. |
-| `src/agents/providers/` | Provider adapters | Claude/Codex thread providers, event translators, credentials, direct auth, upstream transports. |
-| `src/agents/launch/` | Agent launch | External CLI launchers, PTY runner/wrapper, notifier, ready detection, environment setup. |
+| `src/agents/providers/` | Provider adapters | Claude/Codex thread providers, event translators, credentials, runtime configuration, shared API transports. |
+| `src/agents/launch/` | Agent launch | External CLI launchers, PTY wrapper, notifier, ready detection, environment setup. |
 | `src/agents/internal/` | Internal agents | SDK/API-backed embedded internal runner. |
 | `src/agents/activity/` | Activity tracking | Ready/activity detectors and state publishing. |
-| `src/agents/controller/` | `ufoo-agent` | Controller loop runtime, observability, tool executor. |
+| `src/agents/controller/` | Coordination tool execution | Shared controller tool executor bound to daemon ports. |
 | `src/agents/runtime/` | Shared native execution | Capability composition, injected model/tool loop, tool registration/schema/host-grant checks, generic protocol helpers, durable request/command journals, namespaced snapshots, cancellation, and resource-aware scheduling. No coding/daemon/UI implementation imports in the core. |
 | `src/agents/capabilities/` | Business capabilities | Coding, planning/interaction, skills, agent management/routing, discovery, memory, reports, independent tasks, groups, and scheduling. Business policy stays outside the shared core. |
 | `src/agents/profiles/` | Agent combinations | Declarative coding, project main, and read-only global-router capability selections; host grants remain authoritative. |
@@ -267,6 +408,7 @@ Do not recreate compatibility directories for old paths.
     all-agents.json
     ucode/
       journal/       # append-only native ucode conversation events
+      runtimes/      # correlated native model/tool/compaction observations
       sessions/      # metadata/projection checkpoints, not message truth
   daemon/
   run/
@@ -282,8 +424,9 @@ the user's project registry.
 
 Shared native provider requests and wire adapters live in
 `src/agents/providers/nativeTransport.js` and `transports/`; configuration/URL
-resolution lives in `src/agents/providers/runtimeConfig.js`. The controller's
-upstream transport no longer imports the coding runner. Existing `ucode`
+resolution lives in `src/agents/providers/runtimeConfig.js` and
+`upstreamRuntime.js`. Main-agent requests use the shared native transports;
+there is no separate controller request sender. Existing `ucode`
 session paths and snapshot codecs remain compatible through namespaced storage
 adapters. `createAgentRuntime().run()` supports the existing ucode host; hosts
 with a runtime store also expose durable `submit`, `resume`, `cancel`, `snapshot`,
@@ -293,19 +436,27 @@ Directory leases are shared with native ucode; verified worktrees can run
 independently. Accepted requests and paused interactions recover after restart;
 a running round becomes interrupted and uncertain effects are never replayed.
 
-New conversations default to the main runtime. Existing controller conversations
-retain their recorded executor, and `/session new` starts a conversation with
-current settings. Provider/model bindings survive restart; provider credentials
-are resolved through their own adapters without borrowing MCP handles or an
-unrelated ucode gateway key. Old controller history is read only as a bounded,
-untrusted summary; old ucode files are not rewritten.
+All main conversations use the main runtime, with one `agentProvider` and
+`agentModel` configuration for coding and routing. `/session new` starts a
+conversation with current settings. Provider/model bindings survive restart;
+provider credentials are resolved through their own adapters without borrowing
+MCP handles or an unrelated ucode gateway key. Controller history and execution
+mode selectors are no longer loaded; ucode files are not rewritten.
 
 The project daemon delegates bus observation and report consumption to
 `src/runtime/daemon/busBridge.js`. Native tool schemas live in
 `src/code/tools/specs.js`; execution lives in `src/code/tools/executor.js`, and
 `nativeRunner` keeps its existing exported builders.
+Shared result/handoff guidance lives in `src/agents/prompts/reporting.js` and
+applies to group, native, main coding and resumed internal bootstraps. Reports
+and peer handoffs use 1-4 short lines (up to 600 characters by default), with
+longer evidence in referenced files. Internal peer replies use the provider's
+final text rather than concatenating progress; main replies follow the same rule
+and panes retain the full live stream.
 CLI report transport/formatting lives in `src/app/cli/reportCoreCommands.js`.
-Chat launch environment parsing lives in `src/app/chat/launchRequestContext.js`.
+Wrapper/CLI launch environment parsing lives in
+`src/app/chat/launchRequestContext.js`; dashboard launches do not forward
+external terminal context.
 
 Project registry updates and pruning share per-record locks. Memory writes use
 the shared expiring lock mechanism, including recovery of crash leftovers.
@@ -350,7 +501,7 @@ current platform binary before source installs can open chat or ucode.
 | Chat/UI behavior | `npm test -- --runTestsByPath test/unit/ui/tuiLauncher.test.js test/unit/chat/commandExecutor.test.js` |
 | Runtime daemon behavior | `npm test -- --runTestsByPath test/unit/daemon/run.test.js test/unit/daemon/promptRequest.test.js` |
 | MCP control-plane behavior | `npm test -- --runTestsByPath test/unit/daemon/mcpHttpServer.test.js test/unit/daemon/mcpStdioProxy.test.js test/unit/daemon/mcpServer.test.js test/unit/daemon/mcpIntegration.test.js test/unit/daemon/projectRuntimeGateway.test.js test/unit/daemon/projectRuntimeControlPlane.test.js test/unit/tools/registry.test.js test/unit/shared/eventContract.test.js` |
-| Agent launch/provider code | `npm test -- --runTestsByPath test/unit/agent/launcher.test.js test/unit/agent/internalRunner.test.js test/unit/agent/ufooAgent.test.js` |
+| Agent launch/provider code | `npm test -- --runTestsByPath test/unit/agent/launcher.test.js test/unit/agent/internalRunner.test.js test/unit/daemon/agentHost.test.js` |
 | Tool registry/handlers | `npm test -- --runTestsByPath test/unit/tools/registry.test.js test/unit/tools/handlers.test.js` |
 | Native `ucode` | `npm test -- --runTestsByPath test/unit/code/ucodeTui.test.js test/unit/code/nativeRunner.test.js` |
 | Documentation text | `git diff --check` |

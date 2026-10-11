@@ -252,7 +252,7 @@ function startBusBridge(
     joinInProgress = (async () => {
       try {
         // Determine agent type based on provider configuration
-        const agentType = provider === "codex-cli" ? "codex" : (provider === "ucode" ? "ufoo-code" : "claude-code");
+        const agentType = provider === "codex-cli" ? "codex" : (provider === "ucode" ? "ucode" : "claude-code");
         // Use fixed ID "ufoo-agent" for daemon's bus identity with explicit nickname
         const sub = await eventBus.join("ufoo-agent", agentType, "ufoo-agent");
         if (!sub || stopped) return null;

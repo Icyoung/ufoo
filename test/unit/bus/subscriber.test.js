@@ -188,42 +188,42 @@ describe('SubscriberManager', () => {
     });
 
     it('should not inherit an auto nickname owned by another agent type', async () => {
-      busData.agents['ufoo-code:old'] = {
-        agent_type: 'ufoo-code',
+      busData.agents['ucode:old'] = {
+        agent_type: 'ucode',
         nickname: 'grok-1',
         scoped_nickname: 'grok-1',
         status: 'active',
         tty: '/dev/ttys779',
       };
 
-      const result = await manager.join('newucode', 'ufoo-code', '', {
+      const result = await manager.join('newucode', 'ucode', '', {
         tty: '/dev/ttys779',
       });
 
-      expect(result.subscriber).toBe('ufoo-code:newucode');
+      expect(result.subscriber).toBe('ucode:newucode');
       expect(result.nickname).toBe('ucode-1');
-      expect(busData.agents['ufoo-code:old']).toBeUndefined();
-      expect(busData.agents['ufoo-code:newucode'].nickname).toBe('ucode-1');
-      expect(busData.agents['ufoo-code:newucode'].scoped_nickname).toBe('ucode-1');
+      expect(busData.agents['ucode:old']).toBeUndefined();
+      expect(busData.agents['ucode:newucode'].nickname).toBe('ucode-1');
+      expect(busData.agents['ucode:newucode'].scoped_nickname).toBe('ucode-1');
     });
 
     it('should replace a mismatched auto nickname when rejoining the same subscriber', async () => {
-      busData.agents['ufoo-code:sameucode'] = {
-        agent_type: 'ufoo-code',
+      busData.agents['ucode:sameucode'] = {
+        agent_type: 'ucode',
         nickname: 'grok-1',
         scoped_nickname: 'grok-1',
         status: 'inactive',
         tty: '/dev/ttys780',
       };
 
-      const result = await manager.join('sameucode', 'ufoo-code', '', {
+      const result = await manager.join('sameucode', 'ucode', '', {
         tty: '/dev/ttys780',
       });
 
-      expect(result.subscriber).toBe('ufoo-code:sameucode');
+      expect(result.subscriber).toBe('ucode:sameucode');
       expect(result.nickname).toBe('ucode-1');
-      expect(busData.agents['ufoo-code:sameucode'].nickname).toBe('ucode-1');
-      expect(busData.agents['ufoo-code:sameucode'].scoped_nickname).toBe('ucode-1');
+      expect(busData.agents['ucode:sameucode'].nickname).toBe('ucode-1');
+      expect(busData.agents['ucode:sameucode'].scoped_nickname).toBe('ucode-1');
     });
   });
 

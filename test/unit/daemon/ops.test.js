@@ -311,24 +311,14 @@ describe("daemon ops internal launch", () => {
     expect(spawn.mock.calls[0][2].env.UFOO_SKIP_DEFAULT_BOOTSTRAP).toBe("1");
   });
 
-  test("internal grok launch registers grok and applies --rules bootstrap", async () => {
-    writeConfig({ launchMode: "internal" });
-
-    const result = await launchAgent(projectRoot, "grok", 1, "");
-    const agents = JSON.parse(fs.readFileSync(getUfooPaths(projectRoot).agentsFile, "utf8")).agents;
-    const subscriberId = result.subscriberIds[0];
-
-    expect(subscriberId).toMatch(/^grok:/);
-    expect(agents[subscriberId].agent_type).toBe("grok");
-    expect(agents[subscriberId].nickname).toBe("grok-1");
-    expect(spawn.mock.calls[0][1]).toEqual([
-      path.resolve(__dirname, "../../../bin/ufoo.js"),
-      "agent-runner",
-      "grok",
-      "--rules",
-      expect.stringContaining("Session bootstrap for Grok."),
-    ]);
-    expect(spawn.mock.calls[0][2].env.UFOO_SKIP_DEFAULT_BOOTSTRAP).toBe("1");
+  test.each(["grok", "kimi", "agy"])("internal %s launch fails before registering or spawning a worker", async (agent) => {
+    writeConfig({ launchMode: "auto" });
+    const agentsFile = getUfooPaths(projectRoot).agentsFile;
+    const before = fs.existsSync(agentsFile) ? fs.readFileSync(agentsFile, "utf8") : null;
+    await expect(launchAgent(projectRoot, agent, 1, "invalid-worker", null, { internalOnly: true }))
+      .rejects.toThrow("unsupported internal agent type");
+    expect(spawn).not.toHaveBeenCalled();
+    expect(fs.existsSync(agentsFile) ? fs.readFileSync(agentsFile, "utf8") : null).toBe(before);
   });
 });
 
@@ -444,7 +434,7 @@ describe("daemon ops launch scope (tmux)", () => {
     const tmuxLayoutContext = { mode: "group-right-column" };
     await launchAgent(projectRoot, "codex", 1, "builder", null, { tmuxLayoutContext });
     await launchAgent(projectRoot, "claude", 1, "architect", null, { tmuxLayoutContext });
-    await launchAgent(projectRoot, "ufoo", 1, "ucode", null, { tmuxLayoutContext });
+    await launchAgent(projectRoot, "ucode", 1, "ucode", null, { tmuxLayoutContext });
 
     const tmuxCalls = spawn.mock.calls.filter((call) => call[0] === "tmux").map(([, args]) => args);
     const splitCalls = tmuxCalls.filter((args) => Array.isArray(args) && args[0] === "split-window");
@@ -689,7 +679,6 @@ describe("daemon ops host launch", () => {
     expect(hostAdapter.closeSession).not.toHaveBeenCalled();
   });
 });
-
 
 describe("daemon ops closeAgent window close gate", () => {
   const projectRoot = "/tmp/ufoo-daemon-closeagent-test";

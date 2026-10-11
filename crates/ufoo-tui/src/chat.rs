@@ -84,7 +84,7 @@ pub fn run_surface(surface: Surface, ui_socket: Option<PathBuf>) -> io::Result<i
                     HostEvent::Disconnected => Action::HostDisconnected,
                 };
                 let effects = dispatch(&mut state, action);
-                if let Some(code) = apply_effects(client, &effects)? {
+                if let Some(code) = apply_effects(Some(client), &effects)? {
                     exit_code = code;
                     state.exit_requested = true;
                 }
@@ -95,11 +95,9 @@ pub fn run_surface(surface: Surface, ui_socket: Option<PathBuf>) -> io::Result<i
         if !tick_effects.is_empty() {
             had_work = true;
         }
-        if let Some(client) = host.as_ref() {
-            if let Some(code) = apply_effects(client, &tick_effects)? {
-                exit_code = code;
-                state.exit_requested = true;
-            }
+        if let Some(code) = apply_effects(host.as_ref(), &tick_effects)? {
+            exit_code = code;
+            state.exit_requested = true;
         }
 
         if state.dirty || had_work {
@@ -132,25 +130,26 @@ pub fn run_surface(surface: Surface, ui_socket: Option<PathBuf>) -> io::Result<i
                         continue;
                     }
                     let effects = dispatch(&mut state, Action::Key(key));
-                    if let Some(client) = host.as_ref() {
-                        if let Some(code) = apply_effects(client, &effects)? {
-                            exit_code = code;
-                            state.exit_requested = true;
-                        }
-                    } else if effects.iter().any(|e| matches!(e, Effect::Exit(_))) {
-                        exit_code = 0;
+                    if let Some(code) = apply_effects(host.as_ref(), &effects)? {
+                        exit_code = code;
                         state.exit_requested = true;
                     }
                 }
                 Event::Paste(text) => {
                     let effects = dispatch(&mut state, Action::Paste(text));
-                    if let Some(client) = host.as_ref() {
-                        let _ = apply_effects(client, &effects)?;
-                    }
+                    let _ = apply_effects(host.as_ref(), &effects)?;
                 }
                 Event::Mouse(mouse) => {
                     let action = match mouse.kind {
-                        MouseEventKind::Down(MouseButton::Left) => Some(Action::MouseClick {
+                        MouseEventKind::Down(MouseButton::Left) => Some(Action::MousePress {
+                            column: mouse.column,
+                            row: mouse.row,
+                        }),
+                        MouseEventKind::Drag(MouseButton::Left) => Some(Action::MouseDrag {
+                            column: mouse.column,
+                            row: mouse.row,
+                        }),
+                        MouseEventKind::Up(MouseButton::Left) => Some(Action::MouseRelease {
                             column: mouse.column,
                             row: mouse.row,
                         }),
@@ -168,20 +167,17 @@ pub fn run_surface(surface: Surface, ui_socket: Option<PathBuf>) -> io::Result<i
                     };
                     if let Some(action) = action {
                         let effects = dispatch(&mut state, action);
-                        if let Some(client) = host.as_ref() {
-                            let _ = apply_effects(client, &effects)?;
-                        }
+                        let _ = apply_effects(host.as_ref(), &effects)?;
                     }
                 }
                 Event::Resize(w, h) => {
+                    state.text_selection.reset();
                     state.multi.term_cols = w;
                     state.multi.term_rows = h;
                     state.mark_dirty();
                     if state.multi.active {
                         let effects = multi_viewport_effects_public(&mut state);
-                        if let Some(client) = host.as_ref() {
-                            let _ = apply_effects(client, &effects)?;
-                        }
+                        let _ = apply_effects(host.as_ref(), &effects)?;
                     }
                 }
                 _ => {}
@@ -193,16 +189,19 @@ pub fn run_surface(surface: Surface, ui_socket: Option<PathBuf>) -> io::Result<i
     Ok(exit_code)
 }
 
-fn apply_effects(client: &HostClient, effects: &[Effect]) -> io::Result<Option<i32>> {
+fn apply_effects(client: Option<&HostClient>, effects: &[Effect]) -> io::Result<Option<i32>> {
     let mut exit = None;
     for effect in effects {
         match effect {
+            Effect::CopyText(text) => crate::clipboard::copy(text, &mut io::stdout())?,
             Effect::SendCommand {
                 name,
                 request_id,
                 payload,
             } => {
-                client.send_command(name, request_id, payload.clone())?;
+                if let Some(client) = client {
+                    client.send_command(name, request_id, payload.clone())?;
+                }
             }
             Effect::Exit(code) => exit = Some(*code),
         }
@@ -240,8 +239,8 @@ pub fn restore_terminal() {
 fn enable_keyboard_enhancements(writer: &mut impl io::Write) -> io::Result<()> {
     #[cfg(unix)]
     {
-        // Supported terminals distinguish Ctrl+M from Enter; legacy terminals
-        // ignore this request and continue reporting Enter as usual.
+        // Disambiguate modified keys and Enter where supported; legacy
+        // terminals ignore this request and retain their usual encoding.
         execute!(
             writer,
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)

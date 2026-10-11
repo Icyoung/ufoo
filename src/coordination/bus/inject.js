@@ -459,8 +459,8 @@ class Injector {
    * 3. Terminal.app/iTerm2 tty lookup（terminal mode fallback）
    */
   async inject(subscriber, commandOverride, delivery = {}) {
-    if (String(subscriber || "").startsWith("ufoo-code:")) {
-      throw new Error(`Inject disabled for ${subscriber}. ufoo-code consumes bus internally.`);
+    if (/^ucode:/.test(String(subscriber || ""))) {
+      throw new Error(`Inject disabled for ${subscriber}. ucode consumes bus internally.`);
     }
 
     // Terminal injection is a delivery adapter for explicit prompt text.

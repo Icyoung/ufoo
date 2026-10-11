@@ -4,7 +4,7 @@ const { getUfooPaths } = require("../../coordination/state/paths");
 const { isMetaActive } = require("../../coordination/bus/utils");
 const { resolveDisplayNickname, resolveScopedNickname } = require("./nicknameScope");
 const { readReportSummary, countControllerInboxEntries } = require("../../coordination/report/store");
-const { readRecentLoopSummary } = require("../../agents/controller/loopObservability");
+const { reconcileGroupStatus } = require("./groupStatus");
 
 function readBus(projectRoot) {
   const busPath = getUfooPaths(projectRoot).agentsFile;
@@ -83,7 +83,7 @@ function normalizeCronTasks(raw = []) {
   }));
 }
 
-function readGroups(projectRoot) {
+function readGroups(projectRoot, agents = {}) {
   const groupsDir = getUfooPaths(projectRoot).groupsDir;
   if (!groupsDir || !fs.existsSync(groupsDir)) {
     return { count: 0, active: 0, failed: 0, stopped: 0, items: [] };
@@ -97,7 +97,7 @@ function readGroups(projectRoot) {
     for (const file of files) {
       const filePath = path.join(groupsDir, file);
       try {
-        const raw = JSON.parse(fs.readFileSync(filePath, "utf8"));
+        const raw = reconcileGroupStatus(JSON.parse(fs.readFileSync(filePath, "utf8")), agents);
         const members = Array.isArray(raw.members) ? raw.members : [];
         const membersActive = members.filter((item) => item && (item.status === "active" || item.status === "reused")).length;
         items.push({
@@ -117,7 +117,7 @@ function readGroups(projectRoot) {
   }
 
   items.sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
-  const active = items.filter((item) => item.status === "active").length;
+  const active = items.filter((item) => item.status === "active" || item.status === "partial").length;
   const failed = items.filter((item) => item.status === "failed").length;
   const stopped = items.filter((item) => item.status === "stopped").length;
   return {
@@ -135,7 +135,7 @@ function buildStatus(projectRoot, options = {}) {
   const unread = readUnread(projectRoot);
   const reports = readReportSummary(projectRoot);
   const controllerPendingTotal = countControllerInboxEntries(projectRoot, "ufoo-agent");
-  const groups = readGroups(projectRoot);
+  const groups = readGroups(projectRoot, bus?.agents || {});
   const subscribers = bus ? Object.keys(bus.agents || {}) : [];
   const cronTasks = normalizeCronTasks(options.cronTasks || []);
 
@@ -191,7 +191,6 @@ function buildStatus(projectRoot, options = {}) {
     controller: {
       pending_total: controllerPendingTotal,
     },
-    loop: readRecentLoopSummary(projectRoot),
     cron: {
       count: cronTasks.length,
       tasks: cronTasks,

@@ -1,4 +1,4 @@
-const { defaultResolveTerminalApp, collectHostLaunchRequestContext, collectTerminalLaunchRequestContext, collectTmuxLaunchRequestContext } = require("./launchRequestContext");
+const { normalizeInternalAgentType } = require("../../runtime/contracts/agentMode");
 const path = require("path");
 const EventBus = require("../../coordination/bus");
 const { IPC_REQUEST_TYPES } = require("../../runtime/contracts/eventContract");
@@ -9,20 +9,18 @@ const {
   saveConfig: saveProjectConfig,
   loadGlobalUcodeConfig,
   saveGlobalUcodeConfig,
-  normalizeControllerMode,
-  normalizeLaunchMode,
   SETTINGS_MODEL_DEFAULTS,
   defaultAgentModelForProvider,
-  defaultRouterModelForProvider,
 } = require("../../config");
+const { DEFAULT_THINKING_LEVEL } = require("../../agents/providers/thinkingLevels");
 
-const LAUNCH_MODE_OPTIONS = Object.freeze(["auto", "host", "terminal", "tmux", "internal"]);
 const AGENT_PROVIDER_OPTIONS = Object.freeze([
   { label: "codex", value: "codex-cli" },
   { label: "claude", value: "claude-cli" },
   { label: "agy", value: "agy-cli" },
   { label: "kimi", value: "kimi-cli" },
   { label: "grok", value: "grok-cli" },
+  { label: "custom", value: "custom" },
 ]);
 const { resolveTransport } = require("../../code/nativeRunner");
 const { resolveDisplayNickname } = require("../../runtime/daemon/nicknameScope");
@@ -57,6 +55,7 @@ function defaultCreateSkills(projectRoot) {
 
 function normalizeSettingsProvider(value = "", fallback = "codex-cli") {
   const text = String(value || "").trim().toLowerCase();
+  if (text === "custom") return "custom";
   if (text === "claude" || text === "claude-cli" || text === "claude-code" || text === "anthropic") {
     return "claude-cli";
   }
@@ -81,11 +80,8 @@ function agentProviderKey(value = "") {
   if (provider === "agy-cli") return "agy";
   if (provider === "kimi-cli") return "kimi";
   if (provider === "grok-cli") return "grok";
+  if (provider === "custom") return "custom";
   return "codex";
-}
-
-function defaultGateModelForProvider(value = "") {
-  return defaultRouterModelForProvider(value);
 }
 
 async function withCapturedConsole(capture, fn) {
@@ -111,7 +107,6 @@ function createCommandExecutor(options = {}) {
   const hasRestartDaemon = typeof options.restartDaemon === "function";
   const {
     projectRoot,
-    internalOnly = false,
     getActiveProjectRoot = () => projectRoot,
     parseCommand = () => null,
     escapeBlessed = (value) => String(value || ""),
@@ -150,12 +145,12 @@ function createCommandExecutor(options = {}) {
     listProjects = () => [],
     getCurrentProject = () => ({ projectRoot }),
     switchProject = async () => ({ ok: false, error: "project switching unavailable" }),
-    resolveTerminalApp = defaultResolveTerminalApp,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     schedule = (fn, ms) => setTimeout(fn, ms),
     clearLog = null,
     fetchModelsImpl = null,
     applyChatSettings = null,
+    openResumeMenu = null,
   } = options;
 
   if (!projectRoot) {
@@ -597,22 +592,16 @@ function createCommandExecutor(options = {}) {
     if (args.length === 0) {
       logMessage(
         "error",
-        "{white-fg}✗{/white-fg} Usage: /launch <claude|codex|agy|grok|kimi|ucode> [nickname=<name>] [profile=<id>] [count=<n>] [scope=inplace|window]"
+        "{white-fg}✗{/white-fg} Usage: /launch <claude|codex|ucode> [nickname=<name>] [profile=<id>] [count=<n>]"
       );
       return;
     }
 
-    const agentTypeInput = String(args[0] || "").trim().toLowerCase();
-    // Accept friendly aliases the same way `ufoo launch` does in cli.js.
-    let agentType = agentTypeInput;
-    if (agentTypeInput === "antigravity" || agentTypeInput === "uagy") agentType = "agy";
-    if (agentTypeInput === "grok-build" || agentTypeInput === "ugrok" || agentTypeInput === "xai") agentType = "grok";
-    if (agentTypeInput === "kimi-cli" || agentTypeInput === "kimi-code" || agentTypeInput === "ukimi") agentType = "kimi";
-    if (agentType !== "claude" && agentType !== "codex" && agentType !== "agy" && agentType !== "grok" && agentType !== "kimi" && agentType !== "ucode") {
-      logMessage("error", "{white-fg}✗{/white-fg} Unknown agent type. Use: claude, codex, agy, grok, kimi, or ucode");
+    const normalizedAgent = normalizeInternalAgentType(args[0]);
+    if (!normalizedAgent) {
+      logMessage("error", "Unknown internal agent type. Use: claude, codex or ucode");
       return;
     }
-    const normalizedAgent = agentType === "ucode" ? "ufoo" : agentType;
 
     const parsedOptions = {};
     for (let i = 1; i < args.length; i += 1) {
@@ -623,51 +612,9 @@ function createCommandExecutor(options = {}) {
       }
     }
 
-    function normalizeLaunchScopeOption(value, fallback = "inplace") {
-      const raw = String(value || "").trim().toLowerCase();
-      if (!raw) return fallback;
-      if (raw === "inplace" || raw === "same" || raw === "current" || raw === "tab" || raw === "pane") {
-        return "inplace";
-      }
-      if (
-        raw === "window"
-        || raw === "separate"
-        || raw === "new"
-        || raw === "new-window"
-        || raw === "external"
-        || raw === "1"
-        || raw === "true"
-        || raw === "yes"
-        || raw === "y"
-        || raw === "on"
-      ) {
-        return "window";
-      }
-      if (raw === "0" || raw === "false" || raw === "no" || raw === "n" || raw === "off") {
-        return "inplace";
-      }
-      return "";
-    }
-
     const nickname = parsedOptions.nickname || "";
     const promptProfile = parsedOptions.profile || parsedOptions.prompt_profile || "";
     const count = parseInt(parsedOptions.count || "1", 10);
-    const scopeRaw = parsedOptions.scope || parsedOptions.launch_scope || parsedOptions.window || "";
-    let launchScope = normalizeLaunchScopeOption(scopeRaw, "inplace");
-    if (scopeRaw && !launchScope) {
-      logMessage("error", "{white-fg}✗{/white-fg} scope must be inplace|window");
-      return;
-    }
-    const rawFlags = args
-      .slice(1)
-      .filter((arg) => !String(arg || "").includes("="))
-      .map((arg) => String(arg || "").trim().toLowerCase())
-      .filter(Boolean);
-    for (const flag of rawFlags) {
-      const normalized = normalizeLaunchScopeOption(flag, "");
-      if (normalized) launchScope = normalized;
-    }
-    if (!launchScope) launchScope = "inplace";
     if (nickname && count > 1) {
       logMessage("error", "{white-fg}✗{/white-fg} nickname requires count=1");
       return;
@@ -684,12 +631,7 @@ function createCommandExecutor(options = {}) {
         count: Number.isFinite(count) ? count : 1,
         nickname,
         prompt_profile: promptProfile,
-        launch_scope: launchScope,
-        ...(internalOnly ? { internal_only: true, launch_scope: "inplace" } : {
-          ...collectHostLaunchRequestContext(),
-          ...collectTerminalLaunchRequestContext(resolveTerminalApp),
-          ...collectTmuxLaunchRequestContext(),
-        }),
+        internal_only: true,
       };
       send(request);
       schedule(requestStatus, 1000);
@@ -787,7 +729,7 @@ function createCommandExecutor(options = {}) {
 
     const profile = String(args[1] || "").trim();
     if (!profile) {
-      logMessage("error", "{white-fg}✗{/white-fg} Usage: /solo run <prompt-profile> [agent=codex|claude|agy|grok|ucode] [nickname=<name>] [scope=inplace|window]");
+      logMessage("error", "{white-fg}✗{/white-fg} Usage: /solo run <prompt-profile> [agent=codex|claude|ucode] [nickname=<name>]");
       return;
     }
 
@@ -800,39 +742,23 @@ function createCommandExecutor(options = {}) {
       }
     }
 
-    function normalizeLaunchScopeOption(value, fallback = "inplace") {
-      const raw = String(value || "").trim().toLowerCase();
-      if (!raw) return fallback;
-      if (raw === "inplace" || raw === "same" || raw === "current" || raw === "tab" || raw === "pane") {
-        return "inplace";
-      }
-      if (raw === "window" || raw === "separate" || raw === "new" || raw === "new-window" || raw === "external") {
-        return "window";
-      }
-      return "";
-    }
-
     const config = loadConfig(projectRoot);
-    const agent = resolveSoloAgentType(config, parsedOptions.agent || parsedOptions.type || "");
-    const nickname = String(parsedOptions.nickname || "").trim();
-    const scopeRaw = parsedOptions.scope || parsedOptions.launch_scope || "";
-    const launchScope = normalizeLaunchScopeOption(scopeRaw, "inplace");
-    if (scopeRaw && !launchScope) {
-      logMessage("error", "{white-fg}✗{/white-fg} scope must be inplace|window");
+    const requested = parsedOptions.agent || parsedOptions.type || "";
+    const agent = normalizeInternalAgentType(resolveSoloAgentType(config, requested));
+    if (!agent) {
+      logMessage("error", "Unknown internal agent type. Use: claude, codex or ucode");
       return;
     }
+    const nickname = String(parsedOptions.nickname || "").trim();
 
     try {
       send({
         type: IPC_REQUEST_TYPES.LAUNCH_AGENT,
-        agent: agent === "ucode" ? "ufoo" : agent,
+        agent,
         count: 1,
         nickname,
         prompt_profile: profile,
-        launch_scope: launchScope,
-        ...collectHostLaunchRequestContext(),
-        ...collectTerminalLaunchRequestContext(resolveTerminalApp),
-        ...collectTmuxLaunchRequestContext(),
+        internal_only: true,
       });
       schedule(requestStatus, 1000);
     } catch (err) {
@@ -841,20 +767,19 @@ function createCommandExecutor(options = {}) {
   }
 
   async function handleResumeCommand(args = []) {
-    const action = String(args[0] || "").toLowerCase();
-    if (action === "list" || action === "ls") {
-      const target = args[1] || "";
-      const label = target ? ` (${target})` : "";
-      logMessage("system", `{white-fg}⚙{/white-fg} Listing recoverable agents${label}...`);
-      send({ type: IPC_REQUEST_TYPES.LIST_RECOVERABLE_AGENTS, target });
-      schedule(requestStatus, 1000);
+    if (args.length === 0) {
+      if (typeof openResumeMenu === "function") await openResumeMenu();
+      else logMessage("system", "Choose an agent or group from the /resume menu.");
       return;
     }
-
+    if (args.length !== 1 || ["list", "ls"].includes(args[0])) {
+      logMessage("error", "Use /resume to select an agent or group; /resume list has been removed.");
+      return;
+    }
     const target = args[0] || "";
     const label = target ? ` (${target})` : "";
     logMessage("system", `{white-fg}⚙{/white-fg} Resuming agents${label}...`);
-    send({ type: IPC_REQUEST_TYPES.RESUME_AGENTS, target });
+    send({ type: IPC_REQUEST_TYPES.RESUME_AGENTS, target, internal_only: true });
     schedule(requestStatus, 1000);
   }
 
@@ -998,18 +923,6 @@ function createCommandExecutor(options = {}) {
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
 
-  function clearUfooAgentIdentity() {
-    try {
-      const { getUfooPaths } = require("../../coordination/state/paths");
-      const agentDir = getUfooPaths(projectRoot).agentDir;
-      const fsModule = require("fs");
-      fsModule.rmSync(path.join(agentDir, "ufoo-agent.json"), { force: true });
-      fsModule.rmSync(path.join(agentDir, "ufoo-agent.history.jsonl"), { force: true });
-    } catch {
-      // Ignore cleanup failures.
-    }
-  }
-
   async function notifyChatSettings(patch = {}) {
     if (typeof applyChatSettings !== "function") return;
     try {
@@ -1019,46 +932,9 @@ function createCommandExecutor(options = {}) {
     }
   }
 
-  async function handleModeCommand(args = []) {
-    const action = String(args[0] || "").trim().toLowerCase();
-    if (internalOnly) {
-      logMessage(action && !["internal", "show", "status"].includes(action) ? "error" : "system",
-        "ufoo dashboard uses internal agents only.");
-      return;
-    }
-    const config = loadConfig(projectRoot) || {};
-    const current = normalizeLaunchMode(config.launchMode || "auto");
-
-    if (!action || action === "show" || action === "status") {
-      logMessage("system", "{cyan-fg}launch mode:{/cyan-fg}");
-      logMessage("system", `  • current: ${current}`);
-      logMessage("system", `  • options: ${LAUNCH_MODE_OPTIONS.join(", ")}`);
-      logMessage("system", "  • use: /mode <auto|host|terminal|tmux|internal>");
-      return;
-    }
-
-    if (!LAUNCH_MODE_OPTIONS.includes(action)) {
-      logMessage(
-        "error",
-        `{white-fg}✗{/white-fg} Unknown mode: ${action}. Use: ${LAUNCH_MODE_OPTIONS.join("|")}`
-      );
-      return;
-    }
-
-    const next = normalizeLaunchMode(action);
-    if (next === current) {
-      logMessage("system", `{cyan-fg}launch mode:{/cyan-fg} already ${next}`);
-      return;
-    }
-
-    saveConfig(projectRoot, { launchMode: next });
-    logMessage("system", `{white-fg}✓{/white-fg} Launch mode: ${next}`);
-    await notifyChatSettings({ launchMode: next });
-    await restartDaemon(projectRoot);
-  }
-
   async function handleProviderCommand(args = []) {
     const action = String(args[0] || "").trim().toLowerCase();
+    if (action === "custom" && options.openAgentSettings) return options.openAgentSettings("custom");
     const config = loadConfig(projectRoot) || {};
     const current = normalizeSettingsProvider(config.agentProvider);
     const labels = AGENT_PROVIDER_OPTIONS.map((opt) => opt.label).join(", ");
@@ -1086,8 +962,12 @@ function createCommandExecutor(options = {}) {
       return;
     }
 
+    if (options.applyAgentSettings) {
+      const result = await options.applyAgentSettings({ agentProvider: next });
+      if (!result.ok) logMessage("error", result.error);
+      return;
+    }
     saveConfig(projectRoot, { agentProvider: next });
-    clearUfooAgentIdentity();
     logMessage("system", `{white-fg}✓{/white-fg} ufoo-agent: ${agentProviderKey(next)}`);
     await notifyChatSettings({ agentProvider: next });
     await restartDaemon(projectRoot);
@@ -1337,11 +1217,7 @@ function createCommandExecutor(options = {}) {
         alias,
         instance,
         dry_run: dryRun,
-        ...(internalOnly ? { internal_only: true } : {
-          ...collectHostLaunchRequestContext(),
-          ...collectTerminalLaunchRequestContext(resolveTerminalApp),
-          ...collectTmuxLaunchRequestContext(),
-        }),
+        internal_only: true,
       });
       schedule(requestStatus, 1000);
       return;
@@ -1428,12 +1304,6 @@ function createCommandExecutor(options = {}) {
       return;
     }
 
-    if (section === "router") {
-      const subArgs = args.slice(1);
-      await handleRouterSettingsCommand(subArgs);
-      return;
-    }
-
     if (section === "ucode") {
       const subArgs = args.slice(1);
       if (subArgs.length === 0) {
@@ -1444,7 +1314,7 @@ function createCommandExecutor(options = {}) {
       return;
     }
 
-    logMessage("error", "{white-fg}✗{/white-fg} Unknown settings section. Use: show, agent, router, ucode");
+    logMessage("error", "{white-fg}✗{/white-fg} Unknown settings section. Use: show, agent, ucode");
   }
 
   async function handleSettingsOverviewCommand() {
@@ -1452,22 +1322,35 @@ function createCommandExecutor(options = {}) {
     const agentProvider = normalizeSettingsProvider(config.agentProvider);
     const agentKey = agentProviderKey(agentProvider);
     const agentModel = String(config.agentModel || "").trim();
-    const routerMode = normalizeControllerMode(config.controllerMode);
-    const routerProvider = String(config.routerProvider || "").trim();
-    const routerModel = String(config.routerModel || "").trim();
     const ucodeConfig = loadUcodeConfig() || {};
     const ucodeProvider = String(ucodeConfig.ucodeProvider || "").trim();
     const ucodeModel = String(ucodeConfig.ucodeModel || "").trim();
 
     logMessage("system", "{cyan-fg}settings:{/cyan-fg}");
     logMessage("system", `  • agent: ${agentKey} · model ${agentModel || `(unset, recommended ${defaultAgentModelForProvider(agentProvider)})`}`);
-    logMessage("system", `  • router: mode ${routerMode} · provider ${routerProvider || "(unset)"} · model ${routerModel || "(unset)"}`);
     logMessage("system", `  • ucode: provider ${ucodeProvider || "(unset)"} · model ${ucodeModel || "(unset)"}`);
-    logMessage("system", "  • use: /settings agent | /settings router | /settings ucode");
+    logMessage("system", "  • use: /settings agent | /settings ucode");
   }
 
   async function handleAgentSettingsCommand(args = []) {
     const first = String(args[0] || "").trim().toLowerCase();
+    if (first === "custom" && options.openAgentSettings) return options.openAgentSettings("custom");
+    if (first === "model") {
+      if (args.length === 1 && options.openAgentSettings) return options.openAgentSettings("model");
+      if (options.applyAgentModel) {
+        const result = await options.applyAgentModel(args[1], args[2]);
+        if (!result.ok) logMessage("error", result.error);
+        return;
+      }
+    }
+    if (first === "thinking") {
+      if (args.length === 1 && options.openAgentSettings) return options.openAgentSettings("thinking");
+      if (options.applyAgentSettings) {
+        const result = await options.applyAgentSettings({ agent_thinking: args[1] });
+        if (!result.ok) logMessage("error", result.error);
+        return;
+      }
+    }
     const hasInlineKv = args.some((item) => String(item || "").includes("="));
     const action = !first ? "show" : (hasInlineKv ? "set" : first);
 
@@ -1480,7 +1363,12 @@ function createCommandExecutor(options = {}) {
       logMessage("system", `  • provider: ${key}`);
       logMessage("system", `  • model: ${model || `(unset, recommended ${defaultAgentModelForProvider(provider)})`}`);
       logMessage("system", `  • defaults: codex=${SETTINGS_MODEL_DEFAULTS.agent.codex}, claude=${SETTINGS_MODEL_DEFAULTS.agent.claude}`);
-      logMessage("system", "  • use: /settings agent set provider=<codex|claude|agy> model=<id>");
+      logMessage("system", `  • thinking: ${config.agentThinking || "medium"}`);
+      if (provider === "custom") {
+        logMessage("system", `  • url: ${config.agentBaseUrl || "(unset)"}`);
+        logMessage("system", `  • key: ${config.agentApiKey ? "(configured)" : "(unset)"}`);
+      }
+      logMessage("system", "  • use: /settings agent custom | model | thinking");
       return;
     }
 
@@ -1492,10 +1380,14 @@ function createCommandExecutor(options = {}) {
           ? "agy-cli"
           : (action === "kimi" ? "kimi-cli" : (action === "grok" ? "grok-cli" : "codex-cli")));
       const model = String(kv.model || defaultAgentModelForProvider(provider)).trim();
-      saveConfig(projectRoot, {
-        agentProvider: provider,
-        agentModel: model,
-      });
+      const patch = { agentProvider: provider, agentModel: model,
+        ...(action === "codex" ? { agentThinking: DEFAULT_THINKING_LEVEL } : {}) };
+      if (options.applyAgentSettings) {
+        const result = await options.applyAgentSettings(patch);
+        if (!result.ok) logMessage("error", result.error);
+        return;
+      }
+      saveConfig(projectRoot, patch);
       logMessage("system", "{white-fg}✓{/white-fg} ufoo-agent config updated");
       logMessage("system", `  • provider: ${agentProviderKey(provider)}`);
       logMessage("system", `  • model: ${model}`);
@@ -1528,6 +1420,12 @@ function createCommandExecutor(options = {}) {
         return;
       }
 
+      if (options.applyAgentSettings) {
+        const result = await options.applyAgentSettings(updates);
+        if (!result.ok) logMessage("error", result.error);
+        return;
+      }
+
       saveConfig(projectRoot, updates);
       logMessage("system", "{white-fg}✓{/white-fg} ufoo-agent config updated");
       if (Object.prototype.hasOwnProperty.call(updates, "agentProvider")) {
@@ -1551,6 +1449,11 @@ function createCommandExecutor(options = {}) {
         logMessage("error", "{white-fg}✗{/white-fg} Usage: /settings agent clear [provider|model|all]");
         return;
       }
+      if (options.applyAgentSettings) {
+        const result = await options.applyAgentSettings(updates);
+        if (!result.ok) logMessage("error", result.error);
+        return;
+      }
       saveConfig(projectRoot, updates);
       logMessage("system", "{white-fg}✓{/white-fg} ufoo-agent config cleared");
       await restartDaemon(projectRoot);
@@ -1558,103 +1461,6 @@ function createCommandExecutor(options = {}) {
     }
 
     logMessage("error", "{white-fg}✗{/white-fg} Unknown settings agent action. Use: show, set, clear, codex, claude, agy, kimi, grok");
-  }
-
-  async function handleRouterSettingsCommand(args = []) {
-    const first = String(args[0] || "").trim().toLowerCase();
-    const hasInlineKv = args.some((item) => String(item || "").includes("="));
-    const action = !first ? "show" : (hasInlineKv ? "set" : first);
-
-    if (action === "show" || action === "status") {
-      const config = loadConfig(projectRoot) || {};
-      const mode = normalizeControllerMode(config.controllerMode);
-      logMessage("system", "{cyan-fg}gate router config:{/cyan-fg}");
-      logMessage("system", `  • controllerMode: ${mode}`);
-      logMessage("system", `  • provider: ${String(config.routerProvider || "").trim() || "(unset)"}`);
-      logMessage("system", `  • model: ${String(config.routerModel || "").trim() || "(unset)"}`);
-      logMessage("system", "  • allowed modes: main | loop | legacy | shadow");
-      logMessage("system", `  • defaults: codex=${SETTINGS_MODEL_DEFAULTS.router.codex}, claude=${SETTINGS_MODEL_DEFAULTS.router.claude}`);
-      return;
-    }
-
-    if (action === "codex" || action === "claude") {
-      const kv = parseKeyValueArgs(args.slice(1));
-      const provider = action;
-      const model = String(kv.model || defaultGateModelForProvider(provider)).trim();
-      saveConfig(projectRoot, {
-        routerProvider: provider,
-        routerModel: model,
-      });
-      logMessage("system", "{white-fg}✓{/white-fg} gate router config updated");
-      logMessage("system", `  • provider: ${provider}`);
-      logMessage("system", `  • model: ${model}`);
-      await restartDaemon(projectRoot);
-      return;
-    }
-
-    if (action === "set") {
-      const kvArgs = hasInlineKv ? args : args.slice(1);
-      const kv = parseKeyValueArgs(kvArgs);
-      const updates = {};
-
-      if (Object.prototype.hasOwnProperty.call(kv, "mode")) {
-        const nextMode = normalizeControllerMode(kv.mode);
-        if (!["main", "loop", "legacy", "shadow"].includes(nextMode) || nextMode !== String(kv.mode || "").trim().toLowerCase()) {
-          logMessage("error", "{white-fg}✗{/white-fg} Usage: /settings router set mode=<main|loop|legacy|shadow> provider=<id> model=<id>");
-          return;
-        }
-        updates.controllerMode = nextMode;
-      }
-      if (Object.prototype.hasOwnProperty.call(kv, "provider")) updates.routerProvider = String(kv.provider || "").trim();
-      if (Object.prototype.hasOwnProperty.call(kv, "model")) updates.routerModel = String(kv.model || "").trim();
-
-      if (Object.keys(updates).length === 0) {
-        logMessage("error", "{white-fg}✗{/white-fg} Usage: /settings router set mode=<main|loop|legacy|shadow> provider=<id> model=<id>");
-        return;
-      }
-
-      saveConfig(projectRoot, updates);
-      logMessage("system", "{white-fg}✓{/white-fg} gate router config updated");
-      if (Object.prototype.hasOwnProperty.call(updates, "controllerMode")) {
-        logMessage("system", `  • controllerMode: ${updates.controllerMode}`);
-      }
-      if (Object.prototype.hasOwnProperty.call(updates, "routerProvider")) {
-        logMessage("system", `  • provider: ${updates.routerProvider || "(unset)"}`);
-      }
-      if (Object.prototype.hasOwnProperty.call(updates, "routerModel")) {
-        logMessage("system", `  • model: ${updates.routerModel || "(unset)"}`);
-      }
-      await restartDaemon(projectRoot);
-      return;
-    }
-
-    if (action === "clear") {
-      const fieldsRaw = args.slice(1).map((item) => String(item || "").trim().toLowerCase()).filter(Boolean);
-      const fields = fieldsRaw.length === 0 ? ["all"] : fieldsRaw;
-      const updates = {};
-      const clearAll = fields.includes("all");
-      if (clearAll || fields.includes("mode")) updates.controllerMode = "main";
-      if (clearAll || fields.includes("provider")) updates.routerProvider = "";
-      if (clearAll || fields.includes("model")) updates.routerModel = "";
-      if (Object.keys(updates).length === 0) {
-        logMessage("error", "{white-fg}✗{/white-fg} Usage: /settings router clear [mode|provider|model|all]");
-        return;
-      }
-      saveConfig(projectRoot, updates);
-      logMessage("system", "{white-fg}✓{/white-fg} gate router config cleared");
-      await restartDaemon(projectRoot);
-      return;
-    }
-
-    const nextMode = normalizeControllerMode(action);
-    if (nextMode !== action || !["main", "loop", "legacy", "shadow"].includes(nextMode)) {
-      logMessage("error", "{white-fg}✗{/white-fg} Usage: /settings router <main|loop|legacy|shadow>");
-      return;
-    }
-
-    saveConfig(projectRoot, { controllerMode: nextMode });
-    logMessage("system", `{white-fg}✓{/white-fg} gate router mode set to ${nextMode}`);
-    await restartDaemon(projectRoot);
   }
 
   function parseUcodeConfigKv(args = []) {
@@ -1760,7 +1566,13 @@ function createCommandExecutor(options = {}) {
       const kvArgs = hasInlineKv ? args : args.slice(1);
       const kv = parseUcodeConfigKv(kvArgs);
       const updates = {};
-      if (Object.prototype.hasOwnProperty.call(kv, "provider")) updates.ucodeProvider = String(kv.provider || "").trim();
+      if (Object.prototype.hasOwnProperty.call(kv, "provider")) {
+        updates.ucodeProvider = String(kv.provider || "").trim();
+        if (["anthropic", "anthropic-messages"].includes(updates.ucodeProvider.toLowerCase())) {
+          logMessage("error", "Custom APIs use OpenAI protocol. Use provider=openai; internal Claude retains its native connection.");
+          return;
+        }
+      }
       if (Object.prototype.hasOwnProperty.call(kv, "model")) updates.ucodeModel = String(kv.model || "").trim();
       if (Object.prototype.hasOwnProperty.call(kv, "url")) updates.ucodeBaseUrl = String(kv.url || "").trim();
       if (Object.prototype.hasOwnProperty.call(kv, "baseurl")) updates.ucodeBaseUrl = String(kv.baseurl || "").trim();
@@ -1769,9 +1581,12 @@ function createCommandExecutor(options = {}) {
       if (Object.prototype.hasOwnProperty.call(kv, "apikey")) updates.ucodeApiKey = String(kv.apikey || "").trim();
       if (Object.prototype.hasOwnProperty.call(kv, "api_key")) updates.ucodeApiKey = String(kv.api_key || "").trim();
       if (Object.prototype.hasOwnProperty.call(kv, "token")) updates.ucodeApiKey = String(kv.token || "").trim();
+      if ((updates.ucodeBaseUrl || updates.ucodeApiKey) && !updates.ucodeProvider && !(loadUcodeConfig() || {}).ucodeProvider) {
+        updates.ucodeProvider = "openai";
+      }
 
       if (Object.keys(updates).length === 0) {
-        logMessage("error", "{white-fg}✗{/white-fg} Usage: /settings ucode set provider=<openai|anthropic> model=<id> url=<baseUrl> key=<apiKey>");
+        logMessage("error", "{white-fg}✗{/white-fg} Usage: /settings ucode set provider=openai model=<id> url=<baseUrl> key=<apiKey>");
         return;
       }
 
@@ -1927,11 +1742,11 @@ function createCommandExecutor(options = {}) {
           logMessage("error", "{white-fg}✗{/white-fg} /clear is not available in this view");
         }
         return true;
-      case "multi":
-        if (typeof options.toggleMultiWindow === "function") {
-          await (args.length ? options.toggleMultiWindow(args) : options.toggleMultiWindow());
+      case "window":
+        if (typeof options.setWindowLayout === "function") {
+          await options.setWindowLayout(args);
         } else {
-          logMessage("error", "{white-fg}✗{/white-fg} Multi-window mode is not available");
+          logMessage("error", "{white-fg}✗{/white-fg} Window layouts are not available");
         }
         return true;
       case "mcp":
@@ -1979,9 +1794,6 @@ function createCommandExecutor(options = {}) {
       case "cron":
         await handleCronCommand(args);
         return true;
-      case "mode":
-        await handleModeCommand(args);
-        return true;
       case "provider":
         await handleProviderCommand(args);
         return true;
@@ -2017,7 +1829,6 @@ function createCommandExecutor(options = {}) {
     handleRoleCommand,
     handleSoloCommand,
     handleCronCommand,
-    handleModeCommand,
     handleProviderCommand,
     handleGroupCommand,
     handleSettingsCommand,
@@ -2028,7 +1839,4 @@ function createCommandExecutor(options = {}) {
 
 module.exports = {
   createCommandExecutor,
-  collectHostLaunchRequestContext,
-  collectTerminalLaunchRequestContext,
-  collectTmuxLaunchRequestContext,
 };

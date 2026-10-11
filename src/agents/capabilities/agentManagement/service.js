@@ -3,9 +3,12 @@
 const { createHash } = require("crypto");
 const { createCommandStore } = require("../../runtime");
 const { stableStringify } = require("../../runtime/core/stableJson");
+const { REPORTING_GUIDANCE } = require("../../prompts/reporting");
+const { normalizeInternalAgentType } = require("../../../runtime/contracts/agentMode");
 
 const digest = (value) => createHash("sha256").update(value).digest("hex").slice(0, 24);
 const empty = () => ({ tasks: {} });
+const reject = (code, error) => ({ ok: false, code, error });
 
 /** Project host ports own launching/delivery; this adapter records business associations. */
 function createAgentManagementService({ store, launch, dispatch, wake = async () => {}, emit = () => {}, validateEvidence = null, resolveTarget = (target) => target } = {}) {
@@ -17,6 +20,19 @@ function createAgentManagementService({ store, launch, dispatch, wake = async ()
       mutator(state);
       return [{ type: "capability.state_committed", capabilityId: "agent-management", version: 1, value: state }];
     });
+  }
+  function failed(taskId, stage, result) {
+    const failure = { ...result, ok: false, taskId };
+    update((state) => {
+      const task = state.tasks[taskId];
+      task.lastError = { code: failure.code || `${stage}_failed`, error: failure.error || `${stage} failed`, stage };
+      task.updatedAt = new Date().toISOString();
+      // An uncertain side effect must still be reconciled through its command
+      // receipt. A confirmed failure cannot remain a queued/running task.
+      if (failure.code !== "uncertain_effect") task.status = failure.code === "awaiting_registration" ? "awaiting_registration" : "failed";
+    });
+    emit({ type: "delegation.failed", taskId, stage, code: failure.code, error: failure.error });
+    return failure;
   }
   async function flushWakes() {
     for (const task of Object.values(read().tasks)) {
@@ -40,41 +56,47 @@ function createAgentManagementService({ store, launch, dispatch, wake = async ()
     },
     async delegate(args, context = {}) {
       const id = String(args.command_id || "");
-      if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,100}$/.test(id)) throw new Error("delegate_task requires safe command_id");
-      if (!String(args.objective || "").trim()) throw new Error("delegate_task requires objective");
-      if (!args.target && !args.agent) throw new Error("delegate_task requires target or agent");
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,100}$/.test(id)) return reject("invalid_arguments", "delegate_task requires safe command_id");
+      if (!String(args.objective || "").trim()) return reject("invalid_arguments", "delegate_task requires objective");
+      if (!args.target && !args.agent) return reject("invalid_arguments", "delegate_task requires an existing target or an agent type to create");
+      if (!args.target && !normalizeInternalAgentType(args.agent)) return reject("invalid_arguments", "delegate_task supports internal codex, claude or ucode workers only");
       const scope = context.requestId ? `${context.requestId}:${id}` : id;
       const commandId = `delegate-${digest(scope)}`;
       const taskId = `delegated-${digest(scope)}`;
       const fingerprint = digest(stableStringify(args));
       const target = args.target ? resolveTarget(args.target) : "";
-      if (args.target && !target) throw new Error("delegation target is not an active project worker");
+      if (args.target && !target) return reject("invalid_target", "delegation target is not an active project worker. To create one, omit target and pass agent plus optional nickname.");
       update((state) => {
         const existing = state.tasks[taskId];
         if (existing && existing.fingerprint !== fingerprint) throw Object.assign(new Error("delegation command conflicts"), { code: "command_conflict" });
         if (!existing) state.tasks[taskId] = { taskId, fingerprint, objective: args.objective,
+          commandIds: [`${commandId}:launch`, `${commandId}:dispatch`],
           acceptanceCriteria: args.acceptance_criteria || [], parentTaskRunId: context.taskRunId || "",
-          parentSessionId: context.sessionId || "", status: "planning", workerId: String(target), reportIds: [] };
+          parentSessionId: context.sessionId || "", traceId: context.traceId || context.taskId || context.taskRunId || taskId,
+          parentRequestId: context.requestId || "", createdAt: new Date().toISOString(), status: "planning", workerId: String(target), reportIds: [] };
       });
       let task = read().tasks[taskId];
+      if (["failed", "awaiting_registration"].includes(task.status)) return { ok: false, task: { ...task }, ...task.lastError };
       if (task.status !== "planning") return { ok: true, task: { ...task } };
       if (!task.workerId) {
         const nickname = args.nickname || `worker-${digest(scope).slice(0, 12)}`;
         const result = await commands.execute({ commandId: `${commandId}:launch`, kind: "launch_agent", args: { agent: args.agent, nickname } }, () => launch({ agent: args.agent, nickname, count: 1 }));
-        if (!result || result.ok === false) return { ...result, ok: false, taskId };
+        if (!result || result.ok === false) return failed(taskId, "launch", result);
         const rows = Array.isArray(result.ops_results) ? result.ops_results : [result];
         const workerId = rows.map((row) => row.agent_id || row.subscriber_ids?.[0] || "").find(Boolean);
-        if (!workerId) return { ok: false, code: "awaiting_registration", taskId, error: "Launch receipt has no concrete worker identity; reconcile before dispatch." };
+        if (!workerId) return failed(taskId, "launch", { code: "awaiting_registration", error: "Launch receipt has no concrete worker identity; reconcile before dispatch." });
         update((state) => { state.tasks[taskId].workerId = workerId; });
         task = read().tasks[taskId];
       }
       const message = [args.objective, `Task ID: ${taskId}`, "Controller: ufoo-agent. Report start/progress/done/error with this exact task ID and private scope.",
         "Use ufoo report --task <id> --scope private --controller ufoo-agent, or MCP report_agent_status with task_id, scope=private, controller_id=ufoo-agent.",
+        REPORTING_GUIDANCE,
         `Acceptance criteria: ${JSON.stringify(task.acceptanceCriteria)}`].join("\n\n");
       const receipt = await commands.execute({ commandId: `${commandId}:dispatch`, kind: "dispatch_message", args: { target: task.workerId, message } },
-        () => dispatch({ target: task.workerId, message, taskId }));
-      if (!receipt || receipt.ok === false) return { ...receipt, ok: false, taskId };
-      update((state) => { const entry = state.tasks[taskId]; entry.status = "queued"; entry.dispatchReceipt = receipt; });
+        () => dispatch({ target: task.workerId, message, taskId, runtimeContext: { traceId: task.traceId,
+          taskId, parentTaskRunId: task.parentTaskRunId, parentSessionId: task.parentSessionId, parentRequestId: task.parentRequestId } }));
+      if (!receipt || receipt.ok === false) return failed(taskId, "dispatch", receipt);
+      update((state) => { const entry = state.tasks[taskId]; if (entry.status === "planning") entry.status = "queued"; entry.queuedAt = new Date().toISOString(); entry.dispatchReceipt = receipt; });
       emit({ type: "delegation.queued", taskId, workerId: task.workerId, parentTaskRunId: task.parentTaskRunId });
       return { ok: true, task: read().tasks[taskId], deliveryStatus: "queued" };
     },
@@ -86,9 +108,10 @@ function createAgentManagementService({ store, launch, dispatch, wake = async ()
       update((state) => {
         const current = state.tasks[entry.task_id];
         current.reportIds.push(reportId);
-        if (current.status === "accepted") return;
+        if (["accepted", "rejected"].includes(current.status)) return;
         if (current.report && ["done", "error"].includes(current.report.phase) && ["start", "progress"].includes(entry.phase)) return;
         current.report = entry;
+        current.updatedAt = entry.ts || new Date().toISOString();
         current.status = ["done", "error"].includes(entry.phase) ? "reported" : "running";
         if (current.status === "reported") current.pendingWake = `report-${digest(`${current.taskId}:${reportId}`)}`;
       });
@@ -96,14 +119,18 @@ function createAgentManagementService({ store, launch, dispatch, wake = async ()
       return { matched: true, task: read().tasks[entry.task_id] };
     },
     accept({ task_id: taskId, outcome, reason, evidence = [] }, context = {}) {
-      if (!["accepted", "rejected"].includes(outcome)) throw new Error("accept_task requires accepted or rejected outcome");
+      if (!["accepted", "rejected"].includes(outcome)) return reject("invalid_arguments", "accept_task requires accepted or rejected outcome");
+      const existing = read().tasks[taskId];
+      if (!existing || existing.status !== "reported") return reject("invalid_task_state", "task has no unreviewed terminal report");
+      if (outcome === "accepted" && (!String(reason || "").trim() || !evidence.length || existing.report.phase !== "done")) return reject("acceptance_required", "acceptance requires a completed worker report, reason, and validation evidence");
+      if (outcome === "accepted" && (!validateEvidence || validateEvidence(evidence, existing, context) !== true)) return reject("invalid_evidence", "host did not verify the acceptance evidence");
       update((state) => {
         const task = state.tasks[taskId];
         if (!task || task.status !== "reported") throw new Error("task has no unreviewed terminal report");
         if (outcome === "accepted" && (!String(reason || "").trim() || !evidence.length || task.report.phase !== "done")) throw new Error("acceptance requires a completed worker report, reason, and validation evidence");
         if (outcome === "accepted" && (!validateEvidence || validateEvidence(evidence, task, context) !== true)) throw new Error("host did not verify the acceptance evidence");
         task.status = outcome;
-        task.acceptance = { outcome, reason, evidence };
+        task.acceptance = { outcome, reason, evidence, time: new Date().toISOString() };
       });
       return { ok: true, task: read().tasks[taskId] };
     },

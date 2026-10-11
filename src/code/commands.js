@@ -72,7 +72,7 @@ function listUcodeCommandsForHelp() {
     "  /ubus",
     "  /status",
     "  /queue [status|clear|cancel|stop]",
-    "  /model [model-id] [off|low|medium|high|max]",
+    "  /model [model-id] [off|low|medium|high|xhigh|max]",
     "  /plan [on|off|show|hide|focus|debug|clear]",
     "  /skills [list]",
     "  /skills show <name>",

@@ -462,10 +462,10 @@ describe("ActivityDetector", () => {
     test("uses mode-based quiet defaults", () => {
       const internal = new ActivityDetector("claude-code", { mode: "internal" });
       const terminal = new ActivityDetector("claude-code", { mode: "terminal" });
-      const ptyRunner = new ActivityDetector("claude-code", { mode: "pty-runner" });
+      const tmux = new ActivityDetector("claude-code", { mode: "tmux" });
       expect(internal.quietWindowMs).toBe(3500);
       expect(terminal.quietWindowMs).toBe(5000);
-      expect(ptyRunner.quietWindowMs).toBe(5000);
+      expect(tmux.quietWindowMs).toBe(5000);
     });
 
     test("quietWindowMs option overrides mode default", () => {

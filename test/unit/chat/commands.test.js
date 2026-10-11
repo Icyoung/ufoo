@@ -1,6 +1,7 @@
 const {
   COMMAND_REGISTRY,
   buildCommandRegistry,
+  getChatCommandCatalog,
   describeCommandForChat,
   parseCommand,
   shouldEchoCommandInChat,
@@ -26,11 +27,51 @@ describe("chat command helpers", () => {
     expect(registry[0].subcommands.map((s) => s.cmd)).toEqual(["alpha", "beta"]);
   });
 
-  test("multi keeps its bare toggle command executable despite optional layout arguments", () => {
+  test("project-mode catalog excludes global commands without changing the full catalog", () => {
+    const project = getChatCommandCatalog();
+    const global = getChatCommandCatalog({ globalMode: true });
+    expect(project.commands.map((item) => item.cmd)).toEqual(
+      global.commands.map((item) => item.cmd).filter((cmd) => !["/open", "/project"].includes(cmd))
+    );
+    expect(project.commandTree["/open"]).toBeUndefined();
+    expect(project.commandTree["/project"]).toBeUndefined();
+    expect(global.commandTree["/open"]).toBeDefined();
+    expect(global.commandTree["/project"].children.switch).toBeDefined();
+  });
+
+  test.each(["/", "/op", "/pro", "/project", "/project ", "/project s"])(
+    "global-only completions for %j are visible only in global mode",
+    (text) => {
+      const { buildCompletions } = require("../../../src/ui/format");
+      const completions = (globalMode) => buildCompletions({
+        text, limit: 100, ...getChatCommandCatalog({ globalMode }),
+      });
+      const isGlobalCommand = (item) => /^\/(open|project)(?:\s|$)/.test(item.label);
+      expect(completions(false).filter(isGlobalCommand)).toEqual([]);
+      expect(completions(true).filter(isGlobalCommand).length).toBeGreaterThan(0);
+    }
+  );
+
+  test.each([false, true])("normal completions retain priority and subcommands with globalMode=%s", (globalMode) => {
+    const { buildCompletions } = require("../../../src/ui/format");
+    const catalog = getChatCommandCatalog({ globalMode });
+    expect(buildCompletions({ text: "/", ...catalog }).slice(0, 4).map((item) => item.label))
+      .toEqual(["/launch", "/group", "/bus", "/ctx"]);
+    expect(buildCompletions({ text: "/window ", ...catalog }).map((item) => item.label))
+      .toEqual(["/window main", "/window side", "/window multi"]);
+  });
+
+  test("window completion exposes the three full commands and removes multi", () => {
     const { buildCompletions } = require("../../../src/ui/format");
     const { COMMAND_TREE } = require("../../../src/app/chat/commands");
-    expect(COMMAND_REGISTRY.find((entry) => entry.cmd === "/multi").optionalArguments).toBe(true);
-    expect(buildCompletions({ text: "/multi", commands: COMMAND_REGISTRY, commandTree: COMMAND_TREE })).toEqual([]);
+    expect(COMMAND_REGISTRY.find((entry) => entry.cmd === "/multi")).toBeUndefined();
+    const completions = (text) => buildCompletions({ text, commands: COMMAND_REGISTRY, commandTree: COMMAND_TREE });
+    expect(completions("/window ").map((item) => item.label)).toEqual([
+      "/window main", "/window side", "/window multi",
+    ]);
+    for (const command of ["/window main", "/window side", "/window multi"]) {
+      expect(completions(command)).toEqual([]);
+    }
   });
 
   test("launch command exposes ucode subcommand", () => {
@@ -39,15 +80,12 @@ describe("chat command helpers", () => {
     expect((launch.subcommands || []).some((sub) => sub.cmd === "ucode")).toBe(true);
   });
 
-  test("launch subcommands are ordered claude / codex / agy / grok / ucode / kimi", () => {
+  test("launch subcommands are ordered claude / codex / ucode", () => {
     const launch = COMMAND_REGISTRY.find((item) => item.cmd === "/launch");
     expect((launch.subcommands || []).map((sub) => sub.cmd)).toEqual([
       "claude",
       "codex",
-      "agy",
-      "grok",
       "ucode",
-      "kimi",
     ]);
   });
 
@@ -56,7 +94,7 @@ describe("chat command helpers", () => {
     expect(settings).toBeTruthy();
     expect((settings.subcommands || []).some((sub) => sub.cmd === "show")).toBe(true);
     expect((settings.subcommands || []).some((sub) => sub.cmd === "agent")).toBe(true);
-    expect((settings.subcommands || []).some((sub) => sub.cmd === "router")).toBe(true);
+    expect((settings.subcommands || []).some((sub) => sub.cmd === "router")).toBe(false);
     expect((settings.subcommands || []).some((sub) => sub.cmd === "ucode")).toBe(true);
     const agent = (settings.subcommands || []).find((sub) => sub.cmd === "agent");
     expect((agent.subcommands || []).map((sub) => sub.cmd)).toEqual([
@@ -65,19 +103,17 @@ describe("chat command helpers", () => {
       "clear",
       "codex",
       "claude",
+      "custom",
+      "model",
+      "thinking",
     ]);
-    const router = (settings.subcommands || []).find((sub) => sub.cmd === "router");
-    expect((router.subcommands || []).map((sub) => sub.cmd)).toEqual([
-      "show",
-      "set",
-      "clear",
-      "main",
-      "loop",
-      "legacy",
-      "shadow",
-      "codex",
-      "claude",
-    ]);
+  });
+
+  test("settings completions show the current Codex and Claude defaults", () => {
+    const { buildCompletions } = require("../../../src/ui/format");
+    const rows = buildCompletions({ text: "/settings agent ", ...getChatCommandCatalog() });
+    expect(rows.find((row) => row.label === "/settings agent codex").description).toContain("gpt-6.1-sol · medium");
+    expect(rows.find((row) => row.label === "/settings agent claude").description).toContain("claude-opus-5-5");
   });
 
   test("cron command is exposed", () => {
@@ -88,13 +124,8 @@ describe("chat command helpers", () => {
     expect((cron.subcommands || []).some((sub) => sub.cmd === "stop")).toBe(true);
   });
 
-  test("mode command exposes launch-mode subcommands", () => {
-    const mode = COMMAND_REGISTRY.find((item) => item.cmd === "/mode");
-    expect(mode).toBeTruthy();
-    expect((mode.subcommands || []).map((sub) => sub.cmd)).toEqual([
-      "show",
-      "internal",
-    ]);
+  test("the removed mode command is absent from the dashboard registry", () => {
+    expect(COMMAND_REGISTRY.find((item) => item.cmd === "/mode")).toBeUndefined();
   });
 
   test("provider command exposes agent-provider subcommands", () => {
@@ -106,6 +137,7 @@ describe("chat command helpers", () => {
       "claude",
       "agy",
       "kimi",
+      "custom",
     ]);
   });
 

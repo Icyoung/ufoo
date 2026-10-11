@@ -112,39 +112,6 @@ describe("§10.7 redactor three-slice enforcement", () => {
       }
     });
 
-    test("loop observability event file redacts bearer tokens", () => {
-      const {
-        createLoopObserver,
-        appendShadowDiff,
-      } = require("../../../src/agents/controller/loopObservability");
-      const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-obs-redact-"));
-      try {
-        const observer = createLoopObserver({ projectRoot });
-        observer.emit("test.event", {
-          payload: "Authorization: Bearer abc.def",
-          token: "leak-1",
-        });
-        appendShadowDiff(projectRoot, {
-          note: "Authorization: Bearer abc.def",
-          refreshToken: "leak-2",
-        });
-
-        const eventsRead = fs.readFileSync(observer.paths.eventsFile, "utf8");
-        expect(eventsRead).not.toMatch(/abc\.def/);
-        expect(eventsRead).not.toMatch(/leak-1/);
-        expect(eventsRead).toMatch(/Bearer \[REDACTED\]/);
-
-        const diffDir = path.join(projectRoot, ".ufoo", "shadow");
-        const diffFiles = fs.readdirSync(diffDir);
-        expect(diffFiles.length).toBeGreaterThan(0);
-        const diffRead = fs.readFileSync(path.join(diffDir, diffFiles[0]), "utf8");
-        expect(diffRead).not.toMatch(/abc\.def/);
-        expect(diffRead).not.toMatch(/leak-2/);
-      } finally {
-        fs.rmSync(projectRoot, { recursive: true, force: true });
-      }
-    });
-
     test("report store redacts token payloads in both report file and state file", () => {
       const store = require("../../../src/coordination/report/store");
       const { getUfooPaths } = require("../../../src/coordination/state/paths");

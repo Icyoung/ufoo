@@ -23,8 +23,8 @@ pub struct Envelope {
 }
 
 pub fn write_envelope(stream: &mut UnixStream, envelope: &serde_json::Value) -> io::Result<()> {
-    let mut line =
-        serde_json::to_string(envelope).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    let mut line = serde_json::to_string(envelope)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
     line.push('\n');
     stream.write_all(line.as_bytes())?;
     stream.flush()
@@ -74,7 +74,8 @@ pub fn hello_payload() -> serde_json::Value {
             "chat",
             "scrollback",
             "prompt",
-            "multi-frames-v1"
+            "multi-frames-v1",
+            "window-modes-v1"
         ]
     });
     if let Ok(token) = std::env::var("UFOO_UI_TOKEN") {

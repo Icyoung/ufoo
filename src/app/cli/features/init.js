@@ -18,19 +18,19 @@ class UfooInit {
       .map((item) => item.trim())
       .filter(Boolean);
     const project = options.project || process.cwd();
-    const controllerMode = options.controllerMode === true;
+    const globalController = options.globalController === true;
 
     console.log("=== ufoo init ===");
     console.log(`Project directory: ${project}`);
     console.log(`Targets: ${targets.join(", ")}`);
     console.log();
 
-    if (!controllerMode) {
+    if (!globalController) {
       this.ensureAgentsFiles(project);
     }
 
     // 初始化核心
-    this.initCore(project, { controllerMode });
+    this.initCore(project, { globalController });
 
     // Initialize selected workspace features.
     for (const target of targets) {
@@ -77,7 +77,7 @@ class UfooInit {
    */
   initCore(project, options = {}) {
     console.log("[core] Initializing .ufoo core...");
-    const controllerMode = options.controllerMode === true;
+    const globalController = options.globalController === true;
 
     const ufooDir = path.join(project, ".ufoo");
     if (!fs.existsSync(ufooDir)) {
@@ -92,7 +92,7 @@ class UfooInit {
     const docsLink = path.join(ufooDir, "docs");
     const projectDocs = path.join(project, "docs");
 
-    if (!controllerMode && fs.existsSync(projectDocs)) {
+    if (!globalController && fs.existsSync(projectDocs)) {
       const linkStat = this.safeLstat(docsLink);
       if (linkStat) {
         fs.unlinkSync(docsLink);

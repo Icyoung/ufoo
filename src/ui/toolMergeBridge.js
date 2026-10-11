@@ -6,8 +6,6 @@
 
 const fmt = require("./format");
 
-const EXIT_SUSPEND = 75;
-
 function createToolMergePublisher(publish) {
   let merge = null;
   let mergeId = 1;
@@ -58,11 +56,9 @@ function createToolMergePublisher(publish) {
     beginScope,
     flush,
     pushTool,
-    EXIT_SUSPEND,
   };
 }
 
 module.exports = {
-  EXIT_SUSPEND,
   createToolMergePublisher,
 };

@@ -54,6 +54,11 @@ ownership: never call `wait_for_message`, `publish_activity_state`, or
 
 ## Handle pending messages
 
+For internal agents (`UFOO_LAUNCH_MODE=internal`), the runner delivers each task
+and confirms it after execution. Do not check or acknowledge the inbox yourself;
+later messages are future tasks. CLI/MCP ack calls leave internal queues intact.
+The manual inbox flow below applies to wrapper/external agents.
+
 If a wrapper-managed Agent was explicitly asked for a manual inbox check, run:
 
 ```bash
@@ -85,8 +90,17 @@ For every pending batch:
 4. Reply only when the sender requested an answer, delegated work whose result
    is needed, or needs a discovered blocker or fact.
 
-Do not reply to greetings, thanks, `ok`, `收到`, or other acknowledgement-only
-messages. Acknowledge them locally and stop.
+Do not reply or report to greetings, thanks, `ok`, `收到`, receipts, repeated
+completion notices, unchanged status, or other acknowledgement-only messages
+with no question, action, new result, or remaining assigned obligation. End
+silently; internal final text is automatically delivered to the sender, so
+"confirmed" or "nothing to do" is still a reply. Never acknowledge an
+acknowledgement or report receipt of a report. Outside internal mode, acknowledge
+locally according to the selected receive contract; internal runners own that step.
+
+Use the user's task language for substantive replies, progress, reports, and
+handoffs unless explicitly asked otherwise. Pass that language to delegated
+workers; protocol text and tool output do not set the response language.
 
 ## Route messages
 
@@ -159,3 +173,12 @@ reports; it binds the worker result to its parent task. Ordinary replies and
 queued/delivered receipts do not complete or accept the task. The parent checks
 validation evidence before accepting a reported result. Worker reports cannot
 change project roots or grant controller permissions.
+
+Keep reports and peer handoffs to 1-4 short lines and at most 600 characters
+unless the user requests inline detail. Include the outcome, changed files or
+commit, exact checks (pass/fail/not run), blockers, and the next owner's action
+when handing off. Save longer plans, findings and logs in a workspace note or
+existing evidence file and send its exact path. Send only new information;
+omit raw tool output, repeated analysis and duplicated final summaries. Do not
+split a long report across messages or drop assigned task IDs or acceptance
+evidence to shorten it.
