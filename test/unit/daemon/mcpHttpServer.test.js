@@ -109,6 +109,24 @@ describe("global MCP Streamable HTTP server", () => {
     }
   });
 
+  test("shutdown during startup closes the listener and allows a clean restart", async () => {
+    const root = makeTempRoot();
+    const server = createGlobalMcpHttpServer({ projectRoot: root, port: 0, token: "test-token" });
+    try {
+      await Promise.all([server.start(), server.start(), server.stop(), server.stop()]);
+      expect(server.getStatus().running).toBe(false);
+      expect(fs.existsSync(getUfooPaths(root).mcpEndpoint)).toBe(false);
+
+      await server.start();
+      const health = await fetch(server.endpoint.replace("/mcp", "/health"));
+      expect(health.status).toBe(200);
+      expect(server.getStatus().running).toBe(true);
+    } finally {
+      await server.stop();
+    }
+    expect(fs.existsSync(getUfooPaths(root).mcpEndpoint)).toBe(false);
+  });
+
   test("serves health, authenticates MCP, and keeps independent client sessions", async () => {
     const root = makeTempRoot();
     const token = "test-token";

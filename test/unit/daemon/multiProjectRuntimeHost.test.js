@@ -53,11 +53,14 @@ describe("multi-project daemon runtime host", () => {
     initializeProject("handoff-controller", home);
     const homeSpy = jest.spyOn(os, "homedir").mockReturnValue(home);
     const previousFetch = global.fetch;
+    const previousMcpDisabled = process.env.UFOO_MCP_HTTP_DISABLED;
     const frames = [];
     const socket = { destroyed: false, write: (line) => frames.push(JSON.parse(line)) };
     let projectDaemon;
     let globalDaemon;
     try {
+      // This handoff fixture does not use HTTP; leave the user's listener alone.
+      process.env.UFOO_MCP_HTTP_DISABLED = "1";
       fs.writeFileSync(path.join(home, ".ufoo/config.json"), JSON.stringify({
         ucodeProvider: "openai",
         ucodeApiKey: "isolated-handoff-key",
@@ -109,6 +112,8 @@ describe("multi-project daemon runtime host", () => {
       }
       await new Promise((resolve) => setImmediate(resolve));
       global.fetch = previousFetch;
+      if (previousMcpDisabled === undefined) delete process.env.UFOO_MCP_HTTP_DISABLED;
+      else process.env.UFOO_MCP_HTTP_DISABLED = previousMcpDisabled;
       homeSpy.mockRestore();
       fs.rmSync(root, { recursive: true, force: true });
       fs.rmSync(home, { recursive: true, force: true });

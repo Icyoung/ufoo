@@ -159,6 +159,8 @@ class GlobalMcpHttpServer {
     this.activeRequests = new Map();
     this.httpRequestCount = 0;
     this.server = null;
+    this.startPromise = null;
+    this.stopPromise = null;
     this.startedAt = "";
     this.stopping = false;
   }
@@ -358,33 +360,46 @@ class GlobalMcpHttpServer {
   }
 
   async start() {
+    if (this.stopPromise) await this.stopPromise;
     if (this.server && this.server.listening) return this.getStatus();
+    if (this.startPromise) return this.startPromise;
+    const starting = this.startListener();
+    this.startPromise = starting;
+    try {
+      return await starting;
+    } finally {
+      this.startPromise = null;
+    }
+  }
+
+  async startListener() {
     if (this.host !== "127.0.0.1" && this.host !== "::1") {
       const err = new Error(`MCP HTTP host must be loopback, got: ${this.host}`);
       err.code = "UFOO_MCP_NON_LOOPBACK_HOST";
       throw err;
     }
     this.token = this.token || loadOrCreateMcpToken(this.tokenPath);
-    this.server = http.createServer((req, res) => {
+    const server = http.createServer((req, res) => {
       void this.handleHttpRequest(req, res);
     });
-    this.server.on("clientError", (_err, socket) => {
+    this.server = server;
+    server.on("clientError", (_err, socket) => {
       if (socket.writable) socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
     });
     await new Promise((resolve, reject) => {
       const onError = (err) => {
-        this.server.off("listening", onListening);
+        server.off("listening", onListening);
         reject(err);
       };
       const onListening = () => {
-        this.server.off("error", onError);
+        server.off("error", onError);
         resolve();
       };
-      this.server.once("error", onError);
-      this.server.once("listening", onListening);
-      this.server.listen(this.port, this.host);
+      server.once("error", onError);
+      server.once("listening", onListening);
+      server.listen(this.port, this.host);
     });
-    const address = this.server.address();
+    const address = server.address();
     if (address && typeof address === "object") this.port = address.port;
     this.startedAt = new Date().toISOString();
     this.writeEndpointFile();
@@ -393,8 +408,23 @@ class GlobalMcpHttpServer {
   }
 
   async stop() {
-    if (this.stopping) return;
+    if (this.stopPromise) return this.stopPromise;
     this.stopping = true;
+    const stopping = this.stopListener();
+    this.stopPromise = stopping;
+    try {
+      await stopping;
+    } finally {
+      this.stopPromise = null;
+      this.stopping = false;
+    }
+  }
+
+  async stopListener() {
+    // Shutdown must wait for the listener and endpoint publication to settle.
+    // Otherwise a delayed listening event can access a cleared server or leave
+    // a live listener and stale endpoint after shutdown has already completed.
+    if (this.startPromise) await this.startPromise.catch(() => {});
     const sessions = Array.from(this.sessions.values());
     this.sessions.clear();
     await Promise.allSettled(sessions.map(async ({ transport, protocolServer }) => {
@@ -419,7 +449,6 @@ class GlobalMcpHttpServer {
     } catch {
       // Best effort; a PID mismatch is still visible in status diagnostics.
     }
-    this.stopping = false;
   }
 }
 
