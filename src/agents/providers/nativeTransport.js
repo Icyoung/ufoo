@@ -10,9 +10,16 @@ const { systemBlocksToAnthropicPayload } = require("./transports/systemBlocks");
 const { buildResponsesPayload, isResponsesKeepalive, responseEventDelta, parseResponsesEvents, parseResponsesSsePayload } = require("./transports/responsesProtocol");
 
 const DEFAULT_NATIVE_TIMEOUT_MS = 43200000;
+const DEFAULT_NATIVE_CONNECT_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_OPENAI_MAX_TOKENS = 32768;
 const DEFAULT_ANTHROPIC_MAX_TOKENS = 32768;
-const NATIVE_SSE_DISPATCHER_OPTIONS = Object.freeze({ headersTimeout: 0, bodyTimeout: 0 });
+// Undici otherwise imposes its own 10-second connection deadline, regardless
+// of the model task budget. Explicit cancellation/task deadlines still apply.
+const NATIVE_SSE_DISPATCHER_OPTIONS = Object.freeze({
+  connectTimeout: DEFAULT_NATIVE_CONNECT_TIMEOUT_MS,
+  headersTimeout: 0,
+  bodyTimeout: 0,
+});
 const ANTHROPIC_CACHE_CONTROL = Object.freeze({ type: "ephemeral" });
 
 function nowMs() {

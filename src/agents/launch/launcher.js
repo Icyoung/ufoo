@@ -26,25 +26,12 @@ const {
 } = require("../../runtime/terminal/adapters/hostAdapter");
 const PtyWrapper = require("./ptyWrapper");
 const ReadyDetector = require("./readyDetector");
+const { setLauncherReady, isLauncherReady } = require("./launcherReadiness");
+const STARTUP_WAIT_DIAGNOSTIC_MS = 10 * 60 * 1000;
 const {
   extractResumeConversationId,
   persistConversationId,
 } = require("./agyConversation");
-
-function setLauncherReady(projectRoot, subscriber, ready) {
-  try {
-    const file = getUfooPaths(projectRoot).agentsFile;
-    if (!fs.existsSync(file)) return false;
-    return updateAgentsData(file, (data) => {
-      const meta = data.agents && data.agents[subscriber];
-      if (!meta || meta.status === "inactive") return false;
-      meta.launcher_ready = ready;
-      return true;
-    });
-  } catch {
-    return false;
-  }
-}
 
 function connectSocket(sockPath) {
   return new Promise((resolve, reject) => {
@@ -752,7 +739,7 @@ class AgentLauncher {
       const sessionId = result.sessionId || (subscriberId.split(":")[1] || "");
       const finalNickname = result.nickname || nickname || "";
 
-      if (["codex", "claude-code"].includes(this.agentType)) {
+      if (["codex", "claude-code", "ucode"].includes(this.agentType)) {
         setLauncherReady(this.cwd, subscriberId, false);
       }
 
@@ -804,7 +791,11 @@ class AgentLauncher {
       }
 
       // 7. 启动命令（PTY wrapper或直接spawn）
-      const startupBootstrapText = String(process.env.UFOO_STARTUP_BOOTSTRAP_TEXT || "").trim();
+      // Native ucode loads its bootstrap through the system-prompt file. A
+      // parent's wrapper bootstrap must never become user input in its TUI.
+      const startupBootstrapText = this.agentType === "ucode"
+        ? ""
+        : String(process.env.UFOO_STARTUP_BOOTSTRAP_TEXT || "").trim();
 
       // 7.1 PTY启用条件（显式开关 + 自动检测）
       let shouldUsePty = false;
@@ -869,8 +860,17 @@ class AgentLauncher {
           });
           // Heal daemon inject-stamp desync (disk working, detector idle).
           const agentsFilePath = getUfooPaths(this.cwd).agentsFile;
+          // Native ucode confirms readiness after the Rust client's authenticated
+          // handshake. Its bordered prompt is not a plain-text CLI ready marker.
+          const reconcileNativeReadiness = () => {
+            if (this.agentType === "ucode" && !readyDetector.ready
+              && isLauncherReady(this.cwd, subscriberId)) {
+              readyDetector.confirmNativeReady();
+            }
+          };
           const activityReconcileTimer = setInterval(() => {
             try {
+              reconcileNativeReadiness();
               reconcileDetectorOwnedActivity({
                 detector: launcherActivityDetector,
                 publisher: launcherPublisher,
@@ -948,15 +948,24 @@ class AgentLauncher {
 
           // Elapsed time cannot prove that a host can accept input. Preserve
           // queued work and report a slow startup instead of injecting blindly.
-          const forceReadyTimer = setTimeout(() => {
-            if (!readyDetector.ready) console.error(`[ufoo] Waiting for ${this.command} to become ready; queued work is retained.`);
-          }, 10000);
+          const startupWaitingTimer = setTimeout(() => {
+            reconcileNativeReadiness();
+            if (!readyDetector.ready) {
+              // The child TUI owns this terminal. Parent stderr would be written
+              // at its input cursor, so keep asynchronous diagnostics in IO logs.
+              wrapper.writeLogEntry({
+                ts: Date.now(), dir: "diagnostic", source: "launcher",
+                event: "startup.waiting", agent_type: this.agentType,
+                text: `Waiting for ${this.agentType} to become ready; queued work is retained.`,
+              });
+            }
+          }, STARTUP_WAIT_DIAGNOSTIC_MS);
 
           // 设置退出回调（复用清理逻辑）
           wrapper.onExit = async ({ exitCode, signal }) => {
             await nativeMessages?.close();
             // 清理 timers
-            clearTimeout(forceReadyTimer);
+            clearTimeout(startupWaitingTimer);
             clearInterval(activityReconcileTimer);
             launcherActivityDetector.destroy();
 

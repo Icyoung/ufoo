@@ -208,6 +208,7 @@ async function runUcodeRust(props = {}) {
   const backgroundTasks = new Map();
   let backgroundSeq = 0;
   let requestExit = false;
+  let clientReady = false;
   const MARKDOWN_LOG_KINDS = new Set(["assistant", "error"]);
   const surface = createAgentSurface({ maxEntries: 4000 });
   const controller = createUcodeController({
@@ -761,6 +762,10 @@ async function runUcodeRust(props = {}) {
       socket.write(encodeMessage(snap));
       publishPendingInteraction();
       publishPlan();
+      if (!clientReady) {
+        clientReady = true;
+        if (typeof props.onReady === "function") props.onReady();
+      }
     },
     async onCommand(cmd) {
       const name = String(cmd.name || "");

@@ -39,6 +39,7 @@ function withIsolatedBinMocks({
 
 describe("bin/ucode launch guards", () => {
   const originalArgv = process.argv.slice();
+  const originalStartupBootstrap = process.env.UFOO_STARTUP_BOOTSTRAP_TEXT;
 
   beforeEach(() => {
     jest.resetModules();
@@ -51,6 +52,18 @@ describe("bin/ucode launch guards", () => {
     delete process.env.UFOO_UCODE_BOOTSTRAP_FILE;
     delete process.env.UFOO_UCODE_APPEND_SYSTEM_PROMPT;
     delete process.env.UFOO_UCODE_APPEND_SYSTEM_PROMPT_MODE;
+    if (originalStartupBootstrap === undefined) delete process.env.UFOO_STARTUP_BOOTSTRAP_TEXT;
+    else process.env.UFOO_STARTUP_BOOTSTRAP_TEXT = originalStartupBootstrap;
+  });
+
+  test("drops inherited CLI-wrapper bootstrap while preserving ucode's system-prompt arguments", () => {
+    process.env.UFOO_STARTUP_BOOTSTRAP_TEXT = "Session bootstrap for Codex.";
+    const args = ["--append-system-prompt", "/tmp/ucode-system.md"];
+    const { launchMock } = withIsolatedBinMocks({
+      resolved: { agentType: "ucode", command: process.execPath, args, env: {} },
+    });
+    expect(process.env.UFOO_STARTUP_BOOTSTRAP_TEXT).toBeUndefined();
+    expect(launchMock).toHaveBeenCalledWith(args);
   });
 
   test("removes append-system-prompt when bootstrap preparation fails in auto mode", () => {

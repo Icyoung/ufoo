@@ -332,9 +332,11 @@ select each layout directly. The one-child layout selects the most recently
 activated live internal agent, or the first agent when none has been activated.
 With no children, split modes remain selected while showing only the full-width
 main pane; new children appear automatically when they become available.
-In either split layout, `Esc` and `Ctrl+C` first leave the footer if it has focus,
-then return child focus to the main agent, then close the split. Drafts and
-running tasks are preserved while moving through these layers. Both keys also
+When the input has focus and contains text, `Ctrl+C` first clears the selected
+agent's draft without cancelling work or switching focus. `Esc` preserves the
+draft. In either split layout, both keys first leave the footer if it has focus,
+then return child focus to the main agent, then close the split. Running tasks
+are preserved while moving through these layers. Both keys also
 dismiss command completion and follow the main input's cancellation and project
 return layers. At the main-only root, `Esc` keeps the application open and only
 `Ctrl+C` exits. `Ctrl+Q` or `/window main` closes either split directly.

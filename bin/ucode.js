@@ -16,6 +16,10 @@ const { resolveUcodeLaunch } = require("../src/code/launcher/ucode");
 const { prepareUcodeBootstrap } = require("../src/code/launcher/ucodeBootstrap");
 const { prepareUcodeRuntimeConfig } = require("../src/code/launcher/ucodeRuntimeConfig");
 
+// CLI-wrapper startup text belongs to the parent agent. Native ucode loads
+// its own system prompt; do not inject or pass the parent's text to its tools.
+delete process.env.UFOO_STARTUP_BOOTSTRAP_TEXT;
+
 function stripAppendSystemPromptArgs(args = [], targetFile = "") {
   const normalizedTarget = String(targetFile || "").trim();
   if (!Array.isArray(args) || args.length === 0) return { args: [], removed: false };

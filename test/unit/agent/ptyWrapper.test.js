@@ -89,6 +89,33 @@ describe('PtyWrapper', () => {
     expect(wrapper._cleaned).toBe(true);
   });
 
+  test('natural child exit notifies the launcher after restoring streams and raw mode', async () => {
+    const EventEmitter = require('events');
+    const stdin = new EventEmitter();
+    stdin.isTTY = true;
+    stdin.setRawMode = jest.fn();
+    stdin.resume = jest.fn();
+    const stdout = { write: jest.fn(), isTTY: false };
+    const wrapper = new PtyWrapper(process.execPath, ['-e', 'process.exit(7)'], { cwd: testDir });
+    let result;
+    const exited = new Promise(resolve => { result = resolve; });
+    const onExit = jest.fn(result);
+    wrapper.onExit = onExit;
+    wrapper.spawn();
+    wrapper.attachStreams(stdin, stdout);
+    try {
+      expect((await exited).exitCode).toBe(7);
+      expect(wrapper._cleaned).toBe(true);
+      expect(wrapper.pty).toBeNull();
+      expect(stdin.listenerCount('data')).toBe(0);
+      expect(stdin.setRawMode.mock.calls).toEqual([[true], [false]]);
+      wrapper.cleanup();
+      expect(onExit).toHaveBeenCalledTimes(1);
+    } finally {
+      wrapper.cleanup();
+    }
+  });
+
   test('prepends host nickname prefix to OSC title updates', () => {
     const wrapper = new PtyWrapper('echo', ['test'], { titlePrefix: 'builder' });
 

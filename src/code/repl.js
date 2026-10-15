@@ -26,6 +26,7 @@ const { summarizeSessionUsage, formatSessionUsageStatus } = require("./usageStor
 const { listUcodeCommandsForHelp } = require("./commands");
 const { applyUcodeModelCommand, suggestUcodeModels } = require("./modelCommand");
 const { applyUcodePlanCommand } = require("./context/planMode");
+const { setLauncherReady } = require("../agents/launch/launcherReadiness");
 
 function printPrompt(stdout = process.stdout) {
   stdout.write("> ");
@@ -358,6 +359,7 @@ async function runUcodeCoreAgent({
     return runUcodeTui({
       stdin,
       stdout,
+      onReady: () => setLauncherReady(workspaceRoot, process.env.UFOO_SUBSCRIBER_ID || "", true),
       runSingleCommand,
       runNaturalLanguageTask,
       runUbusCommand,

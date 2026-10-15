@@ -1375,9 +1375,30 @@ fn entry_from_json(value: &serde_json::Value) -> Option<ScrollbackEntry> {
 }
 
 fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
-    // Dashboard Ctrl+C follows exactly the same back stack as Esc. Keep its
-    // identity only for exiting when the main input reaches the root.
     let ctrl_c = is_ctrl_letter(key, 'c');
+    // Clear the draft being edited before unwinding focus, cancelling work or
+    // exiting. Footer and popup focus keep their own higher back-stack layer.
+    if ctrl_c && state.focus == FocusPane::Input {
+        if state.multi.active && matches!(state.multi.focus, MultiFocus::Agent) {
+            if let Some(pane) = state.multi.frames.get_mut(&state.multi.focus_agent_id) {
+                if !pane.input.is_empty() {
+                    let mut draft = pane.draft();
+                    draft.clear();
+                    pane.set_draft(draft);
+                    return vec![multi_input_effect(state, String::new(), false)];
+                }
+            }
+        } else if !state.prompt.text.is_empty() {
+            state.prompt.clear();
+            state.completions.clear();
+            state.completion_index = 0;
+            state.completion_scroll = 0;
+            state.completion_suppressed = None;
+            return Vec::new();
+        }
+    }
+    // With an empty input, dashboard Ctrl+C follows Esc's back stack, and can
+    // also exit when the main input reaches the root.
     let key = if state.surface == "chat" && ctrl_c {
         KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
     } else {
@@ -1400,7 +1421,7 @@ fn dispatch_key(state: &mut AppState, key: KeyEvent) -> Vec<Effect> {
         }
     }
 
-    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+    if state.surface != "chat" && ctrl_c {
         state.exit_requested = true;
         return vec![
             Effect::SendCommand {
@@ -2886,11 +2907,17 @@ mod tests {
                     );
                     assert!(state.multi.active);
                     assert_eq!(state.focus, FocusPane::Input);
+                    if is_ctrl_letter(back_key, 'c') {
+                        assert!(escape(&mut state).is_empty());
+                        assert!(state.prompt.text.is_empty());
+                        assert!(state.multi.active);
+                        assert!(state.busy);
+                    }
                     let effects = escape(&mut state);
                     assert!(
                         matches!(&effects[0], Effect::SendCommand { name, payload, .. } if name == "window.set" && payload["mode"] == "main")
                     );
-                    assert_eq!(state.prompt.text, "main draft");
+                    assert_eq!(state.prompt.text, if is_ctrl_letter(back_key, 'c') { "" } else { "main draft" });
                     assert!(state.busy);
                     assert!(!state.exit_requested);
                     assert!(!effects
@@ -2902,7 +2929,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_c_dismisses_completion_before_exiting_and_preserves_the_draft() {
+    fn ctrl_c_dismisses_completion_then_clears_input_before_exiting() {
         let mut state = AppState::new("ufoo", "chat");
         state.focus = FocusPane::Completions;
         state.prompt.set_text("/wind".into());
@@ -2919,11 +2946,14 @@ mod tests {
         assert_eq!(state.completion_suppressed.as_deref(), Some("/wind"));
         assert_eq!(state.prompt.text, "/wind");
         assert!(!state.exit_requested);
+        assert!(dispatch(&mut state, Action::Key(key)).is_empty());
+        assert!(state.prompt.text.is_empty());
+        assert!(!state.exit_requested);
         let effects = dispatch(&mut state, Action::Key(key));
         assert!(effects
             .iter()
             .any(|effect| matches!(effect, Effect::Exit(0))));
-        assert_eq!(state.prompt.text, "/wind");
+        assert!(state.prompt.text.is_empty());
     }
 
     #[test]
@@ -2973,16 +3003,20 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_c_cancels_main_work_before_exiting_at_the_idle_root() {
+    fn ctrl_c_clears_input_then_cancels_main_work_before_exiting() {
         let mut state = AppState::new("ufoo", "chat");
         state.busy = true;
         state.prompt.set_text("unfinished message".into());
         let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(dispatch(&mut state, Action::Key(key)).is_empty());
+        assert!(state.prompt.text.is_empty());
+        assert!(state.busy);
+        assert!(!state.exit_requested);
         let effects = dispatch(&mut state, Action::Key(key));
         assert_eq!(effects.len(), 1);
         assert!(matches!(&effects[0], Effect::SendCommand { name, .. } if name == "task.cancel"));
         assert!(!state.exit_requested);
-        assert_eq!(state.prompt.text, "unfinished message");
+        assert!(state.prompt.text.is_empty());
         apply_named_payload(
             &mut state,
             "status.set",
@@ -3001,13 +3035,16 @@ mod tests {
         state.global_scope = "project".into();
         state.prompt.set_text("unfinished message".into());
         let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(dispatch(&mut state, Action::Key(key)).is_empty());
+        assert!(state.prompt.text.is_empty());
+        assert_eq!(state.global_scope, "project");
         let effects = dispatch(&mut state, Action::Key(key));
         assert_eq!(effects.len(), 1);
         assert!(
             matches!(&effects[0], Effect::SendCommand { name, .. } if name == "project.return_controller")
         );
         assert!(!state.exit_requested);
-        assert_eq!(state.prompt.text, "unfinished message");
+        assert!(state.prompt.text.is_empty());
         apply_named_payload(
             &mut state,
             "app.snapshot",
@@ -3041,13 +3078,16 @@ mod tests {
         assert!(!state.exit_requested);
         state.prompt_prefix = "›@coder ".into();
         state.prompt.set_text("unfinished message".into());
+        assert!(dispatch(&mut state, Action::Key(key)).is_empty());
+        assert!(state.prompt.text.is_empty());
+        assert_eq!(state.prompt_prefix, "›@coder ");
         let effects = dispatch(&mut state, Action::Key(key));
         assert_eq!(effects.len(), 1);
         assert!(
             matches!(&effects[0], Effect::SendCommand { name, payload, .. } if name == "agent.select" && payload["agent_id"] == "")
         );
         assert!(!state.exit_requested);
-        assert_eq!(state.prompt.text, "unfinished message");
+        assert!(state.prompt.text.is_empty());
         let effects = dispatch(&mut state, Action::Key(key));
         assert!(effects
             .iter()
@@ -3055,21 +3095,63 @@ mod tests {
     }
 
     #[test]
-    fn standalone_ucode_keeps_its_ctrl_c_exit_behavior() {
-        let mut state = AppState::new("ucode", "ucode");
-        state.focus = FocusPane::Agents;
-        state.busy = true;
+    fn ctrl_c_clears_multiline_input_before_exiting_chat_and_standalone_ucode() {
         for key in back_keys().into_iter().skip(1) {
-            for draft in ["", "unfinished message"] {
-                let mut state = AppState::new("ufoo", "chat");
-                state.prompt.set_text(draft.into());
+            for surface in ["chat", "ucode"] {
+                let mut state = AppState::new("ufoo", surface);
+                state.prompt.set_text("草稿🙂\nsecond line".into());
+                state.prompt.cursor = 2;
+                state.prompt.history = vec!["old prompt".into()];
+                state.prompt.history_index = Some(0);
+                assert!(dispatch(&mut state, Action::Key(key)).is_empty());
+                assert!(state.prompt.text.is_empty());
+                assert_eq!(state.prompt.cursor, 0);
+                assert_eq!(state.prompt.history_index, None);
+                assert_eq!(state.prompt.history, ["old prompt"]);
+                assert!(!state.exit_requested);
                 let effects = dispatch(&mut state, Action::Key(key));
                 assert!(state.exit_requested);
                 assert!(effects.iter().any(|effect| matches!(effect, Effect::SendCommand { name, payload, .. } if name == "app.exit" && payload["reason"] == "ctrl-c")));
                 assert!(effects
                     .iter()
                     .any(|effect| matches!(effect, Effect::Exit(0))));
-                assert_eq!(state.prompt.text, draft);
+                assert!(state.prompt.text.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn ctrl_c_clears_only_the_focused_child_draft_and_rejects_stale_frames() {
+        for mode in ["side", "multi"] {
+            for key in back_keys().into_iter().skip(1) {
+                let mut state = draft_test_state(mode);
+                set_multi_focus(&mut state, Some("a".into()));
+                let pane = state.multi.frames.entry("a".into()).or_default();
+                let mut draft = pane.draft();
+                draft.set_text("草稿🙂\nsecond line".into());
+                pane.set_draft(draft);
+                pane.busy = true;
+                state.multi.frames.entry("b".into()).or_default().input = "other draft".into();
+                state.focus = FocusPane::Agents;
+                assert!(dispatch(&mut state, Action::Key(key)).is_empty());
+                assert_eq!(state.focus, FocusPane::Input);
+                assert_eq!(state.multi.frames["a"].input, "草稿🙂\nsecond line");
+                let effects = dispatch(&mut state, Action::Key(key));
+                assert_eq!(effects.len(), 1);
+                assert!(matches!(&effects[0], Effect::SendCommand { name, payload, .. }
+                    if name == "multi.raw" && payload["agent_id"] == "a"
+                        && payload["input"] == "" && payload["cursor"] == 0
+                        && payload["input_revision"] == 2 && payload["submit"] == false));
+                assert_eq!(state.multi.focus_agent_id, "a");
+                assert!(state.multi.frames["a"].busy);
+                assert_eq!(state.prompt.text, "main draft");
+                assert_eq!(state.multi.frames["b"].input, "other draft");
+                apply_multi_frame(&mut state, &json!({ "session_id": "session", "agent_id": "a",
+                    "revision": 2, "input_revision": 1, "input": "old draft" }));
+                assert!(state.multi.frames["a"].input.is_empty());
+                let effects = dispatch(&mut state, Action::Key(key));
+                assert!(matches!(&effects[0], Effect::SendCommand { name, payload, .. }
+                    if name == "multi.focus" && payload["target"] == "chat"));
             }
         }
     }
@@ -3243,9 +3325,13 @@ mod tests {
                 assert_eq!(state.prompt.text, draft);
             }
         }
+        let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(dispatch(&mut state, Action::Key(key)).is_empty());
+        assert!(state.prompt.text.is_empty());
+        assert!(!state.exit_requested);
         let effects = dispatch(
             &mut state,
-            Action::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            Action::Key(key),
         );
         assert!(state.exit_requested);
         assert!(effects

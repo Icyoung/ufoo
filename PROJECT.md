@@ -43,6 +43,9 @@ calls are unlimited by default, with a 20-tool-error limit and a 12-hour task
 deadline. `UFOO_UCODE_MAX_TOOL_CALLS`, `UFOO_UCODE_MAX_TOOL_ERRORS` and
 `UFOO_UCODE_TASK_TIMEOUT_MS` configure those shared limits; standalone ucode's
 explicit CLI options take precedence.
+Native provider HTTP connections allow ten minutes to establish instead of
+Undici's implicit ten seconds. Task deadlines and explicit cancellation still
+bound requests; SSE headers/body idle timeouts remain disabled.
 
 The main agent and native/internal `ucode` share checkpoint-based conversation
 compression in `src/agents/runtime/context/`. Before each model call, it checks
@@ -155,9 +158,18 @@ Important boundaries:
   the most recently activated live child, or the first child. `window.set` and
   `app.snapshot.window` carry explicit `main|side|multi` modes over `ufoo-ui/1`;
   `window.cycle` is evaluated by the host, independently of stale session IDs.
-  `Esc` and `Ctrl+C` share the back stack: footer, child focus, split layout,
-  then the main input's cancellation and project return layers. At the root,
+  With input focus, `Ctrl+C` first clears a nonempty selected-agent draft;
+  it neither changes focus nor cancels work. Footer and popup focus keep their
+  own back-stack priority. `Esc` and empty-input `Ctrl+C` share the back stack:
+  footer, child focus, split layout, then the main input's cancellation and
+  project return layers. At the root,
   only `Ctrl+C` exits; `Esc` preserves the workspace and draft.
+  Native ucode confirms wrapper readiness through the shared agent registry
+  after the Rust client's authenticated UI handshake. After ten minutes,
+  slow-start diagnostics go to the wrapper's IO JSONL rather than the terminal
+  owned by the child TUI, without cancelling startup or consuming queued work.
+  Native ucode loads bootstrap through its system prompt and discards inherited
+  CLI-wrapper startup text; it never types that text into the user's input.
 - Internal Codex, Claude and ucode use a shared transcript and status surface.
   Their runner owns inbox claims and confirms each claim after execution.
   Model-issued CLI/MCP acknowledgements cannot consume later queued tasks.

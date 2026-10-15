@@ -179,11 +179,14 @@ class PtyWrapper {
 
     // 进程退出
     this._ptyExitHandler = ({ exitCode, signal }) => {
+      // cleanup clears callbacks along with streams. Preserve the launcher's
+      // exit handler so natural child exits still clean up the wrapper host.
+      const onExit = this.onExit;
       this.cleanup();
 
       // 回调给launcher处理退出（不直接process.exit）
-      if (this.onExit) {
-        this.onExit({ exitCode, signal });
+      if (onExit) {
+        onExit({ exitCode, signal });
       }
     };
     this.pty.onExit(this._ptyExitHandler);

@@ -189,9 +189,10 @@ describe("ucode native runner", () => {
     else delete process.env.UFOO_UCODE_THINKING;
   });
 
-  test("disables Undici's implicit 300-second SSE idle timeout", () => {
+  test("allows ten minutes to connect and disables Undici's implicit SSE idle timeouts", () => {
     expect(createNativeSseDispatcher()).toBe(mockSseDispatcher);
     expect(mockUndiciAgent).toHaveBeenCalledWith({
+      connectTimeout: 600000,
       headersTimeout: 0,
       bodyTimeout: 0,
     });
