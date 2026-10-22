@@ -246,6 +246,68 @@ describe("MCP stdio compatibility proxy", () => {
     } finally { await proxy.close(); }
   });
 
+  test("speaks Content-Length frames with Cursor and keeps newline JSON for other clients", async () => {
+    const fakeFetch = jest.fn(async (_endpoint, options) => {
+      const request = JSON.parse(options.body);
+      return new Response(JSON.stringify({
+        jsonrpc: "2.0",
+        id: request.id,
+        result: { protocolVersion: "2025-06-18", echoed: request.params?.clientInfo?.name || "" },
+      }), { status: 200, headers: { "mcp-session-id": "framed" } });
+    });
+    const cursor = makeProxy({ fetch: fakeFetch });
+    const cursorMessages = [];
+    let cursorRaw = Buffer.alloc(0);
+    cursor.output.on("data", (chunk) => {
+      cursorRaw = Buffer.concat([cursorRaw, Buffer.from(chunk)]);
+      while (true) {
+        const separator = cursorRaw.indexOf("\r\n\r\n");
+        if (separator < 0) return;
+        const header = cursorRaw.slice(0, separator).toString("utf8");
+        const match = header.match(/Content-Length:\s*(\d+)/i);
+        if (!match) return;
+        const length = Number(match[1]);
+        const start = separator + 4;
+        if (cursorRaw.length < start + length) return;
+        const body = cursorRaw.slice(start, start + length);
+        expect(body.length).toBe(length);
+        cursorMessages.push(JSON.parse(body.toString("utf8")));
+        cursorRaw = cursorRaw.slice(start + length);
+      }
+    });
+    cursor.start();
+
+    const framed = {
+      jsonrpc: "2.0",
+      id: "cursor-init",
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        clientInfo: { name: "游", version: "1" },
+      },
+    };
+    const framedJson = JSON.stringify(framed);
+    const frame = Buffer.from(`Content-Length: ${Buffer.byteLength(framedJson)}\r\n\r\n${framedJson}`, "utf8");
+    cursor.input.write(frame.slice(0, 8));
+    cursor.input.write(frame.slice(8, 21));
+    cursor.input.write(frame.slice(21));
+    const cursorResponse = await waitFor(() => cursorMessages.find((message) => message.id === "cursor-init"));
+    expect(cursorResponse.result.echoed).toBe("游");
+    expect(cursorRaw.length).toBe(0);
+
+    const newline = makeProxy({ fetch: fakeFetch });
+    const newlineMessages = parseLines(newline.output);
+    newline.start();
+    newline.input.write(`${JSON.stringify(initializeRequest)}\n`);
+    const newlineResponse = await waitFor(() => newlineMessages.find((message) => message.id === "init"));
+    expect(newlineResponse.result.protocolVersion).toBe("2025-06-18");
+    expect(newline.outputFraming).toBe("ndjson");
+
+    await cursor.close();
+    await newline.close();
+  });
+
   test("reports initialization failures to requests waiting for the handshake", async () => {
     const proxy = makeProxy({ fetch: async () => { throw new Error("unavailable"); } });
     proxy.output.resume();

@@ -132,16 +132,19 @@ loopback endpoint. Existing ufoo authentication fields and headers are retained.
 Use `ufoo mcp configure codex --dry-run` to preview the change with credentials
 redacted. Restart the Codex surface after configuring it.
 
-For a host that has not been verified with direct HTTP, keep the compatible
-stdio configuration:
+For Cursor and any other host that has not been verified with direct HTTP,
+keep the compatible stdio configuration:
 
 ```bash
 ufoo mcp
 ```
 
 This command is a stateless transport proxy into the same global server. It
-does not own Agent registrations or project state. Inspect or restart the
-singleton listener with `ufoo mcp status` and `ufoo mcp restart`.
+accepts both newline-delimited JSON and standard `Content-Length` frames, and
+answers in the framing that client used. Cursor can keep `command: ufoo` and
+`args: ["mcp"]`. The proxy does not own Agent registrations or project state.
+Inspect or restart the singleton listener with `ufoo mcp status` and
+`ufoo mcp restart`.
 
 ## Runtime Model
 

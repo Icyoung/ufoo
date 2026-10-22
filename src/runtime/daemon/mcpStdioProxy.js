@@ -22,9 +22,79 @@ const REPLAYABLE_TOOLS = new Set([
   "list_agents", "ufoo_mcp_status", "poll_inbox", "wait_for_message",
 ]);
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+const CONTENT_LENGTH_HEADER = "content-length:";
+const MAX_STDIO_HEADER_BYTES = 64 * 1024;
+const MAX_STDIO_BODY_BYTES = 2 * 1024 * 1024;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function skipAsciiSpace(buffer) {
+  let index = 0;
+  while (index < buffer.length && (buffer[index] === 0x20 || buffer[index] === 0x09)) index += 1;
+  return index;
+}
+
+function classifyStdioChunk(buffer) {
+  const offset = skipAsciiSpace(buffer);
+  const sample = buffer.slice(offset, offset + CONTENT_LENGTH_HEADER.length).toString("latin1").toLowerCase();
+  if (!sample) return "empty";
+  if (sample.startsWith("{")) return "json";
+  if (sample.startsWith(CONTENT_LENGTH_HEADER)) return "header";
+  if (CONTENT_LENGTH_HEADER.startsWith(sample) && !sample.includes("\n")) return "prefix";
+  return "line";
+}
+
+function takeContentLengthFrame(buffer) {
+  let index = 0;
+  while (
+    index < buffer.length
+    && (buffer[index] === 0x20 || buffer[index] === 0x09 || buffer[index] === 0x0d || buffer[index] === 0x0a)
+  ) index += 1;
+  if (index === buffer.length) return { status: "empty" };
+  const slice = buffer.slice(index);
+  const crlf = slice.indexOf("\r\n\r\n");
+  const lf = slice.indexOf("\n\n");
+  let headerEnd = -1;
+  let separatorLength = 0;
+  if (crlf >= 0 && (lf < 0 || crlf <= lf)) {
+    headerEnd = crlf;
+    separatorLength = 4;
+  } else if (lf >= 0) {
+    headerEnd = lf;
+    separatorLength = 2;
+  }
+  if (headerEnd < 0) {
+    if (slice.length > MAX_STDIO_HEADER_BYTES) {
+      return { status: "invalid", rest: Buffer.alloc(0), message: "MCP header is too large" };
+    }
+    return { status: "need-more" };
+  }
+  const header = slice.slice(0, headerEnd).toString("utf8");
+  const match = header.match(/content-length:\s*(\d+)/i);
+  if (!match) {
+    return {
+      status: "invalid",
+      rest: slice.slice(headerEnd + separatorLength),
+      message: "MCP frame is missing Content-Length",
+    };
+  }
+  const length = Number(match[1]);
+  if (!Number.isSafeInteger(length) || length < 0 || length > MAX_STDIO_BODY_BYTES) {
+    return {
+      status: "invalid",
+      rest: slice.slice(headerEnd + separatorLength),
+      message: "MCP Content-Length is invalid",
+    };
+  }
+  const bodyStart = headerEnd + separatorLength;
+  if (slice.length < bodyStart + length) return { status: "need-more" };
+  return {
+    status: "ok",
+    body: slice.slice(bodyStart, bodyStart + length).toString("utf8"),
+    rest: slice.slice(bodyStart + length),
+  };
 }
 
 function validateEndpoint(raw = "") {
@@ -85,12 +155,21 @@ class McpStdioProxy {
     this.initializing = null;
     this.activeRequests = new Map();
     this.closed = false;
-    this.buffer = "";
+    this.buffer = Buffer.alloc(0);
+    this.inputFraming = "";
+    this.outputFraming = "ndjson";
   }
 
   writeMessage(message) {
     if (!message || this.closed) return;
-    this.output.write(`${JSON.stringify(message)}\n`);
+    const json = JSON.stringify(message);
+    if (this.outputFraming === "content-length") {
+      const body = Buffer.from(json, "utf8");
+      this.output.write(`Content-Length: ${body.length}\r\n\r\n`);
+      this.output.write(body);
+      return;
+    }
+    this.output.write(`${json}\n`);
   }
 
   writeError(message) {
@@ -288,11 +367,10 @@ class McpStdioProxy {
     }
   }
 
-  handleLine(line) {
-    if (!line.trim()) return;
+  handleJsonText(text) {
     let request;
     try {
-      request = JSON.parse(line);
+      request = JSON.parse(text);
     } catch (err) {
       this.writeMessage(createJsonRpcError(
         null,
@@ -304,13 +382,55 @@ class McpStdioProxy {
     void this.forward(request);
   }
 
+  handleLine(line) {
+    if (!line.trim()) return;
+    this.handleJsonText(line);
+  }
+
+  drainInput() {
+    while (this.buffer.length > 0) {
+      if (this.inputFraming === "content-length") {
+        const frame = takeContentLengthFrame(this.buffer);
+        if (frame.status === "need-more") return;
+        if (frame.status === "empty") {
+          this.buffer = Buffer.alloc(0);
+          return;
+        }
+        this.buffer = frame.rest;
+        this.outputFraming = "content-length";
+        if (frame.status === "invalid") {
+          this.writeMessage(createJsonRpcError(
+            null,
+            MCP_ERROR_CODES.PARSE_ERROR,
+            frame.message || "Parse error"
+          ));
+          continue;
+        }
+        this.handleJsonText(frame.body);
+        continue;
+      }
+
+      const kind = classifyStdioChunk(this.buffer);
+      if (kind === "empty" || kind === "prefix") return;
+      if (kind === "header") {
+        this.inputFraming = "content-length";
+        this.outputFraming = "content-length";
+        continue;
+      }
+
+      const newline = this.buffer.indexOf(0x0a);
+      if (newline < 0) return;
+      const line = this.buffer.slice(0, newline).toString("utf8").replace(/\r$/, "");
+      this.buffer = this.buffer.slice(newline + 1);
+      this.handleLine(line);
+    }
+  }
+
   start() {
-    this.input.setEncoding("utf8");
     this.input.on("data", (chunk) => {
-      this.buffer += chunk;
-      const lines = this.buffer.split(/\r?\n/);
-      this.buffer = lines.pop() || "";
-      for (const line of lines) this.handleLine(line);
+      const next = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+      this.buffer = this.buffer.length ? Buffer.concat([this.buffer, next]) : next;
+      this.drainInput();
     });
     this.input.on("end", () => {
       void this.close();

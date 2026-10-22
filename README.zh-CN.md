@@ -138,10 +138,11 @@ ufoo -g
 ufoo mcp configure codex
 ```
 
-重启 Codex surface 后即可使用。尚未验证直接 HTTP 的 host 继续配置
-`ufoo mcp`；该命令只是连接同一 global server 的无状态 stdio 代理，不拥有
-Agent 注册或项目状态。用 `ufoo mcp status` 检查唯一 listener，用
-`ufoo mcp restart` 只重启 listener。
+重启 Codex surface 后即可使用。Cursor 以及其他尚未验证直接 HTTP 的 host
+继续配置 `ufoo mcp`。这个无状态 stdio 代理连接同一个 global server，同时接受
+换行 JSON 和标准 `Content-Length` 帧，并按客户端使用的帧格式回写。Cursor 保持
+`command: ufoo`、`args: ["mcp"]` 即可。它不拥有 Agent 注册或项目状态。用
+`ufoo mcp status` 检查唯一 listener，用 `ufoo mcp restart` 只重启 listener。
 
 ## 运行模型
 
