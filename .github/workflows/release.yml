@@ -34,10 +34,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             plat: darwin-arm64
             target: ""
-          - os: macos-14
+          - os: macos-15
             plat: darwin-x64
             target: x86_64-apple-darwin
           - os: ubuntu-24.04
