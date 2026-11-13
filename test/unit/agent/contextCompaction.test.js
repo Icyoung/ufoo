@@ -89,12 +89,42 @@ describe("shared context checkpointing", () => {
     expect(f.checkpoint()).toBeNull();
     await f.manager.prepare(f.input(source));
     expect(runTurn).toHaveBeenCalledTimes(1);
-    clock = 3000;
+    clock = 30001;
     const retried = await f.manager.prepare(f.input(source));
     expect(retried.coveredCount).toBeGreaterThan(0);
     expect(runTurn.mock.calls[0][0].messages).toEqual(runTurn.mock.calls[1][0].messages);
     const saving = fixture({ store: { load: () => null, commit: () => { throw new Error("disk full"); } } });
     expect((await saving.manager.prepare(saving.input(source))).coveredCount).toBe(0);
+  });
+
+  test("failure cooldown persists across managers, backs off exponentially and resets after success", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-compaction-retry-"));
+    let clock = 0;
+    const store = createCheckpointStore({ workspaceRoot: root, namespace: "test", sessionId: "retry" });
+    const runTurn = jest.fn().mockRejectedValueOnce(new Error("outage"))
+      .mockRejectedValueOnce(new Error("outage again"))
+      .mockResolvedValue({ text: "已验证的历史与待办", toolCalls: [] });
+    const source = history(12);
+    try {
+      let f = fixture({ store, runTurn, now: () => clock });
+      await f.manager.prepare(f.input(source));
+      expect(store.loadRetryState()).toMatchObject({ failures: 1, retryAt: 30000 });
+      clock = 20000;
+      f = fixture({ store, runTurn, now: () => clock });
+      expect((await f.manager.prepare(f.input(source))).messages).toBe(source);
+      expect(runTurn).toHaveBeenCalledTimes(1);
+      clock = 30001;
+      await f.manager.prepare(f.input(source));
+      expect(store.loadRetryState()).toMatchObject({ failures: 2, retryAt: 90001 });
+      clock = 60000;
+      await f.manager.prepare(f.input(source));
+      expect(runTurn).toHaveBeenCalledTimes(2);
+      clock = 90002;
+      expect((await f.manager.prepare(f.input(source))).coveredCount).toBeGreaterThan(0);
+      expect(store.loadRetryState()).toBeNull();
+      store.remove();
+      expect(store.loadRetryState()).toBeNull();
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
   });
 
   test("empty, oversized or tool-calling summaries do not commit", async () => {

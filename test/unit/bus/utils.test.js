@@ -409,5 +409,21 @@ describe('Bus Utils', () => {
     it('returns true for active without any time info', () => {
       expect(isMetaActive({ status: "active" })).toBe(true);
     });
+
+    it('keeps a wake registration active without a process or fresh heartbeat', () => {
+      const old = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      expect(isMetaActive({
+        status: "active",
+        launch_mode: "wake",
+        wake_adapter: "bearer-json",
+        pid: 0,
+        last_seen: old,
+      })).toBe(true);
+      expect(isMetaActive({
+        status: "inactive",
+        launch_mode: "wake",
+        wake_adapter: "bearer-json",
+      })).toBe(false);
+    });
   });
 });

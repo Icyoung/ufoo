@@ -318,6 +318,10 @@ function isMetaActive(meta) {
   // 1. 显式标记为 inactive
   if (meta.status === "inactive") return false;
 
+  // A wake registration has no local process. Liveness is the saved adapter,
+  // not a pid or a 30s heartbeat.
+  if (meta.launch_mode === "wake" && meta.wake_adapter) return true;
+
   // 2. PID 存活（最可靠）
   if (meta.pid && isAgentPidAlive(meta.pid)) return true;
 

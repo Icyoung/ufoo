@@ -1,5 +1,61 @@
 "use strict";
 
+const { readWakeKeyFile } = require("../../coordination/bus/wakeEndpoint");
+
+function parseJoinArgs(cmdArgs = []) {
+  const positionals = [];
+  let wakeUrl = "";
+  let wakeKeyFile = "";
+  let wakeAdapter = "";
+
+  for (let index = 0; index < cmdArgs.length; index += 1) {
+    const arg = String(cmdArgs[index] || "");
+    if (arg === "--wake-url") {
+      wakeUrl = String(cmdArgs[index + 1] || "").trim();
+      if (!wakeUrl || wakeUrl.startsWith("--")) throw new Error("join --wake-url requires <url>");
+      index += 1;
+      continue;
+    }
+    if (arg === "--wake-key-file") {
+      wakeKeyFile = String(cmdArgs[index + 1] || "").trim();
+      if (!wakeKeyFile || wakeKeyFile.startsWith("--")) throw new Error("join --wake-key-file requires <path>");
+      index += 1;
+      continue;
+    }
+    if (arg === "--wake-adapter") {
+      wakeAdapter = String(cmdArgs[index + 1] || "").trim();
+      if (!wakeAdapter || wakeAdapter.startsWith("--")) throw new Error("join --wake-adapter requires <name>");
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--")) throw new Error(`Unknown join option: ${arg}`);
+    positionals.push(arg);
+  }
+
+  if ((positionals[1] || "").toLowerCase() === "grok-bot") positionals[1] = "grok-bot";
+  const wakeRequested = Boolean(wakeUrl || wakeKeyFile || wakeAdapter);
+  if (wakeRequested && !positionals[1]) {
+    throw new Error("join wake requires <agent-type>");
+  }
+  if (wakeRequested && (!wakeUrl || !wakeKeyFile)) {
+    throw new Error("join wake requires --wake-url and --wake-key-file");
+  }
+  if (positionals[1] === "grok-bot" && !wakeRequested) {
+    throw new Error("grok-bot join requires --wake-url and --wake-key-file");
+  }
+
+  return {
+    sessionId: positionals[0] || "",
+    agentType: positionals[1] || "",
+    nickname: positionals[2] || "",
+    wake: wakeRequested ? {
+      adapter: wakeAdapter || "bearer-json",
+      url: wakeUrl,
+      key: readWakeKeyFile(wakeKeyFile),
+    } : null,
+  };
+}
+
 function parseSendArgs(cmdArgs = []) {
   let injectionMode = "immediate";
   let source = "";
@@ -155,9 +211,13 @@ async function runBusCoreCommand(eventBus, cmd, cmdArgs = []) {
       await eventBus.init();
       return {};
     case "join":
-      return {
-        subscriber: await eventBus.join(cmdArgs[0], cmdArgs[1], cmdArgs[2]),
-      };
+      {
+        const parsed = parseJoinArgs(cmdArgs);
+        const subscriber = parsed.wake
+          ? await eventBus.join(parsed.sessionId, parsed.agentType, parsed.nickname, { wake: parsed.wake })
+          : await eventBus.join(parsed.sessionId, parsed.agentType, parsed.nickname);
+        return { subscriber };
+      }
     case "leave":
       await eventBus.leave(cmdArgs[0]);
       return {};

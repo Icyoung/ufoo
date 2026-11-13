@@ -200,6 +200,36 @@ function rejected(errors = [], extras = {}) {
   };
 }
 
+function validateCommandNodes(command, validateToolArgs = false) {
+  const errors = [];
+  const specs = validateToolArgs ? new Map(require("../tools/specs").buildCoreToolSpecs()
+    .map(({ function: spec }) => [spec.name, spec.parameters])) : null;
+  const visit = (node, field) => {
+    if (!node || typeof node !== "object" || Array.isArray(node)) return;
+    if (node.type === "tool" || node.tool) {
+      if (Object.hasOwn(node, "arguments")) errors.push({ code: "INVALID_NODE_ARGUMENTS", field: `${field}.arguments`, nodeId: node.id || "",
+        message: `${field}.arguments is unsupported; use ${field}.args for tool parameters` });
+      if (node.args != null && (typeof node.args !== "object" || Array.isArray(node.args))) errors.push({ code: "INVALID_NODE_ARGUMENTS", field: `${field}.args`, nodeId: node.id || "", message: `${field}.args must be an object` });
+      if (!Object.hasOwn(node, "arguments")) for (const key of specs?.get(node.tool)?.required || []) {
+        if (!Object.hasOwn(node.args || {}, key)) errors.push({ code: "MISSING_TOOL_ARGUMENT", field: `${field}.args.${key}`, nodeId: node.id || "",
+          message: `${field}.args.${key} is required for ${node.tool}; correct the node and resubmit the command` });
+      }
+    }
+    for (const key of ["nodes", "children", "steps"]) if (Array.isArray(node[key])) node[key].forEach((child, index) => visit(child, `${field}.${key}[${index}]`));
+    for (const key of ["node", "with", "subgraph"]) if (node[key]) visit(node[key], `${field}.${key}`);
+  };
+  if (command.operation === "create") visit(command.graph, "graph");
+  if (command.operation === "patch") (command.operations || []).forEach((op, index) => visit(op, `operations[${index}]`));
+  return errors;
+}
+
+function planRecovery(nodes = []) {
+  const failures = nodes.filter(node => node.status === "failed" || node.status === "blocked")
+    .map(node => ({ nodeId: node.id, tool: node.tool || "", error: String(node.error || node.result?.error || node.result?.summary || "blocked").slice(0, 1000) }));
+  return failures.length ? { needed: true, failures,
+    hint: "Inspect is read-only and cannot retry failed nodes. Correct the plan using patch, or use control.skip_node/control.cancel_subtree for obsolete nodes. If recovery requires user input, explain the concrete blocker." } : null;
+}
+
 function accepted(payload = {}) {
   return {
     ok: true,
@@ -383,6 +413,7 @@ function buildAdvanceSummary(result = {}, beforeStatuses = new Map()) {
         type: node.type,
         status: node.status,
         summary: (node.result && node.result.summary) || node.error || node.status,
+        ...(node.error || node.result?.error ? { error: String(node.error || node.result.error).slice(0, 1000) } : {}),
       };
       if (node.status === "succeeded") executedNodes.push(entry);
       if (node.status === "failed") failedNodes.push(entry);
@@ -482,6 +513,7 @@ function projectPlanView(planGraph = {}) {
       execution: node.execution || "",
       generated: Boolean(node.generated),
       summary: (node.result && node.result.summary) || "",
+      ...(node.error || node.result?.error ? { error: String(node.error || node.result.error).slice(0, 1000) } : {}),
       children: byParent.get(node.id) || [],
     }));
 }
@@ -514,8 +546,10 @@ function inspectPlanGraph(planGraph = {}) {
       parentTaskId: node.parentTaskId || "",
       execution: node.execution || "",
       generated: Boolean(node.generated),
+      ...(node.error || node.result?.error ? { error: String(node.error || node.result.error).slice(0, 1000) } : {}),
     })),
     planView: projectPlanView(planGraph),
+    recovery: planRecovery(nodes),
     validationWarnings: [],
   });
 }
@@ -589,6 +623,11 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
 
   if (!operation) {
     const payload = rejected([{ code: "MISSING_OPERATION", message: "operation is required" }]);
+    return { ...payload, executionState, modelPayload: payload };
+  }
+  const nodeErrors = validateCommandNodes(command, options.validateToolArgs === true);
+  if (nodeErrors.length) {
+    const payload = rejected(nodeErrors);
     return { ...payload, executionState, modelPayload: payload };
   }
 
@@ -748,6 +787,7 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
         waitingFor: terminal ? null : (live.waitingFor || null),
         advance,
         planView: terminal ? [] : projectPlanView(live),
+        recovery: terminal ? null : planRecovery(live.nodes),
         validationWarnings: [],
         ...(terminal ? {
           planCompleted: true,
@@ -1114,6 +1154,7 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
     stoppedAt: terminal ? "graph_terminal" : (live.lastStoppedAt || ""),
     advance,
     planView: terminal ? [] : projectPlanView(live),
+    recovery: terminal ? null : planRecovery(live.nodes),
     validationWarnings: preferredCompile.warnings || [],
     summary: terminal
       ? terminal.completionSummary

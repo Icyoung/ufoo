@@ -26,6 +26,22 @@ function createAgentSurface(options = {}) {
   const background = new Map();
   let contextUsage = "";
   const tools = new Map();
+  const renderedEntries = new WeakMap();
+
+  function presentEntry(row) {
+    if (!["assistant", "thinking"].includes(row.kind) || /\x1b\[/.test(row.text)) return { ...row };
+    let cached = renderedEntries.get(row);
+    if (!cached || cached.source !== row.text) {
+      cached = { source: row.text, text: fmt.renderLogLinesWithMarkdownAnsi(row.text, { inCodeBlock: false }).join("\n") };
+      renderedEntries.set(row, cached);
+    }
+    return { ...row, text: cached.text };
+  }
+
+  function getEntry(id) {
+    const row = entries.find((row) => row.id === id);
+    return row ? presentEntry(row) : null;
+  }
 
   function bound() {
     for (const entry of entries) {
@@ -261,10 +277,25 @@ function createAgentSurface(options = {}) {
     const failed = bg.filter((task) => ["failed", "stopped", "killed"].includes(task.status)).length;
     const suffix = [running && `${running} running`, done && `${done} done`, failed && `${failed} failed`].filter(Boolean).join("/");
     const label = `${status}${!busy && status === "ready" && idlePlanHint ? ` · ${idlePlanHint}` : ""}${submitted.length > 1 || (submitted.length && runningTask) ? ` · queued ${submitted.length}` : ""}${suffix ? ` · BG ${suffix}` : ""}`;
-    return { entries: entries.map((row) => ({ ...row })), status: label, busy, usage, plan: plan.slice(), revision, started_at: startedAt };
+    return { entries: entries.map(presentEntry), status: label, busy, usage, plan: plan.slice(), revision, started_at: startedAt };
   }
 
-  return { apply, accept, snapshot, toggleExpanded };
+  return { apply, accept, snapshot, getEntry, toggleExpanded };
 }
 
-module.exports = { createAgentSurface };
+// Keep source deltas in the surface; send the rendered entry as a replacement
+// so delimiters split across chunks and multi-line tables can be re-evaluated.
+function projectSurfaceEvent(surface, name, payload = {}) {
+  const delta = name === "stream.delta" || name === "thinking.delta";
+  const id = payload.id || (name === "thinking.delta" ? "thinking" : "stream");
+  const exists = delta && Boolean(surface.getEntry(id));
+  surface.apply(name, payload);
+  if (delta) {
+    const row = surface.getEntry(id);
+    return { name: exists ? "transcript.patch" : "transcript.append", payload: row };
+  }
+  if (name === "transcript.reset") return { name, payload: { ...payload, entries: surface.snapshot().entries } };
+  return { name, payload };
+}
+
+module.exports = { createAgentSurface, projectSurfaceEvent };

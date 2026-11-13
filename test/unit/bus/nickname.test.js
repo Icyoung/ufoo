@@ -83,6 +83,13 @@ describe('NicknameManager', () => {
       expect(emptyManager.generateAutoNickname('claude-code')).toBe('claude-1');
       expect(emptyManager.generateAutoNickname('codex')).toBe('codex-1');
       expect(emptyManager.generateAutoNickname('cursor')).toBe('cursor-1');
+      expect(emptyManager.generateAutoNickname('grok-bot')).toBe('grok-bot-1');
+    });
+
+    it('should keep grok-bot nicknames separate from grok', () => {
+      busData.agents['grok:local'] = { nickname: 'grok-1' };
+      busData.agents['grok-bot:cloud'] = { nickname: 'grok-bot-1' };
+      expect(manager.generateAutoNickname('grok-bot')).toBe('grok-bot-2');
     });
 
     it('should find next available number', () => {

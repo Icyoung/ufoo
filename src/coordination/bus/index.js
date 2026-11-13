@@ -179,7 +179,7 @@ class EventBus {
       sessionId,
       agentType,
       nickname,
-      options
+      { ...options, projectRoot: options.projectRoot || this.projectRoot }
     );
 
     this.saveBusData();
@@ -197,7 +197,7 @@ class EventBus {
     this.ensureBus();
     this.loadBusData();
 
-    const success = await this.subscriberManager.leave(subscriber);
+    const success = await this.subscriberManager.leave(subscriber, { projectRoot: this.projectRoot });
 
     if (success) {
       this.saveBusData();

@@ -1,6 +1,44 @@
 "use strict";
 
-const { createAgentSurface } = require("../../../src/ui/agentSurface");
+const { createAgentSurface, projectSurfaceEvent } = require("../../../src/ui/agentSurface");
+
+test("streaming and replay render split Markdown without changing source or user/tool text", () => {
+  const view = createAgentSurface();
+  const plain = text => text.replace(/\x1b\[[0-9;]*m/g, "");
+  const first = projectSurfaceEvent(view, "stream.delta", { id: "answer", text: "现在 **Son" });
+  expect(first.name).toBe("transcript.append");
+  const second = projectSurfaceEvent(view, "stream.delta", { id: "answer", text: "arr 已启动**\n\n## 检查\n- **通过**" });
+  expect(second.name).toBe("transcript.patch");
+  expect(plain(second.payload.text)).toBe("现在 Sonarr 已启动\n\n检查\n- 通过");
+  expect(second.payload.text).toContain("\x1b[1m");
+  expect(view.snapshot().entries[0].text).toBe(second.payload.text);
+  const replay = projectSurfaceEvent(view, "transcript.reset", { entries: [
+    { id: "saved", kind: "assistant", text: "**恢复的回答**" },
+    { id: "user", kind: "user", text: "**原始输入**" },
+    { id: "tool", kind: "tool", text: "**原始输出**" },
+  ] });
+  expect(plain(replay.payload.entries[0].text)).toBe("恢复的回答");
+  expect(replay.payload.entries[1].text).toBe("**原始输入**");
+  expect(replay.payload.entries[2].text).toBe("**原始输出**");
+});
+
+test("stream Markdown retains fences across chunks and aligns whole tables", () => {
+  const view = createAgentSurface();
+  const plain = text => text.replace(/\x1b\[[0-9;]*m/g, "");
+  for (const text of ["```md\n**literal**", "\n```\n\n| 项目 | 结果 |\n", "| --- | --- |\n| **检查** | 通过 |"])
+    projectSurfaceEvent(view, "stream.delta", { id: "answer", text });
+  const text = plain(view.snapshot().entries[0].text);
+  expect(text).toContain("│ **literal**");
+  expect(text).toContain("│ 检查");
+  expect(text).not.toContain("**检查**");
+  expect(text).toContain("┼");
+});
+
+test("formatting leaves identifiers with underscores readable", () => {
+  const view = createAgentSurface();
+  projectSurfaceEvent(view, "stream.delta", { id: "answer", text: "VISIBLE_BEFORE_DONE and config_file_name.json" });
+  expect(view.snapshot().entries[0].text).toBe("VISIBLE_BEFORE_DONE and config_file_name.json");
+});
 
 test("submit, execution phases, queue, interaction, failure and cancellation retain an honest status", () => {
   const view = createAgentSurface();

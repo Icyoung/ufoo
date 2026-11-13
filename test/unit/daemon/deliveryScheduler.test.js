@@ -676,4 +676,121 @@ describe("DeliveryScheduler", () => {
     const after = await scheduler.deliverSubscriber("codex:one");
     expect(after).toEqual(expect.objectContaining({ ok: true, delivered: 1 }));
   });
+
+  test("wake delivery posts once, keeps the message pending, and does not post again before ack", async () => {
+    const fs = require("fs");
+    const os = require("os");
+    const path = require("path");
+    const { writeWakeEndpoint } = require("../../../src/coordination/bus/wakeEndpoint");
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-wake-sched-"));
+    const subscriber = "grok-bot:cloud";
+    const event = {
+      seq: 4,
+      event: "message",
+      publisher: "codex:one",
+      data: { message: "hello cloud" },
+    };
+    const following = { ...event, seq: 5, data: { message: "following" } };
+    const queue = makeQueue([event, following]);
+    const wakeFetch = jest.fn(async () => ({ status: 200 }));
+    const log = jest.fn();
+    writeWakeEndpoint(projectRoot, subscriber, {
+      adapter: "bearer-json",
+      url: "http://127.0.0.1:9/hook",
+      key: "sender-secret",
+    });
+    const scheduler = new DeliveryScheduler(projectRoot, {
+      injector: { inject: jest.fn() },
+      queueFactory: () => queue,
+      readAgents: () => ({
+        agents: {
+          [subscriber]: {
+            status: "active",
+            launch_mode: "wake",
+            wake_adapter: "bearer-json",
+            pid: 0,
+          },
+        },
+      }),
+      wakeFetch,
+      log,
+    });
+
+    try {
+      expect(await scheduler.deliverSubscriber(subscriber)).toMatchObject({
+        ok: true, delivered: 0, woken: true, seq: 4,
+      });
+      expect(await scheduler.deliverSubscriber(subscriber)).toMatchObject({
+        ok: true, delivered: 0, reason: "wake_waiting_ack",
+      });
+      expect(wakeFetch).toHaveBeenCalledTimes(1);
+      expect(queue.restoreClaim).toHaveBeenCalledTimes(1);
+      expect(queue.completeClaim).not.toHaveBeenCalled();
+      const [, init] = wakeFetch.mock.calls[0];
+      expect(init.headers.authorization).toBe("Bearer sender-secret");
+      expect(init.body).not.toContain("sender-secret");
+      expect(JSON.parse(init.body)).toMatchObject({
+        source: "ufoo",
+        subscriber,
+        seq: 4,
+        message: "hello cloud",
+      });
+      expect(log.mock.calls.flat().join("\n")).not.toContain("sender-secret");
+      queue.readPending.mockReturnValue([following]); // Receiver acknowledged seq 4.
+      expect(await scheduler.deliverSubscriber(subscriber)).toMatchObject({ woken: true, seq: 5 });
+      expect(wakeFetch).toHaveBeenCalledTimes(2);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("a non-200 wake response stays queued and is retried", async () => {
+    const fs = require("fs");
+    const os = require("os");
+    const path = require("path");
+    const { hasWakeAccepted, writeWakeEndpoint } = require("../../../src/coordination/bus/wakeEndpoint");
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-wake-sched-"));
+    const subscriber = "grok-bot:cloud";
+    const queue = makeQueue({
+      seq: 5,
+      event: "message",
+      publisher: "codex:one",
+      data: { message: "retry me" },
+    });
+    const wakeFetch = jest.fn(async () => ({ status: 503 }));
+    writeWakeEndpoint(projectRoot, subscriber, {
+      url: "http://127.0.0.1:9/hook",
+      key: "sender-secret",
+    });
+    const scheduler = new DeliveryScheduler(projectRoot, {
+      injector: { inject: jest.fn() },
+      queueFactory: () => queue,
+      readAgents: () => ({
+        agents: {
+          [subscriber]: {
+            status: "active",
+            launch_mode: "wake",
+            wake_adapter: "bearer-json",
+          },
+        },
+      }),
+      wakeFetch,
+      log: () => {},
+    });
+
+    try {
+      expect(await scheduler.deliverSubscriber(subscriber)).toMatchObject({
+        ok: false, reason: "wake_not_accepted", status: 503,
+      });
+      expect(hasWakeAccepted(projectRoot, subscriber, 5)).toBe(false);
+      expect(await scheduler.deliverSubscriber(subscriber)).toMatchObject({
+        ok: false, reason: "wake_not_accepted", status: 503,
+      });
+      expect(wakeFetch).toHaveBeenCalledTimes(2);
+      expect(queue.restoreClaim).toHaveBeenCalledTimes(2);
+      expect(queue.completeClaim).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
 });

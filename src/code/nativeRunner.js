@@ -1,10 +1,7 @@
 "use strict";
 
 const { randomUUID } = require("crypto");
-const { loadConfig } = require("../config");
-const { resolveKimiUpstreamCredentials } = require("../agents/providers/credentials/kimi");
-const { resolveCodexUpstreamCredentials } = require("../agents/providers/credentials/codex");
-const { resolveRuntimeConfig, resolveTransport, resolveCompletionUrl, resolveResponsesUrl, resolveAnthropicMessagesUrl, DEFAULT_OPENAI_BASE_URL } = require("../agents/providers/runtimeConfig");
+const { resolveRuntimeConfig, resolveAuthenticatedRuntime, resolveTransport, resolveCompletionUrl, resolveResponsesUrl, resolveAnthropicMessagesUrl } = require("../agents/providers/runtimeConfig");
 const { getNativeTransport, createNativeSseDispatcher, resolveReasoningEffort, normalizeTimeoutMs, createUsageTotals, cloneMessageList } = require("../agents/providers/nativeTransport");
 const { createAgentRuntime } = require("../agents/runtime/createAgentRuntime");
 const { createCodingCapability } = require("../agents/capabilities/coding");
@@ -112,6 +109,7 @@ async function runNativeAgentTask({
   contextPolicy = {},
   runtimeContext = {},
   onRuntimeEvent = null,
+  onConversationUpdate = null,
 } = {}) {
   const guards = createGuards({ signal, timeoutMs });
   const nextSessionId = String(sessionId || "").trim() || `native-${randomUUID()}`;
@@ -171,59 +169,13 @@ async function runNativeAgentTask({
       };
     }
 
-    const runtime = resolveRuntimeConfig({
+    const runtime = await resolveAuthenticatedRuntime({
       workspaceRoot,
       provider,
       model,
     });
 
-    let accountId = "";
-    if (runtime.provider === "codex" && !runtime.apiKey) {
-      try {
-        const config = loadConfig(workspaceRoot) || {};
-        const credential = await resolveCodexUpstreamCredentials({
-          authPath: config.codexAuthPath,
-          refreshWindowMs: Number(config.codexOauthRefreshWindowSec || 300) * 1000,
-          env: process.env,
-        });
-        const token = String(credential && (credential.accessToken || credential.apiKey) || "").trim();
-        if (token) {
-          runtime.apiKey = token;
-          runtime.apiKeySource = String(credential.source || "codex-credential");
-        }
-        const credentialKind = String(credential && credential.credentialKind || "").trim();
-        if (
-          credentialKind === "api-key"
-          && !String(process.env.UFOO_UCODE_BASE_URL || "").trim()
-          && !String(config.ucodeBaseUrl || "").trim()
-        ) {
-          runtime.baseUrl = String(process.env.OPENAI_BASE_URL || DEFAULT_OPENAI_BASE_URL).trim();
-        }
-        if (credentialKind === "oauth") {
-          accountId = String(credential && credential.accountId || "").trim();
-        }
-      } catch {
-        // The request will report the provider's auth error when no Codex
-        // credential is available; keep runtime resolution non-throwing.
-      }
-    }
-
-    // Kimi tokens expire; resolveRuntimeConfig reads the credential file
-    // synchronously, so refresh it here (async) when the key came from that
-    // file and the token is outside the fresh window.
-    if (
-      runtime.provider === "kimi"
-      && runtime.apiKeySource === "kimi-credential"
-      && runtime.kimiCredentialState !== "fresh"
-    ) {
-      try {
-        const credential = await resolveKimiUpstreamCredentials({ env: process.env });
-        const token = String(credential && credential.accessToken || "").trim();
-        if (token) runtime.apiKey = token;
-      } catch {
-        // Keep the file token; the request itself will surface auth failures.
-      }
-    }
+    const accountId = runtime.accountId;
 
     const transport = getNativeTransport(runtime.transport);
     await observe({ type: "runtime.binding", binding: { provider: runtime.provider, model: runtime.model, transport: runtime.transport } });
@@ -248,6 +200,7 @@ async function runNativeAgentTask({
       onPhase,
       onToolEvent,
       onArtifactPersisted,
+      onConversationUpdate,
       onContextUsage,
       sessionId: nextSessionId,
       signal,
@@ -311,16 +264,22 @@ async function runNativeAgentTask({
   } catch (err) {
     await observe({ type: signal?.aborted || err.code === "cancelled" ? "task.cancelled" : "task.failed", error: err.message || "native runner failed" });
     const message = err && err.message ? err.message : "native runner failed";
-    if (executionState && typeof executionState === "object") {
-      clearUserPrompts(executionState);
+    const recovered = err.result || {};
+    const recoveredState = recovered.executionState || executionState;
+    if (recoveredState && typeof recoveredState === "object") {
+      clearUserPrompts(recoveredState);
     }
     return {
       ok: false,
       error: message,
       output: partialOutput.trim(),
       sessionId: nextSessionId,
-      streamed: false,
-      executionState: executionState || null,
+      streamed: Boolean(partialOutput) && typeof onStreamDelta === "function",
+      messages: cloneMessageList(recovered.messages),
+      turnItems: cloneMessageList(recovered.turnItems),
+      usage: recovered.usage || createUsageTotals(),
+      protocolLedger: recovered.protocolLedger || null,
+      executionState: recoveredState || null,
       ...(observationWarnings.length ? { observationWarnings } : {}),
     };
   }

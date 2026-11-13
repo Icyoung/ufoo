@@ -222,8 +222,10 @@ function renderInlineMarkdown(input = "", adapters = createBlessedAdapters()) {
   let out = "";
   let i = 0;
   while (i < source.length) {
+    // Underscores inside identifiers/filenames are literal, as in GFM.
+    const canOpenUnderscore = i === 0 || !/[\p{L}\p{N}_]/u.test(source[i - 1]);
     // **bold** / __bold__
-    if (source.startsWith("**", i) || source.startsWith("__", i)) {
+    if (source.startsWith("**", i) || source.startsWith("__", i) && canOpenUnderscore) {
       const mark = source.slice(i, i + 2);
       const close = source.indexOf(mark, i + 2);
       if (close !== -1) {
@@ -253,7 +255,7 @@ function renderInlineMarkdown(input = "", adapters = createBlessedAdapters()) {
     // *italic* / _italic_ (single delimiter; avoid ** / __)
     if (
       (source[i] === "*" && source[i + 1] !== "*")
-      || (source[i] === "_" && source[i + 1] !== "_")
+      || (source[i] === "_" && source[i + 1] !== "_" && canOpenUnderscore)
     ) {
       const mark = source[i];
       const close = source.indexOf(mark, i + 1);

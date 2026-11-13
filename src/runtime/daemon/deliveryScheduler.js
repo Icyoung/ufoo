@@ -6,6 +6,13 @@ const { buildPromptInjectionText } = require("../../coordination/bus/promptEnvel
 const { createTerminalAdapterRouter } = require("../terminal/adapterRouter");
 const { normalizeQueueEnvelope } = require("../../coordination/bus/deliveryQueue");
 const { writeActivityState } = require("../../agents/activity/activityStateWriter");
+const {
+  hasWakeAccepted,
+  isWakeMeta,
+  markWakeAccepted,
+  readWakeEndpoint,
+  wakeSubscriber,
+} = require("../../coordination/bus/wakeEndpoint");
 
 function asState(value = "") {
   return String(value || "").trim().toLowerCase();
@@ -74,6 +81,8 @@ class DeliveryScheduler {
         });
       };
     this.log = typeof options.log === "function" ? options.log : () => {};
+    this.wakeFetch = typeof options.wakeFetch === "function" ? options.wakeFetch : global.fetch;
+    this.wakeTimeoutMs = positiveMs(options.wakeTimeoutMs, 10000);
     this.now = typeof options.now === "function" ? options.now : () => Date.now();
     this.deferWarnAfterMs = positiveMs(options.deferWarnAfterMs, DEFAULT_DEFER_WARN_AFTER_MS);
     this.warnIntervalMs = positiveMs(options.warnIntervalMs, DEFAULT_WARN_INTERVAL_MS);
@@ -187,6 +196,9 @@ class DeliveryScheduler {
     const { meta } = this.getAgentMeta(subscriber);
     if (!meta || meta.status === "inactive") {
       return { ok: false, reason: "missing_or_inactive" };
+    }
+    if (isWakeMeta(meta)) {
+      return { ok: true, reason: "wake" };
     }
     if (meta.mcp_bridge === true) {
       return { ok: false, reason: "external_receive" };
@@ -350,6 +362,49 @@ class DeliveryScheduler {
     };
   }
 
+  async deliverWake(subscriber) {
+    const queue = this.queueFactory(subscriber);
+    const pending = this.readPendingEvents(queue).filter((event) => (
+      event
+      && event.event === "message"
+      && event.data
+      && typeof event.data.message === "string"
+    ));
+    const next = pending[0];
+    if (!next || hasWakeAccepted(this.projectRoot, subscriber, next.seq)) {
+      return { ok: true, delivered: 0, reason: "wake_waiting_ack" };
+    }
+    const endpoint = readWakeEndpoint(this.projectRoot, subscriber);
+    if (!endpoint) {
+      return { ok: false, delivered: 0, reason: "wake_endpoint_missing" };
+    }
+    const claim = queue.claimNext((event) => Number(event && event.seq) === Number(next.seq));
+    if (!claim) return { ok: true, delivered: 0, reason: "empty" };
+    try {
+      const result = await wakeSubscriber(endpoint, {
+        source: "ufoo",
+        project_root: this.projectRoot,
+        subscriber,
+        seq: Number(next.seq) || 0,
+        publisher: next.publisher || "",
+        message: next.data.message,
+      }, this.wakeFetch, { timeoutMs: this.wakeTimeoutMs });
+      if (!result.accepted) {
+        queue.restoreClaim(claim);
+        this.log(`wake not accepted subscriber=${subscriber} seq=${next.seq} status=${result.status}`);
+        return { ok: false, delivered: 0, reason: "wake_not_accepted", status: result.status };
+      }
+      markWakeAccepted(this.projectRoot, subscriber, next.seq);
+      queue.restoreClaim(claim);
+      return { ok: true, delivered: 0, woken: true, seq: Number(next.seq) || 0 };
+    } catch (err) {
+      queue.restoreClaim(claim);
+      const message = err && err.message ? err.message : String(err || "wake failed");
+      this.log(`wake failed subscriber=${subscriber} seq=${next.seq}`);
+      return { ok: false, delivered: 0, reason: "wake_failed", error: message };
+    }
+  }
+
   async deliverSubscriber(subscriber) {
     if (!subscriber) return { ok: false, delivered: 0, reason: "missing_subscriber" };
     if (this.locks.has(subscriber)) {
@@ -361,6 +416,9 @@ class DeliveryScheduler {
     try {
       const queue = this.queueFactory(subscriber);
       const transportGate = this.shouldDeliver(subscriber, { requireIdle: false });
+      if (transportGate.reason === "wake") {
+        return await this.deliverWake(subscriber);
+      }
       if (!transportGate.ok) {
         this.noteDeferral(subscriber, transportGate.reason);
         return { ok: true, delivered: 0, deferred: true, reason: transportGate.reason };
@@ -510,7 +568,13 @@ class DeliveryScheduler {
         continue;
       }
       const queue = this.queueFactory(subscriber);
-      if (queue.readPending().length > 0) {
+      let pending = [];
+      try {
+        pending = queue.readPending();
+      } catch {
+        continue;
+      }
+      if (pending.length > 0) {
         subscribers.push(subscriber);
         pendingSubscribers.add(subscriber);
       } else {
@@ -533,7 +597,11 @@ class DeliveryScheduler {
     this.running = true;
     const run = () => {
       this.tick().catch((err) => {
-        this.log(`delivery scheduler tick failed: ${err && err.message ? err.message : String(err)}`);
+        try {
+          this.log(`delivery scheduler tick failed: ${err && err.message ? err.message : String(err)}`);
+        } catch {
+          // A full project volume must not take down the controller.
+        }
       });
     };
     run();

@@ -16,6 +16,7 @@ const { getUfooPaths } = require("../state/paths");
 const { applyProjectNicknamePrefix } = require("../../runtime/daemon/nicknameScope");
 const { QUEUE_TYPES, normalizeQueueEnvelope } = require("./deliveryQueue");
 const { isInternalAgentMeta } = require("../../runtime/contracts/agentMode");
+const { isWakeMeta } = require("./wakeEndpoint");
 
 const SEQ_LOCK_TIMEOUT_MS = 5000;
 const SEQ_LOCK_POLL_MS = 25;
@@ -463,7 +464,15 @@ class MessageManager {
       // 检查订阅者的 offset，如果已经消费过这个 seq，不再添加
       const offset = await this.queueManager.getOffset(targetSubscriber);
       if (seq > offset) {
-        await this.queueManager.appendPending(targetSubscriber, queueEvent);
+        const wakeTarget = isWakeMeta(this.busData.agents?.[targetSubscriber]);
+        const queued = wakeTarget
+          ? normalizeQueueEnvelope(event, {
+            queueType: QUEUE_TYPES.AGENT_MESSAGE,
+            delivery: { mode: "wake", gate: "none", max_inflight: 1 },
+            ack: { policy: "on_consume" },
+          })
+          : queueEvent;
+        await this.queueManager.appendPending(targetSubscriber, queued);
       }
     }
 

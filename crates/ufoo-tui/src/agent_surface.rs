@@ -102,15 +102,26 @@ pub(crate) fn wrap_entry_visual_lines(
                 cut = idx + ch.len_utf8();
             }
             if word_wrap && cut < rest.len() {
-                if let Some((boundary, _)) = rest[..cut]
-                    .char_indices()
-                    .filter(|(idx, ch)| *idx > 0 && ch.is_whitespace())
-                    .last()
+                // CJK permits a break between characters. Only move a whole
+                // Latin word when the width boundary actually splits it;
+                // choosing any earlier space leaves mixed-language rows half empty.
+                let word_char = |ch: char| ch.is_ascii_alphanumeric() || "_-'".contains(ch);
+                if rest[..cut].chars().next_back().is_some_and(word_char)
+                    && rest[cut..].chars().next().is_some_and(word_char)
                 {
-                    cut = boundary;
+                    let boundary = rest[..cut]
+                        .char_indices()
+                        .rev()
+                        .find(|(_, ch)| !word_char(*ch))
+                        .map(|(idx, ch)| idx + ch.len_utf8())
+                        .unwrap_or(0);
+                    if boundary > 0 {
+                        cut = boundary;
+                    }
                 }
             }
             let (chunk, next) = rest.split_at(cut);
+            let chunk = if word_wrap { chunk.trim_end() } else { chunk };
             out.push(format!("{prefix}{chunk}"));
             rest = if word_wrap { next.trim_start() } else { next };
             prefix = continuation_prefix;
@@ -120,6 +131,63 @@ pub(crate) fn wrap_entry_visual_lines(
         }
     }
     out
+}
+
+fn wrap_styled_entry_lines(
+    raw: &str,
+    first_prefix: &str,
+    continuation: &str,
+    content_width: usize,
+    word_wrap: bool,
+    kind_style: Style,
+    semantic_color: bool,
+    pad: &str,
+) -> Option<Vec<Line<'static>>> {
+    let parsed = raw.into_text().ok()?;
+    let mut plain = String::new();
+    let mut styles = Vec::new();
+    for line in parsed.lines {
+        for span in line.spans {
+            let start = plain.len();
+            plain.push_str(&span.content);
+            let style = if semantic_color {
+                span.style.patch(kind_style)
+            } else {
+                kind_style.patch(span.style)
+            };
+            styles.push((start, plain.len(), style));
+        }
+    }
+    let mut offset = 0;
+    let mut out = Vec::new();
+    for (index, visual) in
+        wrap_entry_visual_lines(&plain, first_prefix, continuation, content_width, word_wrap)
+            .into_iter()
+            .enumerate()
+    {
+        let prefix = if index == 0 {
+            first_prefix
+        } else {
+            continuation
+        };
+        let chunk = visual.strip_prefix(prefix).unwrap_or(&visual);
+        let start = offset + plain[offset..].find(chunk).unwrap_or(0);
+        let end = start + chunk.len();
+        let mut spans = vec![
+            Span::raw(pad.to_string()),
+            Span::styled(prefix.to_string(), kind_style),
+        ];
+        for (from, to, style) in &styles {
+            let left = start.max(*from);
+            let right = end.min(*to);
+            if left < right {
+                spans.push(Span::styled(plain[left..right].to_string(), *style));
+            }
+        }
+        out.push(Line::from(spans));
+        offset = end;
+    }
+    Some(out)
 }
 
 pub(crate) fn truncate_single_visual_line(text: &str, content_width: usize) -> String {
@@ -289,7 +357,9 @@ pub(crate) fn build_transcript_lines_with_text_color(
         let speaker_stream = is_speaker_stream_entry(entry);
         // Markdown chalk (bold→whiteBright) punched random white holes into
         // solid-colored semantic rows. Strip it before applying role colors.
-        if (speaker_stream || entry.kind == "thinking") && body.contains('\u{1b}') {
+        if (speaker_stream && entry.kind != "assistant" || entry.kind == "thinking")
+            && body.contains('\u{1b}')
+        {
             body = strip_ansi_codes(&body);
         }
 
@@ -474,7 +544,8 @@ pub(crate) fn build_transcript_lines_with_text_color(
         let continuation = " ".repeat(continuation_width);
         let mut fence: Option<(char, usize)> = None;
         for (line_idx, line) in body.lines().enumerate() {
-            let trimmed = line.trim();
+            let layout_line = strip_ansi_codes(line);
+            let trimmed = layout_line.trim();
             let marker = trimmed.chars().next().unwrap_or(' ');
             let marker_count = trimmed.chars().take_while(|ch| *ch == marker).count();
             let in_code = fence.is_some();
@@ -495,38 +566,36 @@ pub(crate) fn build_transcript_lines_with_text_color(
                 out.push(Line::from(""));
                 continue;
             }
-            let head = if line_idx == 0 {
-                format!("{prefix}{line}")
-            } else {
-                format!("{continuation}{line}")
-            };
-            // Speaker-stream rows always use zebra flat paint (no ANSI path).
-            if !speaker_stream && head.contains('\u{1b}') {
-                if let Ok(text) = head.into_text() {
-                    for ansi_line in text.lines {
-                        let mut spans = vec![Span::raw(pad.to_string())];
-                        for span in ansi_line.spans {
-                            spans.push(Span::styled(span.content.to_string(), span.style));
-                        }
-                        out.push(Line::from(spans));
-                    }
-                    continue;
-                }
-            }
             let word_wrap = matches!(entry.kind.as_str(), "user" | "assistant")
                 && !in_code
                 && !fence_line
-                && !line.starts_with("    ")
-                && !line.starts_with('\t')
-                && !trimmed.starts_with('|');
+                && !layout_line.starts_with("    ")
+                && !layout_line.starts_with('\t')
+                && !trimmed.starts_with('|')
+                && !trimmed.starts_with('│');
             let first_prefix = if line_idx == 0 {
                 prefix.as_str()
             } else {
                 continuation.as_str()
             };
-            for visual_line in wrap_entry_visual_lines(
-                line, first_prefix, &continuation, content_width, word_wrap,
-            ) {
+            if line.contains('\u{1b}') {
+                if let Some(lines) = wrap_styled_entry_lines(
+                    line,
+                    first_prefix,
+                    &continuation,
+                    content_width,
+                    word_wrap,
+                    kind_style,
+                    speaker_stream,
+                    pad,
+                ) {
+                    out.extend(lines);
+                    continue;
+                }
+            }
+            for visual_line in
+                wrap_entry_visual_lines(line, first_prefix, &continuation, content_width, word_wrap)
+            {
                 out.push(Line::from(vec![
                     Span::raw(pad.to_string()),
                     Span::styled(visual_line, kind_style),
@@ -653,4 +722,51 @@ pub(crate) fn draw_input(
     let max_x = inner.x.saturating_add(inner.width.saturating_sub(1));
     let max_y = inner.y.saturating_add(inner.height.saturating_sub(1));
     Some((x.min(max_x), y.min(max_y)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mixed_cjk_prose_does_not_wrap_at_an_unrelated_english_space() {
+        let text = "先检查 Sonarr 当前状态并确认其他剧集未被更改。";
+        for width in [22, 26, 30, 22] {
+            let lines = wrap_entry_visual_lines(text, "• ", "  ", width, true);
+            assert!(lines[0].width() >= width - 1, "{lines:?}");
+            assert!(lines.iter().all(|line| line.width() <= width));
+        }
+        let lines = wrap_entry_visual_lines("one two longerword end", "", "", 10, true);
+        assert_eq!(lines, ["one two", "longerword", "end"]);
+    }
+
+    #[test]
+    fn markdown_styles_survive_wrapping_and_keep_semantic_text_color() {
+        let raw = "先检查 \x1b[1;97mSonarr 当前状态\x1b[0m并确认正常。";
+        for width in [16, 24, 16] {
+            let lines = wrap_styled_entry_lines(
+                raw,
+                "• ",
+                "  ",
+                width,
+                true,
+                Style::default().fg(UCODE_ASSISTANT_TEXT),
+                true,
+                "",
+            )
+            .unwrap();
+            assert!(lines.iter().all(|line| line.width() <= width));
+            assert!(lines.iter().flat_map(|line| &line.spans).any(|span| span
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+                && span.content.contains("Sonarr")));
+            assert!(lines
+                .iter()
+                .flat_map(|line| &line.spans)
+                .skip(1)
+                .filter(|span| !span.content.is_empty())
+                .all(|span| span.style.fg == Some(UCODE_ASSISTANT_TEXT)));
+        }
+    }
 }

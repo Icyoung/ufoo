@@ -6,6 +6,8 @@ function getUfooPaths(projectRoot) {
   const agentDir = path.join(ufooDir, "agent");
   const memoryDir = path.join(ufooDir, "memory");
   const agentsFile = path.join(agentDir, "all-agents.json");
+  const wakeEndpointsFile = path.join(agentDir, "wake-endpoints.json");
+  const wakeReceiptsFile = path.join(busDir, "wake-receipts.json");
   const memoryFile = path.join(memoryDir, "memory.jsonl");
 
   const busQueuesDir = path.join(busDir, "queues");
@@ -33,6 +35,8 @@ function getUfooPaths(projectRoot) {
     agentDir,
     memoryDir,
     agentsFile,
+    wakeEndpointsFile,
+    wakeReceiptsFile,
     memoryFile,
     busQueuesDir,
     busEventsDir,

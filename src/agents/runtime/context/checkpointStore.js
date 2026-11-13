@@ -3,11 +3,13 @@
 const fs = require("fs");
 const path = require("path");
 const { withFileLock } = require("./fileLock");
+const { randomUUID } = require("crypto");
 
 /** Append-only checkpoints also preserve source batches from in-flight turns. */
 function createCheckpointStore({ workspaceRoot, namespace = "ucode", sessionId, redact = value => value } = {}) {
   if (![namespace, sessionId].every(value => /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(value || ""))) throw new Error("invalid checkpoint identity");
   const file = path.join(path.resolve(workspaceRoot), ".ufoo", "agent", namespace, "context", `${sessionId}.jsonl`);
+  const retryFile = file.replace(/\.jsonl$/, ".retry.json");
   const records = () => {
     if (!fs.existsSync(file)) return [];
     const lines = fs.readFileSync(file, "utf8").split("\n");
@@ -17,6 +19,18 @@ function createCheckpointStore({ workspaceRoot, namespace = "ucode", sessionId, 
   return {
     file,
     load: () => records().at(-1)?.checkpoint || null,
+    loadRetryState: () => fs.existsSync(retryFile) ? JSON.parse(fs.readFileSync(retryFile, "utf8")) : null,
+    saveRetryState(state) {
+      return withFileLock(file, () => {
+        const temporary = `${retryFile}.${randomUUID()}.tmp`;
+        try {
+          const fd = fs.openSync(temporary, "wx", 0o600);
+          try { fs.writeSync(fd, JSON.stringify(state)); fs.fsyncSync(fd); }
+          finally { fs.closeSync(fd); }
+          fs.renameSync(temporary, retryFile);
+        } finally { if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
+      });
+    },
     archive: () => records().flatMap(record => record.sourceBatch || []),
     commit(checkpoint, sourceBatch, expectedVersion) {
       return withFileLock(file, () => {
@@ -31,7 +45,7 @@ function createCheckpointStore({ workspaceRoot, namespace = "ucode", sessionId, 
         return true;
       });
     },
-    remove() { if (fs.existsSync(file)) fs.unlinkSync(file); },
+    remove() { for (const entry of [file, retryFile]) if (fs.existsSync(entry)) fs.unlinkSync(entry); },
   };
 }
 

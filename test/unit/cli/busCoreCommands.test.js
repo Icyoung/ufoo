@@ -1,3 +1,6 @@
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const { runBusCoreCommand } = require("../../../src/app/cli/busCoreCommands");
 
 describe("busCoreCommands", () => {
@@ -63,6 +66,33 @@ describe("busCoreCommands", () => {
     const result = await runBusCoreCommand(eventBus, "join", ["s1", "codex", "builder"]);
     expect(eventBus.join).toHaveBeenCalledWith("s1", "codex", "builder");
     expect(result.subscriber).toBe("codex:s1");
+  });
+
+  test("grok-bot join reads the wake key from a file", async () => {
+    const keyFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-wake-key-")), "key");
+    fs.writeFileSync(keyFile, "file-secret\n", { mode: 0o600 });
+    const eventBus = { join: jest.fn().mockResolvedValue("grok-bot:s1") };
+    await runBusCoreCommand(eventBus, "join", [
+      "s1",
+      "grok-bot",
+      "--wake-url",
+      "https://example.com/hook",
+      "--wake-key-file",
+      keyFile,
+    ]);
+    expect(eventBus.join).toHaveBeenCalledWith("s1", "grok-bot", "", {
+      wake: {
+        adapter: "bearer-json",
+        url: "https://example.com/hook",
+        key: "file-secret",
+      },
+    });
+  });
+
+  test("grok-bot join without a wake endpoint fails", async () => {
+    const eventBus = { join: jest.fn() };
+    await expect(runBusCoreCommand(eventBus, "join", ["s1", "grok-bot"])).rejects.toThrow("--wake-url");
+    expect(eventBus.join).not.toHaveBeenCalled();
   });
 
   test("leave command", async () => {

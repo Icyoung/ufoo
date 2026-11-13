@@ -265,6 +265,28 @@ describe('MessageManager', () => {
   });
 
   describe('send', () => {
+    it('queues a wake envelope for a process-less cloud bot', async () => {
+      busData.agents['grok-bot:cloud'] = {
+        agent_type: 'grok-bot',
+        nickname: 'grok-bot-1',
+        status: 'active',
+        launch_mode: 'wake',
+        wake_adapter: 'bearer-json',
+        pid: 0,
+      };
+
+      await manager.send('grok-bot-1', 'Hello', 'sender:123');
+
+      expect(mockQueueManager.appendPending).toHaveBeenCalledWith(
+        'grok-bot:cloud',
+        expect.objectContaining({
+          data: expect.objectContaining({ message: 'Hello' }),
+          delivery: expect.objectContaining({ mode: 'wake', gate: 'none' }),
+          ack: expect.objectContaining({ policy: 'on_consume' }),
+        })
+      );
+    });
+
     it('should send message to single target', async () => {
       const result = await manager.send('architect', 'Hello', 'sender:123');
 

@@ -2,6 +2,7 @@
 
 const { estimateTextTokens, estimateMessagesTokens, summaryMessage, historyDigest, historyUnits, userInstruction } = require("./contextBudget");
 const { resolveModelContextLimit } = require("./contextWindow");
+const { createHash } = require("crypto");
 
 const DEFAULT_CONTEXT_POLICY = Object.freeze({ maxMessages: 50, keepRecentUnits: 6 });
 
@@ -36,13 +37,15 @@ function boundedRequest(work, signal, timeoutMs) {
 function createContextManager({ store = null, policy = {}, now = Date.now } = {}) {
   let checkpoint = null;
   let loaded = false;
-  let retryAt = 0;
+  let retryState = null;
+  const retryBaseMs = Math.max(1, policy.retryDelayMs || 30000);
+  const retryMaxMs = Math.max(retryBaseMs, policy.maxRetryDelayMs || 300000);
   let queue = Promise.resolve();
   const limitOption = policy.limitTokens || Number(process.env.UFOO_CONTEXT_LIMIT_TOKENS) || 0;
 
   async function prepare(input) {
     if (input.signal?.aborted) throw Object.assign(new Error("context compression cancelled"), { code: "cancelled" });
-    if (!loaded) { checkpoint = store?.load() || null; loaded = true; }
+    if (!loaded) { checkpoint = store?.load() || null; retryState = store?.loadRetryState?.() || null; loaded = true; }
     const { messages, model, systemPrompt = "", systemBlocks, tools = [], transport, signal, onPhase, onEvent, request = {} } = input;
     const system = messages.filter(message => message.role === "system");
     const source = messages.filter(message => message.role !== "system");
@@ -56,6 +59,14 @@ function createContextManager({ store = null, policy = {}, now = Date.now } = {}
     const maxItems = policy.maxMessages || DEFAULT_CONTEXT_POLICY.maxMessages;
     const keepUnits = policy.keepRecentUnits || DEFAULT_CONTEXT_POLICY.keepRecentUnits;
     const batchBudget = policy.batchTokens || Math.min(16000, Math.floor(hard / 2));
+    const retryKey = createHash("sha256").update(JSON.stringify([model, request.provider, request.url,
+      transport.name || transport.id, limit, batchBudget, policy.timeoutMs || 30000, retryBaseMs, retryMaxMs])).digest("hex");
+    if (retryState?.key !== retryKey) retryState = null;
+    const saveRetryState = async value => {
+      retryState = value;
+      try { await store?.saveRetryState?.(value); }
+      catch (error) { await onEvent?.("context.compaction.retry_state_failed", { error: error.message }); }
+    };
     const previousVersion = checkpoint?.version || 0;
     let covered = checkpoint?.coveredCount || 0;
     if (covered > source.length || checkpoint && historyDigest(source.slice(0, covered)) !== checkpoint.coveredDigest) {
@@ -94,7 +105,12 @@ function createContextManager({ store = null, policy = {}, now = Date.now } = {}
         if (!unit.complete || cost > batchBudget) break;
         batch = candidate;
       }
-      if (!batch.length || now() < retryAt) break;
+      if (!batch.length) break;
+      if (now() < (retryState?.retryAt || 0)) {
+        await onEvent?.("context.compaction.deferred", { retryAt: retryState.retryAt,
+          retryAfterMs: retryState.retryAt - now(), failures: retryState.failures, coveredCount: covered });
+        break;
+      }
       attempted = true;
       const version = checkpoint?.version || 0;
       const summaryPrompt = JSON.stringify({ previousSummary, sourceStart: covered + 1,
@@ -124,20 +140,24 @@ function createContextManager({ store = null, policy = {}, now = Date.now } = {}
         covered = nextCovered;
         forced = false;
         projected = project();
-        retryAt = 0;
+        await saveRetryState(null);
         await onEvent?.("context.compaction.completed", { version: next.version, coveredCount: covered, batchCount: batch.length,
           durationMs: now() - started, usage: result.usage || {}, sourceArchive: store?.sourceRef || store?.file || "" });
       } catch (error) {
         if (error.code === "stale_checkpoint") loaded = false;
-        retryAt = now() + (policy.retryDelayMs || 2000);
+        const cancelled = error.code === "cancelled" || signal?.aborted === true;
+        const failures = Math.min(16, (retryState?.failures || 0) + 1);
+        const retryDelayMs = Math.min(retryMaxMs, retryBaseMs * 2 ** (failures - 1));
+        if (!cancelled) await saveRetryState({ key: retryKey, failures, retryAt: now() + retryDelayMs });
         await onEvent?.("context.compaction.failed", { error: error.message, code: error.code || "compaction_failed",
-          cancelled: error.code === "cancelled" || signal?.aborted === true, durationMs: now() - started,
+          cancelled, durationMs: now() - started, ...(cancelled ? {} : { retryDelayMs, retryAt: retryState.retryAt, failures }),
           coveredCount: covered, batchCount: batch.length });
         if (error.code === "cancelled" || signal?.aborted) throw error;
         break;
       } finally { onPhase?.({ type: "request_start" }); }
     }
-    if (forced || occupancy(projected) >= hard) throw Object.assign(new Error(attempted ? "context compression failed to create enough space; original history retained" : "context exceeds the configured input budget; original history retained"), { code: "context_budget_exceeded" });
+    if (forced || occupancy(projected) >= hard) throw Object.assign(new Error(attempted ? "context compression failed to create enough space; original history retained" : "context exceeds the configured input budget; original history retained"),
+      { code: "context_budget_exceeded", retryAfterMs: Math.max(0, (retryState?.retryAt || 0) - now()) });
     return { messages: projected, coveredCount: covered, estimatedTokens: overhead + estimateMessagesTokens(projected), maxOutputTokens: reserve, checkpoint };
   }
 

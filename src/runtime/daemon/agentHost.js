@@ -192,6 +192,8 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
     const contextManager = createContextManager({ policy: contextPolicy, store: {
       sourceRef: store.journal,
       load: () => store.read().contextCheckpoint || null,
+      loadRetryState: () => store.read().contextCompactionRetry || null,
+      saveRetryState: retryState => store.append({ type: "context.compaction.retry_state", retryState }),
       commit(checkpoint, sourceBatch, expectedVersion) {
         let committed = false;
         store.transaction(state => {

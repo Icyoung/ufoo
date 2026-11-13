@@ -14,12 +14,13 @@ const {
 } = require("./thinkingLevels");
 
 function resolveModelRuntime(state = {}, options = {}) {
-  // Lazy require: nativeRunner pulls agent/repl paths that can load modelCommand.
-  const { resolveRuntimeConfig } = require("./nativeRunner");
-  return resolveRuntimeConfig({
+  // Resolve the same refreshed auth used for inference, including Codex OAuth.
+  const { resolveAuthenticatedRuntime } = require("../agents/providers/runtimeConfig");
+  return resolveAuthenticatedRuntime({
     workspaceRoot: options.workspaceRoot || process.cwd(),
     provider: options.provider || (state && state.provider) || "",
     model: options.model || (state && state.model) || "",
+    fetchImpl: options.fetchImpl,
   });
 }
 
@@ -55,7 +56,7 @@ function persistThinkingLevel(state = {}, level = "") {
  * Fetch models from the configured provider's /models route.
  */
 async function listUcodeModels(state = {}, options = {}) {
-  const runtime = resolveModelRuntime(state, options);
+  const runtime = await resolveModelRuntime(state, options);
   const listed = await listProviderModels({
     ...runtime,
     fetchImpl: options.fetchImpl,
@@ -130,7 +131,7 @@ async function applyUcodeModelCommand(state = {}, result = {}, options = {}) {
       };
     }
 
-    const runtime = resolveModelRuntime(state, { ...options, model: next });
+    const runtime = await resolveModelRuntime(state, { ...options, model: next });
     const confirmation = await confirmModelSupported({
       ...runtime,
       model: next,

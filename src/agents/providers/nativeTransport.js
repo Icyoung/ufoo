@@ -11,6 +11,12 @@ const { buildResponsesPayload, isResponsesKeepalive, responseEventDelta, parseRe
 
 const DEFAULT_NATIVE_TIMEOUT_MS = 43200000;
 const DEFAULT_NATIVE_CONNECT_TIMEOUT_MS = 10 * 60 * 1000;
+const NATIVE_MAX_RETRIES = 3;
+const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504, 529]);
+const RETRYABLE_CODES = new Set([
+  "ECONNRESET", "ECONNREFUSED", "EPIPE", "ETIMEDOUT", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH",
+  "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT",
+]);
 const DEFAULT_OPENAI_MAX_TOKENS = 32768;
 const DEFAULT_ANTHROPIC_MAX_TOKENS = 32768;
 // Undici otherwise imposes its own 10-second connection deadline, regardless
@@ -275,6 +281,33 @@ function emitPhase(callback, event = {}) {
   }
 }
 
+function isRetryableRequestError(error) {
+  if (RETRYABLE_STATUS.has(error?.status)) return true;
+  for (let current = error, depth = 0; current && depth < 5; current = current.cause, depth += 1) {
+    if (RETRYABLE_CODES.has(current.code)) return true;
+  }
+  return error instanceof TypeError && error.message === "fetch failed" && !error.cause?.code;
+}
+
+function retryDelayMs(response, attempt) {
+  const value = response?.headers?.get?.("retry-after");
+  let requested = Number.NaN;
+  if (value != null && String(value).trim()) {
+    requested = /^\d+(?:\.\d+)?$/.test(value) ? Number(value) * 1000 : Date.parse(value) - Date.now();
+  }
+  return Math.min(30000, Math.max(1000 * 2 ** (attempt - 1), Number.isFinite(requested) ? requested : 0));
+}
+
+function waitForRetry(delayMs, signal) {
+  return new Promise((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener("abort", abort);
+    const abort = () => { clearTimeout(timer); cleanup(); reject(new Error("provider retry cancelled")); };
+    const timer = setTimeout(() => { cleanup(); resolve(); }, delayMs);
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+  });
+}
+
 // Shared SSE transport skeleton: POST the payload, then read the stream as
 // SSE blocks, dispatch each non-[DONE] block to onEvent, and stop after the
 // batch that carried [DONE]. Timeout/cancel translation and request cleanup
@@ -292,67 +325,90 @@ async function runSseRequest({
   buildResult,
 } = {}) {
   const request = createRequestController({ signal, timeoutMs });
-
-  emitPhase(onPhase, { type: "request_start" });
-
   try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload),
-      signal: request.signal,
-      dispatcher: getNativeSseDispatcher(),
-    });
+    for (let attempt = 0; ; attempt += 1) {
+      let response;
+      let reader;
+      // Protocol handlers retain their own accumulators. Once any event has
+      // reached one, replay would duplicate text/tool arguments; stop retrying.
+      let consumed = false;
+      emitPhase(onPhase, { type: "request_start" });
+      try {
+        response = await fetch(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(payload),
+          signal: request.signal,
+          dispatcher: getNativeSseDispatcher(),
+        });
 
-    if (!response.ok) {
-      const body = await response.text().catch(() => "");
-      throw new Error(`provider request failed (${response.status}): ${clipText(body, 500)}`);
-    }
-
-    const contentType = String(response.headers && typeof response.headers.get === "function"
-      ? response.headers.get("content-type") || "" : "");
-    if (/application\/(?:[a-z0-9.+-]*\+)?json\b/i.test(contentType)
-      || !response.body || typeof response.body.getReader !== "function") {
-      const data = await response.json();
-      return onNonStream(data);
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let rawBuffer = "";
-    let sawDone = false;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      rawBuffer += decoder.decode(value, { stream: true });
-      const parsed = parseSseBlocks(rawBuffer);
-      rawBuffer = parsed.rest;
-
-      for (const block of parsed.blocks) {
-        const { event, data } = parseSseEventBlock(block);
-        if (!data) continue;
-        if (data === "[DONE]") {
-          // Stop reading after this batch instead of waiting for the server
-          // to close the connection, but keep the buffered tail and finish
-          // the blocks already parsed alongside [DONE] instead of silently
-          // dropping them.
-          sawDone = true;
-          continue;
+        if (!response.ok) {
+          const body = await response.text().catch(() => "");
+          throw Object.assign(new Error(`provider request failed (${response.status}): ${clipText(body, 500)}`), { status: response.status });
         }
 
-        onEvent({ event, data });
+        const contentType = String(response.headers && typeof response.headers.get === "function"
+          ? response.headers.get("content-type") || "" : "");
+        if (/application\/(?:[a-z0-9.+-]*\+)?json\b/i.test(contentType)
+          || !response.body || typeof response.body.getReader !== "function") {
+          const data = await response.json();
+          consumed = true;
+          return onNonStream(data);
+        }
+
+        reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let rawBuffer = "";
+        let sawDone = false;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          rawBuffer += decoder.decode(value, { stream: true });
+          const parsed = parseSseBlocks(rawBuffer);
+          rawBuffer = parsed.rest;
+
+          for (const block of parsed.blocks) {
+            const { event, data } = parseSseEventBlock(block);
+            if (!data) continue;
+            if (data === "[DONE]") {
+              // Stop reading after this batch instead of waiting for the server
+              // to close the connection, but keep the buffered tail and finish
+              // the blocks already parsed alongside [DONE] instead of silently
+              // dropping them.
+              sawDone = true;
+              continue;
+            }
+
+            consumed = true;
+            onEvent({ event, data });
+          }
+
+          if (sawDone) break;
+        }
+
+        if (typeof onTail === "function") {
+          consumed = consumed || Boolean(rawBuffer.trim());
+          onTail(rawBuffer);
+        }
+
+        return buildResult();
+      } catch (error) {
+        if (request.signal.aborted || consumed || attempt >= NATIVE_MAX_RETRIES || !isRetryableRequestError(error)) throw error;
+        const delayMs = retryDelayMs(response, attempt + 1);
+        emitPhase(onPhase, { type: "retry", attempt: attempt + 1, max_retries: NATIVE_MAX_RETRIES,
+          retry_delay_ms: delayMs, code: error.cause?.code || error.code || "", status: error.status || null });
+        await waitForRetry(delayMs, request.signal);
+      } finally {
+        if (reader) {
+          // A stream source may never settle cancellation. Cleanup must not
+          // hold a completed result or hide the original request failure.
+          try { Promise.resolve(reader.cancel?.()).catch(() => {}); } catch { /* preserve the request result */ }
+          try { reader.releaseLock?.(); } catch { /* preserve the request result */ }
+        }
       }
-
-      if (sawDone) break;
     }
-
-    if (typeof onTail === "function") {
-      onTail(rawBuffer);
-    }
-
-    return buildResult();
   } catch (err) {
     if (request.timedOut()) {
       const timeoutError = new Error(`CLI timeout (${normalizeTimeoutMs(timeoutMs)}ms)`);

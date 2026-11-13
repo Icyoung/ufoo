@@ -33,6 +33,7 @@ function projectEvent(state, event) {
   if (event.type === "runtime.closed") state.owner = null;
   if (event.type === "runtime.binding") state.binding = event.binding;
   if (event.type === "context.checkpoint") state.contextCheckpoint = event.checkpoint;
+  if (event.type === "context.compaction.retry_state") state.contextCompactionRetry = event.retryState;
   if (event.type === "capability.state_committed") state.capabilityState[event.capabilityId] = { version: event.version, value: event.value };
   if (event.type === "command.started") state.commands[event.commandId] = { ...event, status: "uncertain" };
   if (event.type === "command.resolved") Object.assign(state.commands[event.commandId], { status: "resolved", result: event.result });

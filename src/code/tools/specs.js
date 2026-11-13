@@ -152,13 +152,14 @@ function buildCoreToolSpecs() {
             },
             graph: {
               type: "object",
-              description: "Full graph for create (objective + nodes). group is input sugar only.",
+              description: 'Full graph for create (objective + nodes). Tool nodes use {id,type:"tool",tool,args:{...}}; tool parameters belong in args. group is input sugar only.',
             },
             operations: {
               type: "array",
               description: [
                 "Patch ops only: add_node, expand_node, add_dependency, remove_dependency.",
                 "Status actions (complete_task, skip_node, cancel_subtree) belong under control.actions.",
+                'Tool children use {id,type:"tool",tool:"read",args:{path:"AGENTS.md"}}. Use args, not arguments.',
               ].join(" "),
               items: { type: "object" },
             },

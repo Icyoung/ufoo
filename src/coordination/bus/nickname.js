@@ -7,6 +7,7 @@ const AUTO_NICKNAME_PREFIXES = new Set([
   "cursor",
   "agy",
   "grok",
+  "grok-bot",
   "kimi",
   "ucode",
 ]);
@@ -74,11 +75,12 @@ class NicknameManager {
     const prefix = resolveAutoNicknamePrefix(agentType);
 
     // 找出所有相同前缀的昵称
+    const numberPattern = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-(\\d+)$`);
     const existing = Object.values(subscribers)
       .map((meta) => meta.nickname)
       .filter((nick) => nick && nick.startsWith(`${prefix}-`))
       .map((nick) => {
-        const match = nick.match(/^[^-]+-(\d+)$/);
+        const match = String(nick).match(numberPattern);
         return match ? parseInt(match[1], 10) : 0;
       })
       .filter((n) => !isNaN(n));

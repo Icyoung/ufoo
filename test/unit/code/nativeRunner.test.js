@@ -223,12 +223,25 @@ describe("ucode native runner", () => {
     expect(global.fetch.mock.calls[0][1].dispatcher).toBe(mockSseDispatcher);
   });
 
-  test("surfaces the underlying Undici error code when fetch fails", async () => {
+  test("returns completed conversation batches when a later provider request throws", async () => {
+    global.fetch.mockResolvedValueOnce(makeSseResponse([{ choices: [{ delta: { tool_calls: [{ index: 0, id: "read-before-failure", type: "function",
+      function: { name: "read", arguments: '{"path":"a.txt"}' } }] } }] }])).mockRejectedValueOnce(new Error("provider unavailable"));
+    const commits = [];
+    const result = await runNativeAgentTask({ workspaceRoot, prompt: "read a.txt", provider: "openai", model: "gpt-test",
+      onConversationUpdate: update => commits.push(update.turnItems) });
+    expect(result).toMatchObject({ ok: false, error: "provider unavailable", usage: { turns: 1 } });
+    expect(result.turnItems).toHaveLength(2);
+    expect(result.turnItems[1]).toMatchObject({ role: "tool", tool_call_id: "read-before-failure" });
+    expect(commits).toEqual([result.turnItems]);
+    expect(runToolCall).toHaveBeenCalledTimes(1);
+  });
+
+  test("surfaces the underlying Undici error code after retries fail", async () => {
     const cause = Object.assign(new Error("Body Timeout Error"), {
       code: "UND_ERR_BODY_TIMEOUT",
     });
     const fetchError = Object.assign(new TypeError("fetch failed"), { cause });
-    global.fetch.mockRejectedValueOnce(fetchError);
+    global.fetch.mockRejectedValue(fetchError);
 
     const result = await runNativeAgentTask({
       workspaceRoot,
@@ -239,6 +252,24 @@ describe("ucode native runner", () => {
 
     expect(result.ok).toBe(false);
     expect(result.error).toBe("fetch failed (UND_ERR_BODY_TIMEOUT: Body Timeout Error)");
+    expect(global.fetch).toHaveBeenCalledTimes(4);
+  }, 10000);
+
+  test("network retries preserve prior tool results without executing the tool again", async () => {
+    const reset = Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNRESET", message: "connection reset" } });
+    global.fetch
+      .mockResolvedValueOnce(makeSseResponse([{ choices: [{ delta: { tool_calls: [{ index: 0, id: "read-once", type: "function",
+        function: { name: "read", arguments: '{"path":"a.txt"}' } }] } }] }]))
+      .mockRejectedValueOnce(reset)
+      .mockResolvedValueOnce(makeSseResponse([{ choices: [{ delta: { content: "done" } }] }]));
+    const result = await runNativeAgentTask({ workspaceRoot, prompt: "read a.txt", provider: "openai", model: "gpt-test" });
+    expect(result.ok).toBe(true);
+    expect(runToolCall).toHaveBeenCalledTimes(1);
+    expect(global.fetch).toHaveBeenCalledTimes(3);
+    expect(global.fetch.mock.calls[1][1].body).toBe(global.fetch.mock.calls[2][1].body);
+    expect(JSON.parse(global.fetch.mock.calls[2][1].body).messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "tool", tool_call_id: "read-once" }),
+    ]));
   });
 
   test("streams Grok Build through Responses with CLIProxyAPI identity and session id", async () => {
@@ -449,11 +480,14 @@ describe("ucode native runner", () => {
         .mockReturnValueOnce({ ok: true, content: "note" })
         .mockReturnValueOnce(imageResult("a.png", "QUFB"));
 
+      const imageCommits = [];
       const result = await runNativeAgentTask({
         workspaceRoot, prompt: "inspect images", model: "test-model",
         provider: anthropic ? "anthropic" : "openai",
+        onConversationUpdate: update => imageCommits.push(update.turnItems.map(message => message.role)),
       });
       expect(result.ok).toBe(true);
+      for (const committedRoles of imageCommits) expect(result.turnItems.slice(0, committedRoles.length).map(message => message.role)).toEqual(committedRoles);
       const requests = global.fetch.mock.calls.map(([, options]) => JSON.parse(options.body));
       expect(requests).toHaveLength(5);
       const visuals = (value) => {

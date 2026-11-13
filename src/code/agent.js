@@ -486,6 +486,18 @@ function buildNlFallbackSummary(logs = []) {
   return "Done (no model text response).";
 }
 
+function commitConversationOutput(state, workspaceRoot, turnId, update = {}) {
+  const items = Array.isArray(update.turnItems) ? update.turnItems : [];
+  const appended = appendTurnMessages(workspaceRoot, state.sessionId, turnId, items, { scope: "output" });
+  if (!appended.ok) throw Object.assign(new Error(`failed to persist conversation output: ${appended.error}`), { code: "conversation_persistence_failed" });
+  if (update.executionState) state.executionState = update.executionState;
+  const transcript = loadTranscript(workspaceRoot, state.sessionId);
+  state.transcriptEvents = transcript.events;
+  state.nlMessages = stripSkillBlocksFromMessages(transcriptEventsToMessages(transcript.events, { preferArtifact: true }));
+  const saved = persistSessionState(state);
+  if (saved?.ok === false) throw Object.assign(new Error(`failed to persist session progress: ${saved.error}`), { code: "conversation_persistence_failed" });
+}
+
 async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
   const taskText = String(task || "").trim();
   if (!taskText) {
@@ -664,6 +676,7 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
       onContextUsage: applyContextMeter,
       executionState: state.executionState || null,
       onArtifactPersisted: (persisted) => recordToolCallInSession(state, persisted, workspaceRoot),
+      onConversationUpdate: (update) => commitConversationOutput(state, workspaceRoot, turnId, update),
       contextPolicy: state.contextPolicy || {},
       runtimeContext: options.runtimeContext || {},
       onRuntimeEvent: options.onRuntimeEvent,
@@ -724,6 +737,7 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
         systemBlocks: assembled.systemBlocks || null,
         runtimeContext: options.runtimeContext || {},
         onRuntimeEvent: options.onRuntimeEvent,
+        onConversationUpdate: (update) => commitConversationOutput(state, workspaceRoot, turnId, update),
         onStreamDelta: onStream,
         onThinkingDelta,
         onPhase,
@@ -751,9 +765,11 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
 
       if (!cliRes || cliRes.ok === false) {
         const errMsg = String((cliRes && cliRes.error) || "");
-        // Only replay the whole task when this attempt ran no tool calls;
-        // retrying after executed write/edit/bash steps would replay side effects.
-        if (isCliTimeoutError(errMsg) && toolEventsThisAttempt === 0) {
+        // Whole-invocation retry is safe only before any execution or output.
+        // A committed assistant message must keep its existing journal indices.
+        const hasProgress = streamed || cliRes?.streamed || Boolean(String(cliRes?.output || "").trim())
+          || Boolean(cliRes?.turnItems?.length);
+        if (isCliTimeoutError(errMsg) && toolEventsThisAttempt === 0 && !hasProgress) {
           const extendedTimeoutMs = computeExtendedTimeout(timeoutMs);
           cliRes = await invokeNative(String(state.sessionId || ""), extendedTimeoutMs);
         }
@@ -788,6 +804,22 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
       transcriptEventsToMessages(transcript.events, { preferArtifact: true }),
     );
 
+    // The turn coordinator owns session identity. Providers/runners receive it
+    // as correlation metadata but cannot redirect durable writes mid-turn.
+    if (cliRes && cliRes.executionState && typeof cliRes.executionState === "object") {
+      // Preserve planMode if the runner returned a fresh empty state without it.
+      const priorPlanMode = Boolean(state.executionState && state.executionState.planMode);
+      const priorSource = state.executionState && state.executionState.planModeSource
+        ? String(state.executionState.planModeSource)
+        : "";
+      state.executionState = cliRes.executionState;
+      if (typeof state.executionState.planMode !== "boolean") {
+        state.executionState.planMode = priorPlanMode;
+      }
+      if (!state.executionState.planModeSource && priorSource) {
+        state.executionState.planModeSource = priorSource;
+      }
+    }
     if (!cliRes || cliRes.ok === false) {
       const errMsg = String((cliRes && cliRes.error) || "");
       if (isCliCancelledError(errMsg) && state.executionState) {
@@ -804,22 +836,6 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
         streamed: Boolean(streamed || (cliRes && cliRes.streamed)),
         streamLastChar,
       };
-    }
-    // The turn coordinator owns session identity. Providers/runners receive it
-    // as correlation metadata but cannot redirect durable writes mid-turn.
-    if (cliRes && cliRes.executionState && typeof cliRes.executionState === "object") {
-      // Preserve planMode if the runner returned a fresh empty state without it.
-      const priorPlanMode = Boolean(state.executionState && state.executionState.planMode);
-      const priorSource = state.executionState && state.executionState.planModeSource
-        ? String(state.executionState.planModeSource)
-        : "";
-      state.executionState = cliRes.executionState;
-      if (typeof state.executionState.planMode !== "boolean") {
-        state.executionState.planMode = priorPlanMode;
-      }
-      if (!state.executionState.planModeSource && priorSource) {
-        state.executionState.planModeSource = priorSource;
-      }
     }
     const normalized = String(cliRes.output || "").trim();
     const sideEffects = parseStructuredSideEffects(normalized);
@@ -1197,6 +1213,7 @@ async function resumeAfterUserInteraction(answerText = "", state = {}, options =
     contextPolicy: state.contextPolicy || {},
     runtimeContext: options.runtimeContext || {},
     onRuntimeEvent: options.onRuntimeEvent,
+    onConversationUpdate: (update) => commitConversationOutput(state, workspaceRoot, turnId, update),
     onThinkingDelta: typeof options.onThinkingDelta === "function" ? options.onThinkingDelta : null,
     onPhase: typeof options.onPhase === "function" ? options.onPhase : null,
     onContextUsage: (meter) => {

@@ -1825,6 +1825,7 @@ async function runCli(argv) {
     console.log("  ufoo online connect --nickname <name> [--join <ch>] [--room <id> --room-password <pwd>] [...]");
     console.log("  ufoo online send --nickname <name> --text <msg> [--channel <ch>] [--room <id>]");
     console.log("  ufoo online inbox <nickname> [--clear] [--unread]");
+    console.log("  ufoo bus join <session> <agent-type> [nickname] --wake-url <url> --wake-key-file <path> [--wake-adapter bearer-json]");
     console.log("  ufoo bus wake <target> [--reason <reason>] [--no-shake]");
     console.log("  ufoo bus poll [subscriber] [--ack | --follow --interval <seconds>]");
     console.log("  ufoo bus ack <subscriber> [--through <seq>]");

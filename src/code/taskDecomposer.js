@@ -166,6 +166,7 @@ async function runDecomposedTask({
   systemBlocks = null,
   runtimeContext = {},
   onRuntimeEvent = null,
+  onConversationUpdate = null,
   onStreamDelta = null,
   onThinkingDelta = null,
   onPhase = null,
@@ -236,6 +237,8 @@ async function runDecomposedTask({
         runtimeContext: inherited.taskRunId ? { ...inherited, parentTaskRunId: inherited.taskRunId,
           taskRunId: `segment-${randomUUID()}`, requestId: `${inherited.requestId || "step"}:${step.id}`, attemptId: `attempt-${randomUUID()}` } : inherited,
         onRuntimeEvent,
+        onConversationUpdate: onConversationUpdate
+          ? update => onConversationUpdate({ ...update, turnItems: [...turnItems, ...update.turnItems] }) : null,
         onStreamDelta,
         onThinkingDelta,
         onPhase,

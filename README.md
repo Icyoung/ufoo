@@ -406,6 +406,21 @@ second command catalog. Initialization and unified status are handled by
 
 ### Event Bus
 
+External HTTP agents can register a wake endpoint, including `grok-bot`:
+
+```bash
+ufoo bus join my-session grok-bot --wake-url https://agent.example/wake --wake-key-file /path/to/wake-key
+```
+
+The `bearer-json` adapter sends a bearer-authenticated JSON request containing
+`project_root`, `subscriber`, `seq`, `publisher`, and `message`. The endpoint
+must return HTTP 200 after accepting the work. The receiver acknowledges its
+queue with `ufoo bus ack <subscriber> --through <seq>` after handling it; later
+messages wait for that acknowledgement. Failed requests remain queued for retry.
+Requests have a ten-second deadline and do not follow redirects. HTTPS is
+required except for loopback HTTP. Endpoint keys stay in a mode-600 local file.
+Wake registrations have no local PID or terminal ownership.
+
 ```text
 /bus list
 /bus status

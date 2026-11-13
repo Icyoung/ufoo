@@ -156,6 +156,46 @@ function resolveRuntimeConfig({ workspaceRoot = process.cwd(), provider = "", mo
   };
 }
 
+// Model discovery and inference must resolve the same credentials and URL.
+// The synchronous resolver alone cannot refresh subscription credentials.
+async function resolveAuthenticatedRuntime(options = {}) {
+  const runtime = resolveRuntimeConfig(options);
+  const workspaceRoot = options.workspaceRoot || process.cwd();
+  let accountId = "";
+  if (runtime.provider === "codex" && !runtime.apiKey) {
+    try {
+      const config = loadConfig(workspaceRoot) || {};
+      const { resolveCodexUpstreamCredentials } = require("./credentials/codex");
+      const credential = await resolveCodexUpstreamCredentials({
+        authPath: config.codexAuthPath,
+        refreshWindowMs: Number(config.codexOauthRefreshWindowSec || 300) * 1000,
+        env: process.env,
+        ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+      });
+      const token = String(credential && (credential.accessToken || credential.apiKey) || "").trim();
+      if (token) {
+        runtime.apiKey = token;
+        runtime.apiKeySource = String(credential.source || "codex-credential");
+      }
+      if (credential?.credentialKind === "api-key"
+        && !String(process.env.UFOO_UCODE_BASE_URL || "").trim()
+        && !String(config.ucodeBaseUrl || "").trim()) {
+        runtime.baseUrl = String(process.env.OPENAI_BASE_URL || DEFAULT_OPENAI_BASE_URL).trim();
+      }
+      if (credential?.credentialKind === "oauth") accountId = String(credential.accountId || "").trim();
+    } catch { /* Requests surface missing/invalid credentials. */ }
+  }
+  if (runtime.provider === "kimi" && runtime.apiKeySource === "kimi-credential" && runtime.kimiCredentialState !== "fresh") {
+    try {
+      const { resolveKimiUpstreamCredentials } = require("./credentials/kimi");
+      const credential = await resolveKimiUpstreamCredentials({ env: process.env,
+        ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}) });
+      if (credential?.accessToken) runtime.apiKey = String(credential.accessToken).trim();
+    } catch { /* Retain the file token; requests surface auth failures. */ }
+  }
+  return { ...runtime, accountId, requestHeaders: accountId ? { "chatgpt-account-id": accountId } : {} };
+}
+
 function resolveCompletionUrl(baseUrl = "") {
   const raw = String(baseUrl || "").trim();
   if (!raw) return "";
@@ -185,4 +225,4 @@ function resolveAnthropicMessagesUrl(baseUrl = "") {
   return `${normalized}/messages`;
 }
 
-module.exports = { normalizeProvider, normalizeKimiModel, resolveTransport, resolveRuntimeConfig, resolveCompletionUrl, resolveResponsesUrl, resolveAnthropicMessagesUrl, DEFAULT_OPENAI_BASE_URL };
+module.exports = { normalizeProvider, normalizeKimiModel, resolveTransport, resolveRuntimeConfig, resolveAuthenticatedRuntime, resolveCompletionUrl, resolveResponsesUrl, resolveAnthropicMessagesUrl, DEFAULT_OPENAI_BASE_URL };

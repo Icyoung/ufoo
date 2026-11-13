@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { getTimestamp, isAgentPidAlive, isMetaActive, isValidTty, getTtyProcessInfo, normalizeAgentTypeAlias } = require("./utils");
+const { isWakeMeta, removeWakeEndpoint, writeWakeEndpoint } = require("./wakeEndpoint");
 const NicknameManager = require("./nickname");
 const { isMismatchedAutoNickname } = require("./nickname");
 const { spawnSync } = require("child_process");
@@ -280,9 +281,10 @@ class SubscriberManager {
         : (existingMeta?.scoped_nickname || finalNickname);
     }
 
-    const explicitLaunchMode = typeof options.launchMode === "string"
-      ? options.launchMode.trim()
-      : "";
+    const wakeJoin = options.wake && typeof options.wake === "object";
+    const explicitLaunchMode = wakeJoin
+      ? "wake"
+      : (typeof options.launchMode === "string" ? options.launchMode.trim() : "");
     const envLaunchMode = typeof process.env.UFOO_LAUNCH_MODE === "string"
       ? process.env.UFOO_LAUNCH_MODE.trim()
       : "";
@@ -296,18 +298,18 @@ class SubscriberManager {
     const overrideTty = (typeof options.tty === "string" && isValidTty(options.tty.trim()))
       ? options.tty.trim()
       : "";
-    const detectedTty = hasOverrideTty ? overrideTty : getTtyPath();
+    const detectedTty = wakeJoin ? "" : (hasOverrideTty ? overrideTty : getTtyPath());
     const tty = overrideTty || (isValidTty(detectedTty) ? detectedTty : "");
     const preservedTty = !tty && launchMode !== "internal" && isValidTty(existingMeta?.tty)
       ? existingMeta.tty
       : "";
-    const finalTty = tty || preservedTty;
+    const finalTty = wakeJoin ? "" : (tty || preservedTty);
     const ttyInfo = finalTty ? getTtyProcessInfo(finalTty) : null;
 
     // 清理同一 tty 的旧订阅者（避免重复启动污染）
     // Inherit nickname from displaced entry when this is a new subscriber
     // with no explicit nickname (e.g. session restart on same TTY)
-    const inheritedNickname = await this.cleanupDuplicateTty(subscriber, finalTty, { agentType });
+    const inheritedNickname = wakeJoin ? null : await this.cleanupDuplicateTty(subscriber, finalTty, { agentType });
     if (inheritedNickname && !nickname && !existingMeta) {
       finalNickname = inheritedNickname;
       if (!finalScopedNickname) finalScopedNickname = inheritedNickname;
@@ -320,7 +322,7 @@ class SubscriberManager {
     const explicitTmuxPane = typeof options.tmuxPane === "string" ? options.tmuxPane.trim() : "";
     const envTmuxPane = typeof process.env.TMUX_PANE === "string" ? process.env.TMUX_PANE.trim() : "";
     const preservedTmuxPane = typeof existingMeta?.tmux_pane === "string" ? existingMeta.tmux_pane.trim() : "";
-    const tmuxPane = explicitTmuxPane || envTmuxPane || preservedTmuxPane;
+    const tmuxPane = wakeJoin ? "" : (explicitTmuxPane || envTmuxPane || preservedTmuxPane);
 
     const hostInjectSock = typeof options.hostInjectSock === "string"
       ? options.hostInjectSock.trim()
@@ -348,12 +350,23 @@ class SubscriberManager {
       activity_since: getTimestamp(),
       joined_at: existingMeta?.joined_at || getTimestamp(),
       last_seen: getTimestamp(),
-      pid: overridePid || getJoinedPid(),
-      tty: finalTty,
+      pid: wakeJoin ? 0 : (overridePid || getJoinedPid()),
+      tty: wakeJoin ? "" : finalTty,
       tty_shell_pid: ttyInfo?.shellPid || 0,
       tmux_pane: tmuxPane,
       launch_mode: launchMode,
+      ...(wakeJoin ? { activity_state: "idle" } : {}),
     };
+    if (wakeJoin) {
+      try {
+        const saved = writeWakeEndpoint(options.projectRoot, subscriber, options.wake);
+        this.busData.agents[subscriber].wake_adapter = saved.adapter;
+      } catch (error) {
+        if (existingMeta) this.busData.agents[subscriber] = existingMeta;
+        else delete this.busData.agents[subscriber];
+        throw error;
+      }
+    }
 
     if (hostInjectSock) {
       this.busData.agents[subscriber].host_inject_sock = hostInjectSock;
@@ -412,7 +425,7 @@ class SubscriberManager {
   /**
    * 离开总线
    */
-  async leave(subscriber) {
+  async leave(subscriber, options = {}) {
     if (!this.busData.agents || !this.busData.agents[subscriber]) {
       return false;
     }
@@ -420,6 +433,7 @@ class SubscriberManager {
     this.busData.agents[subscriber].status = "inactive";
     this.busData.agents[subscriber].activity_state = "";
     this.busData.agents[subscriber].last_seen = getTimestamp();
+    if (options.projectRoot) removeWakeEndpoint(options.projectRoot, subscriber);
     this.cleanupSubscriberArtifacts(subscriber);
 
     return true;
@@ -485,6 +499,7 @@ class SubscriberManager {
     if (!this.busData.agents) return;
 
     for (const [id, meta] of Object.entries(this.busData.agents)) {
+      if (isWakeMeta(meta)) continue;
       if (isManagedMcpRegistration(meta)) {
         const expiresAtMs = Date.parse(String(meta.mcp_lease_expires_at || ""));
         const expired = !Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now();

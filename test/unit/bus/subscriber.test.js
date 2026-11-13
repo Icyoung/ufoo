@@ -24,6 +24,50 @@ describe('SubscriberManager', () => {
   });
 
   describe('join', () => {
+    it('registers a wake agent without putting the key on the agent record', async () => {
+      const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ufoo-wake-join-'));
+      const cleanup = jest.spyOn(manager, 'cleanupDuplicateTty');
+      try {
+        const result = await manager.join('abc12345', 'grok-bot', '', {
+          projectRoot,
+          tty: '/dev/ttys003',
+          tmuxPane: '%3',
+          wake: { url: 'https://example.com/hook', key: 'sender-secret' },
+        });
+
+        expect(result.subscriber).toBe('grok-bot:abc12345');
+        expect(result.nickname).toBe('grok-bot-1');
+        const meta = busData.agents[result.subscriber];
+        expect(meta).toMatchObject({
+          launch_mode: 'wake',
+          wake_adapter: 'bearer-json',
+          pid: 0,
+          tty: '',
+          tmux_pane: '',
+          activity_state: 'idle',
+          status: 'active',
+        });
+        expect(JSON.stringify(meta)).not.toContain('sender-secret');
+        expect(cleanup).not.toHaveBeenCalled();
+
+        const stored = JSON.parse(fs.readFileSync(
+          path.join(projectRoot, '.ufoo', 'agent', 'wake-endpoints.json'),
+          'utf8'
+        ));
+        expect(stored.endpoints[result.subscriber].key).toBe('sender-secret');
+
+        await manager.leave(result.subscriber, { projectRoot });
+        expect(busData.agents[result.subscriber].status).toBe('inactive');
+        const after = JSON.parse(fs.readFileSync(
+          path.join(projectRoot, '.ufoo', 'agent', 'wake-endpoints.json'),
+          'utf8'
+        ));
+        expect(after.endpoints[result.subscriber]).toBeUndefined();
+      } finally {
+        fs.rmSync(projectRoot, { recursive: true, force: true });
+      }
+    });
+
     it('should join with auto-generated nickname', async () => {
       const result = await manager.join('abc123', 'claude-code');
 
@@ -478,6 +522,21 @@ describe('SubscriberManager', () => {
         activity_state: '',
       });
       expect(busData.agents['codex:expired-mcp'].mcp_revoked_at).toBeDefined();
+    });
+
+    it('keeps a wake registration active without a process', () => {
+      busData.agents['grok-bot:cloud'] = {
+        agent_type: 'grok-bot',
+        status: 'active',
+        launch_mode: 'wake',
+        wake_adapter: 'bearer-json',
+        pid: 0,
+        last_seen: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+      };
+
+      manager.cleanupInactive();
+
+      expect(busData.agents['grok-bot:cloud'].status).toBe('active');
     });
 
     it('should mark dead PIDs as inactive', async () => {

@@ -109,6 +109,7 @@ function runCoreToolUnlocked({
     const result = runPlanGraphCommand(safeArgs, {
       executionState: state,
       autoAdvance: true,
+      validateToolArgs: true,
       parallel: true,
       runTool: ({ node, args: nestedArgs, tool: nestedTool, stepId }) => {
         const nested = runCoreTool({

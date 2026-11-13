@@ -18,6 +18,48 @@ const {
 } = require("../../../src/code/context/planGraph");
 
 describe("plan_graph control-plane tool", () => {
+  test("rejects misspelled tool arguments before mutating a child plan, then accepts the corrected command", () => {
+    const state = emptyExecutionState();
+    runPlanGraphCommand({ operation: "create", graph: { nodes: [{ id: "root", type: "task", objective: "检查规则", execution: "expand" }] } }, { executionState: state });
+    const before = JSON.stringify(state);
+    const runTool = jest.fn(() => ({ ok: true, content: "rules" }));
+    const command = { operation: "patch", operations: [{ op: "expand_node", nodeId: "root", children: [
+      { id: "rules", type: "tool", tool: "read", arguments: { path: "AGENTS.md" } },
+    ] }] };
+    const rejected = runPlanGraphCommand(command, { executionState: state, runTool, validateToolArgs: true });
+    expect(rejected).toMatchObject({ status: "rejected", errors: [expect.objectContaining({
+      code: "INVALID_NODE_ARGUMENTS", field: "operations[0].children[0].arguments", message: expect.stringContaining(".args"),
+    })] });
+    expect(JSON.stringify(state)).toBe(before);
+    expect(runTool).not.toHaveBeenCalled();
+    command.operations[0].children[0].args = command.operations[0].children[0].arguments;
+    delete command.operations[0].children[0].arguments;
+    expect(runPlanGraphCommand(command, { executionState: state, runTool, validateToolArgs: true }).ok).toBe(true);
+    expect(runTool).toHaveBeenCalledTimes(1);
+    expect(runTool.mock.calls[0][0].args).toEqual({ path: "AGENTS.md" });
+  });
+
+  test("missing required graph tool parameters are rejected before execution", () => {
+    const runTool = jest.fn();
+    const result = runPlanGraphCommand({ operation: "create", graph: { nodes: [{ id: "bad", type: "tool", tool: "read", args: {} }] } },
+      { executionState: emptyExecutionState(), runTool, validateToolArgs: true });
+    expect(result).toMatchObject({ status: "rejected", errors: [expect.objectContaining({ field: "graph.nodes[0].args.path", code: "MISSING_TOOL_ARGUMENT" })] });
+    expect(runTool).not.toHaveBeenCalled();
+  });
+
+  test("failed-node inspection exposes the actual error and read-only recovery guidance", () => {
+    const state = emptyExecutionState();
+    const result = runPlanGraphCommand({ operation: "create", graph: { nodes: [
+      { id: "read", type: "tool", tool: "read", args: { path: "missing.md" } },
+      { id: "after", type: "checkpoint", dependsOn: ["read"] },
+    ] } }, { executionState: state, runTool: () => ({ ok: false, error: "ENOENT: missing.md" }) });
+    expect(result.advance.failedNodes).toEqual(expect.arrayContaining([expect.objectContaining({ id: "read", error: "ENOENT: missing.md" })]));
+    const inspected = runPlanGraphCommand({ operation: "inspect" }, { executionState: state });
+    expect(inspected.nodes.find(node => node.id === "read").error).toBe("ENOENT: missing.md");
+    expect(inspected.recovery).toMatchObject({ needed: true, hint: expect.stringContaining("Inspect is read-only") });
+    expect(inspected.recovery.failures).toEqual(expect.arrayContaining([expect.objectContaining({ nodeId: "read", error: "ENOENT: missing.md" })]));
+  });
+
   test("TOOL_NAMES includes plan_graph and task_run without plan_mode tool", () => {
     expect(TOOL_NAMES).toEqual([
       "read",

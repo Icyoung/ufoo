@@ -950,6 +950,7 @@ function startDaemon({
   if (manageProcessState) writePid(projectRoot);
 
   const logFile = fs.createWriteStream(logPath(projectRoot), { flags: "a" });
+  logFile.on("error", () => {});
   const formatLogLine = (msg) => `[daemon] ${new Date().toISOString()} ${msg}\n`;
   const log = (msg) => {
     logFile.write(formatLogLine(msg));

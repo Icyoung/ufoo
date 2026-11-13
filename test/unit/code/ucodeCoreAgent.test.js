@@ -212,6 +212,31 @@ describe("ucode core agent nl path", () => {
     expect(set.output).toContain("not-a-real-model");
   });
 
+  test("model discovery uses the same Codex OAuth token and account as inference", async () => {
+    const { listUcodeModels } = require("../../../src/code/modelCommand");
+    const credentials = require("../../../src/agents/providers/credentials/codex");
+    const resolve = jest.spyOn(credentials, "resolveCodexUpstreamCredentials").mockResolvedValue({
+      credentialKind: "oauth", accessToken: "test-subscription-token", accountId: "test-account", source: "test",
+    });
+    const saved = {};
+    for (const key of ["OPENAI_API_KEY", "UFOO_UCODE_API_KEY", "UFOO_UCODE_BASE_URL", "UFOO_CODEX_BASE_URL"]) {
+      saved[key] = process.env[key]; delete process.env[key];
+    }
+    try {
+      const fetchImpl = jest.fn(async () => new Response(JSON.stringify({ models: [{ slug: "test-model", visibility: "list" }] })));
+      const listed = await listUcodeModels({ provider: "codex", model: "test-model" }, { fetchImpl, skipCache: true });
+      expect(listed).toMatchObject({ ok: true, models: ["test-model"] });
+      expect(fetchImpl.mock.calls[0][0]).toContain("https://chatgpt.com/backend-api/codex/models");
+      expect(fetchImpl.mock.calls[0][1].headers).toMatchObject({ Authorization: "Bearer test-subscription-token", "chatgpt-account-id": "test-account" });
+      expect(resolve).toHaveBeenCalledTimes(1);
+    } finally {
+      resolve.mockRestore();
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+    }
+  });
+
   test("ucode accepts a model omitted from a custom Claude URL's catalog", async () => {
     const { applyUcodeModelCommand } = require("../../../src/code/modelCommand");
     const previousBaseUrl = process.env.UFOO_UCODE_BASE_URL;
@@ -642,6 +667,30 @@ describe("ucode core agent nl path", () => {
     expect(result.streamed).toBe(true);
     expect(result.streamLastChar).toBe("2");
     expect(state.sessionId).toMatch(/^ucode-/);
+  });
+
+  test("completed batches are recoverable from disk before an invocation exits abnormally", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-incremental-conversation-"));
+    const state = { workspaceRoot: root, provider: "openai", model: "gpt-test", sessionId: "session-progress" };
+    const items = [{ role: "assistant", content: null, tool_calls: [{ id: "saved-write", type: "function", function: { name: "write", arguments: '{}' } }] },
+      { role: "tool", tool_call_id: "saved-write", content: '{"ok":true}' }];
+    try {
+      const result = await runNaturalLanguageTask("保存文件", state, { runNativeAgentImpl: async options => {
+        await options.onConversationUpdate({ turnItems: items, executionState: state.executionState });
+        const restored = {};
+        expect(resumeSessionState(restored, state.sessionId, root).ok).toBe(true);
+        expect(restored.nlMessages).toEqual(expect.arrayContaining([expect.objectContaining({ role: "tool", tool_call_id: "saved-write" })]));
+        throw new Error("unexpected provider exception");
+      } });
+      expect(result.ok).toBe(false);
+      const restored = {};
+      expect(resumeSessionState(restored, state.sessionId, root).ok).toBe(true);
+      await runNaturalLanguageTask("继续", restored, { runNativeAgentImpl: async options => {
+        expect(options.messages).toEqual(expect.arrayContaining([expect.objectContaining({ role: "tool", tool_call_id: "saved-write" })]));
+        return { ok: true, output: "已确认", turnItems: [{ role: "assistant", content: "已确认" }] };
+      } });
+      expect(restored.nlMessages.filter(message => message.role === "tool")).toHaveLength(1);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
   });
 
   test("runNaturalLanguageTask persists native message history across turns", async () => {
@@ -1255,6 +1304,22 @@ describe("ucode core agent nl path", () => {
     expect(result.ok).toBe(true);
     expect(result.summary).toBe("done after retry");
     expect(state.sessionId).toMatch(/^ucode-/);
+  });
+
+  test.each([false, true])("timeout does not replay an invocation with output (committed=%s)", async committed => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-timeout-progress-"));
+    const items = [{ role: "assistant", content: "已记录阶段结果" }];
+    const state = { workspaceRoot: root, provider: "openai", model: "gpt-test", sessionId: "timeout-progress", timeoutMs: 300000 };
+    const run = jest.fn(async options => {
+      if (committed) await options.onConversationUpdate({ turnItems: items, executionState: state.executionState });
+      return { ok: false, error: "CLI timeout (300000ms)", output: committed ? "" : "partial output",
+        turnItems: committed ? items : [] };
+    });
+    try {
+      expect((await runNaturalLanguageTask("继续任务", state, { runNativeAgentImpl: run })).ok).toBe(false);
+      expect(run).toHaveBeenCalledTimes(1);
+      if (committed) expect(state.nlMessages.filter(message => message.role === "assistant")).toHaveLength(1);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
   });
 
   test("runNaturalLanguageTask does not replay a timed-out attempt that already ran tools", async () => {

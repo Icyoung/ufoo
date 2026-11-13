@@ -46,6 +46,12 @@ explicit CLI options take precedence.
 Native provider HTTP connections allow ten minutes to establish instead of
 Undici's implicit ten seconds. Task deadlines and explicit cancellation still
 bound requests; SSE headers/body idle timeouts remain disabled.
+Transient connection failures and HTTP 408/429/500/502/503/504/529 retry up to
+three times with exponential backoff and bounded `Retry-After`, within the
+original request deadline. Retries stop once a protocol event has been consumed,
+so partial streams and completed tools are never replayed by this transport.
+Native inference and `/model` discovery share refreshed credential resolution,
+including the Codex subscription token and account header.
 
 The main agent and native/internal `ucode` share checkpoint-based conversation
 compression in `src/agents/runtime/context/`. Before each model call, it checks
@@ -61,6 +67,20 @@ live in `.ufoo/agent/ucode/context/<sessionId>.jsonl`. Canonical transcripts and
 tool artifacts remain available. Provider context-overflow errors get one
 compression retry; failed compression never silently drops history. Codex and
 Claude SDK worker sessions retain their SDK-managed context behavior.
+Failed native compression attempts back off from 30 seconds to five minutes,
+with retry state preserved across invocations (`<sessionId>.retry.json` for
+ucode, the main runtime journal for main agents). During cooldown a request
+within its hard token budget keeps the original history; an over-budget request
+stops with the history intact.
+
+Native ucode commits each complete model/tool batch through the shared loop's
+awaited `onConversationUpdate` port before requesting another model turn.
+Incremental and final journal writes share turn/scope idempotency keys. Provider
+failure, cancellation and tool-budget errors retain completed conversation units;
+an interrupted tool batch retains its ledger without inventing tool results.
+Plan Graph commands reject misspelled `arguments` fields and missing required
+tool parameters before execution; failed-node inspection includes errors and
+recovery guidance.
 
 Agent execution is observable through `ufoo trace [task-id] --json`,
 `ufoo trace --agent <id-or-nickname> --follow`, the read-only MCP tool
@@ -294,6 +314,11 @@ inside the MCP call; Cursor hosts match the general `[ufoo]` delivery prefix,
 and shell poll startup/idle paths remain output-silent. A helper-terminal
 export happens only after external registration and must not be reused as
 evidence that the host Agent was wrapper-launched.
+
+HTTP wake registrations use the `bearer-json` adapter and a separate protected
+endpoint store. The scheduler holds the queue head until consumer acknowledgement,
+bounds HTTP requests to ten seconds and rejects redirects. Registration and receipt
+writes share the coordination file locks; wake agents never take over a TTY.
 
 `dispatch_message` confirms queue persistence, with `delivery_status=queued`,
 `queued=<target count>`, and `delivered=0` in both injection modes. It does not

@@ -17,7 +17,7 @@ const {
 } = require("../code/UcodeController");
 const { createEnvelope, encodeMessage } = require("../runtime/contracts/uiProtocol");
 const fmt = require("./format");
-const { createAgentSurface } = require("./agentSurface");
+const { createAgentSurface, projectSurfaceEvent } = require("./agentSurface");
 const { buildPlanSetPayload, statusForAgentPhase } = require("./agentPresentation");
 const PACKAGE_VERSION = require("../../package.json").version;
 
@@ -219,9 +219,9 @@ async function runUcodeRust(props = {}) {
   });
 
   function publish(name, payload) {
-    surface.apply(name, payload);
+    const projected = projectSurfaceEvent(surface, name, payload);
     if (!hostRef) return;
-    hostRef.broadcast(hostRef.createEvent(name, payload, {
+    hostRef.broadcast(hostRef.createEvent(projected.name, projected.payload, {
       surface: "ucode",
       project_id: workspaceRoot,
     }));

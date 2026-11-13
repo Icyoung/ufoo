@@ -14,6 +14,7 @@ function runPlanGraphTool(args = {}, options = {}) {
     parallel: options.parallel !== false,
     knownTools: options.knownTools,
     maxNodeRuns: options.maxNodeRuns,
+    validateToolArgs: true,
   });
 
   const payload = result.modelPayload || result;

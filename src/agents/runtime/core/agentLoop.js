@@ -36,6 +36,7 @@ async function runAgentLoop({
   traceId = "", parentTaskRunId = "", parentSessionId = "",
   artifactNamespace = "ucode",
   contextManager = null, historyOffset: restoredHistoryOffset = null,
+  onConversationUpdate = null,
 } = {}) {
   const requestModel = String(model || "").trim();
   if (!requestModel) throw new Error("agent model is not configured");
@@ -48,10 +49,15 @@ async function runAgentLoop({
   const historyOffset = restoredHistoryOffset ?? (resume ? 0 : messages.filter(message => message.role !== "system").length);
   if (!resume) transport.prepareMessages({ messages, systemPrompt, prompt });
   const outputStart = messages.length;
-  const currentTurnItems = () => clone(messages.slice(outputStart)).filter((message) => (
-    String(message.role || "").toLowerCase() !== "user" || Array.isArray(message.content)
-      && message.content.some((block) => ["tool_result", "image", "image_url"].includes(block.type))
-  ));
+  const companionItems = new Set();
+  const currentTurnItems = () => clone(messages.slice(outputStart).filter((message, index) => {
+    if (String(message.role || "").toLowerCase() !== "user" || companionItems.has(index)) return true;
+    const companion = Array.isArray(message.content)
+      && message.content.some(block => ["tool_result", "image", "image_url"].includes(block.type));
+    // Keep indices stable after one-shot image bytes retire to text markers.
+    if (companion) companionItems.add(index);
+    return companion;
+  }));
   let executionState = initialState;
   for (const policy of policies) if (policy.initializeState) executionState = policy.initializeState(executionState);
   if (!executionState || typeof executionState !== "object") executionState = {};
@@ -64,6 +70,9 @@ async function runAgentLoop({
   let emptyRetries = 0;
   let activeLedger = null;
   let lastLedger = null;
+  let activePending = [];
+  let flushedLedgerId = "";
+  let flushAttemptedLedgerId = "";
   let autoContinues = 0;
   let lastContinueKey = "";
   let emptyContinues = 0;
@@ -98,11 +107,21 @@ async function runAgentLoop({
     turnItems: currentTurnItems(), usage, executionState,
     protocolLedger: lastLedger || ledgerApi.snapshotLedger(activeLedger), historyOffset, ...extra,
   });
+  let committedMessages = messages.length;
+  let committedItems = [];
+  const commitConversation = async () => {
+    // A persistence port is awaited, unlike display/telemetry observers.
+    committedMessages = messages.length;
+    committedItems = currentTurnItems();
+    if (onConversationUpdate) await onConversationUpdate(finish({ turnItems: committedItems }));
+  };
   const flush = (calls) => {
+    flushAttemptedLedgerId = activeLedger.turnId;
     const pendingById = Object.fromEntries(calls.map((call) => [callId(call), call]));
     materializeResolvedToolResults(activeLedger, { transport, messages: providerMessages, pendingById });
     mirror();
     lastLedger = ledgerApi.snapshotLedger(activeLedger);
+    flushedLedgerId = activeLedger.turnId;
   };
   const pendingInteraction = () => {
     for (const policy of policies) {
@@ -119,7 +138,7 @@ async function runAgentLoop({
     tools: tools.toOpenAiTools(), resume, requestKind, engineFingerprint: LOOP_IMPLEMENTATION_FINGERPRINT }) });
   if (resume) await withFaultPoint("before_provider_resume", () => {});
 
-  while (true) {
+  try { while (true) {
     activeGuards.ensureActive();
     const turnStop = await policyStop("beforeTurn");
     if (turnStop) return finish(turnStop);
@@ -229,6 +248,7 @@ async function runAgentLoop({
         await event("model.retry", { code: "empty_response", retry: emptyRetries });
         providerMessages.push({ role: "user", content: "Continue the current task after the tool results. Call any remaining tools, or provide a concrete final answer to the user. Do not end the turn with an empty response." });
         mirror();
+        await commitConversation();
         continue;
       }
       emptyRetries = 0;
@@ -242,9 +262,11 @@ async function runAgentLoop({
         if (result && result.executionState) executionState = result.executionState;
         providerMessages.push({ role: "user", content: JSON.stringify({ type: legacy.resultType, ...sanitizeResult(result && result.status ? result : { status: "rejected", ok: false, error: `${legacy.tool} failed` }) }) });
         mirror();
+        await commitConversation();
         continue;
       }
       mirror();
+      await commitConversation();
       if (!aggregated.trim() && text) aggregated = text;
       let continuation = false;
       if (autoContinues < maxAutoContinues) {
@@ -266,6 +288,7 @@ async function runAgentLoop({
     emptyRetries = 0;
     const pending = transport.prepareToolCalls({ messages: providerMessages, turnResult, toolCalls: calls });
     if (!pending) { mirror(); return finish(); }
+    activePending = pending;
     loopGuard.observe(pending);
     activeLedger = ledgerApi.createToolCallLedger({ provider, sessionId, deferableTools: tools.deferableTools() });
     for (const call of pending) {
@@ -287,6 +310,7 @@ async function runAgentLoop({
         resolve(call, batchError); toolCallsExecuted += 1; toolErrors += 1;
       }
       flush(pending);
+      await commitConversation();
       continue;
     }
     let deferred = null;
@@ -318,7 +342,6 @@ async function runAgentLoop({
           outcome: "unknown", durationMs: Date.now() - toolStarted });
         throw error;
       }
-      activeGuards.ensureActive();
       if (result && result.executionState) executionState = result.executionState;
       toolCallsExecuted += 1;
       if (!result || result.ok === false) toolErrors += 1;
@@ -331,6 +354,7 @@ async function runAgentLoop({
       }
       resolve(call, result);
       await event("tool.completed", { toolCallId: callId(call), toolName: name, result: sanitizeResult(result), durationMs: Date.now() - toolStarted });
+      activeGuards.ensureActive();
       toolStop = await policyStop("afterTool", { call, result });
       if (toolStop) continue;
       if (toolBudget.maxToolCalls != null && toolCallsExecuted >= toolBudget.maxToolCalls) throw new Error(`tool call budget exceeded (${toolBudget.maxToolCalls})`);
@@ -340,9 +364,27 @@ async function runAgentLoop({
       }
     }
     flush(pending);
+    if (!ledgerApi.listUnresolved(activeLedger).length && !ledgerApi.listDeferred(activeLedger).length) await commitConversation();
     if (toolStop) return finish(toolStop);
     const interaction = pendingInteraction();
     if (deferred || interaction) return finish({ waitingUserInteraction: true, interactionId: deferred && deferred.interactionId || interaction && interaction.id || "" });
+  } } catch (error) {
+    if (!error || typeof error !== "object") error = new Error(String(error));
+    if (activeLedger && activeLedger.turnId !== flushedLedgerId && activeLedger.turnId !== flushAttemptedLedgerId
+      && !ledgerApi.listUnresolved(activeLedger).length && !ledgerApi.listDeferred(activeLedger).length) {
+      // Cancellation/budget checks can fail immediately after the last tool
+      // returned a known result. That completed batch still belongs in history.
+      flush(activePending);
+      try { await commitConversation(); }
+      catch (persistenceError) { error = persistenceError; }
+    }
+    // Preserve completed units without exposing a newly declared, interrupted
+    // tool batch as a valid continuation transcript. The ledger retains its
+    // unresolved/unknown effects for recovery inspection.
+    error.result = finish({ error: error.message, stopReason: error.code || "runtime_error",
+      messages: clone(messages.slice(0, committedMessages)), turnItems: clone(committedItems),
+      protocolLedger: ledgerApi.snapshotLedger(activeLedger) || lastLedger });
+    throw error;
   }
 }
 
