@@ -34,7 +34,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-15
+          - os: macos-26
             plat: darwin-arm64
             target: ""
           - os: macos-15-intel
