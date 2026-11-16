@@ -214,7 +214,7 @@ ufoo -g
 interrupted，需检查实际结果后决定是否重新提交；不会自动重复文件修改、shell、
 启动或投递。相同目录的托管写操作共用锁，独立且经过验证的 git worktree 可并行。
 这些约束不构成 shell 的操作系统沙箱。实现与恢复契约见
-[Agent Runtime 改造记录](AGENT_RUNTIME_REFACTOR.md)。
+[Agent Runtime 改造记录](docs/archive/AGENT_RUNTIME_REFACTOR.md)。
 
 ### Chat 内命令
 
@@ -392,7 +392,7 @@ Decision 只用于计划级约束；长期项目事实应写入 memory。
 `ufoo metrics --json` 汇总执行结果、耗时、tokens、工具错误/重复、报告长度
 与委派验收。保存报告后，可用 `ufoo metrics --baseline baseline.json --json`
 对比后续样本。MCP 提供 `read_agent_metrics`；指标口径和优化流程见
-[OBSERVABILITY.md](OBSERVABILITY.md)。缺失证据保留 unknown，执行完成与
+[OBSERVABILITY.md](docs/OBSERVABILITY.md)。缺失证据保留 unknown，执行完成与
 验收通过分开统计。
 
 report 和 agent 交接默认使用 1–4 行短消息，包含结果、改动、检查和阻塞；
@@ -530,7 +530,7 @@ src/
   online/         relay client/server/runner/token helpers
 ```
 
-维护者视角的项目地图见 [PROJECT.md](PROJECT.md)，更细的目录 ownership 见
+维护者视角的项目地图见 [PROJECT.md](docs/PROJECT.md)，更细的目录 ownership 见
 [docs/source-structure.md](docs/source-structure.md)。
 
 ## 开发

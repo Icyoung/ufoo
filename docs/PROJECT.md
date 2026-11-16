@@ -1,7 +1,7 @@
 # ufoo Project Guide
 
 This file is the maintainer-facing map for the ufoo repository. The public
-user guide lives in [README.md](README.md).
+user guide lives in [README.md](../README.md).
 
 ## Purpose
 
@@ -17,7 +17,7 @@ and agents coordinate through `.ufoo/` state plus bus/tool contracts.
 
 The optional installation and automatic connection flow for the
 ufoo-owned Chrome extension is documented in
-[BROWSER_EXTENSION_PLAN.md](BROWSER_EXTENSION_PLAN.md). Users choose whether to
+[BROWSER_EXTENSION_PLAN.md](archive/BROWSER_EXTENSION_PLAN.md). Users choose whether to
 install `ufoo Browser` via `ufoo setup` (or `ufoo browser install`) into
 `~/.ufoo/browser/`, and connect via Chrome Native Messaging (`com.ufoo.browser`)
 and the user-scoped broker (`~/.ufoo/browser/private/broker.sock`), while
@@ -36,10 +36,10 @@ Published binaries are defined in `package.json`.
 | `ucode` | `bin/ucode.js` | Native ufoo coding-agent CLI/TUI. |
 
 Grok/xAI provider work beyond the CLI wrapper is tracked in
-[GROK_PROVIDER_V2.md](GROK_PROVIDER_V2.md).
+[GROK_PROVIDER_V2.md](archive/GROK_PROVIDER_V2.md).
 
 The layered, pluggable runtime migration is documented in
-[AGENT_RUNTIME_REFACTOR.md](AGENT_RUNTIME_REFACTOR.md). Native `ucode` uses the
+[AGENT_RUNTIME_REFACTOR.md](archive/AGENT_RUNTIME_REFACTOR.md). Native `ucode` uses the
 shared capability-composed loop alongside the project main agent. The project
 main agent can code, delegate, manage independent tasks,
 and use group/cron services; the global profile only selects projects. The

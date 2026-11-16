@@ -1,7 +1,9 @@
 # ufoo Browser 可选安装方案
 
+> Archived implementation record (2026-11-17). The implemented scope is retained for history; current behavior and supported limits are documented in [README](../../README.md) and [PROJECT](../PROJECT.md). Optional or future items below are not completion claims.
+
 日期：2026-11-16
-状态：历史设计方案；4.0.6 已加入可选浏览器扩展，实际能力与命令以 README 和源码为准。
+状态：历史设计方案；4.0.8 已加入可选浏览器扩展，实际能力与命令以 README 和源码为准。
 首版范围：macOS + 日常 Chrome，覆盖 ufoo 原生主 Agent、可写原生子任务和 ucode。
 
 ## 1. 产品目标

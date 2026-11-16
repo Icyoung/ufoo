@@ -3,8 +3,8 @@
 This document is the implementation guide for moving bus delivery callers to
 the unified queue path.
 
-`docs/` is not the repository source of truth for architecture. Keep public
-package maps in `PROJECT.md` or `README.md` when source ownership changes.
+Keep the source ownership map in [PROJECT.md](PROJECT.md) and the public
+guide in [README.md](../README.md) up to date when package ownership changes.
 
 ## Source Of Truth
 

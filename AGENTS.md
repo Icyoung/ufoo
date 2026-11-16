@@ -4,11 +4,12 @@
 
 ## Project Map
 
-Start with `PROJECT.md` for the short project guide.
+Start with `docs/PROJECT.md` for the short project guide.
 
-Architecture references live in `README.md`, `PROJECT.md`, and the source
-packages listed below. The local `docs/` directory is ignored and should not be
-treated as a repository source of truth.
+Architecture references live in `README.md`, `docs/PROJECT.md`, and the source
+packages listed below. Maintained references live in `docs/`; completed implementation plans live in
+`docs/archive/` as historical records. Untracked legacy drafts are not a source
+of truth. Start from `docs/README.md` for the maintained documentation index.
 
 ## Source Boundaries
 
@@ -38,7 +39,7 @@ treated as a repository source of truth.
 - Group templates, prompt profiles, and solo role helpers live in
   `src/orchestration/groups/`, `src/orchestration/solo/`, and
   `templates/groups/`.
-When moving packages, update `PROJECT.md` or `README.md` if the public source
+When moving packages, update `docs/PROJECT.md` or `README.md` if the public source
 map changes.
 
 ## Prompt And Tool Changes

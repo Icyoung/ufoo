@@ -20,5 +20,15 @@ scripts/*
 !scripts/postinstall-skills.js
 !scripts/pack-tui.js
 !scripts/smoke-native-messages.js
-docs/
+# Keep pre-existing local drafts private; version the maintained references.
+/docs/*
+!/docs/README.md
+!/docs/PROJECT.md
+!/docs/OBSERVABILITY.md
+!/docs/archive/
+/docs/archive/*
+!/docs/archive/AGENT_RUNTIME_REFACTOR.md
+!/docs/archive/AGENT_RUNTIME_V2_DESIGN.md
+!/docs/archive/BROWSER_EXTENSION_PLAN.md
+!/docs/archive/GROK_PROVIDER_V2.md
 skills-lock.json

@@ -1,12 +1,14 @@
 # Grok Build Provider v2
 
+> Archived implementation record (2026-11-17). The implemented scope is retained for history; current behavior and supported limits are documented in [README](../../README.md) and [PROJECT](../PROJECT.md). Optional or future items below are not completion claims.
+
 Status: v1 wrapper support and v2 native Responses support are implemented in
 this branch. This document is the implementation contract for the current
 provider layer.
 
 The reference implementation used for the protocol audit is
-`/Users/icy/Code/CLIProxyAPI`, tag `v7.2.140` (`a7e3596b`). The local Grok Build
-source used for PTY state detection is `/Users/icy/Code/grok-build`.
+`~/Code/CLIProxyAPI`, tag `v7.2.140` (`a7e3596b`). The local Grok Build
+source used for PTY state detection is `~/Code/grok-build`.
 
 ## Scope and naming
 
@@ -183,7 +185,7 @@ Chat Completions compatibility path.
 
 ## References
 
-- CLIProxyAPI source: `/Users/icy/Code/CLIProxyAPI` at `v7.2.140`.
-- Grok Build source: `/Users/icy/Code/grok-build`.
+- CLIProxyAPI source: `~/Code/CLIProxyAPI` at `v7.2.140`.
+- Grok Build source: `~/Code/grok-build`.
 - xAI Build overview: <https://docs.x.ai/build/overview>.
 - xAI headless scripting: <https://docs.x.ai/build/cli/headless-scripting>.

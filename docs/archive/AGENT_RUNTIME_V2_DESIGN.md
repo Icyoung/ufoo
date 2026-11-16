@@ -1,5 +1,7 @@
 # ufoo Agent Runtime 完整架构设计方案（V2 修订版）
 
+> Archived implementation record (2026-11-17). The implemented scope is retained for history; current behavior and supported limits are documented in [README](../../README.md) and [PROJECT](../PROJECT.md). Optional or future items below are not completion claims.
+
 ## 1. 架构愿景与核心设计原则
 
 `ufoo` 是一个多 Agent 协同工作区运行时（Multi-Agent Workspace Runtime）。一个用户级全局守护进程（Global Daemon）托管多个隔离的项目运行时（Project Runtime），统一承载主对话面板、事件总线（Event Bus）、持久化记忆、任务报告、群组编排（Groups）、定时调度（Cron）以及跨 Agent 工具路由。
@@ -10,11 +12,11 @@
 
 | 运行角色 | 入口 / 宿主 | 适用 Profile | 上下文管理归属与核心职责 |
 | :--- | :--- | :--- | :--- |
-| **项目主 Agent (`ufoo-agent`)** | [src/runtime/daemon/agentHost.js](src/runtime/daemon/agentHost.js) | `main` | **使用共享 Runtime + Context Engine V2**。项目级总控与主对话入口，具备直接编码、计划拆解、独立子任务管理、内部 Worker 启动/委派/验收、群组与定时服务能力。 |
-| **全局路由 Agent (`global-router`)** | [src/runtime/daemon/agentHost.js](src/runtime/daemon/agentHost.js) | `global-router` | **使用共享 Runtime（轻量只读窗口）**。负责跨项目检索、回答全局状态问题、并将具体任务持久化转交至目标项目的 `ProjectRuntime`。 |
-| **原生编码 Agent (`ucode`)** | `bin/ucode.js` / [src/code/internalThread.js](src/code/internalThread.js) | `coding` | **使用共享 Runtime + Context Engine V2**。独立 CLI/TUI 或内嵌 Headless 编码线程，与主 Agent 共用底层循环、工具账本与单轮索引上下文引擎。 |
-| **独立编码子任务 (`main-task`)** | [src/runtime/daemon/agentHost.js](src/runtime/daemon/agentHost.js) (`getChild`) | `coding-task` / `coding-read-only` | **使用共享 Runtime（单任务独立窗口）**。主 Agent 派生的隔离执行上下文（支持验证过的 `git worktree` 并行或主目录写锁串行），完成后仅向父会话汇报摘要与证据。 |
-| **内部 SDK Worker (`codex` / `claude`)** | [src/agents/internal/internalRunner.js](src/agents/internal/internalRunner.js) | 官方 SDK 线程 | **保持各自官方 SDK 托管会话上下文**。与 `ucode` 共享统一状态面板、收件箱索赔（Inbox Claim）与报告契约；其外部任务画像由协调层从任务账本与 Report Store 派生。 |
+| **项目主 Agent (`ufoo-agent`)** | [src/runtime/daemon/agentHost.js](../../src/runtime/daemon/agentHost.js) | `main` | **使用共享 Runtime + Context Engine V2**。项目级总控与主对话入口，具备直接编码、计划拆解、独立子任务管理、内部 Worker 启动/委派/验收、群组与定时服务能力。 |
+| **全局路由 Agent (`global-router`)** | [src/runtime/daemon/agentHost.js](../../src/runtime/daemon/agentHost.js) | `global-router` | **使用共享 Runtime（轻量只读窗口）**。负责跨项目检索、回答全局状态问题、并将具体任务持久化转交至目标项目的 `ProjectRuntime`。 |
+| **原生编码 Agent (`ucode`)** | `bin/ucode.js` / [src/code/internalThread.js](../../src/code/internalThread.js) | `coding` | **使用共享 Runtime + Context Engine V2**。独立 CLI/TUI 或内嵌 Headless 编码线程，与主 Agent 共用底层循环、工具账本与单轮索引上下文引擎。 |
+| **独立编码子任务 (`main-task`)** | [src/runtime/daemon/agentHost.js](../../src/runtime/daemon/agentHost.js) (`getChild`) | `coding-task` / `coding-read-only` | **使用共享 Runtime（单任务独立窗口）**。主 Agent 派生的隔离执行上下文（支持验证过的 `git worktree` 并行或主目录写锁串行），完成后仅向父会话汇报摘要与证据。 |
+| **内部 SDK Worker (`codex` / `claude`)** | [src/agents/internal/internalRunner.js](../../src/agents/internal/internalRunner.js) | 官方 SDK 线程 | **保持各自官方 SDK 托管会话上下文**。与 `ucode` 共享统一状态面板、收件箱索赔（Inbox Claim）与报告契约；其外部任务画像由协调层从任务账本与 Report Store 派生。 |
 | **外部包装器/MCP Agent** | `uclaude` / `ucodex` / `uagy` / `ugrok` / `ukimi` / MCP | 外部宿主 | 通过环境变量 `UFOO_SUBSCRIBER_ID`（包装器直注）或 MCP `register_agent` + `wait_for_message` 接入总线协作。 |
 
 ### 1.2 核心设计铁律
@@ -32,7 +34,7 @@
    * 存在窗口外历史时，优先通过本地词面/路径/符号/BM25 毫秒级召回；仅当存在指代歧义且配置了可用快模型时触发**至多一次**带短超时的判别调用（只做客观摘要检索，绝不篡改或重写用户原意）；
    * 在 `agentLoop` 每一轮模型调用前保留确定性 Token 水位退让防线，无需同步等待模型总结即可化解单轮超长工具链溢出。
 6. **核心零业务耦合与副作用安全**：
-   * 严守 [AGENTS.md](AGENTS.md) 边界：`src/agents/runtime/` 绝不导入 `coding`、`daemon`、UI 或多 Agent 路由实现；
+   * 严守 [AGENTS.md](../../AGENTS.md) 边界：`src/agents/runtime/` 绝不导入 `coding`、`daemon`、UI 或多 Agent 路由实现；
    * 未知副作用（`uncertain`）绝不盲目自动重放；子任务/Worker 声称完成（`done`）后，主 Agent 必须在完成时间点之后执行独立 `bash` 校验并凭真实 `toolCallId` 验收。
 
 ---
@@ -96,7 +98,7 @@ flowchart TD
 
 ### 3.1 声明式组装与耐久化接口
 
-Runtime 核心不含任何具体业务工具名（如 `bash`、`plan_graph`、`delegate_task`）或硬编码的 Agent 类型分支，一切通过 [src/agents/runtime/createAgentRuntime.js](src/agents/runtime/createAgentRuntime.js) 注入：
+Runtime 核心不含任何具体业务工具名（如 `bash`、`plan_graph`、`delegate_task`）或硬编码的 Agent 类型分支，一切通过 [src/agents/runtime/createAgentRuntime.js](../../src/agents/runtime/createAgentRuntime.js) 注入：
 
 | 核心公开 API | 行为契约 |
 | :--- | :--- |
@@ -110,7 +112,7 @@ Runtime 核心不含任何具体业务工具名（如 `bash`、`plan_graph`、`d
 
 ### 3.2 Capability 插件契约与权限裁定
 
-每个业务模块通过标准 Capability 对象接入（见 [src/agents/runtime/composeCapabilities.js](src/agents/runtime/composeCapabilities.js)）：
+每个业务模块通过标准 Capability 对象接入（见 [src/agents/runtime/composeCapabilities.js](../../src/agents/runtime/composeCapabilities.js)）：
 
 * **静态声明**：`id`、`version`、`requires`（依赖的其他能力、Host Ports、Provider 特性如 `vision`/`tool_calls`）、`requestedPermissions`。
 * **权限裁定（Host Authoritative）**：Profile 仅声明需要哪些能力，具体工具能否暴露给模型并被执行，取决于 `host.grantedPermissions` 与 Caller Tier（`CONTROLLER` vs `WORKER`）的交集。
@@ -118,17 +120,17 @@ Runtime 核心不含任何具体业务工具名（如 `bash`、`plan_graph`、`d
 
 ### 3.3 通用模型/工具循环 (`agentLoop.js`) 与协议账本
 
-在单次执行尝试（`TaskRun` / `run()`）内部，[src/agents/runtime/core/agentLoop.js](src/agents/runtime/core/agentLoop.js) 驱动多步模型与工具交互：
+在单次执行尝试（`TaskRun` / `run()`）内部，[src/agents/runtime/core/agentLoop.js](../../src/agents/runtime/core/agentLoop.js) 驱动多步模型与工具交互：
 
-1. **协议配对账本（[src/agents/runtime/protocol/toolCallLedger.js](src/agents/runtime/protocol/toolCallLedger.js)）**：
+1. **协议配对账本（[src/agents/runtime/protocol/toolCallLedger.js](../../src/agents/runtime/protocol/toolCallLedger.js)）**：
    * 模型产出的每个工具调用先分配唯一 `callId` 并进入 `declared` $\rightarrow$ `executing` 状态，全部决议后统一经 `materializeResolvedToolResults` 成对写入消息流，彻底杜绝孤儿 `tool_use` / `tool_result`。
    * Anthropic 带签名的 `thinking` 块（含 `signature`）在单轮工具续写期间严格原样保留，绝不篡改。
 2. **增量会话提交（`onConversationUpdate`）**：
    * 每个完整的“模型推理 + 工具结果配对”批次完成后，立即 `await commitConversation()` 落盘。后续网络中断、取消或超预算不会丢失已完成的前序工具批次。
 3. **工具结果制品化（Artifact Reduction）**：
-   * 编码与 Shell 工具大输出自动剥离 Base64 并持久化至 `.ufoo/agent/<ns>/artifacts/<sessionId>/`（[src/code/context/artifacts.js](src/code/context/artifacts.js)），进入模型消息流的仅是 `{ artifactId, preview, summary }`。
+   * 编码与 Shell 工具大输出自动剥离 Base64 并持久化至 `.ufoo/agent/<ns>/artifacts/<sessionId>/`（[src/code/context/artifacts.js](../../src/code/context/artifacts.js)），进入模型消息流的仅是 `{ artifactId, preview, summary }`。
 4. **死循环守卫与执行预算**：
-   * `ToolLoopGuard` 拦截重复参数死循环；共享预算（[src/agents/runtime/core/executionBudget.js](src/agents/runtime/core/executionBudget.js)）默认不限模型轮次、工具错误上限 `20` 次、总超时 `12` 小时。
+   * `ToolLoopGuard` 拦截重复参数死循环；共享预算（[src/agents/runtime/core/executionBudget.js](../../src/agents/runtime/core/executionBudget.js)）默认不限模型轮次、工具错误上限 `20` 次、总超时 `12` 小时。
 
 ---
 
@@ -145,12 +147,12 @@ Runtime 核心不含任何具体业务工具名（如 `bash`、`plan_graph`、`d
 
 ## 5. 第三层：Context Engine V2（单轮索引 + 步进滑动窗口 + 缓存对齐投影）
 
-本层统一替代原有的滚雪球检查点压缩器（`compaction.js` / `checkpointStore.js`）以及 `ucode` 中重叠的滚动摘要逻辑（[src/code/context/assembler.js](src/code/context/assembler.js) 中的 `buildRollingSummary`），同时服务于 `ufoo` 主 Agent 与 `ucode`。
+本层统一替代原有的滚雪球检查点压缩器（`compaction.js` / `checkpointStore.js`）以及 `ucode` 中重叠的滚动摘要逻辑（[src/code/context/assembler.js](../../src/code/context/assembler.js) 中的 `buildRollingSummary`），同时服务于 `ufoo` 主 Agent 与 `ucode`。
 
 ### 5.1 核心概念：“逻辑轮次（Logical Turn）”与轮次分类
 
 #### 1. 原子边界与轮次类型（`turnKind`）
-在 `ufoo` 中，一次 `submit()` 或 `run()` 闭环构成一个 **Logical Turn**（包含输入、内部 $0 \sim N$ 步工具调用及终态结果），但并非每次触发都来自真人输入（参考 [src/runtime/daemon/agentHost.js](src/runtime/daemon/agentHost.js) 的 `requestKind`）：
+在 `ufoo` 中，一次 `submit()` 或 `run()` 闭环构成一个 **Logical Turn**（包含输入、内部 $0 \sim N$ 步工具调用及终态结果），但并非每次触发都来自真人输入（参考 [src/runtime/daemon/agentHost.js](../../src/runtime/daemon/agentHost.js) 的 `requestKind`）：
 
 | `turnKind` | 触发来源 | 滑动窗口配额规则 | 前置话题判别 |
 | :--- | :--- | :--- | :--- |
@@ -246,7 +248,7 @@ flowchart TD
 
 ### 5.4 步进对齐滑动窗口与硬性 Token 水位防线 (`slidingWindowManager.js`)
 
-为了在 **保留长上下文原样细节**、**极高 KV Cache 命中率** 与 **绝不触发 Context Overflow 崩溃** 之间取得严格平衡，`slidingWindowManager` 实现与现有 [src/agents/runtime/core/agentLoop.js](src/agents/runtime/core/agentLoop.js) 完全兼容的 `contextManager.prepare(input)` 接口：
+为了在 **保留长上下文原样细节**、**极高 KV Cache 命中率** 与 **绝不触发 Context Overflow 崩溃** 之间取得严格平衡，`slidingWindowManager` 实现与现有 [src/agents/runtime/core/agentLoop.js](../../src/agents/runtime/core/agentLoop.js) 完全兼容的 `contextManager.prepare(input)` 接口：
 
 #### 1. 步进对齐弹性原样窗口（Step-Aligned Adaptive Window）
 * **基础配额**：以 `user` 轮次计数，基准保留最近 $W_{\text{base}} = 5$ 个 `user` 轮次及其间关联的 `system_wake` 轮次。
@@ -317,7 +319,7 @@ flowchart TD
 
 ### 6.1 历史轮次检索与分页原文回溯工具 (`recall_turn`)
 
-作为 `turn-recall` Capability 暴露给主 Agent 与 `ucode`（与现有的 [src/code/tools/artifactRead.js](src/code/tools/artifactRead.js) 互补）：
+作为 `turn-recall` Capability 暴露给主 Agent 与 `ucode`（与现有的 [src/code/tools/artifactRead.js](../../src/code/tools/artifactRead.js) 互补）：
 
 * **支持的操作模式**：
   1. **按关键词 / 话题检索 (`query` / `topic`)**：在 `turns.jsonl` 中检索匹配的 `TurnSemanticRecord` 列表（含 `turnId`、`seq`、`outcome`、`modifiedFiles`、`artifactIds`、`summary`），适合跨百轮快速定位。
@@ -328,14 +330,14 @@ flowchart TD
 
 ### 6.2 严守模块边界的 `route_agent` V2（位于 `capabilities/agentRouting`）
 
-遵照 [AGENTS.md](AGENTS.md) 规范，多 Agent 路由逻辑**严格保留在 `src/agents/capabilities/agentRouting/` 与 [src/tools/handlers/routeAgent.js](src/tools/handlers/routeAgent.js) 中**，不侵入 `src/agents/runtime/context/`：
+遵照 [AGENTS.md](../../AGENTS.md) 规范，多 Agent 路由逻辑**严格保留在 `src/agents/capabilities/agentRouting/` 与 [src/tools/handlers/routeAgent.js](../../src/tools/handlers/routeAgent.js) 中**，不侵入 `src/agents/runtime/context/`：
 
 1. **零锁竞争的 Worker 画像派生（不写 `all-agents.json`）**：
    * `all-agents.json` 仅保留高频心跳、PID 与基础注册元数据（避免与 `updateAgentsData` 发生锁竞争）；
    * `route_agent` 在只读预览时，直接聚合三份已有协调真相源构建活跃内部 Worker（`codex`、`claude`、`ucode`）的实时画像：
      1. `all-agents.json` 中的 `nickname / role / activity_state`；
      2. `management.snapshot().tasks` 中该 Worker 近期承接的 `objective` 与状态；
-     3. [src/coordination/report/store.js](src/coordination/report/store.js) 中该 Worker 最近提交的 `done / progress` 报告摘要与涉及路径。
+     3. [src/coordination/report/store.js](../../src/coordination/report/store.js) 中该 Worker 最近提交的 `done / progress` 报告摘要与涉及路径。
    * 如此一来，**不走 `createAgentRuntime` 的内部 `codex` / `claude` SDK Worker 同样天然拥有完整的任务与路径画像**。
 2. **确定性评分升级**：
    * 保持同步、幂等、只读契约：显式 `@nickname` 直达（置信度 `1.0`）$\rightarrow$ 请求中的文件路径/模块词与 Worker 近期任务 `objective` / 报告路径重叠度评分 $\rightarrow$ `role` 匹配与 `idle` 优先度排序。
@@ -343,7 +345,7 @@ flowchart TD
 
 ### 6.3 任务委派、独立子任务与强制证据验收闭环
 
-完整保留现有的可靠协调与验收契约（[src/runtime/daemon/agentHost.js](src/runtime/daemon/agentHost.js)）：
+完整保留现有的可靠协调与验收契约（[src/runtime/daemon/agentHost.js](../../src/runtime/daemon/agentHost.js)）：
 
 ```mermaid
 sequenceDiagram
@@ -377,7 +379,7 @@ sequenceDiagram
 
 ### 7.1 统一命名的 `.ufoo/` 本地持久化目录结构
 
-对齐现有的 [src/agents/runtime/context/runtimeStore.js](src/agents/runtime/context/runtimeStore.js) 与 [src/agents/runtime/context/sessionJournal.js](src/agents/runtime/context/sessionJournal.js) 路径规范，所有 Namespace 统一将单轮索引存放在 `.ufoo/agent/<ns>/context/<sessionId>.turns.jsonl`：
+对齐现有的 [src/agents/runtime/context/runtimeStore.js](../../src/agents/runtime/context/runtimeStore.js) 与 [src/agents/runtime/context/sessionJournal.js](../../src/agents/runtime/context/sessionJournal.js) 路径规范，所有 Namespace 统一将单轮索引存放在 `.ufoo/agent/<ns>/context/<sessionId>.turns.jsonl`：
 
 ```text
 .ufoo/
@@ -419,7 +421,7 @@ sequenceDiagram
 
 ### 7.3 可观测性扩展（`ufoo trace` & `ufoo metrics`）
 
-在现有的 [src/coordination/history/agentTrace.js](src/coordination/history/agentTrace.js) 与 [src/coordination/history/agentPerformance.js](src/coordination/history/agentPerformance.js) 中全面切换为 Context Engine V2 观测事件：
+在现有的 [src/coordination/history/agentTrace.js](../../src/coordination/history/agentTrace.js) 与 [src/coordination/history/agentPerformance.js](../../src/coordination/history/agentPerformance.js) 中全面切换为 Context Engine V2 观测事件：
 * `context.select.completed`：记录召回层级（`bypass` / `tier1_local` / `tier2_model`）、耗时 `durationMs`、命中的 `matchedTopics` 与召回轮次数。
 * `context.window.projected`：记录 `windowStartSeq`、原样窗口实际包含的 `user` 轮数与 `system_wake` 轮数、触发的水位退让等级（`evictionLevel: 0..3`）、预估 Input Tokens 与实测 Cache Read 命中率。
 * `context.turn_indexed`：区分记录 `phase: "deterministic" | "enriched"`、耗时及后台模型 Token 消耗。

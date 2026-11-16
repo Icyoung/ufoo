@@ -301,7 +301,7 @@ A crash during an active round marks it interrupted: inspect actual
 effects before resubmitting. Writes, shell commands, launches, and uncertain
 deliveries are not automatically replayed. Managed writers share directory
 leases; verified git worktrees can run independently. These checks are not an OS
-sandbox for shell commands. See the [runtime implementation record](AGENT_RUNTIME_REFACTOR.md).
+sandbox for shell commands. See the [runtime implementation record](docs/archive/AGENT_RUNTIME_REFACTOR.md).
 
 ### Chat Commands
 
@@ -550,7 +550,7 @@ redacted; bounded or incomplete source reads are explicitly marked in JSON.
 errors/repetition, report size and delegation acceptance. Save a report and use
 `ufoo metrics --baseline baseline.json --json` to compare later samples. MCP
 provides `read_agent_metrics`; metric definitions and an optimization workflow
-are in [OBSERVABILITY.md](OBSERVABILITY.md). Missing evidence stays unknown,
+are in [OBSERVABILITY.md](docs/OBSERVABILITY.md). Missing evidence stays unknown,
 and execution completion is separate from acceptance.
 
 ### Groups
@@ -880,7 +880,7 @@ src/
   online/         relay client/server/runner/token helpers
 ```
 
-See [PROJECT.md](PROJECT.md) for the maintainer-facing map and detailed package
+See [PROJECT.md](docs/PROJECT.md) for the maintainer-facing map and detailed package
 ownership.
 
 Reports share one task ID across lifecycle phases. Pass `--task <id>` to

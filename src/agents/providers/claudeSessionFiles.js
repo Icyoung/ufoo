@@ -18,7 +18,7 @@ const PROJECTS_DIR = path.join(CLAUDE_CONFIG_DIR, "projects");
 
 /**
  * Encode a CWD path to Claude Code's project directory name.
- * e.g. "/Users/icy/Code/ufoo" → "-Users-icy-Code-ufoo"
+ * e.g. "/Users/developer/Code/ufoo" → "-Users-developer-Code-ufoo"
  */
 function encodeProjectPath(cwd) {
   return String(cwd || "").replace(/\//g, "-");

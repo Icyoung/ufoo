@@ -1,52 +1,27 @@
-# ufoo Documentation Index
+# Documentation
 
-This directory keeps current architecture notes at the top level and completed
-planning material in `docs/archive/`.
+Current behavior is documented in the root [README](../README.md) and
+[Chinese README](../README.zh-CN.md).
 
-## Active References
+## Maintained references
 
-| Document | Status | Purpose |
-|---|---|---|
-| `source-structure.md` | current | Source package map and proposed clearer `src/` structure. |
-| `agent-prompts-and-tools.md` | current | Agent bodies, prompts, bootstrap text, prompt profiles, and tool definitions. |
-| `agent-prompts-and-tools.zh.md` | current | Chinese prompt reference with original prompt text and Chinese translations. |
-| `agent-design-audit-and-optimization-plan.md` | confirmed findings + backlog | Agent-design audit with code-confirmed prompt/runtime findings and phased optimization plan. |
-| `ucode-agent-runtime-remediation-plan.md` | proposal | Native `ucode` Agent Runtime 整改方案：协议账本、状态所有权、恢复语义、TaskRun 与分阶段验收。 |
-| `daemon-mcp-integration-plan.md` | initial implementation + backlog | Local global MCP bridge shape, current `ufoo mcp` surface, and remaining convergence work. |
-| `bus-delivery-queue-refactor-plan.md` | design proposal | Refactor plan for one daemon-owned durable bus delivery queue and scheduler. |
-| `delivery-queue-developer-guide.md` | current | Developer guide for writing producers and consumers on the unified bus delivery queue. |
-| `ufoo-agent-api-loop-plan.md` | backlog | API-loop follow-up plan after the initial implementation. |
-| `ufoo-group-role-presets-plan.md` | implemented with gaps | Role preset work that still has documented gaps to close. |
-| `ufoo-prompt-envelope-and-tags-plan.md` | needs audit | Prompt envelope/tag core exists, but timeline/history details need a final implementation check. |
-| `implementation_plan.md` | stale/unverified | Older chat log copy plan; implementation was not found during this cleanup. |
-| `ucode-context-manager-plan.md` | **complete** (P3 optional) | Native `ucode` Context Manager：已落地能力、延后项、env/验证。 |
-| `tui-grok-build-migration-plan.md` | **Phase 0A in progress** | Ink→Grok 风格 TUI：Node host + Rust child；工作集见 `tui-migration/`。 |
-| `tui-migration/` | Phase 0A drafts | ADR-0001、feature matrix、baseline/release、gate checklist。 |
-| `rust-native-multi-plan.md` | **MVP implemented** | Rust 原生 `/multi`：有界 pane frames + `multi-frames-v1`；已去掉 rustChatHost 的 Ink suspend handoff。 |
-| `codebase-review-2026.md` | reference | Historical review notes. |
-| `ufoo-docs-implementation-audit.md` | reference | Audit used to classify plan documents before this archive pass. |
+- [Project guide and source ownership](PROJECT.md)
+- [Agent observability, metrics and tracing](OBSERVABILITY.md)
+- [Delivery queue developer guide](delivery-queue-developer-guide.md)
+- [External MCP client examples](mcp-client-examples.md)
+- [MCP bridge implementation and remaining backlog](daemon-mcp-integration-plan.md)
+- [Contributor and agent instructions](../AGENTS.md)
 
-## Archived Completed Plans
+## Archived implementation records
 
-The following documents describe work that has landed or has been absorbed by
-newer implementation/docs, so they are kept as historical context only:
+These plans have landed in the current codebase. They are retained as design
+history, not as a backlog or a guarantee that every optional proposal shipped.
+Current support and limits belong in the maintained references above.
 
-- `archive/agent-group-orchestration-requirements.md`
-- `archive/agent-group-orchestration-technical-plan.md`
-- `archive/agent-to-ufoo-control-plane.md`
-- `archive/global-chat-multi-project-technical-plan.md`
-- `archive/internal-agent-activity-state-plan.md`
-- `archive/nickname-scoping-plan.md`
-- `archive/ufoo-design-role-presets-from-gstack.md`
-- `archive/ufoo-shared-memory-plan.md`
+- [Shared agent runtime migration](archive/AGENT_RUNTIME_REFACTOR.md)
+- [Agent Runtime V2 and context engine](archive/AGENT_RUNTIME_V2_DESIGN.md)
+- [Optional browser extension](archive/BROWSER_EXTENSION_PLAN.md)
+- [Grok Build provider V2](archive/GROK_PROVIDER_V2.md)
 
-Pre-existing historical archive documents remain in `docs/archive/`.
-
-## Policy
-
-- Keep top-level docs for active architecture, current source-of-truth
-  references, backlog plans, and plans with known gaps.
-- Move plan, requirements, and design docs to `docs/archive/` after the
-  implementation is complete or the content has been absorbed by newer docs.
-- When changing prompts or tools, update `agent-prompts-and-tools.md`.
-- When moving source packages, update `source-structure.md`.
+The browser extension's store publication and Grok OAuth/ACP follow-ups remain
+outside those implemented scopes; consult the current README before use.

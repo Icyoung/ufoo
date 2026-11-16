@@ -1,6 +1,8 @@
 # 分层可插拔 Agent Runtime 改造方案
 
-日期：2026-10-08  
+> Archived implementation record (2026-11-17). The implemented scope is retained for history; current behavior and supported limits are documented in [README](../../README.md) and [PROJECT](../PROJECT.md). Optional or future items below are not completion claims.
+
+日期：2026-10-08
 状态：P0–P5 已落地，主 agent 统一使用共享 main runtime；旧 router 配置与执行入口已删除，实际 API 与恢复边界见第 11 节。
 范围：提取 ucode 的执行能力供 ufoo 共用，使 ufoo 主 agent 能编码、路由、管理 agent，并处理协调任务。
 
@@ -22,29 +24,29 @@
 
 ## 2. 当前实现与改造依据
 
-本节记录实施前的源码基线；实施后的目录边界见 [PROJECT.md](PROJECT.md)，进展见第 11 节。
+本节记录实施前的源码基线；实施后的目录边界见 [PROJECT.md](../PROJECT.md)，进展见第 11 节。
 
 | 当前位置 | 现有职责 | 改造方向 |
 |---|---|---|
-| [src/code/nativeRunner.js](src/code/nativeRunner.js) | Provider 调用、流式输出、工具循环、预算、取消、计划/任务控制、用户交互 | 拆出通用循环与协议；编码和计划策略由能力模块提供 |
-| [src/code/agent.js](src/code/agent.js) | 上下文组装、skills、会话提交、自然语言任务入口、交互恢复 | 拆出通用会话协调，保留 ucode 入口适配 |
-| [src/code/context/](src/code/context/) | 上下文、工作集、执行状态、计划图、交互与制品 | 通用上下文机制共享；编码/计划投影归对应能力 |
-| [src/code/conversation/sessionJournal.js](src/code/conversation/sessionJournal.js) | 会话事件日志 | 提供共享 journal 接口；保持已有数据可读 |
-| [src/code/sessionStore.js](src/code/sessionStore.js) | 会话元数据与投影检查点 | 注入存储 namespace 与 codec，避免固定 ucode 身份 |
-| [src/code/protocol/](src/code/protocol/) | 工具调用账本、协议校验、暂停恢复、状态转换 | 分离通用协议和业务状态转换；逐项验证成熟度 |
-| [src/code/runtime/](src/code/runtime/) | TaskRun、mailbox、任务推进、唤醒、写 lease | 提取通用任务机制；计划图执行保留为可选能力 |
-| [src/agents/controller/controllerToolExecutor.js](src/agents/controller/controllerToolExecutor.js) | Controller 工具调用及 daemon 操作接入 | 工具执行通过统一注册表与受限 host ports 接入 |
-| [src/agents/providers/](src/agents/providers/) 与 [src/code/providers/](src/code/providers/) | 上游认证、请求、模型协议、传输适配 | 保留 provider 身份差异，提取可共用的传输协议 |
-| [src/tools/](src/tools/) 与 [src/code/tools/](src/code/tools/) | 协调工具与编码工具 | 统一运行时描述协议；业务 handler 保留明确归属 |
-| [src/runtime/daemon/promptRequest.js](src/runtime/daemon/promptRequest.js) | 全局/项目请求入口 | 统一使用 main agent host，保留强制项目转交 |
+| [src/code/nativeRunner.js](../../src/code/nativeRunner.js) | Provider 调用、流式输出、工具循环、预算、取消、计划/任务控制、用户交互 | 拆出通用循环与协议；编码和计划策略由能力模块提供 |
+| [src/code/agent.js](../../src/code/agent.js) | 上下文组装、skills、会话提交、自然语言任务入口、交互恢复 | 拆出通用会话协调，保留 ucode 入口适配 |
+| [src/code/context/](../../src/code/context) | 上下文、工作集、执行状态、计划图、交互与制品 | 通用上下文机制共享；编码/计划投影归对应能力 |
+| [src/code/conversation/sessionJournal.js](../../src/code/conversation/sessionJournal.js) | 会话事件日志 | 提供共享 journal 接口；保持已有数据可读 |
+| [src/code/sessionStore.js](../../src/code/sessionStore.js) | 会话元数据与投影检查点 | 注入存储 namespace 与 codec，避免固定 ucode 身份 |
+| [src/code/protocol/](../../src/code/protocol) | 工具调用账本、协议校验、暂停恢复、状态转换 | 分离通用协议和业务状态转换；逐项验证成熟度 |
+| [src/code/runtime/](../../src/code/runtime) | TaskRun、mailbox、任务推进、唤醒、写 lease | 提取通用任务机制；计划图执行保留为可选能力 |
+| [src/agents/controller/controllerToolExecutor.js](../../src/agents/controller/controllerToolExecutor.js) | Controller 工具调用及 daemon 操作接入 | 工具执行通过统一注册表与受限 host ports 接入 |
+| [src/agents/providers/](../../src/agents/providers) 与 [src/code/providers/](../../src/code/providers) | 上游认证、请求、模型协议、传输适配 | 保留 provider 身份差异，提取可共用的传输协议 |
+| [src/tools/](../../src/tools) 与 [src/code/tools/](../../src/code/tools) | 协调工具与编码工具 | 统一运行时描述协议；业务 handler 保留明确归属 |
+| [src/runtime/daemon/promptRequest.js](../../src/runtime/daemon/promptRequest.js) | 全局/项目请求入口 | 统一使用 main agent host，保留强制项目转交 |
 
 需要明确的现状：
 
 1. `nativeRunner` 固定了核心工具名，并直接处理 `plan_graph`、`task_run` 等业务规则。单纯移动文件无法获得可插拔 runtime。
 2. `upstreamTransport` 已依赖 `code/nativeRunner` 的配置与 URL helper。提取共享层应消除这类由 provider 指向产品 runner 的依赖。
-3. 注册表中的 [route_agent](src/tools/tier1/routeAgent.js) 使用 dormant handler。现有有效路由主要在 controller/orchestration 流程中，不能假设注册工具已经实现完整路由。
+3. 注册表中的 [route_agent](../../src/tools/tier1/routeAgent.js) 使用 dormant handler。现有有效路由主要在 controller/orchestration 流程中，不能假设注册工具已经实现完整路由。
 4. ucode 会话路径包含 `.ufoo/agent/ucode/`，主 agent 需要独立 namespace，不能共享同一份可变会话。
-5. [workspaceLease](src/code/runtime/workspaceLease.js) 的状态位于单个 `executionState` 中，不能充当跨 agent、跨进程的项目写入协调。
+5. [workspaceLease](../../src/code/runtime/workspaceLease.js) 的状态位于单个 `executionState` 中，不能充当跨 agent、跨进程的项目写入协调。
 6. 工具账本仍包含 shadow 阶段实现。抽取不代表直接扩大其保证范围，协议接管需单独通过故障恢复验证。
 
 ## 3. 分层架构

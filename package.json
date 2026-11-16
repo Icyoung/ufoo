@@ -43,7 +43,7 @@
     "OPTIONAL_SKILLS/",
     "LICENSE",
     "README.md",
-    "OBSERVABILITY.md"
+    "docs/OBSERVABILITY.md"
   ],
   "type": "commonjs",
   "engines": {
