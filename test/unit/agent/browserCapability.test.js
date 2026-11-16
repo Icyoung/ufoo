@@ -3,7 +3,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { createBrowserSessions, readConnectionConfig, browserProcessEnvironment } = require("../../../src/runtime/browser/playwrightSession");
+const { createBrowserSessions, createMcpConnection, readConnectionConfig, browserProcessEnvironment } = require("../../../src/runtime/browser/playwrightSession");
 const { createBrowserCapability } = require("../../../src/agents/capabilities/browser");
 const { createToolRegistry } = require("../../../src/agents/runtime/tools/registry");
 const { createOpenAiChatTransport, createOpenAiResponsesTransport, createAnthropicMessagesTransport } = require("../../../src/agents/providers/transports");
@@ -174,6 +174,11 @@ describe("shared Playwright browser capability", () => {
     await manager.closeAll();
     manager = createBrowserSessions({ env: {} });
     const result = await manager.execute({ operation: "tools", tool: "browser_click" }, context);
+    if (Number(process.versions.node.split(".")[0]) < 20) {
+      expect(result).toMatchObject({ ok: false, code: "browser_node_unsupported" });
+      expect(result.error).toContain("Node.js 20");
+      return;
+    }
     expect(result).toMatchObject({ ok: true, name: "browser_click", inputSchema: { required: ["target"] } });
     expect(await manager.execute({ operation: "tools", tool: "browser_mouse_click_xy" }, context)).toMatchObject({ ok: true, inputSchema: { required: ["x", "y"] } });
     expect(await manager.execute({ operation: "status" }, context)).toMatchObject({ state: "ready" });
@@ -214,4 +219,9 @@ describe("shared Playwright browser capability", () => {
     expect(release).toHaveBeenCalledTimes(1);
     expect(await manager.execute({ operation: "status" }, context)).toMatchObject({ state: "disconnected", reconnectRequired: true });
   });
+});
+
+test("old Node versions fail before spawning the optional browser runtime", () => {
+  expect(() => createMcpConnection({ nodeVersion: "18.17.0" }))
+    .toThrow(expect.objectContaining({ code: "browser_node_unsupported", message: expect.stringContaining("Node.js 20") }));
 });

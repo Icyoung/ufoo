@@ -690,6 +690,9 @@ shared `browser` tool powered by Playwright. It connects to an existing browser
 and preserves its signed-in sessions; it never falls back to launching a fresh
 profile. SDK-managed Codex/Claude wrappers keep their own tool configuration.
 
+Browser automation requires Node.js 20 or newer (the ufoo core still supports
+Node.js 18.17+).
+
 ufoo Browser is an optional user-level component managed outside individual
 projects (`~/.ufoo/browser/` and `~/.ufoo/config.json`):
 
@@ -826,8 +829,8 @@ Internal Claude retains its native provider transport and credentials.
 #### Antigravity
 
 Select `/provider agy` for the main agent, or run `ucode --provider agy` for
-standalone coding. The default model is `gemini-4-hydrogen-high` and the
-default auxiliary model is `gemini-3.8-flash-medium`. The native provider uses
+standalone coding. The default model is `gemini-4-carbon-high` and the
+default auxiliary model is `gemini-4-hydrogen-high`. The native provider uses
 the Antigravity Cloud Code API for streaming, tool calls, and
 the `/model` catalog. Select a text model available to your account with
 `/model`. If a session was created with the earlier `agy` setting, start a

@@ -14,7 +14,7 @@ const { resolveAgyCredentials } = require("../../../../src/agents/providers/cred
 
 describe("Antigravity native provider", () => {
   let root;
-  const model = "gemini-4-hydrogen-high";
+  const model = "gemini-4-carbon-high";
   const baseUrl = "https://daily-cloudcode-pa.googleapis.com";
   const transport = getNativeTransport("antigravity");
 
@@ -53,13 +53,13 @@ describe("Antigravity native provider", () => {
 
   test("main and native coding select the Antigravity wire protocol and model", async () => {
     expect(resolveRuntimeConfig({ workspaceRoot: root, provider: "antigravity", useCodingConfig: false })).toMatchObject({
-      provider: "agy", transport: "antigravity", model, baseUrl, auxModel: "gemini-3.8-flash-medium",
+      provider: "agy", transport: "antigravity", model, baseUrl, auxModel: "gemini-4-hydrogen-high",
     });
     await expect(resolveUpstreamRuntime({ projectRoot: root, provider: "agy-cli" })).resolves.toMatchObject({
       provider: "agy", transport: "antigravity", model, baseUrl,
     });
     expect(resolveRuntimeConfig({ workspaceRoot: root, provider: "agy" })).toMatchObject({
-      model, auxModel: "gemini-3.8-flash-medium",
+      model, auxModel: "gemini-4-hydrogen-high",
     });
     fs.writeFileSync(process.env.UFOO_GLOBAL_CONFIG_PATH, JSON.stringify({
       ucodeProvider: "antigravity", ucodeModel: "gemini-4-hydrogen-low", ucodeAuxModel: "gemini-3.8-flash-high",

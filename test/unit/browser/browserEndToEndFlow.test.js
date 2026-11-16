@@ -251,6 +251,10 @@ describe("ufoo Browser end-to-end CLI, native host binary, and Playwright MCP re
 
       // Claim tab 77 for Agent A; Agent B gets browser_tab_busy without preemption!
       const selA = await sessions.execute({ operation: "call", tool: "browser_tabs", arguments: { action: "select", tabId: 77 } }, ctxA);
+      if (Number(process.versions.node.split(".")[0]) < 20) {
+        expect(selA).toMatchObject({ ok: false, code: "browser_node_unsupported" });
+        return;
+      }
       expect(selA).toMatchObject({ ok: true, tabId: 77 });
 
       const selB = await sessions.execute({ operation: "call", tool: "browser_tabs", arguments: { action: "select", tabId: 77 } }, ctxB);

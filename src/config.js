@@ -18,7 +18,7 @@ const SETTINGS_MODEL_DEFAULTS = Object.freeze({
   agent: Object.freeze({
     codex: "gpt-6.1-sol",
     claude: "claude-opus-5-5",
-    agy: "gemini-4-hydrogen-high",
+    agy: "gemini-4-carbon-high",
     // kimi reads its model from its own config.toml (default_model); ufoo
     // never injects -m/--model.
     kimi: "",
@@ -27,7 +27,7 @@ const SETTINGS_MODEL_DEFAULTS = Object.freeze({
   aux: Object.freeze({
     codex: "gpt-6-luna",
     claude: "claude-haiku-5-5",
-    agy: "gemini-3.8-flash-medium",
+    agy: "gemini-4-hydrogen-high",
     kimi: "",
     "grok-build": "",
   }),

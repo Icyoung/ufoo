@@ -6,11 +6,11 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const http = require("http");
-const { chromium } = require("playwright");
 const { createBrowserSessions } = require("../../src/runtime/browser/playwrightSession");
 
 describeBrowser("existing Chrome through Playwright MCP", () => {
   test("reuses authenticated tabs, performs form actions, captures vision and disconnects without closing Chrome", async () => {
+    const { chromium } = require("playwright");
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-chrome-smoke-"));
     const profile = path.join(root, "profile");
     const server = http.createServer((req, res) => {

@@ -246,10 +246,10 @@ describe("config save/load", () => {
     expect(providerKey("codex")).toBe("codex");
   });
 
-  test("agy defaults to Gemini 4 Hydrogen and uses Gemini 3.8 Flash for auxiliary calls", () => {
+  test("agy defaults to Gemini 4 Carbon and uses Gemini 4 Hydrogen for auxiliary calls", () => {
     const { defaultAuxModelForProvider } = require("../../src/config");
-    expect(defaultAgentModelForProvider("agy-cli")).toBe("gemini-4-hydrogen-high");
-    expect(defaultAuxModelForProvider("agy-cli")).toBe("gemini-3.8-flash-medium");
+    expect(defaultAgentModelForProvider("agy-cli")).toBe("gemini-4-carbon-high");
+    expect(defaultAuxModelForProvider("agy-cli")).toBe("gemini-4-hydrogen-high");
   });
 
   test("removed internal mode settings are neither read nor persisted", () => {

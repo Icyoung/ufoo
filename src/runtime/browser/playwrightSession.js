@@ -86,7 +86,10 @@ function browserProcessEnvironment(env = process.env) {
   return childEnv;
 }
 
-function createMcpConnection({ root, outputDir, config, name, env, cliPath = "", allowBundledFallback = true }) {
+function createMcpConnection({ root, outputDir, config, name, env, cliPath = "", allowBundledFallback = true, nodeVersion = process.versions.node }) {
+  if (Number(nodeVersion.split(".")[0]) < 20) {
+    throw Object.assign(new Error("Browser automation requires Node.js 20 or newer. Upgrade Node.js and restart ufoo/ucode; core features still support Node.js 18.17+."), { code: "browser_node_unsupported" });
+  }
   const resolved = cliPath
     ? { entryPath: cliPath, version: "" }
     : resolveMcpCliEntrypoint({ env, allowBundledFallback });
@@ -566,7 +569,7 @@ function createBrowserSessions({
         await close(entry).catch(() => {});
         entry.reconnectRequired = dispatched;
         const uncertain = dispatched && !isReadCall(tool, args);
-        if (!uncertain && ["browser_disabled", "not_installed", "waiting_for_browser", "protocol_mismatch", "browser_paused", "browser_busy"].includes(error?.code)) {
+        if (!uncertain && ["browser_node_unsupported", "browser_disabled", "not_installed", "waiting_for_browser", "protocol_mismatch", "browser_paused", "browser_busy"].includes(error?.code)) {
           return failure(error.code, error.message);
         }
         return failure(
