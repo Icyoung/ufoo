@@ -83,7 +83,7 @@ test.each([
     expect(pendingAfterAck).toEqual(queuedMessages);
     expect(claimRetained).toBe(true);
     expect(mcpResult).toMatchObject({ ok: true, acknowledged: 0 });
-    expect(surface.snapshot()).toMatchObject({ busy: true, status: "Waiting for agent… · queued 2" });
+    expect(surface.snapshot()).toMatchObject({ busy: true, status: "Waiting for agent… · queued 2 · Alt+Enter immediately" });
 
     await execute(queue.claimNext());
     expect(queue.readPending().map((event) => event.data.message)).toEqual([queuedMessages[1]]);

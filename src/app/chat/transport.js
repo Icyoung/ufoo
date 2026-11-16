@@ -165,7 +165,7 @@ async function requestDaemon(projectRoot, payload, options = {}) {
           return;
         }
         if (response.type === "response") {
-          finish(null, response.data || {});
+          finish(null, options.fullResponse ? response : (response.data || {}));
           return;
         }
       }

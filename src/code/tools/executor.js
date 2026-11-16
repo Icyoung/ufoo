@@ -17,8 +17,15 @@ function writerLease(options) {
   return { lease: createResourceLease({ file: path.join(workspaceRoot, ".ufoo", "agent", "runtime", "workspace-leases.json") }),
     key: workspaceRoot, ownerId: options.taskRunId || options.sessionId || `process-${process.pid}` };
 }
+function isReadOnlyBashCall(tool, args) {
+  if (normalizeToolName(tool) !== "bash") return false;
+  const action = String((args && args.action) || "").trim().toLowerCase();
+  return action === "logs" || action === "status" || action === "list";
+}
 function runCoreTool(options = {}) {
-  if (!["write", "edit", "bash"].includes(normalizeToolName(options.tool))) return runCoreToolUnlocked(options);
+  if (!["write", "edit", "bash"].includes(normalizeToolName(options.tool)) || isReadOnlyBashCall(options.tool, options.args)) {
+    return runCoreToolUnlocked(options);
+  }
   const { lease, key, ownerId } = writerLease(options);
   const acquired = lease.acquire({ key, ownerId });
   if (!acquired.ok) return { ...acquired, error: "workspace writer is active" };
@@ -229,7 +236,7 @@ function runCoreToolUnlocked({
 
   const toolOptions = { workspaceRoot, cwd: workspaceRoot };
   if (artifactNamespace !== "ucode") toolOptions.artifactNamespace = artifactNamespace;
-  if (normalizedTool === "artifact_read" && sessionId) {
+  if ((normalizedTool === "artifact_read" || (normalizedTool === "bash" && safeArgs.background)) && sessionId) {
     toolOptions.sessionId = sessionId;
   }
   const result = runToolCall(
@@ -283,7 +290,7 @@ function runCoreToolUnlocked({
  * dispatcher so bash can terminate on the caller's AbortSignal.
  */
 async function runCoreToolAsync(options = {}) {
-  if (["write", "edit", "bash"].includes(normalizeToolName(options.tool))) {
+  if (["write", "edit", "bash"].includes(normalizeToolName(options.tool)) && !isReadOnlyBashCall(options.tool, options.args)) {
     const { lease, key, ownerId } = writerLease(options);
     return lease.run({ key, ownerId, signal: options.signal }, () => runCoreToolAsyncUnlocked(options));
   }
@@ -320,10 +327,11 @@ async function runCoreToolAsyncUnlocked(options = {}) {
   const toolOptions = {
     workspaceRoot,
     cwd: workspaceRoot,
+    ...(options.backgroundId ? { backgroundId: options.backgroundId } : {}),
   };
   if (artifactNamespace !== "ucode") toolOptions.artifactNamespace = artifactNamespace;
   if (signal) toolOptions.signal = signal;
-  if (normalizedTool === "artifact_read" && sessionId) {
+  if ((normalizedTool === "artifact_read" || (normalizedTool === "bash" && safeArgs.background)) && sessionId) {
     toolOptions.sessionId = sessionId;
   }
   const result = await runToolCallAsync(

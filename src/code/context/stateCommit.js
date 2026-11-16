@@ -267,12 +267,6 @@ function parseStructuredSideEffects(text = "") {
   return null;
 }
 
-function resolveCommitInterval(env = process.env) {
-  const parsed = Number.parseInt(String(env.UFOO_UCODE_COMMIT_INTERVAL || ""), 10);
-  if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
-  return 4;
-}
-
 function validateStateCommit(commit = {}) {
   const normalized = normalizeStateCommit(commit);
   const errors = [];
@@ -294,29 +288,6 @@ function validateStateCommit(commit = {}) {
   }
   if (normalized.nextObjective.length > 500) errors.push("nextObjective too long");
   return { ok: errors.length === 0, errors, commit: normalized };
-}
-
-function buildDeterministicToolCommit(toolEvent = {}) {
-  const source = toolEvent && typeof toolEvent === "object" ? toolEvent : {};
-  const tool = String(source.tool || "").trim().toLowerCase();
-  const preview = String(source.preview || source.summary || "").trim();
-  const artifactId = String(source.artifactId || "").trim();
-  if (!tool && !preview) return null;
-  const fact = [
-    tool ? `tool:${tool}` : "",
-    artifactId ? `artifact:${artifactId}` : "",
-    preview ? preview.slice(0, 180) : "",
-  ].filter(Boolean).join(" ");
-  if (!fact) return null;
-  return {
-    factsAdd: [fact],
-    nextObjective: "",
-  };
-}
-
-function shouldCommitAfterToolCall(session = {}, interval = resolveCommitInterval()) {
-  const count = Number(session.toolCallsSinceCommit) || 0;
-  return count >= interval;
 }
 
 function appendCommitLog(workspaceRoot = process.cwd(), sessionId = "", commitEntry = {}) {
@@ -398,11 +369,8 @@ module.exports = {
   renderTaskContract,
   normalizeStateCommit,
   validateStateCommit,
-  buildDeterministicToolCommit,
-  resolveCommitInterval,
   resolveCommitFoldThreshold,
   foldCommitsIfNeeded,
-  shouldCommitAfterToolCall,
   appendCommitLog,
   applyValidatedStateCommit,
   applyStateCommit,

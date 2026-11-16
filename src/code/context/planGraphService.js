@@ -210,9 +210,17 @@ function validateCommandNodes(command, validateToolArgs = false) {
       if (Object.hasOwn(node, "arguments")) errors.push({ code: "INVALID_NODE_ARGUMENTS", field: `${field}.arguments`, nodeId: node.id || "",
         message: `${field}.arguments is unsupported; use ${field}.args for tool parameters` });
       if (node.args != null && (typeof node.args !== "object" || Array.isArray(node.args))) errors.push({ code: "INVALID_NODE_ARGUMENTS", field: `${field}.args`, nodeId: node.id || "", message: `${field}.args must be an object` });
-      if (!Object.hasOwn(node, "arguments")) for (const key of specs?.get(node.tool)?.required || []) {
-        if (!Object.hasOwn(node.args || {}, key)) errors.push({ code: "MISSING_TOOL_ARGUMENT", field: `${field}.args.${key}`, nodeId: node.id || "",
-          message: `${field}.args.${key} is required for ${node.tool}; correct the node and resubmit the command` });
+      if (!Object.hasOwn(node, "arguments")) {
+        const requiredKeys = [...(specs?.get(node.tool)?.required || [])];
+        if (specs?.has("bash") && node.tool === "bash") {
+          const bashAction = String((node.args && node.args.action) || "run").trim().toLowerCase() || "run";
+          if (bashAction === "run") requiredKeys.push("command");
+          else if (["logs", "status", "stop"].includes(bashAction)) requiredKeys.push("backgroundId");
+        }
+        for (const key of requiredKeys) {
+          if (!Object.hasOwn(node.args || {}, key)) errors.push({ code: "MISSING_TOOL_ARGUMENT", field: `${field}.args.${key}`, nodeId: node.id || "",
+            message: `${field}.args.${key} is required for ${node.tool}; correct the node and resubmit the command` });
+        }
       }
     }
     for (const key of ["nodes", "children", "steps"]) if (Array.isArray(node[key])) node[key].forEach((child, index) => visit(child, `${field}.${key}[${index}]`));
@@ -631,9 +639,9 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
     return { ...payload, executionState, modelPayload: payload };
   }
 
-  // create/control always target the primary agent graph; patch/inspect may
-  // select a TaskLoop child via command.graphId.
-  const selected = (operation === "patch" || operation === "inspect")
+  // create/cancel_graph/clear target the primary agent graph; patch/inspect/control
+  // may select a TaskLoop child via command.graphId.
+  const selected = (operation === "patch" || operation === "inspect" || operation === "control")
     ? selectGraphForCommand(executionState, command)
     : {
       ok: true,
@@ -652,6 +660,7 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
 
   const primaryGraphId = selected.primaryGraphId
     || String(executionState.planGraph && executionState.planGraph.graphId || "");
+  const priorMode = executionState.mode || "single_action";
   // Work on the selected graph for this command; restore primary afterward if child.
   if (!selected.isPrimary) {
     executionState.planGraph = selected.graph;
@@ -662,11 +671,40 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
     if (executionState.planGraph && executionState.planGraph.graphId) {
       executionState.graphs[executionState.planGraph.graphId] = executionState.planGraph;
     }
-    if (!selected.isPrimary && primaryGraphId && executionState.graphs[primaryGraphId]) {
-      executionState.planGraph = executionState.graphs[primaryGraphId];
+    if (!selected.isPrimary) {
+      if (primaryGraphId && executionState.graphs[primaryGraphId]) {
+        executionState.planGraph = executionState.graphs[primaryGraphId];
+      } else {
+        executionState.planGraph = emptyPlanGraphState();
+        executionState.mode = priorMode === "plan_graph" && primaryGraphId ? "plan_graph" : "single_action";
+      }
     } else if (executionState.planGraph && executionState.planGraph.graphId) {
       executionState.graphs[executionState.planGraph.graphId] = executionState.planGraph;
     }
+  }
+
+  function attachChildTaskLoopHint(payload = null, resumed = null, targetGraph = null) {
+    if (
+      selected.isPrimary
+      || !payload
+      || payload.status !== "accepted"
+      || !resumed
+      || resumed.yieldReason !== "awaiting_complete_task"
+      || !targetGraph
+      || !targetGraph.owner
+      || !targetGraph.owner.taskRunId
+    ) {
+      return;
+    }
+    const ownerRunId = String(targetGraph.owner.taskRunId);
+    const parentBound = Boolean(targetGraph.parentNodeId);
+    const nextAction = parentBound
+      ? `All child nodes finished for taskRunId="${ownerRunId}". Call plan_graph operation="control" with actions=[{"op":"complete_task","taskRunId":"${ownerRunId}","result":{"summary":"..."}}] to finish this TaskRun, or patch graphId="${targetGraph.graphId}" if more steps are needed.`
+      : `All child nodes finished for standalone taskRunId="${ownerRunId}". Call task_run operation="complete" with taskRunId="${ownerRunId}" and result={"summary":"..."} to finish this TaskRun, or patch graphId="${targetGraph.graphId}" if more steps are needed.`;
+    payload.taskRunId = ownerRunId;
+    payload.awaitingCompleteTask = true;
+    payload.nextAction = nextAction;
+    payload.summary = `${payload.summary || "graph_terminal"} — ${nextAction}`;
   }
 
   function resumeChildTaskLoopIfNeeded(payload = null) {
@@ -752,11 +790,38 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
         };
       }
       if (advanced.advance) advance = advanced.advance;
+    } else if (
+      controlResult.ok
+      && touchedStatus
+      && options.autoAdvance !== false
+      && executionState.planGraph
+      && Array.isArray(executionState.planGraph.nodes)
+      && executionState.planGraph.nodes.length > 0
+      && !executionState.planGraph.waitingFor
+    ) {
+      const terminalSet = new Set(["succeeded", "failed", "blocked", "cancelled", "skipped"]);
+      const allTerminal = executionState.planGraph.nodes.every((n) => (
+        n && terminalSet.has(String(n.status || "").trim().toLowerCase())
+      ));
+      if (allTerminal) {
+        advance = { ...advance, yieldReason: "graph_terminal" };
+        executionState.planGraph.lastYieldReason = "graph_terminal";
+      }
     }
     const completedGraph = executionState.planGraph;
     const terminal = selected.isPrimary
       ? finalizeTerminalPrimaryPlan(executionState, completedGraph, advance)
       : null;
+    if (!terminal && !selected.isPrimary && advance.yieldReason === "graph_terminal") {
+      const childId = String(completedGraph.graphId || "").trim();
+      if (childId) {
+        executionState.graphs[childId] = {
+          ...completedGraph,
+          completedAt: new Date().toISOString(),
+          lastYieldReason: "graph_terminal",
+        };
+      }
+    }
     const live = terminal
       ? completedGraph
       : executionState.planGraph;
@@ -803,7 +868,15 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
       cacheCommand(executionState.planGraph, commandId, payload);
     }
     restorePrimaryGraph();
-    return { ...payload, executionState, modelPayload: payload, ok: payload.status === "accepted" };
+    const resumed = resumeChildTaskLoopIfNeeded(payload);
+    attachChildTaskLoopHint(payload, resumed, completedGraph);
+    return {
+      ...payload,
+      executionState,
+      modelPayload: payload,
+      ok: payload.status === "accepted",
+      taskLoopResume: resumed || null,
+    };
   }
 
   if (operation === "cancel_graph" || operation === "clear") {
@@ -1191,6 +1264,7 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
 
   restorePrimaryGraph();
   const resumed = resumeChildTaskLoopIfNeeded(payload);
+  attachChildTaskLoopHint(payload, resumed, completedGraph);
 
   return {
     ...payload,

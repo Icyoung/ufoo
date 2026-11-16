@@ -10,6 +10,7 @@ function makeSession({
   agents = ["agent-a", "agent-b"],
   paneOptions = () => ({ mode: "internal", initialLines: ["ready"] }),
   onInternalSubmit = () => {},
+  onInternalCancel = async () => ({ ok: true, cancelled: true }),
 } = {}) {
   const events = [];
   const publish = (name, payload) => events.push({ name, payload, lossy: false });
@@ -21,6 +22,7 @@ function makeSession({
     getInjectSockPath: () => "",
     resolvePaneOptions: paneOptions,
     onInternalSubmit,
+    onInternalCancel,
     publish,
     publishLossy,
     getLabel: (id) => `@${id}`,
@@ -29,6 +31,51 @@ function makeSession({
 }
 
 describe("createRustMultiSession", () => {
+  test("cancellation targets a live pane and preserves focus and draft", async () => {
+    const cancel = jest.fn(async () => ({ ok: true, cancelled: true }));
+    const { session, events } = makeSession({ onInternalCancel: cancel });
+    try {
+      session.setLayout("side", "agent-a");
+      session.focusAgent("agent-a");
+      session.handleRaw({ agent_id: "agent-a", input: "next instruction", cursor: 16, input_revision: 1 });
+      const before = session.getSnapshot();
+      expect(await session.handleCancel({ agent_id: "agent-a", session_id: "expired" })).toMatchObject({ ok: false });
+      expect(await session.handleCancel({ agent_id: "outside" })).toMatchObject({ ok: false });
+      expect(cancel).not.toHaveBeenCalled();
+      expect(await session.handleCancel({ agent_id: "agent-a", session_id: session.getSessionId() }))
+        .toEqual({ ok: true, cancelled: true });
+      expect(cancel).toHaveBeenCalledWith("agent-a");
+      expect(session.getSnapshot()).toEqual(before);
+      session.publishFrames();
+      expect(collect(events, "multi.pane.frame").at(-1)).toMatchObject({ input: "next instruction", input_revision: 1 });
+    } finally { session.stop(); }
+    expect(await session.handleCancel({ agent_id: "agent-a" })).toMatchObject({ ok: false });
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  test("a shared communication directory never creates external panes or accepts their detailed events/input", () => {
+    const events = [];
+    const onInternalSubmit = jest.fn();
+    const paneOptions = jest.fn(() => ({ mode: "internal", initialLines: ["ready"] }));
+    const session = createRustMultiSession({
+      projectRoot: "/tmp/does-not-matter", getActiveAgents: () => ["child", "outside"],
+      getAgentMeta: (id) => ({ agent_type: "ucode", launch_mode: id === "child" ? "internal" : "terminal" }),
+      getInjectSockPath: () => "", resolvePaneOptions: paneOptions, onInternalSubmit,
+      publish: (name, payload) => events.push({ name, payload }),
+      publishLossy: (name, payload) => events.push({ name, payload }),
+    });
+    try {
+      session.setLayout("multi");
+      session.acceptEvent("outside", { type: "text_delta", delta: "private external output" });
+      expect(session.handleRaw({ agent_id: "outside", data: "do work", submit: true }).ok).toBe(false);
+      session.publishFrames();
+      expect(collect(events, "multi.pane.frame").every(frame => frame.agent_id === "child")).toBe(true);
+      expect(JSON.stringify(events)).not.toContain("private external output");
+      expect(paneOptions.mock.calls.every(([id]) => id === "child")).toBe(true);
+      expect(onInternalSubmit).not.toHaveBeenCalled();
+    } finally { session.stop(); }
+  });
+
   test("absolute drafts survive output refresh and layout changes and submit only to their explicit child", () => {
     const submit = jest.fn();
     const { session, events } = makeSession({ onInternalSubmit: submit });

@@ -3,8 +3,8 @@
 /**
  * In-process split-pane session for the Rust TUI host.
  *
- * Both kinds use Tab to cycle focus and Esc / Ctrl+C to return focus to chat,
- * then close the split. Only Ctrl+C exits the application at the root.
+ * Both kinds let Esc return child input focus to the main pane. Ctrl+C cancels
+ * the focused child's current task; it never closes the worker or split.
  * Window modes are main, side and multi, including when no children exist.
  * They share draw and the multi.* pane wire:
  * - "multi"  — all internal agents
@@ -61,6 +61,7 @@ function createRustMultiSession(options = {}) {
     getAgentMeta = () => ({}),
     resolvePaneOptions = () => ({ mode: "internal" }),
     onInternalSubmit = () => {},
+    onInternalCancel = (id) => require("../agents/internal/taskControl").cancelInternalTask(getProjectRoot(), id),
     publish = () => {},
     publishLossy = null,
     getLabel = (id) => id,
@@ -569,6 +570,16 @@ function createRustMultiSession(options = {}) {
     return { ok: true };
   }
 
+  async function handleCancel(payload = {}) {
+    if (!active || !paneManager) return { ok: false, error: "multi not active" };
+    if (payload.session_id && payload.session_id !== sessionId) return { ok: false, error: "stale session_id" };
+    const id = String(payload.agent_id || "");
+    if (!paneManager.getPane(id) || !listInternalAgentIds().includes(id)) return { ok: false, error: "Unknown internal agent" };
+    const result = await onInternalCancel(id);
+    if (!result?.ok) acceptEvent(id, { type: "text_delta", delta: `\n${result?.error || "Cancellation failed"}\n` });
+    return result;
+  }
+
   function handleScroll(payload = {}) {
     if (!active || !paneManager) return { ok: false, error: "multi not active" };
     if (payload.session_id && payload.session_id !== sessionId) return { ok: false, error: "stale session_id" };
@@ -685,6 +696,7 @@ function createRustMultiSession(options = {}) {
     getSnapshot,
     handleViewport,
     handleRaw,
+    handleCancel,
     handleScroll,
     handleFocus,
     focusAgent,

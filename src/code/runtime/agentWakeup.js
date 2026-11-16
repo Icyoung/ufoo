@@ -94,18 +94,35 @@ function shouldAutoContinueForTaskWake(executionState = null) {
 function buildTaskRunWakeReminder(executionState = null) {
   const runs = listTaskRunsAwaitingModel(executionState);
   if (runs.length === 0 && !hasPendingAgentMailbox(executionState)) return "";
+  const graphs = executionState && executionState.graphs && typeof executionState.graphs === "object"
+    ? executionState.graphs
+    : {};
   const lines = [
     "Runtime wake (not a user message): active TaskRun(s) still need the Agent Loop.",
-    "Continue serving them now. For a TaskLoop child graph waiting on root:",
-    "call plan_graph operation=patch with graphId=<childGraphId> and expand_node on nodeId=root",
-    "(tool children). Do not ask the user to /plan off. Do not end with text only.",
+    "Continue serving them now. Do not ask the user to /plan off. Do not end with text only.",
   ];
   for (const run of runs.slice(0, 4)) {
     const label = run.title || run.objective || run.parentNodeId || run.id;
+    const child = run.childGraphId ? graphs[run.childGraphId] : null;
+    const childWaiting = child && child.waitingFor && child.waitingFor.id
+      ? String(child.waitingFor.id)
+      : "";
+    const childNodes = child && Array.isArray(child.nodes) ? child.nodes : [];
+    let actionHint = "";
+    if (run.childGraphId && childWaiting) {
+      actionHint = ` -> call plan_graph operation="patch" graphId="${run.childGraphId}" with expand_node on nodeId="${childWaiting}" (tool children)`;
+    } else if (run.childGraphId && childNodes.length > 0 && !childWaiting) {
+      actionHint = run.parentNodeId
+        ? ` -> all child nodes finished; call plan_graph operation="control" actions=[{"op":"complete_task","taskRunId":"${run.id}","result":{"summary":"..."}}] (or patch graphId="${run.childGraphId}" to add more steps)`
+        : ` -> all child nodes finished; call task_run operation="complete" taskRunId="${run.id}" result={"summary":"..."} (or patch graphId="${run.childGraphId}" to add more steps)`;
+    } else if (run.childGraphId) {
+      actionHint = ` -> call plan_graph operation="patch" graphId="${run.childGraphId}" with expand_node on nodeId="root" (tool children)`;
+    }
     lines.push(
       `- taskRunId=${run.id} phase=${run.phase || ""} status=${run.status || ""}`
       + (run.childGraphId ? ` childGraphId=${run.childGraphId}` : "")
       + (label ? ` — ${String(label).slice(0, 120)}` : "")
+      + actionHint
     );
   }
   return lines.join("\n");

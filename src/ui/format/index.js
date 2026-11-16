@@ -37,6 +37,7 @@ const TOOL_LABELS = {
   edit: "Editing file",
   bash: "Running command",
   artifact_read: "Reading artifact",
+  recall_turn: "Recalling past turn",
   plan_graph: "Updating plan",
   task_run: "Managing task",
   ask_user: "Asking user",
@@ -738,7 +739,26 @@ function formatPendingElapsed(ms = 0) {
 function normalizeBashToolCommand(args = {}, payload = {}) {
   const argObj = args && typeof args === "object" ? args : {};
   const resObj = payload && typeof payload === "object" ? payload : {};
+  const action = String(argObj.action || resObj.action || "run").trim().toLowerCase() || "run";
+  const bgId = String(argObj.backgroundId || resObj.backgroundId || "").trim();
+  if (action === "list") {
+    const countPart = Number.isFinite(resObj.runningCount) && Number.isFinite(resObj.count)
+      ? `${resObj.runningCount}/${resObj.count} running`
+      : "";
+    return ["bg list", countPart].filter(Boolean).join(" · ");
+  }
+  if (action === "logs" || action === "status" || action === "stop") {
+    const statusPart = resObj.status ? String(resObj.status) : "";
+    const offsetPart = action === "logs" && Number.isFinite(argObj.offset) ? `@${argObj.offset}` : "";
+    return [`bg ${action}`, bgId, offsetPart, statusPart].filter(Boolean).join(" · ");
+  }
   const command = String(argObj.command || argObj.cmd || "").trim();
+  if (argObj.background || resObj.kind === "background_bash") {
+    const statusPart = resObj.status
+      ? String(resObj.status)
+      : (Number.isFinite(resObj.code) ? `exit ${resObj.code}` : "");
+    return ["bg", command, bgId, statusPart].filter(Boolean).join(" · ");
+  }
   const code = Number.isFinite(resObj.code) ? `exit ${resObj.code}` : "";
   return [command, code].filter(Boolean).join(" · ");
 }
@@ -776,6 +796,17 @@ function normalizeToolLogDetail(tool = "", args = {}, payload = {}) {
     if (argObj.endLine != null) rangeBits.push(`L${argObj.endLine}`);
     const range = rangeBits.length > 0 ? rangeBits.join("-") : "";
     return [artifactId, range].filter(Boolean).join(" · ");
+  }
+
+  if (name === "recall_turn") {
+    const turnId = String(argObj.turn_id || argObj.turnId || resObj.turnId || "").trim();
+    const mode = String(argObj.mode || (turnId && !argObj.query ? "detail" : "search")).trim().toLowerCase();
+    if (mode === "detail") {
+      const pageBit = argObj.page != null ? `p${argObj.page}` : "";
+      return ["detail", turnId, pageBit].filter(Boolean).join(" · ");
+    }
+    const queryText = shortenPathDetail(String(argObj.query || argObj.topic || "").trim(), 48);
+    return ["search", queryText].filter(Boolean).join(" · ");
   }
 
   const fallback = String(argObj.path || argObj.command || argObj.cmd || "").trim();
@@ -1220,12 +1251,13 @@ function buildCompletions({
     }
 
     // Generic top-level argument lists (e.g. /resume <session-id>,
-    // /model <id> [thinking]). /model supports a secondary intensity menu.
+    // /model <id> [thinking]). /model supports a secondary intensity menu
+    // and opens its candidate list immediately when `/model` is typed.
     if (
       Array.isArray(argListForHead)
       && argListForHead.length > 0
       && !(headNode && headNode.children)
-      && (endsWithWhitespace || tail.length >= 1)
+      && (endsWithWhitespace || tail.length >= 1 || headKey === "/model")
     ) {
       const secondaryList = argumentLists && typeof argumentLists === "object"
         ? argumentLists[`${headKey}/thinking`] || argumentLists[`${headKey}/think`]

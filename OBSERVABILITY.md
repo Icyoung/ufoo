@@ -35,8 +35,8 @@ MCP 提供只读 `read_agent_metrics`；`read_agent_trace` 的结果及 JSONL fo
 | 模型 | 主模型调用、SDK turns、失败、空回复重试、上下文溢出重试、自动续跑 | SDK 内部 HTTP 次数不可见，不推算。模型阶段与工具阶段累计耗时是服务时间，不能当作互不重叠的总耗时分解。 |
 | 工具 | 执行、错误、执行异常、校验拒绝、未配对调用、相同工具参数重复、loop guard 警告/停止 | 执行异常单独计数并保留副作用未知的状态。同参数重复是调查线索，合法轮询或重读也可能重复。进行中的工具及等待用户的工具可以暂时未配对；这不等于失败。 |
 | 用量 | input、output、cacheRead、cacheCreation | 按已有 provider 解析器的字段语义分别汇总，不把 SDK/API 数据或缓存字段重复相加。未回传 usage 不按零计算。部分回传仅汇总可见部分，并标出完整用量覆盖率；不估算费用。 |
-| 缓存 | cache.hitRate、cachedTokens、promptTokens、样本和完整覆盖率 | 按 tokens 加权：命中 tokens 总量 / 同批样本的输入总量。OpenAI 的输入总量已含缓存；Anthropic 的分母为 input + cacheRead + cacheCreation。缺少缓存字段或无法确定输入口径的样本不参加缓存率计算；明确回传 cached_tokens=0 才能作为零命中样本。压缩缓存另列 compactionCache。 |
-| 压缩 | 尝试、完成、失败、耗时、压缩调用用量 | 压缩用量单独放在 compactionUsage，避免藏在主模型用量里。 |
+| 缓存 | cache.hitRate、cachedTokens、promptTokens、样本和完整覆盖率 | 按 tokens 加权：命中 tokens 总量 / 同批样本的输入总量。OpenAI 的输入总量已含缓存；Anthropic 的分母为 input + cacheRead + cacheCreation。缺少缓存字段或无法确定输入口径的样本不参加缓存率计算；明确回传 cached_tokens=0 才能作为零命中样本。 |
+| 上下文 | contextSelections、windowProjections、maxEvictionLevel、contextSelectMs | 记录话题召回次数与耗时、滑动窗口投影次数及触发的最高水位退让等级（0~3）。 |
 | 协作 | 委派数、报告数、待验收、accepted、rejected、投递不确定、报告到验收延迟 | acceptedOfReviewed = accepted / (accepted + rejected)；没有验收样本时为 null。不会用 done 报告代替 accepted。 |
 | 输出 | 流式文字量、最终回复长度、报告长度 | 按 Unicode 字符计数；报告超过协议默认 600 字符会出现 long_report 线索。最终回复与过程流分开计数。 |
 | 活动 | 最后事件距今时间、队列年龄 | running 五分钟无可见事件会标出线索；模型/SDK 可能仍在工作，不自动判定卡死。排队耗时只来自 request.accepted 或精确匹配的 bus sequence。 |
@@ -49,7 +49,7 @@ Provider/model、thinking、版本、执行引擎指纹、请求类型形成 coh
 
 1. 选一组固定的开发任务，保存任务说明、仓库起点、预期产物和验证命令；同时覆盖直接编码、委派、group、错误纠正和长会话。
 2. 固定模型、thinking、凭据来源和任务环境；运行后保存 metrics JSON、精确任务的 trace，以及代码 diff 和验证结果。
-3. 一次改一个变量，例如系统提示词、路由策略、报告约束或压缩策略；复跑同一任务集。
+3. 一次改一个变量，例如系统提示词、路由策略、报告约束或上下文窗口策略；复跑同一任务集。
 4. 对比验收、错误和重复行为，再看耗时、用量及输出长度；同时人工检查真实产物。快、少 tokens 或短报告本身不代表质量提高。
 
 `--baseline` 输出指标差值和变化比例；不同任务、样本量、模型或不完整来源可能影响结果，因此它是观测差异，不是因果结论。没有真实质量评分或独立验收的数据，不生成质量评分。

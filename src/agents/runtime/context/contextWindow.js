@@ -108,6 +108,10 @@ function normalizeContextMeter(value = null, model = "") {
   };
 }
 
+function isContextOverflow(error) {
+  return /context_length_exceeded|context_window_exceeded|maximum context|context (?:length|window|limit).*(?:exceed|too|limit)|(?:input|request).{0,40}exceeds?.{0,40}context|prompt.{0,40}too long|too many (?:input )?tokens/i.test(`${error?.code || ""} ${error?.message || ""}`);
+}
+
 module.exports = {
   toTokenCount,
   contextTokensFromUsage,
@@ -116,4 +120,5 @@ module.exports = {
   formatContextMeter,
   buildContextMeter,
   normalizeContextMeter,
+  isContextOverflow,
 };

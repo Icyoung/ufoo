@@ -115,22 +115,43 @@ function syncParentNodeFromRun(executionState = null, run = null) {
   node.runtime.phase = run.phase;
   if (run.status === "running" || run.status === "queued" || run.status === "cancelling") {
     node.status = "running";
+    if (parent.waitingFor && parent.waitingFor.id === node.id) {
+      parent.waitingFor = null;
+    }
   } else if (run.status === "succeeded") {
     node.status = "succeeded";
     node.result = run.result;
     node.runtime.result = run.result;
+    if (parent.waitingFor && parent.waitingFor.id === node.id) {
+      parent.waitingFor = null;
+    }
   } else if (run.status === "failed") {
     node.status = "failed";
     node.error = (run.error && run.error.message) || run.error || "task failed";
     node.runtime.error = run.error;
+    if (parent.waitingFor && parent.waitingFor.id === node.id) {
+      parent.waitingFor = null;
+    }
   } else if (run.status === "cancelled") {
     node.status = "cancelled";
     node.runtime.error = run.error;
+    if (parent.waitingFor && parent.waitingFor.id === node.id) {
+      parent.waitingFor = null;
+    }
   }
   setGraph(executionState, parent);
   if (executionState.planGraph && executionState.planGraph.graphId === parent.graphId) {
     executionState.planGraph = parent;
   }
+}
+
+function clearLeakedChildFromPrimarySlot(executionState = null, taskRunId = "") {
+  if (!executionState || !executionState.planGraph || !executionState.planGraph.graphId) return;
+  const owner = executionState.planGraph.owner;
+  if (!owner || owner.kind !== "task_loop") return;
+  if (taskRunId && owner.taskRunId && owner.taskRunId !== taskRunId) return;
+  executionState.planGraph = emptyPlanGraphState();
+  executionState.mode = "single_action";
 }
 
 function finalizeSuccess(executionState = null, taskRunId = "", result = {}) {
@@ -148,6 +169,7 @@ function finalizeSuccess(executionState = null, taskRunId = "", result = {}) {
   if (!cas.ok) return cas;
   releaseTaskWriteLease(executionState, taskRunId);
   syncParentNodeFromRun(executionState, cas.run);
+  clearLeakedChildFromPrimarySlot(executionState, taskRunId);
   enqueueAgentRuntime(executionState, createRuntimeEvent("task_succeeded", {
     taskId: cas.run.parentNodeId,
     taskRunId: cas.run.id,
@@ -178,6 +200,7 @@ function finalizeFailure(executionState = null, taskRunId = "", error = {}, expe
   }
   releaseTaskWriteLease(executionState, taskRunId);
   syncParentNodeFromRun(executionState, cas.run);
+  clearLeakedChildFromPrimarySlot(executionState, taskRunId);
   const eventType = cas.run.status === "cancelled" ? "task_cancelled" : "task_failed";
   enqueueAgentRuntime(executionState, createRuntimeEvent(eventType, {
     taskId: cas.run.parentNodeId,
@@ -317,7 +340,7 @@ function processTaskRun(executionState = null, taskRunId = "", options = {}) {
     casTaskRunStatus(executionState, live.id, {
       expectedStatus: "running",
       nextStatus: "running",
-      phase: after && after.waitingFor ? "waiting_model" : "executing_tools",
+      phase: "waiting_model",
     });
     syncParentNodeFromRun(executionState, getTaskRun(executionState, taskRunId));
 

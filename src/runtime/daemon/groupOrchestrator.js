@@ -5,6 +5,7 @@ const path = require("path");
 const EventBus = require("../../coordination/bus");
 const { prepareUcodeBootstrap } = require("../../code/launcher/ucodeBootstrap");
 const { loadConfig } = require("../../config");
+const { normalizeProvider } = require("../../agents/providers/runtimeConfig");
 const {
   buildGroupPromptMetadata,
   composeGroupBootstrapPrompt,
@@ -12,6 +13,7 @@ const {
   computeRosterVersion,
 } = require("../../orchestration/groups/bootstrap");
 const { validateTemplateTarget: validateGroupTemplateTarget } = require("../../orchestration/groups/templateValidation");
+const { resolveGroupModelConfig, buildGroupModelArgs, buildGroupModelEnv } = require("../../orchestration/groups/modelConfig");
 const { getUfooPaths } = require("../../coordination/state/paths");
 const { associateAgentWithGroup } = require("./agentRecoveryGroups");
 const { reconcileGroupStatus } = require("./groupStatus");
@@ -103,6 +105,7 @@ function buildLaunchPlan(templateDoc = {}) {
       type: asTrimmedString(agent.type),
       role: asTrimmedString(agent.role),
       prompt_profile: asTrimmedString(agent.prompt_profile),
+      ...(agent.model_config ? { model_config: agent.model_config } : {}),
       startup_order: startupOrder,
       depends_on: dependsOn,
       accept_from: asStringArray(agent.accept_from),
@@ -429,11 +432,20 @@ function buildExecutionPlan({
       })
       : "";
 
+    const config = loadConfig(projectRoot);
+    // Auto agy groups intentionally use agy even when standalone ucode differs.
+    // Explicit ucode members follow the same provider precedence as native ucode.
+    const nativeProvider = (item.requested_type || item.type) === "auto"
+      && normalizeProvider(config.agentProvider) === "agy"
+      ? "agy"
+      : process.env.UFOO_UCODE_PROVIDER || config.ucodeProvider || config.agentProvider;
     return {
       ...item,
       requested_type: item.requested_type || item.type,
       type: resolvedType,
       scoped_nickname: runtimeNickname,
+      ...resolveGroupModelConfig(item.model_config, resolvedType,
+        nativeProvider),
       resolved_profile: profile ? profile.resolved_profile : "",
       display_name: profile ? profile.display_name : "",
       short_name: profile ? profile.short_name : "",
@@ -495,6 +507,8 @@ function buildDefaultRuntime({
       requested_type: item.requested_type || item.type,
       type: item.type,
       role: item.role || "",
+      ...(item.model_source ? { model: item.model, reasoning_effort: item.reasoning_effort, model_source: item.model_source } : {}),
+      ...(item.model_provider ? { model_provider: item.model_provider } : {}),
       prompt_profile: item.prompt_profile || "",
       resolved_profile: item.resolved_profile || "",
       display_name: item.display_name || "",
@@ -834,6 +848,8 @@ function createGroupOrchestrator(options = {}) {
           scoped_nickname: item.scoped_nickname,
           type: item.type,
           role: item.role,
+          ...(item.model_source ? { model: item.model, reasoning_effort: item.reasoning_effort, model_source: item.model_source } : {}),
+          ...(item.model_provider ? { model_provider: item.model_provider } : {}),
           startup_order: item.startup_order,
           depends_on: item.depends_on.slice(),
           accept_from: item.accept_from.slice(),
@@ -871,7 +887,7 @@ function createGroupOrchestrator(options = {}) {
     for (let i = 0; i < compiled.executionPlan.length; i += 1) {
       const item = compiled.executionPlan[i];
       const member = runtime.members[i];
-      const extraEnv = {};
+      const extraEnv = buildGroupModelEnv(item.type, item);
       if (item.bootstrap_required) {
         extraEnv.UFOO_SKIP_DEFAULT_BOOTSTRAP = "1";
       }
@@ -956,6 +972,9 @@ function createGroupOrchestrator(options = {}) {
         }
       }
 
+      // Options precede the positional Codex bootstrap prompt; the internal
+      // runner consumes that final prompt separately from model options.
+      extraArgs = [...buildGroupModelArgs(item.type, item), ...extraArgs];
       const op = {
         action: "launch",
         internal_only: params.internal_only === true,

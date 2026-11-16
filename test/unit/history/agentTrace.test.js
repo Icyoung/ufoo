@@ -42,7 +42,9 @@ describe("read-only agent trace", () => {
     write(".ufoo/agent/main/runtimes/main/events.jsonl", [
       { eventId: "parent-start", type: "task.started", time: time(0), taskRunId: "parent", agentId: "ufoo-agent", sessionId: "main" },
       { eventId: "model", type: "model.started", time: time(1), taskRunId: "parent", agentId: "ufoo-agent", provider: "codex", model: "test", estimatedInputTokens: 120 },
-      { eventId: "compacted", type: "context.compaction.completed", time: time(7), taskRunId: "parent", agentId: "ufoo-agent", coveredCount: 30, batchCount: 10, durationMs: 25, usage: { input: 100, output: 12 } },
+      { eventId: "ctx-select", type: "context.select.completed", time: time(6), taskRunId: "parent", agentId: "ufoo-agent", mode: "tier1_local", activeTopics: ["auth"], selectedTurnIds: ["turn-1"], latencyMs: 4 },
+      { eventId: "ctx-win", type: "context.window.projected", time: time(7), taskRunId: "parent", agentId: "ufoo-agent", evictionLevel: 1, rawTurnCount: 5, totalTurns: 8, offWindowCount: 3, estimatedTokens: 2048 },
+      { eventId: "ctx-idx", type: "context.turn_indexed", time: time(8), taskRunId: "parent", agentId: "ufoo-agent", turnId: "turn-2", topic: "auth", turnKind: "user", outcome: "completed" },
     ]);
     write(".ufoo/bus/events/2026-10-10.jsonl", [
       { seq: 10, event: "message", timestamp: time(2), publisher: "ufoo-agent", target: "codex:first", data: { task_id: "child-1", message: "fix parser", runtime_context: { traceId: "parent", parentTaskRunId: "parent" } } },
@@ -61,10 +63,10 @@ describe("read-only agent trace", () => {
     expect(result.tasks).toHaveLength(1);
     expect(result.tasks[0].status).toBe("accepted");
     expect(result.events.some(e => e.type === "command.resolved")).toBe(true);
-    expect(result.events.some(e => e.type === "context.compaction.completed" && e.batchCount === 10)).toBe(true);
+    expect(result.events.some(e => e.type === "context.window.projected" && e.evictionLevel === 1)).toBe(true);
     expect(result.events.every(e => e.taskId !== "child-2" && e.agentId !== "codex:second")).toBe(true);
     expect(result.tools).toEqual([expect.objectContaining({ toolCallId: "patch", started: true, ended: true, outcome: "ok", durationMs: 1000 })]);
-    expect(result.counts).toMatchObject({ modelCalls: 1, toolCalls: 1, unresolvedTools: 0, compactions: 1 });
+    expect(result.counts).toMatchObject({ modelCalls: 1, toolCalls: 1, unresolvedTools: 0, contextSelections: 1, windowProjections: 1, turnsIndexed: 1 });
     expect(result.queues).toEqual([expect.objectContaining({ taskId: "child-1", state: "claimed" })]);
     expect(JSON.stringify(result)).not.toContain("secret-long-value");
     expect(result.events.find(e => e.type === "tool.started").args.api_key).toBe("[REDACTED]");

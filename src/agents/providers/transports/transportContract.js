@@ -21,6 +21,7 @@ const TRANSPORT_NAMES = Object.freeze([
   "openai-chat",
   "openai-responses",
   "anthropic-messages",
+  "antigravity",
 ]);
 
 function assertTransport(transport = null, name = "") {

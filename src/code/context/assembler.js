@@ -19,9 +19,6 @@ const {
   renderStateEpoch,
   applyStateCommit,
   applyValidatedStateCommit,
-  buildDeterministicToolCommit,
-  resolveCommitInterval,
-  shouldCommitAfterToolCall,
   ensureStateEpoch,
 } = require("./stateCommit");
 const {
@@ -34,7 +31,7 @@ const { renderExecutionSegmentContext } = require("./executionSegment");
 const { renderPlanModeContext } = require("./planMode");
 const { drainAgentMailboxForTurn } = require("../runtime/agentWakeup");
 const { stripVisionBase64, degradeVisionContent } = require("../providers/visionBlocks");
-const { DEFAULT_CONTEXT_POLICY } = require("../../agents/runtime/context/compaction");
+const { DEFAULT_V2_POLICY } = require("../../agents/runtime/context/slidingWindowManager");
 
 const DEFAULT_TRANSCRIPT_WINDOW = 12;
 const DEFAULT_RECENT_TOOL_EVENTS = 4;
@@ -45,10 +42,9 @@ function resolveTranscriptWindow(env = process.env) {
   return DEFAULT_TRANSCRIPT_WINDOW;
 }
 
-function defaultContextPolicy(env = process.env) {
+function defaultContextPolicy() {
   return {
-    ...DEFAULT_CONTEXT_POLICY,
-    commitInterval: resolveCommitInterval(env),
+    ...DEFAULT_V2_POLICY,
   };
 }
 
@@ -64,12 +60,15 @@ function eventToModelMessage(event = {}, options = {}) {
   if (!event || typeof event !== "object") return null;
 
   if (preferArtifact && event.artifactId) {
+    const hasFullContent = event.content !== undefined && event.content !== null && event.content !== "";
     return {
       role: event.role || "tool",
-      content: JSON.stringify({
-        artifactId: event.artifactId,
-        preview: event.preview || "",
-      }),
+      content: hasFullContent
+        ? event.content
+        : JSON.stringify({
+          artifactId: event.artifactId,
+          preview: event.preview || "",
+        }),
       tool_call_id: event.toolCallId,
     };
   }
@@ -83,70 +82,6 @@ function eventToModelMessage(event = {}, options = {}) {
   if (event.toolCalls) message.tool_calls = event.toolCalls;
   if (event.toolCallId) message.tool_call_id = event.toolCallId;
   return message;
-}
-
-function buildRollingSummary(transcriptEvents = [], existingSummary = "", session = null) {
-  const events = Array.isArray(transcriptEvents) ? transcriptEvents : [];
-  const window = resolveTranscriptWindow();
-  const parts = [];
-
-  const contract = session && session.taskContract && typeof session.taskContract === "object"
-    ? session.taskContract
-    : null;
-  if (contract && contract.objective) {
-    parts.push(`Objective: ${String(contract.objective).slice(0, 200)}`);
-  }
-
-  const epoch = session && session.stateEpoch && session.stateEpoch.snapshot
-    ? session.stateEpoch.snapshot
-    : null;
-  if (epoch) {
-    if (epoch.currentObjective) {
-      parts.push(`Current objective: ${String(epoch.currentObjective).slice(0, 160)}`);
-    }
-    if (Array.isArray(epoch.facts) && epoch.facts.length > 0) {
-      parts.push(`Facts: ${epoch.facts.slice(-4).map((f) => String(f).slice(0, 120)).join(" | ")}`);
-    }
-    if (Array.isArray(epoch.decisions) && epoch.decisions.length > 0) {
-      parts.push(`Decisions: ${epoch.decisions.slice(-3).map((d) => String(d).slice(0, 120)).join(" | ")}`);
-    }
-  }
-
-  const modified = session
-    && session.executionState
-    && Array.isArray(session.executionState.modifiedFiles)
-    ? session.executionState.modifiedFiles.slice(-8)
-    : [];
-  if (modified.length > 0) {
-    parts.push(`Modified files: ${modified.join(", ")}`);
-  }
-
-  if (events.length > window) {
-    const omitted = events.length - window;
-    parts.push(`Earlier transcript (${omitted} events omitted from model input).`);
-    const userGoals = events
-      .filter((e) => e.role === "user")
-      .map((e) => {
-        const text = typeof e.content === "string" ? e.content : "";
-        return text.split(/\r?\n/)[0].trim();
-      })
-      .filter(Boolean)
-      .slice(-3);
-    const toolErrors = events
-      .filter((e) => e.preview && /error|failed/i.test(e.preview))
-      .slice(-2)
-      .map((e) => String(e.preview).slice(0, 160));
-    if (userGoals.length > 0) parts.push(`Recent goals: ${userGoals.join(" | ")}`);
-    if (toolErrors.length > 0) parts.push(`Recent errors: ${toolErrors.join(" | ")}`);
-  }
-
-  const prior = String(existingSummary || "").trim();
-  // Keep a short prior digest only when it adds distinct content.
-  if (prior && !parts.some((part) => prior.includes(part.slice(0, 40)))) {
-    parts.unshift(prior.split(/\n/).slice(0, 3).join("\n").slice(0, 400));
-  }
-
-  return parts.join("\n").slice(0, 1800);
 }
 
 function selectRecentToolArtifactIds(events = [], limit = DEFAULT_RECENT_TOOL_EVENTS) {
@@ -473,10 +408,9 @@ function persistToolResultToContext({
   };
 }
 
-function recordToolCallInSession(session = {}, persisted = {}, workspaceRoot = process.cwd()) {
+function recordToolCallInSession(session = {}, persisted = {}) {
   if (!session || typeof session !== "object") return;
   ensureStateEpoch(session);
-  session.toolCallsSinceCommit = (Number(session.toolCallsSinceCommit) || 0) + 1;
   if (!Array.isArray(session.workingSet)) session.workingSet = [];
   if (!session.executionState || typeof session.executionState !== "object") {
     session.executionState = require("./executionSegment").emptyExecutionState();
@@ -538,16 +472,6 @@ function recordToolCallInSession(session = {}, persisted = {}, workspaceRoot = p
     retries[toolKey] = (Number(retries[toolKey]) || 0) + 1;
     session.executionState.retries = retries;
   }
-
-  const interval = resolveCommitInterval();
-  if (shouldCommitAfterToolCall(session, interval)) {
-    const commit = buildDeterministicToolCommit(persisted);
-    if (commit) {
-      applyValidatedStateCommit(session, commit, workspaceRoot);
-    } else {
-      session.toolCallsSinceCommit = 0;
-    }
-  }
 }
 
 function applyContextSideEffects(session = {}, sideEffects = {}, workspaceRoot = process.cwd()) {
@@ -601,7 +525,6 @@ module.exports = {
   DEFAULT_TRANSCRIPT_WINDOW,
   DEFAULT_RECENT_TOOL_EVENTS,
   defaultContextPolicy,
-  buildRollingSummary,
   buildRecentMessages,
   buildModelMessagesFromTranscript,
   selectRecentToolArtifactIds,

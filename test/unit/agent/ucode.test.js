@@ -88,6 +88,18 @@ describe("ucode launcher resolver", () => {
     expect(onlyModel.env.UFOO_UCODE_MODEL).toBe("claude-opus-4-6");
   });
 
+  test("selecting agy leaves model resolution to the provider when coding settings belong to another provider", () => {
+    const resolved = resolveUcodeLaunch({
+      argv: ["--provider", "agy"],
+      env: {},
+      cwd: "/repo",
+      loadConfigImpl: () => ({ ucodeProvider: "openai", ucodeModel: "gpt-6.1-sol" }),
+    });
+    expect(resolved.env.UFOO_UCODE_PROVIDER).toBe("agy");
+    expect(resolved.env.UFOO_UCODE_MODEL).toBe("");
+    expect(resolved.args).not.toContain("--model");
+  });
+
   test("does not inject bundled prompt file by default but passes through explicit settings", () => {
     const resolved = resolveUcodeLaunch({
       argv: [],

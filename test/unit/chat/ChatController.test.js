@@ -6,7 +6,7 @@ const path = require("path");
 const { createChatController } = require("../../../src/app/chat/ChatController");
 
 describe("ChatController", () => {
-  test("internal dashboard cannot address external or stale agents through @target", async () => {
+  test("communication includes external agents while stale identities remain rejected", async () => {
     const send = jest.fn();
     const published = jest.fn();
     const controller = createChatController({ ports: { send, publish: published } });
@@ -14,14 +14,20 @@ describe("ChatController", () => {
       { id: "codex:child", nickname: "coder", launch_mode: "internal" },
       { id: "claude:external", nickname: "outside", launch_mode: "terminal" },
     ] });
-    expect(controller.session.agents).toEqual(["codex:child"]);
+    expect(controller.session.agents).toEqual(["codex:child", "claude:external"]);
+    expect(controller.getAgentsSnapshot().agents).toEqual(expect.arrayContaining([expect.objectContaining({ id: "claude:external", internal: false })]));
     await controller.submitInput("@outside hello");
     await controller.submitInput("@claude:external hello");
-    expect(send).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ type: "bus_send", target: "claude:external" }));
     published.mockClear();
     controller.patchAgentActivity("claude:external", { activity_state: "working" });
-    expect(controller.session.metaMap.has("claude:external")).toBe(false);
-    expect(published).not.toHaveBeenCalled();
+    expect(controller.session.metaMap.get("claude:external").activity_state).toBe("working");
+    expect(published).toHaveBeenCalled();
+    controller.applyStatus({ active: ["codex:child"], active_meta: [{ id: "codex:child", nickname: "coder", launch_mode: "internal" }] });
+    send.mockClear();
+    await controller.submitInput("@outside stale");
+    await controller.submitInput("@claude:external stale");
     controller.session.targetAgent = "claude:external";
     await controller.submitInput("stale target");
     expect(send).not.toHaveBeenCalled();

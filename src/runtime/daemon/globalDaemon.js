@@ -7,8 +7,10 @@ const path = require("path");
 const {
   defaultAgentModelForProvider,
   loadConfig,
+  loadGlobalBrowserConfig,
   normalizeDaemonTopology,
 } = require("../../config");
+const { BrowserBroker } = require("../browser/broker");
 const { getUfooPaths } = require("../../coordination/state/paths");
 const {
   loadAgentsData,
@@ -123,6 +125,8 @@ class GlobalDaemon {
     };
     this.disposed = false;
     this.startedAt = "";
+    this.browserBrokerEnabled = options.browserBroker !== false;
+    this.browserBroker = null;
     this.rehydration = {
       state: this.rehydrateProjects ? "pending" : "disabled",
       restored: [],
@@ -513,6 +517,17 @@ class GlobalDaemon {
       beforeCleanup: () => this.disposeProjectRuntimes("global-controller-cleanup"),
     });
     this.startedAt = new Date().toISOString();
+    if (
+      this.browserBrokerEnabled
+      && isGlobalControllerProjectRoot(this.controllerRoot)
+      && !this.browserBroker
+      && loadGlobalBrowserConfig().enabled === true
+    ) {
+      this.browserBroker = new BrowserBroker();
+      void this.browserBroker.start().catch(() => {
+        this.browserBroker = null;
+      });
+    }
     if (this.rehydrateProjects) {
       this.rehydrationPromise = this.restoreRegisteredProjectRuntimes().catch((err) => {
         this.rehydration = {
@@ -542,6 +557,11 @@ class GlobalDaemon {
   stop(reason = "global-daemon-stop") {
     if (this.disposed) return;
     this.disposed = true;
+    if (this.browserBroker) {
+      const broker = this.browserBroker;
+      this.browserBroker = null;
+      void broker.stop().catch(() => {});
+    }
     this.disposeProjectRuntimes(reason);
     const controller = this.controller;
     this.controller = null;

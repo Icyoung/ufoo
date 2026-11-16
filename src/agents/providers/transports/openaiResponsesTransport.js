@@ -73,9 +73,10 @@ function createOpenAiResponsesTransport(deps = {}) {
       }
 
       if (assistantToolCalls.length === 0) return null;
+      const text = String((turnResult && turnResult.text) || "").trim();
       const assistantMessage = {
         role: "assistant",
-        content: null,
+        content: text || null,
         tool_calls: assistantToolCalls,
       };
       attachResponsesReasoningItems(

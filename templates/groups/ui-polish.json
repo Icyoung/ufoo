@@ -26,7 +26,25 @@
         "qa"
       ],
       "startup_order": 1,
-      "depends_on": []
+      "depends_on": [],
+      "model_config": {
+        "codex": {
+          "model": "gpt-6.1-sol",
+          "reasoning_effort": "xhigh"
+        },
+        "claude": {
+          "model": "claude-opus-5-5",
+          "reasoning_effort": ""
+        },
+        "agy": {
+          "model": "gemini-4-argon-high",
+          "reasoning_effort": ""
+        },
+        "override": {
+          "model": "",
+          "reasoning_effort": ""
+        }
+      }
     },
     {
       "id": "refiner",
@@ -44,7 +62,25 @@
       "startup_order": 2,
       "depends_on": [
         "designer"
-      ]
+      ],
+      "model_config": {
+        "codex": {
+          "model": "gpt-6.1-sol",
+          "reasoning_effort": "high"
+        },
+        "claude": {
+          "model": "claude-opus-5-5",
+          "reasoning_effort": ""
+        },
+        "agy": {
+          "model": "gemini-4-hydrogen-high",
+          "reasoning_effort": ""
+        },
+        "override": {
+          "model": "",
+          "reasoning_effort": ""
+        }
+      }
     },
     {
       "id": "qa",
@@ -63,7 +99,25 @@
       "depends_on": [
         "designer",
         "refiner"
-      ]
+      ],
+      "model_config": {
+        "codex": {
+          "model": "gpt-6.1-sol",
+          "reasoning_effort": "xhigh"
+        },
+        "claude": {
+          "model": "claude-opus-5-5",
+          "reasoning_effort": ""
+        },
+        "agy": {
+          "model": "gemini-4-hydrogen-high",
+          "reasoning_effort": ""
+        },
+        "override": {
+          "model": "",
+          "reasoning_effort": ""
+        }
+      }
     }
   ],
   "edges": [

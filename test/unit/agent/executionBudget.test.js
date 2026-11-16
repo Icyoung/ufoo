@@ -3,8 +3,8 @@
 const { resolveToolBudget, resolveTaskTimeoutMs } = require("../../../src/agents/runtime/core/executionBudget");
 
 describe("shared main and coding execution budgets", () => {
-  test("defaults to unlimited tools, 20 errors and a 12-hour deadline", () => {
-    expect(resolveToolBudget(undefined, {})).toEqual({ maxToolCalls: null, maxToolErrors: 20 });
+  test("defaults to unlimited tools, 5 consecutive errors and a 12-hour deadline", () => {
+    expect(resolveToolBudget(undefined, {})).toEqual({ maxToolCalls: null, maxToolErrors: 5 });
     expect(resolveTaskTimeoutMs(undefined, {})).toBe(43200000);
   });
 
@@ -20,7 +20,7 @@ describe("shared main and coding execution budgets", () => {
 
   test("invalid error and timeout settings retain the existing defaults", () => {
     const env = { UFOO_UCODE_MAX_TOOL_ERRORS: "0", UFOO_UCODE_TASK_TIMEOUT_MS: "invalid" };
-    expect(resolveToolBudget(undefined, env).maxToolErrors).toBe(20);
+    expect(resolveToolBudget(undefined, env).maxToolErrors).toBe(5);
     expect(resolveTaskTimeoutMs(undefined, env)).toBe(43200000);
   });
 });

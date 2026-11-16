@@ -13,13 +13,16 @@ const { COMMAND_TREE, COMMAND_REGISTRY } = require("../../../src/app/chat/comman
 
 describe("rustChatHost helpers", () => {
   test("submission identity wins over stale footer selection and invalid targets never fall back to main", () => {
-    const internal = (id) => ["child-a", "child-b"].includes(id);
-    expect(resolveSubmittedInputTarget({ target_agent: "child-b", has_target: true }, "child-a", internal))
+    const known = (id) => ["child-a", "child-b", "wrapper"].includes(id);
+    expect(resolveSubmittedInputTarget({ target_agent: "child-b", has_target: true }, "child-a", known))
       .toEqual({ ok: true, target: "child-b" });
-    expect(resolveSubmittedInputTarget({ input_target: "main" }, "child-a", internal))
+    expect(resolveSubmittedInputTarget({ input_target: "main" }, "child-a", known))
       .toEqual({ ok: true, target: null });
-    for (const payload of [{ has_target: true }, { target_agent: "missing" }, { target_agent: "wrapper" }]) {
-      expect(resolveSubmittedInputTarget(payload, null, internal).ok).toBe(false);
+    expect(resolveSubmittedInputTarget({ target_agent: "wrapper", has_target: true }, "child-a", known))
+      .toEqual({ ok: true, target: "wrapper" });
+    expect(resolveSubmittedInputTarget({}, "departed-wrapper", known).ok).toBe(false);
+    for (const payload of [{ has_target: true }, { target_agent: "missing" }]) {
+      expect(resolveSubmittedInputTarget(payload, null, known).ok).toBe(false);
     }
   });
   test("resume offers standalone agents and whole groups instead of a list subcommand", async () => {

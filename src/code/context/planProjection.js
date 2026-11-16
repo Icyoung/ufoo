@@ -543,12 +543,20 @@ function buildPlanUiProjection(executionState = null, options = {}) {
   const narrow = cols < 60;
   const activityMessage = String(options.activityMessage || "").trim();
 
-  const pg = state.planGraph && typeof state.planGraph === "object" ? state.planGraph : {};
+  const rawPg = state.planGraph && typeof state.planGraph === "object" ? state.planGraph : {};
+  const activeRuns = listActiveWritingTaskRuns(state);
+  const isChildGraph = Boolean(rawPg.owner && rawPg.owner.kind === "task_loop");
+  const isTerminalGraph = String(rawPg.lastYieldReason || "").trim().toLowerCase() === "graph_terminal"
+    && !rawPg.waitingFor
+    && activeRuns.length === 0;
+  let pg = (isChildGraph || isTerminalGraph) ? {} : rawPg;
+  if (!pg.graphId && activeRuns.length > 0 && activeRuns[0].childGraphId && state.graphs && state.graphs[activeRuns[0].childGraphId]) {
+    pg = state.graphs[activeRuns[0].childGraphId];
+  }
   const view = projectPlanView(pg);
   const taskNodes = view.filter((node) => node && node.type === "task" && !node.generated);
   const hasPlan = Boolean(pg.graphId) && taskNodes.length > 0;
   const progress = countTaskProgress(view);
-  const activeRuns = listActiveWritingTaskRuns(state);
   const focus = resolveFocus(view, pg, activeRuns);
   const taskRun = buildTaskRunProjection(state, view);
   const leaseHeld = hasActiveWriteLease(state);

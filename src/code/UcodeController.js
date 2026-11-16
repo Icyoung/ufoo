@@ -140,7 +140,7 @@ function createUcodeController({
     if (activeTask) {
       activeTask.cancelRequested = true;
       try {
-        activeTask.controller.abort();
+        activeTask.controller.abort("runtime_closed");
       } catch {
         // ignore
       }
@@ -223,6 +223,7 @@ function createUcodeController({
       id,
       kind: String(taskMeta.kind || "task").trim() || "task",
       label: taskLabel(taskMeta, id),
+      promptText: String(taskMeta.promptText || ""),
       enqueuedAt: Date.now(),
       startedAt: 0,
       status: "queued",
@@ -243,6 +244,34 @@ function createUcodeController({
     return promise;
   }
 
+  function drainQueuedPrompts() {
+    if (pendingTasks.length === 0) return [];
+    const drained = [];
+    const remaining = [];
+    for (const task of pendingTasks) {
+      if (task.kind === "prompt" && (task.promptText || task.label)) {
+        task.status = "injected";
+        if (!task.settled) {
+          task.settled = true;
+          task.resolve({ ok: true, injected: true });
+        }
+        drained.push({
+          id: task.id,
+          label: task.label,
+          text: String(task.promptText || task.label || ""),
+        });
+      } else {
+        remaining.push(task);
+      }
+    }
+    pendingTasks.length = 0;
+    pendingTasks.push(...remaining);
+    if (drained.length > 0) {
+      notifyQueueChange("injected");
+    }
+    return drained;
+  }
+
   return {
     projectRoot,
     view,
@@ -255,6 +284,7 @@ function createUcodeController({
     cancelTask,
     runExclusive,
     clearQueue: () => clearPending("cleared"),
+    drainQueuedPrompts,
     pauseQueue,
     resumeQueue,
     getQueueSnapshot: () => queueSnapshot("snapshot"),

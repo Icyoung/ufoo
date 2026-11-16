@@ -6,6 +6,7 @@ const { runNativeAgentTask } = require("./nativeRunner");
 const { resolveTaskTimeoutMs: resolveNlTaskTimeoutMs, DEFAULT_TASK_TIMEOUT_MS: DEFAULT_NL_TASK_TIMEOUT_MS } = require("../agents/runtime/core/executionBudget");
 const { runDecomposedTask } = require("./taskDecomposer");
 const { loadConfig, defaultAgentModelForProvider, sameModelProvider } = require("../config");
+const { resolveRuntimeConfig } = require("../agents/providers/runtimeConfig");
 const {
   resolveSessionId,
   normalizeSessionId,
@@ -82,8 +83,7 @@ function ensureContextSessionState(state = {}) {
   }
   require("./context/planProjection").ensurePlanUiState(state.executionState);
   if (!state.contextPolicy || typeof state.contextPolicy !== "object") {
-    const { defaultContextPolicy } = require("./context/assembler");
-    state.contextPolicy = defaultContextPolicy();
+    state.contextPolicy = {};
   }
   if (!Number.isFinite(state.toolCallsSinceCommit)) state.toolCallsSinceCommit = 0;
   ensureStateEpoch(state);
@@ -257,6 +257,10 @@ function resolveUcodeProviderModel({
       || ""
   ).trim();
   const resolvedProvider = resolvePlannerProvider(explicitProvider || fallbackProviderFromAgent);
+  if (resolvedProvider === "agy") {
+    const runtime = resolveRuntimeConfig({ workspaceRoot: root, provider: resolvedProvider, model });
+    return { provider: runtime.provider, model: runtime.model };
+  }
   const configuredModel = sameModelProvider(config.ucodeProvider || config.agentProvider, resolvedProvider)
     ? (config.ucodeModel || config.agentModel)
     : "";
@@ -283,6 +287,7 @@ function resolvePlannerProvider(value = "") {
   if (!text) return "";
   if (text === "claude" || text === "claude-cli" || text === "claude-code" || text === "anthropic") return "anthropic";
   if (text === "codex" || text === "codex-cli" || text === "codex-code") return "codex";
+  if (text === "agy" || text === "agy-cli" || text === "antigravity") return "agy";
   if (text === "grok" || text === "grok-cli" || text === "grok-build" || text === "grok-shell" || text === "grok-api") return "grok-build";
   if (text === "xai") return "xai";
   if (text === "openai") return "openai";
@@ -374,7 +379,7 @@ function normalizeToolLogEvent(event = {}) {
   if (!event || typeof event !== "object") return null;
   const tool = String(event.tool || event.name || "").trim().toLowerCase();
   if (!tool) return null;
-  if (tool !== "read" && tool !== "write" && tool !== "edit" && tool !== "bash" && tool !== "artifact_read") return null;
+  if (tool !== "read" && tool !== "write" && tool !== "edit" && tool !== "bash" && tool !== "artifact_read" && tool !== "recall_turn") return null;
   const phase = String(event.phase || "update").trim().toLowerCase();
   const normalizedPhase = phase === "error" ? "error" : (phase === "start" ? "start" : "");
   if (!normalizedPhase) return null;
@@ -565,7 +570,7 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
   }
 
   ensureTaskContract(state, taskText);
-  if (!shouldFrameAsUserReminder(state.executionState)) {
+  if (options.runtimeContext?.requestKind !== "system_wake" && !shouldFrameAsUserReminder(state.executionState)) {
     state.taskContract = patchTaskContractFromUserMessage(state.taskContract, taskText);
   }
 
@@ -660,6 +665,7 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
     toolEventsThisAttempt = 0;
     const historyMessages = assembled.messages;
     return runNativeAgentImpl({
+      runtimeHooks: state.runtimeHooks,
       workspaceRoot,
       provider,
       model,
@@ -675,9 +681,14 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
       onPhase,
       onContextUsage: applyContextMeter,
       executionState: state.executionState || null,
-      onArtifactPersisted: (persisted) => recordToolCallInSession(state, persisted, workspaceRoot),
+      onArtifactPersisted: (persisted) => recordToolCallInSession(
+        state,
+        persisted,
+        workspaceRoot,
+      ),
       onConversationUpdate: (update) => commitConversationOutput(state, workspaceRoot, turnId, update),
       contextPolicy: state.contextPolicy || {},
+      logicalTurnId: turnId,
       runtimeContext: options.runtimeContext || {},
       onRuntimeEvent: options.onRuntimeEvent,
       onToolEvent: (event) => {
@@ -721,6 +732,7 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
     if (useDecomposition) {
       const decomposedResult = await runDecomposedTask({
         task: effectiveTaskPrompt,
+        timeoutMs,
         onProgress: options.onProgress,
         onToolEvent: (event) => {
           pushToolLog(event);
@@ -816,7 +828,7 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
       if (typeof state.executionState.planMode !== "boolean") {
         state.executionState.planMode = priorPlanMode;
       }
-      if (!state.executionState.planModeSource && priorSource) {
+      if (state.executionState.planMode && !state.executionState.planModeSource && priorSource) {
         state.executionState.planModeSource = priorSource;
       }
     }
@@ -861,6 +873,10 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
       applyContextMeter(cliRes.contextMeter);
     }
     if (cliRes && cliRes.waitingUserInteraction) {
+      state.pendingLogicalTurnId = turnId;
+      state.pendingTurnHistoryOffset = Array.isArray(assembled.messages)
+        ? assembled.messages.filter((m) => m && m.role !== "system").length
+        : 0;
       return {
         ok: true,
         summary: resolvedSummary || "Waiting for your reply",
@@ -877,6 +893,8 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
         usage: cliRes.usage || null,
       };
     }
+    state.pendingLogicalTurnId = "";
+    state.pendingTurnHistoryOffset = null;
     return {
       ok: true,
       summary: resolvedSummary,
@@ -1008,6 +1026,10 @@ function buildSessionSnapshotFromState(state = {}) {
     contextPolicy: source.contextPolicy && typeof source.contextPolicy === "object"
       ? source.contextPolicy
       : null,
+    pendingLogicalTurnId: String(source.pendingLogicalTurnId || "").trim(),
+    pendingTurnHistoryOffset: Number.isInteger(source.pendingTurnHistoryOffset)
+      ? source.pendingTurnHistoryOffset
+      : null,
     toolCallsSinceCommit: Number.isFinite(source.toolCallsSinceCommit)
       ? Math.max(0, Math.floor(source.toolCallsSinceCommit))
       : 0,
@@ -1049,7 +1071,7 @@ function persistSessionState(state = {}) {
   return saved;
 }
 
-function resumeSessionState(state = {}, sessionId = "", workspaceRoot = process.cwd()) {
+function resumeSessionState(state = {}, sessionId = "", workspaceRoot = (state && state.workspaceRoot) || process.cwd()) {
   const targetId = normalizeSessionId(sessionId);
   if (!targetId) {
     return {
@@ -1085,6 +1107,10 @@ function resumeSessionState(state = {}, sessionId = "", workspaceRoot = process.
   state.workingSet = Array.isArray(snapshot.workingSet) ? snapshot.workingSet : [];
   state.executionState = snapshot.executionState || null;
   state.contextPolicy = snapshot.contextPolicy || null;
+  state.pendingLogicalTurnId = String(snapshot.pendingLogicalTurnId || "").trim();
+  state.pendingTurnHistoryOffset = Number.isInteger(snapshot.pendingTurnHistoryOffset)
+    ? snapshot.pendingTurnHistoryOffset
+    : null;
   state.toolCallsSinceCommit = Number.isFinite(snapshot.toolCallsSinceCommit)
     ? snapshot.toolCallsSinceCommit
     : 0;
@@ -1191,7 +1217,9 @@ async function resumeAfterUserInteraction(answerText = "", state = {}, options =
     }
     : null;
 
+  const logicalTurnId = String(state.pendingLogicalTurnId || turnId).trim();
   const cliRes = await runNativeAgentTask({
+    runtimeHooks: state.runtimeHooks,
     workspaceRoot,
     provider: state.provider,
     model: state.model,
@@ -1211,6 +1239,8 @@ async function resumeAfterUserInteraction(answerText = "", state = {}, options =
     maxToolCalls: state.maxToolCalls,
     onStreamDelta: trackingOnDelta,
     contextPolicy: state.contextPolicy || {},
+    logicalTurnId,
+    historyOffset: Number.isInteger(state.pendingTurnHistoryOffset) ? state.pendingTurnHistoryOffset : null,
     runtimeContext: options.runtimeContext || {},
     onRuntimeEvent: options.onRuntimeEvent,
     onConversationUpdate: (update) => commitConversationOutput(state, workspaceRoot, turnId, update),
@@ -1228,6 +1258,10 @@ async function resumeAfterUserInteraction(answerText = "", state = {}, options =
     resume: true,
   });
 
+  if (cliRes && !cliRes.waitingUserInteraction) {
+    state.pendingLogicalTurnId = "";
+    state.pendingTurnHistoryOffset = null;
+  }
   if (cliRes && cliRes.executionState) {
     state.executionState = cliRes.executionState;
   }

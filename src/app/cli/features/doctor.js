@@ -65,6 +65,26 @@ class RepoDoctor {
     }
   }
 
+  reportBrowser() {
+    try {
+      const { computeBrowserSetupStatus } = require("../../../runtime/browser/installState");
+      const { checkNativeHostHealth } = require("../../../runtime/browser/nativeHost");
+      const status = computeBrowserSetupStatus();
+      console.log("Browser:");
+      console.log(`- state: ${status.state} (setupChoice=${status.setupChoice}, enabled=${status.enabled ? "yes" : "no"}, backend=${status.backend})`);
+      if (status.runtimeInstalled) {
+        const hostHealth = checkNativeHostHealth();
+        console.log(`- runtime: ${status.runtimeVersion} (${status.activeEntryPath})`);
+        console.log(`- native-host: ${hostHealth.ok ? "ok" : hostHealth.issues.join(", ")}`);
+        if (!hostHealth.ok) console.log("- fix: run `ufoo browser doctor`");
+      } else {
+        console.log("- note: optional component; run `ufoo setup` or `ufoo browser install` if needed.");
+      }
+    } catch (err) {
+      console.log(`Browser: unavailable (${err && err.message ? err.message : err})`);
+    }
+  }
+
   run() {
     const skillsDir = path.join(this.repoRoot, "SKILLS");
     const contextSkill = path.join(skillsDir, "ufoo-context", "SKILL.md");
@@ -85,6 +105,7 @@ class RepoDoctor {
     this.reportTui();
     this.reportMcp();
     this.reportNative();
+    this.reportBrowser();
 
     if (this.failed) {
       console.log("Status: FAILED");

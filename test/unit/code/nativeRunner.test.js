@@ -88,6 +88,24 @@ describe("ucode native runner", () => {
   const originalThinking = process.env.UFOO_UCODE_THINKING;
   const originalThinkingBudget = process.env.UFOO_UCODE_THINKING_BUDGET_TOKENS;
   let workspaceRoot = "";
+  test("native loop registers background hooks on the host-owned service across invocations", async () => {
+    process.env.OPENAI_API_KEY = "test-only-key";
+    const hooks = { register: jest.fn(), cancel: jest.fn(), cancelOwner: jest.fn() };
+    runToolCall.mockImplementationOnce((_call, options) => ({ ok: true, backgroundId: options.backgroundId, running: true }));
+    global.fetch
+      .mockResolvedValueOnce(makeSseResponse([{ choices: [{ delta: { tool_calls: [{ index: 0, id: "bg-call", type: "function",
+        function: { name: "bash", arguments: JSON.stringify({ command: "build", background: true, wake: { conditions: [{ type: "log_contains", text: "ready" }] } }) } }] } }] }]))
+      .mockResolvedValueOnce(makeSseResponse([{ choices: [{ delta: { content: "等待完成。" } }] }]))
+      .mockResolvedValueOnce(makeSseResponse([{ choices: [{ delta: { content: "已收到完成通知。" } }] }]));
+    const first = await runNativeAgentTask({ workspaceRoot, provider: "openai", model: "test", prompt: "构建", sessionId: "wake-native", runtimeHooks: hooks, logicalTurnId: "original-turn" });
+    expect(first.ok).toBe(true);
+    expect(hooks.register).toHaveBeenCalledWith(expect.objectContaining({ ownerTaskRunId: "original-turn", source: "background" }));
+    const second = await runNativeAgentTask({ workspaceRoot, provider: "openai", model: "test", prompt: "Runtime notification: build finished", messages: first.messages,
+      sessionId: "wake-native", runtimeHooks: hooks, runtimeContext: { requestKind: "system_wake" } });
+    expect(second.ok).toBe(true);
+    expect(hooks.register).toHaveBeenCalledTimes(1);
+    expect(runToolCall).toHaveBeenCalledTimes(1);
+  });
   test("observation write failures are explicit and do not abort coding or hide its live events", async () => {
     process.env.OPENAI_API_KEY = "test-only-key";
     const blocked = path.join(workspaceRoot, ".ufoo/agent/ucode/runtimes");
@@ -221,6 +239,20 @@ describe("ucode native runner", () => {
     expect(global.fetch).toHaveBeenCalledTimes(1);
     expect(global.fetch.mock.calls[0][0]).toBe("https://api.openai.com/v1/chat/completions");
     expect(global.fetch.mock.calls[0][1].dispatcher).toBe(mockSseDispatcher);
+  });
+
+  test("native ucode exposes the shared browser capability with stable schemas across rounds", async () => {
+    global.fetch
+      .mockResolvedValueOnce(makeSseResponse([{ choices: [{ delta: { tool_calls: [{ index: 0, id: "browser-status", type: "function",
+        function: { name: "browser", arguments: '{"operation":"status"}' } }] } }] }]))
+      .mockResolvedValueOnce(makeSseResponse([{ choices: [{ delta: { content: "Chrome connection needs setup." } }] }]));
+    const result = await runNativeAgentTask({ workspaceRoot, sessionId: "browser-status", prompt: "inspect browser status", provider: "openai", model: "gpt-test" });
+    expect(result.ok).toBe(true);
+    const [first, second] = global.fetch.mock.calls.map(([, options]) => JSON.parse(options.body));
+    expect(first.tools.map(tool => tool.function.name)).toContain("browser");
+    expect(second.tools).toEqual(first.tools);
+    expect(JSON.parse(second.messages.find(message => message.tool_call_id === "browser-status").content)).toMatchObject({ ok: true, state: "disconnected" });
+    expect(runToolCall).not.toHaveBeenCalled();
   });
 
   test("returns completed conversation batches when a later provider request throws", async () => {
@@ -576,7 +608,7 @@ describe("ucode native runner", () => {
     ]);
   });
 
-  test("stops native tool loop immediately after bash tool error", async () => {
+  test("stops native tools after error limit and allows one tool-free closing request", async () => {
     process.env.UFOO_UCODE_MAX_TOOL_ERRORS = "1";
     global.fetch.mockImplementation(() => Promise.resolve(makeSseResponse([
       {
@@ -619,7 +651,8 @@ describe("ucode native runner", () => {
     expect(result.ok).toBe(false);
     expect(result.error).toContain("tool error budget exceeded (1)");
     expect(result.error).toContain("bash: command exited with 1");
-    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(global.fetch.mock.calls[1][1].body).tools || []).toEqual([]);
     expect(runToolCall).toHaveBeenCalledTimes(1);
     expect(events).toEqual([
       {
@@ -1571,48 +1604,45 @@ describe("ucode native runner", () => {
     expect(global.fetch).toHaveBeenCalledTimes(2);
   });
 
-  test("native ucode persists and reuses checkpoints through the public session resume path", async () => {
+  test("native ucode persists V2 turn index and injects <turn_context> continuity through the public session resume path", async () => {
     const { runNaturalLanguageTask, persistSessionState, resumeSessionState } = require("../../../src/code/agent");
-    const { createCheckpointStore } = require("../../../src/agents/runtime/context/checkpointStore");
+    const { createTurnIndexStore } = require("../../../src/agents/runtime/context/turnIndexStore");
     const { deleteSessionData } = require("../../../src/code/sessionStore");
     const onDelta = jest.fn();
     let readRequested = false;
     runToolCall.mockReturnValue({ ok: true, content: "verified evidence" });
-    global.fetch.mockImplementation(async (_url, options) => {
-      const payload = JSON.parse(options.body);
-      if (payload.tools?.length && !readRequested) {
+    global.fetch.mockImplementation(async () => {
+      if (!readRequested) {
         readRequested = true;
         return { ok: true, json: async () => ({ choices: [{ message: { tool_calls: [{ id: "checkpoint-read", type: "function",
           function: { name: "read", arguments: JSON.stringify({ path: "evidence.txt" }) } }] } }] }) };
       }
-      return { ok: true, json: async () => ({ choices: [{ message: { content: payload.tools?.length
-        ? "检查完成" : "checkpoint_summary_canary：检查已完成，继续保留字段约束。" } }] }) };
+      return { ok: true, json: async () => ({ choices: [{ message: { content: "检查完成" } }] }) };
     });
     const state = { workspaceRoot, sessionId: "native-checkpoint-resume", provider: "openai", model: "gpt-test",
-      contextPolicy: { limitTokens: 1000000, maxMessages: 6, keepRecentUnits: 2, batchTokens: 12000 } };
+      contextPolicy: { limitTokens: 1000000, rawTurnCount: 3, hardMaxTurns: 5, keepRecentUnits: 2 } };
     for (let i = 0; i < 12; i++) {
       const result = await runNaturalLanguageTask(i ? `继续检查步骤 ${i}` : "处理登录问题\nsession_nonce 保留原有命名", state,
         { forceDirect: true, onDelta });
       expect(result.ok).toBe(true);
     }
-    const store = createCheckpointStore({ workspaceRoot, sessionId: state.sessionId });
-    expect(store.load().coveredCount).toBeGreaterThan(0);
-    expect(store.archive()).toHaveLength(store.load().coveredCount);
-    expect(JSON.stringify(onDelta.mock.calls)).not.toContain("checkpoint_summary_canary");
+    const turnStore = createTurnIndexStore({ workspaceRoot, namespace: "ucode", sessionId: state.sessionId });
+    expect(fs.existsSync(turnStore.turnsFile)).toBe(true);
+    expect(turnStore.listTurns()).toHaveLength(12);
     expect(persistSessionState(state).ok).toBe(true);
     const restored = {};
     expect(resumeSessionState(restored, state.sessionId, workspaceRoot).ok).toBe(true);
     expect(restored.nlMessages).toHaveLength(26);
     expect(restored.nlMessages.find(message => message.tool_call_id === "checkpoint-read").content).toContain("artifactId");
-    restored.contextPolicy.maxMessages = 100;
     global.fetch.mockClear();
     expect((await runNaturalLanguageTask("继续恢复后的检查", restored, { forceDirect: true })).ok).toBe(true);
     expect(global.fetch).toHaveBeenCalledTimes(1);
     const payload = JSON.parse(global.fetch.mock.calls[0][1].body);
     expect(JSON.stringify(payload.messages)).toContain("session_nonce");
-    expect(payload.messages.some(message => message.content?.startsWith("Session continuity"))).toBe(true);
+    expect(JSON.stringify(payload.messages)).toContain("<turn_context>");
     expect(deleteSessionData(workspaceRoot, state.sessionId).ok).toBe(true);
-    expect(fs.existsSync(store.file)).toBe(false);
+    expect(fs.existsSync(turnStore.turnsFile)).toBe(false);
+    expect(fs.existsSync(turnStore.windowFile)).toBe(false);
   });
 
   test.each([undefined, null])("allows more than 100 tools with unlimited budget %s", async (maxToolCalls) => {
@@ -1638,7 +1668,7 @@ describe("ucode native runner", () => {
     expect(result.output).toBe("done");
     expect(runToolCall).toHaveBeenCalledTimes(101);
     expect(global.fetch.mock.calls.filter(([, options]) => JSON.parse(options.body).tools?.length)).toHaveLength(102);
-    expect(global.fetch.mock.calls.some(([, options]) => !JSON.parse(options.body).tools?.length)).toBe(true);
+    expect(global.fetch.mock.calls.some(([, options]) => !JSON.parse(options.body).tools?.length)).toBe(false);
   });
 
   test.each(["openai-chat", "openai-responses", "anthropic-messages"])(

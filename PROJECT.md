@@ -15,6 +15,14 @@ and agents coordinate through `.ufoo/` state plus bus/tool contracts.
 
 ## Entry Points
 
+The optional installation and automatic connection flow for the
+ufoo-owned Chrome extension is documented in
+[BROWSER_EXTENSION_PLAN.md](BROWSER_EXTENSION_PLAN.md). Users choose whether to
+install `ufoo Browser` via `ufoo setup` (or `ufoo browser install`) into
+`~/.ufoo/browser/`, and connect via Chrome Native Messaging (`com.ufoo.browser`)
+and the user-scoped broker (`~/.ufoo/browser/private/broker.sock`), while
+retaining official extension and explicit CDP compatibility paths.
+
 Published binaries are defined in `package.json`.
 
 | Binary | Main file | Responsibility |
@@ -39,10 +47,17 @@ document records implemented APIs and conservative recovery boundaries.
 
 The main agent, independent coding tasks and native `ucode` share execution
 budgets from `src/agents/runtime/core/executionBudget.js`. Model rounds and tool
-calls are unlimited by default, with a 20-tool-error limit and a 12-hour task
-deadline. `UFOO_UCODE_MAX_TOOL_CALLS`, `UFOO_UCODE_MAX_TOOL_ERRORS` and
-`UFOO_UCODE_TASK_TIMEOUT_MS` configure those shared limits; standalone ucode's
+calls are unlimited by default, with a 12-hour task deadline. Recoverable tool
+errors warn at 3 consecutive failures and stop at 5, or at 12 failures in the
+last 20 calls. Successful calls reset the streak but retain the rolling window.
+All tool rejection paths share these checks. After a failure stop, remaining
+calls in the batch receive explicit non-execution results, and at most one
+tool-free model turn may explain the blocker; it cannot restart execution. `UFOO_UCODE_MAX_TOOL_CALLS`, `UFOO_UCODE_MAX_TOOL_ERRORS` and
+`UFOO_UCODE_TASK_TIMEOUT_MS` configure those shared limits (the error setting now controls consecutive failures;
+the 12-of-20 window remains active); standalone ucode's
 explicit CLI options take precedence.
+Decomposed coding tasks inherit that same timeout and share one deadline across
+all steps; each step receives only the remaining time, including context setup.
 Native provider HTTP connections allow ten minutes to establish instead of
 Undici's implicit ten seconds. Task deadlines and explicit cancellation still
 bound requests; SSE headers/body idle timeouts remain disabled.
@@ -53,25 +68,58 @@ so partial streams and completed tools are never replayed by this transport.
 Native inference and `/model` discovery share refreshed credential resolution,
 including the Codex subscription token and account header.
 
-The main agent and native/internal `ucode` share checkpoint-based conversation
-compression in `src/agents/runtime/context/`. Before each model call, it checks
-estimated input tokens (calibrated by provider usage) and uncovered message
-count, reserving space for model output. Defaults trigger at 70% of the context
-limit or above 50 uncovered messages and retain at least six recent atomic
-message/tool units. `UFOO_CONTEXT_LIMIT_TOKENS` overrides model context estimates.
-The summarizer has no tools and receives complete batches that fit its input
-budget. Checkpoints preserve user text verbatim alongside a model summary;
-only a durable source-and-summary commit advances the model window. Main
-checkpoints live in its runtime journal; ucode checkpoints and source batches
-live in `.ufoo/agent/ucode/context/<sessionId>.jsonl`. Canonical transcripts and
-tool artifacts remain available. Provider context-overflow errors get one
-compression retry; failed compression never silently drops history. Codex and
-Claude SDK worker sessions retain their SDK-managed context behavior.
-Failed native compression attempts back off from 30 seconds to five minutes,
-with retry state preserved across invocations (`<sessionId>.retry.json` for
-ucode, the main runtime journal for main agents). During cooldown a request
-within its hard token budget keeps the original history; an over-budget request
-stops with the history intact.
+Native main, writable main child tasks and standalone/internal ucode expose the
+shared `browser` capability (`src/agents/capabilities/browser/`). Its fixed tool
+schema discovers the pinned Playwright MCP tools on demand through
+`src/runtime/browser/playwrightSession.js`; no external tool schemas or live tab
+state are injected into the system prefix. The adapter requires `browser.control`
+and is excluded from read-only children and the global router. When `browser`
+is disabled or not installed, `status` reports setup state and non-status
+operations return `browser_disabled`/`not_installed` without loading optional
+dependencies. Optional runtime components live in `~/.ufoo/browser/runtime/` and
+are managed by `src/runtime/browser/` (`componentInstaller.js`, `nativeHost.js`,
+`broker.js`). In `ufoo-extension` mode, each session connects over a
+token-authenticated per-session CDP relay (`/cdp/<sessionId>`) managed by the
+user-scoped `BrowserBroker`, with per-tab ownership (`browser_tab_busy` on
+contention); explicit `UFOO_BROWSER_CDP_ENDPOINT` retains a per-OS-user
+exclusive lease and `playwright-extension` compatibility remains available.
+Neither mode may fall back to launching Chrome. Disconnect/idle expiry disposes
+the client without closing the user's browser; runtime disposal releases any
+touched connections. Large text and screenshot artifacts live in
+`.ufoo/browser/<session-hash>/`; screenshots use the shared provider vision
+result shape. Unknown action outcomes are returned explicitly and are never
+automatically replayed. Plan mode permits inspection only. A paused runtime may
+add this stateless capability without changing or replaying its existing pending
+work.
+
+The main agent and native/internal `ucode` share Context Engine V2 in
+`src/agents/runtime/context/` (`turnIndexStore`, `turnAnalyzer`, `topicSelector`,
+and `slidingWindowManager`). Each settled turn writes an append-only Phase A
+deterministic turn record to `.ufoo/agent/<namespace>/context/<sessionId>.turns.jsonl`
+(plus projection state in `<sessionId>.window.json`); when `agentAuxModel` or
+`ucodeAuxModel` is configured, an optional bounded Phase B background enricher
+refines turn summaries without blocking the foreground loop, and Tier 2 topic
+selection activates only for ambiguous off-window queries (both make zero extra
+model calls when unconfigured). Before each model call, `slidingWindowManager`
+keeps a Step=2 aligned raw turn window (default 5 turns, expanding up to 10 on
+hot topics within a 45% history cap, excluding `system_wake` turns from the user
+turn quota) so the System prefix and older raw turns remain KV-cache stable,
+while injecting a compact, per-turn cached ephemeral `<turn_context>` block
+(`<topic_map>` + `<relevant_turns>`)
+onto the current turn's user message only; this wrapper is stripped before
+indexing, persisting to journals, or counting against history. Overflow or
+tight budgets use a deterministic Level 1–3 eviction ladder instead of inline
+tool-less LLM summarization calls, and the `turn-recall` capability
+(`src/agents/capabilities/turnRecall/`, `recall_turn`) lets `main` and `ucode`
+search off-window turns or paginate full raw transcripts on demand.
+Emergency eviction refreshes summaries against the retained window and pins
+that projection, including tool-result truncation limits, for subsequent calls
+in the same logical turn. Further budget pressure may shrink it again; ordinary
+tool rounds do not restore evicted content and rewrite the prefix. Latest tool
+results are truncated only when necessary, and irreducible oversized inputs
+stop before the provider call while retaining the original transcript.
+`UFOO_CONTEXT_LIMIT_TOKENS` overrides model context estimates, while Codex/Claude
+SDK worker sessions retain their SDK-managed context behavior.
 
 Native ucode commits each complete model/tool batch through the shared loop's
 awaited `onConversationUpdate` port before requesting another model turn.
@@ -82,6 +130,24 @@ Plan Graph commands reject misspelled `arguments` fields and missing required
 tool parameters before execution; failed-node inspection includes errors and
 recovery guidance.
 
+Native background command notifications use the shared durable hook inbox in
+`src/agents/runtime/tasks/hooks.js`. Host-injected sources own detection; the
+core owns one-shot subscriptions, deduplication, cancellation and delivery state.
+The coding adapter observes process exit, literal log matches, workspace file
+existence and IPv4 loopback port readiness. Bash defaults to exit notification
+on supported hosts, with optional `wake.conditions` and a bounded lifetime.
+Polling never invokes the model. Main/coding-child runtimes submit idempotent
+wake requests; standalone TUI/readline and internal ucode keep a host-owned
+inbox across per-turn executors via `src/code/runtime/backgroundWakeHost.js`.
+Delivery waits for a turn boundary and pending user interaction to finish.
+User cancellation revokes subscriptions; a stopped host preserves them for
+session recovery. A claimed non-durable invocation interrupted by a crash is
+marked uncertain and never automatically replayed. `bash action=status` exposes
+notification delivery states. Active or pending hooks prevent project suspension.
+The detached `src/code/tools/backgroundProcess.js` supervisor records exit
+outcomes even when its original host has exited. Notifications do not replay
+commands, kill processes on watch expiry, or launch a closed ucode application.
+
 Agent execution is observable through `ufoo trace [task-id] --json`,
 `ufoo trace --agent <id-or-nickname> --follow`, the read-only MCP tool
 `read_agent_trace`, and the `agent_runtime` IPC `trace` operation. The history
@@ -89,8 +155,8 @@ reader in `src/coordination/history/agentTrace.js` combines main/control/native
 runtime journals, SDK worker surface events, reports and live queue claims.
 Task, run, request, attempt, session, parent and tool-call IDs follow a delegated
 message through the runner. Model events record timing, provider/model,
-usage and provider-exposed thinking summaries; compaction events record covered
-source counts, timing, usage and failures. The query includes tool pairing and
+usage and provider-exposed thinking summaries; context events record topic
+selection latency/tier, sliding-window projection/eviction levels, and turn indexing. The query includes tool pairing and
 error counts. SDK lifecycle events are labelled `sdk-turn` and counted separately
 from direct API calls; SDK-internal requests are not inferred. Default output is
 concise; `--details` includes redacted arguments
@@ -102,7 +168,7 @@ evidence. Observation neither acknowledges delivery nor accepts a task.
 
 `ufoo metrics [task-id] --json` and read-only MCP `read_agent_metrics` derive
 performance summaries from those same sources. They report execution outcomes,
-latency/first output, model and tool usage, retries/repetition, compaction cost,
+latency/first output, model and tool usage, retries/repetition, context selection/projection,
 report size and delegation acceptance, with coverage for missing evidence.
 `--since`/`--until` select run starts without clipping their observed lifecycles;
 `--baseline <metrics.json>` compares saved samples. New runs record hashed
@@ -164,13 +230,15 @@ Important boundaries:
   leaking another runtime's status into its agent panes.
 - UI code may render state and call injected callbacks; it should not directly
   write bus queues, launch processes, or own daemon state.
-- The ufoo dashboard and main-agent roster manage only explicitly internal
-  Codex, Claude and ucode children. Provider choices do not add worker types.
-  Wrapper/MCP agents remain in the shared registry for cooperation,
-  but cannot enter dashboard lists, panes, watches, or automatic main-agent
-  messages. Dashboard and main-agent launches force internal mode independently
-  of wrapper launch settings. The welcome banner reuses the compact CLI logo
-  and appears only when a project has no chat or input history.
+- The dashboard communication directory and main-agent tools include all active
+  registered agents: internal children, terminal wrappers and MCP agents can be
+  addressed with `@`, routed to, and delegated work; their replies/reports can
+  wake the main agent. Only explicitly internal Codex, Claude and ucode children
+  get panes, detailed output watches or managed lifecycle operations. External
+  agents keep their own receive path and host. Unassigned external agents do
+  not block the main workspace; delegated external writers do. Dashboard and
+  main-agent launches still force internal mode. The welcome banner reuses the
+  compact CLI logo and appears only when a project has no chat or input history.
 - `Ctrl+W` cycles the dashboard through main-only, main plus one internal child,
   and main plus all children. `/window main`, `/window side` and
   `/window multi` select those modes. A split mode stays selected with
@@ -178,12 +246,17 @@ Important boundaries:
   the most recently activated live child, or the first child. `window.set` and
   `app.snapshot.window` carry explicit `main|side|multi` modes over `ufoo-ui/1`;
   `window.cycle` is evaluated by the host, independently of stale session IDs.
-  With input focus, `Ctrl+C` first clears a nonempty selected-agent draft;
-  it neither changes focus nor cancels work. Footer and popup focus keep their
-  own back-stack priority. `Esc` and empty-input `Ctrl+C` share the back stack:
-  footer, child focus, split layout, then the main input's cancellation and
-  project return layers. At the root,
-  only `Ctrl+C` exits; `Esc` preserves the workspace and draft.
+  While an internal child owns input, all editing keys stay with that child:
+  `Ctrl+C` cancels its current turn without clearing drafts, terminating the
+  worker or draining queued messages; only `Esc` returns to main. `Tab` indents
+  and `Ctrl+W` deletes the previous word in the child draft. Main input retains
+  its layout shortcuts and draft-clear/cancel/exit layers. Footer and popup
+  navigation remain separate from activated child input.
+  Standalone ucode reuses `rustMultiSession` through `ucodeAgentSession`: first
+  footer selection targets a message; repeated selection opens an internal
+  agent in the right-hand pane. External targets remain message-only. New
+  internal runners expose a private local task-control socket that aborts a
+  fresh per-turn signal; old workers require relaunch to support Ctrl+C.
   Native ucode confirms wrapper readiness through the shared agent registry
   after the Rust client's authenticated UI handshake. After ten minutes,
   slow-start diagnostics go to the wrapper's IO JSONL rather than the terminal
@@ -197,9 +270,13 @@ Important boundaries:
   setting or environment switch. Initialization
   failures retain the underlying provider error for the agent surface.
   One bottom input follows the selected agent; each draft stays independent.
-  Internal Codex keeps `workspace-write` with SDK network access enabled for
-  local services such as ADB, Gradle and development servers; an explicit
-  `networkAccessEnabled: false` thread option remains authoritative.
+  Internal Codex defaults to `danger-full-access`, `approvalPolicy: never`,
+  and network access enabled on both new and resumed SDK threads. This temporary
+  host-access policy supports simulators, system services and build caches;
+  granular permission controls and approval flows are deferred. Explicit caller
+  `threadOptions` override these defaults. Existing loaded workers must be
+  relaunched to adopt the policy. Host access remains bounded by the OS user's
+  permissions, not root privileges.
   Child drafts update locally and carry per-agent input revisions and explicit
   identities over `multi.raw`; stale output frames cannot clear newer edits.
   Client ready/resync replays all visible transcripts, including quiet agents.
@@ -224,12 +301,23 @@ Important boundaries:
   `group_member_id` and `group_template_alias` on agent registrations; recovery
   also reads exact member IDs from existing `.ufoo/groups/` records. Group
   recovery updates those member IDs before subsequent routing or stopping.
+  Group member `model_config` holds Codex, Claude and agy defaults plus a manual
+  override. A nonempty override model replaces the whole provider setting;
+  `src/orchestration/groups/modelConfig.js` validates and translates selected
+  settings into launch arguments. Preview and runtime records expose model,
+  reasoning effort and source; resume preserves the saved choice.
+  Internal auto agy members retain the native ucode host and persist
+  `model_provider: agy`; launch and resume explicitly select agy so unrelated
+  coding-provider settings cannot override the group's model assignment.
+  Explicit ucode members also resolve role defaults and overrides against their
+  effective native provider, persisting it for launch and recovery. Native
+  reasoning effort uses `UFOO_UCODE_THINKING`, not vendor CLI flags.
   Internal group launches validate every member before starting workers; auto
   members use ucode with API providers. Group status reconciles the stored roster
   against live registrations:
   groups with some live members report `partial`, and those with none report
   `inactive`. Main-agent dispatch rejects missing or inactive workers and
-  targets only internal children. A workspace lease denial directs the main
+  can address active internal or external agents. A workspace lease denial directs the main
   agent to delegate, wait, read, or use a separate worktree; it does not
   authorize closing an existing group to take over its directory.
   New native coding registrations and launch operations use `ucode`, with
@@ -358,7 +446,7 @@ remain intact. Wrappers still own terminal rendering, activity, and lifecycle.
 | Package | Owner concept | Notes |
 |---|---|---|
 | `src/app/chat/` | Chat client | Slash commands, daemon connection, multi-window panes, agent selection, `ChatController`, history/stream helpers. |
-| `src/app/cli/` | CLI entry | Main command runner and command groups. |
+| `src/app/cli/` | CLI entry | Main command runner, `setupCommands.js`, `browserCommands.js`, and command groups. |
 | `src/app/cli/features/` | CLI features | Init, doctor, and skill installation logic used by CLI/chat/daemon entry paths. |
 | `src/ui/format/` | Pure display helpers | Width, markdown, status, input, and banner formatting. |
 | `src/ui/tuiLauncher.js` | Rust TUI launch plan | `UFOO_TUI=auto\|rust`; binary resolve. |
@@ -373,6 +461,8 @@ remain intact. Wrappers still own terminal rendering, activity, and lifecycle.
 | `src/coordination/history/agentSurface.js` | Internal display observations | Redacted ordered provider events, independent of inbox delivery and reply targets. |
 | `src/ui/toolMergeBridge.js` | Tool-merge → UI events | Collapsed `tool.*` publisher for Rust hosts. |
 | `crates/ufoo-tui/` | Rust TTY UI | Required `ufoo-ui/1` child process (ratatui). |
+| `src/runtime/browser/` | Optional browser runtime | Component installer, Native Messaging Host, user-scoped `BrowserBroker`, per-session CDP relay, and Playwright MCP session lifecycle. |
+| `extensions/ufoo-browser/` | Ufoo Chrome extension | Manifest V3 Chrome extension ("Ufoo"), popup control panel, Native Messaging auto-discovery, and Apache-2.0 attribution/build docs. |
 | `src/runtime/daemon/` | Global daemon and project runtime control plane | `GlobalDaemon`, immutable `ProjectContext`, `ProjectRuntimeManager`, global Streamable HTTP listener, stateless stdio proxy, endpoint routing, MCP leases/configuration, prompt routing, launch/resume/close, cron, reports, status, group orchestration. |
 | `src/runtime/projects/` | Project registry | Project identity and runtime registry. |
 | `src/runtime/terminal/` | Terminal adapters | Host, tmux, internal, external, Terminal.app, iTerm2. |
@@ -444,8 +534,9 @@ Do not recreate compatibility directories for old paths.
   agent/
     all-agents.json
     ucode/
+      context/       # V2 turn index (.turns.jsonl) and sliding window state (.window.json)
       journal/       # append-only native ucode conversation events
-      runtimes/      # correlated native model/tool/compaction observations
+      runtimes/      # correlated native model/tool/context observations
       sessions/      # metadata/projection checkpoints, not message truth
   daemon/
   run/

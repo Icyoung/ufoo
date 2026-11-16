@@ -15,6 +15,7 @@ const AgentLauncher = require("../src/agents/launch/launcher");
 const { resolveUcodeLaunch } = require("../src/code/launcher/ucode");
 const { prepareUcodeBootstrap } = require("../src/code/launcher/ucodeBootstrap");
 const { prepareUcodeRuntimeConfig } = require("../src/code/launcher/ucodeRuntimeConfig");
+const { maybeRunFirstTimeSetup } = require("../src/app/cli/setupCommands");
 
 // CLI-wrapper startup text belongs to the parent agent. Native ucode loads
 // its own system prompt; do not inject or pass the parent's text to its tools.
@@ -175,5 +176,12 @@ if (mode !== "always" && bootstrapFile && !fs.existsSync(bootstrapFile) && !pres
   }
 }
 
-const launcher = new AgentLauncher(resolved.agentType, resolved.command);
-launcher.launch(resolved.args);
+(async () => {
+  try {
+    await maybeRunFirstTimeSetup({ surface: "ucode", argv: cleanArgs });
+  } catch {
+    // First-run setup must never block launching ucode
+  }
+  const launcher = new AgentLauncher(resolved.agentType, resolved.command);
+  launcher.launch(resolved.args);
+})();

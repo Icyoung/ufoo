@@ -2,6 +2,7 @@
 
 const DEFAULT_RESPONSES_MAX_OUTPUT_TOKENS = 32768;
 const RESPONSES_REASONING_ITEMS = Symbol("ufoo.responsesReasoningItems");
+const RESPONSES_OUTPUT_ITEMS = Symbol("ufoo.responsesOutputItems");
 
 function cloneJsonValue(value) {
   try {
@@ -27,22 +28,70 @@ function reasoningItemsFromResponse(response = null) {
     .filter(Boolean);
 }
 
+function orderedOutputItemsFromResponse(response = null) {
+  const output = response && typeof response === "object" && Array.isArray(response.output)
+    ? response.output
+    : [];
+  const items = [];
+  for (const item of output) {
+    if (!item || typeof item !== "object") continue;
+    if (
+      item.type === "reasoning"
+      && typeof item.encrypted_content === "string"
+      && item.encrypted_content.length > 0
+    ) {
+      const cloned = cloneJsonValue(item);
+      if (cloned) items.push(cloned);
+      continue;
+    }
+    if (item.type === "message") {
+      const cloned = cloneJsonValue(item);
+      if (cloned) items.push(cloned);
+      continue;
+    }
+    if (item.type === "function_call") {
+      const callId = String(item.call_id || item.id || "").trim();
+      if (callId) items.push({ type: "function_call", call_id: callId });
+    }
+  }
+  return items;
+}
+
 function attachResponsesReasoningItems(message = null, response = null) {
   if (!message || typeof message !== "object") return message;
   const items = reasoningItemsFromResponse(response);
-  if (items.length === 0) return message;
-  Object.defineProperty(message, RESPONSES_REASONING_ITEMS, {
-    value: items,
-    enumerable: false,
-    configurable: false,
-    writable: false,
-  });
+  if (items.length > 0) {
+    Object.defineProperty(message, RESPONSES_REASONING_ITEMS, {
+      value: items,
+      enumerable: false,
+      configurable: false,
+      writable: false,
+    });
+  }
+  const ordered = orderedOutputItemsFromResponse(response);
+  if (ordered.length > 0) {
+    Object.defineProperty(message, RESPONSES_OUTPUT_ITEMS, {
+      value: ordered,
+      enumerable: false,
+      configurable: false,
+      writable: false,
+    });
+  }
   return message;
 }
 
 function getResponsesReasoningItems(message = null) {
   const items = message && typeof message === "object"
     ? message[RESPONSES_REASONING_ITEMS]
+    : null;
+  return (Array.isArray(items) ? items : [])
+    .map(cloneJsonValue)
+    .filter(Boolean);
+}
+
+function getResponsesOutputItems(message = null) {
+  const items = message && typeof message === "object"
+    ? message[RESPONSES_OUTPUT_ITEMS]
     : null;
   return (Array.isArray(items) ? items : [])
     .map(cloneJsonValue)
@@ -145,28 +194,79 @@ function messagesToResponsesInput(messages = []) {
     }
 
     if (role === "assistant" && Array.isArray(message.tool_calls)) {
-      // With store=false and no previous_response_id, encrypted reasoning
-      // output must be replayed before the corresponding function calls. The
-      // items live on a non-enumerable message property, so this projection is
-      // available only to the in-flight provider loop and cannot enter the
-      // Session Journal through JSON serialization.
-      input.push(...getResponsesReasoningItems(message));
+      // With store=false and no previous_response_id, encrypted reasoning and
+      // commentary message items must be replayed in their original order
+      // before the corresponding function calls so function_call stays paired
+      // with function_call_output.
+      const normalizedCalls = [];
+      const callsById = new Map();
       for (const call of message.tool_calls) {
         if (!call || typeof call !== "object") continue;
         const fn = call.function && typeof call.function === "object" ? call.function : call;
         const callId = String(call.id || call.call_id || "").trim();
         const name = String(fn.name || "").trim();
         if (!callId || !name) continue;
-        input.push({
+        const callItem = {
           type: "function_call",
           call_id: callId,
           name,
           arguments: typeof fn.arguments === "string" ? fn.arguments : toJsonString(fn.arguments),
-        });
+        };
+        normalizedCalls.push(callItem);
+        callsById.set(callId, callItem);
       }
-      const assistantText = normalizeContentParts(message.content, "assistant");
-      if (assistantText.length > 0) {
-        input.push({ type: "message", role: "assistant", content: assistantText });
+
+      const orderedItems = getResponsesOutputItems(message);
+      const fallbackText = normalizeContentParts(message.content, "assistant");
+
+      if (orderedItems.length > 0) {
+        const turnBuffer = [];
+        const emittedCallIds = new Set();
+        let emittedMessageText = false;
+
+        for (const item of orderedItems) {
+          if (!item || typeof item !== "object") continue;
+          if (item.type === "reasoning" && item.encrypted_content) {
+            turnBuffer.push(item);
+            continue;
+          }
+          if (item.type === "message") {
+            const msgParts = normalizeContentParts(item.content, "assistant");
+            if (msgParts.length > 0) {
+              turnBuffer.push({ type: "message", role: "assistant", content: msgParts });
+              emittedMessageText = true;
+            }
+            continue;
+          }
+          if (item.type === "function_call") {
+            const callId = String(item.call_id || "").trim();
+            const mapped = callsById.get(callId);
+            if (mapped && !emittedCallIds.has(callId)) {
+              turnBuffer.push(mapped);
+              emittedCallIds.add(callId);
+            }
+          }
+        }
+
+        if (!emittedMessageText && fallbackText.length > 0) {
+          const firstCallIdx = turnBuffer.findIndex((entry) => entry && entry.type === "function_call");
+          const msgEntry = { type: "message", role: "assistant", content: fallbackText };
+          if (firstCallIdx >= 0) turnBuffer.splice(firstCallIdx, 0, msgEntry);
+          else turnBuffer.push(msgEntry);
+        }
+
+        for (const callItem of normalizedCalls) {
+          if (!emittedCallIds.has(callItem.call_id)) {
+            turnBuffer.push(callItem);
+          }
+        }
+        input.push(...turnBuffer);
+      } else {
+        input.push(...getResponsesReasoningItems(message));
+        if (fallbackText.length > 0) {
+          input.push({ type: "message", role: "assistant", content: fallbackText });
+        }
+        input.push(...normalizedCalls);
       }
       continue;
     }
@@ -490,6 +590,7 @@ module.exports = {
   DEFAULT_RESPONSES_MAX_OUTPUT_TOKENS,
   attachResponsesReasoningItems,
   getResponsesReasoningItems,
+  getResponsesOutputItems,
   reasoningItemsFromResponse,
   resolveResponsesUrl,
   messagesToResponsesInput,

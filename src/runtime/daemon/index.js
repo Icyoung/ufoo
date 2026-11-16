@@ -1122,9 +1122,9 @@ function startDaemon({
       log,
     });
     publishAgentReportResult(entry);
-    if (isInternalAgentMeta(loadAgentsData(getUfooPaths(projectRoot).agentsFile).agents[entry.agent_id])) {
-      await mainAgentHost.management.report(entry);
-    }
+    // Management validates the exact task/worker association. Communication
+    // eligibility does not depend on who owns the worker's process or pane.
+    await mainAgentHost.management.report(entry);
     return entry;
   };
 
@@ -1141,6 +1141,7 @@ function startDaemon({
     }
   }, {
     internalOnly: true,
+    includeExternalMessages: true,
     onMessage: (event) => {
       if (!event.message || event.publisher === "ufoo-agent") return;
       try { if (JSON.parse(event.message)?.stream) return; } catch { /* ordinary text */ }
@@ -1162,7 +1163,7 @@ function startDaemon({
   }));
   void mainAgentHost.recover().catch((error) => log(`main runtime recovery failed: ${error.message}`));
   runtimeServices.workspaceAccess = mainAgentHost.workspaceAccess;
-  projectRuntime.canSuspendHook = () => !mainAgentHost.snapshot().sessions.some((session) => session.tasks.some((task) => ["queued", "running"].includes(task.status)))
+  projectRuntime.canSuspendHook = () => !mainAgentHost.hasPendingHooks() && !mainAgentHost.snapshot().sessions.some((session) => session.tasks.some((task) => ["queued", "running"].includes(task.status)))
     && !mainAgentHost.snapshot().children.some((task) => ["queued", "running"].includes(task.status));
   const deliveryScheduler = new DeliveryScheduler(projectRoot, {
     log,

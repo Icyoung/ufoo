@@ -40,7 +40,12 @@ function buildThreadOptions({
     options.skipGitRepoCheck = true;
   }
   if (options.sandboxMode === undefined) {
-    options.sandboxMode = "workspace-write";
+    // Internal workers currently need host access for simulators and build
+    // caches. Keep explicit caller restrictions intact for permission controls.
+    options.sandboxMode = "danger-full-access";
+  }
+  if (options.approvalPolicy === undefined) {
+    options.approvalPolicy = "never";
   }
   // SDK workspace-write disables sockets unless explicitly enabled. Coding
   // tools need local services too (ADB, Gradle, dev servers), not just HTTP.

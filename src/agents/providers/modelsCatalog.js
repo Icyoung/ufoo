@@ -13,6 +13,8 @@ const CACHE_TTL_MS = 60_000;
 const { createHash } = require("crypto");
 const { resolveCodexClientVersion, resolveCodexUserAgent, resolveGrokClientVersion } = require("./clientIdentity");
 const { normalizeProvider } = require("./runtimeConfig");
+const { DEFAULT_AGY_BASE_URL, resolveAgyCredentials, buildAgyHeaders } = require("./credentials/agy");
+const { resolveAgyUrl } = require("./transports/antigravityTransport");
 
 const OFFICIAL_MODEL_ORIGINS = Object.freeze({
   openai: ["https://api.openai.com"],
@@ -21,6 +23,7 @@ const OFFICIAL_MODEL_ORIGINS = Object.freeze({
   kimi: ["https://api.kimi.com"],
   "grok-build": ["https://api.x.ai"],
   xai: ["https://api.x.ai"],
+  agy: [DEFAULT_AGY_BASE_URL, "https://cloudcode-pa.googleapis.com"],
 });
 
 function usesCustomModelEndpoint({ provider = "", transport = "", baseUrl = "", allowUnlistedModels = false } = {}) {
@@ -72,6 +75,7 @@ function resolveAnthropicModelsUrl(baseUrl = "") {
 }
 
 function resolveModelsUrl({ transport = "", baseUrl = "", provider = "", clientVersion = "", codexHome = "" } = {}) {
+  if (transport === "antigravity") return baseUrl ? resolveAgyUrl(baseUrl, "fetchAvailableModels") : "";
   let url;
   if (String(transport || "") === "anthropic-messages") {
     url = resolveAnthropicModelsUrl(baseUrl);
@@ -173,7 +177,15 @@ async function listProviderModels(options = {}) {
   const timeoutMs = Math.max(1000, Number(options.timeoutMs) || DEFAULT_TIMEOUT_MS);
   const fetchImpl = typeof options.fetchImpl === "function" ? options.fetchImpl : fetch;
   const skipCache = options.skipCache === true;
-  const url = resolveModelsUrl({ transport, baseUrl, provider, clientVersion: options.clientVersion, codexHome: options.codexHome });
+  const antigravity = transport === "antigravity";
+  let url = "";
+  let agy;
+  try {
+    url = resolveModelsUrl({ transport, baseUrl, provider, clientVersion: options.clientVersion, codexHome: options.codexHome });
+    if (url && antigravity) agy = resolveAgyCredentials({ apiKey, env: options.env });
+  } catch (error) {
+    return { ok: false, models: [], url, error: error.message, status: 0, cached: false };
+  }
 
   if (!url) {
     return {
@@ -186,7 +198,8 @@ async function listProviderModels(options = {}) {
     };
   }
 
-  const key = cacheKey({ transport, baseUrl, url, apiKey, provider, requestHeaders });
+  const key = cacheKey({ transport, baseUrl, url, apiKey: agy?.accessToken || apiKey, provider,
+    requestHeaders: agy ? { project: agy.projectId, userAgent: agy.userAgent } : requestHeaders });
   if (!skipCache) {
     const hit = modelsCache.get(key);
     if (hit && (Date.now() - hit.at) < CACHE_TTL_MS) {
@@ -210,7 +223,12 @@ async function listProviderModels(options = {}) {
     do {
       if (seenPages.has(nextUrl)) throw new Error("models route repeated a pagination cursor");
       seenPages.add(nextUrl);
-      const response = await fetchImpl(nextUrl, {
+      const response = await fetchImpl(nextUrl, agy ? {
+        method: "POST",
+        headers: { Accept: "application/json", ...buildAgyHeaders(agy) },
+        body: JSON.stringify({ project: agy.projectId }),
+        signal: controller?.signal,
+      } : {
         method: "GET",
         headers: { ...buildListHeaders({ transport, apiKey, provider, clientVersion: options.clientVersion, codexHome: options.codexHome }), ...requestHeaders },
         signal: controller ? controller.signal : undefined,
@@ -236,11 +254,14 @@ async function listProviderModels(options = {}) {
         return result;
       }
 
-      for (const id of extractModelIds(payload, { visibleOnly: provider.toLowerCase() === "codex" })) {
+      const pageModels = agy && payload?.models && typeof payload.models === "object" && !Array.isArray(payload.models)
+        ? Object.keys(payload.models)
+        : extractModelIds(payload, { visibleOnly: provider.toLowerCase() === "codex" });
+      for (const id of pageModels) {
         if (!models.includes(id)) models.push(id);
       }
       nextUrl = "";
-      if (payload && payload.has_more) {
+      if (!agy && payload && payload.has_more) {
         const cursor = payload.last_id || payload.data?.at(-1)?.id;
         if (!cursor) throw new Error("models route omitted its pagination cursor");
         const pageUrl = new URL(url);

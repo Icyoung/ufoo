@@ -196,6 +196,140 @@ function createTestOrchestrator(handleOps) {
     expect(handleOps).not.toHaveBeenCalled();
   });
 
+  test.each(["codex-cli", "claude-cli", "agy-cli"])("built-in group model defaults reach preview, launch and persisted state with %s", async provider => {
+    const template = require("../../../templates/groups/build-lane.json");
+    writeJson(path.join(builtinDir, "build-lane.json"), template);
+    writeProjectConfig(projectRoot, { agentProvider: provider, agentModel: "project-wide-model", ucodeProvider: "openai", ucodeModel: "unrelated-coding-model" });
+    let n = 0;
+    const handleOps = jest.fn(async (_root, [op]) => {
+      const id = `${op.agent === "claude" ? "claude-code" : op.agent}:model-${++n}`;
+      upsertAgentMeta(projectRoot, id, { nickname: op.nickname, status: "active", activity_state: "ready" });
+      return [{ action: "launch", ok: true, subscriber_ids: [id], mode: "internal" }];
+    });
+    const orchestrator = createTestOrchestrator(handleOps);
+    const preview = await orchestrator.runGroup({ alias: "build-lane", internal_only: true, dry_run: true });
+    const type = provider === "codex-cli" ? "codex" : provider === "agy-cli" ? "agy" : "claude";
+    expect(preview.ok).toBe(true);
+    expect(preview.members.map(member => member.model)).toEqual(template.agents.map(member => member.model_config[type].model));
+    const result = await orchestrator.runGroup({ alias: "build-lane", internal_only: true });
+    expect(result.ok).toBe(true);
+    expect(handleOps).toHaveBeenCalledTimes(3);
+    handleOps.mock.calls.forEach(([, [op]], index) => {
+      const setting = template.agents[index].model_config[type];
+      expect(op.extra_args.slice(0, 2)).toEqual(["--model", setting.model]);
+      expect(result.group.members[index]).toMatchObject({ ...setting, model_source: type });
+      if (type === "codex") {
+        expect(op.extra_args.slice(2, 4)).toEqual(["-c", `model_reasoning_effort="${setting.reasoning_effort}"`]);
+        const { resolveInternalBootstrap, resolveInternalModel, resolveInternalCodexEffort } = require("../../../src/agents/internal/internalRunner");
+        const bootstrap = resolveInternalBootstrap({ projectRoot, agentType: "codex", extraArgs: op.extra_args, env: {} });
+        expect(bootstrap.promptText).toContain("UFOO");
+        expect(resolveInternalModel({ projectRoot, provider, extraArgs: bootstrap.extraArgs, env: {} })).toBe(setting.model);
+        expect(resolveInternalCodexEffort(bootstrap.extraArgs)).toBe(setting.reasoning_effort);
+      } else if (type === "agy") {
+        expect(op.agent).toBe("ucode");
+        expect(op.extra_env).toMatchObject({ UFOO_UCODE_PROVIDER: "agy", UFOO_UCODE_BOOTSTRAP_FILE: expect.any(String) });
+        expect(result.group.members[index].model_provider).toBe("agy");
+        const { resolveInternalModel } = require("../../../src/agents/internal/internalRunner");
+        const model = resolveInternalModel({ projectRoot, provider: "ucode", extraArgs: op.extra_args, env: {} });
+        expect(model).toBe(setting.model);
+        expect(require("../../../src/code/agent").resolveUcodeProviderModel({ workspaceRoot: projectRoot, provider: op.extra_env.UFOO_UCODE_PROVIDER, model }))
+          .toMatchObject({ provider: "agy", model: setting.model });
+      } else {
+        expect(op.extra_args).toContain("--append-system-prompt");
+        expect(op.extra_args).not.toContain("-c");
+      }
+    });
+  });
+
+  test.each([
+    ["agy-cli", "", "", "agy", "agy", false],
+    ["agy-cli", "codex", "", "codex", "codex", false],
+    ["codex-cli", "anthropic", "", "anthropic", "claude", false],
+    ["codex-cli", "anthropic", "agy", "agy", "agy", false],
+    ["agy-cli", "openai", "", "openai", "override", true],
+  ])("explicit ucode resolves provider, launch and persisted settings (%s/%s/%s)", async (agentProvider, ucodeProvider, envProvider, expectedProvider, source, override) => {
+    const template = JSON.parse(JSON.stringify(require("../../../templates/groups/build-lane.json")));
+    for (const member of template.agents) {
+      member.type = "ucode";
+      if (override) member.model_config.override = { model: "manual-native-model", reasoning_effort: "high" };
+    }
+    writeJson(path.join(builtinDir, "build-lane.json"), template);
+    writeProjectConfig(projectRoot, { agentProvider, ucodeProvider, ucodeModel: "standalone-model" });
+    const previousGlobal = process.env.UFOO_GLOBAL_CONFIG_PATH;
+    process.env.UFOO_GLOBAL_CONFIG_PATH = path.join(projectRoot, "global-config.json");
+    writeJson(process.env.UFOO_GLOBAL_CONFIG_PATH, { ucodeProvider, ucodeModel: "standalone-model" });
+    const previous = process.env.UFOO_UCODE_PROVIDER;
+    if (envProvider) process.env.UFOO_UCODE_PROVIDER = envProvider;
+    else delete process.env.UFOO_UCODE_PROVIDER;
+    try {
+      let n = 0;
+      const handleOps = jest.fn(async (_root, [op]) => {
+        const id = `ucode:native-${++n}`;
+        upsertAgentMeta(projectRoot, id, { nickname: op.nickname, status: "active", activity_state: "ready" });
+        return [{ action: "launch", ok: true, subscriber_ids: [id], mode: "internal" }];
+      });
+      const orchestrator = createTestOrchestrator(handleOps);
+      const preview = await orchestrator.runGroup({ alias: "build-lane", internal_only: true, dry_run: true });
+      const result = await orchestrator.runGroup({ alias: "build-lane", internal_only: true });
+      expect(preview.ok).toBe(true);
+      expect(result.ok).toBe(true);
+      expect(handleOps).toHaveBeenCalledTimes(3);
+      handleOps.mock.calls.forEach(([, [op]], index) => {
+        const setting = template.agents[index].model_config[source];
+        const expected = { ...setting, model_source: source, model_provider: expectedProvider, type: "ucode" };
+        expect(preview.members[index]).toMatchObject(expected);
+        expect(result.group.members[index]).toMatchObject(expected);
+        expect(op.extra_args).toEqual(["--model", setting.model]);
+        expect(op.extra_env).toMatchObject({ UFOO_UCODE_PROVIDER: expectedProvider,
+          ...(setting.reasoning_effort ? { UFOO_UCODE_THINKING: setting.reasoning_effort } : {}) });
+        expect(require("../../../src/code/agent").resolveUcodeProviderModel({ workspaceRoot: projectRoot, provider: op.extra_env.UFOO_UCODE_PROVIDER, model: op.extra_args[1] }))
+          .toEqual({ provider: expectedProvider, model: setting.model });
+      });
+    } finally {
+      if (previousGlobal === undefined) delete process.env.UFOO_GLOBAL_CONFIG_PATH;
+      else process.env.UFOO_GLOBAL_CONFIG_PATH = previousGlobal;
+      if (previous === undefined) delete process.env.UFOO_UCODE_PROVIDER;
+      else process.env.UFOO_UCODE_PROVIDER = previous;
+    }
+  });
+
+  test("manual model override wins over both provider defaults in the launch plan", async () => {
+    const template = buildTemplate();
+    for (const member of template.agents) member.model_config = {
+      codex: { model: "codex-default", reasoning_effort: "high" },
+      claude: { model: "claude-default", reasoning_effort: "high" },
+      override: { model: "manual-model" },
+    };
+    writeJson(path.join(builtinDir, "dev-basic.json"), template);
+    const result = await createTestOrchestrator(jest.fn()).runGroup({ alias: "dev-basic", dry_run: true });
+    expect(result.ok).toBe(true);
+    for (const member of result.members) expect(member).toMatchObject({ model: "manual-model", reasoning_effort: "", model_source: "override" });
+  });
+
+  test.each(["codex-cli", "claude-cli", "agy-cli"])("every built-in group resolves every member's model for %s", async provider => {
+    const dir = path.join(__dirname, "../../../templates/groups");
+    writeProjectConfig(projectRoot, { agentProvider: provider });
+    const handleOps = jest.fn();
+    const orchestrator = createTestOrchestrator(handleOps);
+    const type = provider === "codex-cli" ? "codex" : provider === "agy-cli" ? "agy" : "claude";
+    let count = 0;
+    for (const file of fs.readdirSync(dir).filter(name => name.endsWith(".json"))) {
+      const template = JSON.parse(fs.readFileSync(path.join(dir, file), "utf8"));
+      writeJson(path.join(builtinDir, file), template);
+      const result = await orchestrator.runGroup({ alias: template.template.alias, internal_only: true, dry_run: true });
+      expect(result.ok).toBe(true);
+      expect(result.members).toHaveLength(template.agents.length);
+      for (const member of result.members) {
+        const expected = template.agents.find(agent => agent.nickname === member.nickname).model_config[type];
+        expect(member).toMatchObject({ ...expected, type: type === "agy" ? "ucode" : type, model_source: type });
+        expect(member.model).toBeTruthy();
+        count++;
+      }
+    }
+    expect(count).toBe(24);
+    expect(handleOps).not.toHaveBeenCalled();
+  });
+
   test("runGroup launches members, injects bootstrap prompts, and persists runtime state", async () => {
     const handleOps = jest.fn(async (_root, ops) => {
       const op = ops[0];
@@ -783,7 +917,9 @@ function createTestOrchestrator(handleOps) {
   });
 
   test("runGroup uses initial-prompt-arg strategy with -i flag for agy members", async () => {
-    writeJson(path.join(builtinDir, "agy-group.json"), buildAgyTemplate("agy-group"));
+    const template = buildAgyTemplate("agy-group");
+    template.agents[0].model_config = { agy: { model: "gemini-4-argon-high" } };
+    writeJson(path.join(builtinDir, "agy-group.json"), template);
     const handleOps = jest.fn(async (_root, ops) => {
       const op = ops[0];
       if (op.action === "launch") {
@@ -801,7 +937,7 @@ function createTestOrchestrator(handleOps) {
     const result = await orchestrator.runGroup({ alias: "agy-group", instance: "grp-agy" });
 
     expect(result.ok).toBe(true);
-    // Verify the launch op shape: agent type = "agy", extra_args = ["-i", "<bootstrap>"]
+    // Model selection must preserve the interactive bootstrap arguments.
     expect(handleOps).toHaveBeenCalledWith(
       projectRoot,
       [expect.objectContaining({
@@ -815,9 +951,9 @@ function createTestOrchestrator(handleOps) {
     const launchCall = handleOps.mock.calls.find(([, ops]) => ops[0].action === "launch");
     const extraArgs = launchCall[1][0].extra_args;
     // -i must be followed by a non-empty bootstrap prompt.
-    expect(extraArgs[0]).toBe("-i");
-    expect(extraArgs[1]).toEqual(expect.any(String));
-    expect(extraArgs[1].length).toBeGreaterThan(0);
+    expect(extraArgs.slice(0, 3)).toEqual(["--model", "gemini-4-argon-high", "-i"]);
+    expect(extraArgs[3]).toEqual(expect.any(String));
+    expect(extraArgs[3].length).toBeGreaterThan(0);
     // No post-launch inject — agy receives bootstrap as a launch flag.
     expect(injectMock).not.toHaveBeenCalled();
   });

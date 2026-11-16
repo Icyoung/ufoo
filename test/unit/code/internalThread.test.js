@@ -12,6 +12,28 @@ jest.mock("../../../src/code/agent", () => ({
 const agent = require("../../../src/code/agent");
 const { createInternalCodingThread } = require("../../../src/code/internalThread");
 
+test("internal ucode polls the shared inbox only between turns and never answers an interaction", async () => {
+  const fs = require("fs"), path = require("path"), os = require("os");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-internal-wake-"));
+  let savedState;
+  const thread = createInternalCodingThread({ workspaceRoot: root, runTask: async (_input, state) => {
+    savedState = state;
+    const base = path.join(root, ".ufoo", "agent", "bg", "bg_test"); fs.mkdirSync(path.dirname(base), { recursive: true });
+    fs.writeFileSync(`${base}.json`, JSON.stringify({ status: "exited", exitCode: 0 }));
+    state.runtimeHooks.register({ id: "bg_test", source: "background", ownerTaskRunId: "original", spec: { backgroundId: "bg_test", onExit: true, conditions: [] } });
+    return { ok: true, summary: "waiting" };
+  } });
+  try {
+    for await (const _event of thread.runStreamed("build")) { /* drain turn */ }
+    savedState.executionState = { pendingUserInteraction: { id: "question", status: "pending", type: "ask_user" } };
+    const deliver = jest.fn(async (_event, claim) => claim());
+    await thread.pollWakes(deliver); expect(deliver).not.toHaveBeenCalled();
+    savedState.executionState = {};
+    await thread.pollWakes(deliver); await thread.pollWakes(deliver);
+    expect(deliver).toHaveBeenCalledTimes(1);
+  } finally { await thread.close(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test("native phases, live context meter and plan callbacks survive the headless adapter", async () => {
   const thread = createInternalCodingThread({ runTask: async (input, state, callbacks) => {
     state.executionState = require("../../../src/code/context/executionSegment").emptyExecutionState();

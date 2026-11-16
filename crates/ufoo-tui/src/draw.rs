@@ -11,6 +11,7 @@ use unicode_width::UnicodeWidthStr;
 pub(crate) use crate::agent_surface::pane_content_area;
 use crate::agent_surface::{
     build_transcript_lines, build_transcript_lines_with_text_color, draw_input, pane_border_style,
+    wrap_entry_visual_lines,
 };
 #[cfg(test)]
 use crate::agent_surface::{
@@ -50,8 +51,19 @@ pub fn draw(frame: &mut Frame, state: &mut AppState) -> Option<(u16, u16)> {
             .interaction
             .as_ref()
             .map(|i| {
-                let n = if i.lines.is_empty() { 1 } else { i.lines.len() };
-                (n as u16).clamp(1, 6)
+                if i.options.is_empty() && i.kind == "settings" {
+                    let n = if i.lines.is_empty() { 1 } else { i.lines.len() };
+                    (n as u16).clamp(1, 6)
+                } else {
+                    let inner_w = area.width.saturating_sub(2).max(20) as usize;
+                    let lines = build_interaction_card_lines(
+                        i,
+                        inner_w,
+                        !state.prompt.text.trim().is_empty(),
+                    );
+                    let max_h = area.height.saturating_sub(8).clamp(4, 16);
+                    (lines.len() as u16).saturating_add(2).clamp(3, max_h)
+                }
             })
             .unwrap_or(0)
     };
@@ -378,29 +390,102 @@ fn draw_plan_band(frame: &mut Frame, area: Rect, state: &AppState) {
     frame.render_widget(paragraph, area);
 }
 
+fn build_interaction_card_lines(
+    interaction: &crate::model::InteractionPrompt,
+    inner_width: usize,
+    has_custom_draft: bool,
+) -> Vec<Line<'static>> {
+    let width = inner_width.max(20);
+    let mut out = Vec::new();
+    let prompt_style = Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+    for row in wrap_entry_visual_lines(&interaction.prompt, " ? ", "   ", width, true) {
+        out.push(Line::from(Span::styled(row, prompt_style)));
+    }
+    for (idx, opt) in interaction.options.iter().enumerate() {
+        let active = !has_custom_draft && idx == interaction.selected_option;
+        let first_prefix = format!(" {} [{}] ", if active { "›" } else { " " }, opt.key);
+        let cont_prefix = " ".repeat(first_prefix.width());
+        let style = if active {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Rgb(210, 214, 220))
+        };
+        for row in wrap_entry_visual_lines(&opt.label, &first_prefix, &cont_prefix, width, true) {
+            out.push(Line::from(Span::styled(row, style)));
+        }
+    }
+    let hint = if !interaction.options.is_empty() {
+        if interaction.allow_free_chat {
+            "   ↑/↓ 选择 · Enter 确认 · 或在下方输入框直接输入回复 · Esc 取消"
+        } else {
+            "   ↑/↓ 选择 · Enter 确认 · Esc 取消"
+        }
+    } else {
+        "   在下方输入框输入回复 · Enter 提交 · Esc 取消"
+    };
+    out.push(Line::from(Span::styled(
+        hint.to_string(),
+        Style::default().fg(Color::DarkGray),
+    )));
+    out
+}
+
 fn draw_interaction_band(frame: &mut Frame, area: Rect, state: &AppState) {
     let Some(interaction) = state.interaction.as_ref() else {
         return;
     };
-    let source: Vec<String> = if interaction.lines.is_empty() {
-        vec![format!("{}: {}", interaction.kind, interaction.prompt)]
-    } else {
-        interaction.lines.clone()
+    if interaction.options.is_empty() && interaction.kind == "settings" {
+        let source: Vec<String> = if interaction.lines.is_empty() {
+            vec![format!("{}: {}", interaction.kind, interaction.prompt)]
+        } else {
+            interaction.lines.clone()
+        };
+        let lines: Vec<Line> = source
+            .iter()
+            .take(area.height as usize)
+            .map(|line| {
+                Line::from(Span::styled(
+                    format!(" {line}"),
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ))
+            })
+            .collect();
+        let paragraph = Paragraph::new(lines);
+        frame.render_widget(paragraph, area);
+        return;
+    }
+
+    let title = match interaction.kind.as_str() {
+        "choice" => " choice ",
+        "approval" | "confirm" => " approval ",
+        _ => " question ",
     };
-    let lines: Vec<Line> = source
-        .iter()
-        .take(area.height as usize)
-        .map(|line| {
-            Line::from(Span::styled(
-                format!(" {line}"),
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ))
-        })
-        .collect();
-    let paragraph = Paragraph::new(lines);
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(area);
+    let visible_rows = inner.height as usize;
+    if visible_rows == 0 {
+        frame.render_widget(block, area);
+        return;
+    }
+    let all_lines = build_interaction_card_lines(
+        interaction,
+        inner.width as usize,
+        !state.prompt.text.trim().is_empty(),
+    );
+    let skip = all_lines.len().saturating_sub(visible_rows);
+    let visible: Vec<Line> = all_lines.into_iter().skip(skip).take(visible_rows).collect();
+    let paragraph = Paragraph::new(visible).block(block);
     frame.render_widget(paragraph, area);
 }
 
@@ -561,7 +646,13 @@ fn main_status_text(state: &AppState) -> String {
         String::new()
     };
     let ask = if let Some(interaction) = state.interaction.as_ref() {
-        format!(" | {}: {}", interaction.kind, interaction.prompt)
+        if !interaction.options.is_empty() {
+            " · ↑/↓ select · Enter confirm · Esc cancel".to_string()
+        } else if interaction.kind == "settings" {
+            format!(" | {}: {}", interaction.kind, interaction.prompt)
+        } else {
+            " · Enter submit · Esc cancel".to_string()
+        }
     } else {
         String::new()
     };
@@ -571,7 +662,7 @@ fn main_status_text(state: &AppState) -> String {
         format!(" | {}", state.loop_summary)
     };
     let queue_bit = if state.queued_count > 0 {
-        format!(" · queued {}", state.queued_count)
+        format!(" · queued {} · Alt+Enter immediately", state.queued_count)
     } else if state.queue_cancel_requested {
         " · stopping…".to_string()
     } else {
@@ -883,7 +974,9 @@ fn draw_footer(frame: &mut Frame, area: Rect, state: &AppState) {
     } else {
         state.footer.clone()
     };
-    let text = if state.multi.active {
+    let text = if state.multi.active && matches!(state.multi.focus, MultiFocus::Agent) {
+        format!("{base} · Esc main · Ctrl+C cancel")
+    } else if state.multi.active {
         format!("{base} · Tab switch")
     } else {
         base
@@ -1073,16 +1166,19 @@ mod tests {
         state.agents = vec![
             crate::model::AgentItem {
                 id: "a".into(),
+                internal: true,
                 label: "coder".into(),
                 activity_state: String::new(),
             },
             crate::model::AgentItem {
                 id: "b".into(),
+                internal: true,
                 label: "coder-review".into(),
                 activity_state: String::new(),
             },
             crate::model::AgentItem {
                 id: "c".into(),
+                internal: true,
                 label: "中文".into(),
                 activity_state: String::new(),
             },

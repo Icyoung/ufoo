@@ -246,11 +246,10 @@ describe("config save/load", () => {
     expect(providerKey("codex")).toBe("codex");
   });
 
-  test("agy has no provider-specific default model, so lookups fall through to codex", () => {
-    // agy picks its model in-REPL via `/model`; ufoo never passes one on the
-    // command line. SETTINGS_MODEL_DEFAULTS reserves "" for agy and the
-    // lookup helpers degrade gracefully to the codex default.
-    expect(defaultAgentModelForProvider("agy-cli")).toBe(defaultAgentModelForProvider("codex"));
+  test("agy defaults to Gemini 4 Hydrogen and uses Gemini 3.8 Flash for auxiliary calls", () => {
+    const { defaultAuxModelForProvider } = require("../../src/config");
+    expect(defaultAgentModelForProvider("agy-cli")).toBe("gemini-4-hydrogen-high");
+    expect(defaultAuxModelForProvider("agy-cli")).toBe("gemini-3.8-flash-medium");
   });
 
   test("removed internal mode settings are neither read nor persisted", () => {

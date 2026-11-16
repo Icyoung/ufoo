@@ -1,7 +1,8 @@
 "use strict";
 
 const DEFAULT_TASK_TIMEOUT_MS = 43200000;
-const DEFAULT_MAX_TOOL_ERRORS = 20;
+// Legacy setting name: now limits consecutive failures, not lifetime errors.
+const DEFAULT_MAX_TOOL_ERRORS = 5;
 
 function parseMaxToolCalls(value) {
   if (value == null || String(value).trim().toLowerCase() === "none") return null;

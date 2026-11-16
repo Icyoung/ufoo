@@ -1,4 +1,7 @@
 const { describe, it, expect } = require("@jest/globals");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 
 jest.mock("../../../src/code/nativeRunner", () => ({
   runNativeAgentTask: jest.fn(),
@@ -21,7 +24,6 @@ describe("taskDecomposer", () => {
       expect(steps).toHaveLength(4);
       expect(steps[0].id).toBe("identify");
       expect(steps[0].name).toBe("Identifying the issue");
-      expect(steps[0].timeoutMs).toBe(30000);
       expect(steps[0].earlyExit).toBe(true);
 
       expect(steps[1].id).toBe("locate");
@@ -41,7 +43,6 @@ describe("taskDecomposer", () => {
       expect(steps).toHaveLength(1);
       expect(steps[0].id).toBe("execute");
       expect(steps[0].name).toBe("Executing task");
-      expect(steps[0].timeoutMs).toBe(120000);
     });
 
     it("should recognize various bug-related keywords", () => {
@@ -256,6 +257,75 @@ Let me verify this`,
   describe("runDecomposedTask", () => {
     beforeEach(() => {
       runNativeAgentTask.mockReset();
+    });
+
+    it.each([
+      { label: "default", configured: undefined, timeoutMs: undefined, state: null, expected: 43200000 },
+      { label: "environment", configured: "600000", timeoutMs: undefined, state: null, expected: 600000 },
+      { label: "session", configured: "600000", timeoutMs: undefined, state: { timeoutMs: 900000 }, expected: 900000 },
+      { label: "explicit", configured: "600000", timeoutMs: 1800000, state: { timeoutMs: 900000 }, expected: 1800000 },
+    ])("inherits the $label budget instead of legacy step caps", async ({ configured, timeoutMs, state, expected }) => {
+      const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-step-budget-"));
+      const previous = process.env.UFOO_UCODE_TASK_TIMEOUT_MS;
+      if (configured === undefined) delete process.env.UFOO_UCODE_TASK_TIMEOUT_MS;
+      else process.env.UFOO_UCODE_TASK_TIMEOUT_MS = configured;
+      let now = 1000000;
+      const clock = jest.spyOn(Date, "now").mockImplementation(() => now);
+      // Every stage exceeds its former hardcoded 20/30/60 second cap.
+      const elapsed = [31000, 31000, 61000, 21000];
+      let index = 0;
+      runNativeAgentTask.mockImplementation(async () => {
+        now += elapsed[index++];
+        return { ok: true, output: "done" };
+      });
+      try {
+        const result = await runDecomposedTask({ task: "fix the bug", timeoutMs, state, workspaceRoot });
+        expect(result.ok).toBe(true);
+        expect(runNativeAgentTask.mock.calls.map(([args]) => args.timeoutMs))
+          .toEqual([expected, expected - 31000, expected - 62000, expected - 123000]);
+      } finally {
+        clock.mockRestore();
+        if (previous === undefined) delete process.env.UFOO_UCODE_TASK_TIMEOUT_MS;
+        else process.env.UFOO_UCODE_TASK_TIMEOUT_MS = previous;
+        fs.rmSync(workspaceRoot, { recursive: true, force: true });
+      }
+    });
+
+    it.each([10000, 9500])("does not renew an exhausted deadline after %i ms and retains completed output", async (elapsed) => {
+      let now = 1000000;
+      const clock = jest.spyOn(Date, "now").mockImplementation(() => now);
+      const turnItems = [{ role: "assistant", content: "Found the affected function" }];
+      runNativeAgentTask.mockImplementation(async () => {
+        now += elapsed;
+        return { ok: true, output: "identified", turnItems };
+      });
+      try {
+        const result = await runDecomposedTask({ task: "fix the bug", timeoutMs: 10000 });
+        expect(result.ok).toBe(false);
+        expect(result.error).toContain("agent timeout (10000ms)");
+        expect(runNativeAgentTask).toHaveBeenCalledTimes(1);
+        expect(result.turnItems).toEqual(turnItems);
+        expect(result.results).toHaveLength(1);
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    it("counts preparation before a step against the shared deadline", async () => {
+      let now = 1000000;
+      const clock = jest.spyOn(Date, "now").mockImplementation(() => now);
+      try {
+        const result = await runDecomposedTask({
+          task: "explain the code",
+          timeoutMs: 10000,
+          onProgress: event => { if (event.type === "step_start") now += 10000; },
+        });
+        expect(result.ok).toBe(false);
+        expect(result.error).toContain("agent timeout (10000ms)");
+        expect(runNativeAgentTask).not.toHaveBeenCalled();
+      } finally {
+        clock.mockRestore();
+      }
     });
 
     it("returns aborted when signal is already aborted", async () => {

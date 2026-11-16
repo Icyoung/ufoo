@@ -1,7 +1,102 @@
 "use strict";
 
 const PREVIEW_MAX_CHARS = 600;
-const MODEL_PAYLOAD_MAX_CHARS = 4000;
+const MODEL_PAYLOAD_MAX_CHARS = 16000;
+const JSON_ARRAY_FOLD_LIMIT = 12;
+const JSON_OBJECT_KEY_LIMIT = 60;
+const JSON_STRING_FIELD_MAX_CHARS = 1600;
+const BASH_JSON_MAX_CHARS = 3600;
+const BASH_STDOUT_MAX_CHARS = 2200;
+const BASH_STDERR_MAX_CHARS = 1200;
+
+function looksLikeLargeBase64(value = "") {
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  if (trimmed.length < 256) return false;
+  if (/^data:[a-zA-Z0-9.+-]+\/[a-zA-Z0-9.+-]+;base64,/i.test(trimmed)) return true;
+  const compact = trimmed.replace(/\r?\n/g, "");
+  if (compact.length < 256 || /\s/.test(compact)) return false;
+  if (!/^[A-Za-z0-9+/=_-]+$/.test(compact)) return false;
+  // Require a mix of upper, lower, and digits or base64 padding/symbols so
+  // ordinary long paths or repeated single-char banners are not misclassified.
+  const hasUpper = /[A-Z]/.test(compact);
+  const hasLower = /[a-z]/.test(compact);
+  const hasDigitOrSym = /[0-9+/=]/.test(compact);
+  return hasUpper && hasLower && hasDigitOrSym;
+}
+
+function stripEmbeddedBase64(text = "") {
+  const source = String(text || "");
+  if (!source) return "";
+  return source
+    .replace(/data:[a-zA-Z0-9.+-]+\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\s]{128,}/gi, (match) => `[omitted data-uri base64 (${match.length} chars)]`)
+    .replace(/\b[A-Za-z0-9+/]{256,}={0,2}\b/g, (match) => (looksLikeLargeBase64(match) ? `[omitted base64 blob (${match.length} chars)]` : match));
+}
+
+function dehydrateJsonValue(value, {
+  maxArrayItems = JSON_ARRAY_FOLD_LIMIT,
+  maxObjectKeys = JSON_OBJECT_KEY_LIMIT,
+  maxStringChars = JSON_STRING_FIELD_MAX_CHARS,
+  depth = 0,
+} = {}) {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "string") {
+    if (looksLikeLargeBase64(value)) {
+      return `[omitted base64 blob (${value.length} chars)]`;
+    }
+    const cleaned = stripEmbeddedBase64(value);
+    return cleaned.length > maxStringChars ? clipText(cleaned, maxStringChars) : cleaned;
+  }
+  if (typeof value !== "object") return value;
+  if (depth >= 8) {
+    return Array.isArray(value) ? `[array(${value.length})]` : "[object]";
+  }
+  if (Array.isArray(value)) {
+    const kept = value
+      .slice(0, maxArrayItems)
+      .map((item) => dehydrateJsonValue(item, { maxArrayItems, maxObjectKeys, maxStringChars, depth: depth + 1 }));
+    if (value.length > maxArrayItems) {
+      kept.push(`[omitted ${value.length - maxArrayItems} additional items]`);
+    }
+    return kept;
+  }
+  const keys = Object.keys(value);
+  const out = {};
+  const sliceKeys = keys.slice(0, maxObjectKeys);
+  for (const key of sliceKeys) {
+    out[key] = dehydrateJsonValue(value[key], { maxArrayItems, maxObjectKeys, maxStringChars, depth: depth + 1 });
+  }
+  if (keys.length > maxObjectKeys) {
+    out._omittedKeys = keys.length - maxObjectKeys;
+  }
+  return out;
+}
+
+function compactToolOutputForPrompt(rawText = "", {
+  maxArrayItems = JSON_ARRAY_FOLD_LIMIT,
+  maxJsonChars = BASH_JSON_MAX_CHARS,
+  maxTextChars = BASH_STDOUT_MAX_CHARS,
+  tailLineCount = 20,
+} = {}) {
+  const source = String(rawText || "");
+  if (!source) return "";
+  const trimmed = source.trim();
+  if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === "object") {
+        const dehydrated = dehydrateJsonValue(parsed, { maxArrayItems });
+        const serialized = JSON.stringify(dehydrated, null, 2);
+        return clipText(serialized, maxJsonChars);
+      }
+    } catch {
+      // Fall through to text dehydration when output is not valid JSON.
+    }
+  }
+  const stripped = stripEmbeddedBase64(source);
+  const tailed = tailLineCount > 0 ? tailLines(stripped, tailLineCount) : stripped;
+  return clipText(tailed, maxTextChars);
+}
 
 function clipText(value = "", maxChars = PREVIEW_MAX_CHARS) {
   const text = String(value || "");
@@ -206,6 +301,63 @@ function reduceBashResult(raw = {}, artifactId = "", args = {}) {
   const stderr = String(source.stderr || "");
   const command = String((args && args.command) || source.command || "");
 
+  if (source.kind === "background_bash") {
+    if (source.action === "list") {
+      const processes = Array.isArray(source.processes) ? source.processes : [];
+      const runningCount = Number.isFinite(source.runningCount)
+        ? source.runningCount
+        : processes.filter((item) => item && item.running).length;
+      const summary = `bash bg list (${runningCount}/${processes.length} running)`;
+      return {
+        preview: summary,
+        summary,
+        modelPayload: {
+          ok: source.ok !== false,
+          artifactId,
+          kind: "background_bash",
+          action: "list",
+          count: processes.length,
+          runningCount,
+          processes,
+          error: source.error ? String(source.error) : undefined,
+        },
+      };
+    }
+
+    const logOutput = String(source.logOutput ?? stdout);
+    const previewLines = tailLines(logOutput, 8);
+    const statusLabel = source.status || (source.running ? "running" : "exited");
+    const summary = `bash bg ${source.action || "run"} ${source.backgroundId || ""} status=${statusLabel}`.trim();
+    const preview = clipText(
+      [summary, previewLines ? `logs:\n${previewLines}` : ""].filter(Boolean).join("\n"),
+      PREVIEW_MAX_CHARS,
+    );
+    return {
+      preview,
+      summary,
+      modelPayload: {
+        ok: source.ok !== false,
+        artifactId,
+        kind: "background_bash",
+        action: source.action || "run",
+        backgroundId: source.backgroundId || "",
+        pid: source.pid ?? null,
+        running: Boolean(source.running),
+        status: statusLabel,
+        exitCode: source.exitCode ?? source.code ?? null,
+        signal: source.signal || undefined,
+        command: source.command || command || undefined,
+        logPath: source.logPath || undefined,
+        offset: Number.isFinite(source.offset) ? source.offset : 0,
+        nextOffset: Number.isFinite(source.nextOffset) ? source.nextOffset : 0,
+        totalBytes: Number.isFinite(source.totalBytes) ? source.totalBytes : 0,
+        truncated: Boolean(source.truncated) || logOutput.length > 12000,
+        logOutput: clipText(logOutput, 12000),
+        error: source.error ? String(source.error) : undefined,
+      },
+    };
+  }
+
   if (isTestCommand(command, stdout)) {
     return reduceTestResult(raw, artifactId, args);
   }
@@ -216,8 +368,20 @@ function reduceBashResult(raw = {}, artifactId = "", args = {}) {
     return reduceSearchResult(raw, artifactId, args);
   }
 
+  const compactedStdout = compactToolOutputForPrompt(stdout, {
+    maxArrayItems: JSON_ARRAY_FOLD_LIMIT,
+    maxJsonChars: BASH_JSON_MAX_CHARS,
+    maxTextChars: BASH_STDOUT_MAX_CHARS,
+    tailLineCount: 20,
+  });
+  const compactedStderr = compactToolOutputForPrompt(stderr, {
+    maxArrayItems: JSON_ARRAY_FOLD_LIMIT,
+    maxJsonChars: BASH_STDERR_MAX_CHARS,
+    maxTextChars: BASH_STDERR_MAX_CHARS,
+    tailLineCount: 20,
+  });
   const preview = clipText(
-    [stdout ? `stdout:\n${tailLines(stdout, 8)}` : "", stderr ? `stderr:\n${tailLines(stderr, 8)}` : ""]
+    [compactedStdout ? `stdout:\n${tailLines(compactedStdout, 8)}` : "", compactedStderr ? `stderr:\n${tailLines(compactedStderr, 8)}` : ""]
       .filter(Boolean)
       .join("\n"),
     PREVIEW_MAX_CHARS,
@@ -229,8 +393,8 @@ function reduceBashResult(raw = {}, artifactId = "", args = {}) {
       ok: source.ok !== false,
       artifactId,
       exitCode: source.code ?? source.exitCode ?? null,
-      stdoutTail: tailLines(stdout, 20),
-      stderrTail: tailLines(stderr, 20),
+      stdoutTail: compactedStdout,
+      stderrTail: compactedStderr,
       error: source.error ? String(source.error) : undefined,
     },
   };
@@ -360,4 +524,8 @@ module.exports = {
   reduceWriteResult,
   reduceEditResult,
   reduceArtifactReadResult,
+  looksLikeLargeBase64,
+  stripEmbeddedBase64,
+  dehydrateJsonValue,
+  compactToolOutputForPrompt,
 };

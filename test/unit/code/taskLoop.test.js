@@ -563,6 +563,13 @@ describe("Nested Plan Graph V1 — TaskLoop / Agent Loop", () => {
     expect(patched.status).toBe("accepted");
     expect(patched.graphId).toBe(started.childGraphId);
     expect(calls.some((c) => c.stepId === "read_a")).toBe(true);
+    expect(patched.awaitingCompleteTask).toBe(true);
+    expect(patched.taskRunId).toBe(started.taskRunId);
+    expect(patched.nextAction).toMatch(/complete_task/);
+    // Run stays in waiting_model until complete_task finalizes it.
+    const { listTaskRunsAwaitingModel } = require("../../../src/code/runtime/agentWakeup");
+    expect(getTaskRun(executionState, started.taskRunId).phase).toBe("waiting_model");
+    expect(listTaskRunsAwaitingModel(executionState).map((r) => r.id)).toContain(started.taskRunId);
     // Parent remains the active planGraph for the Agent Loop.
     expect(executionState.planGraph.graphId).toBe(parentIdBefore);
     expect(executionState.graphs[started.childGraphId]).toBeTruthy();

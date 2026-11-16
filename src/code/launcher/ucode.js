@@ -1,4 +1,4 @@
-const { loadConfig } = require("../../config");
+const { loadConfig, sameModelProvider } = require("../../config");
 const path = require("path");
 const fs = require("fs");
 
@@ -95,9 +95,11 @@ function resolveUcodeLaunch({
       || config.ucodeProvider
       || ""
   ).trim();
+  const requestedProvider = readLastArgValue(argv, "--provider") || configuredProvider || config.agentProvider;
+  const useConfiguredModel = !sameModelProvider(requestedProvider, "agy") || sameModelProvider(config.ucodeProvider, "agy");
   const configuredModel = String(
     env.UFOO_UCODE_MODEL
-      || config.ucodeModel
+      || (useConfiguredModel ? config.ucodeModel : "")
       || ""
   ).trim();
 

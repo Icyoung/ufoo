@@ -2,6 +2,7 @@
 
 const ALLOWED_AGENT_TYPES = new Set(["auto", "codex", "claude", "ucode", "agy", "grok", "kimi"]);
 const { resolvePromptProfileReference } = require("./promptProfiles");
+const { validateModelConfig } = require("./modelConfig");
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -139,6 +140,7 @@ function validateTemplate(doc, options = {}) {
     }
 
     const nickname = asTrimmedString(agent.nickname);
+    errors.push(...validateModelConfig(agent.model_config, `${basePath}.model_config`));
     if (!nickname) {
       addError(errors, `${basePath}.nickname`, "nickname is required");
     } else if (knownNicknames.has(nickname)) {

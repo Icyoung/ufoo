@@ -20,7 +20,9 @@ function createWorkspaceAccess({ projectRoot, externalWriters = () => [] } = {})
   return Object.freeze({
     leases,
     async run(context, operation) {
-      if (!["write", "edit", "bash"].includes(context.tool)) return operation();
+      const readOnlyBash = context.tool === "bash"
+        && ["logs", "status", "list"].includes(String((context.args && context.args.action) || "").trim().toLowerCase());
+      if (!["write", "edit", "bash"].includes(context.tool) || readOnlyBash) return operation();
       const workspace = key(context.workspaceRoot);
       const writers = workspace === root ? externalWriters(context) : [];
       if (writers.length) return { ok: false, code: "workspace_busy", error: "Workers own or may write this workspace. Delegate to them, wait, read files, or use an isolated worktree. Do not close workers to bypass this lease.", owners: writers };

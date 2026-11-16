@@ -7,7 +7,10 @@ const { createAgentRuntime } = require("../agents/runtime/createAgentRuntime");
 const { createCodingCapability } = require("../agents/capabilities/coding");
 const { createPlanningCapability } = require("../agents/capabilities/planning");
 const { createSkillsCapability } = require("../agents/capabilities/skills");
+const { createTurnRecallCapability } = require("../agents/capabilities/turnRecall");
+const { createBrowserCapability } = require("../agents/capabilities/browser");
 const codingProfile = require("../agents/profiles/coding");
+const { loadConfig, defaultAuxModelForProvider, sameModelProvider } = require("../config");
 const { runCoreToolAsync } = require("./tools/executor");
 const { sanitizeModelMessages } = require("./context/assembler");
 const { retireMessageImages } = require("../agents/providers/transports/visionBlocks");
@@ -16,8 +19,10 @@ const { clearUserPrompts } = require("./context/userNudge");
 const { runProviderTurnGate, resolveCall, checkFaultPoint, materializeAnswerToolResult } = require("./protocol");
 const { appendUsageRecord } = require("./usageStore");
 const { buildCoreToolSpecs, buildAnthropicToolSpecs } = require("./tools/specs");
-const { createContextManager } = require("../agents/runtime/context/compaction");
-const { createCheckpointStore } = require("../agents/runtime/context/checkpointStore");
+const { createTurnIndexStore } = require("../agents/runtime/context/turnIndexStore");
+const { buildDeterministicTurnRecord, backfillMissingTurns, createAsyncTurnEnricher } = require("../agents/runtime/context/turnAnalyzer");
+const { createTopicSelector } = require("../agents/runtime/context/topicSelector");
+const { createSlidingWindowManager } = require("../agents/runtime/context/slidingWindowManager");
 const { createRuntimeStore } = require("../agents/runtime/context/runtimeStore");
 const { normalizeTraceContext } = require("../agents/runtime/protocol/traceContext");
 const { redactSecrets } = require("../runtime/privacy/redactor");
@@ -49,12 +54,39 @@ function createGuards({ signal = null, timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS } =
   };
 }
 
+function resolveDurableTurnSlice(resultObj = {}, { preTurnOffset = 0, resume = false, promptText = "" } = {}) {
+  const runNonSystem = Array.isArray(resultObj.messages)
+    ? resultObj.messages.filter((m) => m && m.role !== "system")
+    : [];
+  const rawSlice = runNonSystem.slice(preTurnOffset);
+  if (Array.isArray(resultObj.turnItems) && (resultObj.turnItems.length > 0 || !rawSlice.length)) {
+    const candidate = [
+      ...(!resume && promptText ? [{ role: "user", content: promptText }] : []),
+      ...resultObj.turnItems,
+    ];
+    const sanitized = sanitizeModelMessages(candidate);
+    if (sanitized.length > 0) return sanitized;
+  }
+  const sanitizedFallback = sanitizeModelMessages(rawSlice);
+  if (sanitizedFallback.length > 0) return sanitizedFallback;
+  if (!rawSlice.length && !resume && promptText) {
+    return [{ role: "user", content: promptText }];
+  }
+  return rawSlice;
+}
+
 async function runNativeLoop(options = {}) {
   const runtime = createAgentRuntime({
     profile: codingProfile,
     transport: options.transport,
-    capabilities: [createCodingCapability(), createPlanningCapability(), createSkillsCapability()],
-    host: { grantedPermissions: ["workspace.read", "workspace.write", "workspace.execute", "execution.control", "interaction.request"] },
+    capabilities: [
+      createCodingCapability(),
+      createPlanningCapability(),
+      createSkillsCapability(),
+      createTurnRecallCapability({ projectRoot: options.workspaceRoot }, { defaultNamespace: "ucode" }),
+      createBrowserCapability(),
+    ],
+    host: { runtimeHooks: options.runtimeHooks, grantedPermissions: ["workspace.read", "workspace.write", "workspace.execute", "execution.control", "interaction.request", "browser.control"] },
     defaults: {
       sanitizeMessages: sanitizeModelMessages,
       retireImages: retireMessageImages,
@@ -110,16 +142,21 @@ async function runNativeAgentTask({
   runtimeContext = {},
   onRuntimeEvent = null,
   onConversationUpdate = null,
+  logicalTurnId = "",
+  historyOffset: restoredTurnOffset = null,
+  runtimeHooks = null,
 } = {}) {
   const guards = createGuards({ signal, timeoutMs });
   const nextSessionId = String(sessionId || "").trim() || `native-${randomUUID()}`;
   const promptText = String(prompt || "").trim();
   const ids = normalizeTraceContext(runtimeContext);
-  ids.taskRunId ||= `native-run-${randomUUID()}`;
+  ids.taskRunId ||= String(logicalTurnId || "").trim() || `native-run-${randomUUID()}`;
   ids.taskId ||= ids.taskRunId;
   ids.traceId ||= ids.taskId;
   ids.requestId ||= ids.taskRunId;
   ids.attemptId ||= `attempt-${randomUUID()}`;
+  const effectiveTurnId = String(logicalTurnId || ids.taskRunId).trim();
+  const requestKind = runtimeContext.requestKind || (runtimeContext.taskRunId ? "unknown" : "user");
   const observation = createRuntimeStore({ workspaceRoot, namespace: "ucode", sessionId: nextSessionId, redact: redactSecrets });
   const observationWarnings = [];
   const observe = async event => {
@@ -153,6 +190,11 @@ async function runNativeAgentTask({
     }
   };
 
+  let turnIndexStore = null;
+  let enricher = null;
+  let abortEnricherListener = null;
+  let preTurnOffset = 0;
+
   try {
     await observe({ type: "request.accepted", request: { ...ids, text: promptText } });
     await observe({ type: "task.started" });
@@ -180,7 +222,97 @@ async function runNativeAgentTask({
     const transport = getNativeTransport(runtime.transport);
     await observe({ type: "runtime.binding", binding: { provider: runtime.provider, model: runtime.model, transport: runtime.transport } });
 
+    turnIndexStore = createTurnIndexStore({ workspaceRoot, namespace: "ucode", sessionId: nextSessionId, redact: redactSecrets });
+    const productConfig = loadConfig(workspaceRoot);
+    const effectivePolicy = {
+      ...(productConfig.context && typeof productConfig.context === "object" ? productConfig.context : {}),
+      ...(contextPolicy && typeof contextPolicy === "object" ? contextPolicy : {}),
+    };
+    const baseMessages = Array.isArray(messages) ? messages : [];
+    const nonSystemBase = baseMessages.filter((m) => m && m.role !== "system");
+    if (Number.isInteger(restoredTurnOffset) && restoredTurnOffset >= 0) {
+      preTurnOffset = restoredTurnOffset;
+    } else if (resume) {
+      try {
+        const existingTurn = turnIndexStore.getTurn(effectiveTurnId);
+        preTurnOffset = existingTurn && Number.isInteger(existingTurn.historyOffset) ? existingTurn.historyOffset : 0;
+      } catch {
+        preTurnOffset = 0;
+      }
+    } else {
+      preTurnOffset = nonSystemBase.length;
+    }
+    try {
+      backfillMissingTurns({ store: turnIndexStore, journalMessages: nonSystemBase.slice(0, preTurnOffset) });
+    } catch {
+      turnIndexStore = null;
+    }
+
+    const useConfiguredAuxModel = runtime.provider !== "agy" || sameModelProvider(productConfig.ucodeProvider, "agy");
+    const explicitAuxModel = String(
+      effectivePolicy?.auxModel
+      || (useConfiguredAuxModel ? productConfig.ucodeAuxModel : "")
+      || process.env.UFOO_UCODE_AUX_MODEL
+      || ""
+    ).trim();
+    const allowDefaultAux = !process.env.JEST_WORKER_ID
+      || Boolean(effectivePolicy?.enableModelSelector || effectivePolicy?.backgroundEnrich);
+    const configuredAuxModel = explicitAuxModel
+      || (allowDefaultAux ? String(runtime.auxModel || defaultAuxModelForProvider(runtime.provider) || "").trim() : "");
+    const runAuxModel = typeof effectivePolicy?.runAuxModel === "function"
+      ? effectivePolicy.runAuxModel
+      : configuredAuxModel
+        ? async ({ purpose, currentQuery, activeTopics, candidates, turn, existingTopics, signal: auxSignal }) => {
+          const url = typeof transport.resolveUrl === "function" ? transport.resolveUrl(runtime.baseUrl) : runtime.baseUrl;
+          if (!url) return null;
+          const sysPrompt = purpose === "topic_select"
+            ? "Select relevant historical turns and topics as strict JSON: {\"isNewTopic\":boolean,\"matchedTopics\":string[],\"referencedTurnIds\":string[]}. Do not include markdown or prose."
+            : "Summarize the completed agent turn as strict JSON: {\"topic\":string,\"userSummary\":string,\"assistantSummary\":string,\"decisions\":string[],\"keywords\":string[]}. Do not include markdown or prose.";
+          const userPayload = purpose === "topic_select"
+            ? { currentQuery, activeTopics, candidates }
+            : { turn, existingTopics };
+          const res = await transport.runTurn({
+            url,
+            apiKey: runtime.apiKey,
+            model: configuredAuxModel,
+            provider: runtime.provider,
+            accountId,
+            systemPrompt: sysPrompt,
+            messages: [{ role: "user", content: JSON.stringify(userPayload) }],
+            tools: [],
+            maxOutputTokens: 512,
+            sessionId: `${nextSessionId}:aux`,
+            signal: auxSignal,
+          });
+          return res && res.text ? res.text : "";
+        }
+        : null;
+    const topicSelector = createTopicSelector({
+      ...effectivePolicy,
+      runAuxModel,
+      enableModelSelector: Boolean(runAuxModel && (effectivePolicy?.enableModelSelector ?? true)),
+    });
+    enricher = createAsyncTurnEnricher({
+      store: turnIndexStore,
+      runAuxModel,
+      enabled: Boolean(runAuxModel && (effectivePolicy?.backgroundEnrich ?? true)),
+      timeoutMs: effectivePolicy?.enrichTimeoutMs || 8000,
+      onEvent: (ev) => {
+        observe({ ...ev, taskRunId: ids.taskRunId }).catch(() => {});
+      },
+    });
+    if (signal && typeof signal.addEventListener === "function") {
+      abortEnricherListener = () => { if (enricher) enricher.close(); };
+      signal.addEventListener("abort", abortEnricherListener, { once: true });
+    }
+    const contextManager = createSlidingWindowManager({
+      policy: effectivePolicy,
+      turnIndexStore,
+      topicSelector,
+    });
+
     const runResult = await runNativeLoop({
+      runtimeHooks,
       transport,
       workspaceRoot,
       prompt: resume ? "" : promptText,
@@ -188,7 +320,7 @@ async function runNativeAgentTask({
       systemBlocks,
       historyMessages: messages,
       model: runtime.model,
-      requestKind: runtimeContext.requestKind || (runtimeContext.taskRunId ? "unknown" : "user"),
+      requestKind,
       baseUrl: runtime.baseUrl,
       apiKey: runtime.apiKey,
       provider: runtime.provider,
@@ -207,8 +339,8 @@ async function runNativeAgentTask({
       guards,
       executionState,
       resume: Boolean(resume),
-      contextManager: createContextManager({ policy: contextPolicy,
-        store: createCheckpointStore({ workspaceRoot, namespace: "ucode", sessionId: nextSessionId }) }),
+      ...(resume ? { historyOffset: preTurnOffset } : {}),
+      contextManager,
       ...ids,
       agentId: process.env.UFOO_SUBSCRIBER_ID || "ucode",
       onEvent: observe,
@@ -238,6 +370,48 @@ async function runNativeAgentTask({
       cacheRead: usage.cacheRead,
       cacheCreation: usage.cacheCreation,
     });
+    const settledOutcome = signal?.aborted || runResult.stopReason === "cancelled"
+      ? "cancelled"
+      : (runResult.waitingUserInteraction ? "paused" : (runResult.error || runResult.stopReason ? "failed" : "completed"));
+    if (turnIndexStore) {
+      try {
+        const existingTurns = turnIndexStore.listTurns();
+        const existing = existingTurns.find((item) => item.turnId === effectiveTurnId) || null;
+        const turnSlice = resolveDurableTurnSlice(runResult, {
+          preTurnOffset,
+          resume: Boolean(resume),
+          promptText,
+        });
+        const indexed = turnIndexStore.upsertTurn(buildDeterministicTurnRecord({
+          turnId: effectiveTurnId,
+          turnIndex: existing ? existing.turnIndex : existingTurns.length,
+          historyOffset: preTurnOffset,
+          historyEnd: preTurnOffset + turnSlice.length,
+          turnMessages: turnSlice,
+          requestKind,
+          prompt: promptText,
+          outcome: settledOutcome,
+          error: runResult.error || runResult.stopReason || "",
+          previousTurns: existingTurns,
+          resume: Boolean(resume),
+        }), { phase: "A" });
+        await observe({
+          type: "context.turn_indexed",
+          turnId: indexed.turnId,
+          topic: indexed.topic,
+          turnKind: indexed.turnKind,
+          outcome: indexed.outcome,
+        });
+        if (settledOutcome === "completed" && enricher) {
+          enricher.enqueue(indexed);
+          if (effectivePolicy?.awaitEnrich) {
+            await enricher.flush();
+          }
+        }
+      } catch {
+        // Read-only or unavailable context storage must not fail completed turns.
+      }
+    }
     await observe({ type: signal?.aborted || runResult.stopReason === "cancelled" ? "task.cancelled" : runResult.error || runResult.stopReason ? "task.failed" : runResult.waitingUserInteraction ? "task.paused" : "task.completed",
       error: runResult.error || runResult.stopReason || "", result: { text: runResult.finalText || outputText, usage } });
 
@@ -262,9 +436,41 @@ async function runNativeAgentTask({
       ...(observationWarnings.length ? { observationWarnings } : {}),
     };
   } catch (err) {
-    await observe({ type: signal?.aborted || err.code === "cancelled" ? "task.cancelled" : "task.failed", error: err.message || "native runner failed" });
-    const message = err && err.message ? err.message : "native runner failed";
     const recovered = err.result || {};
+    const cancelled = Boolean(signal?.aborted || err.code === "cancelled");
+    if (turnIndexStore) {
+      try {
+        const existingTurns = turnIndexStore.listTurns();
+        const existing = existingTurns.find((item) => item.turnId === effectiveTurnId) || null;
+        const turnSlice = resolveDurableTurnSlice(recovered, {
+          preTurnOffset,
+          resume: Boolean(resume),
+          promptText,
+        });
+        const indexed = turnIndexStore.upsertTurn(buildDeterministicTurnRecord({
+          turnId: effectiveTurnId,
+          turnIndex: existing ? existing.turnIndex : existingTurns.length,
+          historyOffset: preTurnOffset,
+          historyEnd: preTurnOffset + turnSlice.length,
+          turnMessages: turnSlice,
+          requestKind,
+          prompt: promptText,
+          outcome: cancelled ? "cancelled" : "failed",
+          error: (err && err.message) || "native runner failed",
+          previousTurns: existingTurns,
+          resume: Boolean(resume),
+        }), { phase: "A" });
+        await observe({
+          type: "context.turn_indexed",
+          turnId: indexed.turnId,
+          topic: indexed.topic,
+          turnKind: indexed.turnKind,
+          outcome: indexed.outcome,
+        });
+      } catch {}
+    }
+    await observe({ type: cancelled ? "task.cancelled" : "task.failed", error: err.message || "native runner failed" });
+    const message = err && err.message ? err.message : "native runner failed";
     const recoveredState = recovered.executionState || executionState;
     if (recoveredState && typeof recoveredState === "object") {
       clearUserPrompts(recoveredState);
@@ -282,6 +488,11 @@ async function runNativeAgentTask({
       executionState: recoveredState || null,
       ...(observationWarnings.length ? { observationWarnings } : {}),
     };
+  } finally {
+    if (abortEnricherListener && signal && typeof signal.removeEventListener === "function") {
+      signal.removeEventListener("abort", abortEnricherListener);
+    }
+    if (enricher && (signal?.aborted || enricher.pendingCount() === 0)) enricher.close();
   }
 }
 

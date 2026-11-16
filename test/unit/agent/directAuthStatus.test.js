@@ -219,20 +219,36 @@ describe("agent directAuthStatus", () => {
     }));
   });
 
-  test("agy: inspectDirectAuthStatus routes to agy probe when provider is agy-cli", async () => {
+  test("agy: direct API credentials are checked independently of CLI login logs", async () => {
     const status = await inspectDirectAuthStatus({
       projectRoot: "/tmp/ufoo",
       loadConfigImpl: () => ({ agentProvider: "agy-cli" }),
-      provider: "agy-cli",
-      // Inject mocks so we don't touch the real filesystem.
-      resolveLogDirImpl: () => "/tmp/agy-log",
-      findLogImpl: () => "/tmp/agy-log/cli.log",
-      readLogTailImpl: () => "OAuth: authenticated successfully as ada@example.com",
+      env: { UFOO_AGY_ACCESS_TOKEN: "test-token", UFOO_AGY_PROJECT_ID: "test-project" },
     });
-    expect(status.provider).toBe("agy");
-    expect(status.ok).toBe(true);
-    expect(status.accountEmail).toBe("ada@example.com");
-    expect(status.source).toBe("google-keyring");
+    expect(status).toMatchObject({ provider: "agy", transport: "antigravity", ok: true,
+      state: "present", source: "configured access token" });
+    expect(JSON.stringify(status)).not.toContain("test-token");
+  });
+
+  test("agy: CLI login alone does not claim native API authentication", async () => {
+    const fs = require("fs");
+    const homeDir = fs.mkdtempSync(require("path").join(require("os").tmpdir(), "ufoo-agy-auth-"));
+    try {
+      const status = await inspectDirectAuthStatus({
+        projectRoot: "/tmp/ufoo",
+        loadConfigImpl: () => ({ agentProvider: "agy-cli" }),
+        provider: "agy-cli",
+        env: {},
+        homeDir,
+        resolveLogDirImpl: () => "/tmp/agy-log",
+        findLogImpl: () => "/tmp/agy-log/cli.log",
+        readLogTailImpl: () => "OAuth: authenticated successfully as ada@example.com",
+      });
+      expect(status).toMatchObject({ provider: "agy", ok: false,
+        errorCode: "AGY_CREDENTIALS_MISSING", cliAuthenticated: true });
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
   });
 
   test("agy: formatDirectAuthStatus renders compact OK and FAIL lines", () => {

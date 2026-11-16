@@ -18,6 +18,7 @@ const { resolveDefaultManualBootstrap } = require("../../agents/prompts/defaultB
 const { detectLaunchEnvironment } = require("../../agents/launch/launchEnvironment");
 const { isInternalAgentMeta, normalizeInternalAgentType } = require("../contracts/agentMode");
 const { loadRecoveryGroups, resolveRecoveryGroup, associateAgentWithGroup, recordGroupMemberResume } = require("./agentRecoveryGroups");
+const { buildGroupModelArgs, buildGroupModelEnv } = require("../../orchestration/groups/modelConfig");
 
 function normalizeLaunchAgent(agent = "") {
   const value = String(agent || "").trim().toLowerCase();
@@ -498,23 +499,23 @@ function buildTitleCmd(title) {
   return `printf '\\033]0;%s\\007' ${shellEscape(title)}`;
 }
 
-function buildResumeCommand(projectRoot, agent, sessionId) {
+function buildResumeCommand(projectRoot, agent, sessionId, modelSettings = {}) {
   const binary = toTerminalBinary(agent);
   if (!binary) {
     throw new Error(`unsupported agent for resume: ${agent}`);
   }
-  const args = buildResumeArgs(agent, sessionId);
+  const args = [...buildGroupModelArgs(agent, modelSettings), ...buildResumeArgs(agent, sessionId)];
   const argText = args.length > 0 ? ` ${args.map(shellEscape).join(" ")}` : "";
   const skipSessionResolveEnv = "UFOO_SKIP_SESSION_RESOLVE=1 ";
   return `cd ${shellEscape(projectRoot)} && ${skipSessionResolveEnv}${binary}${argText}`;
 }
 
-async function tryReuseTerminal(projectRoot, subscriberId, meta, agent, sessionId) {
+async function tryReuseTerminal(projectRoot, subscriberId, meta, agent, sessionId, modelSettings = {}) {
   if (!meta || !meta.tty) return false;
   const info = getTtyProcessInfo(meta.tty);
   if (!info.alive || info.hasAgent || !info.idle) return false;
   const titleCmd = buildTitleCmd(meta.nickname || "");
-  const baseCmd = buildResumeCommand(projectRoot, agent, sessionId);
+  const baseCmd = buildResumeCommand(projectRoot, agent, sessionId, modelSettings);
   const command = titleCmd ? `${titleCmd} && ${baseCmd}` : baseCmd;
   try {
     const EventBus = require("../../coordination/bus");
@@ -1217,7 +1218,11 @@ function collectRecoverableAgents(projectRoot, target = "", options = {}) {
       continue;
     }
 
-    recoverableEntries.push({ id, meta, agent, association: associations.get(id) });
+    const association = associations.get(id);
+    const member = groups.find(group => group.group_id === association.group_id)?.members.find(row => row.subscriber_id === id);
+    const modelSettings = member?.model_source
+      ? { model: member.model, reasoning_effort: member.reasoning_effort, model_provider: member.model_provider } : {};
+    recoverableEntries.push({ id, meta, agent, association, modelSettings });
   }
 
   return {
@@ -1260,7 +1265,7 @@ async function resumeAgents(projectRoot, target = "", processManager = null, opt
   for (const item of recoverableEntries) {
     const nickname = resolveDisplayNickname(projectRoot, item.meta);
     const sessionId = item.meta.provider_session_id;
-    const args = buildResumeArgs(item.agent, sessionId);
+    const args = [...buildGroupModelArgs(item.agent, item.modelSettings), ...buildResumeArgs(item.agent, sessionId)];
     let reused = false;
     let resumedId = item.id;
     if (options.internalOnly || isInternalAgentMeta(item.meta) || mode === "internal") {
@@ -1274,7 +1279,8 @@ async function resumeAgents(projectRoot, target = "", processManager = null, opt
         1,
         nickname,
         processManager,
-        { UFOO_SKIP_SESSION_RESOLVE: "1", UFOO_SCOPED_NICKNAME: item.meta.scoped_nickname || "" },
+        { UFOO_SKIP_SESSION_RESOLVE: "1", UFOO_SCOPED_NICKNAME: item.meta.scoped_nickname || "",
+          ...buildGroupModelEnv(item.agent, item.modelSettings) },
         args,
         { replaceAgentId: item.id, providerSessionId: sessionId }
       );
@@ -1284,7 +1290,7 @@ async function resumeAgents(projectRoot, target = "", processManager = null, opt
       associateAgentWithGroup(projectRoot, resumedId, item.association);
       recordGroupMemberResume(projectRoot, item.association, item.id, resumedId);
     } else {
-      reused = await tryReuseTerminal(projectRoot, item.id, item.meta, item.agent, sessionId);
+      reused = await tryReuseTerminal(projectRoot, item.id, item.meta, item.agent, sessionId, item.modelSettings);
       if (!reused) {
         const envPrefix = "UFOO_SKIP_SESSION_RESOLVE=1";
         if (mode === "tmux") {

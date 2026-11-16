@@ -7,8 +7,10 @@ const { stableStringify } = require("../../agents/runtime/core/stableJson");
 const { resolveToolBudget, resolveTaskTimeoutMs } = require("../../agents/runtime/core/executionBudget");
 const { spawnSync } = require("child_process");
 const { createAgentRuntime, createRuntimeStore, createTaskScheduler } = require("../../agents/runtime");
-const { createMainCapabilities, createGlobalCapabilities } = require("../../agents/capabilities");
+const { createMainCapabilities, createGlobalCapabilities, createTurnRecallCapability } = require("../../agents/capabilities");
+const { createBrowserCapability } = require("../../agents/capabilities/browser");
 const { createCodingCapability } = require("../../agents/capabilities/coding");
+const { createBackgroundHookSource } = require("../../agents/capabilities/coding/backgroundHooks");
 const { createMainPlanningCapability } = require("../../agents/capabilities/planning/main");
 const { createSkillsCapability } = require("../../agents/capabilities/skills");
 const { createAgentManagementService } = require("../../agents/capabilities/agentManagement/service");
@@ -17,7 +19,7 @@ const { TOOL_PERMISSIONS } = require("../../agents/capabilities/coordination");
 const { getNativeTransport } = require("../../agents/providers/nativeTransport");
 const { resolveRuntimeConfig } = require("../../agents/providers/runtimeConfig");
 const { resolveUpstreamRuntime, normalizeProvider } = require("../../agents/providers/upstreamRuntime");
-const { loadConfig, defaultAgentModelForProvider, sameModelProvider } = require("../../config");
+const { loadConfig, defaultAgentModelForProvider, defaultAuxModelForProvider, sameModelProvider } = require("../../config");
 const mainProfile = require("../../agents/profiles/main");
 const globalProfile = require("../../agents/profiles/globalRouter");
 const { buildMainAgentPrompt, buildCodingTaskPrompt } = require("../../agents/prompts/mainAgent");
@@ -35,12 +37,15 @@ const { canonicalProjectRoot, buildProjectId } = require("../projects/projectId"
 const { resolveWorkspacePath } = require("../../code/tools/common");
 const { listControllerInboxEntries } = require("../../coordination/report/store");
 const { redactSecrets } = require("../privacy/redactor");
-const { createContextManager } = require("../../agents/runtime/context/compaction");
+const { createTurnIndexStore } = require("../../agents/runtime/context/turnIndexStore");
+const { buildDeterministicTurnRecord, backfillMissingTurns, createAsyncTurnEnricher } = require("../../agents/runtime/context/turnAnalyzer");
+const { createTopicSelector } = require("../../agents/runtime/context/topicSelector");
+const { createSlidingWindowManager } = require("../../agents/runtime/context/slidingWindowManager");
 const { replayHistory } = require("../../agents/runtime/context/replayHistory");
 
 const hash = (value) => createHash("sha256").update(value).digest("hex").slice(0, 32);
 const safeId = (value) => /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,100}$/.test(value || "");
-const MAIN_GRANTS = ["workspace.read", "workspace.write", "workspace.execute", "interaction.request", "coordination.read", "coordination.write", "agents.manage", "memory.write", "tasks.accept", "tasks.execute", "groups.manage", "schedules.manage"];
+const MAIN_GRANTS = ["workspace.read", "workspace.write", "workspace.execute", "interaction.request", "coordination.read", "coordination.write", "agents.manage", "memory.write", "tasks.accept", "tasks.execute", "groups.manage", "schedules.manage", "browser.control"];
 
 function resolveTaskWorkspace(projectRoot, requested = "") {
   const target = canonicalProjectRoot(requested || projectRoot);
@@ -92,16 +97,17 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
   const workspaceAccess = createWorkspaceAccess({ projectRoot: root, externalWriters(context) {
     const tasks = Object.values(management.snapshot().tasks);
     const pending = tasks.filter((task) => ["planning", "awaiting_registration"].includes(task.status) && !task.workerId).map((task) => task.taskId);
-    return [...pending, ...readBusSummaryHandler({ projectRoot: root, internalAgentsOnly: true }).active_agents.filter((agent) => {
+    return [...pending, ...readBusSummaryHandler({ projectRoot: root }).active_agents.filter((agent) => {
       if (agent.id === context.agentId || agent.id === "ufoo-agent") return false;
       const assigned = tasks.filter((task) => task.workerId === agent.id);
+      if (!isInternalAgentMeta(agent) && !assigned.length) return false;
       return !assigned.length || assigned.some((task) => ["planning", "queued", "delivered", "delivery_uncertain", "running"].includes(task.status))
         || ["working", "starting", "running"].includes(agent.activity_state);
     }).map((agent) => agent.id)];
   } });
   const management = createAgentManagementService({ store: control,
     resolveTarget(target) {
-      const matches = readBusSummaryHandler({ projectRoot: root, internalAgentsOnly: true }).active_agents.filter((agent) => agent.id !== "ufoo-agent"
+      const matches = readBusSummaryHandler({ projectRoot: root }).active_agents.filter((agent) => agent.id !== "ufoo-agent"
         && [agent.id, agent.nickname, agent.scoped_nickname, agent.display_nickname].includes(target));
       return matches.length === 1 ? matches[0].id : "";
     },
@@ -171,6 +177,10 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
     return { ok: true, task: publicChild(jobs()[job.id]) };
   } };
   async function coordinatedOps(project, ops, manager) {
+    const registered = loadAgentsData(getUfooPaths(project).agentsFile).agents;
+    for (const op of ops) if (["close", "rename"].includes(op.action) && !isInternalAgentMeta(registered[op.agent_id])) {
+      throw Object.assign(new Error("External agents own their lifecycle; use messages instead"), { code: "external_lifecycle" });
+    }
     ops = ops.map((op) => op.action === "launch" ? { ...op, internal_only: true } : op);
     if (!ops.some((op) => op.action === "launch")) return ports.handleOps(project, ops, manager);
     const ownerId = `launch-${randomUUID()}`;
@@ -188,22 +198,72 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
   }
   function makeRuntime({ sessionId, namespace, profile, capabilities, host, workspaceRoot = root, child = null }) {
     const productConfig = loadConfig(root);
+    const effectivePolicy = {
+      ...(productConfig.context && typeof productConfig.context === "object" ? productConfig.context : {}),
+      ...(contextPolicy && typeof contextPolicy === "object" ? contextPolicy : {}),
+    };
     const store = createRuntimeStore({ workspaceRoot: root, namespace, sessionId, redact: redactSecrets });
-    const contextManager = createContextManager({ policy: contextPolicy, store: {
-      sourceRef: store.journal,
-      load: () => store.read().contextCheckpoint || null,
-      loadRetryState: () => store.read().contextCompactionRetry || null,
-      saveRetryState: retryState => store.append({ type: "context.compaction.retry_state", retryState }),
-      commit(checkpoint, sourceBatch, expectedVersion) {
-        let committed = false;
-        store.transaction(state => {
-          if ((state.contextCheckpoint?.version || 0) !== expectedVersion) return [];
-          committed = true;
-          return [{ type: "context.checkpoint", checkpoint, sourceBatch }];
-        });
-        return committed;
+    const turnIndexStore = createTurnIndexStore({ workspaceRoot: root, namespace, sessionId, redact: redactSecrets });
+    backfillMissingTurns({ store: turnIndexStore, runtimeEvents: store.events() });
+    let latestResolvedAuth = null;
+    const explicitAuxModel = String(effectivePolicy?.auxModel || productConfig.agentAuxModel || "").trim();
+    const allowDefaultAux = !process.env.JEST_WORKER_ID
+      || Boolean(effectivePolicy?.enableModelSelector || effectivePolicy?.backgroundEnrich);
+    const canUseAuxModel = typeof effectivePolicy?.runAuxModel === "function"
+      || Boolean(explicitAuxModel)
+      || allowDefaultAux;
+    const runAuxModel = typeof effectivePolicy?.runAuxModel === "function"
+      ? effectivePolicy.runAuxModel
+      : canUseAuxModel
+        ? async ({ purpose, currentQuery, activeTopics, candidates, turn, existingTopics, signal }) => {
+          const auth = latestResolvedAuth;
+          if (!auth || !auth.url || !auth.transport) return null;
+          const targetAuxModel = explicitAuxModel
+            || (allowDefaultAux ? defaultAuxModelForProvider(auth.provider) : "");
+          if (!targetAuxModel) return null;
+          const systemPrompt = purpose === "topic_select"
+            ? "Select relevant historical turns and topics as strict JSON: {\"isNewTopic\":boolean,\"matchedTopics\":string[],\"referencedTurnIds\":string[]}. Do not include markdown or prose."
+            : "Summarize the completed agent turn as strict JSON: {\"topic\":string,\"userSummary\":string,\"assistantSummary\":string,\"decisions\":string[],\"keywords\":string[]}. Do not include markdown or prose.";
+          const userPayload = purpose === "topic_select"
+            ? { currentQuery, activeTopics, candidates }
+            : { turn, existingTopics };
+          const res = await auth.transport.runTurn({
+            url: auth.url,
+            apiKey: auth.apiKey,
+            model: targetAuxModel,
+            provider: auth.provider,
+            accountId: auth.accountId,
+            requestHeaders: auth.requestHeaders,
+            requestProfile: auth.requestProfile,
+            systemPrompt,
+            messages: [{ role: "user", content: JSON.stringify(userPayload) }],
+            tools: [],
+            maxOutputTokens: 512,
+            sessionId: `${sessionId}:aux`,
+            signal,
+          });
+          return res && res.text ? res.text : "";
+        }
+        : null;
+    const topicSelector = createTopicSelector({
+      ...effectivePolicy,
+      runAuxModel,
+      enableModelSelector: Boolean(runAuxModel && (effectivePolicy?.enableModelSelector ?? true)),
+    });
+    const enricher = createAsyncTurnEnricher({
+      store: turnIndexStore,
+      runAuxModel,
+      enabled: Boolean(runAuxModel && (effectivePolicy?.backgroundEnrich ?? true)),
+      timeoutMs: effectivePolicy?.enrichTimeoutMs || 8000,
+      onEvent: (ev) => {
+        try { store.append(ev); } catch {}
       },
-    } });
+    });
+    const contextManager = createSlidingWindowManager({
+      policy: effectivePolicy,
+      turnIndexStore,
+      topicSelector,
+    });
     const previousBinding = store.read().binding;
     const configuredProvider = normalizeProvider(provider || productConfig.agentProvider || "ucode");
     const useCodingConfig = previousBinding?.codingConfig ?? configuredProvider === "ucode";
@@ -211,7 +271,8 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
     const modelRevision = Number(productConfig.agentModelRevision) || 0;
     const changedModel = !useCodingConfig && modelRevision > (Number(previousBinding?.modelRevision) || 0)
       && sameModelProvider(productConfig.agentProvider, selectedProvider);
-    const selectedModel = (changedModel ? productConfig.agentModel : "") || previousBinding?.model || model || (useCodingConfig ? "" : productConfig.agentModel || defaultAgentModelForProvider(selectedProvider));
+    const selectedModel = (changedModel ? productConfig.agentModel : "") || previousBinding?.model || model || (useCodingConfig ? "" :
+      (sameModelProvider(productConfig.agentProvider, selectedProvider) ? productConfig.agentModel : "") || defaultAgentModelForProvider(selectedProvider));
     const config = resolveRuntimeConfig({ workspaceRoot: root, provider: selectedProvider, model: selectedModel, useCodingConfig });
     const transport = transportFactory(config.transport);
     const binding = { provider: selectedProvider || config.provider, model: config.model, transport: config.transport, codingConfig: useCodingConfig,
@@ -236,12 +297,12 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
       if (useCodingConfig) resolved.baseUrl = config.baseUrl;
       const expected = resolved.transport === "codex-responses" ? "openai-responses" : resolved.transport;
       if (expected !== config.transport) throw new Error("provider transport changed; start a new session");
-      const context = child ? [] : [readBusSummaryHandler({ projectRoot: root, internalAgentsOnly: true }), readOpenDecisionsHandler({ projectRoot: root }, { limit: 20 }),
+      const context = child ? [] : [readBusSummaryHandler({ projectRoot: root }), readOpenDecisionsHandler({ projectRoot: root }, { limit: 20 }),
         { memory: buildCachedMemoryPrefix(root, { limit: 30, maxTokens: 1500 }).prefix || "" }, { delegatedTasks: Object.values(management.snapshot().tasks).slice(-30) }];
       if (!child) {
         const registered = loadAgentsData(getUfooPaths(root).agentsFile).agents;
         context.push({ requestMeta: request.requestMeta || {}, reports: listControllerInboxEntries(root, "ufoo-agent", { num: 30 })
-          .filter((report) => isInternalAgentMeta(registered[report.agent_id])) });
+          .filter((report) => Boolean(registered[report.agent_id])) });
       }
       const sources = await runtime.buildContext({ workspaceRoot, prompt: request.text, promptText: request.text });
       const skillSource = sources.find((source) => source.capabilityId === "skills")?.value;
@@ -250,14 +311,24 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
       if (skillSource) context.push({ skills: { active: skillSource.activeSkills, warnings: skillSource.warnings } });
       const instructionFile = path.join(workspaceRoot, "AGENTS.md");
       const instructions = fs.existsSync(instructionFile) ? fs.readFileSync(instructionFile, "utf8").slice(0, 16000) : "";
-      const history = child ? [] : replayHistory(store.events(), task.taskRunId);
+      const history = child && !request.runtimeEvent ? [] : replayHistory(store.events(), task.taskRunId);
       const attachments = (request.attachments || []).map((attachment) => resolveWorkspacePath(workspaceRoot, typeof attachment === "string" ? attachment : attachment.path).resolved);
+      const resolvedUrl = typeof transport.resolveUrl === "function" ? transport.resolveUrl(resolved.baseUrl) : resolved.baseUrl;
+      latestResolvedAuth = {
+        transport,
+        url: resolvedUrl,
+        apiKey: resolved.auth?.apiKey || "",
+        provider: resolved.provider === "claude" ? "anthropic" : resolved.provider,
+        accountId: resolved.credential?.accountId || "",
+        requestHeaders: resolved.auth?.headers || {},
+        requestProfile: resolved.requestProfile || "",
+      };
       return { workspaceRoot, sessionId, projectId, agentId: child ? child.id : "ufoo-agent", artifactNamespace: namespace,
         model: resolved.model, provider: resolved.provider === "claude" ? "anthropic" : resolved.provider,
         baseUrl: resolved.baseUrl, apiKey: resolved.auth?.apiKey || "", requestHeaders: resolved.auth?.headers || {},
         accountId: resolved.credential?.accountId || "", requestProfile: resolved.requestProfile || "",
         thinkingLevel: currentConfig.agentThinking || "medium",
-        requestKind: child ? "coding-task" : request.report ? "worker-report" : request.parentTaskRunId ? "task-result" : "user",
+        requestKind: request.runtimeEvent ? "system_wake" : child ? "coding-task" : request.report ? "worker-report" : request.parentTaskRunId ? "task-result" : "user",
         prompt: resumed ? "" : request.text + (attachments.length ? `\n\nWorkspace attachments (read with read/read_image): ${JSON.stringify(attachments)}` : ""), historyMessages: history,
         systemPrompt: child ? buildCodingTaskPrompt({ workspaceRoot, instructions, skillBlocks, toolNames: runtime.tools.names() }) : buildMainAgentPrompt({ global, workspaceRoot, skillBlocks, toolNames: runtime.tools.names(), promptSections: runtime.promptSections, context, instructions: global ? "" : instructions }),
         timeoutMs: resolveTaskTimeoutMs(), toolBudget: resolveToolBudget(),
@@ -265,7 +336,75 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
       };
     };
     runtime = createAgentRuntime({ profile, capabilities, transport,
-      host: { ...host, projectId, agentId: child ? child.id : "ufoo-agent", sessionStore: store, prepareRequest: prepare,
+      host: { ...host, ...(!global && (!child || !child.readOnly) ? { hookSources: { background: createBackgroundHookSource(workspaceRoot) } } : {}), contextNamespace: namespace, projectId, agentId: child ? child.id : "ufoo-agent", sessionStore: store, prepareRequest: prepare,
+        onTasksInterrupted(tasks = []) {
+          const existing = turnIndexStore.listTurns();
+          for (const task of tasks) {
+            const turnId = task.taskRunId;
+            if (!turnId || turnIndexStore.getTurn(turnId)) continue;
+            const requestKind = task.request?.runtimeEvent ? "system_wake" : child ? "coding-task" : task.request?.report ? "worker-report" : task.request?.parentTaskRunId ? "task-result" : "user";
+            const baseHistory = child ? [] : replayHistory(store.events(), turnId);
+            const record = buildDeterministicTurnRecord({
+              turnId,
+              turnIndex: existing.length,
+              historyOffset: baseHistory.length,
+              historyEnd: baseHistory.length + (task.request?.text ? 1 : 0),
+              turnMessages: task.request?.text ? [{ role: "user", content: task.request.text }] : [],
+              requestKind,
+              prompt: task.request?.text || "",
+              outcome: "interrupted",
+              error: "owner stopped; inspect effects before resubmitting",
+              startedAt: task.startedAt || task.createdAt,
+              previousTurns: existing,
+            });
+            const saved = turnIndexStore.upsertTurn(record, { phase: "A" });
+            existing.push(saved);
+          }
+        },
+        async onTurnSettled({ task, outcome = "completed", error = "", messages = [], historyOffset = 0 } = {}) {
+          if (!task || !task.taskRunId) return null;
+          const existingTurns = turnIndexStore.listTurns();
+          const existing = existingTurns.find((item) => item.turnId === task.taskRunId) || null;
+          const requestKind = task.request?.runtimeEvent ? "system_wake" : child ? "coding-task" : task.request?.report ? "worker-report" : task.request?.parentTaskRunId ? "task-result" : "user";
+          const promptText = String(task.request?.text || "");
+          const turnMessages = Array.isArray(messages) ? messages.slice() : [];
+          if (!turnMessages.length && promptText) {
+            turnMessages.push({ role: "user", content: promptText });
+          }
+          const resolvedOffset = child
+            ? 0
+            : (Number.isInteger(historyOffset) && historyOffset >= 0 ? historyOffset : replayHistory(store.events(), task.taskRunId).length);
+          const record = buildDeterministicTurnRecord({
+            turnId: task.taskRunId,
+            turnIndex: existing ? existing.turnIndex : existingTurns.length,
+            historyOffset: resolvedOffset,
+            historyEnd: resolvedOffset + turnMessages.length,
+            turnMessages,
+            requestKind,
+            prompt: promptText,
+            outcome,
+            error: error || "",
+            startedAt: task.startedAt || task.createdAt,
+            previousTurns: existingTurns,
+            resume: task.answer !== undefined,
+          });
+          const saved = turnIndexStore.upsertTurn(record, { phase: "A" });
+          if (outcome === "completed") {
+            enricher.enqueue(saved);
+            if (effectivePolicy?.awaitEnrich) {
+              await enricher.flush();
+            }
+          }
+          return {
+            type: "context.turn_indexed",
+            taskRunId: task.taskRunId,
+            turnId: saved.turnId,
+            topic: saved.topic,
+            turnKind: saved.turnKind,
+            outcome: saved.outcome,
+          };
+        },
+        onClose: () => enricher.close(),
         validateAnswer(task, answer) {
           const parsed = parseUserInteractionInput(task.result.executionState.pendingUserInteraction, typeof answer === "string" ? answer : JSON.stringify(answer));
           if (!parsed.ok) throw new Error(parsed.error);
@@ -292,10 +431,11 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
   function getSession(sessionId = "main-default") {
     if (closed || !safeId(sessionId)) throw new Error("invalid or closed main session");
     if (sessions.has(sessionId)) return sessions.get(sessionId);
-    const host = { grantedPermissions: global ? ["coordination.read"] : MAIN_GRANTS, workspaceAccess,
+    const namespace = global ? "global-router" : "main";
+    const host = { grantedPermissions: global ? ["coordination.read"] : MAIN_GRANTS, contextNamespace: namespace, workspaceAccess,
       taskScheduler: conversationScheduler,
       projectRouting: { list: () => listProjectRuntimes({ validate: true }) },
-      coordination: { ...ports, internalAgentsOnly: true, handleOps: coordinatedOps, projectRoot: root, agentManagement: management, taskScheduler: taskPort } };
+      coordination: { ...ports, internalAgentsOnly: true, includeExternalAgents: true, handleOps: coordinatedOps, projectRoot: root, agentManagement: management, taskScheduler: taskPort } };
     host.coordination.execute = (ctx, call) => {
       const permission = TOOL_PERMISSIONS[call.name];
       const readOnly = ["manage_tasks", "manage_group", "resume_agents", "manage_cron"].includes(call.name)
@@ -316,10 +456,10 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
   }
   function getChild(job) {
     if (children.has(job.id)) return children.get(job.id);
-    const grants = job.readOnly ? ["workspace.read"] : ["workspace.read", "workspace.write", "workspace.execute", "interaction.request"];
+    const grants = job.readOnly ? ["workspace.read"] : ["workspace.read", "workspace.write", "workspace.execute", "interaction.request", "browser.control"];
     const coding = createCodingCapability({ workspaceAccess });
     coding.tools = coding.tools.filter((tool) => tool.permissions.every((permission) => grants.includes(permission)));
-    const capabilities = [coding, createSkillsCapability(), ...(job.readOnly ? [] : [createMainPlanningCapability()])];
+    const capabilities = [coding, createSkillsCapability(), createTurnRecallCapability({ projectRoot: job.workspaceRoot, contextNamespace: "main-task" }, { defaultNamespace: "main-task" }), ...(job.readOnly ? [] : [createMainPlanningCapability(), createBrowserCapability()])];
     const host = { grantedPermissions: grants, taskScheduler: { schedule(options, work) {
       return scheduler.schedule(options, (signal) => job.readOnly ? work(signal)
         : workspaceAccess.runTask({ workspaceRoot: job.workspaceRoot, taskRunId: options.id, signal }, () => work(signal)).then((result) => {
@@ -346,6 +486,11 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
   }
   return Object.freeze({
     getSession, resolveRuntime, taskPort, management, publicEvent, workspaceAccess, projectRoot: root,
+    hasPendingHooks: () => [...sessions.values(), ...children.values()].some(runtime => {
+      const state = runtime.hooks?.snapshot();
+      return state && (Object.values(state.subscriptions).some(sub => sub.status === "active")
+        || Object.values(state.events).some(event => ["pending", "claimed"].includes(event.status)));
+    }),
     findRuntime({ taskRunId, interactionId, sessionId } = {}) {
       for (const runtime of [...sessions.values(), ...children.values()]) if (Object.values(runtime.snapshot().tasks).some((task) => taskRunId ? task.taskRunId === taskRunId : interactionId && [task.interactionId, task.answeredInteractionId].includes(interactionId))) return runtime;
       return resolveRuntime(sessionId);

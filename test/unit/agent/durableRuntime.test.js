@@ -61,6 +61,21 @@ describe("durable shared runtime", () => {
     await runtime.close();
     expect(() => make(jest.fn(), { profileId: "global-router" })).toThrow("profile is pinned");
   });
+
+  test("adds browser capability to an existing paused session without allowing unrelated capability removal", async () => {
+    const store = createRuntimeStore({ workspaceRoot: root, namespace: "main", sessionId: "test-session" });
+    store.append({ type: "runtime.opened", owner: { id: "old", pid: 99999999, profile: "main", capabilities: ["turn-recall"] } });
+    store.append({ type: "request.accepted", taskRunId: "paused", request: { requestId: "paused", text: "continue later" } });
+    store.append({ type: "task.paused", taskRunId: "paused", result: { interactionId: "question" } });
+    const capabilities = [{ id: "turn-recall", version: "1" }, { id: "browser", version: "1" }];
+    const runtime = createAgentRuntime({ profile: { id: "main", capabilities: capabilities.map(cap => cap.id) }, capabilities,
+      transport: transport(jest.fn()), host: { sessionStore: store } });
+    runtimes.push(runtime);
+    expect(runtime.snapshot().tasks.paused.status).toBe("waiting_user");
+    await runtime.close();
+    expect(() => createAgentRuntime({ profile: { id: "main", capabilities: ["browser"] }, capabilities: [capabilities[1]],
+      transport: transport(jest.fn()), host: { sessionStore: store } })).toThrow("cannot change capabilities");
+  });
   test("marks interrupted effects as uncertain without replaying the provider or tool", async () => {
     const store = createRuntimeStore({ workspaceRoot: root, namespace: "main", sessionId: "test-session" });
     store.append({ type: "runtime.opened", owner: { id: "dead-owner", pid: 99999999, profile: "main" } });

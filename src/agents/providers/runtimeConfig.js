@@ -1,7 +1,8 @@
 "use strict";
 
-const { loadConfig, defaultAgentModelForProvider, sameModelProvider } = require("../../config");
+const { loadConfig, defaultAgentModelForProvider, defaultAuxModelForProvider, sameModelProvider } = require("../../config");
 const { readKimiAccessToken } = require("./credentials/kimi");
+const { DEFAULT_AGY_BASE_URL } = require("./credentials/agy");
 
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1";
@@ -18,6 +19,7 @@ function normalizeProvider(value = "") {
   if (text === "custom") return "openai";
   if (text === "codex" || text === "codex-cli" || text === "codex-code") return "codex";
   if (text === "claude" || text === "claude-cli" || text === "claude-code") return "anthropic";
+  if (text === "agy" || text === "agy-cli" || text === "antigravity") return "agy";
   if (text === "kimi" || text === "kimi-code" || text === "moonshot") return "kimi";
   if (text === "grok" || text === "grok-build" || text === "grok-shell" || text === "grok-api") return "grok-build";
   if (text === "xai") return "xai";
@@ -50,6 +52,7 @@ function resolveTransport({ provider = "", baseUrl = "" } = {}) {
     return "openai-responses";
   }
   if (normalizedProvider === "anthropic") return "anthropic-messages";
+  if (normalizedProvider === "agy") return "antigravity";
   if (normalizedProvider === "kimi") return "openai-chat";
   if (/\/responses(?:$|[/?#])/.test(url)) return "openai-responses";
 
@@ -67,9 +70,15 @@ function resolveRuntimeConfig({ workspaceRoot = process.cwd(), provider = "", mo
   ) || "openai";
   const custom = selectedProvider === "openai" && config.agentProvider === "custom"
     && (!useCodingConfig || !(config.ucodeProvider || process.env.UFOO_UCODE_PROVIDER));
-  const configuredModel = sameModelProvider((useCodingConfig ? config.ucodeProvider : "") || config.agentProvider, selectedProvider)
-    ? ((useCodingConfig ? config.ucodeModel : "") || config.agentModel)
-    : "";
+  const useCodingGateway = useCodingConfig && (selectedProvider !== "agy" || normalizeProvider(config.ucodeProvider) === "agy");
+  const modelProviderMatches = sameModelProvider((useCodingConfig ? config.ucodeProvider : "") || config.agentProvider, selectedProvider);
+  function modelSetting(codingModel, agentModel) {
+    if (selectedProvider === "agy") {
+      return (useCodingGateway ? codingModel : "") || (normalizeProvider(config.agentProvider) === "agy" ? agentModel : "");
+    }
+    return modelProviderMatches ? ((useCodingConfig ? codingModel : "") || agentModel) : "";
+  }
+  const configuredModel = modelSetting(config.ucodeModel, config.agentModel);
 
   const selectedModel = String(
     model
@@ -94,19 +103,21 @@ function resolveRuntimeConfig({ workspaceRoot = process.cwd(), provider = "", mo
           )
           : selectedProvider === "xai"
             ? String(process.env.XAI_BASE_URL || DEFAULT_XAI_BASE_URL)
-            : String(process.env.OPENAI_BASE_URL || DEFAULT_OPENAI_BASE_URL);
+            : selectedProvider === "agy"
+              ? String(process.env.UFOO_AGY_BASE_URL || DEFAULT_AGY_BASE_URL)
+              : String(process.env.OPENAI_BASE_URL || DEFAULT_OPENAI_BASE_URL);
 
   let baseUrl = String(
     (custom ? process.env.UFOO_AGENT_BASE_URL || config.agentBaseUrl : "")
       || (useCodingConfig ? process.env.UFOO_UCODE_BASE_URL : "")
-      || (useCodingConfig ? config.ucodeBaseUrl : "")
+      || (useCodingGateway ? config.ucodeBaseUrl : "")
       || defaultBaseUrl
   ).trim();
   if (custom) baseUrl = String(process.env.UFOO_AGENT_BASE_URL || config.agentBaseUrl || "").trim();
 
   const explicitApiKey = String(custom ? process.env.UFOO_AGENT_API_KEY || config.agentApiKey || "" :
     (useCodingConfig ? process.env.UFOO_UCODE_API_KEY : "")
-      || (useCodingConfig ? config.ucodeApiKey : "")
+      || (useCodingGateway ? config.ucodeApiKey : "")
       || ""
   ).trim();
   let apiKey = explicitApiKey;
@@ -144,9 +155,17 @@ function resolveRuntimeConfig({ workspaceRoot = process.cwd(), provider = "", mo
     baseUrl = String(process.env.OPENAI_BASE_URL || DEFAULT_OPENAI_BASE_URL).trim();
   }
 
+  const configuredAuxModel = modelSetting(config.ucodeAuxModel, config.agentAuxModel);
+  const selectedAuxModel = String(
+    (useCodingConfig ? process.env.UFOO_UCODE_AUX_MODEL : "")
+      || configuredAuxModel
+      || (custom ? "" : defaultAuxModelForProvider(selectedProvider))
+  ).trim();
+
   return {
     provider: selectedProvider,
     model: selectedModel,
+    auxModel: selectedAuxModel,
     baseUrl,
     apiKey,
     apiKeySource,

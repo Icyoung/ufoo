@@ -124,12 +124,15 @@ function transcriptEventsToMessages(events = [], options = {}) {
   const messages = [];
   for (const event of list) {
     if (preferArtifact && event.artifactId) {
+      const hasFullContent = event.content !== undefined && event.content !== null && event.content !== "";
       messages.push({
         role: event.role || "tool",
-        content: JSON.stringify({
-          artifactId: event.artifactId,
-          preview: event.preview || "",
-        }),
+        content: hasFullContent
+          ? event.content
+          : JSON.stringify({
+            artifactId: event.artifactId,
+            preview: event.preview || "",
+          }),
         tool_call_id: event.toolCallId,
       });
       continue;

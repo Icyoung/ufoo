@@ -99,3 +99,9 @@ try {
   // Non-fatal - skills can be installed manually via `ufoo skills install`
   console.log(`[postinstall] Skipped skills install: ${err.message}`);
 }
+
+try {
+  console.log("[postinstall] Optional: run 'ufoo setup' to configure ufoo Browser for Chrome automation.");
+} catch {
+  // ignore
+}

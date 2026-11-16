@@ -61,7 +61,7 @@ describe("capability-composed shared agent runtime", () => {
     const result = await runtimeFor(capability(), transportFor(runTurn)).run({
       prompt: "status", model: "test", baseUrl: "test", onStreamDelta: text => deltas.push(text),
     });
-    expect(result.text).toBe("Checking agents…Two agents online");
+    expect(result.text).toBe("Checking agents…\n\nTwo agents online");
     expect(result.finalText).toBe("Two agents online");
     expect(deltas).toEqual(["Checking agents…", "Two agents online"]);
   });

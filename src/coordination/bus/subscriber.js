@@ -298,7 +298,7 @@ class SubscriberManager {
     const overrideTty = (typeof options.tty === "string" && isValidTty(options.tty.trim()))
       ? options.tty.trim()
       : "";
-    const detectedTty = wakeJoin ? "" : (hasOverrideTty ? overrideTty : getTtyPath());
+    const detectedTty = (wakeJoin || launchMode === "internal") ? "" : (hasOverrideTty ? overrideTty : getTtyPath());
     const tty = overrideTty || (isValidTty(detectedTty) ? detectedTty : "");
     const preservedTty = !tty && launchMode !== "internal" && isValidTty(existingMeta?.tty)
       ? existingMeta.tty

@@ -4,6 +4,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { loadConfig } = require("../../config");
+const { AGY_SETUP_HINT, resolveAgyCredentials } = require("./credentials/agy");
 const {
   resolveCodexAuthPaths,
   resolveCodexUpstreamCredentials,
@@ -250,7 +251,7 @@ async function inspectAgyDirectAuth({
   const classification = classifyAgyLogTail(tail);
   const base = {
     provider: "agy",
-    transport: "antigravity-tui",  // No API mode — TUI is the only path.
+    transport: "antigravity-tui",
     credentialKind: "oauth",
     source: "google-keyring",
     credentialPath: file || logDir || "",
@@ -371,7 +372,16 @@ async function inspectDirectAuthStatus(options = {}) {
     return inspectClaudeDirectAuth(nextOptions);
   }
   if (selected === "agy") {
-    return inspectAgyDirectAuth(nextOptions);
+    const env = options.env || process.env;
+    const base = { provider: "agy", transport: "antigravity", credentialKind: "oauth" };
+    try {
+      const { source, expiresAt } = resolveAgyCredentials({ env, homeDir: options.homeDir });
+      return { ...base, ok: true, state: "present", source, expiresAt };
+    } catch (error) {
+      const cli = error.code === "AGY_CREDENTIALS_MISSING" ? await inspectAgyDirectAuth(nextOptions) : null;
+      return { ...base, ok: false, errorCode: error.code || "AGY_API_CREDENTIALS",
+        error: error.message, cliAuthenticated: cli?.ok === true };
+    }
   }
   if (selected === "kimi") {
     return inspectKimiDirectAuth(nextOptions);
@@ -479,6 +489,12 @@ function formatClaudeDirectAuthStatus(status = {}, options = {}) {
 }
 
 function formatAgyDirectAuthStatus(status = {}, options = {}) {
+  if (status.transport === "antigravity") {
+    return status.ok
+      ? [`Agy API: credentials present · ${status.source}`]
+      : [`Agy API: ${status.error || AGY_SETUP_HINT}`,
+        ...(status.cliAuthenticated ? ["  The agy CLI is signed in with its keychain credentials."] : [])];
+  }
   if (options.compact === true) {
     if (status.ok) {
       const details = [

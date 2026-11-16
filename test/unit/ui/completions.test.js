@@ -220,17 +220,37 @@ describe("buildCompletions", () => {
     ]);
     expect(out.find((s) => s.label === "/resume").hasChildren).toBe(true);
     expect(out.find((s) => s.label === "/model").hasChildren).toBe(true);
-    expect(out.find((s) => s.label === "/model").optionalArguments).toBe(true);
+    expect(out.find((s) => s.label === "/model").optionalArguments).toBe(false);
   });
 
-  test("exact /model closes popup so Enter can show current model", () => {
+  test("exact /model opens model candidates directly instead of closing popup", () => {
     const { UCODE_COMMAND_REGISTRY, UCODE_COMMAND_TREE } = require("../../../src/code/commands");
     expect(buildCompletions({
       text: "/model",
       commands: UCODE_COMMAND_REGISTRY,
       commandTree: UCODE_COMMAND_TREE,
-      argumentLists: { "/model": [{ id: "gpt-5.4" }] },
-    })).toEqual([]);
+      argumentLists: {
+        "/model": [
+          { id: "gpt-5.4", desc: "current", hasChildren: true },
+          { id: "o3", desc: "reasoning", hasChildren: true },
+        ],
+      },
+    })).toEqual([
+      {
+        kind: "argument",
+        label: "/model gpt-5.4",
+        replace: "/model gpt-5.4 ",
+        description: "current",
+        hasChildren: true,
+      },
+      {
+        kind: "argument",
+        label: "/model o3",
+        replace: "/model o3 ",
+        description: "reasoning",
+        hasChildren: true,
+      },
+    ]);
   });
 
   test("ucode /model argumentLists offers model ids", () => {

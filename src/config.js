@@ -7,6 +7,7 @@ const { writeFileAtomic } = require("./coordination/bus/utils");
 const UCODE_FIELDS = [
   "ucodeProvider",
   "ucodeModel",
+  "ucodeAuxModel",
   "ucodeBaseUrl",
   "ucodeApiKey",
   "ucodeAgentDir",
@@ -17,15 +18,18 @@ const SETTINGS_MODEL_DEFAULTS = Object.freeze({
   agent: Object.freeze({
     codex: "gpt-6.1-sol",
     claude: "claude-opus-5-5",
-    // agy (Antigravity CLI) only supports model selection via in-REPL
-    // `/model` slash command, which persists across launches. There is no
-    // command-line flag for model, so the value here is a placeholder for
-    // display; we never pass it on the agy command line.
-    agy: "",
+    agy: "gemini-4-hydrogen-high",
     // kimi reads its model from its own config.toml (default_model); ufoo
-    // never injects -m/--model, so keep the placeholder empty like agy.
+    // never injects -m/--model.
     kimi: "",
     "grok-build": "grok-4.6",
+  }),
+  aux: Object.freeze({
+    codex: "gpt-6-luna",
+    claude: "claude-haiku-5-5",
+    agy: "gemini-3.8-flash-medium",
+    kimi: "",
+    "grok-build": "",
   }),
 });
 
@@ -40,6 +44,7 @@ const DEFAULT_CONFIG = {
   claudeOauthTokenPath: "",
   claudeOauthRefreshWindowSec: 300,
   agentModel: "",
+  agentAuxModel: "",
   agentBaseUrl: "",
   agentApiKey: "",
   agentThinking: "medium",
@@ -50,11 +55,24 @@ const DEFAULT_CONFIG = {
 const DEFAULT_UCODE_CONFIG = {
   ucodeProvider: "",
   ucodeModel: "",
+  ucodeAuxModel: "",
   ucodeBaseUrl: "",
   ucodeApiKey: "",
   ucodeAgentDir: "",
   ucodeThinking: "",
 };
+
+const DEFAULT_BROWSER_CONFIG = Object.freeze({
+  enabled: false,
+  backend: "ufoo-extension",
+  setupChoice: "unset",
+  schemaVersion: 1,
+  profile: "",
+});
+
+function normalizeAuxModel(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
 
 function normalizeLaunchMode(value) {
   if (value === "auto") return "auto";
@@ -103,6 +121,12 @@ function defaultAgentModelForProvider(value = "") {
   return SETTINGS_MODEL_DEFAULTS.agent[providerKey(value)] || SETTINGS_MODEL_DEFAULTS.agent.codex;
 }
 
+function defaultAuxModelForProvider(value = "") {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw || raw === "custom" || raw === "openai") return "";
+  return SETTINGS_MODEL_DEFAULTS.aux[providerKey(raw)] || "";
+}
+
 function normalizeModel(value, fallback = "") {
   const text = typeof value === "string" ? value.trim() : "";
   return text || fallback;
@@ -138,7 +162,36 @@ function normalizeClaudeOauthRefreshWindowSec(value) {
   return Math.floor(num);
 }
 
+function normalizeBrowserBackend(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "playwright-extension" || raw === "extension") return "playwright-extension";
+  if (raw === "cdp") return "cdp";
+  return DEFAULT_BROWSER_CONFIG.backend;
+}
+
+function normalizeBrowserSetupChoice(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "install") return "install";
+  if (raw === "skip") return "skip";
+  return DEFAULT_BROWSER_CONFIG.setupChoice;
+}
+
+function normalizeBrowserConfig(raw = {}) {
+  const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  const profile = typeof source.profile === "string" ? source.profile.trim() : "";
+  const normalized = {
+    enabled: source.enabled === true,
+    backend: normalizeBrowserBackend(source.backend),
+    setupChoice: normalizeBrowserSetupChoice(source.setupChoice),
+    schemaVersion: 1,
+  };
+  if (profile) normalized.profile = profile;
+  return normalized;
+}
+
 function globalConfigPath() {
+  const override = String(process.env.UFOO_GLOBAL_CONFIG_PATH || "").trim();
+  if (override) return override;
   return path.join(os.homedir(), ".ufoo", "config.json");
 }
 
@@ -189,6 +242,7 @@ function loadConfig(projectRoot) {
       ),
       agentProvider,
       agentModel: normalizeModel(raw.agentModel, defaultAgentModelForProvider(agentProvider)),
+      agentAuxModel: normalizeAuxModel(raw.agentAuxModel),
       mcpPort: normalizeMcpPort(raw.mcpPort),
       codexAuthPath: normalizeCodexAuthPath(raw.codexAuthPath),
       codexOauthRefreshWindowSec: normalizeCodexOauthRefreshWindowSec(raw.codexOauthRefreshWindowSec),
@@ -244,6 +298,7 @@ function saveConfig(projectRoot, config) {
     }
     merged.agentProvider = normalizeAgentProvider(merged.agentProvider);
     merged.agentModel = typeof merged.agentModel === "string" ? merged.agentModel.trim() : "";
+    merged.agentAuxModel = normalizeAuxModel(merged.agentAuxModel);
     merged.mcpPort = normalizeMcpPort(merged.mcpPort);
     merged.codexAuthPath = normalizeCodexAuthPath(merged.codexAuthPath);
     merged.codexOauthRefreshWindowSec = normalizeCodexOauthRefreshWindowSec(merged.codexOauthRefreshWindowSec);
@@ -261,6 +316,7 @@ function loadGlobalUcodeConfig() {
   return {
     ucodeProvider: typeof raw.ucodeProvider === "string" ? raw.ucodeProvider : "",
     ucodeModel: typeof raw.ucodeModel === "string" ? raw.ucodeModel : "",
+    ucodeAuxModel: normalizeAuxModel(raw.ucodeAuxModel),
     ucodeBaseUrl: typeof raw.ucodeBaseUrl === "string" ? raw.ucodeBaseUrl : "",
     ucodeApiKey: typeof raw.ucodeApiKey === "string" ? raw.ucodeApiKey : "",
     ucodeAgentDir: typeof raw.ucodeAgentDir === "string" ? raw.ucodeAgentDir : "",
@@ -305,20 +361,50 @@ function saveGlobalDaemonConfig(updates = {}) {
   });
 }
 
+function loadGlobalBrowserConfig() {
+  const raw = loadJsonSafe(globalConfigPath());
+  return normalizeBrowserConfig(raw.browser);
+}
+
+function saveGlobalBrowserConfig(updates = {}) {
+  const target = globalConfigPath();
+  return withFileLock(target, () => {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const existing = loadJsonForUpdate(target);
+    const merged = withoutRemovedSettings(existing);
+    const nextBrowser = normalizeBrowserConfig({
+      ...(existing.browser && typeof existing.browser === "object" ? existing.browser : {}),
+      ...(updates && typeof updates === "object" ? updates : {}),
+    });
+    merged.browser = nextBrowser;
+    writeFileAtomic(target, JSON.stringify(merged, null, 2), { mode: 0o600 });
+    return nextBrowser;
+  });
+}
+
 module.exports = {
   SETTINGS_MODEL_DEFAULTS,
+  DEFAULT_BROWSER_CONFIG,
+  globalConfigPath,
   loadConfig,
   saveConfig,
   loadGlobalUcodeConfig,
   saveGlobalUcodeConfig,
   loadGlobalDaemonConfig,
   saveGlobalDaemonConfig,
+  loadGlobalBrowserConfig,
+  saveGlobalBrowserConfig,
+  normalizeBrowserBackend,
+  normalizeBrowserSetupChoice,
+  normalizeBrowserConfig,
   normalizeLaunchMode,
   normalizeDaemonTopology,
   normalizeAgentProvider,
+  normalizeAuxModel,
   providerKey,
   sameModelProvider,
   defaultAgentModelForProvider,
+  defaultAuxModelForProvider,
   normalizeMcpPort,
   normalizeCodexAuthPath,
   normalizeCodexOauthRefreshWindowSec,

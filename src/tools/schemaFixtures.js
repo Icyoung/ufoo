@@ -604,7 +604,7 @@ const MANAGE_CRON_SCHEMA = Object.freeze({
 
 const READ_AGENT_TRACE_SCHEMA = Object.freeze({ name: "read_agent_trace", schema_version: SCHEMA_VERSION,
   tier: "tier0-read", allowed_tiers: CALLER_TIERS_READ_COORD,
-  description: "Read a task timeline across main/worker model and tool events, reports, queue state and context compaction, with an observed performance summary. Default shows the latest events with concise summaries; details includes redacted parameters/results. This is observation only, not acceptance or delivery acknowledgement.",
+  description: "Read a task timeline across main/worker model and tool events, reports, queue state and context window/indexing, with an observed performance summary. Default shows the latest events with concise summaries; details includes redacted parameters/results. This is observation only, not acceptance or delivery acknowledgement.",
   input_schema: { type: "object", properties: {
     task_id: { type: "string", description: "Exact delegated task ID or parent taskRunId; includes related descendants." },
     agent_id: { type: "string", description: "Worker subscriber ID or registered nickname." }, session_id: { type: "string" },

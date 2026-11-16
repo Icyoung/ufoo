@@ -19,12 +19,21 @@ pub enum FocusPane {
     Interaction,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InteractionOption {
+    pub key: String,
+    pub label: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct InteractionPrompt {
     pub id: String,
     pub prompt: String,
     pub kind: String,
     pub lines: Vec<String>,
+    pub options: Vec<InteractionOption>,
+    pub selected_option: usize,
+    pub allow_free_chat: bool,
     pub secret: bool,
 }
 
@@ -52,6 +61,7 @@ pub struct AgentItem {
     pub id: String,
     pub label: String,
     pub activity_state: String,
+    pub internal: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -786,7 +796,10 @@ impl AppState {
             base = format!("{base} · 📎{}", self.attachment_count);
         }
         if self.surface == "ucode" && self.queued_count > 0 {
-            base = format!("{base} · queued {} · /queue", self.queued_count);
+            base = format!(
+                "{base} · queued {} · Alt+Enter immediately · /queue",
+                self.queued_count
+            );
         }
         if !self.usage_summary.is_empty() {
             base = format!("{base} · {}", self.usage_summary);

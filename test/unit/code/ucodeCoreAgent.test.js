@@ -74,6 +74,46 @@ describe("ucode core agent nl path", () => {
     jest.clearAllMocks();
   });
 
+  test.each([
+    { label: "default", configured: undefined, explicit: undefined, expected: 43200000 },
+    { label: "environment", configured: "600000", explicit: undefined, expected: 600000 },
+    { label: "CLI", configured: "600000", explicit: 900000, expected: 900000 },
+  ])("complex Chinese handoff keeps the $label timeout through automatic decomposition", async ({ configured, explicit, expected }) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-handoff-timeout-"));
+    const previousRunner = runNativeAgentTask.getMockImplementation();
+    const previous = process.env.UFOO_UCODE_TASK_TIMEOUT_MS;
+    if (configured === undefined) delete process.env.UFOO_UCODE_TASK_TIMEOUT_MS;
+    else process.env.UFOO_UCODE_TASK_TIMEOUT_MS = configured;
+    let now = 1000000;
+    const clock = jest.spyOn(Date, "now").mockImplementation(() => now);
+    runNativeAgentTask.mockImplementation(async ({ timeoutMs }) => {
+      now += 121000;
+      return timeoutMs < 121000
+        ? { ok: false, error: `agent timeout (${timeoutMs}ms)` }
+        : { ok: true, output: "验证完成", turnItems: [{ role: "assistant", content: "验证完成" }] };
+    });
+    try {
+      const state = { workspaceRoot: root, provider: "openai", model: "gpt-test", timeoutMs: explicit };
+      const result = await runNaturalLanguageTask(
+        "继续完成交易推荐需求并保留已有修改；请求、缓存和页面状态按完整币对隔离；检查接口与模型的一致性并运行回归测试。",
+        state,
+      );
+      expect(state.lastRouteDecision).toMatchObject({ upgrade: true, reason: "multi_clause_objectives" });
+      expect(runNativeAgentTask).toHaveBeenCalledTimes(1);
+      expect(runNativeAgentTask.mock.calls[0][0].timeoutMs).toBe(expected);
+      expect(result.ok).toBe(true);
+      expect(state.nlMessages).toEqual(expect.arrayContaining([
+        expect.objectContaining({ role: "assistant", content: "验证完成" }),
+      ]));
+    } finally {
+      clock.mockRestore();
+      runNativeAgentTask.mockImplementation(previousRunner);
+      if (previous === undefined) delete process.env.UFOO_UCODE_TASK_TIMEOUT_MS;
+      else process.env.UFOO_UCODE_TASK_TIMEOUT_MS = previous;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("runSingleCommand routes free-form text to nl task path", () => {
     const result = runSingleCommand("please refactor src/app.js", process.cwd());
     expect(result.kind).toBe("nl");
@@ -316,6 +356,7 @@ describe("ucode core agent nl path", () => {
       provider: "openai",
       model: "gpt-5.2-codex",
       workspaceRoot: process.cwd(),
+      contextPolicy: {},
     }));
     expect(result.ok).toBe(true);
     expect(result.summary).toBe("implemented");
@@ -837,6 +878,17 @@ describe("ucode core agent nl path", () => {
       error: "",
     });
     expect(normalizeToolLogEvent({
+      tool: "recall_turn",
+      phase: "start",
+      args: { mode: "search", query: "JWT_TTL_SEC" },
+    })).toEqual({
+      type: "tool",
+      tool: "recall_turn",
+      phase: "start",
+      args: { mode: "search", query: "JWT_TTL_SEC" },
+      error: "",
+    });
+    expect(normalizeToolLogEvent({
       tool: "bash",
       phase: "end",
       args: { command: "ls" },
@@ -1183,13 +1235,38 @@ describe("ucode core agent nl path", () => {
       expect(result.ok).toBe(true);
       expect(result.handled).toBe(1);
       expect(runNl).toHaveBeenCalledWith("run tests", state, expect.objectContaining({
-        onProgress: expect.any(Function),
+        onProgress: undefined,
         signal: abortController.signal,
       }));
-      expect(shellCalls.some((cmd) => cmd.startsWith("ufoo bus send"))).toBe(true);
+      expect(shellCalls.filter((cmd) => cmd.startsWith("ufoo bus send"))).toHaveLength(1);
+      expect(shellCalls.join(" ")).not.toContain("Starting task");
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
+  });
+
+  test("idle external ucode consumes acknowledgments silently without creating a reply loop", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-silent-bus-"));
+    const subscriberId = "ucode:outside";
+    const pendingFile = resolvePendingQueueFile(root, subscriberId);
+    fs.mkdirSync(path.dirname(pendingFile), { recursive: true });
+    fs.writeFileSync(pendingFile, JSON.stringify({ seq: 1, event: "message", publisher: "ufoo-agent", data: { message: "收到，无需继续" } }) + "\n");
+    const shell = jest.fn(() => ({ ok: true }));
+    const onProgress = jest.fn();
+    try {
+      const result = await runUbusCommand({ workspaceRoot: root }, {
+        workspaceRoot: root, subscriberId, execShell: shell, onProgress,
+        runNaturalLanguageTaskImpl: async (_text, _state, options) => {
+          options.onProgress({ phase: "start", message: "checking" });
+          return { ok: true, summary: "", artifacts: [], logs: [] };
+        },
+        formatNlResultImpl: () => "Done (no model text response).",
+      });
+      expect(result).toMatchObject({ ok: true, handled: 1 });
+      expect(onProgress).toHaveBeenCalledTimes(1);
+      expect(shell).not.toHaveBeenCalled();
+      expect(getPendingBusCount(root, subscriberId)).toBe(0);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
   });
 
   test("runUbusCommand prefers explicit subscriber id option", async () => {

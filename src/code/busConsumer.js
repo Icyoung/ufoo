@@ -1,7 +1,6 @@
 const fs = require("fs");
 const path = require("path");
 const { execSync } = require("child_process");
-const { createBusProgressReporter } = require("./taskDecomposer");
 const { DeliveryQueue } = require("../coordination/bus/deliveryQueue");
 
 function shellQuote(value = "") {
@@ -307,6 +306,14 @@ function parseBusCheckOutput(raw = "") {
     .filter(Boolean);
 }
 
+// An intentionally silent model turn must stay silent on the bus. Terminal
+// display fallbacks ("Done") and automatic progress ACKs otherwise wake peers.
+function formatBusReply(result, formatNl) {
+  if (result?.ok && !result.cancelled && !String(result.summary || "").trim()
+      && !(result.artifacts || []).length) return "";
+  return String(formatNl(result, false) || "").replace(/\s+/g, " ").trim();
+}
+
 async function runUbusCommand(state = {}, options = {}) {
   const runtimeWorkspace = resolveUfooProjectRoot(String(
     options.workspaceRoot
@@ -375,16 +382,10 @@ async function runUbusCommand(state = {}, options = {}) {
         });
       }
 
-      // Create progress reporter for this message
-      const progressReporter = createBusProgressReporter(shell, message.publisher);
-
       try {
-        // Send initial acknowledgment
-        shell(`ufoo bus send ${shellQuote(message.publisher)} ${shellQuote("🚀 Starting task...")}`);
-
         // eslint-disable-next-line no-await-in-loop
         nlResult = await runNl(message.task, state, {
-          onProgress: progressReporter,
+          onProgress: options.onProgress,
           signal: options.signal,
         });
       } catch (err) {
@@ -395,8 +396,8 @@ async function runUbusCommand(state = {}, options = {}) {
         shell(`ufoo bus send ${shellQuote(message.publisher)} ${shellQuote(`❌ Error: ${errorMessage}`)}`);
         break;
       }
-      const reply = String(formatNl(nlResult, false) || "").replace(/\s+/g, " ").trim() || "Done.";
-      const sendRes = shell(`ufoo bus send ${shellQuote(message.publisher)} ${shellQuote(reply.slice(0, 2000))}`);
+      const reply = formatBusReply(nlResult, formatNl);
+      const sendRes = reply ? shell(`ufoo bus send ${shellQuote(message.publisher)} ${shellQuote(reply.slice(0, 2000))}`) : { ok: true };
       if (!sendRes.ok) {
         sendErrors.push(`reply to ${message.publisher} failed: ${sendRes.error || "send failed"}`);
         queue.restoreClaim(claim);
@@ -446,8 +447,8 @@ async function runUbusCommand(state = {}, options = {}) {
       const nlResult = await runNl(item.task, state, {
         signal: options.signal,
       });
-      const reply = String(formatNl(nlResult, false) || "").replace(/\s+/g, " ").trim() || "Done.";
-      const sendRes = shell(`ufoo bus send ${shellQuote(item.publisher)} ${shellQuote(reply.slice(0, 2000))}`);
+      const reply = formatBusReply(nlResult, formatNl);
+      const sendRes = reply ? shell(`ufoo bus send ${shellQuote(item.publisher)} ${shellQuote(reply.slice(0, 2000))}`) : { ok: true };
       if (!sendRes.ok) {
         sendErrors.push(`reply to ${item.publisher} failed: ${sendRes.error || "send failed"}`);
         continue;

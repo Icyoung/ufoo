@@ -107,7 +107,7 @@ function createInputSubmitHandler(options = {}) {
     if (state.targetAgent) {
       if (requireKnownTarget && !resolveAgentId(state.targetAgent)) {
         clearTargetAgent();
-        logMessage("error", "Unknown internal @target");
+        logMessage("error", "Unknown or inactive @target");
         focusInput();
         return;
       }
@@ -146,7 +146,7 @@ function createInputSubmitHandler(options = {}) {
       }
       const resolvedTarget = resolveAgentId(atTarget.target) || (requireKnownTarget ? "" : atTarget.target);
       if (!resolvedTarget) {
-        logMessage("error", "Unknown internal @target");
+        logMessage("error", "Unknown or inactive @target");
         focusInput();
         return;
       }

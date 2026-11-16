@@ -88,10 +88,67 @@ function buildCoreToolSpecs() {
         parameters: {
           type: "object",
           properties: {
-            command: { type: "string" },
-            timeoutMs: { type: "integer" },
+            command: {
+              type: "string",
+              description: "Shell command to execute when action is \"run\" (default).",
+            },
+            timeoutMs: {
+              type: "integer",
+              description: "Foreground command timeout in milliseconds (default 60000, max 600000).",
+            },
+            background: {
+              type: "boolean",
+              description: "Set true to start a long-running background process (dev server, watcher) detached from the foreground turn.",
+            },
+            startupWaitMs: {
+              type: "integer",
+              description: "When background=true, milliseconds to wait for initial startup logs or early exit (default 2500, max 15000).",
+            },
+            wake: {
+              type: "object",
+              description: "Background runtime notifications. Exit notification defaults to true on supported native hosts. Each condition fires once, without model polling. Only valid when starting a background command.",
+              additionalProperties: false,
+              properties: {
+                onExit: { type: "boolean", description: "Notify once on command exit (default true)." },
+                timeoutMs: { type: "integer", minimum: 100, maximum: 43200000, description: "Subscription lifetime; default 12 hours. Expiry notifies once without killing the process." },
+                conditions: { type: "array", maxItems: 8, items: {
+                  type: "object", additionalProperties: false, required: ["type"],
+                  properties: {
+                    type: { type: "string", enum: ["log_contains", "file_exists", "port_open"] },
+                    text: { type: "string", description: "Literal log substring for log_contains; at most 1024 bytes." },
+                    path: { type: "string", description: "Workspace path for file_exists." },
+                    port: { type: "integer", minimum: 1, maximum: 65535, description: "Local IPv4 loopback port for port_open." },
+                  },
+                } },
+              },
+            },
+            action: {
+              type: "string",
+              enum: ["run", "logs", "status", "list", "stop"],
+              description: "Operation mode: \"run\" (default) executes command; \"logs\" reads background output; \"status\" checks process state; \"list\" lists background processes; \"stop\" terminates a background process.",
+            },
+            backgroundId: {
+              type: "string",
+              description: "Background process ID returned when starting with background=true. Required for logs, status, and stop.",
+            },
+            offset: {
+              type: "integer",
+              description: "Byte offset for incremental log reads with action=\"logs\" (pass previous nextOffset to read only newly appended output).",
+            },
+            tailLines: {
+              type: "integer",
+              description: "Number of recent log lines to return when offset is omitted (default 80, max 500).",
+            },
+            maxBytes: {
+              type: "integer",
+              description: "Maximum log bytes to read in one call (default 32768, max 200000).",
+            },
+            waitMs: {
+              type: "integer",
+              description: "Optional milliseconds to wait for new log output when action=\"logs\" and process is running (default 0, max 10000).",
+            },
           },
-          required: ["command"],
+          required: [],
         },
       },
     },

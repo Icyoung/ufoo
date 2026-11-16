@@ -1702,7 +1702,7 @@ async function runCli(argv) {
         }
       });
 
-    program.command("trace").description("Inspect agent task, tool, report, queue and compaction events")
+    program.command("trace").description("Inspect agent task, tool, report, queue and context events")
       .argument("[task-id]", "Delegated task ID or parent taskRunId")
       .option("--task <id>", "Filter task")
       .option("--agent <id>", "Filter subscriber ID or nickname")
@@ -1730,6 +1730,39 @@ async function runCli(argv) {
       .option("--baseline <path>", "Compare with a saved metrics JSON report")
       .option("--json", "Export a performance report")
       .action((taskId, opts) => require("./metricsCommands").runMetricsCommand(taskId, opts));
+
+    program
+      .command("setup")
+      .description("Interactive installation wizard for optional ufoo components (including ufoo Browser)")
+      .option("--browser <choice>", "Explicitly choose browser setup (install|skip)")
+      .option("--dev", "Register developer unpacked extension mode")
+      .option("--source <path>", "Local component source directory")
+      .option("--tarball <path>", "Component tarball path or URL")
+      .option("--sha256 <digest>", "Expected sha256 digest for component tarball")
+      .option("--no-open", "Do not open Chrome Web Store automatically")
+      .option("-y, --yes", "Non-interactive defaults (does not auto-enable browser)")
+      .option("--json", "Output JSON")
+      .action(async (opts) => {
+        const res = await require("./setupCommands").runSetupCommand(opts);
+        if (res && res.exitCode) process.exitCode = res.exitCode;
+      });
+
+    program
+      .command("browser")
+      .description("Manage optional ufoo Browser extension and runtime (install|status|doctor|enable|disable|update|uninstall)")
+      .argument("[subcmd]", "Subcommand (install|status|doctor|enable|disable|update|uninstall)", "status")
+      .argument("[subargs...]", "Subcommand arguments")
+      .option("--dev", "Use unpacked developer extension mode")
+      .option("--source <path>", "Local component source directory")
+      .option("--tarball <path>", "Component tarball path or URL")
+      .option("--sha256 <digest>", "Expected sha256 digest for component tarball")
+      .option("--no-open", "Do not open Chrome Web Store automatically")
+      .option("--no-repair", "Do not repair native host paths during doctor")
+      .option("--json", "Output JSON")
+      .action(async (subcmd, subargs, opts) => {
+        const code = await require("./browserCommands").runBrowserCommand(subcmd, subargs, opts);
+        if (code) process.exitCode = code;
+      });
 
     const history = program.command("history").description("Agent input history timeline");
     history
@@ -1793,6 +1826,8 @@ async function runCli(argv) {
     console.log("");
     console.log("Usage:");
     console.log("  ufoo doctor");
+    console.log("  ufoo setup [--browser=install|skip] [--dev] [--json]");
+    console.log("  ufoo browser <install|status|doctor|enable|disable|update|uninstall> [--dev] [--json]");
     console.log("  ufoo status");
     console.log("  ufoo daemon --start|--stop|--status");
     console.log("  ufoo -g");
@@ -2584,6 +2619,50 @@ async function runCli(argv) {
       return;
     }
     console.log("Usage: ufoo history [build|show|prompt] [limit]");
+    return;
+  }
+
+  if (cmd === "setup") {
+    const readFlagValue = (flag) => {
+      const prefix = `${flag}=`;
+      const inline = rest.find((arg) => arg.startsWith(prefix));
+      if (inline) return inline.slice(prefix.length);
+      const idx = rest.indexOf(flag);
+      return idx !== -1 && rest[idx + 1] && !rest[idx + 1].startsWith("-") ? rest[idx + 1] : "";
+    };
+    const res = await require("./setupCommands").runSetupCommand({
+      browser: readFlagValue("--browser"),
+      dev: rest.includes("--dev"),
+      source: readFlagValue("--source"),
+      tarball: readFlagValue("--tarball"),
+      sha256: readFlagValue("--sha256"),
+      noOpen: rest.includes("--no-open"),
+      yes: rest.includes("--yes") || rest.includes("-y"),
+      json: rest.includes("--json"),
+    });
+    if (res && res.exitCode) process.exitCode = res.exitCode;
+    return;
+  }
+
+  if (cmd === "browser") {
+    const sub = rest[0] || "status";
+    const readFlagValue = (flag) => {
+      const prefix = `${flag}=`;
+      const inline = rest.find((arg) => arg.startsWith(prefix));
+      if (inline) return inline.slice(prefix.length);
+      const idx = rest.indexOf(flag);
+      return idx !== -1 && rest[idx + 1] && !rest[idx + 1].startsWith("-") ? rest[idx + 1] : "";
+    };
+    const code = await require("./browserCommands").runBrowserCommand(sub, rest.slice(1), {
+      dev: rest.includes("--dev"),
+      source: readFlagValue("--source"),
+      tarball: readFlagValue("--tarball"),
+      sha256: readFlagValue("--sha256"),
+      noOpen: rest.includes("--no-open"),
+      noRepair: rest.includes("--no-repair"),
+      json: rest.includes("--json"),
+    });
+    if (code) process.exitCode = code;
     return;
   }
 

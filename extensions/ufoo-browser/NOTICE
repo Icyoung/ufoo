@@ -1,0 +1,10 @@
+Ufoo Chrome Extension
+
+Based on the Chrome extension CDP-bridge architecture pioneered by Microsoft Playwright
+(`packages/extension`, Apache-2.0 License).
+
+Copyright (c) Microsoft Corporation (original Playwright extension protocol and debugger bridge design).
+Modifications for Ufoo (Native Messaging auto-discovery, per-session tab ownership,
+and Ufoo control panel) Copyright (c) ufoo Contributors.
+
+Licensed under the Apache License, Version 2.0. See LICENSE for full terms.

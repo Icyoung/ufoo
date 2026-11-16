@@ -404,6 +404,31 @@ async function runUcodeCoreAgent({
     let queuedWork = 0;
     let queueGeneration = 0;
     let activeAbortController = null;
+    const wakeHost = require("./runtime/backgroundWakeHost").createUcodeWakeHost({ state,
+      canDeliver: () => !closing && !taskInFlight && !queuedWork && !autoBusQueued,
+      deliver: (event, claim, text) => {
+        const pending = chain.then(async () => {
+          const { hasPendingUserInteraction } = require("./context/userInteraction");
+          if (closing || hasPendingUserInteraction(state.executionState) || !claim()) return false;
+          const abort = new AbortController();
+          activeAbortController = abort;
+          taskInFlight = true;
+          try {
+            stdout.write(`\n[${event.type}]\n`);
+            const result = await runNaturalLanguageTask(text, state, { signal: abort.signal,
+              runtimeContext: { requestKind: "system_wake", parentTaskRunId: event.ownerTaskRunId } });
+            stdout.write(`${formatNlResult(result, state.jsonOutput)}\n`);
+            persistSessionState(state);
+            printPrompt(stdout);
+          } finally { taskInFlight = false; if (activeAbortController === abort) activeAbortController = null; }
+          return true;
+        });
+        chain = pending.catch(() => {});
+        return pending;
+      },
+      onError: error => stdout.write(`Background notification: ${error.message}\n`),
+    });
+    wakeHost.start();
 
     function formatCoreQueueStatus() {
       return `Queue: ${taskInFlight ? "active" : "idle"} · pending ${queuedWork}`;
@@ -801,7 +826,8 @@ async function runUcodeCoreAgent({
 
     rl.on("close", () => {
       closing = true;
-      if (activeAbortController) activeAbortController.abort();
+      wakeHost.close();
+      if (activeAbortController) activeAbortController.abort("runtime_closed");
       if (autoBusTimer) {
         clearInterval(autoBusTimer);
         autoBusTimer = null;

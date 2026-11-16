@@ -26,7 +26,25 @@
         "architect"
       ],
       "startup_order": 1,
-      "depends_on": []
+      "depends_on": [],
+      "model_config": {
+        "codex": {
+          "model": "gpt-6-astra",
+          "reasoning_effort": "high"
+        },
+        "claude": {
+          "model": "claude-fable-5-2",
+          "reasoning_effort": ""
+        },
+        "agy": {
+          "model": "gemini-4-carbon-high",
+          "reasoning_effort": ""
+        },
+        "override": {
+          "model": "",
+          "reasoning_effort": ""
+        }
+      }
     },
     {
       "id": "challenger",
@@ -44,7 +62,25 @@
       "startup_order": 2,
       "depends_on": [
         "consultant"
-      ]
+      ],
+      "model_config": {
+        "codex": {
+          "model": "gpt-6.1-sol",
+          "reasoning_effort": "xhigh"
+        },
+        "claude": {
+          "model": "claude-opus-5-5",
+          "reasoning_effort": ""
+        },
+        "agy": {
+          "model": "gemini-4-argon-high",
+          "reasoning_effort": ""
+        },
+        "override": {
+          "model": "",
+          "reasoning_effort": ""
+        }
+      }
     },
     {
       "id": "architect",
@@ -61,7 +97,25 @@
       "depends_on": [
         "consultant",
         "challenger"
-      ]
+      ],
+      "model_config": {
+        "codex": {
+          "model": "gpt-6-astra",
+          "reasoning_effort": "high"
+        },
+        "claude": {
+          "model": "claude-fable-5-2",
+          "reasoning_effort": ""
+        },
+        "agy": {
+          "model": "gemini-4-carbon-high",
+          "reasoning_effort": ""
+        },
+        "override": {
+          "model": "",
+          "reasoning_effort": ""
+        }
+      }
     }
   ],
   "edges": [

@@ -19,6 +19,7 @@ const { createEnvelope, encodeMessage } = require("../runtime/contracts/uiProtoc
 const fmt = require("./format");
 const { createAgentSurface, projectSurfaceEvent } = require("./agentSurface");
 const { buildPlanSetPayload, statusForAgentPhase } = require("./agentPresentation");
+const { countRunningBackgroundProcesses } = require("../code/tools/bash");
 const PACKAGE_VERSION = require("../../package.json").version;
 
 function stripTags(value) {
@@ -30,6 +31,7 @@ function buildUcodeAgentsSnapshot(workspaceRoot, selfSubscriberId = "") {
     fmt.loadActiveAgents(workspaceRoot),
     selfSubscriberId
   );
+  const metadata = require("../coordination/state/agentsStore").loadAgentsData(require("../coordination/state/paths").getUfooPaths(workspaceRoot).agentsFile).agents || {};
   const agents = list.map((agent) => {
     const id = String((agent && (agent.fullId || agent.id)) || "").trim();
     const label = String(
@@ -38,6 +40,7 @@ function buildUcodeAgentsSnapshot(workspaceRoot, selfSubscriberId = "") {
     return {
       id,
       label,
+      internal: require("../runtime/contracts/agentMode").isInternalAgentMeta(metadata[id]),
       activity_state: String((agent && agent.status) || ""),
     };
   }).filter((agent) => agent.id);
@@ -158,6 +161,95 @@ function createLeadingWhitespaceNormalizer() {
   };
 }
 
+/**
+ * Keep a single assistant bubble and a single accumulating tool group per user
+ * prompt. When a new model step emits commentary after tool calls or thinking,
+ * replace the bubble text in-place so only the latest message is shown above
+ * the accumulating tool tree.
+ */
+function createSegmentedStreamSession({
+  baseId = "stream",
+  publish,
+  tools = null,
+  thinking = null,
+  onToolEntry = null,
+} = {}) {
+  const currentId = String(baseId || "stream");
+  let replaceOnNextDelta = false;
+  let hasStreamedAnyText = false;
+  let responseStarted = false;
+  const thinkingLog = createThinkingLogPublisher(publish, thinking, currentId);
+  let normalizeStreamDelta = createLeadingWhitespaceNormalizer();
+
+  if (tools && typeof tools.beginScope === "function") tools.beginScope();
+  if (thinking && typeof thinking.reset === "function") thinking.reset();
+  publish("stream.start", { id: currentId });
+
+  function beginResponse() {
+    if (responseStarted) return;
+    responseStarted = true;
+    thinkingLog.stop();
+    publish("status.set", { text: "Generating response…", busy: true });
+  }
+
+  function onTextPhase(event = {}) {
+    if (String(event.text || "").trim()) {
+      beginResponse();
+    }
+  }
+
+  function onDelta(delta) {
+    if (replaceOnNextDelta) {
+      const freshNormalizer = createLeadingWhitespaceNormalizer();
+      const visibleDelta = freshNormalizer(delta);
+      if (!visibleDelta) return;
+      normalizeStreamDelta = freshNormalizer;
+      replaceOnNextDelta = false;
+      hasStreamedAnyText = true;
+      beginResponse();
+      publish("stream.delta", { id: currentId, text: visibleDelta, reset: true, aboveTools: true });
+      return;
+    }
+    const visibleDelta = normalizeStreamDelta(delta);
+    if (!visibleDelta) return;
+    hasStreamedAnyText = true;
+    beginResponse();
+    publish("stream.delta", { id: currentId, text: visibleDelta, aboveTools: true });
+  }
+
+  function onThinkingDelta(delta) {
+    if (hasStreamedAnyText) {
+      replaceOnNextDelta = true;
+    }
+    if (!responseStarted) thinkingLog.onThinkingDelta(delta);
+  }
+
+  function onToolLog(entry) {
+    if (!entry || typeof entry !== "object") return;
+    thinkingLog.stop();
+    if (hasStreamedAnyText) {
+      replaceOnNextDelta = true;
+    }
+    if (typeof onToolEntry === "function") onToolEntry(entry);
+  }
+
+  function finish() {
+    if (tools && typeof tools.flush === "function") tools.flush();
+    thinkingLog.stop();
+    publish("stream.done", { id: currentId });
+  }
+
+  return {
+    get currentId() { return currentId; },
+    beginResponse,
+    onTextPhase,
+    onDelta,
+    onThinkingDelta,
+    onToolLog,
+    finish,
+  };
+}
+
 function appendNaturalLanguageResult(nlResult, formatNlResult, appendLog) {
   if (typeof formatNlResult !== "function" || typeof appendLog !== "function" || !nlResult) {
     return false;
@@ -199,8 +291,6 @@ async function runUcodeRust(props = {}) {
   let autoBusError = "";
   let closing = false;
   let pendingAttachments = [];
-  let selectedAgentId = "";
-  let selectedAgentLabel = "";
   let markdownState = { inCodeBlock: false };
   let remoteModels = [];
   let remoteModelsCacheKey = "";
@@ -227,6 +317,12 @@ async function runUcodeRust(props = {}) {
     }));
   }
 
+  const agentSession = require("./ucodeAgentSession").createUcodeAgentSession({
+    projectRoot: workspaceRoot,
+    getSubscriber: () => String(props.autoBus?.subscriberId || process.env.UFOO_SUBSCRIBER_ID || "").trim(),
+    publish,
+  });
+
   function publishAgents() {
     const selfSubscriberId = String(
       (props.autoBus && props.autoBus.subscriberId)
@@ -235,6 +331,7 @@ async function runUcodeRust(props = {}) {
     ).trim();
     const snapshot = buildUcodeAgentsSnapshot(workspaceRoot, selfSubscriberId);
     publish("agents.snapshot", snapshot);
+    agentSession.refresh();
     return snapshot;
   }
 
@@ -274,7 +371,7 @@ async function runUcodeRust(props = {}) {
   const thinking = createThinkingStatusPublisher(publish);
 
   function getBackgroundSuffix() {
-    let running = 0;
+    let running = countRunningBackgroundProcesses({ workspaceRoot });
     let done = 0;
     let failed = 0;
     for (const task of backgroundTasks.values()) {
@@ -330,6 +427,7 @@ async function runUcodeRust(props = {}) {
     if (normalized) tools.pushTool(normalized);
     if (
       entry.tool === "plan_graph"
+      || entry.tool === "task_run"
       || entry.phase === "end"
       || entry.phase === "result"
     ) {
@@ -508,6 +606,7 @@ async function runUcodeRust(props = {}) {
       attachment_count: pendingAttachments.length,
       usage: String((meter && meter.label) || view.usage || ""),
       task_queue: controller.getQueueSnapshot(),
+      window: agentSession.getSnapshot(),
     };
   }
 
@@ -527,6 +626,13 @@ async function runUcodeRust(props = {}) {
         id: String((pending && pending.id) || "ask"),
         kind: String((pending && pending.kind) || "ask_user"),
         prompt: String((pending && pending.prompt) || "Input required"),
+        options: Array.isArray(pending && pending.options)
+          ? pending.options.map((opt) => ({
+            key: String((opt && opt.key) || ""),
+            label: String((opt && opt.label) || ""),
+          }))
+          : [],
+        allow_free_chat: pending ? pending.allowFreeChat !== false : true,
         lines: Array.isArray(lines) ? lines.map((line) => stripTags(line)) : [],
       });
       publish("status.set", { text: "waiting for reply…", busy: false });
@@ -541,36 +647,21 @@ async function runUcodeRust(props = {}) {
       const submit = typeof props.submitUserInteractionAnswer === "function"
         ? props.submitUserInteractionAnswer
         : require("../code/protocol").submitUserInteractionAnswer;
-      const streamId = `resume-${Date.now()}`;
-      tools.beginScope();
-      thinking.reset();
-      publish("stream.start", { id: streamId });
-      const thinkingLog = createThinkingLogPublisher(publish, thinking, streamId);
-      const normalizeStreamDelta = createLeadingWhitespaceNormalizer();
-      let responseStarted = false;
-      const beginResponse = () => {
-        if (responseStarted) return;
-        responseStarted = true;
-        thinkingLog.stop();
-        publish("status.set", { text: "Generating response…", busy: true });
-      };
+      const streamSession = createSegmentedStreamSession({
+        baseId: `resume-${Date.now()}`,
+        publish,
+        tools,
+        thinking,
+        onToolEntry: ingestToolLog,
+      });
       try {
         const result = await submit(answerText, props.state, {
           signal: abort.signal,
-          onDelta: (delta) => {
-            const visibleDelta = normalizeStreamDelta(delta);
-            if (!visibleDelta) return;
-            beginResponse();
-            publish("stream.delta", { id: streamId, text: visibleDelta });
-          },
-          onThinkingDelta: (delta) => {
-            if (!responseStarted) thinkingLog.onThinkingDelta(delta);
-          },
-          onToolLog: ingestToolLog,
+          onDelta: streamSession.onDelta,
+          onThinkingDelta: streamSession.onThinkingDelta,
+          onToolLog: streamSession.onToolLog,
         });
-        tools.flush();
-        thinkingLog.stop();
-        publish("stream.done", { id: streamId });
+        streamSession.finish();
         if (!result || result.ok === false) {
           appendLog(`Error: ${(result && result.error) || "resume failed"}`, "error");
         } else if (result.shouldEchoSummary) {
@@ -586,9 +677,7 @@ async function runUcodeRust(props = {}) {
         controller.resumeQueue();
         return { ok: true, waiting: false };
       } catch (err) {
-        tools.flush();
-        thinkingLog.stop();
-        publish("stream.done", { id: streamId });
+        streamSession.finish();
         if (abort.signal.aborted) {
           appendLog("Task cancelled.", "system");
           return { ok: false, cancelled: true };
@@ -606,48 +695,38 @@ async function runUcodeRust(props = {}) {
   async function runNaturalLanguage(text, meta = {}) {
     const label = String(meta.label || text || "prompt").trim().replace(/\s+/g, " ");
     return controller.runExclusive(async (abort) => {
+      if (meta.runtimeEvent) {
+        const { hasPendingUserInteraction } = require("../code/context/userInteraction");
+        if (hasPendingUserInteraction(props.state.executionState) || !meta.claim()) return false;
+      }
       if (typeof props.runNaturalLanguageTask !== "function") {
         appendLog("runNaturalLanguageTask unavailable", "error");
         return { ok: false };
       }
-      const streamId = `nl-${Date.now()}`;
-      tools.beginScope();
-      thinking.reset();
-      publish("stream.start", { id: streamId });
-      const thinkingLog = createThinkingLogPublisher(publish, thinking, streamId);
-      const normalizeStreamDelta = createLeadingWhitespaceNormalizer();
-      let responseStarted = false;
-      const beginResponse = () => {
-        if (responseStarted) return;
-        responseStarted = true;
-        thinkingLog.stop();
-        publish("status.set", { text: "Generating response…", busy: true });
-      };
+      const streamSession = createSegmentedStreamSession({
+        baseId: `nl-${Date.now()}`,
+        publish,
+        tools,
+        thinking,
+        onToolEntry: ingestToolLog,
+      });
       try {
         const nlResult = await props.runNaturalLanguageTask(text, props.state, {
+          ...(meta.runtimeEvent ? { runtimeContext: { requestKind: "system_wake", parentTaskRunId: meta.runtimeEvent.ownerTaskRunId } } : {}),
           signal: abort.signal,
-          onDelta: (delta) => {
-            const visibleDelta = normalizeStreamDelta(delta);
-            if (!visibleDelta) return;
-            beginResponse();
-            publish("stream.delta", { id: streamId, text: visibleDelta });
-          },
-          onThinkingDelta: (delta) => {
-            if (!responseStarted) thinkingLog.onThinkingDelta(delta);
-          },
-          onToolLog: ingestToolLog,
+          onDelta: streamSession.onDelta,
+          onThinkingDelta: streamSession.onThinkingDelta,
+          onToolLog: streamSession.onToolLog,
           onPhase: (event) => {
             if (!event || typeof event !== "object") return;
-            if (event.type === "text_delta") beginResponse();
+            if (event.type === "text_delta") streamSession.onTextPhase(event);
             else {
               const text = statusForAgentPhase(event);
               if (text) publish("status.set", { text, busy: true });
             }
           },
         });
-        tools.flush();
-        thinkingLog.stop();
-        publish("stream.done", { id: streamId });
+        streamSession.finish();
         appendNaturalLanguageResult(nlResult, props.formatNlResult, appendLog);
         persistIfNeeded();
         publishPlan();
@@ -659,9 +738,7 @@ async function runUcodeRust(props = {}) {
         controller.resumeQueue();
         return { ok: true, waiting: false, result: nlResult };
       } catch (err) {
-        tools.flush();
-        thinkingLog.stop();
-        publish("stream.done", { id: streamId });
+        streamSession.finish();
         if (abort.signal.aborted) {
           appendLog("Task cancelled.", "system");
           return { ok: false, cancelled: true };
@@ -672,6 +749,7 @@ async function runUcodeRust(props = {}) {
     }, {
       kind: String(meta.kind || "prompt").trim() || "prompt",
       label: label.length > 80 ? `${label.slice(0, 77)}…` : label,
+      promptText: String(text || ""),
     });
   }
 
@@ -750,7 +828,7 @@ async function runUcodeRust(props = {}) {
   const host = createUiHostServer({
     socketPath: uiSocketPath,
     authToken: uiAuthToken,
-    capabilities: ["ucode", "scrollback", "prompt", "interaction", "auto-bus"],
+    capabilities: ["ucode", "scrollback", "prompt", "interaction", "auto-bus", "window-modes-v1"],
     onClientReady(socket) {
       const snap = createEnvelope({
         kind: "snapshot",
@@ -760,8 +838,10 @@ async function runUcodeRust(props = {}) {
         payload: buildSnapshot(),
       });
       socket.write(encodeMessage(snap));
+      agentSession.publishFrames();
       publishPendingInteraction();
       publishPlan();
+      ensureRemoteModels().catch(() => {});
       if (!clientReady) {
         clientReady = true;
         if (typeof props.onReady === "function") props.onReady();
@@ -784,6 +864,9 @@ async function runUcodeRust(props = {}) {
       }
       if (name === "completion.request") {
         const text = String(payload.text || "");
+        if (/^\s*\/m/i.test(text)) {
+          ensureRemoteModels().catch(() => {});
+        }
         if (/^\s*\/model(\s|$)/i.test(text)) {
           await ensureRemoteModels();
         }
@@ -805,27 +888,63 @@ async function runUcodeRust(props = {}) {
       }
       if (name === "ui.resync.request") {
         publish("app.snapshot", buildSnapshot());
+        agentSession.publishFrames();
         publishAgents();
         publishPlan();
         return { ok: true };
       }
-      if (name === "agent.select") {
-        selectedAgentId = String(payload.agent_id || payload.agentId || "").trim();
-        selectedAgentLabel = String(payload.label || selectedAgentId).trim();
-        publish("prompt.set_prefix", {
-          prefix: selectedAgentId
-            ? `›@${selectedAgentLabel || selectedAgentId} `
-            : "› ",
-        });
-        publish("status.set", {
-          text: selectedAgentId
-            ? `target @${selectedAgentLabel || selectedAgentId}`
-            : "ready",
-        });
-        return { ok: true, agent_id: selectedAgentId };
+      const agentCommand = await agentSession.handleCommand(name, payload);
+      if (agentCommand) {
+        if (name === "agent.close") {
+          if (agentCommand.ok) publishAgents();
+          else appendLog(agentCommand.error || "Agent close failed", "error");
+        }
+        return agentCommand;
       }
       if (name === "input.paste") {
         return handlePasteCommand(payload);
+      }
+      if (name === "queue.inject") {
+        const rawText = String(payload.text || "");
+        const { modelText, logText, attachments } = composeSubmitText(rawText);
+        if (modelText || attachments.length > 0) {
+          clearAttachments();
+          appendLog(`› ${logText || rawText}`, "user");
+        }
+        const drained = typeof controller.drainQueuedPrompts === "function"
+          ? controller.drainQueuedPrompts()
+          : [];
+        const texts = drained
+          .map((item) => String((item && item.text) || "").trim())
+          .filter(Boolean);
+        if (modelText) texts.push(modelText);
+        if (texts.length === 0) {
+          return { ok: true, injected: 0 };
+        }
+        if (controller.isBusy()) {
+          const { enqueueUserPrompt } = require("../code/context/userNudge");
+          const { emptyExecutionState } = require("../code/context/executionSegment");
+          if (props.state) {
+            if (!props.state.executionState || typeof props.state.executionState !== "object") {
+              props.state.executionState = emptyExecutionState();
+            }
+            for (const itemText of texts) {
+              enqueueUserPrompt(props.state.executionState, itemText);
+            }
+          }
+          publishStatus("injected into current turn…", true);
+          return { ok: true, injected: texts.length };
+        }
+        publishStatus("working…", true);
+        const combined = texts.join("\n\n");
+        const result = await runNaturalLanguage(combined);
+        if (result && result.waiting) {
+          return { ok: true, routed: "ucode", waiting: true, injected: texts.length };
+        }
+        if (!controller.isBusy()) {
+          publishStatus("ready", false);
+        }
+        return { ok: true, routed: "ucode", injected: texts.length };
       }
       if (name === "interaction.respond") {
         if (payload.cancelled) {
@@ -836,6 +955,13 @@ async function runUcodeRust(props = {}) {
           return { ok: true, cancelled: true };
         }
         publish("interaction.clear", {});
+        const replyText = String(payload.text || "").trim();
+        const replyLabel = String(payload.label || "").trim();
+        if (replyLabel && replyText && replyLabel !== replyText) {
+          appendLog(`› [${replyText}] ${replyLabel}`, "user");
+        } else if (replyText) {
+          appendLog(`› ${replyText}`, "user");
+        }
         publish("status.set", { text: "applying reply…", busy: true });
         const resume = resumeInteraction(String(payload.text || ""), { priority: true });
         controller.resumeQueue();
@@ -848,6 +974,15 @@ async function runUcodeRust(props = {}) {
       if (name === "input.submit") {
         const rawText = String(payload.text || "");
         const { modelText, logText, attachments } = composeSubmitText(rawText);
+        const agentResult = await agentSession.submit({ ...payload, text: modelText });
+        if (agentResult) {
+          if (agentResult.ok && agentResult.routed === "agent") {
+            clearAttachments();
+            appendLog(`› @${agentResult.agent_id} ${logText || rawText}`, "user");
+          }
+          if (!agentResult.ok) appendLog(agentResult.error, "error");
+          return agentResult;
+        }
         if (!modelText && attachments.length === 0) return { ok: true, empty: true };
         clearAttachments();
 
@@ -864,6 +999,27 @@ async function runUcodeRust(props = {}) {
           }
         } catch {
           // fall through
+        }
+
+        const trimmedSubmit = String(rawText || "").trim();
+        if (attachments.length === 0 && /^\/model$/i.test(trimmedSubmit)) {
+          await ensureRemoteModels();
+          const selfSubscriberId = String(
+            (props.autoBus && props.autoBus.subscriberId)
+            || process.env.UFOO_SUBSCRIBER_ID
+            || ""
+          ).trim();
+          const items = await buildUcodeCompletionItems({
+            text: "/model ",
+            workspaceRoot,
+            state: props.state || {},
+            selfSubscriberId,
+            remoteModels,
+            limit: Math.max(20, remoteModels.length + 1),
+          });
+          publish("completions.set", { items });
+          publishStatus("ready", false);
+          return { ok: true, routed: "completions" };
         }
 
         appendLog(`› ${logText || rawText}`, "user");
@@ -1057,6 +1213,16 @@ async function runUcodeRust(props = {}) {
   hostRef = host;
   await host.listen();
   controller.start();
+  const wakeHost = props.state && require("../code/runtime/backgroundWakeHost").createUcodeWakeHost({
+    state: props.state,
+    canDeliver: () => !closing && !controller.isBusy() && !controller.getQueueSnapshot().paused,
+    deliver: async (event, claim, text) => {
+      const result = await runNaturalLanguage(text, { kind: "runtime-wake", label: event.type, runtimeEvent: event, claim });
+      return result !== null && result !== false;
+    },
+    onError: error => appendLog(`Background notification: ${error.message}`, "error"),
+  });
+  wakeHost?.start();
   publishAgents();
   ensureRemoteModels().catch(() => {});
   agentsTimer = setInterval(publishAgents, 3000);
@@ -1092,6 +1258,7 @@ async function runUcodeRust(props = {}) {
   });
 
   closing = true;
+  wakeHost?.close();
   if (autoBusTimer) {
     clearInterval(autoBusTimer);
     autoBusTimer = null;
@@ -1101,6 +1268,7 @@ async function runUcodeRust(props = {}) {
     agentsTimer = null;
   }
   thinking.reset();
+  agentSession.stop();
   controller.stop();
   await host.close();
   return exitCode;
@@ -1113,6 +1281,7 @@ module.exports = {
   splitUcodeBannerRow,
   createThinkingLogPublisher,
   createLeadingWhitespaceNormalizer,
+  createSegmentedStreamSession,
   appendNaturalLanguageResult,
   buildUcodeAgentsSnapshot,
   buildUcodeCompletionItems,

@@ -1,8 +1,6 @@
 "use strict";
 
-const { createHash } = require("crypto");
 const { stripVisionBase64, retireMessageImages } = require("../../providers/transports/visionBlocks");
-const { stableStringify } = require("../core/stableJson");
 
 // Conservative local estimate; provider usage calibrates it in the loop.
 function estimateTextTokens(text = "") {
@@ -34,22 +32,6 @@ function estimateMessagesTokens(messages = []) {
   // conservative visual allowance while retaining live images for the model.
   return messages.reduce((sum, message) => sum + 12 + imageCount(message) * 2000
     + estimateTextTokens(JSON.stringify(summaryMessage(message))), 0);
-}
-
-function historyDigest(messages = []) {
-  // Artifact previews can change after restoration; their immutable artifact
-  // identity stays stable. Non-artifact results still hash their full text.
-  const identity = messages.map(message => {
-    const value = summaryMessage(message);
-    if (value.role === "tool" && value.tool_call_id && typeof value.content === "string") {
-      try {
-        const artifactId = JSON.parse(value.content)?.artifactId;
-        if (artifactId) value.content = { artifactId };
-      } catch { /* Plain results use their original content. */ }
-    }
-    return value;
-  });
-  return createHash("sha256").update(stableStringify(identity)).digest("hex");
 }
 
 function toolCalls(message = {}) {
@@ -90,4 +72,4 @@ function userInstruction(message = {}) {
   return message.content.filter(block => block.type === "text").map(block => block.text || "").join("\n");
 }
 
-module.exports = { estimateTextTokens, estimateMessagesTokens, summaryMessage, historyDigest, historyUnits, userInstruction };
+module.exports = { estimateTextTokens, estimateMessagesTokens, summaryMessage, historyUnits, userInstruction };

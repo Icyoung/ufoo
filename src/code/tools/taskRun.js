@@ -105,6 +105,44 @@ function runTaskRunTool(args = {}, options = {}) {
   }
 
   const ok = payload && payload.ok !== false && payload.status !== "rejected";
+  if (
+    ok
+    && (operation === "complete" || operation === "cancel" || operation === "fail")
+    && options.autoAdvance !== false
+    && typeof runTool === "function"
+    && executionState.planGraph
+    && executionState.planGraph.graphId
+  ) {
+    const {
+      advanceStoredGraph,
+      finalizeTerminalPrimaryPlan,
+    } = require("../context/planGraphService");
+    const advanced = advanceStoredGraph(executionState.planGraph, {
+      knownTools,
+      runTool,
+      parallel: options.parallel !== false,
+      maxNodeRuns: options.maxNodeRuns,
+    });
+    if (advanced && advanced.planGraph) {
+      executionState.planGraph = {
+        ...advanced.planGraph,
+        commandLog: executionState.planGraph.commandLog || {},
+      };
+    }
+    const terminal = finalizeTerminalPrimaryPlan(
+      executionState,
+      executionState.planGraph,
+      advanced ? advanced.advance : null,
+    );
+    if (terminal) {
+      payload = {
+        ...payload,
+        planCompleted: true,
+        archivedGraphId: terminal.archivedGraphId,
+        completionSummary: terminal.completionSummary,
+      };
+    }
+  }
   return {
     ok,
     ...payload,

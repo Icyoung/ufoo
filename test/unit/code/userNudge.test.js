@@ -478,6 +478,292 @@ describe("nativeRunner injects pending reminders before LLM turns", () => {
     // Durable transcript keeps prior Agent Loop history.
     expect(result.messages.some((m) => String(m.content || "").includes("earlier context"))).toBe(true);
   });
+
+  test("preserves tool calls and results across multi-step TaskFocus episodes and completes TaskLoop cleanly", async () => {
+    const executionState = emptyExecutionState();
+    runToolCall.mockImplementation(({ tool, args }) => ({
+      ok: true,
+      summary: `${tool} ${args && args.path || ""}`.trim(),
+      output: { ok: true },
+    }));
+
+    let step = 0;
+    let taskRunId = "";
+    let childGraphId = "";
+
+    global.fetch.mockImplementation(async (_url, init) => {
+      step += 1;
+      const body = JSON.parse(String(init && init.body || "{}"));
+      const msgs = body.messages || [];
+
+      if (step === 1) {
+        return makeSseResponse([{
+          choices: [{
+            delta: {
+              tool_calls: [{
+                index: 0,
+                id: "call_create",
+                type: "function",
+                function: {
+                  name: "plan_graph",
+                  arguments: JSON.stringify({
+                    operation: "create",
+                    graph: {
+                      objective: "Build 3D pelican page",
+                      nodes: [{
+                        id: "impl",
+                        type: "task",
+                        title: "Implement 3D pelican page",
+                        objective: "Create index.html",
+                        execution: { kind: "task_loop" },
+                      }],
+                    },
+                  }),
+                },
+              }],
+            },
+          }],
+        }]);
+      }
+
+      if (step === 2) {
+        return makeSseResponse([{
+          choices: [{
+            delta: {
+              tool_calls: [{
+                index: 0,
+                id: "call_start",
+                type: "function",
+                function: {
+                  name: "plan_graph",
+                  arguments: JSON.stringify({
+                    operation: "control",
+                    actions: [{ op: "start_task", nodeId: "impl" }],
+                  }),
+                },
+              }],
+            },
+          }],
+        }]);
+      }
+
+      if (step === 3) {
+        // First step of TaskRun TaskFocus episode: 1 isolated message, prior transcript excluded.
+        expect(msgs).toHaveLength(1);
+        expect(String(msgs[0].content || "")).toMatch(/Isolated TaskFocus turn/);
+        const activeRuns = Object.values(executionState.taskRuns.byId);
+        expect(activeRuns).toHaveLength(1);
+        taskRunId = activeRuns[0].id;
+        childGraphId = activeRuns[0].childGraphId;
+        // Simulate an initially invalid patch (missing required args field) to prove error history is retained!
+        return makeSseResponse([{
+          choices: [{
+            delta: {
+              tool_calls: [{
+                index: 0,
+                id: "call_bad_patch",
+                type: "function",
+                function: {
+                  name: "plan_graph",
+                  arguments: JSON.stringify({
+                    operation: "patch",
+                    graphId: childGraphId,
+                    operations: [{
+                      op: "expand_node",
+                      nodeId: "root",
+                      children: [{ id: "w1", type: "tool", tool: "write", arguments: { path: "index.html", content: "<h1>Pelican</h1>" } }],
+                    }],
+                  }),
+                },
+              }],
+            },
+          }],
+        }]);
+      }
+
+      if (step === 4) {
+        // Must retain the rejected tool call & result from step 3 instead of wiping back to 1 message!
+        expect(msgs.length).toBeGreaterThanOrEqual(3);
+        expect(String(msgs[0].content || "")).toMatch(/Isolated TaskFocus turn/);
+        const lastTool = msgs.filter((m) => m.role === "tool").pop();
+        expect(lastTool).toBeTruthy();
+        expect(String(lastTool.content || "")).toMatch(/rejected|args/i);
+
+        return makeSseResponse([{
+          choices: [{
+            delta: {
+              tool_calls: [{
+                index: 0,
+                id: "call_good_patch",
+                type: "function",
+                function: {
+                  name: "plan_graph",
+                  arguments: JSON.stringify({
+                    operation: "patch",
+                    graphId: childGraphId,
+                    operations: [{
+                      op: "expand_node",
+                      nodeId: "root",
+                      children: [{ id: "w1", type: "tool", tool: "write", args: { path: "index.html", content: "<h1>Pelican</h1>" } }],
+                    }],
+                  }),
+                },
+              }],
+            },
+          }],
+        }]);
+      }
+
+      if (step === 5) {
+        const lastTool = msgs.filter((m) => m.role === "tool").pop();
+        expect(lastTool).toBeTruthy();
+        const parsedTool = JSON.parse(String(lastTool.content || "{}"));
+        expect(parsedTool.awaitingCompleteTask).toBe(true);
+        expect(parsedTool.taskRunId).toBe(taskRunId);
+
+        return makeSseResponse([{
+          choices: [{
+            delta: {
+              tool_calls: [{
+                index: 0,
+                id: "call_complete",
+                type: "function",
+                function: {
+                  name: "plan_graph",
+                  arguments: JSON.stringify({
+                    operation: "control",
+                    actions: [{
+                      op: "complete_task",
+                      taskRunId,
+                      result: { summary: "Built interactive 3D pelican page" },
+                    }],
+                  }),
+                },
+              }],
+            },
+          }],
+        }]);
+      }
+
+      return makeSseResponse([
+        { choices: [{ delta: { content: "3D pelican page completed!" } }] },
+      ]);
+    });
+
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "实现一个鹈鹕骑自行车的 3D 网页",
+      provider: "openai",
+      model: "gpt-test",
+      executionState,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.output).toContain("3D pelican page completed!");
+    expect(executionState.taskRuns.byId[taskRunId].status).toBe("succeeded");
+    expect(executionState.planGraph.graphId).toBeFalsy();
+  });
+
+  test("allows direct read exploration while active plan waits on a task, but blocks direct write", async () => {
+    const executionState = emptyExecutionState();
+    runToolCall.mockImplementation(({ tool }) => ({
+      ok: true,
+      content: tool === "read" ? "doc contents" : "ok",
+    }));
+
+    let step = 0;
+    global.fetch.mockImplementation(async (_url, init) => {
+      step += 1;
+      const body = JSON.parse(String(init && init.body || "{}"));
+      const msgs = body.messages || [];
+
+      if (step === 1) {
+        return makeSseResponse([{
+          choices: [{
+            delta: {
+              tool_calls: [{
+                index: 0,
+                id: "call_plan_create",
+                type: "function",
+                function: {
+                  name: "plan_graph",
+                  arguments: JSON.stringify({
+                    operation: "create",
+                    graph: {
+                      objective: "Inspect then finish",
+                      nodes: [{ id: "t1", type: "task", title: "Review docs", execution: { kind: "inline_llm" } }],
+                    },
+                  }),
+                },
+              }],
+            },
+          }],
+        }]);
+      }
+
+      if (step === 2) {
+        return makeSseResponse([{
+          choices: [{
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call_read_ok",
+                  type: "function",
+                  function: { name: "read", arguments: JSON.stringify({ path: "README.md" }) },
+                },
+                {
+                  index: 1,
+                  id: "call_write_blocked",
+                  type: "function",
+                  function: { name: "write", arguments: JSON.stringify({ path: "x.txt", content: "no" }) },
+                },
+              ],
+            },
+          }],
+        }]);
+      }
+
+      if (step === 3) {
+        const toolResults = msgs.filter((m) => m.role === "tool").map((m) => JSON.parse(m.content));
+        expect(toolResults[0].ok).toBe(true);
+        expect(toolResults[1].ok).toBe(false);
+        expect(toolResults[1].errors[0].code).toBe("ACTIVE_PLAN_REQUIRES_EXPANSION");
+
+        return makeSseResponse([{
+          choices: [{
+            delta: {
+              tool_calls: [{
+                index: 0,
+                id: "call_done",
+                type: "function",
+                function: {
+                  name: "plan_graph",
+                  arguments: JSON.stringify({
+                    operation: "control",
+                    actions: [{ op: "complete_task", nodeId: "t1", summary: "Reviewed" }],
+                  }),
+                },
+              }],
+            },
+          }],
+        }]);
+      }
+
+      return makeSseResponse([{ choices: [{ delta: { content: "All done" } }] }]);
+    });
+
+    const result = await runNativeAgentTask({
+      workspaceRoot,
+      prompt: "review and complete",
+      provider: "openai",
+      model: "gpt-test",
+      executionState,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.output).toContain("All done");
+  });
 });
 
 describe("busy submit enqueue helper path", () => {
@@ -487,5 +773,42 @@ describe("busy submit enqueue helper path", () => {
     expect(queued.enqueued).toBe(true);
     expect(state.executionState.pendingUserPrompts).toHaveLength(1);
     expect(state.executionState.pendingUserPrompts[0].text).toBe("mid-run hint");
+  });
+
+  test("UcodeController drainQueuedPrompts extracts pending prompt tasks for Alt+Enter immediate injection", async () => {
+    const { createUcodeController } = require("../../../src/code/UcodeController");
+    const controller = createUcodeController({ projectRoot: process.cwd() });
+    controller.start();
+
+    let releaseFirst;
+    const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+    const p1 = controller.runExclusive(async () => {
+      await firstGate;
+      return { ok: true, id: 1 };
+    }, { kind: "prompt", label: "first", promptText: "first prompt" });
+
+    const p2 = controller.runExclusive(async () => ({ ok: true, id: 2 }), {
+      kind: "prompt",
+      label: "second",
+      promptText: "second prompt",
+    });
+    const p3 = controller.runExclusive(async () => ({ ok: true, id: 3 }), {
+      kind: "prompt",
+      label: "third",
+      promptText: "third prompt",
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(controller.getQueueSnapshot().queuedCount).toBe(2);
+
+    const drained = controller.drainQueuedPrompts();
+    expect(drained.map((item) => item.text)).toEqual(["second prompt", "third prompt"]);
+    expect(controller.getQueueSnapshot().queuedCount).toBe(0);
+
+    await expect(p2).resolves.toEqual({ ok: true, injected: true });
+    await expect(p3).resolves.toEqual({ ok: true, injected: true });
+
+    releaseFirst();
+    await expect(p1).resolves.toEqual({ ok: true, id: 1 });
   });
 });

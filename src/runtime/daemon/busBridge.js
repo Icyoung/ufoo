@@ -319,7 +319,8 @@ function startBusBridge(
       }
       try {
         if (evt.event === "message" && typeof options.onMessage === "function"
-            && (!options.internalOnly || acceptsEvent(evt))) await options.onMessage(toBridgeEvent(evt));
+            && (!options.internalOnly || acceptsEvent(evt)
+              || (options.includeExternalMessages && Boolean(readAgentsData().agents?.[evt.publisher])))) await options.onMessage(toBridgeEvent(evt));
         emitBusEvent(evt);
         queue.completeClaim(claim);
       } catch {

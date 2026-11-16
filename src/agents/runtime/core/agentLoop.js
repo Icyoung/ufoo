@@ -4,12 +4,22 @@ const { randomUUID } = require("crypto");
 const ledgerApi = require("../protocol/toolCallLedger");
 const { materializeResolvedToolResults } = require("../protocol/materialize");
 const { withFaultPoint } = require("../protocol/faultHarness");
+const { ToolErrorGuard } = require("./toolErrorGuard");
 const { ToolLoopGuard } = require("./toolLoopGuard");
-const { buildContextMeter, contextTokensFromUsage } = require("../context/contextWindow");
-const { isContextOverflow } = require("../context/compaction");
+const { buildContextMeter, contextTokensFromUsage, isContextOverflow } = require("../context/contextWindow");
 const { buildRunObservation, observationFingerprint } = require("../protocol/runObservation");
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
+function clonePreservingSymbols(value) {
+  const copy = clone(value);
+  if (value && copy && typeof value === "object" && typeof copy === "object") {
+    for (const sym of Object.getOwnPropertySymbols(value)) {
+      const desc = Object.getOwnPropertyDescriptor(value, sym);
+      if (desc) Object.defineProperty(copy, sym, desc);
+    }
+  }
+  return copy;
+}
 const count = (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? Math.floor(Number(value)) : 0;
 
 function createExecutionGuards({ signal = null, timeoutMs = 43200000 } = {}) {
@@ -37,6 +47,7 @@ async function runAgentLoop({
   artifactNamespace = "ucode",
   contextManager = null, historyOffset: restoredHistoryOffset = null,
   onConversationUpdate = null,
+  runtimeHooks = null,
 } = {}) {
   const requestModel = String(model || "").trim();
   if (!requestModel) throw new Error("agent model is not configured");
@@ -52,8 +63,8 @@ async function runAgentLoop({
   const companionItems = new Set();
   const currentTurnItems = () => clone(messages.slice(outputStart).filter((message, index) => {
     if (String(message.role || "").toLowerCase() !== "user" || companionItems.has(index)) return true;
-    const companion = Array.isArray(message.content)
-      && message.content.some(block => ["tool_result", "image", "image_url"].includes(block.type));
+    const companion = Boolean(message.durableUserPrompt) || (Array.isArray(message.content)
+      && message.content.some(block => ["tool_result", "image", "image_url"].includes(block.type)));
     // Keep indices stable after one-shot image bytes retire to text markers.
     if (companion) companionItems.add(index);
     return companion;
@@ -67,6 +78,9 @@ async function runAgentLoop({
   let streamed = false;
   let toolCallsExecuted = 0;
   let toolErrors = 0;
+  const toolErrorGuard = new ToolErrorGuard(toolBudget);
+  let errorStop = null;
+  let errorWarning = "";
   let emptyRetries = 0;
   let activeLedger = null;
   let lastLedger = null;
@@ -87,6 +101,20 @@ async function runAgentLoop({
     if (onEvent) await onEvent({ type, time: new Date().toISOString(), projectId, agentId, sessionId, taskId, taskRunId, attemptId, requestId, turnId,
       traceId: traceId || taskId || taskRunId, parentTaskRunId, parentSessionId, ...data });
   };
+  const recordToolResult = async (name, result) => {
+    toolCallsExecuted += 1;
+    const failed = !result || result.ok === false;
+    if (failed) toolErrors += 1;
+    const action = toolErrorGuard.observe(failed);
+    if (action) {
+      await event(action.kind === "stop" ? "loop.stopped" : "loop.warning", action);
+      if (action.kind === "stop") {
+        const detail = [name, result && result.error].filter(Boolean).join(": ");
+        errorStop = { stopReason: action.code, error: `${action.message}${detail ? `: ${detail}` : ""}` };
+        errorWarning = "";
+      } else errorWarning = action.message;
+    } else if (!toolErrorGuard.warned) errorWarning = "";
+  };
   const policyStop = async (hook, extra = {}) => {
     for (const policy of policies) {
       const stop = policy[hook] && await policy[hook]({ ...context(), ...extra });
@@ -99,7 +127,7 @@ async function runAgentLoop({
   const resolve = (call, result) => ledgerApi.resolveCall(activeLedger, callId(call), { result: sanitizeResult(result), isError: !result || result.ok === false });
   const mirror = () => {
     if (providerMessages === messages) return;
-    messages.push(...clone(providerMessages.slice(isolatedPrefix)));
+    messages.push(...providerMessages.slice(isolatedPrefix).map(clonePreservingSymbols));
     isolatedPrefix = providerMessages.length;
   };
   const finish = (extra = {}) => ({
@@ -130,7 +158,7 @@ async function runAgentLoop({
     }
     return null;
   };
-  const toolContext = (extra = {}) => ({ workspaceRoot, onToolEvent: typeof onToolEvent === "function" ? event => onToolEvent({ ...event,
+  const toolContext = (extra = {}) => ({ workspaceRoot, runtimeHooks, onToolEvent: typeof onToolEvent === "function" ? event => onToolEvent({ ...event,
     ...(event.origin ? { parentToolCallId: extra.toolCallId } : { toolCallId: extra.toolCallId }) }) : null, sessionId, onArtifactPersisted, executionState, signal,
     projectId, agentId, taskId, taskRunId, attemptId, requestId, turnId, traceId: traceId || taskId || taskRunId, parentTaskRunId, parentSessionId, artifactNamespace, ...extra });
   if (onEvent) await event("run.config", { configuration: buildRunObservation({ provider, model: requestModel,
@@ -140,14 +168,15 @@ async function runAgentLoop({
 
   try { while (true) {
     activeGuards.ensureActive();
-    const turnStop = await policyStop("beforeTurn");
+    const turnStop = errorStop ? null : await policyStop("beforeTurn");
     if (turnStop) return finish(turnStop);
-    if (usage.turns >= maxRounds) return finish({ stopReason: "budget_exceeded" });
+    if (usage.turns >= maxRounds) return finish(errorStop || { stopReason: "budget_exceeded" });
     turnId = `turn_${randomUUID()}`;
     providerMessages = messages;
-    for (const policy of policies) {
+    for (const policy of errorStop ? [] : policies) {
       if (policy.prepareTurn) providerMessages = await policy.prepareTurn({ ...context(), providerMessages }) || providerMessages;
     }
+    const isIsolatedTurn = providerMessages !== messages;
     isolatedPrefix = providerMessages.length;
     if (activeLedger) {
       if (providerTurnGate) providerTurnGate(activeLedger);
@@ -155,26 +184,41 @@ async function runAgentLoop({
         throw new Error("unresolved tool calls before provider turn");
       }
     }
-    const action = loopGuard.nextAction();
+    const action = errorStop ? null : loopGuard.nextAction();
     if (action) await event(`loop.${action.kind === "stop" ? "stopped" : "warning"}`, { code: "repeated_tool_calls", repeatedSteps: loopGuard.count, toolNames: loopGuard.names });
     if (action && action.kind === "stop") return finish({ error: action.message, stopReason: "repeated_tool_calls" });
     if (action && action.kind === "warn") providerMessages.push({ role: "user", content: action.message });
+    if (errorStop) {
+      providerMessages.push({ role: "user", content: `Tool execution has stopped: ${errorStop.error}. No tools are available. Give one brief final response in the task user's language describing verified progress, the blocker, and the next useful action. Do not claim the task succeeded or issue further tool calls.` });
+    } else if (errorWarning) {
+      providerMessages.push({ role: "user", content: errorWarning });
+      errorWarning = "";
+    }
     mirror();
+    const requestTools = errorStop ? [] : tools.toOpenAiTools();
 
     let maxOutputTokens;
     if (contextManager) {
+      let sysPrefix = 0;
+      while (sysPrefix < providerMessages.length && String(providerMessages[sysPrefix]?.role || "").toLowerCase() === "system") sysPrefix += 1;
+      const prepareHistoryOffset = isIsolatedTurn
+        ? sysPrefix
+        : Math.min(providerMessages.length, sysPrefix + historyOffset);
+      const logicalTurnId = taskRunId || (sessionId ? `${sessionId}:${historyOffset}` : `offset_${historyOffset}`);
       let prepared;
       try { prepared = await contextManager.prepare({ messages: providerMessages, model: requestModel, systemPrompt, systemBlocks,
-        tools: tools.toOpenAiTools(), transport, signal, onPhase, onEvent: event,
+        tools: requestTools, transport, signal, onPhase, onEvent: event,
         lastUsage: usage.lastContextTokens, lastEstimate: lastContextEstimate,
-        force: forceCompaction,
+        force: forceCompaction, historyOffset: prepareHistoryOffset, requestKind, turnId: logicalTurnId, resume,
+        isolated: isIsolatedTurn,
         request: { url: requestUrl, apiKey, provider, accountId, requestHeaders, requestProfile, sessionId } }); }
       catch (error) {
         // Preflight runs only after tool results are paired. Keep this complete
         // transcript even when compression is cancelled or storage is broken.
-        return finish({ error: error.message, stopReason: error.code || "context_compression_failed" });
+        return finish(errorStop || { error: error.message, stopReason: error.code || "context_compression_failed" });
       }
       providerMessages = prepared.messages;
+      isolatedPrefix = providerMessages.length;
       lastContextEstimate = prepared.estimatedTokens;
       maxOutputTokens = prepared.maxOutputTokens;
       forceCompaction = false;
@@ -191,9 +235,10 @@ async function runAgentLoop({
     let turnResult;
     let turnError = null;
     const outputBeforeTurn = aggregated.length;
+    let stepStreamedText = false;
     try { turnResult = await transport.runTurn({
       url: requestUrl, apiKey, model: requestModel, provider, accountId, requestHeaders, requestProfile, thinkingLevel,
-      systemPrompt, systemBlocks, messages: providerMessages, tools: tools.toOpenAiTools(),
+      systemPrompt, systemBlocks, messages: providerMessages, tools: requestTools,
       ...(maxOutputTokens ? { maxOutputTokens } : {}),
       sessionId, signal, timeoutMs,
       onPhase(phase) {
@@ -207,6 +252,10 @@ async function runAgentLoop({
       onTextDelta(chunk) {
         const text = String(chunk || "");
         if (!text) return;
+        if (!stepStreamedText && aggregated && !aggregated.endsWith("\n") && !/^\s/.test(text)) {
+          aggregated += "\n\n";
+        }
+        stepStreamedText = true;
         aggregated += text;
         if (onEvent) {
           streamed = true;
@@ -220,6 +269,7 @@ async function runAgentLoop({
     }
     if (turnError) {
       await event("model.failed", { error: turnError.message, code: turnError.code || "provider_error", durationMs: Date.now() - modelStarted });
+      if (errorStop) return finish({ ...errorStop, summaryError: turnError.message });
       if (!contextManager || !isContextOverflow(turnError)) throw turnError;
       if (contextRetry || aggregated.length !== outputBeforeTurn) return finish({ error: turnError.message, stopReason: "context_budget_exceeded" });
       contextRetry = true;
@@ -237,6 +287,18 @@ async function runAgentLoop({
     await event("model.completed", { usage: turnResult && turnResult.usage || {}, durationMs: Date.now() - modelStarted });
     if (typeof onContextUsage === "function") {
       try { onContextUsage(buildContextMeter({ usedTokens: usage.lastContextTokens, model: requestModel })); } catch { /* observer only */ }
+    }
+    if (errorStop) {
+      // Exactly one text-only closing attempt: never execute tool/legacy commands,
+      // retry an empty response, or enter a policy auto-continuation here.
+      const text = String(turnResult.text || "").trim();
+      if (text) {
+        transport.appendFinalAssistantMessage({ messages: providerMessages, turnResult: { text } });
+        mirror();
+        await commitConversation();
+      }
+      if (!aggregated.trim() && text) aggregated = text;
+      return finish({ ...errorStop, finalText: text });
     }
     const calls = transport.getToolCalls(turnResult);
     if (!calls.length) {
@@ -260,6 +322,7 @@ async function runAgentLoop({
         const result = await tools.execute(legacy.tool, legacy.args, toolContext({ origin: legacy.origin }));
         activeGuards.ensureActive();
         if (result && result.executionState) executionState = result.executionState;
+        await recordToolResult(legacy.tool, result);
         providerMessages.push({ role: "user", content: JSON.stringify({ type: legacy.resultType, ...sanitizeResult(result && result.status ? result : { status: "rejected", ok: false, error: `${legacy.tool} failed` }) }) });
         mirror();
         await commitConversation();
@@ -304,19 +367,17 @@ async function runAgentLoop({
     await withFaultPoint("before_tool_exec", () => {});
     let batchError = null;
     for (const policy of policies) if (policy.validateBatch) { batchError = policy.validateBatch(pending); if (batchError) break; }
-    if (batchError) {
-      for (const call of pending) {
-        await event("tool.rejected", { toolCallId: callId(call), toolName: call.name, code: batchError.code || "invalid_batch", argumentFingerprint: observationFingerprint(call.args) });
-        resolve(call, batchError); toolCallsExecuted += 1; toolErrors += 1;
-      }
-      flush(pending);
-      await commitConversation();
-      continue;
-    }
     let deferred = null;
     let toolStop = null;
     for (const call of pending) {
       const name = String(call.name || "").trim().toLowerCase();
+      if (errorStop) {
+        // These calls were declared but never executed; pair explicit rejections.
+        const rejected = { ok: false, code: errorStop.stopReason, error: "not executed: tool failure limit reached" };
+        resolve(call, rejected);
+        await event("tool.rejected", { toolCallId: callId(call), toolName: name, code: rejected.code, argumentFingerprint: observationFingerprint(call.args) });
+        continue;
+      }
       const before = toolStop || await policyStop("beforeTool", { call });
       if (before) {
         toolStop = before;
@@ -324,11 +385,13 @@ async function runAgentLoop({
         resolve(call, { ok: false, code: before.stopReason || "stopped", error: "execution stopped before tool invocation" });
         continue;
       }
-      let blocked = null;
-      for (const policy of policies) if (policy.validateTool) { blocked = policy.validateTool(name, executionState); if (blocked) break; }
+      let blocked = batchError;
+      for (const policy of blocked ? [] : policies) if (policy.validateTool) { blocked = policy.validateTool(name, executionState); if (blocked) break; }
       if (blocked) {
         await event("tool.rejected", { toolCallId: callId(call), toolName: name, code: blocked.code || "tool_not_allowed", argumentFingerprint: observationFingerprint(call.args) });
-        toolCallsExecuted += 1; toolErrors += 1; resolve(call, blocked); continue;
+        resolve(call, blocked);
+        await recordToolResult(name, blocked);
+        continue;
       }
       const resumeCall = tools.deferableTools().includes(name) ? { toolCallId: callId(call), toolName: name, call: { name: call.name, args: call.args, source: call.source } } : null;
       ledgerApi.markExecuting(activeLedger, callId(call));
@@ -343,8 +406,7 @@ async function runAgentLoop({
         throw error;
       }
       if (result && result.executionState) executionState = result.executionState;
-      toolCallsExecuted += 1;
-      if (!result || result.ok === false) toolErrors += 1;
+      await recordToolResult(name, result);
       if (resumeCall && result && result.deferToolResult) {
         for (const policy of policies) if (policy.onDeferred) policy.onDeferred({ executionState, resume: resumeCall, provider });
         ledgerApi.deferCall(activeLedger, callId(call), { reason: name });
@@ -358,13 +420,14 @@ async function runAgentLoop({
       toolStop = await policyStop("afterTool", { call, result });
       if (toolStop) continue;
       if (toolBudget.maxToolCalls != null && toolCallsExecuted >= toolBudget.maxToolCalls) throw new Error(`tool call budget exceeded (${toolBudget.maxToolCalls})`);
-      if (toolErrors >= (toolBudget.maxToolErrors ?? 20)) {
-        const detail = [call.name, result && result.error].filter(Boolean).join(": ");
-        throw new Error(`tool error budget exceeded (${toolBudget.maxToolErrors ?? 20})${detail ? `: ${detail}` : ""}`);
-      }
     }
     flush(pending);
     if (!ledgerApi.listUnresolved(activeLedger).length && !ledgerApi.listDeferred(activeLedger).length) await commitConversation();
+    if (errorStop) {
+      // Never send an unresolved deferred call back to the provider.
+      if (ledgerApi.listDeferred(activeLedger).length) return finish(errorStop);
+      continue;
+    }
     if (toolStop) return finish(toolStop);
     const interaction = pendingInteraction();
     if (deferred || interaction) return finish({ waitingUserInteraction: true, interactionId: deferred && deferred.interactionId || interaction && interaction.id || "" });

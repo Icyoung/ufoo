@@ -24,6 +24,7 @@ const {
 } = require("./agentDirectory");
 const { buildPromptIpcRequest, buildDirectBusSendRequest } = require("./ipcBuilders");
 const { IPC_REQUEST_TYPES } = require("../../runtime/contracts/eventContract");
+const { isInternalAgentMeta } = require("../../runtime/contracts/agentMode");
 
 function createChatController({
   projectRoot = process.cwd(),
@@ -73,7 +74,7 @@ function createChatController({
   setSend(view.send);
 
   function applyStatus(data = {}) {
-    const snapshot = normalizeStatusToAgentsSnapshot(data, { internalOnly: true });
+    const snapshot = normalizeStatusToAgentsSnapshot(data);
     session.agents = snapshot.agents.map((row) => row.id || row.fullId);
     session.metaMap = snapshot.metaMap;
     session.labelMap = snapshot.labelMap;
@@ -84,6 +85,7 @@ function createChatController({
       agents: snapshot.agents.map((row) => ({
         id: row.id,
         label: row.label,
+        internal: isInternalAgentMeta(row),
         activity_state: row.activity_state || "",
         activity_detail: row.activity_detail || "",
       })),
@@ -104,12 +106,13 @@ function createChatController({
     const rebuilt = normalizeStatusToAgentsSnapshot({
       active: session.agents,
       active_meta: session.agents.map((id) => session.metaMap.get(id) || { id }),
-    }, { internalOnly: true });
+    });
     session.footer = rebuilt.footer;
     view.publish("agents.patch", {
       agents: rebuilt.agents.map((row) => ({
         id: row.id,
         label: row.label,
+        internal: isInternalAgentMeta(row),
         activity_state: row.activity_state || "",
         activity_detail: row.activity_detail || "",
       })),
@@ -182,7 +185,7 @@ function createChatController({
       },
       requestCron: (payload = {}) => daemonSend({ type: IPC_REQUEST_TYPES.CRON, ...payload }),
       activateAgent: async (target) => {
-        if (!session.metaMap.has(target)) return;
+        if (!isInternalAgentMeta(session.metaMap.get(target))) return;
         return ports.activateInternalAgent?.(target);
       },
       globalMode: Boolean(globalMode),
@@ -275,7 +278,7 @@ function createChatController({
         view.publish("prompt.set_prefix", { prefix: `›@${label} ` });
       },
       activateInternalAgent: (agentId) => {
-        if (!session.metaMap.has(agentId)) return { ok: false, error: "Unknown internal agent" };
+        if (!isInternalAgentMeta(session.metaMap.get(agentId))) return { ok: false, error: "External agents use @messages, not panes" };
         if (typeof ports.activateInternalAgent === "function") return ports.activateInternalAgent(agentId);
         return { ok: false, error: "Internal pane unavailable in this host" };
       },
@@ -388,6 +391,7 @@ function createChatController({
         return {
           id,
           label: getAgentLabel(id),
+          internal: isInternalAgentMeta(meta),
           activity_state: meta.activity_state || "",
           activity_detail: meta.activity_detail || "",
         };

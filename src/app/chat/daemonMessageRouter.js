@@ -198,9 +198,11 @@ function createDaemonMessageRouter(options = {}) {
       const type = member && member.type ? ` [${member.type}]` : "";
       const status = member && member.status ? ` (${member.status})` : "";
       const subscriber = member && member.subscriber_id ? ` -> ${member.subscriber_id}` : "";
+      const model = member?.model || member?.reasoning_effort
+        ? ` · ${member.model || "default model"}${member.reasoning_effort ? ` / ${member.reasoning_effort}` : ""}${member.model_source === "override" ? " (override)" : ""}` : "";
       logMessage(
         "system",
-        `  • ${escapeBlessed(`${nickname}${type}${status}${subscriber}`)}`
+        `  • ${escapeBlessed(`${nickname}${type}${status}${subscriber}${model}`)}`
       );
     });
   }

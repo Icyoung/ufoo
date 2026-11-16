@@ -80,12 +80,30 @@ function createAgentSurface(options = {}) {
       busy = true;
       startedAt = Date.now();
     } else if (name === "stream.delta") {
-      entry(payload.id || "stream", "assistant").text += String(payload.text || payload.delta || "");
+      const id = payload.id || "stream";
+      let row = entries.find((item) => item.id === id);
+      if (!row) {
+        row = { id, kind: "assistant", text: "", detail: "", speaker: "", expanded: false };
+        if (payload.aboveTools) {
+          let insertIdx = entries.length;
+          while (insertIdx > 0 && ["tool", "thinking"].includes(entries[insertIdx - 1].kind)) {
+            insertIdx -= 1;
+          }
+          entries.splice(insertIdx, 0, row);
+        } else {
+          entries.push(row);
+        }
+      }
+      const chunk = String(payload.text || payload.delta || "");
+      row.text = payload.reset ? chunk : row.text + chunk;
       busy = true;
       if (!startedAt) startedAt = Date.now();
     } else if (name === "thinking.start" || name === "thinking.delta") {
       const row = entry(payload.id || "thinking", "thinking");
-      if (name === "thinking.delta") row.text += String(payload.text || "");
+      if (name === "thinking.delta") {
+        const chunk = String(payload.text || "");
+        row.text = payload.reset ? chunk : row.text + chunk;
+      }
     } else if (name === "stream.done") {
       busy = false;
       status = payload.reason === "error" ? "error" : "ready";
@@ -276,7 +294,7 @@ function createAgentSurface(options = {}) {
     const done = bg.filter((task) => task.status === "completed").length;
     const failed = bg.filter((task) => ["failed", "stopped", "killed"].includes(task.status)).length;
     const suffix = [running && `${running} running`, done && `${done} done`, failed && `${failed} failed`].filter(Boolean).join("/");
-    const label = `${status}${!busy && status === "ready" && idlePlanHint ? ` · ${idlePlanHint}` : ""}${submitted.length > 1 || (submitted.length && runningTask) ? ` · queued ${submitted.length}` : ""}${suffix ? ` · BG ${suffix}` : ""}`;
+    const label = `${status}${!busy && status === "ready" && idlePlanHint ? ` · ${idlePlanHint}` : ""}${submitted.length > 1 || (submitted.length && runningTask) ? ` · queued ${submitted.length} · Alt+Enter immediately` : ""}${suffix ? ` · BG ${suffix}` : ""}`;
     return { entries: entries.map(presentEntry), status: label, busy, usage, plan: plan.slice(), revision, started_at: startedAt };
   }
 
@@ -291,6 +309,11 @@ function projectSurfaceEvent(surface, name, payload = {}) {
   const exists = delta && Boolean(surface.getEntry(id));
   surface.apply(name, payload);
   if (delta) {
+    const snapEntries = surface.snapshot().entries;
+    const isLast = snapEntries.length > 0 && snapEntries[snapEntries.length - 1].id === id;
+    if (!exists && !isLast) {
+      return { name: "transcript.reset", payload: { entries: snapEntries } };
+    }
     const row = surface.getEntry(id);
     return { name: exists ? "transcript.patch" : "transcript.append", payload: row };
   }

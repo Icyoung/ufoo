@@ -57,7 +57,7 @@ function createOpenAiChatTransport(deps = {}) {
         });
       }
     },
-    prepareToolCalls({ messages, toolCalls }) {
+    prepareToolCalls({ messages, turnResult, toolCalls }) {
       const assistantToolCalls = [];
       for (const call of toolCalls) {
         const callId = String(call.id || `call_${randomUUID()}`);
@@ -76,9 +76,10 @@ function createOpenAiChatTransport(deps = {}) {
 
       if (assistantToolCalls.length === 0) return null;
 
+      const text = String((turnResult && turnResult.text) || "").trim();
       messages.push({
         role: "assistant",
-        content: null,
+        content: text || null,
         tool_calls: assistantToolCalls,
       });
 

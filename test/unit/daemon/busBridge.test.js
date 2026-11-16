@@ -66,6 +66,33 @@ describe("daemon bus bridge", () => {
       expect(onEvent).not.toHaveBeenCalled();
     } finally { bridge.stop(); fs.rmSync(root, { recursive: true, force: true }); }
   });
+  test("external replies wake main without exposing external output or watches", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-external-bridge-"));
+    const bus = new (require("../../../src/coordination/bus"))(root);
+    await bus.init();
+    const external = await bus.join("outside", "ucode", "outside", { launchMode: "terminal" });
+    const onMessage = jest.fn().mockRejectedValueOnce(new Error("journal unavailable")).mockResolvedValue({ accepted: true });
+    const onEvent = jest.fn();
+    const bridge = startBusBridge(root, "codex-cli", onEvent, jest.fn(), () => false, null,
+      { eventBus: { join: async () => "ufoo-agent" }, internalOnly: true, includeExternalMessages: true, onMessage });
+    try {
+      const queue = DeliveryQueue.forSubscriber(path.join(root, ".ufoo/bus"), "ufoo-agent");
+      queue.append({ seq: 1, event: "message", publisher: external, data: { message: "finished verification" } });
+      await bridge.refresh();
+      expect(queue.readPending()).toHaveLength(1);
+      await bridge.refresh();
+      expect(queue.readPending()).toHaveLength(0);
+      expect(onMessage).toHaveBeenCalledTimes(2);
+      expect(onMessage).toHaveBeenLastCalledWith(expect.objectContaining({ publisher: external }));
+      queue.append({ seq: 2, event: "message", publisher: "ucode:unknown", data: { message: "unknown sender" } });
+      await bridge.refresh();
+      expect(onMessage).toHaveBeenCalledTimes(2);
+      bridge.watchAgent(external);
+      await bus.send("*", "external detailed output", external);
+      await bridge.refresh();
+      expect(onEvent).not.toHaveBeenCalled();
+    } finally { bridge.stop(); fs.rmSync(root, { recursive: true, force: true }); }
+  });
   test("background main input is acknowledged only after durable acceptance without a UI client", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-bridge-input-"));
     const accept = jest.fn().mockRejectedValueOnce(new Error("journal unavailable")).mockResolvedValue({ accepted: true });

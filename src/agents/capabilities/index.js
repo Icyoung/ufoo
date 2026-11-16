@@ -13,8 +13,11 @@ const { createGroupsCapability } = require("./groups");
 const { createSchedulingCapability } = require("./scheduling");
 const { createGlobalRoutingCapability } = require("./globalRouting");
 
+const { createTurnRecallCapability } = require("./turnRecall");
+const { createBrowserCapability } = require("./browser");
+
 function createMainCapabilities(host) {
-  return [createCodingCapability({ workspaceAccess: host.workspaceAccess }), createMainPlanningCapability(), createSkillsCapability(),
+  return [createCodingCapability({ workspaceAccess: host.workspaceAccess }), createMainPlanningCapability(), createSkillsCapability(), createTurnRecallCapability(host, { defaultNamespace: "main" }), createBrowserCapability(),
     createAgentManagementCapability(host), createAgentRoutingCapability(host), createProjectDiscoveryCapability(host),
     createSharedMemoryCapability(host), createTaskReportsCapability(host), createTaskExecutionCapability(host), createGroupsCapability(host), createSchedulingCapability(host)];
 }
@@ -22,4 +25,4 @@ function createGlobalCapabilities(host) {
   return [createProjectDiscoveryCapability(host), createGlobalRoutingCapability()];
 }
 
-module.exports = { createMainCapabilities, createGlobalCapabilities };
+module.exports = { createMainCapabilities, createGlobalCapabilities, createTurnRecallCapability };

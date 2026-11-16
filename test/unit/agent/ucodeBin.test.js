@@ -2,16 +2,22 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-function withIsolatedBinMocks({
+async function withIsolatedBinMocks({
   resolved,
   runtimePrepared = {},
   bootstrapImpl = () => {},
+  setupImpl = async () => ({ prompted: false }),
 } = {}) {
   const launchMock = jest.fn();
   const launcherCtor = jest.fn(() => ({ launch: launchMock }));
   const resolveUcodeLaunchMock = jest.fn(() => resolved);
   const prepareUcodeRuntimeConfigMock = jest.fn(() => runtimePrepared);
   const prepareUcodeBootstrapMock = jest.fn(bootstrapImpl);
+  const setupMock = jest.fn(setupImpl);
+
+  jest.doMock("../../../src/app/cli/setupCommands", () => ({
+    maybeRunFirstTimeSetup: setupMock,
+  }));
 
   jest.doMock("../../../src/agents/launch/launcher", () => launcherCtor);
   jest.doMock("../../../src/code/launcher/ucode", () => ({
@@ -24,12 +30,16 @@ function withIsolatedBinMocks({
     prepareUcodeBootstrap: prepareUcodeBootstrapMock,
   }));
 
-  jest.isolateModules(() => {
+  await jest.isolateModulesAsync(async () => {
     require("../../../bin/ucode.js");
+    // The launcher must wait for optional setup, including its failure path.
+    expect(launchMock).not.toHaveBeenCalled();
+    await setupMock.mock.results[0].value.catch(() => {});
   });
 
   return {
     launchMock,
+    setupMock,
     launcherCtor,
     resolveUcodeLaunchMock,
     prepareUcodeRuntimeConfigMock,
@@ -56,17 +66,32 @@ describe("bin/ucode launch guards", () => {
     else process.env.UFOO_STARTUP_BOOTSTRAP_TEXT = originalStartupBootstrap;
   });
 
-  test("drops inherited CLI-wrapper bootstrap while preserving ucode's system-prompt arguments", () => {
+  test("drops inherited CLI-wrapper bootstrap while preserving ucode's system-prompt arguments", async () => {
     process.env.UFOO_STARTUP_BOOTSTRAP_TEXT = "Session bootstrap for Codex.";
     const args = ["--append-system-prompt", "/tmp/ucode-system.md"];
-    const { launchMock } = withIsolatedBinMocks({
+    const { launchMock } = await withIsolatedBinMocks({
       resolved: { agentType: "ucode", command: process.execPath, args, env: {} },
     });
     expect(process.env.UFOO_STARTUP_BOOTSTRAP_TEXT).toBeUndefined();
     expect(launchMock).toHaveBeenCalledWith(args);
   });
 
-  test("removes append-system-prompt when bootstrap preparation fails in auto mode", () => {
+  test.each([false, true])("launches once after asynchronous optional setup settles (reject=%s)", async (reject) => {
+    const args = ["--help"];
+    const { launchMock, setupMock } = await withIsolatedBinMocks({
+      resolved: { agentType: "ucode", command: process.execPath, args, env: {} },
+      setupImpl: async () => {
+        await Promise.resolve();
+        if (reject) throw new Error("optional setup unavailable");
+        return { prompted: true };
+      },
+    });
+    expect(setupMock).toHaveBeenCalledWith({ surface: "ucode", argv: [] });
+    expect(launchMock).toHaveBeenCalledTimes(1);
+    expect(launchMock).toHaveBeenCalledWith(args);
+  });
+
+  test("removes append-system-prompt when bootstrap preparation fails in auto mode", async () => {
     const bootstrapFile = "/tmp/ufoo-nonexistent-bootstrap-auto.md";
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
 
@@ -81,7 +106,7 @@ describe("bin/ucode launch guards", () => {
       },
     };
 
-    const { launchMock } = withIsolatedBinMocks({
+    const { launchMock } = await withIsolatedBinMocks({
       resolved,
       bootstrapImpl: () => {
         throw new Error("prepare failed");
@@ -93,7 +118,7 @@ describe("bin/ucode launch guards", () => {
     errorSpy.mockRestore();
   });
 
-  test("keeps append-system-prompt when mode is always even if bootstrap preparation fails", () => {
+  test("keeps append-system-prompt when mode is always even if bootstrap preparation fails", async () => {
     const bootstrapFile = "/tmp/ufoo-nonexistent-bootstrap-always.md";
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
 
@@ -108,7 +133,7 @@ describe("bin/ucode launch guards", () => {
       },
     };
 
-    const { launchMock } = withIsolatedBinMocks({
+    const { launchMock } = await withIsolatedBinMocks({
       resolved,
       bootstrapImpl: () => {
         throw new Error("prepare failed");
@@ -119,7 +144,7 @@ describe("bin/ucode launch guards", () => {
     errorSpy.mockRestore();
   });
 
-  test("preserves custom append-system-prompt when bootstrap fails in auto mode", () => {
+  test("preserves custom append-system-prompt when bootstrap fails in auto mode", async () => {
     const bootstrapFile = "/tmp/ufoo-nonexistent-bootstrap-custom.md";
     const customFile = path.join(os.tmpdir(), `ufoo-custom-append-${Date.now()}.md`);
     fs.writeFileSync(customFile, "# custom append\n", "utf8");
@@ -136,7 +161,7 @@ describe("bin/ucode launch guards", () => {
       },
     };
 
-    const { launchMock } = withIsolatedBinMocks({
+    const { launchMock } = await withIsolatedBinMocks({
       resolved,
       bootstrapImpl: () => {
         throw new Error("prepare failed");

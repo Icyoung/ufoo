@@ -34,7 +34,6 @@ const UCODE_COMMAND_TREE = {
   "/model": {
     desc: "Show or switch model, then pick thinking intensity",
     hasArguments: true,
-    optionalArguments: true,
   },
   "/plan": {
     desc: "Show plan progress or set plan mode",

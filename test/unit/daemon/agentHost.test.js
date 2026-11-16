@@ -17,6 +17,39 @@ describe("project main agent host", () => {
   afterEach(async () => { if (host) await host.close(); host = null; global.fetch = previousFetch; jest.restoreAllMocks(); fs.rmSync(root, { recursive: true, force: true }); });
   const make = (options = {}) => createAgentHost({ projectRoot: root, provider: "kimi", model: "test", resolveProvider: credentials,
     ports: { handleOps: jest.fn(), dispatchMessages: jest.fn() }, ...options });
+  test("background exit automatically wakes the same main session without replaying bash", async () => {
+    global.fetch = jest.fn()
+      .mockResolvedValueOnce(response(null, [call("background-build", "bash", { command: "sleep 0.1; exit 0", background: true, startupWaitMs: 0 })]))
+      .mockResolvedValueOnce(response("等待构建结果。"))
+      .mockResolvedValue(response("构建已完成。"));
+    host = make();
+    const first = await host.runPrompt({ prompt: "请构建，结束后告诉我", requestId: "background-build", sessionId: "build-session" });
+    const runtime = host.getSession("build-session");
+    expect(host.hasPendingHooks()).toBe(true);
+    let wake;
+    for (let n = 0; n < 100 && !wake; n++) {
+      await runtime.hooks.tick();
+      wake = Object.values(runtime.snapshot().tasks).find(task => task.request.runtimeEvent);
+      if (!wake) await new Promise(resolve => setTimeout(resolve, 30));
+    }
+    expect(wake.request.parentTaskRunId).toBe(first.payload.runtime.taskRunId);
+    expect((await runtime.wait(wake.taskRunId)).status).toBe("completed");
+    expect(runtime.events().filter(event => event.type === "tool.started" && event.toolName === "bash")).toHaveLength(1);
+    expect(global.fetch).toHaveBeenCalledTimes(3);
+    expect(runtime.events().find(event => event.type === "context.turn_indexed" && event.taskRunId === wake.taskRunId).turnKind).toBe("system_wake");
+    expect(host.hasPendingHooks()).toBe(false);
+  });
+  test("main can inspect daily-browser status without shell execution or opening Chrome", async () => {
+    global.fetch = jest.fn()
+      .mockResolvedValueOnce(response(null, [call("browser-status", "browser", { operation: "status" })]))
+      .mockResolvedValueOnce(response("Browser connection is not started."));
+    host = make();
+    const result = await host.runPrompt({ prompt: "inspect browser status", requestId: "browser-status" });
+    expect(result.ok).toBe(true);
+    expect(host.getSession().tools.names()).toContain("browser");
+    const followup = JSON.parse(global.fetch.mock.calls[1][1].body);
+    expect(JSON.parse(followup.messages.find(message => message.tool_call_id === "browser-status").content)).toMatchObject({ ok: true, state: "disconnected" });
+  });
   test("main corrects an invalid delegation target without failing its runtime or creating uncertain effects", async () => {
     const EventBus = require("../../../src/coordination/bus");
     const bus = new EventBus(root);
@@ -71,27 +104,33 @@ describe("project main agent host", () => {
     expect((await runtime.wait(resumed.taskRunId)).status).toBe("completed");
     expect(JSON.parse(global.fetch.mock.calls[2][1].body).messages.at(-1).content).toContain(original);
   });
-  test("main checkpoints full history and keeps early multiline requirements through host restart", async () => {
+  test("main indexes full history and injects <turn_context> continuity for early multiline requirements through host restart", async () => {
     global.fetch = jest.fn(async (_url, options) => {
       const payload = JSON.parse(options.body);
       return response(payload.tools?.length ? "已验证当前步骤。" : "已完成前序检查，后续继续验证；接口字段保持原样。");
     });
-    const contextPolicy = { limitTokens: 1000000, maxMessages: 6, keepRecentUnits: 2, batchTokens: 12000 };
+    const contextPolicy = { limitTokens: 1000000, rawTurnCount: 3, hardMaxTurns: 5, keepRecentUnits: 2 };
     host = make({ contextPolicy });
     const goal = "修复登录界面\n接口字段保持原样：session_nonce 保留现有命名。";
     for (let i = 0; i < 12; i++) await host.runPrompt({ prompt: i ? `继续检查步骤 ${i}` : goal, requestId: `history-${i}` });
-    expect(host.getSession().events().some(event => event.type === "context.checkpoint")).toBe(true);
-    const completed = host.getSession().events().filter(event => event.type === "task.completed");
+    const events = host.getSession().events();
+    expect(events.some((event) => event.type === "context.turn_indexed")).toBe(true);
+    expect(events.some((event) => event.type === "context.window.projected")).toBe(true);
+    expect(events.some((event) => event.type === "context.checkpoint")).toBe(false);
+    expect(events.filter((event) => event.type === "request.accepted")
+      .every((event) => !String(event.request?.text || "").includes("<turn_context>"))).toBe(true);
+    const completed = events.filter((event) => event.type === "task.completed");
     expect(completed).toHaveLength(12);
-    expect(completed.every(event => event.result.historyOffset === 0 && event.result.messages.length === 2)).toBe(true);
+    expect(completed.every((event) => event.result.historyOffset === 0 && event.result.messages.length === 2)).toBe(true);
     await host.close();
     host = make({ contextPolicy });
     await host.recover();
     await host.runPrompt({ prompt: "继续验证恢复后的会话", requestId: "history-resume" });
     const last = JSON.parse(global.fetch.mock.calls.at(-1)[1].body);
     expect(JSON.stringify(last.messages)).toContain("session_nonce");
-    expect(last.messages.some(message => message.content?.startsWith("Session continuity"))).toBe(true);
-    expect(host.getSession().events().filter(event => event.type === "task.completed")).toHaveLength(13);
+    expect(JSON.stringify(last.messages)).toContain("<turn_context>");
+    expect(last.messages.at(-1).content).toContain("<turn_context>");
+    expect(host.getSession().events().filter((event) => event.type === "task.completed")).toHaveLength(13);
   });
   test("custom models and thinking apply to the next request and preserve conversation across host restart", async () => {
     const { saveConfig } = require("../../../src/config");
@@ -117,7 +156,7 @@ describe("project main agent host", () => {
     await host.runPrompt({ prompt: "Continue after restart", requestId: "custom-third" });
     expect(JSON.parse(global.fetch.mock.calls[2][1].body).model).toBe("model-two");
   });
-  test("external wrappers neither enter the main roster nor block its managed workspace", async () => {
+  test("external wrappers enter the communication roster without blocking an unassigned workspace", async () => {
     const EventBus = require("../../../src/coordination/bus");
     const bus = new EventBus(root);
     await bus.init();
@@ -131,11 +170,11 @@ describe("project main agent host", () => {
     expect(fs.readFileSync(path.join(root, "managed.txt"), "utf8")).toBe("main work");
     const round = JSON.parse(global.fetch.mock.calls[1][1].body);
     const result = round.messages.find((message) => message.tool_call_id === "roster").content;
-    expect(result).toContain('"count":0');
-    expect(JSON.stringify(round.messages)).not.toContain("outside-wrapper");
+    expect(result).toContain('"count":1');
+    expect(JSON.stringify(round.messages)).toContain("outside-wrapper");
   });
 
-  test("main dispatch rejects departed workers and sends type/broadcast targets only to live internal children", async () => {
+  test("main dispatch rejects departed workers and includes active external agents in direct, type and broadcast delivery", async () => {
     const EventBus = require("../../../src/coordination/bus");
     const { getUfooPaths } = require("../../../src/coordination/state/paths");
     const { updateAgentsData } = require("../../../src/coordination/state/agentsStore");
@@ -156,15 +195,51 @@ describe("project main agent host", () => {
     host = make({ ports });
     expect((await host.runPrompt({ prompt: "dispatch to live children", requestId: "live-dispatch" })).ok).toBe(true);
     expect(ports.dispatchMessages.mock.calls.map((args) => args[1])).toEqual([
-      [{ target: "codex:live", message: "type work", injection_mode: "immediate", source: "ufoo-agent" }],
-      [{ target: "codex:live", message: "broadcast work", injection_mode: "immediate", source: "ufoo-agent" }],
+      [{ target: "codex:outside", message: "work", injection_mode: "immediate", source: "ufoo-agent" }],
+      ["codex:live", "codex:outside"].map((target) => ({ target, message: "type work", injection_mode: "immediate", source: "ufoo-agent" })),
+      ["codex:live", "codex:outside"].map((target) => ({ target, message: "broadcast work", injection_mode: "immediate", source: "ufoo-agent" })),
     ]);
     const messages = JSON.parse(global.fetch.mock.calls[5][1].body).messages;
-    for (const id of ["missing", "closed", "outside"]) {
+    for (const id of ["missing", "closed"]) {
       expect(messages.find((message) => message.tool_call_id === id).content).toContain("invalid_target");
     }
-    expect(ports.markPending).toHaveBeenCalledTimes(1);
-    expect(ports.markPending).toHaveBeenCalledWith("codex:live");
+    expect(ports.markPending).toHaveBeenCalledTimes(3);
+    expect(ports.markPending).toHaveBeenCalledWith("codex:outside");
+  });
+
+  test("external workers support routing, delegation and correlated report wakeups without lifecycle takeover", async () => {
+    const bus = new (require("../../../src/coordination/bus"))(root);
+    await bus.init();
+    await bus.join("outside", "ucode", "outside", { launchMode: "terminal", parentPid: process.pid });
+    const ports = { handleOps: jest.fn(), dispatchMessages: jest.fn(async () => [{ seq: 10, targets: ["ucode:outside"] }]) };
+    global.fetch = jest.fn()
+      .mockResolvedValueOnce(response(null, [call("route", "route_agent", { request: "@outside verify this" })]))
+      .mockResolvedValueOnce(response(null, [call("delegate", "delegate_task", { command_id: "external-job", target: "outside", objective: "验证" })]))
+      .mockResolvedValueOnce(response(null, [call("blocked", "write", { path: "conflict.txt", content: "unsafe overlap" })]))
+      .mockResolvedValueOnce(response(null, [call("close", "close_agent", { agent_id: "ucode:outside" })]))
+      .mockResolvedValueOnce(response("等待外部验证。"))
+      .mockResolvedValueOnce(response("验证已完成。"));
+    host = make({ ports });
+    const original = await host.runPrompt({ prompt: "请让 outside 验证", requestId: "external", sessionId: "external-session" });
+    expect(original.ok).toBe(true);
+    expect(ports.handleOps).not.toHaveBeenCalled();
+    expect(ports.dispatchMessages).toHaveBeenCalledTimes(1);
+    expect(ports.dispatchMessages.mock.calls[0][1][0].target).toBe("ucode:outside");
+    expect(fs.existsSync(path.join(root, "conflict.txt"))).toBe(false);
+    const events = host.getSession("external-session").events().filter(e => e.type === "tool.completed");
+    expect(events.find(e => e.toolCallId === "route").result).toMatchObject({ ok: true, result: { target: "ucode:outside" } });
+    expect(JSON.stringify(events.find(e => e.toolCallId === "blocked").result)).toContain("workspace_busy");
+    expect(JSON.stringify(events.find(e => e.toolCallId === "close").result)).toContain("external_lifecycle");
+    const task = Object.values(host.management.snapshot().tasks)[0];
+    await host.management.report({ entry_id: "wrong", phase: "done", task_id: task.taskId, agent_id: "ucode:other" });
+    const runtime = host.getSession("external-session");
+    expect(Object.values(runtime.snapshot().tasks)).toHaveLength(1);
+    await host.management.report({ entry_id: "done", phase: "done", task_id: task.taskId, agent_id: "ucode:outside", summary: "verified" });
+    const wake = Object.values(runtime.snapshot().tasks).find(t => t.request.parentTaskRunId === original.payload.runtime.taskRunId);
+    expect(wake).toBeDefined();
+    expect((await runtime.wait(wake.taskRunId)).status).toBe("completed");
+    await host.management.report({ entry_id: "done", phase: "done", task_id: task.taskId, agent_id: "ucode:outside" });
+    expect(Object.values(runtime.snapshot().tasks)).toHaveLength(2);
   });
 
   test("workspace denial preserves group members and gives the main agent delegation guidance", async () => {

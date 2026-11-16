@@ -6,6 +6,7 @@ const { assertTransport } = require("../providers/transports/transportContract")
 const { randomUUID, createHash } = require("crypto");
 const { createCommandStore } = require("./context/commandStore");
 const { stableStringify } = require("./core/stableJson");
+const { createRuntimeHooks, formatWakeEvent } = require("./tasks/hooks");
 
 const terminal = new Set(["completed", "failed", "cancelled", "interrupted", "waiting_user"]);
 const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (error) { return error.code !== "ESRCH"; } };
@@ -29,6 +30,8 @@ function createAgentRuntime({ profile, transport, capabilities, host = {}, defau
   let activeRun = null;
   let runController = null;
   let closePromise = null;
+  let hooks = host.runtimeHooks || null;
+  const ownsHooks = !hooks && Boolean(host.hookSources && host.sessionStore);
   const ownerId = randomUUID();
   const waiters = new Map();
   const storage = host.sessionStore;
@@ -59,16 +62,23 @@ function createAgentRuntime({ profile, transport, capabilities, host = {}, defau
       if (task && terminal.has(task.status)) { listeners.forEach((resolve) => resolve(task)); waiters.delete(id); }
     }
   };
+  let interruptedTasks = [];
   if (store) store.transaction((state) => {
     if (state.profile && state.profile !== (profile && profile.id || "custom")) throw new Error("session profile is pinned; use a new session or explicit checkpoint migration");
     if (state.owner && pidAlive(state.owner.pid)) throw Object.assign(new Error("runtime session already owned"), { code: "runtime_busy" });
     const selectedCapabilities = composition.capabilities.map((capability) => capability.id);
-    if (state.capabilities && stableStringify(state.capabilities) !== stableStringify(selectedCapabilities)
+    const matchesAdditively = Array.isArray(state.capabilities)
+      && stableStringify(state.capabilities) === stableStringify(selectedCapabilities.filter((id) => !["turn-recall", "browser"].includes(id) || state.capabilities.includes(id)));
+    if (state.capabilities && stableStringify(state.capabilities) !== stableStringify(selectedCapabilities) && !matchesAdditively
       && Object.values(state.tasks).some((task) => ["queued", "running", "waiting_user"].includes(task.status))) throw new Error("cannot change capabilities with unfinished state; use a new session or explicit migration");
-    return [...Object.values(state.tasks).filter((task) => task.status === "running").map((task) => ({
+    interruptedTasks = Object.values(state.tasks).filter((task) => task.status === "running");
+    return [...interruptedTasks.map((task) => ({
       type: "task.interrupted", taskRunId: task.taskRunId, error: "owner stopped; inspect effects before resubmitting",
     })), { type: "runtime.opened", owner: { id: ownerId, pid: process.pid, profile: profile && profile.id || "custom", capabilities: selectedCapabilities } }];
   });
+  if (interruptedTasks.length && typeof host.onTasksInterrupted === "function") {
+    try { host.onTasksInterrupted(interruptedTasks); } catch {}
+  }
   const record = async (event) => {
     const before = store.read();
     const task = before.tasks[event.taskRunId];
@@ -96,7 +106,10 @@ function createAgentRuntime({ profile, transport, capabilities, host = {}, defau
   };
   async function pump() {
     while (!closed) {
-      const task = Object.values(store.read().tasks).filter((item) => item.status === "queued").sort((a, b) => a.sequence - b.sequence)[0];
+      const snapshot = store.read();
+      const waitingUser = Object.values(snapshot.tasks).some(item => item.status === "waiting_user");
+      const task = Object.values(snapshot.tasks).filter((item) => item.status === "queued" && (!item.request.runtimeEvent || !waitingUser))
+        .sort((a, b) => Number(Boolean(a.request.runtimeEvent)) - Number(Boolean(b.request.runtimeEvent)) || a.sequence - b.sequence)[0];
       if (!task) return;
       activeTask = task.taskRunId;
       controller = new AbortController();
@@ -108,6 +121,7 @@ function createAgentRuntime({ profile, transport, capabilities, host = {}, defau
             ? await host.resumeRequest(task, task.answer)
             : host.prepareRequest ? await host.prepareRequest(task.request, task) : { prompt: task.request.text };
           return runtime.run({ ...prepared, requestId: task.request.requestId,
+            requestKind: task.request.requestKind || prepared.requestKind,
             taskId: task.request.taskId || task.taskRunId, taskRunId: task.taskRunId, attemptId,
             traceId: task.request.traceId || task.request.taskId || task.taskRunId,
             parentTaskRunId: task.request.parentTaskRunId || "", parentSessionId: task.request.parentSessionId || "",
@@ -118,15 +132,47 @@ function createAgentRuntime({ profile, transport, capabilities, host = {}, defau
           : await execute(controller.signal);
         if (controller.signal.aborted) throw Object.assign(new Error("agent cancelled"), { code: "cancelled" });
         if (result.error || result.stopReason) throw Object.assign(new Error(result.error || `agent stopped: ${result.stopReason}`), { code: result.stopReason || "runtime_error", result });
+        const terminal = result.waitingUserInteraction ? result : terminalResult(result);
+        const slicedTurnMessages = Array.isArray(result.messages) && Number.isInteger(result.historyOffset)
+          ? result.messages.filter((message) => message.role !== "system").slice(result.historyOffset)
+          : (terminal.messages || []);
+        if (typeof host.onTurnSettled === "function") {
+          try {
+            const settledEvent = await host.onTurnSettled({
+              task,
+              outcome: result.waitingUserInteraction ? "paused" : "completed",
+              result,
+              messages: slicedTurnMessages,
+              historyOffset: Number.isInteger(result.historyOffset) ? result.historyOffset : 0,
+            });
+            if (settledEvent && settledEvent.type) await record(settledEvent);
+          } catch {}
+        }
         await record({ type: result.waitingUserInteraction ? "task.paused" : "task.completed", taskRunId: activeTask,
-          result: result.waitingUserInteraction ? result : terminalResult(result) });
+          result: terminal });
       } catch (error) {
         if (store.read().tasks[activeTask]?.status === "completed") {
           if (host.onError) host.onError(error);
           continue;
         }
-        await record({ type: controller.signal.aborted || error.code === "cancelled" ? "task.cancelled" : "task.failed",
-          taskRunId: activeTask, error: error.message, code: error.code || "runtime_error", ...(error.result ? { result: terminalResult(error.result) } : {}) });
+        const cancelled = controller.signal.aborted || error.code === "cancelled";
+        const errTerminal = error.result ? terminalResult(error.result) : null;
+        if (typeof host.onTurnSettled === "function") {
+          try {
+            const settledEvent = await host.onTurnSettled({
+              task,
+              outcome: cancelled ? "cancelled" : "failed",
+              error: error.message,
+              code: error.code || "runtime_error",
+              result: error.result || null,
+              messages: errTerminal && Array.isArray(errTerminal.messages) ? errTerminal.messages : [],
+              historyOffset: Number.isInteger(error.result?.historyOffset) ? error.result.historyOffset : 0,
+            });
+            if (settledEvent && settledEvent.type) await record(settledEvent);
+          } catch {}
+        }
+        await record({ type: cancelled ? "task.cancelled" : "task.failed",
+          taskRunId: activeTask, error: error.message, code: error.code || "runtime_error", ...(error.result ? { result: errTerminal } : {}) });
       } finally { activeTask = ""; controller = null; }
     }
   }
@@ -137,7 +183,8 @@ function createAgentRuntime({ profile, transport, capabilities, host = {}, defau
     }).finally(() => {
       pumpPromise = null;
       notify();
-      if (!closed && Object.values(store.read().tasks).some((task) => task.status === "queued")) startPump();
+      const tasks = Object.values(store.read().tasks);
+      if (!closed && tasks.some(task => task.status === "queued" && (!task.request.runtimeEvent || !tasks.some(item => item.status === "waiting_user")))) startPump();
     });
   }
   const runtime = Object.freeze({
@@ -145,6 +192,7 @@ function createAgentRuntime({ profile, transport, capabilities, host = {}, defau
     capabilities: composition.capabilities,
     buildContext: composition.buildContext,
     promptSections: composition.promptSections,
+    get hooks() { return hooks; },
     async run(input = {}) {
       if (closed) throw Object.assign(new Error("agent runtime is closed"), { code: "runtime_closed" });
       if (running) throw Object.assign(new Error("agent runtime is already running"), { code: "runtime_busy" });
@@ -159,11 +207,16 @@ function createAgentRuntime({ profile, transport, capabilities, host = {}, defau
       try {
         activeRun = runAgentLoop({
           ...defaults, ...input, transport,
+          runtimeHooks: hooks,
           tools: composition.tools, policies: composition.policies,
           signal: runController.signal,
         });
         return await activeRun;
       } finally {
+        if (runController.signal.aborted && runController.signal.reason !== "runtime_closed") {
+          hooks?.cancelOwner(input.taskRunId);
+          if (input.requestKind === "system_wake" && input.parentTaskRunId) hooks?.cancelOwner(input.parentTaskRunId);
+        }
         running = false;
         activeRun = null;
         runController = null;
@@ -193,6 +246,11 @@ function createAgentRuntime({ profile, transport, capabilities, host = {}, defau
       startPump();
       return { accepted: true, requestId: request.requestId, taskRunId: id, status: state.tasks[id].status, sequence: state.sequence };
     },
+    wake(event) {
+      const original = store.read().tasks[event.ownerTaskRunId]?.request.text || "";
+      return runtime.submit({ requestId: event.id, text: `${formatWakeEvent(event)}\nOriginal task (historical context; preserve its language): ${JSON.stringify(original)}`, runtimeEvent: event.id,
+        parentTaskRunId: event.ownerTaskRunId, requestKind: "system_wake" });
+    },
     async resume({ interactionId, answer } = {}) {
       requireStore();
       if (closed) throw new Error("agent runtime is closed");
@@ -216,6 +274,11 @@ function createAgentRuntime({ profile, transport, capabilities, host = {}, defau
       requireStore();
       const task = store.read().tasks[taskRunId];
       if (!task) throw new Error("task not found");
+      hooks?.cancelOwner(taskRunId);
+      store.transaction(state => Object.values(state.tasks).filter(item => item.request.runtimeEvent && item.request.parentTaskRunId === taskRunId && item.status === "queued")
+        .map(item => ({ type: "task.cancelled", taskRunId: item.taskRunId, error: reason })));
+      if (controller && store.read().tasks[activeTask]?.request.runtimeEvent && store.read().tasks[activeTask]?.request.parentTaskRunId === taskRunId) controller.abort(reason);
+      notify();
       if (terminal.has(task.status) && task.status !== "waiting_user") return { taskRunId, status: task.status };
       if (activeTask === taskRunId && controller) {
         store.append({ type: "task.cancel_requested", taskRunId, reason });
@@ -236,6 +299,7 @@ function createAgentRuntime({ profile, transport, capabilities, host = {}, defau
     async close() {
       if (closePromise) return closePromise;
       closed = true;
+      if (ownsHooks) hooks?.close();
       if (controller) controller.abort("runtime_closed");
       if (runController) runController.abort("runtime_closed");
       closePromise = (async () => {
@@ -245,6 +309,9 @@ function createAgentRuntime({ profile, transport, capabilities, host = {}, defau
         for (const capability of composition.capabilities.slice().reverse()) if (capability.dispose) {
           try { await capability.dispose(); } catch (error) { disposalError = disposalError || error; }
         }
+        if (typeof host.onClose === "function") {
+          try { await host.onClose(); } catch (error) { disposalError = disposalError || error; }
+        }
         if (store) store.transaction((state) => state.owner && state.owner.id === ownerId ? [{ type: "runtime.closed" }] : []);
         notify();
         if (disposalError) throw disposalError;
@@ -252,6 +319,12 @@ function createAgentRuntime({ profile, transport, capabilities, host = {}, defau
       return closePromise;
     },
   });
+  if (ownsHooks) {
+    hooks = createRuntimeHooks({ store, sources: host.hookSources, deliver: event => runtime.wake(event),
+      canDeliver: () => !closed && !running && !Object.values(store.read().tasks).some(task => ["running", "queued", "waiting_user"].includes(task.status)),
+      onError: error => host.onError?.(error) });
+    hooks.start();
+  }
   if (store) startPump();
   return runtime;
 }

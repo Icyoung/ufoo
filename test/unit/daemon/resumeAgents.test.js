@@ -174,7 +174,7 @@ describe("daemon resumeAgents", () => {
     expect(spawn).not.toHaveBeenCalled();
   });
 
-  test("group recovery uses persisted membership, restores only that group and updates member identities", async () => {
+  test.each(["agy", "codex", "anthropic", "openai"])("group recovery preserves native %s settings, membership and identities", async provider => {
     writeConfig({ launchMode: "auto" });
     const inactive = { status: "inactive", launch_mode: "internal" };
     writeAgents({
@@ -187,8 +187,9 @@ describe("daemon resumeAgents", () => {
     const file = path.join(getUfooPaths(projectRoot).groupsDir, "dev-team.json");
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify({ group_id: "dev-team", template_alias: "dev-basic", status: "stopped", members: [
-      { id: "coder", subscriber_id: "ucode:coder", bootstrapped_subscriber_id: "ucode:coder", status: "stopped" },
-      { id: "review", subscriber_id: "codex:review", status: "stopped" },
+      { id: "coder", subscriber_id: "ucode:coder", bootstrapped_subscriber_id: "ucode:coder", status: "stopped",
+        model: "gemini-4-hydrogen-high", reasoning_effort: "", model_source: "override", model_provider: provider },
+      { id: "review", subscriber_id: "codex:review", status: "stopped", model: "gpt-6.1-sol", reasoning_effort: "xhigh", model_source: "codex" },
       { id: "live", subscriber_id: "claude-code:live", status: "active" },
     ] }));
     const list = getRecoverableAgents(projectRoot, "", { internalOnly: true });
@@ -197,6 +198,11 @@ describe("daemon resumeAgents", () => {
     expect(list.groups[0].members.map((item) => item.id)).toEqual(["ucode:coder", "codex:review"]);
     const result = await resumeAgents(projectRoot, "group:dev-team", null, { internalOnly: true });
     expect(result.resumed).toHaveLength(2);
+    const coderSpawn = spawn.mock.calls.find(([, args]) => args.includes("ucode"));
+    expect(coderSpawn[1]).toEqual(expect.arrayContaining(["--model", "gemini-4-hydrogen-high"]));
+    expect(coderSpawn[2].env.UFOO_UCODE_PROVIDER).toBe(provider);
+    const reviewerSpawn = spawn.mock.calls.find(([, args]) => args.includes("codex"));
+    expect(reviewerSpawn[1]).toEqual(expect.arrayContaining(["--model", "gpt-6.1-sol", "-c", 'model_reasoning_effort="xhigh"']));
     expect(result.resumed.map((item) => item.group_id)).toEqual(["dev-team", "dev-team"]);
     expect(result.skipped).toContainEqual({ id: "claude-code:live", reason: "already active" });
     const group = JSON.parse(fs.readFileSync(file, "utf8"));

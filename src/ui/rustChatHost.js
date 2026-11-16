@@ -61,12 +61,13 @@ function parseWindowModeArgs(args = []) {
   return ["main", "side", "multi"].includes(text) ? text : "";
 }
 
-function resolveSubmittedInputTarget(payload, currentTarget, isInternalAgent) {
-  const target = String(payload.target_agent || payload.targetAgent || "").trim();
-  if ((payload.has_target && !target) || (target && !isInternalAgent(target))) {
-    return { ok: false, error: "Unknown internal target" };
+function resolveSubmittedInputTarget(payload, currentTarget, isKnownAgent) {
+  const explicit = String(payload.target_agent || payload.targetAgent || "").trim();
+  const target = explicit || (payload.input_target === "main" ? null : currentTarget);
+  if ((payload.has_target && !explicit) || (target && !isKnownAgent(target))) {
+    return { ok: false, error: "Unknown or inactive target" };
   }
-  return { ok: true, target: target || (payload.input_target === "main" ? null : currentTarget) };
+  return { ok: true, target: target || null };
 }
 
 function stripTags(value) {
@@ -504,6 +505,9 @@ async function runChatRust(projectRoot, options = {}) {
     isInternalAgent(agentId) {
       return isInternalAgentMeta(controller.session.metaMap.get(String(agentId || "").trim()));
     },
+    isKnownAgent(agentId) {
+      return controller.session.agents.includes(String(agentId || "").trim());
+    },
     /** Activate an internal child in the one-child window mode. */
     startSide(agentId) {
       const id = String(agentId || "").trim();
@@ -922,7 +926,7 @@ async function runChatRust(projectRoot, options = {}) {
       }
       if (name === "agent.select") {
         const agentId = String(payload.agent_id || payload.agentId || "").trim();
-        if (agentId && !hostApi.isInternalAgent(agentId)) return { ok: false, error: "Unknown internal agent" };
+        if (agentId && !hostApi.isKnownAgent(agentId)) return { ok: false, error: "Unknown or inactive agent" };
         if (agentId) {
           controller.session.targetAgent = agentId;
           const label = payload.label || agentId;
@@ -935,6 +939,12 @@ async function runChatRust(projectRoot, options = {}) {
       }
       if (name === "agent.open") {
         const agentId = String(payload.agent_id || payload.agentId || "").trim();
+        if (hostApi.isKnownAgent(agentId) && !hostApi.isInternalAgent(agentId)) {
+          multiSession?.handleFocus({ target: "chat" });
+          controller.session.targetAgent = agentId;
+          publish("prompt.set_prefix", { prefix: `›@${getAgentLabel(agentId)} ` });
+          return { ok: true, mode: "message", agent_id: agentId };
+        }
         return hostApi.activateInternalAgent(agentId) || { ok: true, agent_id: agentId };
       }
       if (name === "window.set" || name === "window.cycle") {
@@ -963,6 +973,7 @@ async function runChatRust(projectRoot, options = {}) {
           ? multiSession.handleScroll(payload)
           : { ok: false, error: "multi not active" };
       }
+      if (name === "multi.cancel") return multiSession?.handleCancel(payload) || { ok: false };
       if (name === "multi.expand") return multiSession?.handleExpand(payload) || { ok: false };
       if (name === "agent.close") {
         const agentId = String(payload.agent_id || payload.agentId || "").trim();
@@ -1062,7 +1073,7 @@ async function runChatRust(projectRoot, options = {}) {
         const text = String(payload.text || "");
         // The submitted identity wins over mutable footer/focus state. Never
         // send an unresolved explicit child target to the main agent.
-        const routing = resolveSubmittedInputTarget(payload, controller.session.targetAgent, hostApi.isInternalAgent);
+        const routing = resolveSubmittedInputTarget(payload, controller.session.targetAgent, hostApi.isKnownAgent);
         if (!routing.ok) return routing;
         controller.session.targetAgent = routing.target;
         const childOrLayout = Boolean(routing.target)
@@ -1071,6 +1082,10 @@ async function runChatRust(projectRoot, options = {}) {
         // depend solely on tryActivate → focusMultiPane chain).
         if (!text.trim()) {
           const target = routing.target;
+          if (target && !hostApi.isInternalAgent(target)) {
+            publish("prompt.set_prefix", { prefix: `›@${getAgentLabel(target)} ` });
+            return { ok: true, routed: "message", agent_id: target };
+          }
           if (target && hostApi.isInternalAgent(target)
               && !(multiSession && multiSession.isMultiKind && multiSession.isMultiKind())) {
             const side = hostApi.startSide(target);

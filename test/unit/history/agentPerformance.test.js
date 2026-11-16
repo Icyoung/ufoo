@@ -26,9 +26,9 @@ describe("observed agent performance", () => {
     const report = summarizeAgentPerformance([event("task.started", 0),
       event("model.started", 0), event("model.completed", 1, { usage: { input: 100, output: 10, cacheRead: null, inputIncludesCache: true } }),
       event("model.started", 1), event("model.completed", 2, { usage: { input: 100, cacheRead: 40, inputIncludesCache: true } }),
-      event("context.compaction.completed", 2, { usage: { input: 200, cacheRead: 150, inputIncludesCache: true } }), event("task.completed", 3)]);
+      event("context.select.completed", 2, { latencyMs: 12, mode: "tier1_local" }), event("task.completed", 3)]);
     expect(report.summary.cache).toEqual({ samples: 1, usageSamples: 2, cachedTokens: 40, promptTokens: 100, hitRate: 0.4 });
-    expect(report.summary.compactionCache.hitRate).toBe(0.75);
+    expect(report.summary.counts.contextSelections).toBe(1);
     expect(report.coverage).toMatchObject({ runsWithCompleteUsage: 1, runsWithCache: 1, runsWithCompleteCache: 0 });
     const observe = usage => summarizeAgentPerformance([event("task.started", 0), event("model.completed", 1, { usage })]).summary.cache.hitRate;
     expect(observe({ input: 100, cacheRead: 0, inputIncludesCache: true })).toBe(0);
@@ -90,18 +90,19 @@ describe("observed agent performance", () => {
     expect(() => summarizeAgentPerformance(events, [], [], { since: time(2), until: time(1) })).toThrow("after until");
   });
 
-  test("keeps compaction usage separate, exposes queue age, and identifies idle execution without grading it", () => {
+  test("tracks context selection and window projection metrics, exposes queue age, and identifies idle execution without grading it", () => {
     const report = summarizeAgentPerformance([
       event("task.started", 0), event("model.completed", 1, { usage: { input: 50, output: 1 } }),
-      event("context.compaction.completed", 2, { durationMs: 1500, usage: { input: 100, output: 10 } }),
+      event("context.select.completed", 2, { latencyMs: 15, mode: "tier1_local" }),
+      event("context.window.projected", 2, { evictionLevel: 2 }),
       event("tool.rejected", 3, { toolCallId: "invalid", toolName: "ask_user", code: "invalid_batch" }),
       event("loop.warning", 4), event("loop.stopped", 5),
     ], [], [{ state: "pending", enqueuedAt: time(1) }], { now: Date.parse(time(1000)) });
     expect(report.summary.usage.input.sum).toBe(50);
-    expect(report.summary.compactionUsage.input.sum).toBe(100);
-    expect(report.runs[0]).toMatchObject({ counts: { toolCalls: 0, toolRejections: 1, unresolvedTools: 0, loopStops: 1 }, errorCodes: { invalid_batch: 1 } });
+    expect(report.summary.counts).toMatchObject({ contextSelections: 1, windowProjections: 1, maxEvictionLevel: 2 });
+    expect(report.runs[0]).toMatchObject({ counts: { toolCalls: 0, toolRejections: 1, unresolvedTools: 0, loopStops: 1, maxEvictionLevel: 2 }, errorCodes: { invalid_batch: 1 } });
     expect(report.runs[0].signals).toContain("running_without_recent_events");
-    expect(report.runs[0].timings.compactionMs).toBe(1500);
+    expect(report.runs[0].timings.contextSelectMs).toBe(15);
     expect(report.queues[0].ageMs).toBe(999000);
   });
 

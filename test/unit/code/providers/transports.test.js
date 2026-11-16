@@ -13,8 +13,8 @@ const {
 } = require("../../../../src/code/providers/responsesProtocol");
 
 describe("providers transports", () => {
-  test("TRANSPORT_NAMES lists chat, responses, and anthropic", () => {
-    expect(TRANSPORT_NAMES).toEqual(["openai-chat", "openai-responses", "anthropic-messages"]);
+  test("TRANSPORT_NAMES lists the native transports", () => {
+    expect(TRANSPORT_NAMES).toEqual(["openai-chat", "openai-responses", "anthropic-messages", "antigravity"]);
   });
 
   test("responses transport keeps tool continuation in the public message projection", () => {
@@ -209,5 +209,62 @@ describe("providers transports", () => {
       type: "image",
       source: { type: "base64", media_type: "image/png", data: "BBBB" },
     });
+  });
+
+  test("chat and responses transports preserve non-empty commentary text alongside tool_calls in order", () => {
+    const chat = createOpenAiChatTransport({
+      resolveUrl: () => "https://example.test/v1/chat/completions",
+      runTurn: async () => ({ text: "", toolCalls: [] }),
+      normalizeToolName: (n) => String(n || "").toLowerCase(),
+      normalizeToolCallArgs: (raw) => (typeof raw === "string" ? JSON.parse(raw || "{}") : raw),
+      toJsonString: (v) => JSON.stringify(v),
+      clipText: (v) => String(v),
+    });
+    const chatMessages = [];
+    chat.prepareToolCalls({
+      messages: chatMessages,
+      turnResult: { text: "  我会做成一个 3D 海边场景。 \n" },
+      toolCalls: [{ id: "c1", function: { name: "bash", arguments: '{"command":"pwd"}' } }],
+    });
+    expect(chatMessages[0].content).toBe("我会做成一个 3D 海边场景。");
+
+    const responses = createOpenAiResponsesTransport({
+      resolveUrl: () => "https://example.test/v1/responses",
+      runTurn: async () => ({ text: "", toolCalls: [] }),
+      normalizeToolName: (n) => String(n || "").toLowerCase(),
+      normalizeToolCallArgs: (raw) => (typeof raw === "string" ? JSON.parse(raw || "{}") : raw),
+      toJsonString: (v) => JSON.stringify(v),
+      clipText: (v) => String(v),
+    });
+    const respMessages = [];
+    const pending = responses.prepareToolCalls({
+      messages: respMessages,
+      turnResult: {
+        text: "我会做成一个 3D 海边场景。",
+        outputItems: [
+          { id: "rs_1", type: "reasoning", summary: [], encrypted_content: "enc-1" },
+          { id: "msg_1", type: "message", role: "assistant", content: [{ type: "output_text", text: "我会做成一个 3D 海边场景。" }] },
+          { id: "fc_1", type: "function_call", call_id: "call_bash", name: "bash", arguments: '{"command":"pwd"}' },
+        ],
+      },
+      toolCalls: [{ id: "call_bash", function: { name: "bash", arguments: '{"command":"pwd"}' } }],
+    });
+    responses.appendToolResult({ messages: respMessages, call: pending[0], toolResult: { ok: true } });
+
+    expect(respMessages[0].content).toBe("我会做成一个 3D 海边场景。");
+    expect(messagesToResponsesInput(respMessages)).toEqual([
+      { id: "rs_1", type: "reasoning", summary: [], encrypted_content: "enc-1" },
+      { type: "message", role: "assistant", content: [{ type: "output_text", text: "我会做成一个 3D 海边场景。" }] },
+      { type: "function_call", call_id: "call_bash", name: "bash", arguments: '{"command":"pwd"}' },
+      { type: "function_call_output", call_id: "call_bash", output: '{"ok":true}' },
+    ]);
+
+    // Restored from JSON journal (without non-enumerable symbols): assistant message still precedes function_call.
+    const roundTripped = JSON.parse(JSON.stringify(respMessages));
+    expect(messagesToResponsesInput(roundTripped)).toEqual([
+      { type: "message", role: "assistant", content: [{ type: "output_text", text: "我会做成一个 3D 海边场景。" }] },
+      { type: "function_call", call_id: "call_bash", name: "bash", arguments: '{"command":"pwd"}' },
+      { type: "function_call_output", call_id: "call_bash", output: '{"ok":true}' },
+    ]);
   });
 });

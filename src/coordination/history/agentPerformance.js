@@ -61,9 +61,9 @@ function aggregate(runs) {
   const counts = {};
   for (const run of runs) for (const [key, value] of Object.entries(run.counts)) counts[key] = (counts[key] || 0) + value;
   const latency = {};
-  for (const key of ["elapsedMs", "activeMs", "queueMs", "firstTextMs", "firstThinkingMs", "modelMs", "toolMs", "compactionMs", "waitingUserMs", "idleMs"]) latency[key] = distribution(runs.map(r => r.timings[key]));
+  for (const key of ["elapsedMs", "activeMs", "queueMs", "firstTextMs", "firstThinkingMs", "modelMs", "toolMs", "contextSelectMs", "waitingUserMs", "idleMs"]) latency[key] = distribution(runs.map(r => r.timings[key]));
   const tokenTotals = {};
-  for (const scope of ["usage", "compactionUsage"]) {
+  for (const scope of ["usage"]) {
     tokenTotals[scope] = {};
     for (const key of ["input", "output", "cacheRead", "cacheCreation"]) {
       const observed = runs.map(r => r[scope][key]).filter(v => v !== null);
@@ -72,7 +72,7 @@ function aggregate(runs) {
   }
   return { runs: runs.length, outcomes, completedOfFinished: rate(outcomes.completed, finished), finished,
     counts, latency, ...tokenTotals, finalTextCharacters: distribution(runs.map(r => r.finalTextCharacters)),
-    cache: aggregateCache(runs, "cache"), compactionCache: aggregateCache(runs, "compactionCache"),
+    cache: aggregateCache(runs, "cache"),
     signals: Object.fromEntries([...new Set(runs.flatMap(r => r.signals))].map(key => [key, runs.filter(r => r.signals.includes(key)).length])) };
 }
 
@@ -99,7 +99,7 @@ function summarizeAgentPerformance(events, tasks = [], queues = [], options = {}
   let uncorrelatedEvents = 0;
   for (const event of events) {
     const type = event.type || "";
-    if (!/^(?:task\.|request.accepted|run.config|model\.|tool\.|message.delta|thinking.delta|context.compaction|loop\.|interaction\.)/.test(type)) continue;
+    if (!/^(?:task\.|request.accepted|run.config|model\.|tool\.|message.delta|thinking.delta|context\.(?:select|window|turn_indexed|turn_enriched)|loop\.|interaction\.)/.test(type)) continue;
     if (!event.taskRunId) { uncorrelatedEvents += 1; continue; }
     let run = runs.get(event.taskRunId);
     if (!run) {
@@ -107,10 +107,10 @@ function summarizeAgentPerformance(events, tasks = [], queues = [], options = {}
         parentTaskRunId: event.parentTaskRunId || null, traceId: event.traceId || null, status: "unknown", configuration: null,
         accepted: null, enqueued: null, started: null, ended: null, lastActivity: null, firstText: null, firstThinking: null,
         activeStart: null, pausedAt: null, activeMs: 0, waitingUserMs: 0, attempts: new Set(), tools: new Map(),
-        usageSamples: [], modelOutcomes: 0, compactionUsageSamples: [], terminalUsage: null, finalTextCharacters: null, streamedCharacters: 0,
+        usageSamples: [], modelOutcomes: 0, terminalUsage: null, finalTextCharacters: null, streamedCharacters: 0,
         counts: { modelCalls: 0, sdkTurns: 0, modelFailures: 0, toolCalls: 0, toolErrors: 0, toolExceptions: 0, toolRejections: 0, unresolvedTools: 0,
-          repeatedToolCalls: 0, loopWarnings: 0, loopStops: 0, modelRetries: 0, compactionAttempts: 0, compactions: 0, compactionFailures: 0 },
-        modelDurations: [], modelStarts: new Map(), toolDurations: [], compactionDurations: [], fingerprints: new Map(), errorCodes: {} };
+          repeatedToolCalls: 0, loopWarnings: 0, loopStops: 0, modelRetries: 0, contextSelections: 0, windowProjections: 0, maxEvictionLevel: 0 },
+        modelDurations: [], modelStarts: new Map(), toolDurations: [], contextSelectDurations: [], fingerprints: new Map(), errorCodes: {} };
       runs.set(event.taskRunId, run);
     }
     run.agentId ||= event.agentId || "";
@@ -177,14 +177,15 @@ function summarizeAgentPerformance(events, tasks = [], queues = [], options = {}
       }
       run.tools.set(id, tool);
     }
-    if (type === "context.compaction.started") run.counts.compactionAttempts += 1;
-    if (type === "context.compaction.completed") {
-      run.counts.compactions += 1;
-      const usage = normalizedUsage(event.usage);
-      if (usage) run.compactionUsageSamples.push(usage);
+    if (type === "context.select.completed") {
+      run.counts.contextSelections += 1;
+      const d = number(event.latencyMs ?? event.durationMs);
+      if (d !== null) run.contextSelectDurations.push(d);
     }
-    if (type === "context.compaction.failed") run.counts.compactionFailures += 1;
-    if (["context.compaction.completed", "context.compaction.failed"].includes(type) && number(event.durationMs) !== null) run.compactionDurations.push(event.durationMs);
+    if (type === "context.window.projected") {
+      run.counts.windowProjections += 1;
+      run.counts.maxEvictionLevel = Math.max(run.counts.maxEvictionLevel, Number(event.evictionLevel) || 0);
+    }
     const code = event.code || event.resultCode;
     if (code && (type.endsWith("failed") || type === "tool.rejected" || type === "model.retry" || event.ok === false)) run.errorCodes[code] = (run.errorCodes[code] || 0) + 1;
   }
@@ -214,7 +215,6 @@ function summarizeAgentPerformance(events, tasks = [], queues = [], options = {}
     if (run.counts.toolRejections) signals.push("rejected_tool_calls");
     if (run.counts.repeatedToolCalls) signals.push("repeated_tool_arguments");
     if (run.counts.loopStops) signals.push("loop_guard_stopped");
-    if (run.counts.compactionFailures) signals.push("compaction_failed");
     const idleMs = terminal.has(run.status) ? null : difference(now, run.lastActivity);
     if (run.status === "running" && idleMs > (options.idleThresholdMs || 300000)) signals.push("running_without_recent_events");
     const reports = reportsByTask.get(`${run.taskId}:${run.agentId}`) || [];
@@ -226,8 +226,8 @@ function summarizeAgentPerformance(events, tasks = [], queues = [], options = {}
       parentTaskRunId: run.parentTaskRunId, traceId: run.traceId, status: run.status, provider, model,
       startedAt: run.started !== null ? new Date(run.started).toISOString() : null,
       endedAt: run.ended !== null ? new Date(run.ended).toISOString() : null,
-      configuration: config, attempts: run.attempts.size || null, counts: run.counts, usage: sumUsage(usage), compactionUsage: sumUsage(run.compactionUsageSamples),
-      cache, compactionCache: cacheObservation(run.compactionUsageSamples, config, provider),
+      configuration: config, attempts: run.attempts.size || null, counts: run.counts, usage: sumUsage(usage),
+      cache,
       queueTimingSource: run.enqueued !== null ? "bus.sequence" : run.accepted !== null ? "request.accepted" : "unknown",
       finalTextCharacters: run.finalTextCharacters, streamedCharacters: run.streamedCharacters,
       reportCharacters: distribution(reportLengths), errorCodes: run.errorCodes, signals,
@@ -238,7 +238,7 @@ function summarizeAgentPerformance(events, tasks = [], queues = [], options = {}
         activeMs: lifecycleComplete ? run.activeMs + (run.activeStart !== null ? difference(end, run.activeStart) || 0 : 0) : null,
         queueMs: difference(run.started, run.enqueued ?? run.accepted), firstTextMs: difference(run.firstText, run.started),
         firstThinkingMs: difference(run.firstThinking, run.started), modelMs: durations(run.modelDurations), toolMs: durations(run.toolDurations),
-        compactionMs: durations(run.compactionDurations), waitingUserMs: run.waitingUserMs + (run.pausedAt !== null ? difference(end, run.pausedAt) || 0 : 0), idleMs } });
+        contextSelectMs: durations(run.contextSelectDurations), waitingUserMs: run.waitingUserMs + (run.pausedAt !== null ? difference(end, run.pausedAt) || 0 : 0), idleMs } });
   }
   rows.sort((a, b) => String(a.startedAt || "").localeCompare(String(b.startedAt || "")) || a.taskRunId.localeCompare(b.taskRunId));
   const groups = new Map();

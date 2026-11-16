@@ -18,6 +18,12 @@ function createInternalCodingThread(options = {}) {
     if (restored?.ok === false) throw new Error(restored.error || `Could not resume session: ${options.sessionId}`);
   }
   let abort = null;
+  let wakeDelivery = null;
+  const wakeHost = require("./runtime/backgroundWakeHost").createUcodeWakeHost({ state,
+    canDeliver: () => !abort && Boolean(wakeDelivery),
+    deliver: (event, claim, text) => wakeDelivery(event, claim, text),
+    onError: error => options.onError?.(error),
+  });
 
   async function* runStreamed(input, runOptions = {}) {
     if (abort) throw new Error("internal coding thread is already running");
@@ -101,7 +107,9 @@ function createInternalCodingThread(options = {}) {
     }
   }
 
-  return { id: state.sessionId, runStreamed, close: async () => { if (abort) abort.abort(); } };
+  return { id: state.sessionId, runStreamed,
+    async pollWakes(deliver) { wakeDelivery = deliver; try { await wakeHost.tick(); } finally { wakeDelivery = null; } },
+    close: async () => { wakeHost.close(); if (abort) abort.abort("runtime_closed"); } };
 }
 
 module.exports = { createInternalCodingThread };

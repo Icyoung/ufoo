@@ -6,6 +6,7 @@ const { runMcpServer } = require("../src/runtime/daemon/mcpServer");
 const { runChat } = require("../src/app/chat");
 const { runInternalRunner } = require("../src/agents/internal/internalRunner");
 const { resolveGlobalControllerProjectRoot } = require("../src/runtime/projects");
+const { maybeRunFirstTimeSetup } = require("../src/app/cli/setupCommands");
 
 const rawArgv = process.argv.slice(2);
 
@@ -40,6 +41,7 @@ async function main() {
   const chatProjectRoot = globalMode ? resolveGlobalControllerProjectRoot() : process.cwd();
 
   if (!cmd) {
+    await maybeRunFirstTimeSetup({ surface: "ufoo", argv: rawArgv });
     await runChat(chatProjectRoot, { globalMode });
     return;
   }
@@ -75,6 +77,7 @@ async function main() {
     return;
   }
   if (cmd === "chat") {
+    await maybeRunFirstTimeSetup({ surface: "ufoo", argv: rawArgv });
     await runChat(chatProjectRoot, { globalMode });
     return;
   }

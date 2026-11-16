@@ -6,10 +6,15 @@ const {
 } = require("../../../src/agents/providers/codexThreadProvider");
 
 describe("agent codexThreadProvider", () => {
-  test("local service access defaults on without changing sandbox or explicit permission options", () => {
-    expect(buildThreadOptions()).toMatchObject({ sandboxMode: "workspace-write", networkAccessEnabled: true });
-    expect(buildThreadOptions({ threadOptions: { networkAccessEnabled: false, sandboxMode: "read-only" } }))
-      .toMatchObject({ sandboxMode: "read-only", networkAccessEnabled: false });
+  test("defaults to full host access without interactive approval", () => {
+    expect(buildThreadOptions()).toMatchObject({
+      sandboxMode: "danger-full-access", approvalPolicy: "never", networkAccessEnabled: true,
+    });
+  });
+  test.each(["read-only", "workspace-write"])("preserves explicit %s permissions without mutating caller options", (sandboxMode) => {
+    const threadOptions = Object.freeze({ sandboxMode, approvalPolicy: "on-request", networkAccessEnabled: false });
+    expect(buildThreadOptions({ threadOptions })).toMatchObject(threadOptions);
+    expect(threadOptions).toEqual({ sandboxMode, approvalPolicy: "on-request", networkAccessEnabled: false });
   });
   function makeEvents(events) {
     return (async function* eventStream() {
@@ -74,7 +79,8 @@ describe("agent codexThreadProvider", () => {
       model: "gpt-5-codex",
       workingDirectory: process.cwd(),
       skipGitRepoCheck: true,
-      sandboxMode: "workspace-write",
+      sandboxMode: "danger-full-access",
+      approvalPolicy: "never",
       networkAccessEnabled: true,
     }));
     expect(sdkThread.runStreamed).toHaveBeenCalledWith("hi", {
@@ -116,12 +122,26 @@ describe("agent codexThreadProvider", () => {
     expect(codexClient.resumeThread).toHaveBeenCalledWith("thread-prev", expect.objectContaining({
       model: "gpt-5-codex",
       workingDirectory: process.cwd(),
+      sandboxMode: "danger-full-access",
+      approvalPolicy: "never",
       networkAccessEnabled: true,
     }));
     expect(events).toEqual([
       { type: "thread_started", threadId: "thread-prev" },
       { type: "turn_completed", turnId: "turn-resume", usage: null, finalText: "" },
     ]);
+  });
+
+  test.each(["start", "resume"])("%s passes explicit permission overrides to the SDK", async (mode) => {
+    const sdkThread = { id: "restricted-thread" };
+    const client = { startThread: jest.fn(() => sdkThread), resumeThread: jest.fn(() => sdkThread) };
+    const threadOptions = { sandboxMode: "workspace-write", approvalPolicy: "on-request", networkAccessEnabled: false,
+      additionalDirectories: ["/tmp/mobile-build"] };
+    const provider = new CodexThreadProvider({ codexClient: client, threadOptions });
+    const thread = mode === "start" ? provider.startThread() : provider.resumeThread("restricted-thread");
+    expect(await thread.getSdkThread()).toBe(sdkThread);
+    if (mode === "start") expect(client.startThread).toHaveBeenCalledWith(expect.objectContaining(threadOptions));
+    else expect(client.resumeThread).toHaveBeenCalledWith("restricted-thread", expect.objectContaining(threadOptions));
   });
 
   test("custom stream provider does not require @openai/codex-sdk", async () => {

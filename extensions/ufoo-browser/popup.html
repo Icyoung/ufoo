@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ufoo Browser</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <main class="panel">
+    <header class="header">
+      <div class="brand">
+        <img class="brand-icon" src="icons/icon-128.png" width="40" height="40" alt="" />
+        <div><span class="wordmark">ufoo<span class="brand-dot">.</span></span><span class="brand-label">Browser companion</span></div>
+      </div>
+      <span class="local-label"><span class="local-dot"></span>本机连接</span>
+    </header>
+    <section class="connection" aria-labelledby="status-title" data-state="connecting">
+      <div class="connection-top"><span id="status-badge" class="badge" role="status">连接中</span>
+        <svg class="connection-symbol" viewBox="0 0 40 32" fill="none" aria-hidden="true"><rect x="3" y="4" width="34" height="24" rx="5"/><path d="M3 11h34M9 8h1m3 0h1M15 19h10m-4-4 4 4-4 4"/></svg>
+      </div>
+      <h1 id="status-title">正在连接你的浏览器</h1>
+      <p id="status-detail" class="detail">正在查找本机 ufoo，请稍候。</p>
+      <div class="actions">
+        <button id="toggle-pause" class="btn btn-secondary" type="button" hidden>暂停全部控制</button>
+        <button id="reconnect" class="btn btn-primary" type="button" hidden>重新连接</button>
+      </div>
+      <details id="connection-help" class="connection-help" hidden><summary>连接详情与帮助</summary><p id="help-text"></p><code id="help-command" hidden></code><p id="connection-error"></p></details>
+    </section>
+    <p id="action-error" class="action-error" role="alert" hidden></p>
+    <section class="tabs-section" aria-labelledby="tabs-title">
+      <div class="section-heading"><h2 id="tabs-title">正在协作的页面 <span id="tab-count" class="count">0</span></h2><span id="project-count" class="section-caption">随时可以释放控制</span></div>
+      <ul id="tab-list" class="tab-list"></ul>
+      <div id="empty-tabs" class="empty">
+        <svg class="empty-symbol" viewBox="0 0 64 52" fill="none" aria-hidden="true"><rect x="9" y="6" width="38" height="30" rx="6"/><rect x="17" y="14" width="38" height="30" rx="6"/><path d="M17 23h38M24 19h1m4 0h1M29 33h14"/></svg>
+        <h3 id="empty-title">还没有正在协作的页面</h3>
+        <p id="empty-detail">在 ufoo 或 ucode 中发起浏览器任务，<br />正在被操作的页面会显示在这里。</p>
+      </div>
+    </section>
+    <footer class="footer"><span class="footer-mark" aria-hidden="true">↳</span><span>连接你的浏览器，协作由你掌控。</span><span id="version" class="version"></span></footer>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

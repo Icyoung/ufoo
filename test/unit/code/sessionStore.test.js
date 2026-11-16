@@ -110,4 +110,28 @@ describe("ucode session store", () => {
     expect(loaded.ok).toBe(true);
     expect(loaded.snapshot.nlMessages).toEqual([{ role: "user", content: "hello" }]);
   });
+
+  test("preserves empty contextPolicy without injecting defaults while normalizing explicit overrides", () => {
+    saveSessionSnapshot(workspaceRoot, {
+      sessionId: "sess-policy-empty",
+      workspaceRoot,
+      nlMessages: [{ role: "user", content: "hi" }],
+    });
+    const loadedEmpty = loadSessionSnapshot(workspaceRoot, "sess-policy-empty");
+    expect(loadedEmpty.ok).toBe(true);
+    expect(loadedEmpty.snapshot.contextPolicy).toEqual({});
+
+    saveSessionSnapshot(workspaceRoot, {
+      sessionId: "sess-policy-explicit",
+      workspaceRoot,
+      nlMessages: [{ role: "user", content: "hi" }],
+      contextPolicy: { rawTurnCount: 2, maxMessages: 12.8 },
+    });
+    const loadedExplicit = loadSessionSnapshot(workspaceRoot, "sess-policy-explicit");
+    expect(loadedExplicit.ok).toBe(true);
+    expect(loadedExplicit.snapshot.contextPolicy).toEqual({
+      rawTurnCount: 2,
+      maxMessages: 12,
+    });
+  });
 });

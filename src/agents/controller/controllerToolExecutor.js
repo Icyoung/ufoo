@@ -42,9 +42,9 @@ function resolveDispatchTargets(ctx, target) {
     const targets = target === "broadcast"
       ? Object.keys(agents)
       : eventBus.messageManager.resolveTarget(target);
-    const active = targets.filter((id) => id !== "ufoo-agent" && isInternalAgentMeta(agents[id]) && isMetaActive(agents[id]));
+    const active = targets.filter((id) => id !== "ufoo-agent" && (ctx.includeExternalAgents || isInternalAgentMeta(agents[id])) && isMetaActive(agents[id]));
     if (active.length) return active;
-    throw buildStructuredError("invalid_target", `dispatch_message target not found among active internal agents: ${target}`);
+    throw buildStructuredError("invalid_target", `dispatch_message target not found among active project agents: ${target}`);
   }
   if (typeof ctx.resolveDispatchTargets === "function") {
     const resolved = ctx.resolveDispatchTargets(target);

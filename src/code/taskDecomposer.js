@@ -13,6 +13,7 @@ const {
 const { sanitizeSkillContent } = require("./skills/injection");
 const { randomUUID } = require("crypto");
 const { normalizeTraceContext } = require("../agents/runtime/protocol/traceContext");
+const { resolveTaskTimeoutMs } = require("../agents/runtime/core/executionBudget");
 
 function renderActiveSkillBodiesFromState(state = {}) {
   const skills = Array.isArray(state.activeSkills) ? state.activeSkills : [];
@@ -51,7 +52,6 @@ function decomposeBugFixTask(task) {
       id: "identify",
       name: "Identifying the issue",
       prompt: `Task context:\n${taskContext}\n\nIdentify the specific problem.\n\nBe concise. Focus only on:\n1. What is broken\n2. What file/function is likely involved\n3. What the expected behavior should be\n\nDo NOT analyze entire codebases. Find the specific issue quickly.`,
-      timeoutMs: 30000, // 30 seconds
       earlyExit: true,
     });
 
@@ -59,7 +59,6 @@ function decomposeBugFixTask(task) {
       id: "locate",
       name: "Locating relevant code",
       prompt: `Task context:\n${taskContext}\n\nBased on the identified issue, find the exact location of the bug.\n\nSearch for and read ONLY the relevant function/file. Stop as soon as you find the problematic code.`,
-      timeoutMs: 30000,
       earlyExit: true,
     });
 
@@ -67,7 +66,6 @@ function decomposeBugFixTask(task) {
       id: "fix",
       name: "Applying the fix",
       prompt: `Task context:\n${taskContext}\n\nApply the minimal fix needed. Do NOT refactor or improve unrelated code. Just fix the specific issue.`,
-      timeoutMs: 60000,
       earlyExit: false,
     });
 
@@ -75,7 +73,6 @@ function decomposeBugFixTask(task) {
       id: "verify",
       name: "Verifying the fix",
       prompt: `Task context:\n${taskContext}\n\nVerify the fix resolves the issue. Check that:\n1. The specific problem is fixed\n2. No new issues were introduced\n\nBe brief.`,
-      timeoutMs: 20000,
       earlyExit: false,
     });
   } else {
@@ -84,7 +81,6 @@ function decomposeBugFixTask(task) {
       id: "execute",
       name: "Executing task",
       prompt: task,
-      timeoutMs: 120000,
       earlyExit: false,
     });
   }
@@ -172,7 +168,10 @@ async function runDecomposedTask({
   onPhase = null,
   onContextUsage = null,
   contextPolicy = {},
+  timeoutMs,
 }) {
+  const budgetMs = resolveTaskTimeoutMs(timeoutMs ?? state?.timeoutMs);
+  const deadline = Date.now() + budgetMs;
   const steps = decomposeBugFixTask(task);
   const results = [];
   const turnItems = [];
@@ -204,7 +203,7 @@ async function runDecomposedTask({
     });
 
     try {
-      // Run the step with its own timeout
+      // All steps share one deadline, including context assembly between steps.
       const stepPrompt = buildStepPrompt(step, results);
       let stepMessages = messages;
       let stepSystemPrompt = systemPrompt;
@@ -222,7 +221,14 @@ async function runDecomposedTask({
         stepSystemBlocks = assembled.systemBlocks;
       }
       const inherited = normalizeTraceContext(runtimeContext);
+      const remainingMs = deadline - Date.now();
+      // Native transports clamp timeouts to at least one second. Do not start
+      // another step if that minimum would extend the task deadline.
+      if (remainingMs < 1000) {
+        throw new Error(`agent timeout (${budgetMs}ms)`);
+      }
       const stepResult = await runNativeAgentTask({
+        runtimeHooks: state?.runtimeHooks,
         workspaceRoot,
         provider,
         model,
@@ -231,7 +237,7 @@ async function runDecomposedTask({
         systemBlocks: stepSystemBlocks,
         messages: stepMessages,
         sessionId,
-        timeoutMs: step.timeoutMs,
+        timeoutMs: remainingMs,
         maxToolCalls: state ? state.maxToolCalls : undefined,
         onToolEvent,
         runtimeContext: inherited.taskRunId ? { ...inherited, parentTaskRunId: inherited.taskRunId,

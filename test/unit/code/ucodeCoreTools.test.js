@@ -266,7 +266,205 @@ describe("ucode-core tool kernel", () => {
     expect(desc).toContain("truncated");
   });
 
-  test("bash tool description documents the timeout ceiling", () => {
-    expect(getBashToolDescription()).toContain("600 seconds");
+  test("bash tool description documents the timeout ceiling and background log observation", () => {
+    const desc = getBashToolDescription();
+    expect(desc).toContain("600 seconds");
+    expect(desc).toContain("background: true");
+    expect(desc).toContain('action: "logs"');
+    expect(desc).toContain("nextOffset");
+  });
+
+  test("bash background=true starts a service, observes incremental and tail logs, lists, and stops", async () => {
+    const { countRunningBackgroundProcesses } = require("../../../src/code/tools/bash");
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-bg-bash-"));
+    const scriptPath = path.join(root, "server.js");
+    fs.writeFileSync(
+      scriptPath,
+      [
+        'console.log("READY http://127.0.0.1:5173");',
+        "let tick = 0;",
+        "setInterval(() => {",
+        "  tick += 1;",
+        '  console.log("TICK " + tick);',
+        "}, 50);",
+      ].join("\n"),
+      "utf8",
+    );
+
+    let backgroundId = "";
+    try {
+      const started = await runBashToolAsync({
+        command: `${JSON.stringify(process.execPath)} ${JSON.stringify(scriptPath)}`,
+        background: true,
+        startupWaitMs: 250,
+      }, {
+        workspaceRoot: root,
+        sessionId: "sess-bg-1",
+      });
+
+      expect(started.ok).toBe(true);
+      expect(started.kind).toBe("background_bash");
+      expect(started.action).toBe("run");
+      expect(started.running).toBe(true);
+      expect(started.status).toBe("running");
+      expect(started.backgroundId).toMatch(/^bg_/);
+      expect(started.logOutput).toContain("READY http://127.0.0.1:5173");
+      expect(started.nextOffset).toBeGreaterThan(0);
+      backgroundId = started.backgroundId;
+      expect(countRunningBackgroundProcesses({ workspaceRoot: root })).toBe(1);
+
+      const incremental = await runBashToolAsync({
+        action: "logs",
+        backgroundId,
+        offset: started.nextOffset,
+        waitMs: 500,
+      }, {
+        workspaceRoot: root,
+      });
+      expect(incremental.ok).toBe(true);
+      expect(incremental.running).toBe(true);
+      expect(incremental.offset).toBe(started.nextOffset);
+      expect(incremental.nextOffset).toBeGreaterThan(started.nextOffset);
+      expect(incremental.logOutput).toContain("TICK ");
+      expect(incremental.logOutput).not.toContain("READY http://127.0.0.1:5173");
+
+      const tailed = await runBashToolAsync({
+        action: "logs",
+        backgroundId,
+        tailLines: 2,
+      }, {
+        workspaceRoot: root,
+      });
+      expect(tailed.ok).toBe(true);
+      const nonEmptyLines = tailed.logOutput.trim().split("\n").filter(Boolean);
+      expect(nonEmptyLines.length).toBeLessThanOrEqual(2);
+
+      const listed = await runBashToolAsync({
+        action: "list",
+      }, {
+        workspaceRoot: root,
+      });
+      expect(listed.ok).toBe(true);
+      expect(listed.count).toBe(1);
+      expect(listed.runningCount).toBe(1);
+      expect(listed.processes[0].backgroundId).toBe(backgroundId);
+
+      const stopped = await runBashToolAsync({
+        action: "stop",
+        backgroundId,
+      }, {
+        workspaceRoot: root,
+      });
+      expect(stopped.ok).toBe(true);
+      expect(stopped.running).toBe(false);
+      expect(stopped.status).toBe("stopped");
+      expect(countRunningBackgroundProcesses({ workspaceRoot: root })).toBe(0);
+    } finally {
+      if (backgroundId) {
+        await runBashToolAsync({ action: "stop", backgroundId }, { workspaceRoot: root }).catch(() => {});
+      }
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("bash background=true reports immediate startup failure with captured stderr", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-bg-crash-"));
+    try {
+      const crashed = await runBashToolAsync({
+        command: `${JSON.stringify(process.execPath)} -e "console.error('EADDRINUSE: port 5173 already in use'); process.exit(2)"`,
+        background: true,
+        startupWaitMs: 800,
+      }, {
+        workspaceRoot: root,
+      });
+      expect(crashed.ok).toBe(false);
+      expect(crashed.kind).toBe("background_bash");
+      expect(crashed.running).toBe(false);
+      expect(crashed.status).toBe("exited");
+      expect(crashed.exitCode).toBe(2);
+      expect(crashed.logOutput).toContain("EADDRINUSE: port 5173 already in use");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("CodingCapability schema + context reducer preserve background logs and allow read-only log checks under writer lease", async () => {
+    const { createCodingCapability } = require("../../../src/agents/capabilities/coding");
+    const { createToolRegistry } = require("../../../src/agents/runtime/tools/registry");
+    const { createResourceLease } = require("../../../src/agents/runtime/tasks/resourceLease");
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-bg-e2e-"));
+    const realRoot = fs.realpathSync(root);
+    const scriptPath = path.join(realRoot, "watch.js");
+    fs.writeFileSync(
+      scriptPath,
+      [
+        'console.log("VITE v5.0 ready in 120 ms -> http://localhost:5173/");',
+        "let step = 0;",
+        "setInterval(() => { step += 1; console.log('HMR update ' + step); }, 50);",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const registry = createToolRegistry({
+      tools: createCodingCapability().tools,
+      grantedPermissions: ["workspace.read", "workspace.write", "workspace.execute"],
+    });
+
+    let backgroundId = "";
+    try {
+      const startRes = await registry.execute("bash", {
+        command: `${JSON.stringify(process.execPath)} ${JSON.stringify(scriptPath)}`,
+        background: true,
+        startupWaitMs: 250,
+      }, {
+        workspaceRoot: realRoot,
+        sessionId: "sess-e2e",
+      });
+
+      expect(startRes.ok).toBe(true);
+      expect(startRes.kind).toBe("background_bash");
+      expect(startRes.artifactId).toBeTruthy();
+      expect(startRes.backgroundId).toMatch(/^bg_/);
+      expect(startRes.logOutput).toContain("http://localhost:5173/");
+      backgroundId = startRes.backgroundId;
+
+      // Acquire workspace writer lease as a different owner; read-only action="logs" must still succeed without command.
+      const lease = createResourceLease({
+        file: path.join(realRoot, ".ufoo", "agent", "runtime", "workspace-leases.json"),
+      });
+      const held = lease.acquire({ key: realRoot, ownerId: "other-writer" });
+      expect(held.ok).toBe(true);
+      try {
+        const logRes = await registry.execute("bash", {
+          action: "logs",
+          backgroundId,
+          offset: startRes.nextOffset,
+          waitMs: 400,
+        }, {
+          workspaceRoot: realRoot,
+          sessionId: "sess-e2e",
+        });
+        expect(logRes.ok).toBe(true);
+        expect(logRes.kind).toBe("background_bash");
+        expect(logRes.logOutput).toContain("HMR update");
+      } finally {
+        lease.release({ key: realRoot, token: held.token });
+      }
+
+      const stopRes = await registry.execute("bash", {
+        action: "stop",
+        backgroundId,
+      }, {
+        workspaceRoot: realRoot,
+        sessionId: "sess-e2e",
+      });
+      expect(stopRes.ok).toBe(true);
+      expect(stopRes.status).toBe("stopped");
+    } finally {
+      if (backgroundId) {
+        await runBashToolAsync({ action: "stop", backgroundId }, { workspaceRoot: realRoot }).catch(() => {});
+      }
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

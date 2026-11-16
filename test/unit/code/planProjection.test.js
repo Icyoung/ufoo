@@ -237,4 +237,87 @@ describe("planProjection", () => {
     );
     expect(text).toBe("UCODE · Ready · Plan waiting: Apply fix (1/3)");
   });
+
+  test("standalone TaskRun child graph shows progress while active and clears completely on finish", () => {
+    const { startStandaloneTask, completeTaskFromLoop } = require("../../../src/code/runtime/taskControl");
+    const { buildPlanSetPayload } = require("../../../src/ui/agentPresentation");
+    const executionState = emptyExecutionState();
+
+    const started = startStandaloneTask(executionState, {
+      objective: "Build 3D pelican scene.js",
+      title: "Build scene.js",
+      processImmediately: true,
+      runTool: () => ({ ok: true, summary: "ok" }),
+    });
+    expect(started.ok).toBe(true);
+    expect(executionState.planGraph.graphId).toBe("");
+
+    // Patching + completing an inline_llm child node on childGraphId must not leak into executionState.planGraph.
+    const patched = runPlanGraphCommand({
+      operation: "patch",
+      graphId: started.childGraphId,
+      operations: [{
+        op: "expand_node",
+        nodeId: "root",
+        children: [
+          { id: "read_rules", type: "tool", tool: "read", args: { path: "AGENTS.md" } },
+          { id: "impl_scene", type: "task", title: "Write scene.js", dependsOn: ["read_rules"], execution: { kind: "inline_llm" } },
+        ],
+      }],
+    }, {
+      executionState,
+      autoAdvance: true,
+      runTool: () => ({ ok: true, summary: "ok" }),
+    });
+    expect(patched.status).toBe("accepted");
+    expect(executionState.planGraph.graphId).toBe("");
+
+    // While running, UI projection displays the active standalone TaskRun roadmap.
+    const duringRun = buildPlanSetPayload(executionState);
+    expect(duringRun.visible).toBe(true);
+    expect(duringRun.lines.length).toBeGreaterThan(0);
+
+    const inlineDone = runPlanGraphCommand({
+      operation: "control",
+      graphId: started.childGraphId,
+      actions: [{ op: "complete_task", nodeId: "impl_scene", summary: "scene.js written" }],
+    }, {
+      executionState,
+      autoAdvance: true,
+      runTool: () => ({ ok: true, summary: "ok" }),
+    });
+    expect(inlineDone.status).toBe("accepted");
+    expect(inlineDone.awaitingCompleteTask).toBe(true);
+    expect(executionState.planGraph.graphId).toBe("");
+
+    const completed = completeTaskFromLoop(executionState, {
+      taskRunId: started.taskRunId,
+      result: { summary: "all done" },
+    });
+    expect(completed.ok).toBe(true);
+    expect(executionState.planGraph.graphId).toBe("");
+
+    // After completion, workspace plan UI is completely cleared.
+    const afterDone = buildPlanSetPayload(executionState);
+    expect(afterDone.visible).toBe(false);
+    expect(afterDone.lines).toEqual([]);
+    expect(afterDone.summary).toBe("");
+    expect(afterDone.idle_hint).toBe("");
+  });
+
+  test("hides any previously leaked terminal task_loop child graph on session restore", () => {
+    const { buildPlanSetPayload } = require("../../../src/ui/agentPresentation");
+    const executionState = emptyExecutionState();
+    executionState.planGraph = {
+      graphId: "child_leaked_1",
+      owner: { kind: "task_loop", taskRunId: "trun_old" },
+      lastYieldReason: "graph_terminal",
+      waitingFor: null,
+      nodes: [{ id: "root", type: "task", title: "Done task", status: "succeeded" }],
+    };
+    const payload = buildPlanSetPayload(executionState);
+    expect(payload.visible).toBe(false);
+    expect(payload.lines).toEqual([]);
+    expect(payload.summary).toBe("");
+  });
 });

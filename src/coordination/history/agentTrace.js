@@ -94,7 +94,9 @@ function readAgentTrace(projectRoot, options = {}) {
       ...(event.binding ? { binding: event.binding } : {}), ...(event.code ? { code: event.code } : {}), ...(event.outcome ? { outcome: event.outcome } : {}),
       ...(event.warning ? { warning: event.warning } : {}),
       ...(event.error ? { error: event.error } : {}),
-      ...(String(event.type || "").startsWith("context.compaction") ? { coveredCount: event.coveredCount, batchCount: event.batchCount, checkpointVersion: event.version, sourceArchive: event.sourceArchive } : {}) };
+      ...(String(event.type || "").startsWith("context.select") ? { mode: event.mode, activeTopics: event.activeTopics, selectedTurnIds: event.selectedTurnIds, latencyMs: event.latencyMs, cached: event.cached } : {}),
+      ...(String(event.type || "").startsWith("context.window") ? { evictionLevel: event.evictionLevel, rawTurnCount: event.rawTurnCount, totalTurns: event.totalTurns, offWindowCount: event.offWindowCount, estimatedTokens: event.estimatedTokens } : {}),
+      ...(event.type === "context.turn_indexed" || event.type === "context.turn_enriched" ? { turnId: event.turnId, topic: event.topic, turnKind: event.turnKind, outcome: event.outcome } : {}) };
   }
   for (const record of records) {
     const e = record.value;
@@ -232,8 +234,10 @@ function readAgentTrace(projectRoot, options = {}) {
       modelFailures: matched.filter(e => e.type === "model.failed").length, toolCalls: toolCalls.size,
       toolErrors: [...toolCalls.values()].filter(t => t.outcome === "error").length,
       unresolvedTools: [...toolCalls.values()].filter(t => !t.ended || t.outcome === "unknown").length,
-      compactions: matched.filter(e => e.type === "context.compaction.completed").length,
-      compactionFailures: matched.filter(e => e.type === "context.compaction.failed").length },
+      contextSelections: matched.filter(e => e.type === "context.select.completed").length,
+      windowProjections: matched.filter(e => e.type === "context.window.projected").length,
+      turnsIndexed: matched.filter(e => e.type === "context.turn_indexed").length,
+      turnsEnriched: matched.filter(e => e.type === "context.turn_enriched").length },
     tools: [...toolCalls.values()],
     performance,
     queues: selectedQueues.slice(-100),

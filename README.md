@@ -47,7 +47,12 @@ Install the published package:
 
 ```bash
 npm install -g u-foo
+ufoo setup
 ```
+
+`ufoo setup` lets you choose whether to install the optional **ufoo Browser**
+component (`ufoo setup --browser=install` or `--browser=skip`). Non-interactive
+installs skip optional browser components by default.
 
 Or link this repository for local development:
 
@@ -325,8 +330,10 @@ sandbox for shell commands. See the [runtime implementation record](AGENT_RUNTIM
 ```
 
 The dashboard keeps three layouts: `main` (main agent only), `side` (main plus
-one selected internal agent), and `multi` (main plus all internal agents). Wrapper and MCP agents stay
-outside the dashboard. Dashboard child launches use internal mode and never
+one selected internal agent), and `multi` (main plus all internal agents). Active
+wrapper and MCP agents appear in the communication directory and `@` completion;
+selecting one targets messages without opening a pane. Their detailed output
+and process lifecycle stay with their own host. Dashboard child launches use internal mode and never
 open an external terminal. A project with no chat or input history shows the
 existing compact ufoo banner as its welcome screen.
 `Ctrl+W` cycles `main → side → multi → main`.
@@ -335,14 +342,23 @@ select each layout directly. The one-child layout selects the most recently
 activated live internal agent, or the first agent when none has been activated.
 With no children, split modes remain selected while showing only the full-width
 main pane; new children appear automatically when they become available.
-When the input has focus and contains text, `Ctrl+C` first clears the selected
-agent's draft without cancelling work or switching focus. `Esc` preserves the
-draft. In either split layout, both keys first leave the footer if it has focus,
-then return child focus to the main agent, then close the split. Running tasks
-are preserved while moving through these layers. Both keys also
-dismiss command completion and follow the main input's cancellation and project
-return layers. At the main-only root, `Esc` keeps the application open and only
-`Ctrl+C` exits. `Ctrl+Q` or `/window main` closes either split directly.
+When an internal child owns the shared input, editing keys and shortcuts belong
+to that child. `Ctrl+C` cancels only its current task, preserving its draft,
+process and queued messages. `Esc` returns focus to the main input without
+cancelling work; popup menus close before returning focus. `Ctrl+W` edits the
+child's previous word and `Tab` inserts indentation. From the main input,
+`Ctrl+W` cycles layouts and `Ctrl+Q` closes the split; main-only `Ctrl+C` clears
+a nonempty draft before cancelling or exiting. `Esc` at the ufoo root preserves
+the application and draft.
+Standalone `ucode` uses the same side-pane implementation: clicking a footer
+agent selects an `@` message target, and clicking it again opens an internal
+agent on the right. Repeated selection of an external agent stays message-only.
+Keyboard selection followed by empty Enter uses the same internal activation.
+With focus on the Agents footer, `Ctrl+X` closes the selected internal agent
+through its project daemon in both ufoo and ucode. External agents cannot be
+closed from this menu. This differs from `Ctrl+C` in a child's input, which
+cancels its current task while keeping the worker alive.
+Restart existing internal workers to enable the per-task cancellation channel.
 Drag over visible text in the main or an internal agent pane to select it;
 releasing the mouse copies it to the clipboard. Selection stays within that pane,
 excluding its border and adjacent agents. Local macOS uses the system clipboard;
@@ -353,12 +369,12 @@ Selecting a group resumes its inactive members with saved sessions, skips member
 that are already active, and updates the group's member identities. Native
 coding agents register as `agent_type: ucode` with `ucode:<session>` identities;
 their saved conversations remain under `.ufoo/agent/ucode/`.
-`Tab` cycles keyboard focus through the main agent and the visible child panes;
-all agents share one bottom input, which follows the selected agent while
+From main in a split layout, `Tab` enters a visible child. Once activated, only
+`Esc` leaves its input. All agents share one bottom input, which follows the selected agent while
 preserving each draft. Each agent's live status sits in its pane's bottom border;
 the main agent's input is labelled `main`, and its status stays independent of
 child selection, focus changes and child activity.
-Internal Codex enables network access within its workspace sandbox, including
+Internal Codex defaults to full host access without approval prompts, including
 local services such as ADB and Gradle. Peer replies contain the final answer;
 progress and tool output stay visible in the agent's pane. Reports and handoffs
 default to 1-4 short lines with checks and blockers; longer evidence is saved in
@@ -370,8 +386,9 @@ the main input. Command completion keeps its existing `Tab` behavior in the
 main-only layout. An open completion menu also owns `Tab` in split layouts.
 Layout commands also work from an internal child's input. Switching layouts
 keeps unsent child drafts and does not stop running agents.
-With a child active, `Down` from an empty input or a footer click opens the Agents
-selector. `Down` then opens provider settings and cron controls; `Esc` returns to
+With a child active, a footer click opens the Agents selector in ufoo;
+`Down` remains an editing key in the child input. In the footer selector,
+`Down` advances to provider settings and cron controls; `Esc` returns to
 the same agent's input. In the selector, `Enter` opens the selected internal
 agent. The provider caption in the footer also opens its settings directly.
 
@@ -540,6 +557,56 @@ and execution completion is separate from acceptance.
 
 Built-in group templates live in `templates/groups/`.
 
+Every member in all seven built-in groups includes three provider defaults plus a
+manual override in `model_config`:
+
+| Role | Codex model / reasoning effort | Claude model | agy model |
+|---|---|---|---|
+| Architect | `gpt-6-astra` / `high` | `claude-fable-5-2` | `gemini-4-carbon-high` |
+| Builder | `gpt-6.1-sol` / `high` | `claude-opus-5-5` | `gemini-4-hydrogen-high` |
+| Reviewer | `gpt-6.1-sol` / `xhigh` | `claude-opus-5-5` | `gemini-4-argon-high` |
+| Design consultant, discovery facilitator, debugger | `gpt-6-astra` / `high` | `claude-fable-5-2` | `gemini-4-carbon-high` |
+| PMO | `gpt-6-astra` / `high` | `claude-fable-5-2` | `gemini-4-argon-high` |
+| Frontend refiner | `gpt-6.1-sol` / `high` | `claude-opus-5-5` | `gemini-4-hydrogen-high` |
+| Scope challenger, UI plan critic, design critic, release coordinator | `gpt-6.1-sol` / `xhigh` | `claude-opus-5-5` | `gemini-4-argon-high` |
+| QA | `gpt-6.1-sol` / `xhigh` | `claude-opus-5-5` | `gemini-4-hydrogen-high` |
+
+Settings follow each member's prompt-profile role, including numbered builders.
+Claude reasoning effort is left unset. All 24 built-in members have an empty
+manual override ready to customize.
+agy's selected model IDs include the thinking tier, so their separate
+`reasoning_effort` defaults are empty. Carbon is reserved for architectural and
+root-cause work, Argon for coordination and critical review, and Hydrogen for
+implementation and verification.
+
+For example, an architect member contains:
+
+```json
+"model_config": {
+  "codex": { "model": "gpt-6-astra", "reasoning_effort": "high" },
+  "claude": { "model": "claude-fable-5-2", "reasoning_effort": "" },
+  "agy": { "model": "gemini-4-carbon-high", "reasoning_effort": "" },
+  "override": { "model": "", "reasoning_effort": "" }
+}
+```
+
+A nonempty `override.model` replaces the entire selected provider configuration;
+an empty override effort does not inherit effort from any provider default.
+Otherwise the member's provider selects `codex`, `claude` or `agy`. Empty model
+settings keep the existing project/provider defaults. Overrides select a model,
+not a different provider. Internal auto members under the agy provider run as
+native ucode workers with explicit agy provider/model settings; external agy
+members use the CLI's `--model` and optional `--effort` flags. Other native
+provider settings remain unchanged when no matching model setting exists. Explicit
+`type: "ucode"` members select defaults using their effective native provider
+(`UFOO_UCODE_PROVIDER`, global `ucodeProvider`, then project `agentProvider`).
+Codex maps to `codex`, Anthropic to `claude`, and agy to `agy`; manual overrides
+also work with other native providers. Model, provider and effort are carried
+through launch and resume. Project/global custom templates remain
+authoritative over built-ins.
+Dry runs and group state expose the selected model, effort and source. Recovery
+preserves the saved selection; edits affect newly launched groups, not live workers.
+
 ```text
 /group templates
 /group template show build-lane
@@ -587,6 +654,107 @@ ufoo ucode build
 `ucode` can discover built-in and local `SKILL.md` workflow capabilities. Full
 skill bodies are loaded only when explicitly referenced.
 
+### Background Command Notifications
+
+Native ufoo and ucode can continue automatically when a background command exits
+or a condition is met. For example, the agent can start a development server with:
+
+```json
+{
+  "command": "npm run dev",
+  "background": true,
+  "wake": {
+    "conditions": [{ "type": "log_contains", "text": "ready" }]
+  }
+}
+```
+
+Supported conditions are `log_contains` (literal `text`), `file_exists`
+(workspace `path`), and `port_open` (a `port` on `127.0.0.1`). Each fires once;
+exit notification is enabled by default and can be disabled with
+`wake.onExit: false`. `wake.timeoutMs` bounds the subscription (default and
+maximum 12 hours). Expiry sends one notification without stopping the command.
+
+The host watches without model polling. Notifications continue the same session
+after its current turn and any pending user question. Stopping the command or
+cancelling its task revokes its watches. Pending watches survive host restart;
+ucode must reopen the original session to resume delivery. Interrupted wake
+invocations with uncertain effects are not automatically replayed. Inspect
+`bash` with `action: "status"` and its `backgroundId` for delivery status.
+One-shot command-line runs without a resident host do not provide auto-wake.
+
+### Your Everyday Chrome
+
+The native project main agent, writable native child tasks, and `ucode` have a
+shared `browser` tool powered by Playwright. It connects to an existing browser
+and preserves its signed-in sessions; it never falls back to launching a fresh
+profile. SDK-managed Codex/Claude wrappers keep their own tool configuration.
+
+ufoo Browser is an optional user-level component managed outside individual
+projects (`~/.ufoo/browser/` and `~/.ufoo/config.json`):
+
+```bash
+ufoo setup --browser=install   # or interactive `ufoo setup`
+ufoo browser status --json
+ufoo browser doctor
+ufoo browser enable | disable
+ufoo browser update
+ufoo browser uninstall
+```
+
+During developer preview (before the Chrome Web Store listing is published),
+register developer mode and load the unpacked extension from
+`extensions/ufoo-browser/`:
+
+```bash
+ufoo browser install --dev
+```
+
+Once installed and enabled, the extension connects automatically via Chrome
+Native Messaging to the user-scoped broker (`ufoo` and `ucode` share one
+broker). Agents list tabs with `browser_tabs` (`action=list`) and claim tabs by
+`tabId`; a tab already in use by another agent returns `browser_tab_busy`
+without preemption. You can release individual tabs or pause all control from
+the extension popup at any time.
+
+Compatibility modes remain supported: set `backend: "playwright-extension"`
+(with `UFOO_BROWSER_PROFILE` if needed) for the official
+[Playwright Extension](https://chromewebstore.google.com/detail/playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm),
+or use Chrome 144+ remote debugging (`chrome://inspect/#remote-debugging`):
+
+```bash
+UFOO_BROWSER_CDP_ENDPOINT=chrome ucode
+```
+
+You can also supply an existing `http://127.0.0.1:9222` or WebSocket endpoint.
+An already-running daily Chrome does not automatically expose that port.
+For the project main agent, set this environment variable when starting the
+ufoo daemon; an existing daemon must be restarted to pick up changed settings.
+CDP mode grants one ufoo/ucode session exclusive control until it disconnects,
+because multiple clients would otherwise manipulate the same tabs. Other
+applications and manual browser use are not covered by this lease.
+
+The agent can list/select tabs, navigate, inspect snapshots, click/type, fill
+forms, upload workspace files, handle dialogs, and take screenshots. Tool
+operations also include screenshot-guided mouse clicks, dragging and scrolling
+for canvas-based pages. Plan mode allows inspection only; browser actions run
+through the direct capability, not synchronous `plan_graph` tool nodes. Tool
+schemas are discovered on demand behind one stable model-facing tool. Page
+content is data, not instructions; external actions stay within the user's
+authorized task. Screenshot images are delivered to the model and saved under
+`.ufoo/browser/`; long results include an `outputPath` for further reading.
+
+`browser` supports `status`, `connect`, `tools`, `call`, and `disconnect`.
+`tools` with a `tool` name returns its argument schema. A lost connection or
+an action with an unknown outcome requires explicit reconnection and inspection,
+not an automatic repeated click. Idle connections disconnect after ten minutes.
+Disconnect releases control without closing Chrome or its existing tabs.
+
+Browser setup instructions: [Playwright existing-browser connections](https://playwright.dev/mcp/configuration/browser-extension).
+Developers can run the optional real-Chrome fixture with
+`UFOO_TEST_BROWSER=1 npm test -- --runTestsByPath test/integration/browser-existing-chrome.test.js`;
+it uses a disposable profile and a local test page, never the user's profile.
+
 ## Configuration
 
 Project configuration is stored in `.ufoo/config.json`. `ucode` provider
@@ -609,9 +777,15 @@ Common project settings:
 ```
 
 Internal Codex and Claude always use their SDKs; there is no thread-mode setting.
+Internal Codex currently defaults to full host access (`danger-full-access`),
+network enabled, and no approval prompts (`approvalPolicy: never`). It can access
+simulators, system services and build caches outside the project with the current
+OS user's permissions. Granular permissions and approval controls are deferred;
+explicit SDK thread options still override these defaults. Relaunch existing
+internal Codex workers after updating to apply the new policy.
 
 Supported `launchMode` values: `auto`, `internal`, `tmux`, `terminal`, and
-`host`. The dashboard supports internal Codex, Claude and ucode workers only; provider selections remain independent.
+`host`. Dashboard panes and process management support internal Codex, Claude and ucode workers; provider selections remain independent. The `@` directory and main-agent communication also include active external agents. External agents receive messages through their own host and can return replies/reports, without exposing their terminal or detailed output in ufoo.
 
 The dashboard always uses internal children and has no `/mode` command;
 the binary has no `ufoo mode` command either.
@@ -620,6 +794,12 @@ and iTerm2 from their environment, then register the actual terminal type, TTY
 and delivery channels with the daemon. Their event-bus communication works
 without a dashboard. MCP agents communicate through MCP message interfaces
 without requiring a terminal adapter.
+With the project daemon running, a registered worker can initiate contact with
+`ufoo-agent` using `dispatch_message` or `ufoo bus send ufoo-agent "<message>"`
+from its project and inherited worker identity. No prior delegation or open
+chat window is required: the daemon durably accepts the message and wakes the
+main runtime. Use this for substantive results, questions or changed blockers;
+assigned task completion still requires a lifecycle report with its task ID.
 The main agent uses one runtime for coding and routing, configured by
 `agentProvider` and `agentModel`. `/settings agent` manages these settings;
 `/settings ucode` manages the independent ucode gateway settings.
@@ -642,6 +822,23 @@ Custom main-agent settings use `agentProvider: "custom"`, `agentBaseUrl`,
 Custom APIs use OpenAI Chat Completions by default, or Responses when the URL
 ends in `/responses`. There is no Anthropic protocol selector for custom APIs.
 Internal Claude retains its native provider transport and credentials.
+
+#### Antigravity
+
+Select `/provider agy` for the main agent, or run `ucode --provider agy` for
+standalone coding. The default model is `gemini-4-hydrogen-high` and the
+default auxiliary model is `gemini-3.8-flash-medium`. The native provider uses
+the Antigravity Cloud Code API for streaming, tool calls, and
+the `/model` catalog. Select a text model available to your account with
+`/model`. If a session was created with the earlier `agy` setting, start a
+fresh session to bind the Antigravity transport.
+
+Set `UFOO_AGY_AUTH_PATH` to your Antigravity auth JSON from CLIProxyAPI, or set
+`UFOO_AGY_ACCESS_TOKEN` and `UFOO_AGY_PROJECT_ID` together. For the main agent,
+these variables must be available to the ufoo daemon when it starts. ufoo reads
+the selected auth file on each request, and CLIProxyAPI can keep it refreshed.
+`UFOO_AGY_BASE_URL` overrides the Cloud Code base URL. `UFOO_AGY_USER_AGENT`
+overrides the Antigravity client header if the endpoint requires a newer version.
 
 Ordinary provider sessions authenticate through their provider-owned adapters;
 MCP `agent_handle` is never model authentication. Standalone and internal ucode

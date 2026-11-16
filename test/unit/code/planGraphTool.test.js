@@ -45,6 +45,18 @@ describe("plan_graph control-plane tool", () => {
       { executionState: emptyExecutionState(), runTool, validateToolArgs: true });
     expect(result).toMatchObject({ status: "rejected", errors: [expect.objectContaining({ field: "graph.nodes[0].args.path", code: "MISSING_TOOL_ARGUMENT" })] });
     expect(runTool).not.toHaveBeenCalled();
+
+    const badBashRun = runPlanGraphCommand({ operation: "create", graph: { nodes: [{ id: "bad_bash", type: "tool", tool: "bash", args: {} }] } },
+      { executionState: emptyExecutionState(), runTool, validateToolArgs: true });
+    expect(badBashRun).toMatchObject({ status: "rejected", errors: [expect.objectContaining({ field: "graph.nodes[0].args.command", code: "MISSING_TOOL_ARGUMENT" })] });
+
+    const badBashLogs = runPlanGraphCommand({ operation: "create", graph: { nodes: [{ id: "bad_logs", type: "tool", tool: "bash", args: { action: "logs" } }] } },
+      { executionState: emptyExecutionState(), runTool, validateToolArgs: true });
+    expect(badBashLogs).toMatchObject({ status: "rejected", errors: [expect.objectContaining({ field: "graph.nodes[0].args.backgroundId", code: "MISSING_TOOL_ARGUMENT" })] });
+
+    const okBashLogs = runPlanGraphCommand({ operation: "create", graph: { nodes: [{ id: "ok_logs", type: "tool", tool: "bash", args: { action: "logs", backgroundId: "bg_123" } }] } },
+      { executionState: emptyExecutionState(), runTool: jest.fn(() => ({ ok: true, kind: "background_bash", action: "logs", backgroundId: "bg_123", logOutput: "ready" })), validateToolArgs: true });
+    expect(okBashLogs.ok).toBe(true);
   });
 
   test("failed-node inspection exposes the actual error and read-only recovery guidance", () => {

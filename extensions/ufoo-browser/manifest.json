@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Ufoo",
+  "version": "0.1.0",
+  "description": "Connect your daily Chrome tabs to local ufoo and ucode agents without manual tokens or pairing pages.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA4xXww7f6Y4sIvjvV0L2Xv/ZxQuyfgmTM9O2dimgSenMRaquoLGovCEEbzyPXQqnbmFEA3CdNwJPa6G5LChuiFdXTVLGECEOThdz4SWFuLrsJTrUD1N5RcN6bkWeW1oNbYjssfvQqr69G4QiSRVBPrwdNLWvoAwkdZJOdvOsLhYimopPUrnd1ga3saGcf9JaT0vH9HYeIE/tf9GOsGZ0LGi/BKdzkD7rUhuglWjFmiPOVTyScwrXfCiPAUZoPybYKBbW3EyUDYjfJAevcJIYLeoz7isYnZpEh4dhb7D5Twnk6PbzEgDjecPfOmDhol+eATkhOeOSG/UKVjU2XWSRDWQIDAQAB",
+  "permissions": [
+    "debugger",
+    "tabs",
+    "nativeMessaging",
+    "storage"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Ufoo",
+    "default_icon": {
+      "16": "icons/toolbar-16.png",
+      "32": "icons/toolbar-32.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  }
+}

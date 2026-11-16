@@ -14,6 +14,7 @@ function normalizeProvider(value = "") {
   if (!text) return "ucode";
   if (text === "codex-cli" || text === "codex-code" || text === "codex" || text === "openai") return "codex";
   if (text === "claude-cli" || text === "claude-code" || text === "claude" || text === "anthropic") return "claude";
+  if (text === "agy" || text === "agy-cli" || text === "antigravity") return "agy";
   if (text === "grok" || text === "grok-cli" || text === "grok-build" || text === "grok-shell" || text === "grok-api" || text === "xai") return "grok";
   if (text === "ucode") return "ucode";
   if (text === "kimi-cli" || text === "kimi-code" || text === "moonshot") return "kimi";
@@ -112,7 +113,8 @@ async function resolveUpstreamRuntime({
   const runtime = resolveRuntimeConfig({
     workspaceRoot: projectRoot,
     provider: normalizedProvider === "ucode" ? "" : normalizedProvider,
-    model: model || resolveConfiguredModelForProvider(config, normalizedProvider) || defaultAgentModelForProvider(config.agentProvider),
+    model: model || resolveConfiguredModelForProvider(config, normalizedProvider)
+      || (normalizedProvider === "agy" ? defaultAgentModelForProvider("agy") : defaultAgentModelForProvider(config.agentProvider)),
     useCodingConfig: normalizedProvider === "ucode",
   });
   let credential = null;

@@ -438,7 +438,8 @@ describe("chat daemonMessageRouter", () => {
           status: "active",
           template_alias: "build-lane",
           members: [
-            { nickname: "builder", type: "codex", status: "active", subscriber_id: "codex:1" },
+            { nickname: "builder", type: "codex", status: "active", subscriber_id: "codex:1",
+              model: "gpt-6.1-sol", reasoning_effort: "high", model_source: "override" },
           ],
         },
       },
@@ -455,6 +456,8 @@ describe("chat daemonMessageRouter", () => {
       "system",
       "{cyan-fg}Group:{/cyan-fg} ESC(build-lane-mnfurxqc-2wjm) [ESC(active)] ESC(build-lane)"
     );
+    expect(options.logMessage).toHaveBeenCalledWith("system",
+      "  • ESC(builder [codex] (active) -> codex:1 · gpt-6.1-sol / high (override))");
   });
 
   test("response with invalid group template renders validation errors", () => {

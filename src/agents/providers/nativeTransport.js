@@ -826,32 +826,25 @@ function extractAnthropicToolCalls(content = []) {
     }));
 }
 
-// Mark the newest message with a cache breakpoint so the append-only history
-// prefix is served from the prompt cache. The payload gets a copy: stamping
-// cache_control onto the shared history array would leave stale breakpoints
-// behind as later turns append, eventually exceeding the 4-breakpoint limit.
-function withAnthropicCacheBreakpoint(messages = []) {
-  if (!Array.isArray(messages) || messages.length === 0) return messages;
-  const copy = messages.slice();
-  const lastIndex = copy.length - 1;
-  const last = copy[lastIndex];
-  if (!last || typeof last !== "object" || Array.isArray(last)) return copy;
-  if (typeof last.content === "string") {
-    if (!last.content) return copy;
-    copy[lastIndex] = {
-      ...last,
+const STABLE_HISTORY_BOUNDARY_SYMBOL = Symbol.for("ufoo.stableHistoryBoundary");
+
+function stampAnthropicCacheBlock(msg) {
+  if (!msg || typeof msg !== "object" || Array.isArray(msg)) return msg;
+  if (typeof msg.content === "string") {
+    if (!msg.content) return msg;
+    return {
+      ...msg,
       content: [
         {
           type: "text",
-          text: last.content,
+          text: msg.content,
           cache_control: { ...ANTHROPIC_CACHE_CONTROL },
         },
       ],
     };
-    return copy;
   }
-  if (Array.isArray(last.content) && last.content.length > 0) {
-    const blocks = last.content.slice();
+  if (Array.isArray(msg.content) && msg.content.length > 0) {
+    const blocks = msg.content.slice();
     const blockIndex = blocks.length - 1;
     const block = blocks[blockIndex];
     if (block && typeof block === "object" && !Array.isArray(block)) {
@@ -859,12 +852,33 @@ function withAnthropicCacheBreakpoint(messages = []) {
         ...block,
         cache_control: { ...ANTHROPIC_CACHE_CONTROL },
       };
-      copy[lastIndex] = {
-        ...last,
+      return {
+        ...msg,
         content: blocks,
       };
     }
   }
+  return msg;
+}
+
+// Mark the ShortStableSnapshot boundary (when present) and the newest message
+// with cache breakpoints so both the cross-turn sliding window prefix and the
+// intra-turn append-only tool loop prefix are served from the prompt cache.
+function withAnthropicCacheBreakpoint(messages = []) {
+  if (!Array.isArray(messages) || messages.length === 0) return messages;
+  const copy = messages.slice();
+  const lastIndex = copy.length - 1;
+  let boundaryIndex = -1;
+  for (let i = lastIndex - 1; i >= 0; i -= 1) {
+    if (copy[i] && copy[i][STABLE_HISTORY_BOUNDARY_SYMBOL]) {
+      boundaryIndex = i;
+      break;
+    }
+  }
+  if (boundaryIndex >= 0) {
+    copy[boundaryIndex] = stampAnthropicCacheBlock(copy[boundaryIndex]);
+  }
+  copy[lastIndex] = stampAnthropicCacheBlock(copy[lastIndex]);
   return copy;
 }
 
@@ -1174,6 +1188,7 @@ const {
   createOpenAiChatTransport,
   createOpenAiResponsesTransport,
   createAnthropicMessagesTransport,
+  createAntigravityTransport,
 } = require("./transports");
 
 // Transport descriptors: wire-format only. Plan Mode / leases / policy live in the loop.
@@ -1200,6 +1215,7 @@ const TRANSPORTS = {
     toJsonString,
     clipText,
   }),
+  antigravity: createAntigravityTransport({ runSseRequest, parseSseEventBlock, toJsonString, clipText }),
 };
 
 module.exports = {

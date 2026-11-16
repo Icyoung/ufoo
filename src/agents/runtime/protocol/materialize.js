@@ -79,7 +79,7 @@ function materializeAnswerToolResult(messages = [], resume = null, answer = {}, 
   if (!call || !call.source) return { ok: false, error: "missing deferred tool call" };
   const transportName = String(resume.transport || "openai-chat");
   const content = clip(toJsonString(answer), 12000);
-  if (transportName === "anthropic-messages") {
+  if (transportName === "anthropic-messages" || transportName === "antigravity") {
     messages.push({
       role: "user",
       content: [{

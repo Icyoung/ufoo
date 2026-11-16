@@ -3,6 +3,40 @@ const { loadTemplateRegistry } = require("../../../src/orchestration/groups/temp
 const { validateTemplateEntry } = require("../../../src/orchestration/groups/templateValidation");
 
 describe("builtin group templates", () => {
+  test("role model defaults stay consistent across built-in templates", () => {
+    const expected = {
+      "system-architect": ["gpt-6-astra", "high", "claude-fable-5-2", "gemini-4-carbon-high"],
+      "implementation-lead": ["gpt-6.1-sol", "high", "claude-opus-5-5", "gemini-4-hydrogen-high"],
+      "review-critic": ["gpt-6.1-sol", "xhigh", "claude-opus-5-5", "gemini-4-argon-high"],
+      "pmo-coordinator": ["gpt-6-astra", "high", "claude-fable-5-2", "gemini-4-argon-high"],
+      "design-system-consultant": ["gpt-6-astra", "high", "claude-fable-5-2", "gemini-4-carbon-high"],
+      "discovery-facilitator": ["gpt-6-astra", "high", "claude-fable-5-2", "gemini-4-carbon-high"],
+      "debug-investigator": ["gpt-6-astra", "high", "claude-fable-5-2", "gemini-4-carbon-high"],
+      "frontend-refiner": ["gpt-6.1-sol", "high", "claude-opus-5-5", "gemini-4-hydrogen-high"],
+      "scope-challenger": ["gpt-6.1-sol", "xhigh", "claude-opus-5-5", "gemini-4-argon-high"],
+      "ui-plan-critic": ["gpt-6.1-sol", "xhigh", "claude-opus-5-5", "gemini-4-argon-high"],
+      "design-critic": ["gpt-6.1-sol", "xhigh", "claude-opus-5-5", "gemini-4-argon-high"],
+      "qa-driver": ["gpt-6.1-sol", "xhigh", "claude-opus-5-5", "gemini-4-hydrogen-high"],
+      "release-coordinator": ["gpt-6.1-sol", "xhigh", "claude-opus-5-5", "gemini-4-argon-high"],
+    };
+    const dir = path.join(__dirname, "../../../templates/groups");
+    let count = 0;
+    for (const file of require("fs").readdirSync(dir).filter(name => name.endsWith(".json"))) {
+      for (const member of require(path.join(dir, file)).agents) {
+        const values = expected[member.prompt_profile];
+        expect(values).toBeDefined();
+        count++;
+        expect(member.model_config).toEqual({
+          codex: { model: values[0], reasoning_effort: values[1] },
+          claude: { model: values[2], reasoning_effort: "" },
+          agy: { model: values[3], reasoning_effort: "" },
+          override: { model: "", reasoning_effort: "" },
+        });
+      }
+    }
+    expect(count).toBe(24);
+  });
+
   test("repo builtin templates validate with the prompt profile registry", () => {
     const projectRoot = path.join(__dirname, "..", "..", "..");
     const registry = loadTemplateRegistry(projectRoot, {

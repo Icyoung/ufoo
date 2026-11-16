@@ -97,6 +97,13 @@ function compactChildGraphHint(executionState = null, run = null) {
   ];
   if (waiting && waiting.id) {
     lines.push(`  waitingFor: ${waiting.type || "node"}:${waiting.id}`);
+  } else if (nodes.length > 0) {
+    const failedCount = nodes.filter((n) => n && (n.status === "failed" || n.status === "blocked")).length;
+    lines.push(
+      failedCount > 0
+        ? `  status: stopped (${failedCount} failed/blocked node(s)) — complete_task / fail_task or patch ${child.graphId}`
+        : `  status: all child nodes completed — awaiting complete_task for taskRunId=${run.id}`,
+    );
   }
   const pending = nodes
     .filter((n) => n && (n.status === "pending" || n.status === "ready" || n.status === "waiting_llm"))

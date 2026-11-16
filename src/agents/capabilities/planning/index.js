@@ -8,14 +8,32 @@ const { normalizePlanGraphCommand, activePlanRequiresExpansion } = require("../.
 const { planModeBlocksDirectTool } = require("../../../code/context/planMode");
 const { drainUserPrompts, formatUserReminderMessage, ensurePendingUserPrompts, shouldAutoContinuePlan, buildPlanAutoContinueReminder } = require("../../../code/context/userNudge");
 const { drainAgentMailboxForTurn, shouldAutoContinueForTaskWake, listTaskRunsAwaitingModel } = require("../../../code/runtime/agentWakeup");
-const { shouldIsolateTaskFocusTurn, buildIsolatedTaskFocusTurn, sanitizeToolResultForModel } = require("../../../code/runtime/taskFocusContext");
+const {
+  shouldIsolateTaskFocusTurn,
+  buildIsolatedTaskFocusTurn,
+  sanitizeToolResultForModel,
+  pickPrimaryAwaitingRun,
+  waitingPlanNode,
+} = require("../../../code/runtime/taskFocusContext");
 const { hasPendingUserInteraction, getPendingUserInteraction } = require("../../../code/context/userInteraction");
 const { checkWriteAllowed } = require("../../../code/runtime/workspaceLease");
 
-const DATA_TOOLS = new Set(["read", "read_image", "write", "edit", "bash", "artifact_read"]);
+const DATA_TOOLS = new Set(["read", "read_image", "write", "edit", "bash", "artifact_read", "browser"]);
+const SIDE_EFFECT_DATA_TOOLS = new Set(["write", "edit", "bash"]);
 const CONTROL_TOOLS = new Set(["plan_graph", "task_run"]);
 
 function createPlanningPolicy() {
+  const isolatedEpisodes = new WeakMap();
+  function resolveFocusKey(state) {
+    const run = pickPrimaryAwaitingRun(state);
+    if (run && run.id) return `run:${run.id}`;
+    const node = waitingPlanNode(state);
+    if (node && node.id) {
+      const gid = String(state && state.planGraph && state.planGraph.graphId || "");
+      return `plan:${gid}:${node.id}`;
+    }
+    return "";
+  }
   function userReminder(state, guard) {
     const nudges = drainUserPrompts(state);
     if (!nudges.length) return "";
@@ -47,15 +65,36 @@ function createPlanningPolicy() {
         const drained = drainAgentMailboxForTurn(state);
         const nudge = userReminder(state, loopGuard);
         if (drained.events && drained.events.length) loopGuard.reset();
-        return buildIsolatedTaskFocusTurn(state, { mailboxEvents: drained.events || [], userNudge: nudge }).messages;
+        const focusKey = resolveFocusKey(state);
+        const existing = isolatedEpisodes.get(messages);
+        if (existing && existing.focusKey === focusKey && messages.length > existing.startOffset) {
+          const extra = [drained.text, nudge].filter(Boolean).join("\n\n");
+          if (extra) messages.push({ role: "user", content: extra });
+          return [existing.seedMessage, ...messages.slice(existing.startOffset)];
+        }
+        const built = buildIsolatedTaskFocusTurn(state, { mailboxEvents: drained.events || [], userNudge: nudge });
+        const seedMessage = built.messages[0];
+        isolatedEpisodes.set(messages, {
+          focusKey,
+          startOffset: messages.length,
+          seedMessage,
+        });
+        return [seedMessage];
       }
+      isolatedEpisodes.delete(messages);
       const nudge = userReminder(state, loopGuard);
-      if (nudge) messages.push({ role: "user", content: nudge });
+      if (nudge) messages.push({ role: "user", content: nudge, durableUserPrompt: true });
       mailbox(state, messages, loopGuard);
       return messages;
     },
     continuationKey: ({ executionState }) => continuationKey(executionState),
     continueAfterFinal({ executionState: state, messages, loopGuard }) {
+      isolatedEpisodes.delete(messages);
+      const nudge = userReminder(state, loopGuard);
+      if (nudge) {
+        messages.push({ role: "user", content: nudge, durableUserPrompt: true });
+        return true;
+      }
       if (shouldIsolateTaskFocusTurn(state) || shouldAutoContinueForTaskWake(state)) return true;
       if (mailbox(state, messages, loopGuard)) return true;
       if (shouldAutoContinuePlan(state)) {
@@ -86,7 +125,7 @@ function createPlanningPolicy() {
       return null;
     },
     validateTool(name, state) {
-      if (DATA_TOOLS.has(name) && activePlanRequiresExpansion(state.planGraph)) {
+      if (SIDE_EFFECT_DATA_TOOLS.has(name) && activePlanRequiresExpansion(state.planGraph)) {
         return { ok: false, status: "rejected", errors: [{ code: "ACTIVE_PLAN_REQUIRES_EXPANSION", message: "Active plan is waiting on a task; use plan_graph expand_node or control.complete_task instead of direct tools" }] };
       }
       if (planModeBlocksDirectTool(name, state)) {

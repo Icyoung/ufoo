@@ -347,7 +347,7 @@ async function handleEvent(
   const taskId = getTaskIdFromEvent(evt) || inherited.taskId || `worker-${randomUUID()}`;
   const runtimeContext = { ...inherited, taskId, traceId: inherited.traceId || taskId,
     taskRunId: `worker-run-${randomUUID()}`, requestId: `bus-${evt.seq || randomUUID()}`, attemptId: `attempt-${randomUUID()}`,
-    requestKind: publisher === "ufoo-agent" && getTaskIdFromEvent(evt) ? "worker-task" : "bus-message" };
+    requestKind: evt.__runtimeWake ? "system_wake" : publisher === "ufoo-agent" && getTaskIdFromEvent(evt) ? "worker-task" : "bus-message" };
   const emitSurface = event => busSender.surface?.({ ...runtimeContext, task_id: taskId, agentId: subscriber,
     provider, model, sessionId: threadRuntime?.thread?.id || "", ...event });
   const delegated = publisher === "ufoo-agent" && Boolean(getTaskIdFromEvent(evt));
@@ -537,7 +537,7 @@ async function handleThreadedEvent({
     } else {
       // Live progress belongs to the worker pane. Peers receive only the final
       // answer, including an explicitly empty ack-only result.
-      if (reply) busSender.enqueue(publisher, reply);
+      if (reply && runtimeContext.requestKind !== "system_wake") busSender.enqueue(publisher, reply);
     }
     await busSender.flush();
     return {
@@ -571,7 +571,7 @@ async function handleThreadedEvent({
         publisher,
         JSON.stringify({ stream: true, done: true, reason: "error" })
       );
-    } else {
+    } else if (runtimeContext.requestKind !== "system_wake") {
       busSender.enqueue(publisher, errorText);
     }
     await busSender.flush();
@@ -894,6 +894,9 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
   let lastHeartbeat = 0;
   const HEARTBEAT_INTERVAL = 30000; // 30秒心跳间隔
   const runnerAbort = new AbortController();
+  const { createTaskControl, startTaskControlServer } = require("./taskControl");
+  const taskControl = createTaskControl(runnerAbort.signal);
+  const controlServer = await startTaskControlServer(projectRoot, subscriber, taskControl);
 
   const stop = () => {
     running = false;
@@ -945,7 +948,7 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
     }
   };
 
-  while (running) {
+  try { while (running) {
     // 定期心跳更新
     const now = Date.now();
     if (now - lastHeartbeat > HEARTBEAT_INTERVAL) {
@@ -988,7 +991,7 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
             try {
               for (const runnableEvent of runnableEvents) {
                 // eslint-disable-next-line no-await-in-loop
-                await handleEvent(
+                await taskControl.run((signal) => handleEvent(
                   projectRoot,
                   parsedAgentType,
                   provider,
@@ -1001,8 +1004,8 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
                   threadRuntime,
                   bootstrap.promptText,
                   activityTracker,
-                  runnerAbort.signal
-                );
+                  signal
+                ));
                 if (runnableEvent.__internalRawInput) {
                   getInteractiveSession(runnableEvent.publisher || "unknown").writeResponsePrompt();
                 }
@@ -1026,11 +1029,30 @@ async function runInternalRunner({ projectRoot, agentType = "codex", extraArgs =
         processing = false;
       }
     }
+    if (running && threadRuntime.thread?.pollWakes) {
+      await threadRuntime.thread.pollWakes(async (event, claim, text) => {
+        if (!running || !claim()) return false;
+        activityTracker.notifyTurnStart("thinking");
+        try {
+          await taskControl.run((signal) => handleEvent(projectRoot, parsedAgentType, provider, model, subscriber, nickname,
+            { publisher: "runtime", __runtimeWake: true, seq: event.id,
+              data: { message: text, runtime_context: { parentTaskRunId: event.ownerTaskRunId } } },
+            busSender, bootstrap.extraArgs, threadRuntime, bootstrap.promptText, activityTracker, signal));
+          await busSender.flush();
+        } finally { if (activityTracker.getState().state !== "waiting_input") activityTracker.markIdle(); }
+        return true;
+      });
+    }
     // eslint-disable-next-line no-await-in-loop
     await sleep(1000);
   }
 
-  await threadRuntime.close();
+  } finally {
+    await controlServer.close();
+    process.removeListener("SIGTERM", stop);
+    process.removeListener("SIGINT", stop);
+    await threadRuntime.close();
+  }
 }
 
 module.exports = {

@@ -18,7 +18,6 @@ const {
 const {
   assembleModelContext,
   buildRecentMessages,
-  buildRollingSummary,
   persistToolResultToContext,
   recordToolCallInSession,
   ensureProjectSnapshot,
@@ -224,31 +223,6 @@ describe("ucode context manager", () => {
     expect(parsed.contextPlan.retainRaw).toEqual(["artifact_a"]);
   });
 
-  test("buildRollingSummary includes epoch and execution signals", () => {
-    const session = {
-      taskContract: { objective: "Fix flush race" },
-      stateEpoch: {
-        snapshot: {
-          currentObjective: "Add regression test",
-          facts: ["worker.rs owns flush"],
-          decisions: ["Use deterministic reducer"],
-        },
-      },
-      executionState: {
-        modifiedFiles: ["src/code/context/assembler.js"],
-      },
-    };
-    const events = Array.from({ length: 15 }, (_, i) => ({
-      role: "user",
-      content: `goal line ${i}`,
-    }));
-    const summary = buildRollingSummary(events, "", session);
-    expect(summary).toContain("Objective: Fix flush race");
-    expect(summary).toContain("Facts:");
-    expect(summary).toContain("Modified files:");
-    expect(summary).toContain("Earlier transcript");
-  });
-
   test("project snapshot rebuilds when preflight files change", () => {
     fs.writeFileSync(path.join(workspaceRoot, "AGENTS.md"), "# Rules\nv1");
     fs.writeFileSync(path.join(workspaceRoot, "package.json"), JSON.stringify({ name: "demo" }));
@@ -411,35 +385,6 @@ describe("ucode context manager", () => {
     const paired = ensureToolCallPairs(selected, all);
     expect(paired.some((e) => e.toolCallId === "call_1")).toBe(true);
     expect(paired.some((e) => e.role === "assistant" && e.toolCalls)).toBe(true);
-  });
-
-  test("deterministic state commit after tool interval", () => {
-    const { recordToolCallInSession } = require("../../../src/code/context/assembler");
-    const session = {
-      sessionId: "sess-commit",
-      workspaceRoot,
-      toolCallsSinceCommit: 0,
-      stateEpoch: null,
-      workingSet: [],
-      executionState: { modifiedFiles: [], currentSegmentId: "", mode: "single_action", steps: {}, segments: [], approvals: [], retries: {} },
-    };
-    process.env.UFOO_UCODE_COMMIT_INTERVAL = "2";
-    recordToolCallInSession(session, {
-      tool: "read",
-      artifactId: "artifact_read_1",
-      preview: "read package.json",
-      args: { path: "package.json" },
-    }, workspaceRoot);
-    expect(session.toolCallsSinceCommit).toBe(1);
-    recordToolCallInSession(session, {
-      tool: "bash",
-      artifactId: "artifact_bash_1",
-      preview: "bash exit=0",
-      args: { command: "npm test" },
-    }, workspaceRoot);
-    expect(session.toolCallsSinceCommit).toBe(0);
-    expect(session.stateEpoch.commits.length).toBeGreaterThan(0);
-    delete process.env.UFOO_UCODE_COMMIT_INTERVAL;
   });
 
   test("bash test reducer extracts pass fail counts", () => {

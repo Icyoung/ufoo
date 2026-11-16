@@ -6,6 +6,27 @@ describe("chat transport", () => {
     jest.clearAllMocks();
   });
 
+  test.each([false, true])("requestDaemon preserves operation results only when requested: %s", async (fullResponse) => {
+    const { EventEmitter } = require("events");
+    const socket = new EventEmitter();
+    const response = { type: "response", data: { reply: "Close failed" }, opsResults: [{ action: "close", ok: false, error: "denied" }] };
+    socket.write = jest.fn(() => queueMicrotask(() => socket.emit("data", JSON.stringify(response) + "\n")));
+    socket.end = jest.fn();
+    jest.doMock("net", () => ({ createConnection: jest.fn((_path, ready) => {
+      queueMicrotask(ready); return socket;
+    }) }));
+    jest.doMock("../../../src/runtime/daemon/endpoint", () => ({
+      resolveDaemonEndpoint: () => ({ socketPath: "/tmp/test-only.sock" }),
+      routeDaemonRequest: (_endpoint, payload) => payload,
+    }));
+    const { requestDaemon } = require("../../../src/app/chat/transport");
+    const result = await requestDaemon("/tmp/project", { type: "close_agent", agent_id: "child" }, { fullResponse });
+    expect(result).toEqual(fullResponse ? response : response.data);
+    expect(socket.end).toHaveBeenCalled();
+    jest.dontMock("net");
+    jest.dontMock("../../../src/runtime/daemon/endpoint");
+  });
+
   test("a new project starts the daemon from the actual package binary", () => {
     const child = { on: jest.fn().mockReturnThis(), unref: jest.fn() };
     const spawn = jest.fn(() => child);

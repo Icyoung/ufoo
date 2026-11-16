@@ -124,7 +124,7 @@ function createSessionJournal({ namespace = "runtime" } = {}) {
     const artifactPreview = String(message.preview || (parsedArtifact && parsedArtifact.preview) || "").trim();
     const payload = {
       role,
-      content: artifactId ? undefined : contentForStorage(message.content),
+      content: contentForStorage(message.content),
       toolCalls: Array.isArray(message.tool_calls) ? message.tool_calls : undefined,
       toolCallId: toolCallId || undefined,
       artifactId: artifactId || undefined,

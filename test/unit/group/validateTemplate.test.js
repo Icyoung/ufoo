@@ -40,6 +40,14 @@ describe("group validateTemplate", () => {
     expect(result.errors).toEqual([]);
   });
 
+  test("validates member model settings before launching", () => {
+    const sample = buildValidTemplate();
+    sample.agents[0].model_config = { codex: { model: 42 } };
+    expect(validateTemplate(sample)).toMatchObject({ ok: false, errors: expect.arrayContaining([
+      expect.objectContaining({ path: "agents[0].model_config.codex.model" }),
+    ]) });
+  });
+
   test("rejects duplicate nickname", () => {
     const sample = buildValidTemplate();
     sample.agents[1].nickname = "pm";

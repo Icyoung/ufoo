@@ -601,7 +601,7 @@ describe("ucode tui switch", () => {
     expect(formatPendingElapsed(3661000)).toBe("3661 s");
   });
 
-  test("normalizeBashToolCommand includes command and exit code", () => {
+  test("normalizeBashToolCommand includes command, exit code, and background log actions", () => {
     expect(normalizeBashToolCommand(
       { command: "ls -la" },
       { code: 0 }
@@ -610,9 +610,21 @@ describe("ucode tui switch", () => {
       { cmd: "pwd" },
       {}
     )).toBe("pwd");
+    expect(normalizeBashToolCommand(
+      { command: "npm run dev", background: true },
+      { kind: "background_bash", backgroundId: "bg_abc", status: "running" }
+    )).toBe("bg · npm run dev · bg_abc · running");
+    expect(normalizeBashToolCommand(
+      { action: "logs", backgroundId: "bg_abc", offset: 128 },
+      { kind: "background_bash", status: "running" }
+    )).toBe("bg logs · bg_abc · @128 · running");
+    expect(normalizeBashToolCommand(
+      { action: "list" },
+      { kind: "background_bash", action: "list", runningCount: 1, count: 2 }
+    )).toBe("bg list · 1/2 running");
   });
 
-  test("normalizeToolLogDetail covers read/write/edit/artifact_read", () => {
+  test("normalizeToolLogDetail covers read/write/edit/artifact_read/recall_turn", () => {
     const {
       normalizeToolLogDetail,
     } = require("../../../src/ui/format");
@@ -622,6 +634,10 @@ describe("ucode tui switch", () => {
     expect(normalizeToolLogDetail("edit", { path: "b.txt" })).toBe("b.txt");
     expect(normalizeToolLogDetail("artifact_read", { artifactId: "artifact_1", startLine: 2, endLine: 4 }))
       .toBe("artifact_1 · L2-L4");
+    expect(normalizeToolLogDetail("recall_turn", { mode: "search", query: "JWT_TTL_SEC" }))
+      .toBe("search · JWT_TTL_SEC");
+    expect(normalizeToolLogDetail("recall_turn", { mode: "detail", turn_id: "turn_1", page: 2 }))
+      .toBe("detail · turn_1 · p2");
     expect(normalizeToolLogDetail("bash", { command: "ls" }, { code: 1 })).toBe("ls · exit 1");
   });
 
@@ -696,5 +712,58 @@ describe("ucode tui switch", () => {
       buffer: "second",
       sawVisible: true,
     });
+  });
+
+  test("createSegmentedStreamSession keeps a single top assistant bubble (updating in-place) above a single accumulating tool group", () => {
+    const {
+      createSegmentedStreamSession,
+      normalizeToolLogEntry,
+    } = require("../../../src/ui/rustUcodeHost");
+    const { createAgentSurface, projectSurfaceEvent } = require("../../../src/ui/agentSurface");
+    const { createToolMergePublisher } = require("../../../src/ui/toolMergeBridge");
+
+    const surface = createAgentSurface({ maxEntries: 100 });
+    const events = [];
+    const publish = (name, payload) => {
+      events.push(projectSurfaceEvent(surface, name, payload));
+    };
+    const tools = createToolMergePublisher(publish);
+    const session = createSegmentedStreamSession({
+      baseId: "nl-seg",
+      publish,
+      tools,
+      thinking: { reset: jest.fn(), onThinkingDelta: jest.fn() },
+      onToolEntry: (entry) => {
+        const normalized = normalizeToolLogEntry(entry);
+        if (normalized) tools.pushTool(normalized);
+      },
+    });
+
+    // Even if a tool executes first on Step 1 before the model speaks on Step 2,
+    // the assistant bubble is placed ABOVE the single accumulating tool group.
+    session.onToolLog({ tool: "read", phase: "end", args: { path: "scene.js" }, result: { ok: true } });
+    session.onDelta("我会把直杆状的腿改成自然收细的鸟腿。");
+    session.onToolLog({ tool: "bash", phase: "end", args: { command: "pwd" }, result: { ok: true } });
+    session.onToolLog({ tool: "read", phase: "end", args: { path: "AGENTS.md" }, result: { ok: true } });
+    session.onThinkingDelta("**正在规划场景**");
+    // Step 3 commentary replaces Step 2 commentary in-place (only 1 assistant bubble shown)
+    session.onDelta("\n现在开始修改 scene.js。");
+    session.onToolLog({ tool: "edit", phase: "end", args: { path: "scene.js" }, result: { ok: true } });
+    // Final step updates the single assistant bubble to the latest text
+    session.onDelta("全部完成");
+    session.onDelta("！");
+    session.finish();
+
+    const snap = surface.snapshot();
+    expect(snap.entries.map((entry) => entry.kind)).toEqual([
+      "assistant",
+      "tool",
+    ]);
+    expect(snap.entries[0].id).toBe("nl-seg");
+    expect(snap.entries[0].text).toContain("全部完成！");
+    expect(snap.entries[0].text).not.toContain("我会把直杆状的腿改成");
+    expect(snap.entries[0].text).not.toContain("现在开始修改");
+    expect(snap.entries[1].detail).toContain("Read scene.js");
+    expect(snap.entries[1].detail).toContain("Edit scene.js");
   });
 });
