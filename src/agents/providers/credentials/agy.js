@@ -15,7 +15,7 @@ const CLOUD_CODE_ORIGINS = new Set([
   "https://daily-cloudcode-pa.sandbox.googleapis.com",
 ]);
 const KEYRING_ENCODING = "go-keyring-base64:";
-const execFileAsync = promisify(execFile);
+const execFileAsync = (...args) => promisify(execFile)(...args);
 let refreshInFlight;
 let projectCache;
 

@@ -10,6 +10,7 @@ const { listProviderModels } = require("../../../../src/agents/providers/modelsC
 const { createAgentHost } = require("../../../../src/runtime/daemon/agentHost");
 const { runNativeAgentTask } = require("../../../../src/code/nativeRunner");
 const { materializeAnswerToolResult } = require("../../../../src/agents/runtime/protocol/materialize");
+const { resolveAgyCredentials } = require("../../../../src/agents/providers/credentials/agy");
 
 describe("Antigravity native provider", () => {
   let root;
@@ -127,6 +128,46 @@ describe("Antigravity native provider", () => {
     await expect(transport.runTurn({
       url: transport.resolveUrl(baseUrl), model, messages: [{ role: "user", content: "Read one file." }],
     })).rejects.toThrow("before a finish reason");
+  });
+
+  test("reads the agy macOS login and discovers its project once per access token", async () => {
+    const token = { access_token: "keychain-token", expiry: new Date(Date.now() + 3600000).toISOString() };
+    const wrapped = `go-keyring-base64:${Buffer.from(JSON.stringify({ token })).toString("base64")}`;
+    const runCommand = jest.fn().mockResolvedValue({ stdout: wrapped });
+    const fetchImpl = jest.fn().mockResolvedValue(new Response(JSON.stringify({
+      cloudaicompanionProject: { id: "local-agy-project" },
+    })));
+    const options = { baseUrl, homeDir: root, platform: "darwin", env: {}, runCommand, fetchImpl };
+    await expect(resolveAgyCredentials(options)).resolves.toMatchObject({
+      accessToken: "keychain-token", projectId: "local-agy-project", source: "agy macOS Keychain",
+    });
+    await resolveAgyCredentials(options);
+    expect(runCommand).toHaveBeenCalledWith("/usr/bin/security",
+      ["find-generic-password", "-s", "gemini", "-a", "antigravity", "-w"], expect.any(Object));
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledWith(`${baseUrl}/v1internal:loadCodeAssist`, expect.objectContaining({
+      method: "POST",
+      body: '{"metadata":{"ideType":"ANTIGRAVITY"}}',
+      headers: expect.objectContaining({ Authorization: "Bearer keychain-token" }),
+    }));
+    await expect(resolveAgyCredentials({ ...options, baseUrl: "https://custom.invalid" })).rejects.toThrow("explicit");
+    expect(runCommand).toHaveBeenCalledTimes(2);
+  });
+
+  test("has agy renew its own expired token and rereads the file", async () => {
+    const dir = path.join(root, ".gemini", "antigravity-cli");
+    const file = path.join(dir, "antigravity-oauth-token");
+    fs.mkdirSync(dir, { recursive: true });
+    const writeToken = (accessToken, expiresInMs) => fs.writeFileSync(file, JSON.stringify({
+      token: { access_token: accessToken, expiry: new Date(Date.now() + expiresInMs).toISOString() },
+    }));
+    writeToken("expired-agy-token", -60000);
+    const runCommand = jest.fn(() => writeToken("renewed-agy-token", 3600000));
+    await expect(resolveAgyCredentials({
+      baseUrl, homeDir: root, platform: "win32", env: { UFOO_AGY_PROJECT_ID: "known-project" }, runCommand,
+    })).resolves.toMatchObject({ accessToken: "renewed-agy-token", projectId: "known-project", source: "agy auth file" });
+    expect(runCommand).toHaveBeenCalledWith("agy", ["models"],
+      expect.objectContaining({ env: expect.objectContaining({ AGY_CLI_DISABLE_AUTO_UPDATE: "true" }) }));
   });
 
   test("runs through the main agent and standalone ucode entry points", async () => {

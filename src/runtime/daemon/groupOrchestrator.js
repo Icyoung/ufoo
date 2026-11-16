@@ -5,7 +5,7 @@ const path = require("path");
 const EventBus = require("../../coordination/bus");
 const { prepareUcodeBootstrap } = require("../../code/launcher/ucodeBootstrap");
 const { loadConfig } = require("../../config");
-const { normalizeProvider } = require("../../agents/providers/runtimeConfig");
+const { normalizeProvider } = require("../../agents/providers/providerId");
 const {
   buildGroupPromptMetadata,
   composeGroupBootstrapPrompt,

@@ -135,7 +135,9 @@ describe("ufoo Browser end-to-end CLI, native host binary, and Playwright MCP re
     await installBrowserRuntime({ env, sourceDir: fakeSrc, mode: "dev" });
     registerNativeHost({ env, mode: "dev" });
 
-    broker = new BrowserBroker({ env });
+    broker = new BrowserBroker({ env,
+      loadConfig: () => JSON.parse(fs.readFileSync(globalCfgFile, "utf8")).browser,
+    });
     await broker.start();
 
     // 1. Spawn the actual native-host launcher script and complete a Native Messaging handshake.

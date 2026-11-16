@@ -1,6 +1,6 @@
 "use strict";
 
-const { normalizeProvider } = require("../../agents/providers/runtimeConfig");
+const { normalizeProvider } = require("../../agents/providers/providerId");
 
 const EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const text = value => typeof value === "string" ? value.trim() : "";

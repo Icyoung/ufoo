@@ -230,7 +230,7 @@ describe("agent directAuthStatus", () => {
     expect(JSON.stringify(status)).not.toContain("test-token");
   });
 
-  test("agy: CLI login alone does not claim native API authentication", async () => {
+  test("agy: a CLI log does not substitute for readable local credentials", async () => {
     const fs = require("fs");
     const homeDir = fs.mkdtempSync(require("path").join(require("os").tmpdir(), "ufoo-agy-auth-"));
     try {
@@ -240,6 +240,7 @@ describe("agent directAuthStatus", () => {
         provider: "agy-cli",
         env: {},
         homeDir,
+        platform: "win32",
         resolveLogDirImpl: () => "/tmp/agy-log",
         findLogImpl: () => "/tmp/agy-log/cli.log",
         readLogTailImpl: () => "OAuth: authenticated successfully as ada@example.com",

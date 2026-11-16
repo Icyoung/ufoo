@@ -833,10 +833,15 @@ the `/model` catalog. Select a text model available to your account with
 `/model`. If a session was created with the earlier `agy` setting, start a
 fresh session to bind the Antigravity transport.
 
-Set `UFOO_AGY_AUTH_PATH` to your Antigravity auth JSON from CLIProxyAPI, or set
-`UFOO_AGY_ACCESS_TOKEN` and `UFOO_AGY_PROJECT_ID` together. For the main agent,
-these variables must be available to the ufoo daemon when it starts. ufoo reads
-the selected auth file on each request, and CLIProxyAPI can keep it refreshed.
+Sign in with `agy` once. ufoo reuses the local Antigravity login from the
+macOS Keychain, Linux Secret Service, or the CLI's fallback auth file. macOS
+may ask for permission to read the existing Keychain item. ufoo discovers
+the Cloud Code project and asks `agy` to renew an expiring login.
+
+To choose credentials explicitly, set `UFOO_AGY_AUTH_PATH` to your Antigravity
+auth JSON from CLIProxyAPI, or set `UFOO_AGY_ACCESS_TOKEN`. Set
+`UFOO_AGY_PROJECT_ID` to override project discovery. For the main agent, these
+variables must be available to the ufoo daemon when it starts.
 `UFOO_AGY_BASE_URL` overrides the Cloud Code base URL. `UFOO_AGY_USER_AGENT`
 overrides the Antigravity client header if the endpoint requires a newer version.
 

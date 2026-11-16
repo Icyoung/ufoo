@@ -182,7 +182,7 @@ async function listProviderModels(options = {}) {
   let agy;
   try {
     url = resolveModelsUrl({ transport, baseUrl, provider, clientVersion: options.clientVersion, codexHome: options.codexHome });
-    if (url && antigravity) agy = resolveAgyCredentials({ apiKey, env: options.env });
+    if (url && antigravity) agy = await resolveAgyCredentials({ apiKey, env: options.env, baseUrl, fetchImpl });
   } catch (error) {
     return { ok: false, models: [], url, error: error.message, status: 0, cached: false };
   }

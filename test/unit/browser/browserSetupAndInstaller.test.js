@@ -130,7 +130,7 @@ describe("ufoo Browser setup, optional runtime installer, and native host", () =
     const first = await maybeRunFirstTimeSetup({
       surface: "ucode",
       argv: [],
-      env: process.env,
+      env: { ...process.env, CI: "" },
       stdin: { isTTY: true },
       stdout: { isTTY: true },
       write: () => {},
@@ -144,7 +144,7 @@ describe("ufoo Browser setup, optional runtime installer, and native host", () =
     const second = await maybeRunFirstTimeSetup({
       surface: "ufoo",
       argv: [],
-      env: process.env,
+      env: { ...process.env, CI: "" },
       stdin: { isTTY: true },
       stdout: { isTTY: true },
       write: () => {},

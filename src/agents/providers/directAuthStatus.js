@@ -375,7 +375,9 @@ async function inspectDirectAuthStatus(options = {}) {
     const env = options.env || process.env;
     const base = { provider: "agy", transport: "antigravity", credentialKind: "oauth" };
     try {
-      const { source, expiresAt } = resolveAgyCredentials({ env, homeDir: options.homeDir });
+      const { source, expiresAt } = await resolveAgyCredentials({
+        env, homeDir: options.homeDir, platform: options.platform, requireProject: false,
+      });
       return { ...base, ok: true, state: "present", source, expiresAt };
     } catch (error) {
       const cli = error.code === "AGY_CREDENTIALS_MISSING" ? await inspectAgyDirectAuth(nextOptions) : null;

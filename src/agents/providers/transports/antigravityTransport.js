@@ -128,7 +128,7 @@ function createAntigravityTransport({ runSseRequest, parseSseEventBlock, ...mess
     url, apiKey, model, sessionId, messages = [], tools = [], systemPrompt = "", systemBlocks = null,
     thinkingLevel, maxOutputTokens, signal, timeoutMs, onTextDelta, onThinkingDelta, onPhase,
   }) {
-    const credential = resolveAgyCredentials({ apiKey });
+    const credential = await resolveAgyCredentials({ apiKey, baseUrl: url, signal });
     const claude = /^claude-/i.test(model);
     const declarations = tools.map(({ function: tool }) => ({
       name: tool.name,

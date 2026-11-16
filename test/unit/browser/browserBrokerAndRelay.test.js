@@ -53,7 +53,9 @@ describe("ufoo Browser broker, Native Messaging, tab ownership, and host gating"
       UFOO_BROWSER_NATIVE_HOST_DIRS: process.env.UFOO_BROWSER_NATIVE_HOST_DIRS,
       UFOO_BROWSER_CHROME_USER_DATA_DIR: process.env.UFOO_BROWSER_CHROME_USER_DATA_DIR,
       UFOO_GLOBAL_CONFIG_PATH: process.env.UFOO_GLOBAL_CONFIG_PATH,
+      UFOO_BROWSER_PLATFORM: process.env.UFOO_BROWSER_PLATFORM,
     };
+    process.env.UFOO_BROWSER_PLATFORM = "darwin";
     process.env.UFOO_BROWSER_HOME = browserHome;
     process.env.UFOO_BROWSER_NATIVE_HOST_DIRS = path.join(tmpRoot, "native-hosts");
     process.env.UFOO_BROWSER_CHROME_USER_DATA_DIR = path.join(tmpRoot, "chrome-profile-root");
