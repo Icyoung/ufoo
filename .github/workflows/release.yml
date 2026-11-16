@@ -18,6 +18,10 @@ on:
         description: "Pack only (skip npm publish)"
         type: boolean
         default: false
+      reuse_arm_run_id:
+        description: "Optional prior run with a tested ARM artifact and identical Rust sources"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -29,7 +33,10 @@ jobs:
 
   build-tui:
     name: Build ufoo-tui (${{ matrix.plat }})
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.plat == 'darwin-arm64' && inputs.reuse_arm_run_id != '' && 'ubuntu-24.04' || matrix.os }}
+    permissions:
+      contents: read
+      actions: read
     strategy:
       fail-fast: false
       matrix:
@@ -49,13 +56,56 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify reusable ARM artifact source and tests
+        if: matrix.plat == 'darwin-arm64' && inputs.reuse_arm_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REUSE_RUN_ID: ${{ inputs.reuse_arm_run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$REUSE_RUN_ID" =~ ^[0-9]+$ ]] || { echo "Invalid source run ID" >&2; exit 1; }
+          run="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$REUSE_RUN_ID")"
+          source_sha="$(jq -r '.head_sha' <<< "$run")"
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
+          jq -e --arg repo "$GITHUB_REPOSITORY" \
+            '.head_repository.full_name == $repo and .path == ".github/workflows/release.yml"' <<< "$run"
+          git merge-base --is-ancestor "$source_sha" HEAD
+          git diff --exit-code "$source_sha" HEAD -- \
+            crates Cargo.toml Cargo.lock .cargo rust-toolchain rust-toolchain.toml
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$REUSE_RUN_ID/jobs?filter=all&per_page=100" \
+            | jq -s -e '[.[].jobs[] | select(.name == "Build ufoo-tui (darwin-arm64)" and .conclusion == "success")
+              | select(any(.steps[]; .name == "Build release binary" and .conclusion == "success"))
+              | select(any(.steps[]; .name == "Test host Rust renderer" and .conclusion == "success"))
+              | select(any(.steps[]; .name == "Stage binary" and .conclusion == "success"))] | length > 0'
+          echo "Reusing tested ARM binary from $source_sha (run $REUSE_RUN_ID); Rust sources and lockfile are identical."
+
+      - name: Download verified ARM artifact
+        if: matrix.plat == 'darwin-arm64' && inputs.reuse_arm_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: tui-darwin-arm64
+          path: dist/tui/darwin-arm64
+          run-id: ${{ inputs.reuse_arm_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Check reused ARM binary format
+        if: matrix.plat == 'darwin-arm64' && inputs.reuse_arm_run_id != ''
+        run: |
+          set -euo pipefail
+          file dist/tui/darwin-arm64/ufoo-tui | grep -E 'Mach-O.*arm64'
+          chmod +x dist/tui/darwin-arm64/ufoo-tui
 
       - name: Install Rust
+        if: matrix.plat != 'darwin-arm64' || inputs.reuse_arm_run_id == ''
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
       - name: Build release binary
+        if: matrix.plat != 'darwin-arm64' || inputs.reuse_arm_run_id == ''
         run: |
           if [ -n "${{ matrix.target }}" ]; then
             cargo build -p ufoo-tui --release --target "${{ matrix.target }}"
@@ -64,9 +114,11 @@ jobs:
           fi
 
       - name: Test host Rust renderer
+        if: matrix.plat != 'darwin-arm64' || inputs.reuse_arm_run_id == ''
         run: cargo test -p ufoo-tui
 
       - name: Stage binary
+        if: matrix.plat != 'darwin-arm64' || inputs.reuse_arm_run_id == ''
         run: |
           set -euo pipefail
           plat="${{ matrix.plat }}"

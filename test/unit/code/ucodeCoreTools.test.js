@@ -14,6 +14,24 @@ const { getReadToolDescription } = require("../../../src/agents/prompts/native/t
 const { getEditToolDescription } = require("../../../src/agents/prompts/native/toolDescriptions/edit");
 const { getBashToolDescription } = require("../../../src/agents/prompts/native/toolDescriptions/bash");
 
+async function waitForBackgroundLog(execute, initial, marker) {
+  const deadline = Date.now() + 3000;
+  let result = initial;
+  let output = initial.logOutput || "";
+  while (result.running && !output.includes(marker) && Date.now() < deadline) {
+    result = await execute({
+      action: "logs",
+      backgroundId: initial.backgroundId,
+      offset: result.nextOffset,
+      waitMs: 200,
+    });
+    expect(result.ok).toBe(true);
+    output += result.logOutput || "";
+  }
+  expect(output).toContain(marker);
+  return result;
+}
+
 describe("ucode-core tool kernel", () => {
   test("read returns selected line range", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-core-read-"));
@@ -281,12 +299,14 @@ describe("ucode-core tool kernel", () => {
     fs.writeFileSync(
       scriptPath,
       [
+        "setTimeout(() => {",
         'console.log("READY http://127.0.0.1:5173");',
         "let tick = 0;",
         "setInterval(() => {",
         "  tick += 1;",
         '  console.log("TICK " + tick);',
         "}, 50);",
+        "}, 300);",
       ].join("\n"),
       "utf8",
     );
@@ -296,11 +316,12 @@ describe("ucode-core tool kernel", () => {
       const started = await runBashToolAsync({
         command: `${JSON.stringify(process.execPath)} ${JSON.stringify(scriptPath)}`,
         background: true,
-        startupWaitMs: 250,
+        startupWaitMs: 0,
       }, {
         workspaceRoot: root,
         sessionId: "sess-bg-1",
       });
+      backgroundId = started.backgroundId;
 
       expect(started.ok).toBe(true);
       expect(started.kind).toBe("background_bash");
@@ -308,23 +329,27 @@ describe("ucode-core tool kernel", () => {
       expect(started.running).toBe(true);
       expect(started.status).toBe("running");
       expect(started.backgroundId).toMatch(/^bg_/);
-      expect(started.logOutput).toContain("READY http://127.0.0.1:5173");
-      expect(started.nextOffset).toBeGreaterThan(0);
-      backgroundId = started.backgroundId;
+      // Starting a process does not guarantee Node has emitted output yet on a busy host.
+      const ready = await waitForBackgroundLog(
+        (args) => runBashToolAsync(args, { workspaceRoot: root }),
+        started,
+        "READY http://127.0.0.1:5173",
+      );
+      expect(ready.nextOffset).toBeGreaterThan(0);
       expect(countRunningBackgroundProcesses({ workspaceRoot: root })).toBe(1);
 
       const incremental = await runBashToolAsync({
         action: "logs",
         backgroundId,
-        offset: started.nextOffset,
+        offset: ready.nextOffset,
         waitMs: 500,
       }, {
         workspaceRoot: root,
       });
       expect(incremental.ok).toBe(true);
       expect(incremental.running).toBe(true);
-      expect(incremental.offset).toBe(started.nextOffset);
-      expect(incremental.nextOffset).toBeGreaterThan(started.nextOffset);
+      expect(incremental.offset).toBe(ready.nextOffset);
+      expect(incremental.nextOffset).toBeGreaterThan(ready.nextOffset);
       expect(incremental.logOutput).toContain("TICK ");
       expect(incremental.logOutput).not.toContain("READY http://127.0.0.1:5173");
 
@@ -365,7 +390,7 @@ describe("ucode-core tool kernel", () => {
       }
       fs.rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 10000);
 
   test("bash background=true reports immediate startup failure with captured stderr", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-ucode-bg-crash-"));
@@ -420,13 +445,17 @@ describe("ucode-core tool kernel", () => {
         workspaceRoot: realRoot,
         sessionId: "sess-e2e",
       });
+      backgroundId = startRes.backgroundId;
 
       expect(startRes.ok).toBe(true);
       expect(startRes.kind).toBe("background_bash");
       expect(startRes.artifactId).toBeTruthy();
       expect(startRes.backgroundId).toMatch(/^bg_/);
-      expect(startRes.logOutput).toContain("http://localhost:5173/");
-      backgroundId = startRes.backgroundId;
+      const ready = await waitForBackgroundLog(
+        (args) => registry.execute("bash", args, { workspaceRoot: realRoot, sessionId: "sess-e2e" }),
+        startRes,
+        "http://localhost:5173/",
+      );
 
       // Acquire workspace writer lease as a different owner; read-only action="logs" must still succeed without command.
       const lease = createResourceLease({
@@ -438,7 +467,7 @@ describe("ucode-core tool kernel", () => {
         const logRes = await registry.execute("bash", {
           action: "logs",
           backgroundId,
-          offset: startRes.nextOffset,
+          offset: ready.nextOffset,
           waitMs: 400,
         }, {
           workspaceRoot: realRoot,
@@ -466,5 +495,5 @@ describe("ucode-core tool kernel", () => {
       }
       fs.rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 10000);
 });
