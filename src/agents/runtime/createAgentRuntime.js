@@ -68,7 +68,7 @@ function createAgentRuntime({ profile, transport, capabilities, host = {}, defau
     if (state.owner && pidAlive(state.owner.pid)) throw Object.assign(new Error("runtime session already owned"), { code: "runtime_busy" });
     const selectedCapabilities = composition.capabilities.map((capability) => capability.id);
     const matchesAdditively = Array.isArray(state.capabilities)
-      && stableStringify(state.capabilities) === stableStringify(selectedCapabilities.filter((id) => !["turn-recall", "browser"].includes(id) || state.capabilities.includes(id)));
+      && stableStringify(state.capabilities) === stableStringify(selectedCapabilities.filter((id) => !["turn-recall", "browser", "mac-app"].includes(id) || state.capabilities.includes(id)));
     if (state.capabilities && stableStringify(state.capabilities) !== stableStringify(selectedCapabilities) && !matchesAdditively
       && Object.values(state.tasks).some((task) => ["queued", "running", "waiting_user"].includes(task.status))) throw new Error("cannot change capabilities with unfinished state; use a new session or explicit migration");
     interruptedTasks = Object.values(state.tasks).filter((task) => task.status === "running");

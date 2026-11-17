@@ -90,6 +90,8 @@ class SkillsManager {
         target = path.join(codexHome, "skills");
       } else if (options.agents) {
         target = path.join(process.env.HOME, ".agents", "skills");
+      } else if (options.agy) {
+        target = path.join(process.env.HOME, ".gemini", "config", "skills");
       } else {
         target = path.join(process.env.HOME, ".claude", "skills");
       }

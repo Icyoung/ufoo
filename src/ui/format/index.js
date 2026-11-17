@@ -38,6 +38,8 @@ const TOOL_LABELS = {
   bash: "Running command",
   artifact_read: "Reading artifact",
   recall_turn: "Recalling past turn",
+  browser: "Using browser",
+  mac_app: "Operating Mac app",
   plan_graph: "Updating plan",
   task_run: "Managing task",
   ask_user: "Asking user",
@@ -807,6 +809,21 @@ function normalizeToolLogDetail(tool = "", args = {}, payload = {}) {
     }
     const queryText = shortenPathDetail(String(argObj.query || argObj.topic || "").trim(), 48);
     return ["search", queryText].filter(Boolean).join(" · ");
+  }
+
+  if (name === "mac_app") {
+    const op = String(argObj.operation || "").trim().toLowerCase();
+    const target = String(
+      argObj.ref
+      || argObj.app
+      || argObj.bundleId
+      || (argObj.windowId ? `win#${argObj.windowId}` : "")
+      || (argObj.key ? `key:${argObj.key}` : "")
+      || (argObj.x != null && argObj.y != null ? `(${argObj.x}, ${argObj.y})` : "")
+      || resObj.app
+      || "",
+    ).trim();
+    return [op, shortenPathDetail(target, 42)].filter(Boolean).join(" · ");
   }
 
   const fallback = String(argObj.path || argObj.command || argObj.cmd || "").trim();

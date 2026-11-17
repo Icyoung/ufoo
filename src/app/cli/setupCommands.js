@@ -14,6 +14,7 @@ const {
 const FIRST_RUN_SKIP_COMMANDS = new Set([
   "setup",
   "browser",
+  "mac",
   "daemon",
   "mcp",
   "agent-runner",

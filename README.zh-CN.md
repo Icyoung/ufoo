@@ -1,53 +1,50 @@
 # ufoo
 
-[English](README.md)
+[English](README.md) · [项目架构指南](docs/PROJECT.md) · [可观测性与指标](docs/OBSERVABILITY.md) · [文档目录](docs/README.md)
 
-ufoo 是一个按项目隔离的多 Agent 工作区运行时，提供两种用法。
-你可以继续使用 Claude Code、OpenAI Codex 等原有 CLI，通过包装器和 MCP
-互联、收发消息并共享上下文；也可以打开 ufoo 面板，在当前终端与主 agent
-和 internal Codex、Claude、`ucode` 子 agent 协作。
-两种用法共享 daemon、事件总线、memory、report 和 group 编排。
+**多 Agent 工作区运行时协议（Multi-Agent Workspace Runtime）。** 只需在原有命令前加个 `u` —— `claude` → `uclaude`、`codex` → `ucodex`、`agy` → `uagy`、`grok` → `ugrok`、`kimi` → `ukimi`；或直接打开 `ufoo`，在同一个 Rust TUI 终端面板里让项目主 Agent 与内嵌的 Codex、Claude、原生 `ucode` 子 Agent 并行协作。
 
 npm 包：[u-foo](https://www.npmjs.com/package/u-foo)
 
 [![npm version](https://img.shields.io/npm/v/u-foo.svg)](https://www.npmjs.com/package/u-foo)
 [![npm downloads](https://img.shields.io/npm/dm/u-foo.svg)](https://www.npmjs.com/package/u-foo)
 [![License](https://img.shields.io/badge/license-UNLICENSED-red.svg)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org)
-[![Platform](https://img.shields.io/badge/platform-macOS-blue.svg)](https://www.apple.com/macos)
+[![Node](https://img.shields.io/badge/node-%3E%3D18.17-brightgreen.svg)](https://nodejs.org)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue.svg)](https://github.com/Icyoung/ufoo)
 
-## 亮点
+---
 
-- 一个 TUI 面板，承载主 agent 和 internal 子 agent，提供共享输入框、
-  实时输出、状态和三种布局。
-- 唯一的用户级 daemon 通过 `~/.ufoo/run/ufoo.sock` 托管隔离的项目
-  runtime，管理启动/恢复、report、group、cron 和 controller 路由。
-- 项目内事件总线支持 Agent 间消息、唤醒、队列检查和终端激活。
-- 共享上下文能力：decision、durable memory、prompt history、report 和
-  agent registry state。
-- 包装器和 MCP 连接外部 CLI 工作流；面板子 agent 使用 internal 模式，
-  在当前终端内交互。
-- 内置 group 模板，用于启动和编排多 Agent 工作流。
-- 提供原生 ufoo coding-agent 运行时 `ucode`。
-- home 级 global controller daemon 内提供唯一的本机 Streamable HTTP MCP
-  server；`ufoo mcp` 仅作为可随时销毁的 stdio 兼容代理。
+## 核心特性
 
-## 环境要求
+ufoo 为代码仓库内的所有 AI Agent 提供统一控制面与状态底座，同时保留你熟悉的任何工具链：
 
-- Node.js 18.17 或更新版本。
-- macOS，用于 Terminal.app/iTerm2 集成。
-- 使用对应包装器时，需要安装 Claude Code、Codex CLI 或 Antigravity CLI：
-  `uclaude`、`ucodex`、`uagy`。
+- **一体化 Rust TUI 协作面板（`ufoo` & `ucode`）**：单终端承载主 Agent 与多个 internal Codex、Claude、`ucode` 子 Agent，支持 `main` / `side` / `multi` 三种分屏布局、按 Agent 独立保留输入草稿、实时展开思考与合并工具树（`Ctrl+O`）、窗格内鼠标拖选即复制，以及 `/resume` 一键恢复单 Agent 或整个 Group。
+- **可组合原生 Agent Runtime 与 Context Engine V2**：主 Agent、独立后台子任务（`manage_tasks`）与 `ucode` 共用同一套可插拔内核，内置 KV-Cache 友好的滑动窗口、自动 `<turn_context>` 主题索引、跨窗口按需检索工具 `recall_turn`、结构化 `plan_graph` / Plan Mode、崩溃安全日志、工作区写租约以及**后台命令零 Token 自动唤醒**。
+- **日常 Chrome 浏览器自动化（`browser`）**：通过可选的 `ufoo Browser` 扩展与本机 `BrowserBroker` 直接操控你平时已登录的 Chrome，支持按 `tabId` 独立声明标签页所有权（冲突时返回 `browser_tab_busy`），绝不强开空白浏览器或关闭已有页面。
+- **macOS 桌面应用控制与独立 Agent 鼠标（`mac_app`）**：融合 `AXUIElement` 无障碍控件树快照（`@e1..@eN` 引用 + 原生动作触发）、无阴影 1:1 逻辑点截图（`screenshotId` 精准坐标映射）与**独立窗口级 Agent 鼠标**——无需抢占或移动你的物理鼠标即可附带悬浮 HUD 操作应用，并在检测到晃动鼠标、点击目标窗口或按下 `Esc` 时立即避让。
+- **无侵入包装器与全局单例 MCP**：支持 `uclaude`、`ucodex`、`uagy`、`ugrok`、`ukimi` 原生消息注入，同时通过 `~/.ufoo/run/ufoo.sock` 全局守护进程内置的 Streamable HTTP MCP Server 与无状态 `ufoo mcp` stdio 代理连接 **Codex App/IDE**、**Cursor**、**Antigravity App** 及 HTTP Webhook。
+- **多 Agent Group 编排、共享记忆与可观测性**：内置 7 套专业多角色协作模板（预置 `codex` / `claude` / `agy` 分角色模型与推理强度）、架构决策（`ctx`）与持久化共享记忆（`memory`）、证据门控任务验收、`ufoo online` 远程协作中继，以及免模型调用的 `ufoo trace` 与 `ufoo metrics` 性能审计。
 
-## 安装
+---
 
-安装 npm 发布包：
+## 环境要求与安装
+
+### 环境要求
+
+- **Node.js 18.17+**（可选的 `ufoo Browser` Playwright MCP 运行时需要 **Node.js 20+**）。
+- **macOS** 或 **Linux**（npm 包已内置 `darwin-arm64`、`darwin-x64`、`linux-x64`、`linux-arm64` 的 `ufoo-tui` 原生二进制；`mac_app` 桌面控制与 Terminal.app/iTerm2 终端适配仅限 macOS）。
+- 使用对应 CLI 包装器时需预先安装相应宿主 CLI（`claude`、`codex`、`agy`、`grok`、`kimi`）。
+
+### 从 npm 安装
 
 ```bash
 npm install -g u-foo
+ufoo setup
 ```
 
-或从源码链接本仓库：
+`ufoo setup` 会询问是否安装可选组件 **ufoo Browser**（也可显式指定 `ufoo setup --browser=install` 或 `ufoo setup --browser=skip`；非交互环境下默认跳过可选下载）。
+
+### 从源码构建
 
 ```bash
 git clone https://github.com/Icyoung/ufoo.git
@@ -57,365 +54,304 @@ npm run pack:tui
 npm link
 ```
 
-安装后提供这些命令：
+### 提供的命令入口
 
-| 命令 | 用途 |
+| 命令 | 职责说明 |
 |---|---|
-| `ufoo` | 主 CLI、chat 仪表盘、daemon、global MCP server/proxy、group、bus、context、memory、report 和 online helper。 |
-| `uclaude` | Claude Code 包装器，注入 ufoo bootstrap 和 bus 身份。 |
-| `ucodex` | Codex 包装器，注入 ufoo bootstrap 和 bus 身份。 |
-| `uagy` | Antigravity 包装器，注入 ufoo bootstrap 和 bus 身份。 |
-| `ukimi` | Kimi Code 包装器，注入 ufoo bootstrap 和 bus 身份。 |
-| `ucode` | 原生 ufoo coding-agent CLI/TUI。 |
+| `ufoo` | 主 CLI、多 Agent 仪表盘、全局/项目 daemon、MCP 服务与 stdio 代理、`browser` / `mac` 管理、group、bus、context、memory、report、trace/metrics 与 online 中继。 |
+| `ucode` | 原生 ufoo 编程 Agent CLI/TUI，共享可组合 runtime、Context Engine V2、`browser` 与 `mac_app` 能力。 |
+| `uclaude` | Claude Code 包装器，自动注入 bootstrap、bus 身份、原生 stdio MCP 消息通道与会话恢复元数据。 |
+| `ucodex` | OpenAI Codex 包装器，自动注入 bootstrap、bus 身份、私有 app-server 原生入站队列与会话恢复支持。 |
+| `uagy` | Antigravity CLI 包装器，注入 bootstrap、bus 身份并捕获会话恢复标识。 |
+| `ugrok` | Grok Build 包装器，注入 bootstrap 并自动注册事件总线。 |
+| `ukimi` | Kimi Code 包装器，注入 bootstrap、注册事件总线并保留恢复元数据。 |
 
-交互式 `ucodex` 和 `uclaude` 在 macOS/Linux 默认使用原生消息通道。
-Codex 的 TUI 连接本次启动的私有 app-server，Claude 使用本次启动的 MCP
-channel；不会修改宿主全局配置或认证信息。Claude 保留原有开发通道确认，
-账号及组织策略限制仍然适用。接收器确认就绪后才投递消息。
-
-启动器检查已验证的版本基线（Codex 0.160.1、Claude Code 2.1.204）及
-Codex remote 支持；旧版本会提示并使用原有投递方式。
-`--native-messages` 强制要求兼容，`--no-native-messages` 或
-`UFOO_NATIVE_MESSAGES=0` 关闭原生通道。`ufoo doctor` 展示版本和接收器状态。
-
-投递回执仅表示通道接收，不表示任务完成。响应丢失会保留消息和不确定
-回执，不自动重发。可使用以下命令检查并明确处理：
-
-```bash
-ufoo bus deliveries <subscriber>
-ufoo bus deliveries <subscriber> <receipt-id> accepted
-ufoo bus deliveries <subscriber> <receipt-id> retry
-```
-
-确认接收会话已收到任务后用 `accepted`；`retry` 允许再投递一次，如果
-第一次实际成功可能产生重复。正在投递且所属进程存活的回执不能解锁。
-
-任务报告的各个阶段应复用同一个 `--task <id>` / MCP `task_id`。省略 ID
-时，CLI 的 progress/done/error 只关联唯一活跃任务；并行任务必须显式指定。
-报告持久化成功后才确认消费，普通 bus 回复不会把任务标为完成。
-`autoResume` 默认关闭，局部保存配置不会改变其默认值。
+---
 
 ## 快速开始
 
-初始化项目并打开 chat 仪表盘：
+### 1. 启动项目协作面板（推荐日常工作流）
 
 ```bash
 cd your-project
 ufoo init --targets context,bus
-ufoo
+ufoo          # 打开当前项目面板
+ufoo -g       # 或打开全局路由视图，在多个已注册项目间随时切换
 ```
 
-在 chat 中启动 Agent：
+在面板内直接对话，或拉起内嵌子 Agent 与协作组：
 
 ```text
 > /launch codex reviewer
 > /launch claude builder
 > /launch ucode fixer
-> @reviewer inspect the current diff and list release risks
+> @reviewer 检查当前 diff 并列出上线风险
+> /group run build-lane instance=auth-refactor
 ```
 
-也可以在项目目录中直接启动包装器：
+### 2. 直接在终端运行包装器 CLI
+
+在项目目录中直接执行任一包装命令，即可自动接入项目事件总线与共享记忆：
 
 ```bash
 uclaude
 ucodex
 uagy
+ugrok
 ukimi
 ucode
 ```
 
-跨项目全局 chat 模式：
+### 3. 通过全局 MCP 连接外部 IDE / 桌面客户端
 
-```bash
-ufoo -g
-```
+- **Codex App、Codex CLI 与 Codex IDE 插件**（共享本机鉴权 Streamable HTTP 端点）：
+  ```bash
+  ufoo -g
+  ufoo mcp configure codex    # 可加 --dry-run 预览脱敏后的配置变更
+  ```
+  写入后重启对应的 Codex 客户端即可生效。
 
-Codex App、Codex CLI 和 Codex IDE extension 共用同一份配置。先启动一次
-global mode，再写入经过验证的直接 HTTP 配置：
+- **Cursor、Antigravity App 及其他 MCP 客户端**（使用无状态 `ufoo mcp` stdio 代理，自动兼容换行 JSON 与 `Content-Length` 帧）：
+  ```json
+  {
+    "mcpServers": {
+      "ufoo": {
+        "command": "ufoo",
+        "args": ["mcp"]
+      }
+    }
+  }
+  ```
+  可通过 `ufoo mcp status` 与 `ufoo mcp restart` 查看或重启全局唯一 MCP 监听器。
 
-```bash
-ufoo -g
-ufoo mcp configure codex
-```
+---
 
-重启 Codex surface 后即可使用。Cursor 以及其他尚未验证直接 HTTP 的 host
-继续配置 `ufoo mcp`。这个无状态 stdio 代理连接同一个 global server，同时接受
-换行 JSON 和标准 `Content-Length` 帧，并按客户端使用的帧格式回写。Cursor 保持
-`command: ufoo`、`args: ["mcp"]` 即可。它不拥有 Agent 注册或项目状态。用
-`ufoo mcp status` 检查唯一 listener，用 `ufoo mcp restart` 只重启 listener。
+## 面板交互与快捷键指南
 
-## 运行模型
+`ufoo` 与独立 `ucode` 均通过 Rust 编写的 `ufoo-tui` 渲染（`ufoo-ui/1` 协议）。任务执行状态由后台 daemon 持有，关闭面板不会中断运行中的任务，重新连接会自动回放完整输出流与折叠块。
 
-```text
-ufoo / ufoo chat
-  -> src/app/chat + src/ui/rustChatHost + crates/ufoo-tui
-  -> global daemon over ~/.ufoo/run/ufoo.sock
-  -> isolated ProjectRuntime selected by project_root
-  -> runtime launch/resume/recover/reports/cron/groups
-  -> orchestration router, group templates, solo roles
-  -> agents launch/providers/internal/controller/activity
-  -> coordination bus/context/memory/history/report/state/status
-  -> shared controller/worker tools and native ucode tools
+### 三种窗口布局
 
-Codex App / CLI / IDE -> Streamable HTTP --+
-ufoo mcp stdio proxy ----------------------+
-                                           -> home-scoped global controller daemon
-  -> one MCP listener and tool router
-  -> ~/.ufoo/projects/runtime
-  -> managed ProjectRuntimeGateway
-  -> selected in-process ProjectRuntime for bus/report/activity/wait state
-```
+使用 `Ctrl+W` 循环切换 `main → side → multi → main`，或直接执行 `/window main`、`/window side`、`/window multi`：
 
-默认使用 global topology。`ufoo daemon --topology hybrid` 可临时启用项目
-兼容 socket，`--topology project` 则切回旧的逐项目 daemon 回滚路径。
+- **`main`**：主 Agent 全宽视图。
+- **`side`**：左侧主 Agent + 右侧当前激活的单个 internal 子 Agent。
+- **`multi`**：主 Agent + 所有活跃 internal Codex / Claude / `ucode` 子 Agent 同屏并列。
 
-### Agent 消息投递模式
+| 快捷键 / 鼠标操作 | 说明 |
+|---|---|
+| `Ctrl+W`（在 `main` 输入框） | 循环切换布局；在子 Agent 输入框内则为删除前一个单词。 |
+| `Ctrl+Q` | 退出分屏回到 `main` 视图（不关闭子 Agent，保留所有未发送草稿）。 |
+| `Tab` | 分屏下进入可见子窗格；单窗下切换底栏 Agent；补全菜单开启时确认补全。 |
+| `Esc` | 关闭当前弹层菜单，或从子 Agent 输入框切回 `main` 输入框（不中断子任务）。 |
+| `Ctrl+C` | 子窗格内仅取消该子 Agent 当前轮次（保留进程与队列）；`main` 内依次清空草稿、取消任务或退出。 |
+| `Ctrl+O` | 展开或收起当前焦点窗格中最新的一组思考过程或工具调用树。 |
+| `Ctrl+X`（焦点位于底栏 Agents 时） | 通过项目 daemon 安全关闭选中的 internal 子 Agent。 |
+| 窗格内鼠标拖选并松开 | 仅选中当前窗格内的文本（不含边框与相邻窗格），松开即通过系统剪贴板或 OSC 52 自动复制。 |
 
-ufoo 支持两种 Agent 投递模式，只根据启动辅助 terminal 之前，宿主 Agent
-继承的 `UFOO_SUBSCRIBER_ID` 是否存在来选择：
-
-- 包装器托管的 Agent 通过 `ucodex`、`uclaude`、`uagy`、`ukimi` 或 `ucode`
-  启动。包装器会提供 `UFOO_SUBSCRIBER_ID`；ufoo 能监控其 shell 活动并定位
-  注入端点，因此可以直接注入 bus 消息。这类 Agent 复用环境中的身份，
-  不通过 MCP 重复注册，也不运行常驻 bus poll。
-- 外部 host 托管的 Agent 没有包装器提供的 subscriber 环境变量。它通过 MCP
-  `register_agent` 注册一次，保留返回的 subscriber 和不透明
-  `agent_handle`，再选择宿主 App 原生的无 token 等待方式：Codex App 挂起
-  MCP `wait_for_message`，Cursor 则用 `notify_on_output` 监控
-  `ufoo bus poll --follow` 的后台输出。
-
-Agent 类型名和 subscriber 前缀只是路由元数据，不是能力判断条件。外部
-Cursor Agent 通过 MCP 注册后，可以在专用监听 terminal 内把返回的
-subscriber 导出为 `UFOO_SUBSCRIBER_ID`，让 CLI 操作复用同一身份。这个
-子 shell 绑定不会改变宿主 Agent 已选择的外部模式，也不代表支持包装器注入。
-
-Chat 是 UI client。daemon 拥有项目运行态。Agent 通过 bus queue、prompt
-injection、shared memory、report 和 tool handler 协作，而不是直接依赖
-chat UI 代码。
-
-## 日常使用
-
-日常路径通常是先进入 chat，再在仪表盘里启动 Agent 和执行项目命令：
-
-```bash
-ufoo
-ufoo -g
-```
-
-`ufoo` 打开当前项目 chat。`ufoo -g` 打开全局 chat，用于在已注册项目之间
-切换。全局 daemon 只启动一次，各项目 runtime 按需激活。
-
-默认项目主 Agent 与 `ucode` 共用可组合的 runtime，可直接读取、修改代码并执行验证，
-也可委派 internal Agent 或创建独立任务。全局入口只负责选择项目；进入项目后才获得
-编码能力。长任务在后台运行，断开 chat 不会取消任务，重连会补发运行事件。
-
-主 agent 的所有会话统一使用共享 runtime。用 `/session new` 开始使用当前设置的
-新会话；已有会话的 provider/model 绑定不会随设置变更而切换。副作用执行期间进程崩溃后，任务会标为
-interrupted，需检查实际结果后决定是否重新提交；不会自动重复文件修改、shell、
-启动或投递。相同目录的托管写操作共用锁，独立且经过验证的 git worktree 可并行。
-这些约束不构成 shell 的操作系统沙箱。实现与恢复契约见
-[Agent Runtime 改造记录](docs/archive/AGENT_RUNTIME_REFACTOR.md)。
-
-### Chat 内命令
+### 常用面板 Slash 命令
 
 ```text
-/launch codex reviewer
-/launch claude builder
-/launch ucode fixer
-@reviewer inspect the current diff and list release risks
-
-/status
-/task list
-/task inspect <run-id>
-/task cancel <run-id>
-/answer <interaction-id> <reply>
-/session show
-/session new
-/settings
-/window main
-/window side
-/window multi
-/resume
-/project list
-/project switch 2
-/open /path/to/project
+/status                         查看项目、daemon 与在线 Agent 状态概览
+/launch <codex|claude|ucode>    在面板内启动内嵌子 Agent
+/resume                         恢复已保存的独立子 Agent 或整组 Group（group:<id>）
+/task list | inspect | cancel   管理独立上下文的后台编码任务
+/answer <interaction-id> <text> 回复处于 ask_user 等待状态的任务提问
+/session show | new             查看当前会话或基于最新设置开启新主会话
+/settings                       配置主 Agent 或 ucode 的 provider、自定义网关、模型与思考强度
+/group templates | run | status 启动、预览与管理多 Agent Group 协作流
+/ctx status | decisions | doctor 查看架构决策与上下文健康状态
+/bus status | list | send       检查事件总线队列并向任意在线 Agent 发送消息
+/project list | switch <n>      查看或切换已注册项目
+/open /path/to/project          直接挂载并切换到指定目录项目
+/doctor                         自检 CLI 版本基线、MCP 配置与待决投递回执
 ```
 
-面板保留三种布局：`main`（仅主 agent）、`side`（主 agent 加一个选中的
-internal 子 agent）、`multi`（主 agent 加全部 internal 子 agent）。包装器与 MCP agent 不进入面板；面板
-启动的子 agent 只使用 internal 模式，不会打开外部终端。当前文件夹没有
-聊天或输入历史时，欢迎页复用已有的紧凑 ufoo banner。
-`Ctrl+W` 依次循环切换：`main → side → multi → main`。
-`/window main`、`/window side` 和
-`/window multi` 可直接选择对应布局。单子 agent 布局默认选最近激活的
-有效 internal 子 agent，没有激活记录则选第一个。没有子 agent 时仍保留模式，
-主窗格占满宽度，右侧不显示空框；子 agent 出现后自动按当前模式展示。
-两种分屏布局中，`Esc` 和 `Ctrl+C` 共用回退栈：优先退出底栏焦点，再从子 agent
-回到主 agent 输入栏，最后退出分屏。回退这些界面层级时，草稿和运行中的任务都会保留。
-两者也会关闭命令补全，并沿用主输入栏的任务取消、返回全局项目层级。
-`Ctrl+Q` 或 `/window main` 可直接退出分屏。
-到达最外层后，`Esc` 不会退出应用，只有 `Ctrl+C` 才退出。
-在主 agent 或 internal 子 agent 窗格内拖选可见文字，松开鼠标即复制到剪贴板。
-选择范围限定在起始窗格内，不包含边框和相邻 agent。本地 macOS 使用系统剪贴板；
-其他终端通过 OSC 52 复制，需要终端支持剪贴板写入。
-`/resume` 打开可恢复 internal 会话的二级菜单。独立启动的 agent 单独列出，
-group 的成员聚合为 `group:<group-id>`；选择 group 会批量恢复有已保存会话的
-非活跃成员，跳过已活跃成员，并更新 group 中的成员 ID。
-原生编码 agent 的注册类型统一为 `ucode`，ID 使用 `ucode:<session>`；
-会话文件仍保存在 `.ufoo/agent/ucode/`。
-`Tab` 在主 agent 和当前显示的子 agent 窗格之间循环切换输入焦点；单子 agent
-布局在这两个 agent 之间切换。所有 agent 共用底部一个输入框，随当前选中的 agent
-切换，每个 agent 的草稿独立保留。各 agent 的实时状态嵌在各自窗格底边，选中窗格
-的正文使用终端默认前景色。
-主 agent 的输入框标题使用 `main`；选择子 agent、切换焦点及子 agent 的工作状态
-不会覆盖主 agent 自己的状态。
-仅主 agent 时，`Tab` 先选中底部第一个 agent，之后依次选择下一个，末尾回到第一个；
-`Esc` 返回主输入栏。仅主 agent 布局
-下，命令补全仍沿用 `Tab`；分屏中打开补全菜单时，`Tab` 也优先补全。布局命令在选中 internal 子 agent 的共享输入框中
-也可以使用；切换布局会保留未发送的子 agent 输入，不会停止运行中的任务。
-子 agent 激活时，在空输入框按 `↓` 或点击底栏可进入 Agents 选择；再按 `↓`
-进入 provider 设置和 cron 控制。`Esc` 返回原 agent 的输入框，选择 agent 后按
-`Enter` 打开它。也可以直接点击底栏的 provider 名称进入设置。
+---
 
-`uclaude`、`ucodex`、`uagy`、`ukimi`、`ucode` 这些直接包装器仍然可用，但 ufoo 的
-主要工作流是在 chat 里完成。
+## 原生 Agent Runtime 与 `ucode`
 
-### 初始化与维护
+项目主 Agent、可写独立子任务（`manage_tasks`）与 `ucode` 共用分层可组合的原生运行时（`src/agents/runtime/`）。
 
-这些是初始化或排障命令。进入 chat 后优先使用 slash command：
+### Context Engine V2 与 `recall_turn`
 
-```text
-/init context bus
-/doctor
-/status
-/daemon status
-/daemon restart
-/daemon stop
-/daemon start
+- **KV-Cache 稳定的滑动窗口**：默认保留 `Step=2` 对齐的近 5 轮完整原始对话（热点话题可在 45% 历史预算内弹性扩展至 10 轮），最大化命中大模型前缀缓存。
+- **瞬态 `<turn_context>` 注入**：仅在当前轮次用户消息上挂载轻量 `<topic_map>` 与 `<relevant_turns>` 摘要，落盘与归档前自动剥离，不污染历史记录。
+- **可选后台异步富化（Aux Model）**：配置 `agentAuxModel` 或 `ucodeAuxModel` 后，后台异步精炼历史轮次摘要与二阶段语义召回；未配置时产生零额外模型请求。
+- **确定性溢出淘汰与 `recall_turn`**：超长上下文采用 Level 1–3 确定性分级裁剪，无需阻塞式摘要请求；模型可随时调用 `recall_turn` 搜索窗口外历史或分页精读原始对话。
+
+### Plan Mode、执行预算与目录写租约
+
+- **Plan Mode 与 `plan_graph`**：输入 `/plan on`（或模型调用 `plan_graph create` 后自动开启），拦截直接副作用工具（`write`、`edit`、`bash` 及状态修改类 `browser` / `mac_app` 操作），仅放行只读探测并按 `plan_graph` 节点有序推进；用户执行 `/plan off` 即可退出。
+- **执行与死循环防护**：默认不限制工具调用总次数，单任务超时上限 12 小时（支持 `ucode --max-tool-calls <N|none>`、`UFOO_UCODE_MAX_TOOL_CALLS`、`UFOO_UCODE_MAX_TOOL_ERRORS`、`UFOO_UCODE_TASK_TIMEOUT_MS` 覆盖）。连续工具报错满 3 次告警、5 次熔断（滑动 20 次满 12 次熔断）；连续重复相同工具批次会自动提醒并阻断死循环。
+- **崩溃安全与并发写锁**：每轮完整模型/工具批次落盘后再发起下一轮请求；异常中断的未知副作用绝不自动重放。同目录写操作共享互斥租约，独立已验证的 `git worktree` 可完全并行写入。
+
+### 后台命令零轮询自动唤醒
+
+启动开发服务器、构建或监听任务时可声明一次性唤醒条件，等待期间不消耗任何模型轮询 Token：
+
+```json
+{
+  "command": "npm run dev",
+  "background": true,
+  "wake": {
+    "conditions": [{ "type": "log_contains", "text": "Ready in" }]
+  }
+}
 ```
 
-`ufoo init` 会创建 `.ufoo/`，确保 `AGENTS.md` 和 `CLAUDE.md` 存在，
-初始化选中的工作区状态，并准备共享存储。`CLAUDE.md` 可以是 symlink；
-项目指令优先编辑 `AGENTS.md`。
+支持 `log_contains`、`file_exists`、`port_open`（`127.0.0.1`）以及进程退出通知（默认开启，`wake.onExit: false` 可关闭）。订阅持久化到磁盘并在安全轮次边界自动续跑会话。
 
-项目尚未初始化时，也可以先在外部执行等价 CLI：`ufoo init --targets context,bus`。
+### Agent 技能安装与同步
 
-默认 Agent skill 有意精简为 `ufoo`、`ufoo-bus`、`ufoo-context` 和
-`ufoo-online`。它们只作为 skill 安装，不再生成一份 command 目录，
-避免宿主显示两个入口；初始化和统一状态统一由 `ufoo` 处理。
-
-### 事件总线
-
-```text
-/bus list
-/bus status
-/bus send codex:abc123 Please implement the approved slice.
-/bus activate reviewer
-/bus rename codex:abc123 reviewer
-```
-
-发送消息前，先用 `/bus status` 查看真实 subscriber ID 或可解析昵称。
-Agent 应处理 pending work、回复发送方，并 ack 自己的队列。
-
-没有 `UFOO_SUBSCRIBER_ID` 的外部 Agent 使用可选的 `ufoo-bus-poll` skill，
-由它选择宿主 App 对应的队列只读等待和自身唤醒方式：
+`npm install` 时会自动维护 `ufoo`、`ufoo-bus`、`ufoo-context`、`ufoo-online` 四个核心技能符号链接，且绝不覆盖用户自建文件。支持按宿主显式安装：
 
 ```bash
 ufoo skills list --optional
-ufoo skills install ufoo-bus-poll --target /path/to/that/agent/skills
+ufoo skills install all --claude          # ~/.claude/skills
+ufoo skills install all --codex           # ${CODEX_HOME:-~/.codex}/skills
+ufoo skills install all --agy             # ~/.gemini/config/skills
+ufoo skills install all --agents          # ~/.agents/skills
+ufoo skills install ufoo-bus-poll --target /path/to/skills
 ```
 
-先通过 MCP `register_agent` 注册一次并保留返回的 subscriber 与
-`agent_handle`。heartbeat、activity、send、receive、ack、report 和
-unregister 都带上该 handle；它是所有权凭证，不应发送给其他 Agent，也不应
-写进 report。
+---
 
-- **Codex App：**前台调用 MCP `wait_for_message`，传入注册所得 subscriber
-  和 handle，首次使用 `after_seq: 0`、`timeout_seconds: 0`。工具调用在
-  独立的 `ufoo_wait` MCP 连接中持续等待消息或调用方取消，空闲时不会周期性
-  唤醒模型；有消息立即返回并唤醒当前任务，不依赖 shell stdout。
-  处理消息后，用同一 handle，并以返回的 `last_seq` 作为 `through_seq`
-  调用 MCP `ack_bus`，Agent 再次空闲时以该 `last_seq` 续挂。
-- **Cursor：**在 monitored background shell 中绑定 MCP subscriber，再运行
-  `export UFOO_SUBSCRIBER_ID="<subscriber-id>"; exec ufoo bus poll
-  "$UFOO_SUBSCRIBER_ID" --follow --interval 30`，设置
-  `block_until_ms: 0`，并让 `notify_on_output` 匹配 `\[ufoo\]`。启动和
-  空轮询保持静默，只有 ufoo 投递消息会唤醒模型。
+## 浏览器与 macOS 桌面应用自动化
 
-两条路径都把空闲检查留在 LLM 之外。仅有后台 PTY 输出并不能唤醒 Codex App。
+项目主 Agent、可写独立子任务与 `ucode` 均内置 `browser` 和 `mac_app` 工具；截图自动通过多模态 Vision 数据块直传模型，并在完成识别后自动退化为轻量路径标记以节省上下文。
 
-poll skill 不会由 postinstall 或 `skills install all` 首次安装。postinstall
-只更新确认归 ufoo 管理的符号链接，保留用户目录、文件和外部链接；手动安装
-会把原内容保存在旁边的 `.backup-*` 路径。`skills install all` 可更新已安装
-的可选技能。如果
-`UFOO_SUBSCRIBER_ID` 在 Agent 启动时的继承环境中已经存在，包装器托管的
-Agent 就跳过 MCP 注册和外部等待；之后在 Cursor 监听 terminal 中导出的值
-不会重新触发这次分类。接收链路由宿主 App 的能力决定，与外部 Agent 叫
-Codex、Claude、Cursor 或其他类型无关。
+### 1. 日常 Chrome 操控（`browser` / `ufoo browser`）
 
-### Context、Memory、History、Report
-
-在 chat 内：
-
-```text
-/ctx status
-/ctx doctor
-/ctx decisions
-```
-
-Memory、history、report 管理仍是 CLI 辅助能力：
+直接连接你正在使用、已登录账号的日常 Chrome（需 **Node.js 20+**），不启动空白浏览器，断开连接也绝不关闭用户窗口或标签页：
 
 ```bash
-ufoo memory add "Provider contract" --body "Durable fact..." --tags provider,contract
-ufoo memory list --tag provider
-ufoo memory show mem-0001
-
-ufoo history build
-ufoo history show 20
-ufoo history prompt 30
-
-ufoo report start "Implement README refresh" --task docs-readme --agent builder
-ufoo report done "README updated" --task docs-readme --agent builder
-ufoo report list
-
-ufoo trace <task-id> --json
-ufoo trace --agent <id-or-nickname> --follow
-ufoo trace --details --limit 2000
+ufoo setup --browser=install     # 安装可选 Playwright MCP 运行时并注册 Native Messaging Host
+ufoo browser install --dev       # 商店上架前启用开发者模式并从 extensions/ufoo-browser/ 加载解压扩展
+ufoo browser status [--json]
+ufoo browser doctor
+ufoo browser enable | disable | update | uninstall
 ```
 
-Decision 只用于计划级约束；长期项目事实应写入 memory。
+- **`BrowserBroker` 标签页级隔离**：`ufoo Browser` 扩展通过 Chrome Native Messaging 自动连接用户级 Broker（`~/.ufoo/browser/private/broker.sock`）。Agent 先用 `browser_tabs`（`action=list`）查看标签页并按 `tabId` 认领；已被其他会话占用的标签页返回 `browser_tab_busy`，你也可随时在扩展弹窗中暂停控制或释放标签页。
+- **兼容模式**：同时支持官方 Playwright Extension（`backend: "playwright-extension"`）以及显式 CDP 端点（`UFOO_BROWSER_CDP_ENDPOINT=chrome` 或 `http://127.0.0.1:9222`，带系统用户级独占锁）。
+- **按需工具发现**：通过 `status`、`connect`、`tools`、`call`、`disconnect` 按需查询具体工具 Schema，保持基础系统提示词精简以稳定命中缓存。大文本与截图保存在 `.ufoo/browser/<session-hash>/`。
 
-`trace` 可串联父子任务的模型、工具、报告、队列与压缩记录，不启动 daemon、
-不调用模型。MCP 提供相同的只读工具 `read_agent_trace`。参数和结果经过脱敏；
-读取范围受限、数据缺失或未写完时，JSON 中会明确标记。
+### 2. macOS 桌面应用与独立 Agent 鼠标（`mac_app` / `ufoo mac`）
 
-`ufoo metrics --json` 汇总执行结果、耗时、tokens、工具错误/重复、报告长度
-与委派验收。保存报告后，可用 `ufoo metrics --baseline baseline.json --json`
-对比后续样本。MCP 提供 `read_agent_metrics`；指标口径和优化流程见
-[OBSERVABILITY.md](docs/OBSERVABILITY.md)。缺失证据保留 unknown，执行完成与
-验收通过分开统计。
+在 macOS 上通过自动编译缓存的零依赖原生 Swift 守护助手（`~/.ufoo/mac/bin/`，私有 Unix Socket 通信）操控各类原生 Cocoa、SwiftUI 与 Electron 桌面应用：
 
-report 和 agent 交接默认使用 1–4 行短消息，包含结果、改动、检查和阻塞；
-详细计划或证据写入工作区文件，并附准确路径。internal agent 向同伴转发
-最终回复，过程与工具输出保留在自己的窗口。internal Codex 在 workspace
-沙箱内开启网络权限，支持 ADB、Gradle 等本地端口服务。
+- **AX 无障碍结构化操控（`AXUIElement`）**：支持 `list_apps`、`list_windows`、`snapshot`（自动唤醒 Electron/Chromium 无障碍树，生成 `@e1..@eN` 引用，支持 `includeMenuBar=true` 菜单栏探测与 `query` 关键词过滤）、`ax_action`（`press`、`focus`、`set_value`、`confirm`、`pick`、`show_menu` 等），以及 `launch_app`、`focus_app`、`manage_window`。
+- **1:1 逻辑点无阴影截图**：支持按应用/窗口（`-o -l` 去阴影）、区域或显示器截图，默认自动重采样至 **1:1 macOS 逻辑点分辨率**；传入返回的 `screenshotId` 即可将图片像素 `(x, y)` 精准映射到实时窗口屏幕坐标，彻底消除 Retina `2x` 坐标偏移。产物保存在 `.ufoo/mac/<session-hash>/`。
+- **独立 Agent 鼠标与人工接管避让**：
+  - 每个会话维护独立的虚拟指针，通过窗口定向 `NSEvent` / `CGEvent.postToPid` 投递事件，**不会移动或抢占你的物理鼠标光标**。
+  - 屏幕提供不可被截图捕获（`sharingType = .none`）的轻量悬浮 **Agent Mouse HUD**，实时指示当前虚拟光标位置、点击波纹与动作标签。
+  - 默认不强行切出后台窗口（需前置激活时显式传 `focusApp=true`；后台投递兼容性因应用而异，操作后请结合 `snapshot` 或 `screenshot` 校验结果；不支持跨窗口拖拽，且不兼容场景绝不会退化为抢占物理鼠标）。
+  - **即时避让**：普通移动物理鼠标互不干扰；当你刻意晃动鼠标、在目标窗口内物理点击或按下 `Esc` 时，立即触发 `user_takeover` 并让出控制权。
 
-### Group
+```bash
+ufoo mac status [--json]         # 查看助手状态、显示器信息与系统权限
+ufoo mac permissions             # 触发授权提示并打开 macOS「辅助功能 / 屏幕录制」设置面板
+ufoo mac doctor                  # 自检 Swift 编译缓存、守护进程 Socket RPC 与权限项
+ufoo mac hud on | off | toggle   # 开关屏幕上的 Agent 鼠标可视化悬浮层
+ufoo mac enable | disable | stop
+```
 
-内置 group 模板位于 `templates/groups/`。
+---
+
+## 运行架构与 Agent 消息投递协议
+
+```text
+ufoo / ufoo chat / ucode
+  -> src/app/chat + src/ui/ + crates/ufoo-tui (基于 ufoo-ui/1 的 ratatui 终端界面)
+  -> 用户级单例 GlobalDaemon (~/.ufoo/run/ufoo.sock)
+  -> 按项目隔离的 ProjectRuntime (~/.ufoo/projects/runtime)
+  -> orchestration (智能路由、7 套 Group 模板、Solo 角色、Cron 调度)
+  -> 共享原生 Agent Runtime + SDK 内嵌 Runner + CLI 包装器
+  -> .ufoo/ 协作状态存储 (事件总线、架构决策、共享记忆、历史、报告、会话日志)
+
+外部 MCP 客户端接入:
+  Codex App / CLI / IDE  --(Streamable HTTP)--> GlobalDaemon 唯一 MCP 监听器与路由器
+  Cursor / agy / 其他    --(ufoo mcp 代理)---->   -> ProjectRuntimeGateway -> 项目总线与工具集
+```
+
+### 两种确定性 Agent 投递分支
+
+ufoo 仅根据宿主 Agent 启动时是否继承 `UFOO_SUBSCRIBER_ID` 环境变量来决定消息投递模式：
+
+1. **包装器托管模式（`ucodex`、`uclaude`、`uagy`、`ugrok`、`ukimi`、`ucode`）**：
+   - 启动时继承 `UFOO_SUBSCRIBER_ID` 与 `UFOO_AGENT_HANDLE`，由包装器与 daemon 负责注册、监控活跃度并直接注入消息。
+   - **原生入站消息通道**：交互式 `ucodex`（基线版本 `0.160.1+`）挂载单次启动私有的 app-server 并通过 `thread/queue/add` 入队任务；交互式 `uclaude`（`2.1.204+`）使用单次启动专属 stdio MCP channel 并验证启动探针。两者均不篡改宿主全局配置；投递状态不确定时会保留持久化回执供人工裁决（`ufoo bus deliveries <subscriber> [<receipt-id> accepted|retry]`），绝不退化为盲目键盘敲击注入。可用 `--no-native-messages`（或 `UFOO_NATIVE_MESSAGES=0`）显式关闭。
+
+2. **外部宿主自注册模式（未继承 `UFOO_SUBSCRIBER_ID`）**：
+   - 通过 MCP `register_agent` 注册一次，获取服务端分配的 `<prefix>:<8-hex>` ID、`<prefix>-N` 昵称及不透明凭证 `agent_handle`（传入稳定的 `client_instance_id` 可在重连后恢复同一身份）。
+   - 配合可选技能 `ufoo-bus-poll`，按宿主能力实现**空闲零 Token 挂起唤醒**：
+     - **Codex App**：在专用的 `ufoo_wait` MCP 连接上前台挂起 `wait_for_message`，收到消息立即唤醒并通过 `ack_bus` 确认。
+     - **Cursor**：在受监控后台终端运行 `ufoo bus poll "<subscriber-id>" --follow --interval 30`，配置 `notify_on_output` 匹配 `\[ufoo\]` 唤醒。
+     - **Antigravity App（`agy app`）**：启动静默后台等待循环检查 `ufoo bus check "<subscriber-id>"`，仅在检测到 `[ufoo]` 新消息时打印并 `exit 0` 触发宿主自动唤醒，处理完通过 MCP `ack_bus` 确认后续挂。
+   - **HTTP Webhook 唤醒**：支持通过 `ufoo bus join <session> grok-bot --wake-url https://... --wake-key-file /path/to/key` 注册远程 Webhook Agent（`bearer-json` 协议，经 `ufoo bus ack` 顺序放行）。
+
+---
+
+## 多 Agent Group 编排、共享记忆与可观测性
+
+### 内置多角色 Group 模板（`templates/groups/`）
+
+内置 `build-lane`、`build-ultra`、`design-system`、`product-discovery`、`ui-plan-review`、`ui-polish`、`verify-ship` 7 套协作流水线模板：
 
 ```text
 /group templates
 /group template show build-lane
-/group template validate templates/groups/build-lane.json
 /group run build-lane dry_run=true
-/group run build-lane instance=docs-refresh
+/group run build-lane instance=release-v4
 /group status
 /group diagram build-lane mermaid
-/group stop docs-refresh
+/group stop release-v4
 ```
 
-### Online Relay
+所有内置成员均预置 `codex`、`claude`、`agy` 三套分角色最佳模型与推理强度配置，并预留 `override` 手动覆盖字段：
+
+| 角色定位 | Codex（模型 / 思考强度） | Claude | Antigravity (`agy`) |
+|---|---|---|---|
+| Architect / Debugger / Discovery / Design Consultant | `gpt-6-astra` / `high` | `claude-fable-5-2` | `gemini-4-carbon-high` |
+| Builder / Frontend Refiner | `gpt-6.1-sol` / `high` | `claude-opus-5-5` | `gemini-4-hydrogen-high` |
+| Reviewer / Scope Challenger / Critics / Release Coordinator | `gpt-6.1-sol` / `xhigh` | `claude-opus-5-5` | `gemini-4-argon-high` |
+| PMO | `gpt-6-astra` / `high` | `claude-fable-5-2` | `gemini-4-argon-high` |
+| QA | `gpt-6.1-sol` / `xhigh` | `claude-opus-5-5` | `gemini-4-hydrogen-high` |
+
+### 决策、持久化记忆、任务报告与证据门控验收
+
+```bash
+# 持久化长期项目事实（计划级架构约束请使用 /ctx decisions）
+ufoo memory add "鉴权刷新约定" --body "OAuth 提前刷新窗口统一为 300 秒..." --tags auth,api
+ufoo memory list --tag auth
+ufoo memory show mem-0001
+
+# 统一输入时间线与任务生命周期报告
+ufoo history build && ufoo history show 20
+ufoo report start "重构会话存储" --task store-v2 --agent builder
+ufoo report done "全部单测通过" --task store-v2 --agent builder
+ufoo report list
+```
+
+Worker 完成汇报保持 1–4 行精简结论并引用工作区证据文件；父 Agent 验收（`accept_task` / `manage_tasks operation=accept`）与执行完成严格解耦，必须附带汇报完成后的实测验证工具 `toolCallId` 证据。
+
+### 执行链路追踪与指标基线（`OBSERVABILITY.md`）
+
+无需启动 daemon 或消耗模型调用，即可离线串联父子任务的模型耗时、工具配对、上下文投影与委派验收率：
+
+```bash
+ufoo trace <task-id> --json
+ufoo trace --agent <id-or-nickname> --follow
+ufoo metrics --json > baseline.json
+ufoo metrics --baseline baseline.json --json
+```
+
+MCP 同步提供只读工具 `read_agent_trace` 与 `read_agent_metrics`。详见 [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md)。
+
+### Online 远程中继（`ufoo online`）
+
+默认接入公开服务 `https://online.ufoo.dev`，也支持本地自建 WebSocket 房间与收件箱：
 
 ```bash
 ufoo online server --host 127.0.0.1 --port 8787
@@ -426,181 +362,96 @@ ufoo online send --nickname builder --room <room_id> --text "handoff ready"
 ufoo online inbox builder --unread
 ```
 
-默认公开服务地址是 `https://online.ufoo.dev`。本地开发可以用
-`ufoo online server` 启动自己的 relay。
+---
 
-Internal Codex、Claude Code 和 ucode 窗格复用独立 ucode TUI 的内容渲染，共用底部一个多行输入框。
-提交后立即显示 loading；等待、思考、生成、工具执行、等待用户、失败、运行计时、
-上下文用量和计划进度随当前 agent 的真实事件变化。provider 提供的重试、上下文压缩
-和后台任务事件也接入同一状态层。
-文本、思考和工具结果随 provider 事件刷新；在选中的窗格按 Ctrl+O 可展开最近的思考或工具块。
-显示事件独立于 agent 收件箱，agent 之间派发的任务也能显示，且不会唤醒主 agent。
-切换单主窗格、激活子窗格和全部子窗格时，保留输出与输入草稿。
+## 模型 Provider 与配置说明
 
-### 原生 ucode 运行时
+项目配置保存在 `.ufoo/config.json`；用户全局的 `ucode`、daemon、`browser` 与 `mac` 配置保存在 `~/.ufoo/config.json`。在面板中输入 `/settings`（或点击底栏 Provider 名称）即可交互式切换 Provider、模型、自定义网关地址与思考强度（`low` / `medium` / `high` / `xhigh` / `max`）。
 
-```bash
-ufoo ucode doctor
-ufoo ucode prepare
-ufoo ucode build
-```
+- **Codex / OpenAI**：默认 `gpt-6.1-sol`（`medium` 思考强度，辅助模型 `gpt-6-luna`），自动刷新本机 Codex 登录凭据。
+- **Claude / Anthropic**：默认 `claude-opus-5-5`（辅助模型 `claude-haiku-5-5`），启用自适应思考并流式展示思考摘要。
+- **Antigravity (`agy`)**：在 `ufoo` 中选择 `/provider agy` 或运行 `ucode --provider agy`（默认主模型 `gemini-4-carbon-high`，辅助模型 `gemini-4-hydrogen-high`）。首次执行 `agy` 登录后，自动复用 macOS 钥匙串 / Linux Secret Service / Cloud Code 凭据（支持 `UFOO_AGY_AUTH_PATH`、`UFOO_AGY_ACCESS_TOKEN`、`UFOO_AGY_PROJECT_ID` 覆盖）。
+- **Grok Build & Kimi Code**：支持 `ugrok` / `grok-cli`（默认 `grok-4.6`）与 `ukimi` / `kimi-cli`。
+- **自定义 OpenAI 兼容网关**：设置 `agentProvider: "custom"`（或全局 `ucodeBaseUrl` / `ucodeApiKey`），默认走 Chat Completions，URL 以 `/responses` 结尾时自动启用 OpenAI Responses 协议。
 
-`ucode` 可以发现内置和本地 `SKILL.md` 工作流能力。完整 skill 内容只会在被
-显式引用时加载。
-
-## 配置
-
-项目配置文件是 `.ufoo/config.json`。`ucode` provider 凭据写入全局
-`~/.ufoo/config.json`，加载项目配置时会合并进来。
-
-常见项目配置：
+项目 `.ufoo/config.json` 示例：
 
 ```json
 {
   "launchMode": "auto",
+  "daemonTopology": "global",
   "agentProvider": "codex-cli",
-  "codexAuthPath": "",
-  "codexOauthRefreshWindowSec": 300,
-  "claudeOauthProfile": "",
-  "claudeOauthTokenPath": "",
-  "claudeOauthRefreshWindowSec": 300,
   "agentModel": "",
+  "agentAuxModel": "",
+  "agentThinking": "medium",
   "autoResume": false
 }
 ```
 
-internal Codex 和 Claude 固定使用各自 SDK，不再提供 thread mode 配置。
-
-`launchMode` 支持 `auto`、`internal`、`tmux`、`terminal`、`host`。
-面板仅支持 internal Codex、Claude 和 ucode 子 agent；provider 的类型独立于 worker 类型。
-
-面板固定使用 internal 子 agent，不提供 `/mode` 命令，二进制也不提供
-`ufoo mode` 命令。直接运行 `ucodex` 或
-`uclaude` 时，包装器通过环境识别 tmux、host 会话、Terminal.app 或 iTerm2，
-并向 daemon 登记实际终端类型、TTY 及消息通道，无需打开面板即可通过 event bus
-互联。MCP agent 使用 MCP 消息接口通信，不需要终端适配器。
-主 agent 使用同一个 runtime 完成编码与路由，只配置 `agentProvider` 和
-`agentModel`。`/settings agent` 管理主 agent 配置，`/settings ucode` 管理
-独立的 ucode 网关配置。
-
-底部 Settings 提供 `custom`、`model`、`thinking`。选择 `custom` 后依次输入
-API 地址和隐藏显示的 key，再选择模型与思考强度。也可以使用
-`/settings agent custom`、`/settings agent model`、`/settings agent thinking`。
-模型菜单读取当前 provider 的完整可选目录，包括分页结果；Codex 菜单会过滤
-provider 标记为隐藏的内部模型。服务没有 `/models`
-接口时可以手动输入模型 ID。切换模型与思考强度保留当前对话，并用于下一次
-请求；切换 provider 会开始新对话，旧对话仍保留在 runtime 存储中。
-OpenAI 思考强度提供独立的 `xhigh` 和 `max`，请求会保留所选值。
-provider 配置了网关时，模型列表来自该网关；升级 agent SDK 不会改变网关的目录。
-
-custom 使用项目 `.ufoo/config.json` 中的 `agentProvider: "custom"`、
-`agentBaseUrl`、`agentApiKey`、`agentModel`、`agentThinking`。
-默认使用 OpenAI Chat Completions 协议，地址以 `/responses` 结尾时使用
-OpenAI Responses。custom 不提供 Anthropic 协议选项；internal Claude
-保留自身的原生接入与凭据。
-
-普通 provider 会话通过各自的凭据适配器认证；MCP `agent_handle` 不用于模型请求。
-独立和 internal ucode 使用下面的独立网关设置。
-
-全局 `ucode` 配置：
+全局 `~/.ufoo/config.json` 示例：
 
 ```json
 {
   "ucodeProvider": "openai",
-  "ucodeModel": "gpt-4.1",
+  "ucodeModel": "gpt-6.1-sol",
+  "ucodeAuxModel": "",
   "ucodeBaseUrl": "https://api.openai.com/v1",
   "ucodeApiKey": "sk-...",
-  "ucodeAgentDir": ""
+  "browser": { "enabled": true, "backend": "ufoo-extension" },
+  "mac": { "enabled": true, "hud": true, "takeoverGuard": true }
 }
 ```
 
-## 源码结构
+> **关于 Internal Codex 宿主访问权限**：面板内嵌的 Codex SDK 线程默认启用完整宿主用户态访问（`danger-full-access`、开启网络、`approvalPolicy: never`，受当前操作系统用户权限边界约束），以便顺畅访问模拟器、ADB、Gradle 与全局编译缓存。升级后请重启已加载的旧 worker 使新策略生效。
+
+---
+
+## 源码目录与开发发布
 
 ```text
+crates/ufoo-tui/        Rust ratatui 终端渲染引擎（chat 与 ucode 共用）
+extensions/ufoo-browser/ ufoo Browser Chrome MV3 扩展源码
 src/
-  app/            chat client state 和 CLI command entry
-  ui/             Rust TUI hosts + 纯格式化 helper
-  crates/ufoo-tui Rust ratatui 子进程（chat/ucode 必需）
-  runtime/        daemon、projects、terminal adapters、contracts、privacy、process helpers
-  coordination/   bus、context、memory、history、reports、state、status
-  orchestration/  router/controller logic、groups、solo roles
-  agents/         shared runtime、capabilities、profiles、providers、launchers、prompts
-  code/           原生 ucode host、launcher、skills、file/shell tools
-  tools/          shared controller/worker tool registry 和 handlers
-  online/         relay client/server/runner/token helpers
+  app/                  Chat 客户端状态与 CLI 命令组（setup、browser、mac、trace、metrics 等）
+  ui/                   Rust TUI Socket 宿主、多分屏会话管理与纯格式化工具
+  runtime/              全局/项目 daemon、MCP HTTP/stdio、终端适配器、browser 与 mac 运行时
+  orchestration/        路由策略、Group 模板校验/启动与 Solo 角色管理
+  agents/               共享 Runtime 核心、Context Engine V2、Capabilities、Profiles、Providers、Prompts
+  code/                 原生 ucode 宿主、文件/Shell/后台工具、Plan Mode 与会话存储编解码
+  coordination/         事件总线、架构决策、共享记忆、输入历史、任务报告与文件锁状态库
+  tools/                Controller 与 Worker 共享 MCP 工具 Schema 及处理器
+  online/               WebSocket 在线中继服务端、客户端、房间与收件箱
+SKILLS/                 默认安装的 4 个核心 Agent 技能
+OPTIONAL_SKILLS/        按需安装的外部宿主自唤醒技能（ufoo-bus-poll）
+templates/groups/       内置多 Agent 协作流模板
 ```
 
-维护者视角的项目地图见 [PROJECT.md](docs/PROJECT.md)，更细的目录 ownership 见
-[docs/source-structure.md](docs/source-structure.md)。
+完整的模块边界与维护约束请参阅 [docs/PROJECT.md](docs/PROJECT.md)。
 
-## 开发
+### 本地开发与测试
 
 ```bash
 npm install
-npm run pack:tui
-npm link
-node bin/ufoo.js --help
-npm test
+npm run pack:tui          # 编译并将 ufoo-tui 放入 dist/tui/<platform>-<arch>/
+cargo test -p ufoo-tui    # 运行 Rust 渲染器单元测试
+npm test                  # 运行完整 Jest 测试套件
 ```
 
-常用检查：
+可选真机集成测试：
 
 ```bash
-npm run test:watch
-npm run test:coverage
-npm run bench:global-switch
+# 真实 Chrome 隔离测试配置（使用临时空白 Profile，绝不触碰个人日常数据）
+UFOO_TEST_BROWSER=1 npm test -- --runTestsByPath test/integration/browser-existing-chrome.test.js
+
+# macOS 独立 Agent 鼠标指针隔离测试（仅向临时自建 AppKit 测试窗口发送事件）
+UFOO_TEST_MAC_POINTER=1 npm test -- --runTestsByPath test/integration/mac-independent-pointer.test.js
 ```
 
-本仓库是 CommonJS，目标 Node.js 18+，并通过 `dist/tui/` 附带 Rust TTY UI
-（`crates/ufoo-tui`）的平台二进制。
+### 发布与日常排障
 
-## 发布
-
-发布由 GitHub Actions（`.github/workflows/release.yml`）完成：多平台编译
-`ufoo-tui`（`darwin-arm64` / `darwin-x64` / `linux-x64` / `linux-arm64`），
-写入 `dist/tui/<platform>/`，再执行 `npm publish`。
-
-1. 升版本并推送对应 tag：
-
-```bash
-npm test
-npm version patch   # 提交 package.json 并创建 tag vX.Y.Z
-git push --follow-tags
-```
-
-2. 仓库需配置 secret `NPM_TOKEN`（对 `u-foo` 有发布权限的 npm automation token）。
-3. 推送 `v*` tag 后自动跑 `Release` workflow。也可在 Actions 里手动
-   **Run workflow**（`dry_run=true` 只打包不发布）。
-
-本地单平台预演：
-
-```bash
-npm run pack:tui
-npm pack --dry-run
-```
-
-
-## 故障排查
-
-如果 linked binary 不在 `PATH`，可以直接运行本地入口：
-
-```bash
-node bin/ufoo.js --help
-```
-
-如果 Codex 默认 home 不可写，可以在启动 chat 或 Agent 前指定项目内目录：
-
-```bash
-export CODEX_HOME="$PWD/.ufoo/codex"
-ufoo
-```
-
-Codex 场景下建议使用 bus helper，而不是依赖原始终端文本注入提醒：
-
-```bash
-ufoo bus alert codex:abc123 --daemon
-ufoo bus listen codex:abc123
-```
+- **版本发布**：推送 `v*` tag（`npm version patch && git push --follow-tags`）触发 `.github/workflows/release.yml`，自动通过全量 CI 校验、编译四平台 `ufoo-tui` 二进制并发布至 npm。
+- **清理失效项目记录**：使用 `ufoo project prune` 预览已删除目录的历史注册记录，`ufoo project prune --apply` 将其安全归档至 `~/.ufoo/projects/archive/`。
+- **Codex 目录权限受限**：若默认 `~/.codex` 不可写，可在启动前执行 `export CODEX_HOME="$PWD/.ufoo/codex"`。
 
 ## 许可证
 

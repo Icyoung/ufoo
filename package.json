@@ -1,7 +1,7 @@
 {
   "name": "u-foo",
-  "version": "4.0.10",
-  "description": "Multi-Agent Workspace Protocol. Just add u. claude \u2192 uclaude, codex \u2192 ucodex.",
+  "version": "4.1.0",
+  "description": "Multi-Agent Workspace Protocol. Just add u. claude → uclaude, codex → ucodex.",
   "license": "SEE LICENSE IN LICENSE",
   "homepage": "https://ufoo.dev",
   "repository": {
@@ -43,6 +43,7 @@
     "OPTIONAL_SKILLS/",
     "LICENSE",
     "README.md",
+    "README.zh-CN.md",
     "docs/OBSERVABILITY.md"
   ],
   "type": "commonjs",

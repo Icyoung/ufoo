@@ -34,6 +34,13 @@ capabilities from the Agent type or subscriber prefix.
   `UFOO_SUBSCRIBER_ID` after registration so its CLI commands share the
   identity. That helper-local export does not change the already selected
   external delivery mode and must not be treated as wrapper evidence.
+- **Antigravity App (`agy app`)**: when no `UFOO_SUBSCRIBER_ID` is inherited,
+  use the Method A background exit-on-message waiter after MCP
+  `register_agent`: launch one background `run_command` loop that polls
+  `ufoo bus check "<subscriber-id>"` (without exposing `agent_handle`) and
+  exits `0` only when `[ufoo]` output appears. Idle loops emit nothing and
+  consume zero tokens; on exit-wakeup, handle the batch, acknowledge via MCP
+  `ack_bus` (`through_seq`), and re-arm one background waiter.
 
 In the sections below, `<subscriber-id>` means the wrapper-provided
 `UFOO_SUBSCRIBER_ID` or the subscriber returned by MCP. `<agent-handle>` means

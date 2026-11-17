@@ -92,6 +92,35 @@ automatically replayed. Plan mode permits inspection only. A paused runtime may
 add this stateless capability without changing or replaying its existing pending
 work.
 
+Native main, writable main child tasks and standalone/internal ucode also expose
+the shared `mac-app` capability (`src/agents/capabilities/mac/`, tool `mac_app`,
+permission `mac.control`), excluded from read-only children and the global
+router. On macOS it compiles and caches a self-contained Swift helper
+(`src/runtime/mac/native/ufoo_mac_helper.swift` -> `~/.ufoo/mac/bin/`) served
+over a private Unix domain socket (`~/.ufoo/mac/private/helper.sock`). It
+combines structured Accessibility (`AXUIElement`) snapshots (`@e1..@eN` element
+refs + `ax_action`), shadowless window/region/display screenshots scaled to 1:1
+logical points (`screenshotId` coordinate mapping, `.ufoo/mac/<session-hash>/`),
+and window-targeted `NSEvent`/`CGEvent.postToPid` input with a non-capturable
+(`sharingType = .none`) Agent Mouse HUD (`AgentHudController`). Each session
+tracks its own pointer; no input is posted to the global HID stream and no
+physical cursor warp is performed. Cross-process hit-testing uses the dynamically
+resolved `CGEventSetWindowLocation` macOS SPI to stamp window-local coordinates;
+if unavailable, operations fail with `independent_input_unavailable` rather than
+switching to the physical mouse. Explicit refs/window IDs are preserved for
+move, click, drag, scroll and keyboard operations; unqualified screen coordinates
+hit-test a window. Window activation requires explicit `focusApp=true`.
+Ordinary user movement remains independent; deliberate mouse shake, a physical
+click inside the target window, or `Esc` causes `user_takeover`. The OS-user
+input lease serializes agents. Background event posting is not an acknowledgment
+that the application acted; verify results. Cross-window dragging is rejected.
+The opt-in `UFOO_TEST_MAC_POINTER=1` integration test sends input only to a
+disposable AppKit window and checks event delivery, physical cursor displacement,
+and foreground ownership.
+`ufoo mac` (`src/app/cli/macCommands.js`) provides `status`, `doctor`,
+`permissions`, `enable`, `disable`, `hud`, and `stop`. Non-macOS hosts report
+`unsupported_platform` without spawning helper processes.
+
 The main agent and native/internal `ucode` share Context Engine V2 in
 `src/agents/runtime/context/` (`turnIndexStore`, `turnAnalyzer`, `topicSelector`,
 and `slidingWindowManager`). Each settled turn writes an append-only Phase A
@@ -446,7 +475,7 @@ remain intact. Wrappers still own terminal rendering, activity, and lifecycle.
 | Package | Owner concept | Notes |
 |---|---|---|
 | `src/app/chat/` | Chat client | Slash commands, daemon connection, multi-window panes, agent selection, `ChatController`, history/stream helpers. |
-| `src/app/cli/` | CLI entry | Main command runner, `setupCommands.js`, `browserCommands.js`, and command groups. |
+| `src/app/cli/` | CLI entry | Main command runner, `setupCommands.js`, `browserCommands.js`, `macCommands.js`, and command groups. |
 | `src/app/cli/features/` | CLI features | Init, doctor, and skill installation logic used by CLI/chat/daemon entry paths. |
 | `src/ui/format/` | Pure display helpers | Width, markdown, status, input, and banner formatting. |
 | `src/ui/tuiLauncher.js` | Rust TUI launch plan | `UFOO_TUI=auto\|rust`; binary resolve. |
@@ -462,6 +491,7 @@ remain intact. Wrappers still own terminal rendering, activity, and lifecycle.
 | `src/ui/toolMergeBridge.js` | Tool-merge → UI events | Collapsed `tool.*` publisher for Rust hosts. |
 | `crates/ufoo-tui/` | Rust TTY UI | Required `ufoo-ui/1` child process (ratatui). |
 | `src/runtime/browser/` | Optional browser runtime | Component installer, Native Messaging Host, user-scoped `BrowserBroker`, per-session CDP relay, and Playwright MCP session lifecycle. |
+| `src/runtime/mac/` | macOS app & Agent Mouse runtime | Cached Swift native helper compiler, Unix-socket `NSApplication` helper (`AXUIElement`, shadowless screenshots, `CGEvent`, Agent Mouse HUD, human takeover monitor), and per-session state/leases. |
 | `extensions/ufoo-browser/` | Ufoo Chrome extension | Manifest V3 Chrome extension ("Ufoo"), popup control panel, Native Messaging auto-discovery, and Apache-2.0 attribution/build docs. |
 | `src/runtime/daemon/` | Global daemon and project runtime control plane | `GlobalDaemon`, immutable `ProjectContext`, `ProjectRuntimeManager`, global Streamable HTTP listener, stateless stdio proxy, endpoint routing, MCP leases/configuration, prompt routing, launch/resume/close, cron, reports, status, group orchestration. |
 | `src/runtime/projects/` | Project registry | Project identity and runtime registry. |

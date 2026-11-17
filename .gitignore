@@ -9,6 +9,7 @@
 .ufoo/
 node_modules
 coverage/
+output/
 target/
 dist/
 *.rs.bk

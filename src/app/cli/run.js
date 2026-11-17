@@ -1137,6 +1137,7 @@ async function runCli(argv) {
       .option("--target <dir>", "Install target directory")
       .option("--codex", "Install into ~/.codex/skills")
       .option("--agents", "Install into ~/.agents/skills")
+      .option("--agy", "Install into ~/.gemini/config/skills")
       .action(async (name, opts) => {
         const SkillsManager = require("./features/skills");
         const repoRoot = getPackageRoot();
@@ -1764,6 +1765,18 @@ async function runCli(argv) {
         if (code) process.exitCode = code;
       });
 
+    program
+      .command("mac")
+      .description("Manage macOS app automation, Agent Mouse HUD, and TCC permissions (status|doctor|permissions|enable|disable|hud|stop)")
+      .argument("[subcmd]", "Subcommand (status|doctor|permissions|enable|disable|hud|stop)", "status")
+      .argument("[subargs...]", "Subcommand arguments")
+      .option("--no-open", "Do not open System Settings automatically when checking permissions")
+      .option("--json", "Output JSON")
+      .action(async (subcmd, subargs, opts) => {
+        const code = await require("./macCommands").runMacCommand(subcmd, subargs, opts);
+        if (code) process.exitCode = code;
+      });
+
     const history = program.command("history").description("Agent input history timeline");
     history
       .command("build")
@@ -1828,6 +1841,7 @@ async function runCli(argv) {
     console.log("  ufoo doctor");
     console.log("  ufoo setup [--browser=install|skip] [--dev] [--json]");
     console.log("  ufoo browser <install|status|doctor|enable|disable|update|uninstall> [--dev] [--json]");
+    console.log("  ufoo mac <status|doctor|permissions|enable|disable|hud|stop> [--json]");
     console.log("  ufoo status");
     console.log("  ufoo daemon --start|--stop|--status");
     console.log("  ufoo -g");
@@ -2660,6 +2674,18 @@ async function runCli(argv) {
       sha256: readFlagValue("--sha256"),
       noOpen: rest.includes("--no-open"),
       noRepair: rest.includes("--no-repair"),
+      json: rest.includes("--json"),
+    });
+    if (code) process.exitCode = code;
+    return;
+  }
+
+  if (cmd === "mac") {
+    const nonFlags = rest.filter((arg) => arg && !arg.startsWith("-"));
+    const sub = nonFlags[0] || "status";
+    const subArgs = nonFlags.slice(1);
+    const code = await require("./macCommands").runMacCommand(sub, subArgs, {
+      noOpen: rest.includes("--no-open"),
       json: rest.includes("--json"),
     });
     if (code) process.exitCode = code;

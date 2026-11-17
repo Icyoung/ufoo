@@ -15,9 +15,10 @@ const { createGlobalRoutingCapability } = require("./globalRouting");
 
 const { createTurnRecallCapability } = require("./turnRecall");
 const { createBrowserCapability } = require("./browser");
+const { createMacCapability } = require("./mac");
 
 function createMainCapabilities(host) {
-  return [createCodingCapability({ workspaceAccess: host.workspaceAccess }), createMainPlanningCapability(), createSkillsCapability(), createTurnRecallCapability(host, { defaultNamespace: "main" }), createBrowserCapability(),
+  return [createCodingCapability({ workspaceAccess: host.workspaceAccess }), createMainPlanningCapability(), createSkillsCapability(), createTurnRecallCapability(host, { defaultNamespace: "main" }), createBrowserCapability(), createMacCapability(),
     createAgentManagementCapability(host), createAgentRoutingCapability(host), createProjectDiscoveryCapability(host),
     createSharedMemoryCapability(host), createTaskReportsCapability(host), createTaskExecutionCapability(host), createGroupsCapability(host), createSchedulingCapability(host)];
 }

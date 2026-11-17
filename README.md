@@ -1,60 +1,50 @@
 # ufoo
 
-[中文](README.zh-CN.md)
+[中文文档](README.zh-CN.md) · [Architecture Guide](docs/PROJECT.md) · [Observability](docs/OBSERVABILITY.md) · [Documentation Index](docs/README.md)
 
-ufoo is a project-scoped multi-agent workspace runtime with two ways to work.
-Keep using Claude Code, OpenAI Codex, and other supported CLIs through wrappers
-and MCP for messages and shared context. Or open the ufoo dashboard to work with
-a main agent and internal Codex, Claude, and `ucode` agents in one terminal.
-Both share a daemon, event bus, memory, reports, and group orchestration.
+**Multi-Agent Workspace Runtime.** Just add `u` — `claude` → `uclaude`, `codex` → `ucodex`, `agy` → `uagy`, `grok` → `ugrok`, `kimi` → `ukimi` — or open `ufoo` to run a project main agent alongside embedded Codex, Claude, and native `ucode` workers inside a single Rust TUI dashboard.
 
 Package: [u-foo on npm](https://www.npmjs.com/package/u-foo)
 
 [![npm version](https://img.shields.io/npm/v/u-foo.svg)](https://www.npmjs.com/package/u-foo)
 [![npm downloads](https://img.shields.io/npm/dm/u-foo.svg)](https://www.npmjs.com/package/u-foo)
 [![License](https://img.shields.io/badge/license-UNLICENSED-red.svg)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org)
-[![Platform](https://img.shields.io/badge/platform-macOS-blue.svg)](https://www.apple.com/macos)
+[![Node](https://img.shields.io/badge/node-%3E%3D18.17-brightgreen.svg)](https://nodejs.org)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue.svg)](https://github.com/Icyoung/ufoo)
 
-## Highlights
+---
 
-- One TUI dashboard for a main agent and internal child agents, with shared input,
-  live output, status, and three layouts.
-- One user-scoped daemon over `~/.ufoo/run/ufoo.sock`, hosting isolated project
-  runtimes for launch/resume, reports, groups, cron, and controller routing.
-- Project-local event bus for agent-to-agent messages, wakeups, queue checks,
-  and activation.
-- Shared context primitives: decisions, durable memory, prompt history, reports,
-  and agent registry state.
-- Wrappers and MCP keep external CLI workflows connected; dashboard child agents
-  run internally without opening external terminals.
-- Built-in group templates for launching and orchestrating multi-agent workflows.
-- `ucode`, a native ufoo coding-agent runtime.
-- One loopback Streamable HTTP MCP server inside the home-scoped global
-  controller daemon, plus a disposable `ufoo mcp` stdio compatibility proxy.
+## Why ufoo?
 
-## Requirements
+ufoo gives every coding agent in your repository a shared control plane without forcing you into a single vendor CLI:
 
-- Node.js 18.17 or newer.
-- macOS for Terminal.app/iTerm2 integration.
-- Claude Code, Codex CLI, Antigravity CLI, Grok Build, or Kimi Code installed
-  when using the matching wrappers: `uclaude`, `ucodex`, `uagy`, `ugrok`, or
-  `ukimi`.
+- **Unified Rust TUI Dashboard (`ufoo` & `ucode`)**: Work with a project main agent and multiple internal Codex, Claude, and `ucode` workers in one terminal (`main`, `side`, and `multi` split layouts), with independent per-agent input drafts, live streaming thinking/tool trees, pane-local mouse copy, and `/resume` for individual workers or entire agent groups.
+- **Composable Native Agent Runtime & Context Engine V2**: Shared by the `ufoo` main agent, independent background coding tasks (`manage_tasks`), and standalone `ucode`. Includes a KV-cache-stable sliding turn window, automatic `<turn_context>` topic indexing, `recall_turn` off-window transcript search, structured `plan_graph` / Plan Mode, crash-safe journals, workspace write leases, and token-free background command auto-wake.
+- **Everyday Chrome Automation (`browser`)**: Operate your already-open, signed-in Chrome through the optional `ufoo Browser` extension and user-scoped broker with per-tab ownership (`browser_tab_busy` protection) — never launching a blank profile or closing your browser on disconnect.
+- **macOS Desktop Apps & Independent Agent Mouse (`mac_app`)**: Hybrid `AXUIElement` UI tree inspection (`@e1..@eN` refs + direct AX actions), shadowless 1:1 logical-point screenshots (`screenshotId` coordinate mapping), and a window-targeted **Agent Mouse** with a floating HUD that operates Mac apps without hijacking your physical cursor — yielding immediately on mouse shake, target-window click, or `Esc`.
+- **Drop-In CLI Wrappers & Universal MCP**: Keep using external `uclaude`, `ucodex`, `uagy`, `ugrok`, `ukimi`, **Codex App/IDE**, **Cursor**, **Antigravity App**, or HTTP webhooks. One user-scoped daemon (`~/.ufoo/run/ufoo.sock`) hosts isolated project runtimes, a singleton Streamable HTTP MCP server, and a stateless `ufoo mcp` stdio proxy.
+- **Groups, Shared Memory & Evidence-Gated Orchestration**: Launch multi-agent teams from 7 built-in group templates with role-tuned `codex` / `claude` / `agy` model presets, share architectural decisions and durable memory, collaborate remotely via `ufoo online`, and audit every run with `ufoo trace` and `ufoo metrics`.
 
-## Installation
+---
 
-Install the published package:
+## Installation & Requirements
+
+### Requirements
+
+- **Node.js 18.17+** (`ufoo Browser` Playwright MCP runtime requires **Node.js 20+**).
+- **macOS** or **Linux** (prebuilt `ufoo-tui` binaries are bundled for `darwin-arm64`, `darwin-x64`, `linux-x64`, and `linux-arm64`; macOS is required for `mac_app` desktop automation and Terminal.app/iTerm2 adapters).
+- Corresponding vendor CLIs installed when using wrapper binaries (`claude`, `codex`, `agy`, `grok`, `kimi`).
+
+### Install from npm
 
 ```bash
 npm install -g u-foo
 ufoo setup
 ```
 
-`ufoo setup` lets you choose whether to install the optional **ufoo Browser**
-component (`ufoo setup --browser=install` or `--browser=skip`). Non-interactive
-installs skip optional browser components by default.
+`ufoo setup` interactively asks whether to install the optional **ufoo Browser** component (`ufoo setup --browser=install` or `ufoo setup --browser=skip`; non-interactive installs skip optional downloads by default).
 
-Or link this repository for local development:
+### Build from Source
 
 ```bash
 git clone https://github.com/Icyoung/ufoo.git
@@ -64,50 +54,44 @@ npm run pack:tui
 npm link
 ```
 
-Installed binaries:
+### Installed Binaries
 
-| Binary | Purpose |
+| Binary | Responsibility |
 |---|---|
-| `ufoo` | Main CLI, chat dashboard, daemons, global MCP server/proxy, groups, bus, context, memory, reports, and online helpers. |
-| `uclaude` | Claude Code wrapper with ufoo bootstrap and bus identity. |
-| `ucodex` | Codex wrapper with ufoo bootstrap and bus identity. |
-| `uagy` | Antigravity wrapper with ufoo bootstrap and bus identity. |
-| `ugrok` | Grok Build wrapper with ufoo bootstrap and bus identity. |
-| `ukimi` | Kimi Code wrapper with ufoo bootstrap and bus identity. |
-| `ucode` | Native ufoo coding-agent CLI/TUI. |
+| `ufoo` | Main CLI, multi-agent chat dashboard, global/project daemons, MCP server & stdio proxy, `browser` & `mac` managers, groups, bus, context, memory, reports, trace/metrics, and online relay. |
+| `ucode` | Native ufoo coding-agent CLI/TUI powered by the shared runtime, Context Engine V2, `browser`, and `mac_app`. |
+| `uclaude` | Claude Code wrapper with ufoo bootstrap, bus identity, native stdio MCP message channel, and resume capture. |
+| `ucodex` | OpenAI Codex wrapper with ufoo bootstrap, bus identity, native app-server queue delivery, and resume capture. |
+| `uagy` | Antigravity CLI wrapper with ufoo bootstrap, bus identity, and conversation resume capture. |
+| `ugrok` | Grok Build wrapper with ufoo bootstrap and bus registration. |
+| `ukimi` | Kimi Code wrapper with ufoo bootstrap, bus registration, and resume metadata. |
 
-`ucode` has no tool-call count limit by default. Set an optional per-run cap with
-`ucode --max-tool-calls 200`, or `UFOO_UCODE_MAX_TOOL_CALLS=200 ucode`.
-`ucode --max-tool-calls none` explicitly disables the cap, including an environment
-override. The CLI option takes precedence. Limits count individual tool calls,
-not model turns; timeouts and the tool-error budget still apply.
-Consecutive identical tool batches trigger a model reminder, then stop the run
-if repetition continues: read/plan-only batches warn at 4 steps and stop at 8;
-other batches warn at 8 and stop at 12. Comparison uses tool names and arguments,
-ignoring JSON key order and parallel call order. A different batch resets the
-streak; this is not a semantic check of tool results or alternating loops.
+---
 
 ## Quick Start
 
-Initialize a project and open the chat dashboard:
+### 1. Open the Multi-Agent Dashboard
 
 ```bash
 cd your-project
 ufoo init --targets context,bus
-ufoo
+ufoo          # Open current project dashboard
+ufoo -g       # Or open global router to switch across registered projects
 ```
 
-Launch agents from chat:
+Inside chat, work directly with the main agent or spawn internal workers:
 
 ```text
 > /launch codex reviewer
 > /launch claude builder
-> /launch grok explorer
 > /launch ucode fixer
 > @reviewer inspect the current diff and list release risks
+> /group run build-lane instance=auth-refactor
 ```
 
-Or launch wrappers directly inside a project:
+### 2. Or Use Drop-In CLI Wrappers
+
+Run any wrapped CLI in your project terminal — it automatically joins the project event bus and inherits shared context:
 
 ```bash
 uclaude
@@ -118,507 +102,256 @@ ukimi
 ucode
 ```
 
-Use global chat mode to switch between registered projects:
+### 3. Connect External IDE / Desktop Agent Hosts via MCP
 
-```bash
-ufoo -g
-```
+- **Codex App, Codex CLI & Codex IDE Extension** (direct authenticated Streamable HTTP):
+  ```bash
+  ufoo -g
+  ufoo mcp configure codex    # Use --dry-run to preview with redacted credentials
+  ```
+  Restart the Codex surface after configuring.
 
-For Codex App, Codex CLI, and the Codex IDE extension, start global mode once
-and install the shared direct HTTP configuration:
+- **Cursor, Antigravity App & Other MCP Hosts** (stateless stdio proxy supporting both newline JSON and `Content-Length` framing):
+  ```json
+  {
+    "mcpServers": {
+      "ufoo": {
+        "command": "ufoo",
+        "args": ["mcp"]
+      }
+    }
+  }
+  ```
+  Inspect or restart the singleton MCP listener anytime with `ufoo mcp status` and `ufoo mcp restart`.
 
-```bash
-ufoo -g
-ufoo mcp configure codex
-```
+---
 
-The configuration points all three Codex surfaces at the same authenticated
-loopback endpoint. Existing ufoo authentication fields and headers are retained.
-Use `ufoo mcp configure codex --dry-run` to preview the change with credentials
-redacted. Restart the Codex surface after configuring it.
+## Dashboard & TUI Guide
 
-For Cursor and any other host that has not been verified with direct HTTP,
-keep the compatible stdio configuration:
+Both `ufoo` and standalone `ucode` render through the Rust `ufoo-tui` process over the `ufoo-ui/1` socket protocol. Long-running tasks live in the daemon — closing the TUI never cancels background runs, and reconnecting replays live transcripts and status.
 
-```bash
-ufoo mcp
-```
+### Layouts & Navigation
 
-This command is a stateless transport proxy into the same global server. It
-accepts both newline-delimited JSON and standard `Content-Length` frames, and
-answers in the framing that client used. Cursor can keep `command: ufoo` and
-`args: ["mcp"]`. The proxy does not own Agent registrations or project state.
-Inspect or restart the singleton listener with `ufoo mcp status` and
-`ufoo mcp restart`.
+The dashboard provides three window modes (`Ctrl+W` cycles `main → side → multi → main`):
 
-## Runtime Model
+- **`/window main`** — Full-width main agent pane.
+- **`/window side`** — Main agent on the left + one active internal worker on the right.
+- **`/window multi`** — Main agent + all active internal Codex, Claude, and `ucode` workers.
 
-```text
-ufoo / ufoo chat
-  -> src/app/chat + src/ui/rustChatHost + crates/ufoo-tui
-  -> global daemon over ~/.ufoo/run/ufoo.sock
-  -> isolated ProjectRuntime selected by project_root
-  -> runtime launch/resume/recover/reports/cron/groups
-  -> orchestration router, group templates, solo roles
-  -> agents launch/providers/internal/controller/activity
-  -> coordination bus/context/memory/history/report/state/status
-  -> shared controller/worker tools and native ucode tools
+| Shortcut / Action | Behavior |
+|---|---|
+| `Ctrl+W` (in `main` input) | Cycle layouts (`main → side → multi → main`); in a child input, deletes the previous word. |
+| `Ctrl+Q` | Exit split layout back to `main` while keeping workers and drafts alive. |
+| `Tab` | Enter visible child pane in split mode, cycle footer agents in `main` mode, or accept slash completion. |
+| `Esc` | Close open popup/menu, or return focus from an internal child input back to `main` without cancelling work. |
+| `Ctrl+C` | In a child pane: cancel only that child's active turn (keeping worker & queue alive). In `main`: clear draft, cancel turn, or exit. |
+| `Ctrl+O` | Expand/collapse the latest thinking or merged tool-call block in the focused pane. |
+| `Ctrl+X` (on Agents footer) | Close the selected internal worker via the project daemon. |
+| Mouse drag in any pane | Pane-local text selection (excludes borders/adjacent panes); releasing copies via macOS clipboard or OSC 52. |
 
-Codex App / CLI / IDE -> Streamable HTTP --+
-ufoo mcp stdio proxy ----------------------+
-                                           -> home-scoped global controller daemon
-                                              (one MCP listener and tool router)
-  -> ~/.ufoo/projects/runtime
-  -> managed ProjectRuntimeGateway
-  -> selected in-process ProjectRuntime for bus/report/activity/wait state
-```
-
-Global topology is the default. `ufoo daemon --topology hybrid` temporarily
-enables project compatibility sockets, and `--topology project` selects the
-legacy per-project daemon rollback path.
-
-### Agent Delivery Modes
-
-ufoo supports two Agent delivery modes, selected only from the host Agent's
-inherited `UFOO_SUBSCRIBER_ID` before any helper terminal is started:
-
-- Wrapper-managed Agents start through `ucodex`, `uclaude`, `uagy`, `ugrok`, `ukimi`, or
-  `ucode`. The wrapper provides `UFOO_SUBSCRIBER_ID`; ufoo monitors the shell
-  activity and injection endpoint, so bus messages can be injected directly.
-  These Agents reuse the environment identity and do not register through MCP
-  or run a resident bus poll.
-  Current wrappers also provide `UFOO_AGENT_HANDLE` so the Agent can use the
-  shared MCP `dispatch_message`, `ack_bus`, and `report_agent_status` tools.
-  The CLI remains available when MCP is not configured. Receive, activity,
-  and shutdown stay with the wrapper.
-- Externally hosted Agents have no wrapper-provided subscriber environment.
-  They register themselves once through MCP `register_agent`, retain the
-  returned subscriber plus opaque `agent_handle`, and select the host App's
-  native no-token wait:
-  Codex App keeps MCP `wait_for_message` pending, while Cursor monitors
-  `ufoo bus poll --follow` background output with `notify_on_output`.
-
-Agent type names and subscriber prefixes are routing metadata, not capability
-signals. After an external Cursor Agent registers through MCP, its dedicated
-listener terminal may export the returned subscriber as
-`UFOO_SUBSCRIBER_ID` so CLI operations share one identity. That child-shell
-binding does not alter the host Agent's already selected external mode and is
-not evidence of wrapper injection.
-
-Chat is a UI client. The daemon owns project runtime state. Agents communicate
-through bus queues, prompt injection, shared memory, reports, and tool handlers
-instead of importing chat UI code.
-
-MCP sends confirm durable queue persistence, not delivery or task completion.
-The result reports `delivery_status: "queued"`, `queued: <target count>`, and
-`delivered: 0`. Registry reads return up to 100 existing project paths per page;
-follow `next_offset` for more, or set `include_missing: true` for diagnostics.
-To archive abandoned records for deleted workspaces, preview with
-`ufoo project prune`, then run `ufoo project prune --apply`. Original JSON
-records remain recoverable under `~/.ufoo/projects/archive/`.
-
-The stdio proxy reconnects after listener restarts and preserves the Agent's
-registration. It automatically replays reads; an uncertain write returns
-`UFOO_MCP_OUTCOME_UNKNOWN` so its persisted result can be checked before retrying.
-Run `ufoo doctor` to detect outdated Codex MCP configuration, and
-`ufoo mcp configure codex` to refresh it with a backup.
-
-Codex and Claude Code wrappers use native incoming-message transports by
-default for interactive launches on macOS/Linux:
-
-```bash
-ucodex
-uclaude
-```
-
-Codex connects its TUI to a private local app-server. ufoo observes the TUI's
-exact thread response, preserves its requests and approvals, and sends bus
-work through `thread/queue/add`. Claude uses a launch-local stdio MCP channel
-and retains Claude's development-channel confirmation. Its startup probe must
-arrive through the native channel before any bus work is sent. Channels are a
-[Claude research preview](https://code.claude.com/docs/en/channels); account and
-organization availability rules still apply. Existing MCP configuration and
-credentials remain intact; these launches do not write global host settings.
-
-Native receivers admit work while busy. A queue receipt confirms transport
-acceptance, not task completion. Stable delivery IDs and project-local native
-receipts prevent duplicate retries; uncertain writes retain the bus event for
-inspection rather than falling back to keyboard injection. The wrapper still
-owns terminal rendering, identity, activity, and shutdown. Use
-`--no-native-messages` or `UFOO_NATIVE_MESSAGES=0` to select the existing delivery
-path; `--native-messages` explicitly overrides that environment setting.
-Headless commands such as `ucodex exec` and `uclaude --print`, help/version,
-internal agents, and other providers keep their existing launch behavior.
-Launchers check CLI versions against the tested baselines (Codex 0.160.1 and
-Claude Code 2.1.204), and check Codex remote support. Older CLIs use legacy
-delivery with a diagnostic; explicit `--native-messages` requires compatibility.
-`ufoo doctor` shows versions, receiver readiness, and uncertain receipts.
-
-Inspect or explicitly resolve an uncertain receipt:
-
-```bash
-ufoo bus deliveries <subscriber>
-ufoo bus deliveries <subscriber> <receipt-id> accepted
-ufoo bus deliveries <subscriber> <receipt-id> retry
-```
-
-Use `accepted` after verifying the receiving session got the work. `retry`
-allows another submission and can duplicate work if the first submission
-succeeded. A live in-flight submission cannot be resolved.
-
-Codex resume pickers and `resume --last` bind the exact session returned by the
-TUI after selection.
-
-The integration tests use real Unix sockets, WebSockets, and stdio MCP. Optional
-vendor CLI smoke tests use isolated homes and a fake local model endpoint:
-`node scripts/smoke-native-messages.js codex` and
-`node scripts/smoke-native-messages.js claude`. Verified locally with Codex
-0.160.1 and Claude Code 2.1.204.
-
-## Daily Usage
-
-The normal workflow is to enter chat first, then launch agents and run project
-commands inside the dashboard:
-
-```bash
-ufoo
-ufoo -g
-```
-
-`ufoo` opens the current project chat. `ufoo -g` opens global chat for switching
-between registered projects. The global daemon starts once and project runtimes
-activate lazily.
-
-The project main agent shares a composable runtime with `ucode`. It can read and
-edit code, run validation, delegate to internal agents, or start independent
-tasks. The global profile selects projects before coding begins. Long tasks run
-in the daemon; disconnecting chat does not cancel them, and reconnecting replays
-runtime events.
-
-All main conversations use the shared runtime. Use `/session new` to start a
-conversation with current settings; existing provider/model bindings stay pinned.
-A crash during an active round marks it interrupted: inspect actual
-effects before resubmitting. Writes, shell commands, launches, and uncertain
-deliveries are not automatically replayed. Managed writers share directory
-leases; verified git worktrees can run independently. These checks are not an OS
-sandbox for shell commands. See the [runtime implementation record](docs/archive/AGENT_RUNTIME_REFACTOR.md).
-
-### Chat Commands
+### Essential Slash Commands
 
 ```text
-/launch codex reviewer
-/launch claude builder
-/launch grok explorer
-/launch ucode fixer
-@reviewer inspect the current diff and list release risks
-
-/status
-/task list
-/task inspect <run-id>
-/task cancel <run-id>
-/answer <interaction-id> <reply>
-/session show
-/session new
-/settings
-/window main
-/window side
-/window multi
-/resume
-/project list
-/project switch 2
-/open /path/to/project
+/status                         Project, daemon, and active agent summary
+/launch <codex|claude|ucode>    Spawn an embedded internal worker
+/resume                         Resume saved internal workers or whole groups (group:<id>)
+/task list | inspect | cancel   Manage independent background coding tasks
+/answer <interaction-id> <text> Reply to a paused ask_user interaction
+/session show | new             Inspect or start a fresh main conversation
+/settings                       Configure provider, custom gateway, model, and thinking effort
+/group templates | run | status Orchestrate multi-agent group workflows
+/ctx status | decisions | doctor Inspect architectural decisions and context health
+/bus status | list | send       Inspect bus queues and message registered agents
+/project list | switch <n>      Switch workspaces in global/multi-project mode
+/open /path/to/project          Open and attach another project directory
+/doctor                         Diagnose CLI versions, MCP config, and delivery receipts
 ```
 
-The dashboard keeps three layouts: `main` (main agent only), `side` (main plus
-one selected internal agent), and `multi` (main plus all internal agents). Active
-wrapper and MCP agents appear in the communication directory and `@` completion;
-selecting one targets messages without opening a pane. Their detailed output
-and process lifecycle stay with their own host. Dashboard child launches use internal mode and never
-open an external terminal. A project with no chat or input history shows the
-existing compact ufoo banner as its welcome screen.
-`Ctrl+W` cycles `main → side → multi → main`.
-`/window main`, `/window side` and `/window multi`
-select each layout directly. The one-child layout selects the most recently
-activated live internal agent, or the first agent when none has been activated.
-With no children, split modes remain selected while showing only the full-width
-main pane; new children appear automatically when they become available.
-When an internal child owns the shared input, editing keys and shortcuts belong
-to that child. `Ctrl+C` cancels only its current task, preserving its draft,
-process and queued messages. `Esc` returns focus to the main input without
-cancelling work; popup menus close before returning focus. `Ctrl+W` edits the
-child's previous word and `Tab` inserts indentation. From the main input,
-`Ctrl+W` cycles layouts and `Ctrl+Q` closes the split; main-only `Ctrl+C` clears
-a nonempty draft before cancelling or exiting. `Esc` at the ufoo root preserves
-the application and draft.
-Standalone `ucode` uses the same side-pane implementation: clicking a footer
-agent selects an `@` message target, and clicking it again opens an internal
-agent on the right. Repeated selection of an external agent stays message-only.
-Keyboard selection followed by empty Enter uses the same internal activation.
-With focus on the Agents footer, `Ctrl+X` closes the selected internal agent
-through its project daemon in both ufoo and ucode. External agents cannot be
-closed from this menu. This differs from `Ctrl+C` in a child's input, which
-cancels its current task while keeping the worker alive.
-Restart existing internal workers to enable the per-task cancellation channel.
-Drag over visible text in the main or an internal agent pane to select it;
-releasing the mouse copies it to the clipboard. Selection stays within that pane,
-excluding its border and adjacent agents. Local macOS uses the system clipboard;
-other terminals use OSC 52 and require terminal clipboard support.
-`/resume` opens a second-level menu of recoverable internal sessions. Independent
-agents appear individually; group members appear together as `group:<group-id>`.
-Selecting a group resumes its inactive members with saved sessions, skips members
-that are already active, and updates the group's member identities. Native
-coding agents register as `agent_type: ucode` with `ucode:<session>` identities;
-their saved conversations remain under `.ufoo/agent/ucode/`.
-From main in a split layout, `Tab` enters a visible child. Once activated, only
-`Esc` leaves its input. All agents share one bottom input, which follows the selected agent while
-preserving each draft. Each agent's live status sits in its pane's bottom border;
-the main agent's input is labelled `main`, and its status stays independent of
-child selection, focus changes and child activity.
-Internal Codex defaults to full host access without approval prompts, including
-local services such as ADB and Gradle. Peer replies contain the final answer;
-progress and tool output stay visible in the agent's pane. Reports and handoffs
-default to 1-4 short lines with checks and blockers; longer evidence is saved in
-a referenced workspace file.
-The selected pane's body uses the terminal's default foreground. In the main-only
-layout, `Tab` selects the first agent in the bottom bar, then advances through
-the agents and wraps to the first. `Esc` returns to
-the main input. Command completion keeps its existing `Tab` behavior in the
-main-only layout. An open completion menu also owns `Tab` in split layouts.
-Layout commands also work from an internal child's input. Switching layouts
-keeps unsent child drafts and does not stop running agents.
-With a child active, a footer click opens the Agents selector in ufoo;
-`Down` remains an editing key in the child input. In the footer selector,
-`Down` advances to provider settings and cron controls; `Esc` returns to
-the same agent's input. In the selector, `Enter` opens the selected internal
-agent. The provider caption in the footer also opens its settings directly.
+---
 
-Direct wrapper commands such as `uclaude`, `ucodex`, `uagy`, `ugrok`, `ukimi`, and
-`ucode` are still available, but the normal ufoo workflow is to work from chat.
+## Native Agent Runtime & `ucode`
 
-### Initialization And Maintenance
+`ufoo`'s project main agent, writable child tasks (`manage_tasks`), and `ucode` share a layered, capability-composed runtime (`src/agents/runtime/`).
 
-These are setup or troubleshooting commands. In chat, use slash commands:
+### Context Engine V2 & `recall_turn`
 
-```text
-/init context bus
-/doctor
-/status
-/daemon status
-/daemon restart
-/daemon stop
-/daemon start
-```
+- **KV-Cache-Stable Sliding Window**: Retains a `Step=2` aligned raw turn window (5 turns by default, expanding up to 10 on active topics within a 45% context budget) so system prefixes and historical turns stay cache-hit friendly.
+- **Ephemeral `<turn_context>` Injection**: Attaches a compact `<topic_map>` and `<relevant_turns>` digest to the current user turn without polluting persisted transcripts.
+- **Optional Background Aux Enrichment**: When `agentAuxModel` or `ucodeAuxModel` is configured, an asynchronous Phase B enricher refines turn summaries and Tier 2 topic selection off the critical path (zero extra model calls when unconfigured).
+- **Deterministic Overflow Eviction & `recall_turn`**: Tight context budgets trigger a deterministic Level 1–3 eviction ladder instead of blocking LLM compaction calls, while the `recall_turn` tool lets the agent search off-window turns or paginate full raw transcripts on demand.
 
-`ufoo init` creates `.ufoo/`, ensures `AGENTS.md` and `CLAUDE.md`, initializes
-selected workspace state, and prepares shared storage. `CLAUDE.md` may be a
-symlink; edit project instructions in `AGENTS.md`.
+### Plan Mode, Execution Budgets & Workspace Leases
 
-Before a project has been initialized, the equivalent CLI form is also useful:
-`ufoo init --targets context,bus`.
+- **Plan Mode & `plan_graph`**: Enable with `/plan on` (or automatically when `plan_graph create` runs). Blocks direct mutating calls (`write`, `edit`, `bash`, mutating `browser`/`mac_app` actions) while permitting read/inspection tools and advancing structured `plan_graph` nodes. Leave with `/plan off`.
+- **Execution & Loop Guards**: Model turns and tool calls are unbounded by default within a 12-hour task deadline (configurable via `ucode --max-tool-calls <N|none>`, `UFOO_UCODE_MAX_TOOL_CALLS`, `UFOO_UCODE_MAX_TOOL_ERRORS`, and `UFOO_UCODE_TASK_TIMEOUT_MS`). Consecutive tool failures warn at 3 and stop at 5 (or 12 of the last 20); identical repeated tool batches trigger a reminder and halt runaway loops.
+- **Crash Safety & Directory Leases**: Completed turns commit atomically before the next model request. Interrupted mutations are never blindly replayed. Concurrent managed writers coordinate via directory leases, while verified `git worktree` checkouts execute in parallel.
 
-The default agent skill set is intentionally limited to `ufoo`, `ufoo-bus`,
-`ufoo-context`, and `ufoo-online`. They are installed only as skills, not as a
-second command catalog. Initialization and unified status are handled by
-`ufoo`.
+### Token-Free Background Command Auto-Wake
 
-### Event Bus
-
-External HTTP agents can register a wake endpoint, including `grok-bot`:
-
-```bash
-ufoo bus join my-session grok-bot --wake-url https://agent.example/wake --wake-key-file /path/to/wake-key
-```
-
-The `bearer-json` adapter sends a bearer-authenticated JSON request containing
-`project_root`, `subscriber`, `seq`, `publisher`, and `message`. The endpoint
-must return HTTP 200 after accepting the work. The receiver acknowledges its
-queue with `ufoo bus ack <subscriber> --through <seq>` after handling it; later
-messages wait for that acknowledgement. Failed requests remain queued for retry.
-Requests have a ten-second deadline and do not follow redirects. HTTPS is
-required except for loopback HTTP. Endpoint keys stay in a mode-600 local file.
-Wake registrations have no local PID or terminal ownership.
-
-```text
-/bus list
-/bus status
-/bus send codex:abc123 Please implement the approved slice.
-/bus activate reviewer
-/bus rename codex:abc123 reviewer
-```
-
-Use `/bus status` to find the real subscriber ID or resolvable nickname
-before sending. Agents should handle pending work, reply to the sender, and
-acknowledge their queue.
-
-Externally hosted Agents with no `UFOO_SUBSCRIBER_ID` use the opt-in
-`ufoo-bus-poll` skill to select their host App's queue-read-only wait and
-self-wake mechanism:
-
-```bash
-ufoo skills list --optional
-ufoo skills install ufoo-bus-poll --target /path/to/that/agent/skills
-```
-
-Register once through MCP `register_agent` and retain its returned subscriber
-and `agent_handle`. Include the handle in heartbeat, activity, send, receive,
-acknowledgement, report, and unregister calls. The handle is an ownership
-capability: do not send it to peers or print it in reports.
-
-For a new external registration, ufoo assigns both the subscriber's
-eight-character session suffix and its automatic `<agent-prefix>-<number>`
-nickname on the server, using the same identity generators as wrapper launches.
-A Cursor MCP registration with `agent_type: "cursor"`, for example, receives
-`cursor:<8-hex>` and `cursor-N`; the model selected inside Cursor does not
-replace the Cursor Agent type.
-A stable `client_instance_id` recovers that same identity after a transport
-restart; even when that value is a UUID, it is not used as the subscriber
-suffix. Legacy MCP subscribers whose suffix is the client UUID are superseded
-by the short server-assigned identity on their next registration. MCP Agents
-cannot self-assign or update these identity fields; an explicit operator rename
-remains available through the controller/CLI rename path.
-
-- **Codex App:** call MCP `wait_for_message` in the foreground with
-  the registered subscriber and handle, `after_seq: 0`, and
-  `timeout_seconds: 0`. The tool call stays pending inside the dedicated
-  `ufoo_wait` MCP connection until a message arrives or the caller cancels it;
-  idle time produces no periodic model wake or token consumption. A message
-  returns immediately and wakes the task without shell stdout. After handling
-  a message response, call MCP `ack_bus` with the same handle and its
-  `last_seq` as `through_seq`, then re-arm with that `last_seq` when the Agent
-  is idle again.
-- **Cursor:** bind the MCP subscriber and run
-  `export UFOO_SUBSCRIBER_ID="<subscriber-id>"; exec ufoo bus poll
-  "$UFOO_SUBSCRIBER_ID" --follow --interval 30` through the monitored
-  background shell with `block_until_ms: 0`, and configure
-  `notify_on_output` to match `\[ufoo\]`. Startup and empty intervals are
-  silent; only ufoo-delivered messages wake the model.
-
-Both paths keep idle queue checks outside the LLM. A background PTY alone is
-not a wake mechanism in Codex App.
-
-The poll skill is opt-in. Postinstall refreshes only verified ufoo-owned links;
-user directories, files, and foreign links are preserved. `skills install all`
-refreshes an already-installed optional skill with a backup, but does not
-install it for a new host. Explicit skill installs retain previous contents in
-a sibling `.backup-*` path.
-Wrapper-managed Agents skip MCP registration and external waiting when
-`UFOO_SUBSCRIBER_ID` was present in the Agent's inherited launch environment.
-A value exported later inside a Cursor listener terminal does not rerun this
-classification. Receive-path selection depends on host App capabilities, never
-on whether the external Agent calls itself Codex, Claude, Cursor, or another
-type.
-
-### Context, Memory, History, Reports
-
-Inside chat:
-
-```text
-/ctx status
-/ctx doctor
-/ctx decisions
-```
-
-Memory, history, and report management are CLI utilities:
-
-```bash
-ufoo memory add "Provider contract" --body "Durable fact..." --tags provider,contract
-ufoo memory list --tag provider
-ufoo memory show mem-0001
-
-ufoo history build
-ufoo history show 20
-ufoo history prompt 30
-
-ufoo report start "Implement README refresh" --task docs-readme --agent builder
-ufoo report done "README updated" --task docs-readme --agent builder
-ufoo report list
-
-ufoo trace <task-id> --json
-ufoo trace --agent <id-or-nickname> --follow
-ufoo trace --details --limit 2000
-```
-
-Use decisions only for plan-level constraints. Durable project facts belong in
-memory.
-
-`trace` links parent/worker model and tool events, reports, queue claims and
-context compression without starting a daemon or calling a model. MCP exposes
-the same read-only view as `read_agent_trace`. Parameters and results are
-redacted; bounded or incomplete source reads are explicitly marked in JSON.
-
-`ufoo metrics --json` summarizes observed outcomes, latency, tokens, tool
-errors/repetition, report size and delegation acceptance. Save a report and use
-`ufoo metrics --baseline baseline.json --json` to compare later samples. MCP
-provides `read_agent_metrics`; metric definitions and an optimization workflow
-are in [OBSERVABILITY.md](docs/OBSERVABILITY.md). Missing evidence stays unknown,
-and execution completion is separate from acceptance.
-
-### Groups
-
-Built-in group templates live in `templates/groups/`.
-
-Every member in all seven built-in groups includes three provider defaults plus a
-manual override in `model_config`:
-
-| Role | Codex model / reasoning effort | Claude model | agy model |
-|---|---|---|---|
-| Architect | `gpt-6-astra` / `high` | `claude-fable-5-2` | `gemini-4-carbon-high` |
-| Builder | `gpt-6.1-sol` / `high` | `claude-opus-5-5` | `gemini-4-hydrogen-high` |
-| Reviewer | `gpt-6.1-sol` / `xhigh` | `claude-opus-5-5` | `gemini-4-argon-high` |
-| Design consultant, discovery facilitator, debugger | `gpt-6-astra` / `high` | `claude-fable-5-2` | `gemini-4-carbon-high` |
-| PMO | `gpt-6-astra` / `high` | `claude-fable-5-2` | `gemini-4-argon-high` |
-| Frontend refiner | `gpt-6.1-sol` / `high` | `claude-opus-5-5` | `gemini-4-hydrogen-high` |
-| Scope challenger, UI plan critic, design critic, release coordinator | `gpt-6.1-sol` / `xhigh` | `claude-opus-5-5` | `gemini-4-argon-high` |
-| QA | `gpt-6.1-sol` / `xhigh` | `claude-opus-5-5` | `gemini-4-hydrogen-high` |
-
-Settings follow each member's prompt-profile role, including numbered builders.
-Claude reasoning effort is left unset. All 24 built-in members have an empty
-manual override ready to customize.
-agy's selected model IDs include the thinking tier, so their separate
-`reasoning_effort` defaults are empty. Carbon is reserved for architectural and
-root-cause work, Argon for coordination and critical review, and Hydrogen for
-implementation and verification.
-
-For example, an architect member contains:
+Agents can launch background processes (dev servers, builds, watchers) with declarative wake conditions — zero LLM polling while waiting:
 
 ```json
-"model_config": {
-  "codex": { "model": "gpt-6-astra", "reasoning_effort": "high" },
-  "claude": { "model": "claude-fable-5-2", "reasoning_effort": "" },
-  "agy": { "model": "gemini-4-carbon-high", "reasoning_effort": "" },
-  "override": { "model": "", "reasoning_effort": "" }
+{
+  "command": "npm run dev",
+  "background": true,
+  "wake": {
+    "conditions": [{ "type": "log_contains", "text": "Ready in" }]
+  }
 }
 ```
 
-A nonempty `override.model` replaces the entire selected provider configuration;
-an empty override effort does not inherit effort from any provider default.
-Otherwise the member's provider selects `codex`, `claude` or `agy`. Empty model
-settings keep the existing project/provider defaults. Overrides select a model,
-not a different provider. Internal auto members under the agy provider run as
-native ucode workers with explicit agy provider/model settings; external agy
-members use the CLI's `--model` and optional `--effort` flags. Other native
-provider settings remain unchanged when no matching model setting exists. Explicit
-`type: "ucode"` members select defaults using their effective native provider
-(`UFOO_UCODE_PROVIDER`, global `ucodeProvider`, then project `agentProvider`).
-Codex maps to `codex`, Anthropic to `claude`, and agy to `agy`; manual overrides
-also work with other native providers. Model, provider and effort are carried
-through launch and resume. Project/global custom templates remain
-authoritative over built-ins.
-Dry runs and group state expose the selected model, effort and source. Recovery
-preserves the saved selection; edits affect newly launched groups, not live workers.
+Supported one-shot conditions: `log_contains`, `file_exists`, `port_open` (`127.0.0.1`), plus process exit (`wake.onExit`, enabled by default). Watches survive host restarts and resume cleanly at turn boundaries.
+
+### Agent Skills
+
+Default skills (`ufoo`, `ufoo-bus`, `ufoo-context`, `ufoo-online`) link automatically on `postinstall` without overwriting user-owned files. Manage skills across hosts with:
+
+```bash
+ufoo skills list --optional
+ufoo skills install all --claude          # ~/.claude/skills
+ufoo skills install all --codex           # ${CODEX_HOME:-~/.codex}/skills
+ufoo skills install all --agy             # ~/.gemini/config/skills
+ufoo skills install all --agents          # ~/.agents/skills
+ufoo skills install ufoo-bus-poll --target /path/to/skills
+```
+
+---
+
+## Browser & macOS Desktop Automation
+
+Both capabilities are available out of the box in the `ufoo` main agent, writable native child tasks, and `ucode`. Multimodal screenshots attach automatically as provider vision blocks and retire cleanly after viewing.
+
+### 1. Your Everyday Chrome (`browser` / `ufoo browser`)
+
+Connects to your existing, authenticated Chrome via Playwright MCP (requires **Node.js 20+**) — preserving logins and cookies without ever launching an empty browser or closing Chrome on disconnect.
+
+```bash
+ufoo setup --browser=install     # Install optional Playwright MCP runtime + Native Messaging host
+ufoo browser install --dev       # Load unpacked extension from extensions/ufoo-browser/ during preview
+ufoo browser status [--json]
+ufoo browser doctor
+ufoo browser enable | disable | update | uninstall
+```
+
+- **Per-Tab Ownership via `BrowserBroker`**: The `ufoo Browser` MV3 extension auto-connects over Chrome Native Messaging to a shared local broker (`~/.ufoo/browser/private/broker.sock`). Agents inspect tabs (`browser_tabs` `action=list`) and claim specific `tabId`s; tabs owned by another session return `browser_tab_busy` without preemption. You can pause all control or release tabs anytime from the extension popup.
+- **Compatibility Modes**: Supports the official Playwright Extension (`backend: "playwright-extension"`) and explicit CDP endpoints (`UFOO_BROWSER_CDP_ENDPOINT=chrome` or `http://127.0.0.1:9222`, guarded by a per-OS-user lease).
+- **On-Demand Schema Discovery**: `browser` exposes `status`, `connect`, `tools`, `call`, and `disconnect`, keeping external Playwright schemas out of the base system prompt until needed. Artifacts save under `.ufoo/browser/<session-hash>/`.
+
+### 2. macOS Desktop Apps & Independent Agent Mouse (`mac_app` / `ufoo mac`)
+
+Operates native Cocoa, SwiftUI, Catalyst, and Electron apps on macOS through a cached, zero-dependency Swift helper (`~/.ufoo/mac/bin/`) served over a private Unix socket:
+
+- **Structured Accessibility (`AXUIElement`)**: `list_apps`, `list_windows`, `snapshot` (automatically wakes Chromium/Electron AX trees, assigns `@e1..@eN` refs, supports `includeMenuBar=true` and `query` filtering), `ax_action` (`press`, `focus`, `set_value`, `confirm`, `pick`, `show_menu`, `increment`, `decrement`), `launch_app`, `focus_app`, and `manage_window`.
+- **1:1 Logical-Point Screenshots**: Shadowless window (`-o -l`), region, or full-display capture scaled to 1:1 macOS logical points by default. Passing `screenshotId` maps image `(x, y)` coordinates directly to live window/screen coordinates without Retina `2x` drift. Saved under `.ufoo/mac/<session-hash>/`.
+- **Independent Agent Mouse & Human Yield**:
+  - Tracks a per-session virtual pointer and dispatches window-targeted `NSEvent` / `CGEvent.postToPid` events **without moving or warping your physical cursor**.
+  - Renders a non-capturable (`sharingType = .none`) floating **Agent Mouse HUD** showing live pointer position, click ripples, and action badges.
+  - Windows stay in the background unless `focusApp=true` is explicitly requested (always verify background input effects via `snapshot` or `screenshot`, as app support varies; cross-window drags are rejected and unsupported targets never fall back to hijacking the physical mouse).
+  - **Instant Human Takeover**: Ordinary physical mouse movement stays independent; a deliberate mouse shake, a physical click inside the agent's target window, or pressing `Esc` immediately triggers `user_takeover` and yields control.
+
+```bash
+ufoo mac status [--json]         # Inspect helper state, displays, and TCC permissions
+ufoo mac permissions             # Prompt & open macOS Accessibility + Screen Recording settings
+ufoo mac doctor                  # Verify Swift helper build, daemon socket RPC, and permissions
+ufoo mac hud on | off | toggle   # Toggle on-screen Agent Mouse visual indicator
+ufoo mac enable | disable | stop
+```
+
+---
+
+## Architecture & Agent Delivery Protocol
+
+```text
+ufoo / ufoo chat / ucode
+  -> src/app/chat + src/ui/ + crates/ufoo-tui (ratatui over ufoo-ui/1)
+  -> home-scoped GlobalDaemon (~/.ufoo/run/ufoo.sock)
+  -> isolated ProjectRuntime per workspace (~/.ufoo/projects/runtime)
+  -> orchestration (router, 7 group templates, solo roles, cron)
+  -> shared native agent runtime + SDK internal runners + CLI wrappers
+  -> .ufoo/ coordination state (bus, context decisions, memory, history, reports, journals)
+
+External MCP Clients:
+  Codex App / CLI / IDE  --(Streamable HTTP)--> GlobalDaemon MCP Listener & Router
+  Cursor / agy / others  --(ufoo mcp proxy)--->   -> ProjectRuntimeGateway -> Project Bus & Tools
+```
+
+### Two Deterministic Agent Delivery Modes
+
+ufoo selects an agent's bus delivery mode strictly from whether `UFOO_SUBSCRIBER_ID` was inherited at launch:
+
+1. **Wrapper-Managed Agents (`ucodex`, `uclaude`, `uagy`, `ugrok`, `ukimi`, `ucode`)**:
+   - Inherit `UFOO_SUBSCRIBER_ID` and `UFOO_AGENT_HANDLE`. The wrapper/daemon owns registration, activity tracking, and direct prompt injection.
+   - **Native Incoming Transports**: Interactive `ucodex` (verified baseline `0.160.1+`) binds a launch-local app-server and queues bus work via `thread/queue/add`; interactive `uclaude` (`2.1.204+`) uses a launch-local stdio MCP channel with startup probe verification. Neither mutates global vendor config, and uncertain deliveries are persisted for explicit operator resolution (`ufoo bus deliveries <subscriber> [<receipt-id> accepted|retry]`) rather than falling back to blind keystroke injection. Use `--no-native-messages` (`UFOO_NATIVE_MESSAGES=0`) to opt out.
+
+2. **Externally Hosted MCP Agents (no inherited `UFOO_SUBSCRIBER_ID`)**:
+   - Self-register once via MCP `register_agent` (receiving a server-allocated `<prefix>:<8-hex>` ID, `<prefix>-N` nickname, and opaque `agent_handle`; pass `client_instance_id` for seamless reconnect recovery).
+   - Pair with the opt-in `ufoo-bus-poll` skill for **zero-token idle waiting** matched to each host app:
+     - **Codex App**: Keeps one foreground MCP `wait_for_message` call pending on a dedicated `ufoo_wait` connection until a message arrives, then acknowledges via `ack_bus`.
+     - **Cursor**: Runs `ufoo bus poll "<subscriber-id>" --follow --interval 30` in a monitored background terminal (`notify_on_output` matching `\[ufoo\]`).
+     - **Antigravity App (`agy app`)**: Runs a silent background exit-on-message waiter polling `ufoo bus check "<subscriber-id>"` that exits `0` on `[ufoo]` output to trigger reactive wakeup, then acknowledges via MCP `ack_bus` and re-arms.
+   - **HTTP Wake Endpoints**: Register remote bots (e.g. `grok-bot`) with `ufoo bus join <session> grok-bot --wake-url https://... --wake-key-file /path/to/key` (`bearer-json` with `ufoo bus ack` queue gating).
+
+---
+
+## Multi-Agent Groups, Context & Observability
+
+### Built-In Group Templates (`templates/groups/`)
+
+Launch coordinated multi-agent pipelines (`build-lane`, `build-ultra`, `design-system`, `product-discovery`, `ui-plan-review`, `ui-polish`, `verify-ship`) directly from chat or CLI:
 
 ```text
 /group templates
 /group template show build-lane
-/group template validate templates/groups/build-lane.json
 /group run build-lane dry_run=true
-/group run build-lane instance=docs-refresh
+/group run build-lane instance=release-v4
 /group status
 /group diagram build-lane mermaid
-/group stop docs-refresh
+/group stop release-v4
 ```
 
-### Online Relay
+Every member across all 7 templates carries role-tuned defaults for `codex`, `claude`, and `agy` plus an optional manual `override`:
+
+| Role | Codex (`model` / `effort`) | Claude | Antigravity (`agy`) |
+|---|---|---|---|
+| Architect, Debugger, Discovery, Design Consultant | `gpt-6-astra` / `high` | `claude-fable-5-2` | `gemini-4-carbon-high` |
+| Builder, Frontend Refiner | `gpt-6.1-sol` / `high` | `claude-opus-5-5` | `gemini-4-hydrogen-high` |
+| Reviewer, Scope Challenger, Critics, Release Coordinator | `gpt-6.1-sol` / `xhigh` | `claude-opus-5-5` | `gemini-4-argon-high` |
+| PMO | `gpt-6-astra` / `high` | `claude-fable-5-2` | `gemini-4-argon-high` |
+| QA | `gpt-6.1-sol` / `xhigh` | `claude-opus-5-5` | `gemini-4-hydrogen-high` |
+
+### Decisions, Shared Memory, Reports & Acceptance
+
+```bash
+# Durable shared project facts (use /ctx decisions for plan-level architectural constraints)
+ufoo memory add "Auth token contract" --body "Refresh window is 300s..." --tags auth,api
+ufoo memory list --tag auth
+ufoo memory show mem-0001
+
+# Unified prompt history & structured task lifecycle reports
+ufoo history build && ufoo history show 20
+ufoo report start "Refactor session store" --task store-v2 --agent builder
+ufoo report done "All unit tests green" --task store-v2 --agent builder
+ufoo report list
+```
+
+Worker `done` reports record concise 1–4 line handoffs with file references; parent acceptance (`accept_task` / `manage_tasks operation=accept`) is tracked separately and requires post-report validation tool evidence.
+
+### Tracing & Metrics (`OBSERVABILITY.md`)
+
+Inspect end-to-end parent/child model calls, tool executions, context projections, and delegation latency without invoking a model or starting a daemon:
+
+```bash
+ufoo trace <task-id> --json
+ufoo trace --agent <id-or-nickname> --follow
+ufoo metrics --json > baseline.json
+ufoo metrics --baseline baseline.json --json
+```
+
+Read-only MCP equivalents: `read_agent_trace` and `read_agent_metrics`. See [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md).
+
+### Online Relay (`ufoo online`)
+
+Collaborate across machines over `https://online.ufoo.dev` or a self-hosted WebSocket relay:
 
 ```bash
 ufoo online server --host 127.0.0.1 --port 8787
@@ -629,339 +362,96 @@ ufoo online send --nickname builder --room <room_id> --text "handoff ready"
 ufoo online inbox builder --unread
 ```
 
-The default public service URL is `https://online.ufoo.dev`. Local development
-can run its own relay with `ufoo online server`.
+---
 
-Internal Codex, Claude Code and ucode panes share the standalone ucode TUI's
-transcript renderer and one bottom multiline input. Submitting immediately shows
-loading; waiting, thinking, generating, tool execution, user interaction, errors,
-elapsed time, context usage and plans follow the selected agent's actual events.
-Provider-specific retry, compaction and background task events use the same status
-surface. Text, thinking and tool
-results update from provider events; Ctrl+O expands the newest thinking/tool
-block in the focused pane. Display observations are separate from agent inboxes,
-so peer-routed tasks remain visible without waking the main agent. Output and
-drafts survive switching between main-only, focused-child and all-child layouts.
+## Providers & Configuration
 
-### Native ucode Runtime
+Project settings live in `.ufoo/config.json`; user-wide `ucode`, daemon, `browser`, and `mac` settings live in `~/.ufoo/config.json`. Use `/settings` in the TUI (or click the footer provider caption) to switch providers, models, custom OpenAI Chat/Responses gateways, and thinking effort (`low`, `medium`, `high`, `xhigh`, `max`).
 
-```bash
-ufoo ucode doctor
-ufoo ucode prepare
-ufoo ucode build
-```
+- **Codex & OpenAI**: Defaults to `gpt-6.1-sol` (`medium` effort; `gpt-6-luna` aux model), refreshing local Codex OAuth credentials automatically.
+- **Claude / Anthropic**: Defaults to `claude-opus-5-5` (`claude-haiku-5-5` aux model) with adaptive thinking and streamed thinking summaries.
+- **Antigravity (`agy`)**: Select `/provider agy` in `ufoo` or `ucode --provider agy` (defaults to `gemini-4-carbon-high` and aux `gemini-4-hydrogen-high`). Automatically reuses your `agy` login from macOS Keychain / Linux Secret Service / Cloud Code auth (`UFOO_AGY_AUTH_PATH`, `UFOO_AGY_ACCESS_TOKEN`, `UFOO_AGY_PROJECT_ID` overrides supported).
+- **Grok Build & Kimi Code**: Supported via `ugrok` / `grok-cli` (`grok-4.6`) and `ukimi` / `kimi-cli`.
+- **Custom Gateways**: Set `agentProvider: "custom"` (or global `ucodeProvider` / `ucodeBaseUrl` / `ucodeApiKey`); uses OpenAI Chat Completions by default or OpenAI Responses when the URL ends in `/responses`.
 
-`ucode` can discover built-in and local `SKILL.md` workflow capabilities. Full
-skill bodies are loaded only when explicitly referenced.
-
-### Background Command Notifications
-
-Native ufoo and ucode can continue automatically when a background command exits
-or a condition is met. For example, the agent can start a development server with:
-
-```json
-{
-  "command": "npm run dev",
-  "background": true,
-  "wake": {
-    "conditions": [{ "type": "log_contains", "text": "ready" }]
-  }
-}
-```
-
-Supported conditions are `log_contains` (literal `text`), `file_exists`
-(workspace `path`), and `port_open` (a `port` on `127.0.0.1`). Each fires once;
-exit notification is enabled by default and can be disabled with
-`wake.onExit: false`. `wake.timeoutMs` bounds the subscription (default and
-maximum 12 hours). Expiry sends one notification without stopping the command.
-
-The host watches without model polling. Notifications continue the same session
-after its current turn and any pending user question. Stopping the command or
-cancelling its task revokes its watches. Pending watches survive host restart;
-ucode must reopen the original session to resume delivery. Interrupted wake
-invocations with uncertain effects are not automatically replayed. Inspect
-`bash` with `action: "status"` and its `backgroundId` for delivery status.
-One-shot command-line runs without a resident host do not provide auto-wake.
-
-### Your Everyday Chrome
-
-The native project main agent, writable native child tasks, and `ucode` have a
-shared `browser` tool powered by Playwright. It connects to an existing browser
-and preserves its signed-in sessions; it never falls back to launching a fresh
-profile. SDK-managed Codex/Claude wrappers keep their own tool configuration.
-
-Browser automation requires Node.js 20 or newer (the ufoo core still supports
-Node.js 18.17+).
-
-ufoo Browser is an optional user-level component managed outside individual
-projects (`~/.ufoo/browser/` and `~/.ufoo/config.json`):
-
-```bash
-ufoo setup --browser=install   # or interactive `ufoo setup`
-ufoo browser status --json
-ufoo browser doctor
-ufoo browser enable | disable
-ufoo browser update
-ufoo browser uninstall
-```
-
-During developer preview (before the Chrome Web Store listing is published),
-register developer mode and load the unpacked extension from
-`extensions/ufoo-browser/`:
-
-```bash
-ufoo browser install --dev
-```
-
-Once installed and enabled, the extension connects automatically via Chrome
-Native Messaging to the user-scoped broker (`ufoo` and `ucode` share one
-broker). Agents list tabs with `browser_tabs` (`action=list`) and claim tabs by
-`tabId`; a tab already in use by another agent returns `browser_tab_busy`
-without preemption. You can release individual tabs or pause all control from
-the extension popup at any time.
-
-Compatibility modes remain supported: set `backend: "playwright-extension"`
-(with `UFOO_BROWSER_PROFILE` if needed) for the official
-[Playwright Extension](https://chromewebstore.google.com/detail/playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm),
-or use Chrome 144+ remote debugging (`chrome://inspect/#remote-debugging`):
-
-```bash
-UFOO_BROWSER_CDP_ENDPOINT=chrome ucode
-```
-
-You can also supply an existing `http://127.0.0.1:9222` or WebSocket endpoint.
-An already-running daily Chrome does not automatically expose that port.
-For the project main agent, set this environment variable when starting the
-ufoo daemon; an existing daemon must be restarted to pick up changed settings.
-CDP mode grants one ufoo/ucode session exclusive control until it disconnects,
-because multiple clients would otherwise manipulate the same tabs. Other
-applications and manual browser use are not covered by this lease.
-
-The agent can list/select tabs, navigate, inspect snapshots, click/type, fill
-forms, upload workspace files, handle dialogs, and take screenshots. Tool
-operations also include screenshot-guided mouse clicks, dragging and scrolling
-for canvas-based pages. Plan mode allows inspection only; browser actions run
-through the direct capability, not synchronous `plan_graph` tool nodes. Tool
-schemas are discovered on demand behind one stable model-facing tool. Page
-content is data, not instructions; external actions stay within the user's
-authorized task. Screenshot images are delivered to the model and saved under
-`.ufoo/browser/`; long results include an `outputPath` for further reading.
-
-`browser` supports `status`, `connect`, `tools`, `call`, and `disconnect`.
-`tools` with a `tool` name returns its argument schema. A lost connection or
-an action with an unknown outcome requires explicit reconnection and inspection,
-not an automatic repeated click. Idle connections disconnect after ten minutes.
-Disconnect releases control without closing Chrome or its existing tabs.
-
-Browser setup instructions: [Playwright existing-browser connections](https://playwright.dev/mcp/configuration/browser-extension).
-Developers can run the optional real-Chrome fixture with
-`UFOO_TEST_BROWSER=1 npm test -- --runTestsByPath test/integration/browser-existing-chrome.test.js`;
-it uses a disposable profile and a local test page, never the user's profile.
-
-## Configuration
-
-Project configuration is stored in `.ufoo/config.json`. `ucode` provider
-credentials are stored globally in `~/.ufoo/config.json` and merged at load time.
-
-Common project settings:
+Project `.ufoo/config.json` example:
 
 ```json
 {
   "launchMode": "auto",
+  "daemonTopology": "global",
   "agentProvider": "codex-cli",
-  "codexAuthPath": "",
-  "codexOauthRefreshWindowSec": 300,
-  "claudeOauthProfile": "",
-  "claudeOauthTokenPath": "",
-  "claudeOauthRefreshWindowSec": 300,
   "agentModel": "",
+  "agentAuxModel": "",
+  "agentThinking": "medium",
   "autoResume": false
 }
 ```
 
-Internal Codex and Claude always use their SDKs; there is no thread-mode setting.
-Internal Codex currently defaults to full host access (`danger-full-access`),
-network enabled, and no approval prompts (`approvalPolicy: never`). It can access
-simulators, system services and build caches outside the project with the current
-OS user's permissions. Granular permissions and approval controls are deferred;
-explicit SDK thread options still override these defaults. Relaunch existing
-internal Codex workers after updating to apply the new policy.
-
-Supported `launchMode` values: `auto`, `internal`, `tmux`, `terminal`, and
-`host`. Dashboard panes and process management support internal Codex, Claude and ucode workers; provider selections remain independent. The `@` directory and main-agent communication also include active external agents. External agents receive messages through their own host and can return replies/reports, without exposing their terminal or detailed output in ufoo.
-
-The dashboard always uses internal children and has no `/mode` command;
-the binary has no `ufoo mode` command either.
-Manual `ucodex` and `uclaude` wrappers detect tmux, host sessions, Terminal.app
-and iTerm2 from their environment, then register the actual terminal type, TTY
-and delivery channels with the daemon. Their event-bus communication works
-without a dashboard. MCP agents communicate through MCP message interfaces
-without requiring a terminal adapter.
-With the project daemon running, a registered worker can initiate contact with
-`ufoo-agent` using `dispatch_message` or `ufoo bus send ufoo-agent "<message>"`
-from its project and inherited worker identity. No prior delegation or open
-chat window is required: the daemon durably accepts the message and wakes the
-main runtime. Use this for substantive results, questions or changed blockers;
-assigned task completion still requires a lifecycle report with its task ID.
-The main agent uses one runtime for coding and routing, configured by
-`agentProvider` and `agentModel`. `/settings agent` manages these settings;
-`/settings ucode` manages the independent ucode gateway settings.
-
-The bottom Settings bar includes `custom`, `model`, and `thinking`. Select
-`custom` to enter an API URL and hidden API key, then choose its model and
-thinking intensity. `/settings agent custom`, `/settings agent model`, and
-`/settings agent thinking` open the same controls. Model menus fetch the current
-provider's complete selectable catalog, including paginated results; Codex
-menus omit entries marked hidden by the provider. Endpoints without a
-models route also allow a manually entered model ID. Changing model or thinking
-applies to the next request and keeps the current conversation. Changing provider
-starts a new conversation, retaining the old one in runtime storage.
-OpenAI thinking choices include separate `xhigh` and `max` values, preserved in
-requests. When a provider uses a configured gateway, the model list comes from
-that gateway; upgrading an agent SDK does not change the gateway's catalog.
-
-Custom main-agent settings use `agentProvider: "custom"`, `agentBaseUrl`,
-`agentApiKey`, `agentModel`, and `agentThinking` in `.ufoo/config.json`.
-Custom APIs use OpenAI Chat Completions by default, or Responses when the URL
-ends in `/responses`. There is no Anthropic protocol selector for custom APIs.
-Internal Claude retains its native provider transport and credentials.
-
-#### Antigravity
-
-Select `/provider agy` for the main agent, or run `ucode --provider agy` for
-standalone coding. The default model is `gemini-4-carbon-high` and the
-default auxiliary model is `gemini-4-hydrogen-high`. The native provider uses
-the Antigravity Cloud Code API for streaming, tool calls, and
-the `/model` catalog. Select a text model available to your account with
-`/model`. If a session was created with the earlier `agy` setting, start a
-fresh session to bind the Antigravity transport.
-
-Sign in with `agy` once. ufoo reuses the local Antigravity login from the
-macOS Keychain, Linux Secret Service, or the CLI's fallback auth file. macOS
-may ask for permission to read the existing Keychain item. ufoo discovers
-the Cloud Code project and asks `agy` to renew an expiring login.
-
-To choose credentials explicitly, set `UFOO_AGY_AUTH_PATH` to your Antigravity
-auth JSON from CLIProxyAPI, or set `UFOO_AGY_ACCESS_TOKEN`. Set
-`UFOO_AGY_PROJECT_ID` to override project discovery. For the main agent, these
-variables must be available to the ufoo daemon when it starts.
-`UFOO_AGY_BASE_URL` overrides the Cloud Code base URL. `UFOO_AGY_USER_AGENT`
-overrides the Antigravity client header if the endpoint requires a newer version.
-
-Ordinary provider sessions authenticate through their provider-owned adapters;
-MCP `agent_handle` is never model authentication. Standalone and internal ucode
-use the independent gateway settings below.
-
-Global `ucode` settings:
+Global `~/.ufoo/config.json` (`ucode`, `browser`, and `mac` sections):
 
 ```json
 {
   "ucodeProvider": "openai",
-  "ucodeModel": "gpt-4.1",
+  "ucodeModel": "gpt-6.1-sol",
+  "ucodeAuxModel": "",
   "ucodeBaseUrl": "https://api.openai.com/v1",
   "ucodeApiKey": "sk-...",
-  "ucodeAgentDir": ""
+  "browser": { "enabled": true, "backend": "ufoo-extension" },
+  "mac": { "enabled": true, "hud": true, "takeoverGuard": true }
 }
 ```
 
-## Source Layout
+> **Note on Internal Codex Host Access**: Embedded internal Codex SDK threads currently default to `danger-full-access`, network enabled, and `approvalPolicy: never` (bounded by your OS user permissions) so mobile simulators, Gradle/ADB daemons, and build caches work seamlessly. Relaunch existing workers after upgrading to pick up runtime policy updates.
+
+---
+
+## Source Layout & Development
 
 ```text
+crates/ufoo-tui/        Rust ratatui terminal renderer (chat & ucode surfaces)
+extensions/ufoo-browser/ Chrome MV3 extension for ufoo Browser
 src/
-  app/            chat client state and CLI command entry
-  ui/             Rust TUI hosts + pure formatting helpers
-  crates/ufoo-tui Rust ratatui child (required for chat/ucode)
-  runtime/        daemon, projects, terminal adapters, contracts, privacy, process helpers
-  coordination/   bus, context, memory, history, reports, state, status
-  orchestration/  router/controller logic, groups, solo roles
-  agents/         shared runtime, capabilities, profiles, providers, launchers, prompts
-  code/           native ucode host, launcher, skills, file/shell tools
-  tools/          shared controller/worker tool registry and handlers
-  online/         relay client/server/runner/token helpers
+  app/                  Chat client controller & CLI command groups (setup, browser, mac, trace, metrics...)
+  ui/                   Rust TUI socket hosts, multi-pane session manager, and pure formatters
+  runtime/              Global daemon, project runtimes, MCP HTTP/stdio, terminal, browser & mac runtimes
+  orchestration/        Launch routing, group templates/validation, and solo role policies
+  agents/               Shared runtime core, Context Engine V2, capabilities, profiles, providers, prompts
+  code/                 Native ucode host, file/shell/background tools, Plan Mode, and session codecs
+  coordination/         Event bus, decisions, shared memory, history, reports, and file-locked state
+  tools/                Shared controller/worker MCP tool schemas and handlers
+  online/               WebSocket relay server, client, rooms, and inbox helpers
+SKILLS/                 Default skills (ufoo, ufoo-bus, ufoo-context, ufoo-online)
+OPTIONAL_SKILLS/        Opt-in host wake skill (ufoo-bus-poll)
+templates/groups/       Built-in multi-agent workflow templates
 ```
 
-See [PROJECT.md](docs/PROJECT.md) for the maintainer-facing map and detailed package
-ownership.
+See [docs/PROJECT.md](docs/PROJECT.md) for full architectural invariants and package boundaries.
 
-Reports share one task ID across lifecycle phases. Pass `--task <id>` to
-`ufoo report`, or `task_id` to MCP `report_agent_status`. Without an explicit ID,
-CLI progress/done/error attach to the agent's single active task; multiple
-active tasks require an ID. Reports are acknowledged after persistence, and
-ordinary bus replies do not imply task completion. `autoResume` defaults to
-`false` consistently before and after partial configuration updates.
-
-## Development
+### Development & Testing
 
 ```bash
 npm install
-npm run pack:tui
-npm link
-node bin/ufoo.js --help
-npm test
+npm run pack:tui          # Build & stage crates/ufoo-tui into dist/tui/<platform>-<arch>/
+cargo test -p ufoo-tui    # Rust TUI unit tests
+npm test                  # Full Jest suite
 ```
 
-Useful checks:
+Optional live integration suites:
 
 ```bash
-npm run test:watch
-npm run test:coverage
+# Real Chrome extension/CDP fixture (uses a disposable profile, never your personal profile)
+UFOO_TEST_BROWSER=1 npm test -- --runTestsByPath test/integration/browser-existing-chrome.test.js
+
+# macOS independent Agent Mouse pointer verification against a disposable AppKit window
+UFOO_TEST_MAC_POINTER=1 npm test -- --runTestsByPath test/integration/mac-independent-pointer.test.js
 ```
 
-The repository is CommonJS, targets Node.js 18.17+, and ships a Rust TTY UI
-(`crates/ufoo-tui`) as platform binaries under `dist/tui/`.
+### Release & Troubleshooting
 
-## Release
-
-Releases are published by GitHub Actions (`.github/workflows/release.yml`).
-The workflow builds `ufoo-tui` for `darwin-arm64`, `darwin-x64`, `linux-x64`,
-and `linux-arm64`, stages them under `dist/tui/<platform>/`, then runs
-`npm publish`.
-
-1. Bump the version and push a matching tag:
-
-```bash
-npm test
-npm version patch   # commits package.json + creates tag vX.Y.Z
-git push --follow-tags
-```
-
-2. Ensure the repo secret `NPM_TOKEN` is set (npm automation token with
-   publish rights for `u-foo`).
-3. The `Release` workflow runs on the `v*` tag. Use **Actions → Release →
-   Run workflow** for a manual dry-run (`dry_run=true` packs but does not publish).
-
-Local one-platform staging (dev only):
-
-```bash
-npm run pack:tui          # cargo build + copy into dist/tui/$PLATFORM
-npm pack --dry-run        # requires at least one staged binary (prepack check)
-```
-
-Publishing without the GitHub workflow still requires an npm account/token with
-permission for `u-foo`, plus staged `dist/tui/` binaries.
-## Troubleshooting
-
-Run a local entry directly if the linked binary is not on `PATH`:
-
-```bash
-node bin/ufoo.js --help
-```
-
-If Codex cannot write under its default home, point it at a project-local
-directory before launching chat or agents:
-
-```bash
-export CODEX_HOME="$PWD/.ufoo/codex"
-ufoo
-```
-
-For Codex-friendly notifications, prefer bus helpers over raw terminal text
-injection:
-
-```bash
-ufoo bus alert codex:abc123 --daemon
-ufoo bus listen codex:abc123
-```
+- **Releases**: GitHub Actions (`.github/workflows/release.yml`) runs full CI verification, builds `ufoo-tui` across `darwin-arm64`, `darwin-x64`, `linux-x64`, and `linux-arm64`, verifies package integrity, and publishes to npm on `v*` tags (`npm version patch && git push --follow-tags`).
+- **Deleted Workspaces**: Preview stale project registry entries with `ufoo project prune`, and archive them to `~/.ufoo/projects/archive/` with `ufoo project prune --apply`.
+- **Restricted Codex Home**: If `~/.codex` is read-only in a sandboxed environment, export `CODEX_HOME="$PWD/.ufoo/codex"` before launching `ufoo`.
 
 ## License
 

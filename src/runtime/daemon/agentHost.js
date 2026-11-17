@@ -9,6 +9,7 @@ const { spawnSync } = require("child_process");
 const { createAgentRuntime, createRuntimeStore, createTaskScheduler } = require("../../agents/runtime");
 const { createMainCapabilities, createGlobalCapabilities, createTurnRecallCapability } = require("../../agents/capabilities");
 const { createBrowserCapability } = require("../../agents/capabilities/browser");
+const { createMacCapability } = require("../../agents/capabilities/mac");
 const { createCodingCapability } = require("../../agents/capabilities/coding");
 const { createBackgroundHookSource } = require("../../agents/capabilities/coding/backgroundHooks");
 const { createMainPlanningCapability } = require("../../agents/capabilities/planning/main");
@@ -45,7 +46,7 @@ const { replayHistory } = require("../../agents/runtime/context/replayHistory");
 
 const hash = (value) => createHash("sha256").update(value).digest("hex").slice(0, 32);
 const safeId = (value) => /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,100}$/.test(value || "");
-const MAIN_GRANTS = ["workspace.read", "workspace.write", "workspace.execute", "interaction.request", "coordination.read", "coordination.write", "agents.manage", "memory.write", "tasks.accept", "tasks.execute", "groups.manage", "schedules.manage", "browser.control"];
+const MAIN_GRANTS = ["workspace.read", "workspace.write", "workspace.execute", "interaction.request", "coordination.read", "coordination.write", "agents.manage", "memory.write", "tasks.accept", "tasks.execute", "groups.manage", "schedules.manage", "browser.control", "mac.control"];
 
 function resolveTaskWorkspace(projectRoot, requested = "") {
   const target = canonicalProjectRoot(requested || projectRoot);
@@ -456,10 +457,10 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
   }
   function getChild(job) {
     if (children.has(job.id)) return children.get(job.id);
-    const grants = job.readOnly ? ["workspace.read"] : ["workspace.read", "workspace.write", "workspace.execute", "interaction.request", "browser.control"];
+    const grants = job.readOnly ? ["workspace.read"] : ["workspace.read", "workspace.write", "workspace.execute", "interaction.request", "browser.control", "mac.control"];
     const coding = createCodingCapability({ workspaceAccess });
     coding.tools = coding.tools.filter((tool) => tool.permissions.every((permission) => grants.includes(permission)));
-    const capabilities = [coding, createSkillsCapability(), createTurnRecallCapability({ projectRoot: job.workspaceRoot, contextNamespace: "main-task" }, { defaultNamespace: "main-task" }), ...(job.readOnly ? [] : [createMainPlanningCapability(), createBrowserCapability()])];
+    const capabilities = [coding, createSkillsCapability(), createTurnRecallCapability({ projectRoot: job.workspaceRoot, contextNamespace: "main-task" }, { defaultNamespace: "main-task" }), ...(job.readOnly ? [] : [createMainPlanningCapability(), createBrowserCapability(), createMacCapability()])];
     const host = { grantedPermissions: grants, taskScheduler: { schedule(options, work) {
       return scheduler.schedule(options, (signal) => job.readOnly ? work(signal)
         : workspaceAccess.runTask({ workspaceRoot: job.workspaceRoot, taskRunId: options.id, signal }, () => work(signal)).then((result) => {

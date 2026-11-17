@@ -70,6 +70,13 @@ const DEFAULT_BROWSER_CONFIG = Object.freeze({
   profile: "",
 });
 
+const DEFAULT_MAC_CONFIG = Object.freeze({
+  enabled: true,
+  hud: true,
+  takeoverGuard: true,
+  schemaVersion: 1,
+});
+
 function normalizeAuxModel(value) {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -187,6 +194,16 @@ function normalizeBrowserConfig(raw = {}) {
   };
   if (profile) normalized.profile = profile;
   return normalized;
+}
+
+function normalizeMacConfig(raw = {}) {
+  const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  return {
+    enabled: typeof source.enabled === "boolean" ? source.enabled : DEFAULT_MAC_CONFIG.enabled,
+    hud: typeof source.hud === "boolean" ? source.hud : DEFAULT_MAC_CONFIG.hud,
+    takeoverGuard: typeof source.takeoverGuard === "boolean" ? source.takeoverGuard : DEFAULT_MAC_CONFIG.takeoverGuard,
+    schemaVersion: 1,
+  };
 }
 
 function globalConfigPath() {
@@ -382,9 +399,31 @@ function saveGlobalBrowserConfig(updates = {}) {
   });
 }
 
+function loadGlobalMacConfig() {
+  const raw = loadJsonSafe(globalConfigPath());
+  return normalizeMacConfig(raw.mac);
+}
+
+function saveGlobalMacConfig(updates = {}) {
+  const target = globalConfigPath();
+  return withFileLock(target, () => {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const existing = loadJsonForUpdate(target);
+    const merged = withoutRemovedSettings(existing);
+    const nextMac = normalizeMacConfig({
+      ...(existing.mac && typeof existing.mac === "object" ? existing.mac : {}),
+      ...(updates && typeof updates === "object" ? updates : {}),
+    });
+    merged.mac = nextMac;
+    writeFileAtomic(target, JSON.stringify(merged, null, 2), { mode: 0o600 });
+    return nextMac;
+  });
+}
+
 module.exports = {
   SETTINGS_MODEL_DEFAULTS,
   DEFAULT_BROWSER_CONFIG,
+  DEFAULT_MAC_CONFIG,
   globalConfigPath,
   loadConfig,
   saveConfig,
@@ -394,9 +433,12 @@ module.exports = {
   saveGlobalDaemonConfig,
   loadGlobalBrowserConfig,
   saveGlobalBrowserConfig,
+  loadGlobalMacConfig,
+  saveGlobalMacConfig,
   normalizeBrowserBackend,
   normalizeBrowserSetupChoice,
   normalizeBrowserConfig,
+  normalizeMacConfig,
   normalizeLaunchMode,
   normalizeDaemonTopology,
   normalizeAgentProvider,

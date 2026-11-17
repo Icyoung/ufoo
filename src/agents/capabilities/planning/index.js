@@ -18,7 +18,7 @@ const {
 const { hasPendingUserInteraction, getPendingUserInteraction } = require("../../../code/context/userInteraction");
 const { checkWriteAllowed } = require("../../../code/runtime/workspaceLease");
 
-const DATA_TOOLS = new Set(["read", "read_image", "write", "edit", "bash", "artifact_read", "browser"]);
+const DATA_TOOLS = new Set(["read", "read_image", "write", "edit", "bash", "artifact_read", "browser", "mac_app"]);
 const SIDE_EFFECT_DATA_TOOLS = new Set(["write", "edit", "bash"]);
 const CONTROL_TOOLS = new Set(["plan_graph", "task_run"]);
 

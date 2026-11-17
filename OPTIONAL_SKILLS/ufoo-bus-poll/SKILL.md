@@ -41,6 +41,7 @@ the caller cancels the wait.
 
    - Codex App: use the pending MCP workflow below.
    - Cursor with `notify_on_output`: use the monitored stdout workflow below.
+   - Antigravity App (`agy app`): use the background exit-on-message waiter workflow below.
    - Another App: use its documented pending-tool or output-notification
      primitive. If neither exists, automatic self-wake is unavailable; use an
      explicit `$ufoo-bus` check or a user-approved scheduled fallback.
@@ -120,6 +121,32 @@ host task state and the single-subscriber lease.
 
 This process wakes only its own Cursor session. A peer that must react while
 unattended needs its own armed poll or another real wake channel.
+
+## Use Antigravity App (`agy app`) exit-on-message background wait
+
+Antigravity App (`agy app`) wakes the session automatically when a background
+`run_command` exits (reactive wakeup), while foreground MCP `wait_for_message`
+would block the active chat turn and Cursor's `notify_on_output` is not
+available:
+
+1. After MCP `register_agent`, launch one background `run_command`
+   (`WaitMsBeforeAsync: 500`) using the caller-owned `<subscriber-id>` (never
+   pass or print `agent_handle` in the shell command):
+
+   ```bash
+   bash -lc 'while true; do out=$(ufoo bus check "<subscriber-id>" 2>/dev/null || true); if printf "%s" "$out" | grep -q "\[ufoo\]"; then printf "%s\n" "$out"; exit 0; fi; sleep 5; done'
+   ```
+
+2. End the turn without polling; while the waiter sleeps in the background, it
+   emits nothing and consumes zero model tokens, and the user can still message
+   the session normally.
+3. When a `[ufoo]` event arrives, the command prints the batch and exits `0`,
+   waking the session. Read the pending messages (or verify via MCP `poll_inbox`
+   to obtain exact `seq`), execute actionable work, and acknowledge via MCP
+   `ack_bus` (`through_seq`, with session-local `agent_handle`).
+4. After handling and any active work completes, re-arm one new background
+   exit-on-message waiter. Stop only when the user asks to stop (kill the
+   background task via `manage_task` and do not re-arm).
 
 ## Handle delivered batches
 

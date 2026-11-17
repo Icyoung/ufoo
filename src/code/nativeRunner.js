@@ -9,6 +9,7 @@ const { createPlanningCapability } = require("../agents/capabilities/planning");
 const { createSkillsCapability } = require("../agents/capabilities/skills");
 const { createTurnRecallCapability } = require("../agents/capabilities/turnRecall");
 const { createBrowserCapability } = require("../agents/capabilities/browser");
+const { createMacCapability } = require("../agents/capabilities/mac");
 const codingProfile = require("../agents/profiles/coding");
 const { loadConfig, defaultAuxModelForProvider, sameModelProvider } = require("../config");
 const { runCoreToolAsync } = require("./tools/executor");
@@ -85,8 +86,9 @@ async function runNativeLoop(options = {}) {
       createSkillsCapability(),
       createTurnRecallCapability({ projectRoot: options.workspaceRoot }, { defaultNamespace: "ucode" }),
       createBrowserCapability(),
+      createMacCapability(),
     ],
-    host: { runtimeHooks: options.runtimeHooks, grantedPermissions: ["workspace.read", "workspace.write", "workspace.execute", "execution.control", "interaction.request", "browser.control"] },
+    host: { runtimeHooks: options.runtimeHooks, grantedPermissions: ["workspace.read", "workspace.write", "workspace.execute", "execution.control", "interaction.request", "browser.control", "mac.control"] },
     defaults: {
       sanitizeMessages: sanitizeModelMessages,
       retireImages: retireMessageImages,
