@@ -25,14 +25,22 @@ function createDaemonMessageRouter(options = {}) {
     setTransientAgentState = () => {},
     clearTransientAgentState = () => {},
     refreshDashboard = () => {},
+    isOwnRequestId = () => false,
+    onInteractionRequest = null,
+    onInteractionClear = null,
+    onRuntimeEvent = null,
   } = options;
   const runtimeSequences = new Map();
   const runtimeStreams = new Map();
   const runtimeFinished = new Set();
   const runtimeInteractions = new Set();
-  function showInteraction(interaction) {
+  const renderedPeerRequests = new Set();
+  function showInteraction(interaction, context = {}) {
     if (!interaction || runtimeInteractions.has(interaction.id)) return;
     runtimeInteractions.add(interaction.id);
+    if (typeof onInteractionRequest === "function") {
+      onInteractionRequest({ ...interaction, ...context });
+    }
     logMessage("system", escapeBlessed(`${interaction.prompt}\n${(interaction.options || []).map((option) => `[${option.key}] ${option.label}`).join("  ")}\n/answer ${interaction.id} <reply>`));
   }
   function handleRuntimeEvent(event) {
@@ -40,9 +48,28 @@ function createDaemonMessageRouter(options = {}) {
     const sessionKey = `${event.projectId || ""}:${event.sessionId}`;
     if (event.sequence <= (runtimeSequences.get(sessionKey) || 0)) return true;
     runtimeSequences.set(sessionKey, event.sequence);
+    if (typeof onRuntimeEvent === "function") {
+      try { onRuntimeEvent(event); } catch { /* ignore observer errors */ }
+    }
     const key = `${sessionKey}:${event.taskRunId}`;
     const label = event.agentId === "ufoo-agent" ? "ufoo" : `task ${event.taskRunId}`;
-    if (event.type === "message.delta") {
+    if (event.type === "request.accepted" && event.agentId === "ufoo-agent") {
+      const req = event.request && typeof event.request === "object" ? event.request : {};
+      const reqId = String(req.requestId || "").trim();
+      const isUserTurn = !req.runtimeEvent && !req.report && !req.parentTaskRunId;
+      const promptText = String(req.text || "").trim();
+      if (isUserTurn && promptText && (!reqId || (!isOwnRequestId(reqId) && !renderedPeerRequests.has(reqId)))) {
+        if (reqId) {
+          renderedPeerRequests.add(reqId);
+          if (renderedPeerRequests.size > 500) renderedPeerRequests.delete(renderedPeerRequests.values().next().value);
+        }
+        logMessage("user", escapeBlessed(promptText));
+      }
+    } else if (event.type === "interaction.answered") {
+      if (typeof onInteractionClear === "function") {
+        onInteractionClear({ id: event.interactionId || "", sessionId: event.sessionId, taskRunId: event.taskRunId });
+      }
+    } else if (event.type === "message.delta") {
       const state = beginStream(key, speakerPrefix(label, "white"), "       ", { runtime: true, sessionId: event.sessionId, taskRunId: event.taskRunId });
       appendStreamDelta(state, event.text || "");
       runtimeStreams.set(key, true);
@@ -56,7 +83,7 @@ function createDaemonMessageRouter(options = {}) {
         if (text) logMessage("reply", `${speakerPrefix(label, "white")}${escapeBlessed(text)}`);
       }
       if (["task.failed", "task.interrupted"].includes(event.type)) logMessage("error", escapeBlessed(`${label}: ${event.error || event.type}`));
-      if (event.type === "task.paused") showInteraction(event.result?.executionState?.pendingUserInteraction);
+      if (event.type === "task.paused") showInteraction(event.result?.executionState?.pendingUserInteraction, { sessionId: event.sessionId, taskRunId: event.taskRunId });
       runtimeFinished.add(event.taskRunId);
       if (runtimeFinished.size > 500) runtimeFinished.delete(runtimeFinished.values().next().value);
       requestStatus();

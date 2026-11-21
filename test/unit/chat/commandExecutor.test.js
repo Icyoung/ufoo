@@ -103,6 +103,18 @@ function createHarness(overrides = {}) {
 describe("chat commandExecutor", () => {
   const originalEnv = { ...process.env };
 
+  test("/model opens the ufoo model selector and saves a selected model and effort", async () => {
+    const { parseCommand } = require("../../../src/app/chat/commands");
+    const openAgentSettings = jest.fn();
+    const applyAgentModel = jest.fn().mockResolvedValue({ ok: true });
+    const { executor } = createHarness({ parseCommand, openAgentSettings, applyAgentModel });
+
+    expect(await executor.executeCommand("/model")).toBe(true);
+    expect(openAgentSettings).toHaveBeenCalledWith("model");
+    expect(await executor.executeCommand("/model gateway-model high")).toBe(true);
+    expect(applyAgentModel).toHaveBeenCalledWith("gateway-model", "high");
+  });
+
   beforeEach(() => {
     delete process.env.UFOO_HOST_INJECT_SOCK;
     delete process.env.HORIZON_INJECT_SOCK;

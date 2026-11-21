@@ -78,12 +78,12 @@ function patchTaskContract(contract = {}, patch = {}) {
   return base;
 }
 
-function renderTaskContract(contract = null) {
+function renderTaskContract(contract = null, { includeObjective = true } = {}) {
   if (!contract || !contract.objective) return "";
   const lines = [
     "Task Contract:",
-    `- Objective: ${contract.objective}`,
   ];
+  if (includeObjective) lines.push(`- Objective: ${contract.objective}`);
   if (Array.isArray(contract.successCriteria) && contract.successCriteria.length > 0) {
     lines.push(`- Success criteria: ${contract.successCriteria.join("; ")}`);
   }

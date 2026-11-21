@@ -1,7 +1,7 @@
 "use strict";
 
 const { normalizeTopic, tokenizeForSearch } = require("./turnIndexStore");
-const { stripTurnContextWrapper, parseJsonObjectLenient } = require("./turnAnalyzer");
+const { parseJsonObjectLenient } = require("./turnAnalyzer");
 
 const TEMPORAL_ANCHORS = [
   /刚才|刚刚|上一步|上一个|上一轮|前面|之前那个|刚才那个|上面那个/,
@@ -33,6 +33,7 @@ function createTopicSelector({
 } = {}) {
   async function select({
     currentQuery = "",
+    turnId = "",
     requestKind = "user",
     resume = false,
     allTurns = [],
@@ -42,7 +43,7 @@ function createTopicSelector({
     signal = null,
   } = {}) {
     const startMs = Date.now();
-    const cleanedQuery = stripTurnContextWrapper(String(currentQuery || "")).trim();
+    const cleanedQuery = String(currentQuery || "").trim();
     const turns = Array.isArray(allTurns) ? allTurns.slice().sort((a, b) => (a.turnIndex || 0) - (b.turnIndex || 0)) : [];
     const inWindow = new Set(windowTurnIds || []);
     const offWindowTurns = turns.filter((t) => t && !inWindow.has(t.turnId));
@@ -257,6 +258,7 @@ function createTopicSelector({
         }));
         const raw = await runAuxModel({
           purpose: "topic_select",
+          turnId,
           currentQuery: cleanedQuery,
           activeTopics,
           candidates: candidateTurns,

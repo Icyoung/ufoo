@@ -475,7 +475,7 @@ remain intact. Wrappers still own terminal rendering, activity, and lifecycle.
 | Package | Owner concept | Notes |
 |---|---|---|
 | `src/app/chat/` | Chat client | Slash commands, daemon connection, multi-window panes, agent selection, `ChatController`, history/stream helpers. |
-| `src/app/cli/` | CLI entry | Main command runner, `setupCommands.js`, `browserCommands.js`, `macCommands.js`, and command groups. |
+| `src/app/cli/` | CLI entry | Main command runner, `setupCommands.js`, `browserCommands.js`, `macCommands.js`, `appCommands.js`, and command groups. |
 | `src/app/cli/features/` | CLI features | Init, doctor, and skill installation logic used by CLI/chat/daemon entry paths. |
 | `src/ui/format/` | Pure display helpers | Width, markdown, status, input, and banner formatting. |
 | `src/ui/tuiLauncher.js` | Rust TUI launch plan | `UFOO_TUI=auto\|rust`; binary resolve. |
@@ -489,7 +489,12 @@ remain intact. Wrappers still own terminal rendering, activity, and lifecycle.
 | `src/code/internalThread.js` | Embedded native coding thread | Adapts the same native ucode runner to internal tasks, streaming, sessions and user replies. |
 | `src/coordination/history/agentSurface.js` | Internal display observations | Redacted ordered provider events, independent of inbox delivery and reply targets. |
 | `src/ui/toolMergeBridge.js` | Tool-merge → UI events | Collapsed `tool.*` publisher for Rust hosts. |
+| `src/ui/desktopUiHost.js` | Desktop UI host | Shared Node `ufoo-ui/1` host (`desktop-host-v1`, `markdown-raw-v1`) connecting `Ufoo.app` to `GlobalDaemon` with multi-project + worker tree, `main\|side\|multi` + single-worker stage, and right-rail inspection. |
+| `src/ui/workspaceInspector.js` | Workspace asset inspector | Git diff/worktree/report summaries (`Changes`), safe workspace doc reader (`Docs`), and Decisions/Memory CRUD (`Context`). |
+| `src/ui/cliHandoff.js` | CLI ↔ App handoff | `ufoo://` deep links, `~/.ufoo/run/desktop-handoff.sock` wakeup, macOS terminal launcher, and `~/.ufoo/bin` CLI shims. |
 | `crates/ufoo-tui/` | Rust TTY UI | Required `ufoo-ui/1` child process (ratatui). |
+| `crates/ufoo-desktop/` | macOS Desktop host | Tauri v2 native macOS shell with vibrancy, bundled Node runtime supervisor, and `ufoo-ui/1` socket bridge. |
+| `apps/desktop/` | Desktop WebView UI | React + TypeScript + Tailwind three-pane Codex-style workbench (`LeftSidebar`, `CenterStage`, `RightInspector`). |
 | `src/runtime/browser/` | Optional browser runtime | Component installer, Native Messaging Host, user-scoped `BrowserBroker`, per-session CDP relay, and Playwright MCP session lifecycle. |
 | `src/runtime/mac/` | macOS app & Agent Mouse runtime | Cached Swift native helper compiler, Unix-socket `NSApplication` helper (`AXUIElement`, shadowless screenshots, `CGEvent`, Agent Mouse HUD, human takeover monitor), and per-session state/leases. |
 | `extensions/ufoo-browser/` | Ufoo Chrome extension | Manifest V3 Chrome extension ("Ufoo"), popup control panel, Native Messaging auto-discovery, and Apache-2.0 attribution/build docs. |

@@ -43,7 +43,7 @@ describe("providers transports", () => {
       toolCalls: [{ id: "call_1", function: { name: "read", arguments: '{"path":"README.md"}' } }],
     });
     transport.appendToolResult({ messages, call: pending[0], toolResult: { ok: true, content: "ok" } });
-    expect(messages).toEqual([
+    expect(messages).toMatchObject([
       {
         role: "assistant",
         content: null,
@@ -80,7 +80,7 @@ describe("providers transports", () => {
         output: '{"ok":true,"content":"ok"}',
       },
     ]);
-    expect(JSON.stringify(messages)).not.toContain("encrypted-reasoning-1");
+    expect(JSON.stringify(messages)).toContain("encrypted-reasoning-1");
   });
 
   test("openai transport prepares tool_calls and appends tool results", () => {
@@ -259,8 +259,10 @@ describe("providers transports", () => {
       { type: "function_call_output", call_id: "call_bash", output: '{"ok":true}' },
     ]);
 
-    // Restored from JSON journal (without non-enumerable symbols): assistant message still precedes function_call.
+    // A journal round-trip preserves encrypted reasoning and original output order.
     const roundTripped = JSON.parse(JSON.stringify(respMessages));
+    expect(messagesToResponsesInput(roundTripped)).toEqual(messagesToResponsesInput(respMessages));
+    delete roundTripped[0].responsesContinuation;
     expect(messagesToResponsesInput(roundTripped)).toEqual([
       { type: "message", role: "assistant", content: [{ type: "output_text", text: "我会做成一个 3D 海边场景。" }] },
       { type: "function_call", call_id: "call_bash", name: "bash", arguments: '{"command":"pwd"}' },

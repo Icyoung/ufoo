@@ -2,6 +2,10 @@
 resolver = "2"
 members = [
   "crates/ufoo-tui",
+  "crates/ufoo-desktop",
+]
+default-members = [
+  "crates/ufoo-tui",
 ]
 
 [workspace.package]

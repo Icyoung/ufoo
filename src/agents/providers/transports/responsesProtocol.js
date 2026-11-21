@@ -1,8 +1,7 @@
 "use strict";
 
 const DEFAULT_RESPONSES_MAX_OUTPUT_TOKENS = 32768;
-const RESPONSES_REASONING_ITEMS = Symbol("ufoo.responsesReasoningItems");
-const RESPONSES_OUTPUT_ITEMS = Symbol("ufoo.responsesOutputItems");
+const RESPONSES_CONTINUATION_VERSION = 1;
 
 function cloneJsonValue(value) {
   try {
@@ -57,45 +56,26 @@ function orderedOutputItemsFromResponse(response = null) {
   return items;
 }
 
-function attachResponsesReasoningItems(message = null, response = null) {
+function attachResponsesReasoningItems(message, response, { model, channel, endpointKey } = {}) {
   if (!message || typeof message !== "object") return message;
-  const items = reasoningItemsFromResponse(response);
-  if (items.length > 0) {
-    Object.defineProperty(message, RESPONSES_REASONING_ITEMS, {
-      value: items,
-      enumerable: false,
-      configurable: false,
-      writable: false,
-    });
-  }
-  const ordered = orderedOutputItemsFromResponse(response);
-  if (ordered.length > 0) {
-    Object.defineProperty(message, RESPONSES_OUTPUT_ITEMS, {
-      value: ordered,
-      enumerable: false,
-      configurable: false,
-      writable: false,
-    });
+  const items = orderedOutputItemsFromResponse(response);
+  if (items.length) {
+    message.responsesContinuation = { version: RESPONSES_CONTINUATION_VERSION, model, channel, endpointKey, items };
   }
   return message;
 }
 
-function getResponsesReasoningItems(message = null) {
-  const items = message && typeof message === "object"
-    ? message[RESPONSES_REASONING_ITEMS]
-    : null;
-  return (Array.isArray(items) ? items : [])
-    .map(cloneJsonValue)
-    .filter(Boolean);
+function getResponsesReasoningItems(message) {
+  return reasoningItemsFromResponse({ output: getResponsesOutputItems(message) });
 }
 
-function getResponsesOutputItems(message = null) {
-  const items = message && typeof message === "object"
-    ? message[RESPONSES_OUTPUT_ITEMS]
-    : null;
-  return (Array.isArray(items) ? items : [])
-    .map(cloneJsonValue)
-    .filter(Boolean);
+function getResponsesOutputItems(message, { model, channel, endpointKey } = {}) {
+  const continuation = message?.responsesContinuation;
+  if (continuation?.version !== RESPONSES_CONTINUATION_VERSION
+    || (model && continuation.model && model !== continuation.model)
+    || (channel && continuation.channel && channel !== continuation.channel)
+    || (endpointKey && continuation.endpointKey && endpointKey !== continuation.endpointKey)) return [];
+  return (Array.isArray(continuation.items) ? continuation.items : []).map(cloneJsonValue).filter(Boolean);
 }
 
 function resolveResponsesUrl(baseUrl = "") {
@@ -175,7 +155,7 @@ function normalizeContentParts(content, role = "user") {
   return parts;
 }
 
-function messagesToResponsesInput(messages = []) {
+function messagesToResponsesInput(messages = [], request = {}) {
   const input = [];
   for (const message of Array.isArray(messages) ? messages : []) {
     if (!message || typeof message !== "object") continue;
@@ -193,14 +173,15 @@ function messagesToResponsesInput(messages = []) {
       continue;
     }
 
-    if (role === "assistant" && Array.isArray(message.tool_calls)) {
+    const orderedItems = role === "assistant" ? getResponsesOutputItems(message, request) : [];
+    if (role === "assistant" && (Array.isArray(message.tool_calls) || orderedItems.length > 0)) {
       // With store=false and no previous_response_id, encrypted reasoning and
       // commentary message items must be replayed in their original order
       // before the corresponding function calls so function_call stays paired
       // with function_call_output.
       const normalizedCalls = [];
       const callsById = new Map();
-      for (const call of message.tool_calls) {
+      for (const call of message.tool_calls || []) {
         if (!call || typeof call !== "object") continue;
         const fn = call.function && typeof call.function === "object" ? call.function : call;
         const callId = String(call.id || call.call_id || "").trim();
@@ -216,7 +197,6 @@ function messagesToResponsesInput(messages = []) {
         callsById.set(callId, callItem);
       }
 
-      const orderedItems = getResponsesOutputItems(message);
       const fallbackText = normalizeContentParts(message.content, "assistant");
 
       if (orderedItems.length > 0) {
@@ -233,7 +213,9 @@ function messagesToResponsesInput(messages = []) {
           if (item.type === "message") {
             const msgParts = normalizeContentParts(item.content, "assistant");
             if (msgParts.length > 0) {
-              turnBuffer.push({ type: "message", role: "assistant", content: msgParts });
+              turnBuffer.push({ type: "message", role: "assistant", content: msgParts,
+                ...(["commentary", "final_answer"].includes(item.phase) ? { phase: item.phase } : {}),
+              });
               emittedMessageText = true;
             }
             continue;
@@ -262,7 +244,6 @@ function messagesToResponsesInput(messages = []) {
         }
         input.push(...turnBuffer);
       } else {
-        input.push(...getResponsesReasoningItems(message));
         if (fallbackText.length > 0) {
           input.push({ type: "message", role: "assistant", content: fallbackText });
         }
@@ -313,16 +294,20 @@ function toolsToResponsesTools(tools = []) {
 function buildResponsesPayload({
   model = "",
   instructions = "",
+  systemBlocks = null,
   messages = [],
   tools = [],
   maxOutputTokens = DEFAULT_RESPONSES_MAX_OUTPUT_TOKENS,
   reasoningEffort = "",
   provider = "",
+  requestProfile = "",
+  endpointKey = "",
+  strategyVersion = 1,
 } = {}) {
   const payload = {
     model: String(model || "").trim(),
     instructions: String(instructions || ""),
-    input: messagesToResponsesInput(messages),
+    input: messagesToResponsesInput(messages, { model, channel: requestProfile, endpointKey }),
     max_output_tokens: Math.max(1, Number(maxOutputTokens) || DEFAULT_RESPONSES_MAX_OUTPUT_TOKENS),
     stream: true,
     store: false,
@@ -336,6 +321,23 @@ function buildResponsesPayload({
   }
 
   const normalizedProvider = String(provider || "").trim().toLowerCase();
+  if (strategyVersion === 2 && /^gpt-6\.2-(?:sol|astra)(?:-\d{4}-\d\d-\d\d)?$/i.test(model) && payload.instructions) {
+    if (requestProfile === "openai-responses") {
+      payload.input.unshift({ type: "message", role: "developer", content: [{ type: "input_text", text: payload.instructions }] });
+      delete payload.instructions;
+    } else if (requestProfile === "codex-subscription" && Array.isArray(systemBlocks)
+      && systemBlocks.map(block => block.text).join("\n\n") === payload.instructions) {
+      // The subscription endpoint requires top-level instructions. Only move the
+      // leading stable layers, leaving all subsequent guidance in original order.
+      let count = 0;
+      while (count < systemBlocks.length && ["immutable", "sessionStable"].includes(systemBlocks[count].layer)) count++;
+      if (count) {
+        const text = systemBlocks.slice(0, count).map(block => block.text).join("\n\n");
+        payload.input.unshift({ type: "message", role: "developer", content: [{ type: "input_text", text }] });
+        payload.instructions = systemBlocks.slice(count).map(block => block.text).join("\n\n") || "Follow the developer instructions in the conversation.";
+      }
+    }
+  }
   if (normalizedProvider === "codex" || normalizedProvider === "openai"
     || normalizedProvider === "grok-build" || normalizedProvider === "xai") {
     payload.include = ["reasoning.encrypted_content"];
@@ -406,13 +408,19 @@ function responseUsage(response = null) {
     ? details
     : {};
   const cached = inputDetails.cached_tokens ?? usage.cached_input_tokens ?? usage.cache_read_input_tokens;
-  if (![usage.input_tokens, usage.prompt_tokens, usage.output_tokens, usage.completion_tokens, cached]
+  const writes = inputDetails.cache_write_tokens ?? usage.cache_creation_input_tokens ?? usage.cache_creation_tokens;
+  const writeDetails = inputDetails.cache_write_tokens_details;
+  const count = value => value != null && Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : null;
+  const ttl30m = count(writeDetails?.ttl_30m_tokens);
+  const ttl12h = count(writeDetails?.ttl_12h_tokens);
+  if (![usage.input_tokens, usage.prompt_tokens, usage.output_tokens, usage.completion_tokens, cached, writes, ttl30m, ttl12h]
     .some(value => value != null && Number.isFinite(Number(value)))) return null;
   return {
-    input: Number(usage.input_tokens || usage.prompt_tokens || 0) || 0,
-    output: Number(usage.output_tokens || usage.completion_tokens || 0) || 0,
-    cacheRead: cached != null && Number.isFinite(Number(cached)) ? Number(cached) : null,
-    cacheCreation: Number(inputDetails.cache_write_tokens ?? usage.cache_creation_input_tokens ?? usage.cache_creation_tokens ?? 0) || 0,
+    input: count(usage.input_tokens ?? usage.prompt_tokens),
+    output: count(usage.output_tokens ?? usage.completion_tokens),
+    cacheRead: count(cached),
+    cacheCreation: count(writes),
+    ...((ttl30m !== null || ttl12h !== null) ? { cacheWriteByTtl: { "30m": ttl30m, "12h": ttl12h } } : {}),
     inputIncludesCache: true,
   };
 }

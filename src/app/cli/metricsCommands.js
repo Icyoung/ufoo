@@ -19,6 +19,9 @@ function comparePerformance(current, baseline) {
     elapsedP50Ms: report.summary.latency.elapsedMs?.p50 ?? null,
     elapsedP95Ms: report.summary.latency.elapsedMs?.p95 ?? null,
     firstTextP50Ms: report.summary.latency.firstTextMs?.p50 ?? null,
+    firstTextP95Ms: report.summary.latency.firstTextMs?.p95 ?? null,
+    inputCostPerCompletedTaskUsd: ratio(report.summary.completedTaskInputCost?.inputCostUsd,
+      report.summary.completedTaskInputCost?.tasks),
     inputTokensPerObservedRun: report.coverage?.runsWithCompleteUsage === report.summary.runs ? ratio(report.summary.usage.input?.sum, report.summary.usage.input?.samples) : null,
     outputTokensPerObservedRun: report.coverage?.runsWithCompleteUsage === report.summary.runs ? ratio(report.summary.usage.output?.sum, report.summary.usage.output?.samples) : null,
     cacheHitRate: report.coverage?.runsWithCompleteCache === report.summary.runs ? report.summary.cache?.hitRate ?? null : null,
@@ -49,9 +52,11 @@ function runMetricsCommand(taskId, options = {}) {
     console.log(`Agent performance: ${summary.runs} observed runs${report.incomplete ? " (partial evidence)" : ""}`);
     console.log(`Execution: ${summary.outcomes.completed} completed, ${summary.outcomes.failed} failed, ${summary.outcomes.cancelled} cancelled; completed/finished ${percentage(summary.completedOfFinished)}`);
     console.log(`Latency: p50 ${duration(summary.latency.elapsedMs.p50)}, p95 ${duration(summary.latency.elapsedMs.p95)}; first text p50 ${duration(summary.latency.firstTextMs.p50)} (${summary.latency.firstTextMs.samples} samples)`);
-    console.log(`Models: ${summary.counts.modelCalls || 0} API attempts, ${summary.counts.sdkTurns || 0} SDK turns, ${summary.counts.modelFailures || 0} failures, ${summary.counts.modelRetries || 0} retries`);
+    console.log(`Models: ${summary.counts.modelCalls || 0} foreground API attempts, ${summary.counts.auxiliaryModelCalls || 0} auxiliary API attempts, ${summary.counts.sdkTurns || 0} SDK turns, ${summary.counts.modelFailures || 0} failures, ${summary.counts.modelRetries || 0} retries`);
     console.log(`Usage: input ${display(summary.usage.input.sum)}, output ${display(summary.usage.output.sum)}; context selections ${summary.counts.contextSelections || 0}, window projections ${summary.counts.windowProjections || 0}`);
     console.log(`Cache: ${percentage(summary.cache.hitRate)} hit; read ${display(summary.cache.cachedTokens)}/${display(summary.cache.promptTokens)} prompt tokens, written ${display(summary.usage.cacheCreation.sum)} (${summary.cache.samples}/${summary.cache.usageSamples} usage samples)`);
+    const cost = summary.completedTaskInputCost;
+    if (cost.requests) console.log(`Completed task input cost: ${cost.inputCostUsd == null ? "unknown" : `$${cost.inputCostUsd.toFixed(6)}`} (${cost.pricedTasks}/${cost.tasks} tasks fully priced). Channel, TTL and request details are available with --json.`);
     console.log(`Tools: ${summary.counts.toolCalls || 0} executed, ${summary.counts.toolErrors || 0} errors, ${summary.counts.toolRejections || 0} rejected, ${summary.counts.repeatedToolCalls || 0} repeated arguments`);
     console.log(`Delegation: ${report.delegations.accepted} accepted, ${report.delegations.rejected} rejected, ${report.delegations.awaitingAcceptance} awaiting acceptance`);
     for (const cohort of report.cohorts) console.log(`  ${cohort.provider}/${cohort.model} ${cohort.thinkingLevel} ${cohort.executionKind} ${cohort.requestKind} v${cohort.runtimeVersion} engine=${cohort.engineFingerprint.slice(0, 8)}: ${cohort.runs} runs, p50 ${duration(cohort.latency.elapsedMs.p50)}, cache ${percentage(cohort.cache.hitRate)}`);

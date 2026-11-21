@@ -53,6 +53,9 @@
   "scripts": {
     "postinstall": "node scripts/postinstall.js",
     "pack:tui": "node scripts/pack-tui.js",
+    "pack:desktop": "node scripts/pack-desktop.js",
+    "desktop:stage": "node scripts/pack-desktop.js --stage-only",
+    "desktop:ui:build": "npm --prefix apps/desktop run build",
     "prepack": "node scripts/pack-tui.js --check",
     "test": "jest",
     "test:watch": "jest --watch",

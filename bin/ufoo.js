@@ -34,15 +34,44 @@ function printMcpHelp() {
   console.log("  Human diagnostics are available in chat: /mcp status, /mcp tools, /mcp help");
 }
 
+function parseChatFlags(args = []) {
+  let project = "";
+  let initialWindowMode = "";
+  let initialAgentId = "";
+  for (let i = 0; i < args.length; i += 1) {
+    const val = String(args[i] || "");
+    if ((val === "--project" || val === "-p") && args[i + 1]) {
+      project = String(args[++i]);
+    } else if (val === "--window" && args[i + 1]) {
+      initialWindowMode = String(args[++i]).toLowerCase();
+    } else if (val === "--agent" && args[i + 1]) {
+      initialAgentId = String(args[++i]);
+    }
+  }
+  return { project, initialWindowMode, initialAgentId };
+}
+
 async function main() {
   const globalMode = hasGlobalModeFlag(rawArgv);
   const argv = rawArgv.filter((arg) => arg !== "-g" && arg !== "--global");
   const cmd = argv[0];
-  const chatProjectRoot = globalMode ? resolveGlobalControllerProjectRoot() : process.cwd();
+  const chatFlags = parseChatFlags(argv);
+  const chatProjectRoot = globalMode
+    ? resolveGlobalControllerProjectRoot()
+    : (chatFlags.project ? require("path").resolve(chatFlags.project) : process.cwd());
 
   if (!cmd) {
     await maybeRunFirstTimeSetup({ surface: "ufoo", argv: rawArgv });
-    await runChat(chatProjectRoot, { globalMode });
+    await runChat(chatProjectRoot, {
+      globalMode,
+      initialWindowMode: chatFlags.initialWindowMode,
+      initialAgentId: chatFlags.initialAgentId,
+    });
+    return;
+  }
+  if (cmd === "app") {
+    const { runAppCommand } = require("../src/app/cli/appCommands");
+    await runAppCommand(argv.slice(1));
     return;
   }
   if (cmd === "daemon") {
@@ -78,7 +107,11 @@ async function main() {
   }
   if (cmd === "chat") {
     await maybeRunFirstTimeSetup({ surface: "ufoo", argv: rawArgv });
-    await runChat(chatProjectRoot, { globalMode });
+    await runChat(chatProjectRoot, {
+      globalMode,
+      initialWindowMode: chatFlags.initialWindowMode,
+      initialAgentId: chatFlags.initialAgentId,
+    });
     return;
   }
 

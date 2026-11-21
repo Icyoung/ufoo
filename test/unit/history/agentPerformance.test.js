@@ -6,6 +6,36 @@ const time = second => new Date(Date.UTC(2026, 9, 11) + second * 1000).toISOStri
 const event = (type, second, extra = {}) => ({ type, time: time(second), taskRunId: "main", taskId: "main", agentId: "ufoo-agent", ...extra });
 
 describe("observed agent performance", () => {
+  test("calculates both cache writes at each request's rate before summing the task", () => {
+    const completedModel = (id, second, input, cacheWriteByTtl, channel = "openai-responses", model = "gpt-6.2-sol") => [
+      event("model.started", second, { modelRequestId: id, model, channel }),
+      event("model.completed", second + 1, { modelRequestId: id, model, channel, usage: {
+        input, output: 10, cacheRead: 1000, cacheCreation: 1500, cacheWriteByTtl, inputIncludesCache: channel === "openai-responses",
+      } }),
+    ];
+    const report = summarizeAgentPerformance([event("task.started", 0),
+      ...completedModel("at-boundary", 1, 272_000, { "30m": 1000, "12h": 500 }),
+      ...completedModel("above-boundary", 2, 272_001, { "30m": 1000, "12h": 500 }),
+      ...completedModel("claude", 3, 1000, { "5m": 1500, "1h": 0 }, "anthropic-messages", "claude-opus-5-5"),
+      event("task.completed", 5)]);
+    const [short, long, claude] = report.runs[0].modelRequests;
+    expect(short.inputCostUsd).toBeCloseTo(0.5441, 8);
+    expect(long.inputCostUsd).toBeCloseTo(1.088204, 8);
+    expect(claude.inputCostUsd).toBeCloseTo(0.0117, 8);
+    expect(report.summary.completedTaskInputCost.inputCostUsd).toBeCloseTo(1.644004, 8);
+    expect(report.runs[0].modelCost.cacheWriteByTtl).toEqual({ "5m": 1500, "1h": 0, "30m": 2000, "12h": 1000 });
+
+    const missing = (details, total = 1500) => {
+      const events = completedModel("partial", 1, 5000, details);
+      events[1].usage.cacheCreation = total;
+      return summarizeAgentPerformance([event("task.started", 0), ...events, event("task.completed", 3)]);
+    };
+    expect(missing({ "30m": 1000 }).runs[0].modelCost).toMatchObject({ inputCostUsd: null, cacheCreation: 1500 });
+    expect(missing({ "30m": 1000, "12h": 400 }).runs[0].modelCost).toMatchObject({ inputCostUsd: null, cacheCreation: 1500 });
+    expect(missing({ "30m": 1500, "12h": 0 }).runs[0].modelCost.inputCostUsd).toBeGreaterThan(0);
+    expect(missing(undefined, 0).runs[0].modelCost.inputCostUsd).toBeGreaterThan(0);
+  });
+
   test("weights cache hits by prompt tokens and respects OpenAI, Claude and Codex SDK input semantics", () => {
     const model = (run, provider, usage) => [event("task.started", 0, { taskRunId: run }),
       event("run.config", 0, { taskRunId: run, configuration: { provider } }),

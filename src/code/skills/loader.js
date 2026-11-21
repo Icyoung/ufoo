@@ -166,9 +166,17 @@ function discoverSkillsUnderRoot(rootInfo = {}, options = {}) {
     }
 
     for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
       if (entry.name.startsWith(".")) continue;
-      walk(path.join(dir, entry.name), depth + 1);
+      const child = path.join(dir, entry.name);
+      if (!entry.isDirectory()) {
+        if (!entry.isSymbolicLink() || depth !== 0 || rootInfo.scope !== "repo") continue;
+        const skillFile = path.join(child, SKILL_FILE);
+        if (!isFile(skillFile)) continue;
+        const workspace = canonicalPath(options.workspaceRoot || process.cwd());
+        const relative = path.relative(workspace, canonicalPath(skillFile));
+        if (relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) continue;
+      }
+      walk(child, depth + 1);
     }
   };
 

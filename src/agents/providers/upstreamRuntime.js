@@ -1,7 +1,7 @@
 "use strict";
 
 const { loadConfig, defaultAgentModelForProvider, sameModelProvider } = require("../../config");
-const { resolveRuntimeConfig } = require("./runtimeConfig");
+const { resolveRuntimeConfig, resolveResponsesRequestProfile } = require("./runtimeConfig");
 const { resolveClaudeUpstreamCredentials } = require("./credentials/claude");
 const { resolveCodexUpstreamCredentials } = require("./credentials/codex");
 const { resolveKimiUpstreamCredentials } = require("./credentials/kimi");
@@ -58,7 +58,7 @@ async function resolveUpstreamRuntime({
     return {
       provider: "codex",
       transport: "codex-responses",
-      requestProfile: useCodexOAuth ? "codex-subscription" : "openai-responses",
+      requestProfile: resolveResponsesRequestProfile(baseUrl, credential.credentialKind),
       model: resolvedModel,
       baseUrl,
       credential,

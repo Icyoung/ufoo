@@ -33,7 +33,7 @@ function createExecutionGuards({ signal = null, timeoutMs = 43200000 } = {}) {
 /** Shared model/tool loop. All business policies and tools are injected. */
 async function runAgentLoop({
   transport, tools, policies = [], workspaceRoot = process.cwd(),
-  prompt = "", systemPrompt = "", systemBlocks = null, historyMessages = [],
+  prompt = "", systemPrompt = "", systemBlocks = null, turnSupplement = "", historyMessages = [],
   model = "", baseUrl = "", apiKey = "", provider = "", accountId = "", requestHeaders = {}, requestProfile = "",
   thinkingLevel = "", requestKind = "unknown",
   timeoutMs = 43200000, onStreamDelta = null, onThinkingDelta = null,
@@ -94,6 +94,7 @@ async function runAgentLoop({
   let isolatedPrefix = 0;
   let turnId = "";
   let lastContextEstimate = 0;
+  let lastContextWindow;
   let forceCompaction = false;
   let contextRetry = false;
   const context = () => ({ executionState, messages, loopGuard, usage, toolCallsExecuted, toolErrors, turnId });
@@ -132,7 +133,7 @@ async function runAgentLoop({
   };
   const finish = (extra = {}) => ({
     text: aggregated, finalText: "", streamed, toolCallsExecuted, messages,
-    turnItems: currentTurnItems(), usage, executionState,
+    turnItems: currentTurnItems(), usage, executionState, contextWindow: lastContextWindow,
     protocolLedger: lastLedger || ledgerApi.snapshotLedger(activeLedger), historyOffset, ...extra,
   });
   let committedMessages = messages.length;
@@ -198,6 +199,9 @@ async function runAgentLoop({
     const requestTools = errorStop ? [] : tools.toOpenAiTools();
 
     let maxOutputTokens;
+    let contextWindow;
+    let compressionReason = null;
+    let strategyVersion = 1;
     if (contextManager) {
       let sysPrefix = 0;
       while (sysPrefix < providerMessages.length && String(providerMessages[sysPrefix]?.role || "").toLowerCase() === "system") sysPrefix += 1;
@@ -206,7 +210,7 @@ async function runAgentLoop({
         : Math.min(providerMessages.length, sysPrefix + historyOffset);
       const logicalTurnId = taskRunId || (sessionId ? `${sessionId}:${historyOffset}` : `offset_${historyOffset}`);
       let prepared;
-      try { prepared = await contextManager.prepare({ messages: providerMessages, model: requestModel, systemPrompt, systemBlocks,
+      try { prepared = await contextManager.prepare({ messages: providerMessages, model: requestModel, systemPrompt, systemBlocks, turnSupplement,
         tools: requestTools, transport, signal, onPhase, onEvent: event,
         lastUsage: usage.lastContextTokens, lastEstimate: lastContextEstimate,
         force: forceCompaction, historyOffset: prepareHistoryOffset, requestKind, turnId: logicalTurnId, resume,
@@ -221,6 +225,9 @@ async function runAgentLoop({
       isolatedPrefix = providerMessages.length;
       lastContextEstimate = prepared.estimatedTokens;
       maxOutputTokens = prepared.maxOutputTokens;
+      contextWindow = prepared.meta?.contextWindow;
+      compressionReason = prepared.meta?.compressionReason || null;
+      strategyVersion = prepared.meta?.strategyVersion || 1;
       forceCompaction = false;
     }
     // Only newly generated messages are mirrored into the full transcript.
@@ -229,11 +236,15 @@ async function runAgentLoop({
     try { activeGuards.ensureActive(); }
     catch (error) { return finish({ error: error.message, stopReason: error.code || "runtime_error" }); }
     const modelStarted = Date.now();
-    await event("model.started", { provider, model: requestModel, transport: transport.name || transport.id || "", estimatedInputTokens: lastContextEstimate });
+    const transportName = transport.name || transport.id || "";
+    const modelRequest = { modelRequestId: randomUUID(), purpose: "foreground", provider, model: requestModel,
+      transport: transportName, channel: requestProfile || transportName, compressionReason, strategyVersion };
+    await event("model.started", { ...modelRequest, estimatedInputTokens: lastContextEstimate });
     const streamEvents = [];
     let streamEventError = null;
     let turnResult;
     let turnError = null;
+    let cacheRequest;
     const outputBeforeTurn = aggregated.length;
     let stepStreamedText = false;
     try { turnResult = await transport.runTurn({
@@ -241,6 +252,8 @@ async function runAgentLoop({
       systemPrompt, systemBlocks, messages: providerMessages, tools: requestTools,
       ...(maxOutputTokens ? { maxOutputTokens } : {}),
       sessionId, signal, timeoutMs,
+      requestScope: workspaceRoot, requestPurpose: "foreground", strategyVersion,
+      onRequest(value) { cacheRequest = value; },
       onPhase(phase) {
         streamEvents.push(event("model.phase", { phase }).catch(error => { streamEventError ||= error; }));
         onPhase?.(phase);
@@ -268,7 +281,8 @@ async function runAgentLoop({
       if (streamEventError) throw streamEventError;
     }
     if (turnError) {
-      await event("model.failed", { error: turnError.message, code: turnError.code || "provider_error", durationMs: Date.now() - modelStarted });
+      await event("model.failed", { ...modelRequest, cacheRequest, channel: cacheRequest?.channel || modelRequest.channel,
+        error: turnError.message, code: turnError.code || "provider_error", durationMs: Date.now() - modelStarted });
       if (errorStop) return finish({ ...errorStop, summaryError: turnError.message });
       if (!contextManager || !isContextOverflow(turnError)) throw turnError;
       if (contextRetry || aggregated.length !== outputBeforeTurn) return finish({ error: turnError.message, stopReason: "context_budget_exceeded" });
@@ -278,15 +292,17 @@ async function runAgentLoop({
       continue;
     }
     contextRetry = false;
+    await event("model.completed", { ...modelRequest, cacheRequest, channel: cacheRequest?.channel || modelRequest.channel,
+      model: turnResult?.actualModel || requestModel, usage: turnResult?.usage, providerRequestId: turnResult?.responseId, durationMs: Date.now() - modelStarted });
     activeGuards.ensureActive();
     retireImages(providerMessages);
     if (providerMessages !== messages) retireImages(messages);
     usage.turns += 1;
     for (const key of ["input", "output", "cacheRead", "cacheCreation"]) usage[key] += count(turnResult && turnResult.usage && turnResult.usage[key]);
     usage.lastContextTokens = contextTokensFromUsage(turnResult && turnResult.usage);
-    await event("model.completed", { usage: turnResult && turnResult.usage || {}, durationMs: Date.now() - modelStarted });
+    lastContextWindow = contextWindow;
     if (typeof onContextUsage === "function") {
-      try { onContextUsage(buildContextMeter({ usedTokens: usage.lastContextTokens, model: requestModel })); } catch { /* observer only */ }
+      try { onContextUsage(buildContextMeter({ usedTokens: usage.lastContextTokens, limitTokens: contextWindow, model: requestModel })); } catch { /* observer only */ }
     }
     if (errorStop) {
       // Exactly one text-only closing attempt: never execute tool/legacy commands,

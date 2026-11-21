@@ -14,9 +14,8 @@ const { attachResponsesReasoningItems } = require("./responsesProtocol");
  * OpenAI Responses transport adapter.
  *
  * The loop keeps the public, provider-neutral message projection in the same
- * shape as the Chat transport. The Responses wire conversion is owned by the
- * request builder, so response-only metadata never gets persisted into the
- * Session Journal.
+ * shape as the Chat transport. The versioned continuation field carries the
+ * ordered Responses items needed to rebuild a later stateless request.
  */
 function createOpenAiResponsesTransport(deps = {}) {
   const {
@@ -27,6 +26,8 @@ function createOpenAiResponsesTransport(deps = {}) {
     toJsonString,
     clipText,
   } = deps;
+  const appendContinuation = (message, result) => attachResponsesReasoningItems(message,
+    Array.isArray(result?.outputItems) ? { output: result.outputItems } : result?.response, result?.responsesRequest);
 
   const transport = {
     name: "openai-responses",
@@ -47,10 +48,10 @@ function createOpenAiResponsesTransport(deps = {}) {
     appendFinalAssistantMessage({ messages, turnResult }) {
       const text = String(turnResult.text || "").trim();
       if (text) {
-        messages.push({
+        messages.push(appendContinuation({
           role: "assistant",
           content: text,
-        });
+        }, turnResult));
       }
     },
     prepareToolCalls({ messages, turnResult, toolCalls }) {
@@ -79,13 +80,7 @@ function createOpenAiResponsesTransport(deps = {}) {
         content: text || null,
         tool_calls: assistantToolCalls,
       };
-      attachResponsesReasoningItems(
-        assistantMessage,
-        turnResult && Array.isArray(turnResult.outputItems)
-          ? { output: turnResult.outputItems }
-          : (turnResult && turnResult.response),
-      );
-      messages.push(assistantMessage);
+      messages.push(appendContinuation(assistantMessage, turnResult));
 
       return assistantToolCalls.map((toolCall) => ({
         name: toolCall.function.name,

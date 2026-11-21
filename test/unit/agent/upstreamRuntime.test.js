@@ -1,4 +1,5 @@
 jest.mock("../../../src/agents/providers/runtimeConfig", () => ({
+  ...jest.requireActual("../../../src/agents/providers/runtimeConfig"),
   resolveRuntimeConfig: jest.fn(() => ({
     provider: "openai",
     model: "gpt-4o-mini",
@@ -125,7 +126,7 @@ describe("agent upstreamRuntime", () => {
     })).resolves.toMatchObject({
       provider: "codex",
       transport: "codex-responses",
-      requestProfile: "openai-responses",
+      requestProfile: "responses-compatible",
       baseUrl: "https://openai.example/v1",
       auth: { apiKey: "sk-test" },
     });

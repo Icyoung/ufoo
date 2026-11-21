@@ -1,5 +1,13 @@
 "use strict";
 
+const { estimateModelInputCost } = require("./modelInputCost");
+
+const CACHE_TTLS = ["5m", "1h", "30m", "12h"];
+const sumObserved = values => {
+  const observed = values.filter(value => value !== null);
+  return observed.length ? observed.reduce((a, b) => a + b, 0) : null;
+};
+
 const terminal = new Set(["completed", "failed", "cancelled", "interrupted"]);
 const number = value => value != null && Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : null;
 const time = value => Number.isFinite(Date.parse(value)) ? Date.parse(value) : null;
@@ -21,10 +29,14 @@ function normalizedUsage(usage) {
       ?? usage.input_tokens_details?.cached_tokens ?? usage.input_token_details?.cached_tokens ?? usage.prompt_tokens_details?.cached_tokens),
     cacheCreation: number(usage.cacheCreation ?? usage.cache_creation_tokens ?? usage.cache_creation_input_tokens
       ?? usage.input_tokens_details?.cache_write_tokens ?? usage.prompt_tokens_details?.cache_write_tokens) };
-  if (!Object.values(value).some(v => v !== null)) return null;
+  value.cacheWriteByTtl = Object.fromEntries(CACHE_TTLS.map(ttl => [ttl, number(usage.cacheWriteByTtl?.[ttl])]));
+  if (![value.input, value.output, value.cacheRead, value.cacheCreation, ...Object.values(value.cacheWriteByTtl)].some(v => v !== null)) return null;
   value.inputIncludesCache = typeof usage.inputIncludesCache === "boolean" ? usage.inputIncludesCache
     : usage.prompt_tokens != null || usage.input_tokens_details || usage.input_token_details || usage.cached_input_tokens != null ? true
     : usage.cache_read_input_tokens != null || usage.cache_creation_input_tokens != null ? false : null;
+  value.uncachedInput = value.inputIncludesCache === false ? value.input
+    : value.inputIncludesCache === true && [value.input, value.cacheRead, value.cacheCreation].every(tokenCount => tokenCount !== null)
+      ? number(value.input - value.cacheRead - value.cacheCreation) : null;
   return value;
 }
 
@@ -55,7 +67,30 @@ function aggregateCache(runs, scope) {
     cachedTokens, promptTokens, hitRate: rate(cachedTokens, promptTokens) };
 }
 
-function aggregate(runs) {
+function requestTotals(requests) {
+  const knownInputCostUsd = sumObserved(requests.map(request => request.inputCostUsd));
+  const pricedRequests = requests.filter(request => request.inputCostUsd !== null).length;
+  return { requests: requests.length, pricedRequests, knownInputCostUsd,
+    inputCostUsd: pricedRequests === requests.length ? knownInputCostUsd : null,
+    uncachedInput: sumObserved(requests.map(request => request.usage?.uncachedInput ?? null)),
+    cacheRead: sumObserved(requests.map(request => request.usage?.cacheRead ?? null)),
+    cacheCreation: sumObserved(requests.map(request => request.usage?.cacheCreation ?? null)),
+    cacheWriteByTtl: Object.fromEntries(CACHE_TTLS.map(ttl => [ttl,
+      sumObserved(requests.map(request => request.usage?.cacheWriteByTtl[ttl] ?? null))])),
+  };
+}
+
+function requestCohorts(requests, field) {
+  const groups = new Map();
+  for (const request of requests) {
+    const key = request[field] || "unknown";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(request);
+  }
+  return Object.fromEntries([...groups].map(([key, values]) => [key, requestTotals(values)]));
+}
+
+function aggregate(runs, requestsByRun) {
   const outcomes = Object.fromEntries(["completed", "failed", "cancelled", "interrupted", "running", "waiting_user", "queued", "unknown"].map(key => [key, runs.filter(r => r.status === key).length]));
   const finished = Object.entries(outcomes).filter(([key]) => terminal.has(key)).reduce((sum, [, count]) => sum + count, 0);
   const counts = {};
@@ -70,9 +105,18 @@ function aggregate(runs) {
       tokenTotals[scope][key] = { samples: observed.length, sum: observed.length ? observed.reduce((a, b) => a + b, 0) : null };
     }
   }
+  const completedRuns = runs.filter(run => run.status === "completed");
+  const completedTaskInputCost = requestTotals(completedRuns.flatMap(run => requestsByRun.get(run.taskRunId)));
+  completedTaskInputCost.tasks = completedRuns.length;
+  completedTaskInputCost.pricedTasks = completedRuns.filter(run => run.modelCost.inputCostUsd !== null).length;
+  if (completedTaskInputCost.pricedTasks < completedTaskInputCost.tasks) completedTaskInputCost.inputCostUsd = null;
   return { runs: runs.length, outcomes, completedOfFinished: rate(outcomes.completed, finished), finished,
     counts, latency, ...tokenTotals, finalTextCharacters: distribution(runs.map(r => r.finalTextCharacters)),
     cache: aggregateCache(runs, "cache"),
+    completedTaskInputCost,
+    requestsByChannel: requestCohorts(runs.flatMap(run => requestsByRun.get(run.taskRunId)), "channel"),
+    requestsByPurpose: requestCohorts(runs.flatMap(run => requestsByRun.get(run.taskRunId)), "purpose"),
+    requestsByStrategy: requestCohorts(runs.flatMap(run => requestsByRun.get(run.taskRunId)), "strategyVersion"),
     signals: Object.fromEntries([...new Set(runs.flatMap(r => r.signals))].map(key => [key, runs.filter(r => r.signals.includes(key)).length])) };
 }
 
@@ -107,7 +151,7 @@ function summarizeAgentPerformance(events, tasks = [], queues = [], options = {}
         parentTaskRunId: event.parentTaskRunId || null, traceId: event.traceId || null, status: "unknown", configuration: null,
         accepted: null, enqueued: null, started: null, ended: null, lastActivity: null, firstText: null, firstThinking: null,
         activeStart: null, pausedAt: null, activeMs: 0, waitingUserMs: 0, attempts: new Set(), tools: new Map(),
-        usageSamples: [], modelOutcomes: 0, terminalUsage: null, finalTextCharacters: null, streamedCharacters: 0,
+        usageSamples: [], modelOutcomes: 0, modelRequests: new Map(), terminalUsage: null, finalTextCharacters: null, streamedCharacters: 0,
         counts: { modelCalls: 0, sdkTurns: 0, modelFailures: 0, toolCalls: 0, toolErrors: 0, toolExceptions: 0, toolRejections: 0, unresolvedTools: 0,
           repeatedToolCalls: 0, loopWarnings: 0, loopStops: 0, modelRetries: 0, contextSelections: 0, windowProjections: 0, maxEvictionLevel: 0 },
         modelDurations: [], modelStarts: new Map(), toolDurations: [], contextSelectDurations: [], fingerprints: new Map(), errorCodes: {} };
@@ -138,16 +182,44 @@ function summarizeAgentPerformance(events, tasks = [], queues = [], options = {}
     }
     if (type === "message.delta" && event.textCharacters > 0) { run.firstText ??= timestamp; run.streamedCharacters += event.textCharacters; }
     if (type === "thinking.delta" && event.textCharacters > 0) run.firstThinking ??= timestamp;
+    const modelLifecycle = ["model.started", "model.completed", "model.failed"].includes(type);
+    const auxiliary = event.purpose && event.purpose !== "foreground";
+    if (modelLifecycle && event.modelRequestId) {
+      let request = run.modelRequests.get(event.modelRequestId);
+      if (!request) {
+        request = { modelRequestId: event.modelRequestId, purpose: event.purpose || "foreground", status: "started",
+          model: event.model, provider: event.provider, transport: event.transport, channel: event.channel, compressionReason: event.compressionReason,
+          strategyVersion: event.strategyVersion || null,
+          startedAt: null, usage: null, inputCostUsd: null };
+        run.modelRequests.set(event.modelRequestId, request);
+      }
+      if (type === "model.started") {
+        if (request.startedAt !== null) continue;
+        request.startedAt = event.time;
+      } else {
+        if (request.status !== "started") continue;
+        request.status = type.slice(6);
+        request.providerRequestId = event.providerRequestId;
+        request.model = event.model || request.model;
+        request.channel = event.channel || request.channel;
+        request.durationMs = number(event.durationMs);
+        request.cache = event.cacheRequest || null;
+        request.strategyVersion = request.cache?.strategyVersion || request.strategyVersion;
+        request.usage = normalizedUsage(event.usage);
+        request.inputCostUsd = estimateModelInputCost(request);
+      }
+    }
     if (type === "model.started") {
-      run.counts[event.modelScope === "sdk-turn" ? "sdkTurns" : "modelCalls"] += 1;
-      run.provider ||= event.provider || ""; run.model ||= event.model || "";
-      run.modelStarts.set(event.turnId || event.modelScope || "api-call", timestamp);
+      const counter = auxiliary ? "auxiliaryModelCalls" : event.modelScope === "sdk-turn" ? "sdkTurns" : "modelCalls";
+      run.counts[counter] = (run.counts[counter] || 0) + 1;
+      if (!auxiliary) { run.provider ||= event.provider || ""; run.model ||= event.model || ""; }
+      run.modelStarts.set(event.modelRequestId || event.turnId || event.modelScope || "api-call", timestamp);
     }
     if (["model.completed", "model.failed"].includes(type)) {
       run.modelOutcomes += 1;
-      const key = event.turnId || event.modelScope || "api-call";
+      const key = event.modelRequestId || event.turnId || event.modelScope || "api-call";
       const duration = number(event.durationMs) ?? difference(timestamp, run.modelStarts.get(key) ?? null);
-      if (duration !== null) run.modelDurations.push(duration);
+      if (duration !== null && !auxiliary) run.modelDurations.push(duration);
       run.modelStarts.delete(key);
       if (type === "model.failed") run.counts.modelFailures += 1;
       else { const usage = normalizedUsage(event.usage); if (usage) run.usageSamples.push(usage); }
@@ -190,6 +262,7 @@ function summarizeAgentPerformance(events, tasks = [], queues = [], options = {}
     if (code && (type.endsWith("failed") || type === "tool.rejected" || type === "model.retry" || event.ok === false)) run.errorCodes[code] = (run.errorCodes[code] || 0) + 1;
   }
   const rows = [];
+  const requestsByRun = new Map();
   for (const run of runs.values()) {
     const anchor = run.started ?? run.accepted ?? run.lastActivity;
     const config = run.configuration;
@@ -199,11 +272,15 @@ function summarizeAgentPerformance(events, tasks = [], queues = [], options = {}
     const end = run.ended ?? now;
     const paired = [...run.tools.values()];
     run.counts.unresolvedTools = paired.filter(t => !t.ended || t.outcome === "unknown").length;
-    const modelStarts = run.counts.modelCalls + run.counts.sdkTurns;
+    const modelStarts = run.counts.modelCalls + run.counts.sdkTurns + (run.counts.auxiliaryModelCalls || 0);
     // Terminal native usage is an accumulator with zero defaults. Do not use
     // it to invent token counts when observed model calls omitted usage.
     const usage = run.usageSamples.length ? run.usageSamples : !modelStarts && !run.modelOutcomes && run.terminalUsage ? [run.terminalUsage] : [];
     const cache = cacheObservation(usage, config, provider);
+    const modelRequests = [...run.modelRequests.values()];
+    requestsByRun.set(run.taskRunId, modelRequests);
+    const modelCost = requestTotals(modelRequests);
+    if (modelRequests.length !== modelStarts) modelCost.inputCostUsd = null;
     const usageComplete = modelStarts ? run.usageSamples.length === modelStarts : !run.modelOutcomes && usage.length > 0;
     const sumUsage = samples => Object.fromEntries(["input", "output", "cacheRead", "cacheCreation"].map(key => {
       const values = samples.map(u => u[key]).filter(v => v !== null);
@@ -227,7 +304,7 @@ function summarizeAgentPerformance(events, tasks = [], queues = [], options = {}
       startedAt: run.started !== null ? new Date(run.started).toISOString() : null,
       endedAt: run.ended !== null ? new Date(run.ended).toISOString() : null,
       configuration: config, attempts: run.attempts.size || null, counts: run.counts, usage: sumUsage(usage),
-      cache,
+      cache, modelCost, modelRequests: modelRequests.slice(-100),
       queueTimingSource: run.enqueued !== null ? "bus.sequence" : run.accepted !== null ? "request.accepted" : "unknown",
       finalTextCharacters: run.finalTextCharacters, streamedCharacters: run.streamedCharacters,
       reportCharacters: distribution(reportLengths), errorCodes: run.errorCodes, signals,
@@ -263,7 +340,7 @@ function summarizeAgentPerformance(events, tasks = [], queues = [], options = {}
   if (partialRuns) warnings.push({ code: "performance_partial_lifecycle", count: partialRuns });
   const limit = options.includeRuns === false ? 0 : Math.min(100, Math.max(1, Math.floor(Number(options.limit) || 20)));
   return { version: 1, generatedAt: new Date(now).toISOString(), window: { since: options.since || null, until: options.until || null, selection: "run-start; until exclusive" },
-    summary: aggregate(rows), cohorts: [...groups.values()].sort((a, b) => b.runs.length - a.runs.length).slice(0, 100).map(g => ({ ...g.cohort, ...aggregate(g.runs) })),
+    summary: aggregate(rows, requestsByRun), cohorts: [...groups.values()].sort((a, b) => b.runs.length - a.runs.length).slice(0, 100).map(g => ({ ...g.cohort, ...aggregate(g.runs, requestsByRun) })),
     delegations: { tasks: delegated.length, accepted, rejected, reported, awaitingAcceptance: delegated.filter(t => t.status === "reported").length,
       failed: delegated.filter(t => t.status === "failed").length, deliveryUncertain: delegated.filter(t => t.status === "delivery_uncertain").length,
       acceptedOfReviewed: rate(accepted, accepted + rejected), acceptedOfReported: rate(accepted, reported),

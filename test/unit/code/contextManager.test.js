@@ -537,6 +537,34 @@ describe("ucode context manager", () => {
     expect(layers.indexOf("epoch")).toBeLessThan(layers.indexOf("turnDynamic"));
   });
 
+  test("standalone turns and their resumed calls do not promote the first user request to a system objective", () => {
+    const taskContract = buildInitialTaskContract("Read batch-0.tsv");
+    taskContract.constraints = ["Use the read tool"];
+    const session = { workspaceRoot, taskContract };
+    for (const request of [{ latestUserMessage: "Read batch-19.tsv" }, {}]) {
+      const epoch = assembleModelContext(session, request).systemBlocks.find(b => b.layer === "epoch").text;
+      expect(epoch).not.toContain("batch-0.tsv");
+      expect(epoch).toContain("Use the read tool");
+    }
+    for (const [state, request] of [[session, { requestKind: "system_wake" }],
+      [{ ...session, executionState: { planMode: true } }, { latestUserMessage: "continue" }]]) {
+      expect(assembleModelContext(state, request).systemPrompt).toContain("Objective: Read batch-0.tsv");
+    }
+    expect(taskContract.objective).toBe("Read batch-0.tsv");
+  });
+
+  test("compact skill listings preserve selection metadata without repeating the file path or description", () => {
+    const { renderSkillsSection } = require("../../../src/code/skills");
+    const skill = { name: "demo", description: "Collect metrics", path: "/demo/SKILL.md",
+      triggers: ["audit"], workflowSummary: "Inspect metrics by branch", bodyArtifactId: "sample" };
+    const listed = renderSkillsSection([skill], { compactManifests: true });
+    expect(listed.split(skill.path)).toHaveLength(2);
+    expect(listed.split(skill.description)).toHaveLength(2);
+    expect(listed).toContain("Triggers: audit");
+    expect(listed).toContain(skill.workflowSummary);
+    expect(listed).toContain("artifact://sample");
+  });
+
   test("patchTaskContractFromUserMessage captures constraints", () => {
     const { patchTaskContractFromUserMessage } = require("../../../src/code/context/stateCommit");
     const contract = patchTaskContractFromUserMessage(

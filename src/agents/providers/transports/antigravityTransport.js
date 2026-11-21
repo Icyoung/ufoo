@@ -126,7 +126,7 @@ function agyThinkingConfig(model, effort) {
 function createAntigravityTransport({ runSseRequest, parseSseEventBlock, ...messageDeps }) {
   async function runTurn({
     url, apiKey, model, sessionId, messages = [], tools = [], systemPrompt = "", systemBlocks = null,
-    thinkingLevel, maxOutputTokens, signal, timeoutMs, onTextDelta, onThinkingDelta, onPhase,
+    thinkingLevel, maxOutputTokens, signal, timeoutMs, onTextDelta, onThinkingDelta, onPhase, onRequest, requestScope, requestPurpose, strategyVersion,
   }) {
     const credential = await resolveAgyCredentials({ apiKey, baseUrl: url, signal });
     const claude = /^claude-/i.test(model);
@@ -176,7 +176,7 @@ function createAntigravityTransport({ runSseRequest, parseSseEventBlock, ...mess
           input: Number(stats.promptTokenCount) || 0,
           output: (Number(stats.candidatesTokenCount) || 0) + (Number(stats.thoughtsTokenCount) || 0),
           cacheRead: stats.cachedContentTokenCount == null ? null : Number(stats.cachedContentTokenCount) || 0,
-          cacheCreation: 0,
+          cacheCreation: null,
           inputIncludesCache: true,
         };
       }
@@ -221,6 +221,7 @@ function createAntigravityTransport({ runSseRequest, parseSseEventBlock, ...mess
     const onEvent = ({ data }) => consume(JSON.parse(data));
     return runSseRequest({
       url, headers: { ...buildAgyHeaders(credential), Accept: "text/event-stream" }, payload, signal, timeoutMs, onPhase,
+      onRequest, requestObservation: { transport: "antigravity", sessionId, requestScope, requestPurpose, strategyVersion },
       onNonStream(data) {
         for (const chunk of Array.isArray(data) ? data : [data]) consume(chunk);
         return buildResult();

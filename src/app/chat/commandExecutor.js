@@ -1749,6 +1749,28 @@ function createCommandExecutor(options = {}) {
           logMessage("error", "{white-fg}✗{/white-fg} Window layouts are not available");
         }
         return true;
+      case "app": {
+        if (typeof options.openDesktopApp === "function") {
+          const res = await options.openDesktopApp(args);
+          if (res && res.ok) {
+            logMessage("system", `{white-fg}✓{/white-fg} Handed off to Ufoo Desktop (${escapeBlessed(res.url || "")})`);
+          } else {
+            logMessage("error", `{white-fg}✗{/white-fg} ${escapeBlessed((res && res.error) || "Failed to open Ufoo Desktop")}`);
+          }
+        } else {
+          const { openInDesktopApp } = require("../../ui/cliHandoff");
+          const activeRoot = typeof options.getActiveProjectRoot === "function"
+            ? options.getActiveProjectRoot()
+            : projectRoot;
+          const res = await openInDesktopApp({
+            projectRoot: activeRoot || projectRoot,
+            target: args[0] || "main",
+          });
+          if (res.ok) logMessage("system", `{white-fg}✓{/white-fg} Handed off to Ufoo Desktop (${escapeBlessed(res.url)})`);
+          else logMessage("error", `{white-fg}✗{/white-fg} ${escapeBlessed(res.error)}`);
+        }
+        return true;
+      }
       case "mcp":
         await handleMcpCommand(args);
         return true;
@@ -1802,6 +1824,9 @@ function createCommandExecutor(options = {}) {
         return true;
       case "settings":
         await handleSettingsCommand(args);
+        return true;
+      case "model":
+        await handleAgentSettingsCommand(["model", ...args]);
         return true;
       case "ufoo":
         await handleUfooCommand(args);

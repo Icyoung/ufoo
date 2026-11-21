@@ -8,6 +8,26 @@ const {
 } = require("../../../../src/code/providers/responsesProtocol");
 
 describe("Responses protocol projection", () => {
+  test("subscription puts only the verified stable instruction prefix before history", () => {
+    const systemBlocks = [
+      { layer: "immutable", text: "rules" }, { layer: "sessionStable", text: "available skills" },
+      { layer: "turnDynamic", text: "plan mode is active" },
+    ];
+    const options = { model: "gpt-6.2-sol", requestProfile: "codex-subscription", strategyVersion: 2, systemBlocks,
+      instructions: systemBlocks.map(b => b.text).join("\n\n"), messages: [{ role: "user", content: "read B" }] };
+    const payload = buildResponsesPayload(options);
+    expect(payload.instructions).toBe("plan mode is active");
+    expect(payload.input.map(m => [m.role, m.content[0].text])).toEqual([
+      ["developer", "rules\n\navailable skills"], ["user", "read B"],
+    ]);
+    for (const override of [{ strategyVersion: 1 }, { requestProfile: "responses-compatible" }, { instructions: "custom override" }]) {
+      const original = { ...options, ...override };
+      const unchanged = buildResponsesPayload(original);
+      expect(unchanged.instructions).toBe(original.instructions);
+      expect(unchanged.input[0].role).toBe("user");
+    }
+    expect(buildResponsesPayload({ ...options, systemBlocks: systemBlocks.slice(0, 1), instructions: "rules" }).instructions).toBeTruthy();
+  });
   test("reads official cached and written token fields without double counting input", () => {
     const response = { usage: { input_tokens: 1000, output_tokens: 20,
       input_tokens_details: { cached_tokens: 800, cache_write_tokens: 200 } } };

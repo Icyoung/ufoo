@@ -62,6 +62,19 @@ describe("ucode skills", () => {
     expect(outcome.skills[0].path.endsWith("SKILL.md")).toBe(true);
   });
 
+  test("discovers a project skill through its discovery link and skips external links", () => {
+    const workspace = path.join(tmp, "workspace");
+    const skill = writeSkill(path.join(workspace, ".skills"), "demo");
+    const external = writeSkill(tmp, "outside");
+    const links = path.join(workspace, ".codex", "skills");
+    fs.mkdirSync(links, { recursive: true });
+    fs.symlinkSync("../../.skills/demo", path.join(links, "demo"), "dir");
+    fs.symlinkSync(path.dirname(external), path.join(links, "outside"), "dir");
+    const outcome = listUcodeSkills({ workspaceRoot: workspace, env: { HOME: home, CODEX_HOME: codexHome }, repoRoot });
+    expect(outcome.errors).toEqual([]);
+    expect(outcome.skills.map(item => item.path)).toEqual([fs.realpathSync(skill)]);
+  });
+
   test("discovers codex system skills from explicit .system root", () => {
     const workspace = path.join(tmp, "workspace");
     writeSkill(path.join(codexHome, "skills", ".system"), "sys-skill", {

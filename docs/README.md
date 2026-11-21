@@ -10,6 +10,7 @@ Current behavior is documented in the root [README](../README.md) and
 - [Delivery queue developer guide](delivery-queue-developer-guide.md)
 - [External MCP client examples](mcp-client-examples.md)
 - [MCP bridge implementation and remaining backlog](daemon-mcp-integration-plan.md)
+- [Provider-specific prompt caching for native agents (proposal)](provider-prompt-caching-plan.md)
 - [Contributor and agent instructions](../AGENTS.md)
 
 ## Archived implementation records

@@ -96,7 +96,7 @@ function buildSessionStablePrefix({
   const parts = [
     getUfooIntegrationSection(),
     getSessionStableEnvironmentSection({ workspaceRoot: root, provider, model }),
-    renderSkillsSection(outcome.skills),
+    renderSkillsSection(outcome.skills, { compactManifests: true }),
     `skillCatalogVersion: ${catalogVersion}`,
   ];
   if (sessionStableExtras) parts.push(String(sessionStableExtras).trim());
@@ -111,6 +111,7 @@ function buildLayeredSystemPrompt({
   overrideSystemPrompt = "",
   epochDynamic = "",
   turnDynamic = "",
+  turnEvidence = "",
   sessionStableExtras = "",
 } = {}) {
   if (overrideSystemPrompt) {
@@ -152,6 +153,7 @@ function buildLayeredSystemPrompt({
       cacheable: false,
     });
   }
+  if (turnEvidence) blocks.push({ layer: "turnEvidence", text: turnEvidence, cacheable: false });
 
   return {
     blocks,

@@ -15,6 +15,16 @@ const DEFAULT_KIMI_MODEL = "k3";
 
 const { normalizeProvider } = require("./providerId");
 
+function resolveResponsesRequestProfile(baseUrl, credentialKind = "") {
+  let url;
+  try { url = new URL(baseUrl); } catch { return "responses-compatible"; }
+  if (url.origin === "https://chatgpt.com" && /^\/backend-api\/codex(?:\/responses)?\/?$/.test(url.pathname)
+    && credentialKind === "oauth") return "codex-subscription";
+  if (url.origin === "https://api.openai.com" && /^\/v1(?:\/responses)?\/?$/.test(url.pathname)
+    && credentialKind !== "oauth") return "openai-responses";
+  return "responses-compatible";
+}
+
 function normalizeKimiModel(value = "") {
   const raw = String(value || "").trim();
   if (!raw) return "";
@@ -159,6 +169,7 @@ function resolveRuntimeConfig({ workspaceRoot = process.cwd(), provider = "", mo
     apiKeySource,
     kimiCredentialState,
     transport: resolveTransport({ provider: selectedProvider, baseUrl }),
+    requestProfile: selectedProvider === "codex" ? resolveResponsesRequestProfile(baseUrl, apiKey ? "api-key" : "") : "",
     allowUnlistedModels: custom,
   };
 }
@@ -185,11 +196,11 @@ async function resolveAuthenticatedRuntime(options = {}) {
         runtime.apiKeySource = String(credential.source || "codex-credential");
       }
       if (credential?.credentialKind === "api-key"
-        && !String(process.env.UFOO_UCODE_BASE_URL || "").trim()
-        && !String(config.ucodeBaseUrl || "").trim()) {
+        && !(options.useCodingConfig !== false && String(process.env.UFOO_UCODE_BASE_URL || config.ucodeBaseUrl || "").trim())) {
         runtime.baseUrl = String(process.env.OPENAI_BASE_URL || DEFAULT_OPENAI_BASE_URL).trim();
       }
-      if (credential?.credentialKind === "oauth") accountId = String(credential.accountId || "").trim();
+      runtime.requestProfile = resolveResponsesRequestProfile(runtime.baseUrl, credential?.credentialKind);
+      if (runtime.requestProfile === "codex-subscription") accountId = String(credential.accountId || "").trim();
     } catch { /* Requests surface missing/invalid credentials. */ }
   }
   if (runtime.provider === "kimi" && runtime.apiKeySource === "kimi-credential" && runtime.kimiCredentialState !== "fresh") {
@@ -232,4 +243,4 @@ function resolveAnthropicMessagesUrl(baseUrl = "") {
   return `${normalized}/messages`;
 }
 
-module.exports = { normalizeProvider, normalizeKimiModel, resolveTransport, resolveRuntimeConfig, resolveAuthenticatedRuntime, resolveCompletionUrl, resolveResponsesUrl, resolveAnthropicMessagesUrl, DEFAULT_OPENAI_BASE_URL };
+module.exports = { normalizeProvider, normalizeKimiModel, resolveTransport, resolveRuntimeConfig, resolveAuthenticatedRuntime, resolveResponsesRequestProfile, resolveCompletionUrl, resolveResponsesUrl, resolveAnthropicMessagesUrl, DEFAULT_OPENAI_BASE_URL };

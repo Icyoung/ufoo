@@ -8,7 +8,7 @@ const { createTerminalAdapterRouter } = require("../../runtime/terminal/adapterR
  *
  * 支持的方式：
  * - tmux: 使用 tmux select-pane 激活
- * - terminal: 使用 AppleScript 通过 tty 定位并激活 Terminal.app 的 tab/window
+ * - terminal: 使用 AppleScript 通过 tty 定位并激活 Terminal.app 或 iTerm2 的会话
  * - internal: 不支持自动激活（由 chat PTY view 处理）
  */
 class AgentActivator {
@@ -38,6 +38,7 @@ class AgentActivator {
         id: agentId,
         nickname: meta.nickname || "",
         tty: meta.tty || "",
+        terminal_app: meta.terminal_app || "",
         tmux_pane: meta.tmux_pane || "",
         launch_mode: meta.launch_mode || "",
         host_inject_sock: meta.host_inject_sock || "",
@@ -95,9 +96,9 @@ class AgentActivator {
   }
 
   /**
-   * 通过 tty 激活 Terminal.app 中对应的 tab/window
+   * 通过 tty 激活外部终端中对应的会话
    */
-  activateTerminalByTty(ttyPath) {
+  activateTerminalByTty(ttyPath, terminalApp = "Terminal") {
     if (process.platform !== "darwin") {
       throw new Error("Terminal activation is only supported on macOS");
     }
@@ -105,22 +106,46 @@ class AgentActivator {
       throw new Error("Cannot activate: tty path required");
     }
 
-    const script = `
-tell application "Terminal"
-  repeat with w in windows
-    repeat with t in tabs of w
-      if tty of t is "${ttyPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}" then
-        set selected tab of w to t
-        set index of w to 1
-        activate
-        return "ok"
-      end if
+    const script = terminalApp === "iTerm" ? `
+on run argv
+  set targetTTY to item 1 of argv
+  if application "iTerm2" is not running then return "not found"
+  tell application "iTerm2"
+    repeat with w in windows
+      repeat with t in tabs of w
+        repeat with s in sessions of t
+          if tty of s is targetTTY then
+            select s
+            select t
+            select w
+            activate
+            return "ok"
+          end if
+        end repeat
+      end repeat
     end repeat
-  end repeat
+  end tell
   return "not found"
-end tell`;
+end run` : `
+on run argv
+  set targetTTY to item 1 of argv
+  if application "/System/Applications/Utilities/Terminal.app" is not running then return "not found"
+  tell application "/System/Applications/Utilities/Terminal.app"
+    repeat with w in windows
+      repeat with t in tabs of w
+        if tty of t is targetTTY then
+          set selected tab of w to t
+          set index of w to 1
+          activate
+          return "ok"
+        end if
+      end repeat
+    end repeat
+  end tell
+  return "not found"
+end run`;
 
-    const result = spawnSync("osascript", ["-e", script], {
+    const result = spawnSync("osascript", ["-e", script, ttyPath], {
       encoding: "utf8",
       timeout: 5000,
     });
@@ -130,8 +155,8 @@ end tell`;
     }
 
     const output = (result.stdout || "").trim();
-    if (output === "not found") {
-      throw new Error(`Terminal tab not found for tty: ${ttyPath}`);
+    if (output !== "ok") {
+      throw new Error(`${terminalApp} tab not found for tty: ${ttyPath}`);
     }
   }
 
@@ -143,7 +168,7 @@ end tell`;
 
     const activateTerminal = async () => {
       if (info.tty) {
-        this.activateTerminalByTty(info.tty);
+        this.activateTerminalByTty(info.tty, info.terminal_app === "iterm2" ? "iTerm" : "Terminal");
         return;
       }
       throw new Error("Cannot activate: missing tty or tmux_pane for agent");

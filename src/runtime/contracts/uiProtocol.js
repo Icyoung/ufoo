@@ -13,6 +13,8 @@ const PROTOCOL = "ufoo-ui/1";
 // window.set.mode is main | side | multi, independently of pane membership.
 const MULTI_FRAMES_CAPABILITY = "multi-frames-v1";
 const WINDOW_MODES_CAPABILITY = "window-modes-v1";
+const RAW_MARKDOWN_CAPABILITY = "markdown-raw-v1";
+const DESKTOP_HOST_CAPABILITY = "desktop-host-v1";
 
 // Internal input uses an explicit agent_id and complete input/cursor draft.
 // multi.raw.input_revision increases per child edit; submit=true commits that
@@ -48,6 +50,7 @@ const COMMAND_NAMES = Object.freeze([
   "interaction.respond",
   "settings.set",
   "settings.open",
+  "settings.models",
   "ui.resync.request",
   "app.exit",
   "window.set",
@@ -56,7 +59,22 @@ const COMMAND_NAMES = Object.freeze([
   "multi.viewport",
   "multi.raw",
   "multi.scroll",
+  "multi.cancel",
   "multi.expand",
+  "project.add",
+  "project.archive",
+  "session.archive",
+  "side.select",
+  "worker.focus_view",
+  "worker.launch",
+  "worker.resume",
+  "worker.focus_external",
+  "workspace.changes",
+  "workspace.docs",
+  "workspace.context",
+  "handoff.to_cli",
+  "handoff.open_url",
+  "cli.install_shims",
 ]);
 
 const EVENT_NAMES = Object.freeze([
@@ -73,6 +91,7 @@ const EVENT_NAMES = Object.freeze([
   "agents.snapshot",
   "agents.patch",
   "projects.snapshot",
+  "projects.tree",
   "cron.snapshot",
   "loop.set",
   "completions.set",
@@ -93,6 +112,11 @@ const EVENT_NAMES = Object.freeze([
   "error",
   "window.set",
   "multi.pane.frame",
+  "worker.view.frame",
+  "workspace.changes.snapshot",
+  "workspace.docs.snapshot",
+  "workspace.context.snapshot",
+  "handoff.state",
 ]);
 
 function createEnvelope({
@@ -184,6 +208,8 @@ module.exports = {
   PROTOCOL,
   MULTI_FRAMES_CAPABILITY,
   WINDOW_MODES_CAPABILITY,
+  RAW_MARKDOWN_CAPABILITY,
+  DESKTOP_HOST_CAPABILITY,
   KINDS,
   COMMAND_NAMES,
   EVENT_NAMES,

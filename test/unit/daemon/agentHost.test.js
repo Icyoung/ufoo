@@ -439,6 +439,33 @@ describe("project main agent host", () => {
     expect(next.messages.filter(message => message.content === "Keep earlier_user_constraint")).toHaveLength(1);
     expect(next.messages.some(message => message.content === "ask before editing")).toBe(true);
   });
+  test("Codex main keeps trusted instructions and the user prefix intact across a tool call", async () => {
+    const model = "gpt-6.2-sol";
+    const resolveProvider = async () => ({ provider: "codex", model, transport: "codex-responses",
+      baseUrl: "https://chatgpt.com/backend-api/codex", requestProfile: "codex-subscription", auth: { apiKey: "test" } });
+    fs.writeFileSync(path.join(root, "AGENTS.md"), "Follow project convention ABC.");
+    const payloads = [];
+    global.fetch = jest.fn(async (_url, options) => {
+      const payload = JSON.parse(options.body);
+      const foreground = Boolean(payload.tools?.length);
+      if (foreground) payloads.push(payload);
+      const item = foreground && payloads.length === 1
+        ? { type: "function_call", name: "list_agents", call_id: "list-1", arguments: "{}" }
+        : { type: "message", role: "assistant", content: [{ type: "output_text", text: "done" }] };
+      return new Response(JSON.stringify({ object: "response", status: "completed", output: [item] }), { headers: { "content-type": "application/json" } });
+    });
+    host = make({ provider: "codex", model, resolveProvider, contextPolicy: { cacheStrategy: "stable-prefix" } });
+    const result = await host.runPrompt({ prompt: "Inspect workers", requestId: "list" });
+    expect(result.ok).toBe(true);
+    expect(payloads).toHaveLength(2);
+    const [first, next] = payloads;
+    expect(first.input[0]).toMatchObject({ role: "developer", content: [{ text: expect.stringContaining("Follow project convention ABC.") }] });
+    expect(first.instructions).toBeTruthy();
+    expect(first.instructions).toBe(next.instructions);
+    expect(next.input.slice(0, first.input.length)).toEqual(first.input);
+    expect(first.input[0].content[0].text).not.toContain("Runtime context (untrusted data");
+    expect(first.input.some(item => item.role === "user" && JSON.stringify(item).includes("Runtime context (untrusted data"))).toBe(true);
+  });
   test.each([
     ["codex", "codex-responses", { output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "Codex connected." }] }], usage: {} }, { authorization: "Bearer isolated-codex-token" }],
     ["claude", "anthropic-messages", { content: [{ type: "text", text: "Claude connected." }], usage: {} }, { authorization: "Bearer isolated-claude-token", "anthropic-beta": "oauth-2025-04-20" }],

@@ -35,9 +35,11 @@ function createAgentSettingsController({ getProjectRoot, applyPatch, publish, fo
     if (!model) return { ok: false, error: "Model ID is required" };
     if (model === "<manual>") return open("manual");
     if (thinking && !normalizeThinkingLevel(thinking)) return { ok: false, error: "Unknown thinking level" };
+    const root = getProjectRoot();
     let confirmation;
-    try { confirmation = await confirmModel(getProjectRoot(), model); }
+    try { confirmation = await confirmModel(root, model); }
     catch (error) { return { ok: false, error: error.message }; }
+    if (root !== getProjectRoot()) return { ok: false, error: "The active workspace changed. Try again." };
     if (!confirmation.allowed) return { ok: false, error: confirmation.error };
     const result = await applyPatch({ agent_model: model, ...(thinking ? { agent_thinking: thinking } : {}) });
     if (result.ok) {
@@ -85,18 +87,23 @@ function createAgentSettingsController({ getProjectRoot, applyPatch, publish, fo
     return open("thinking");
   }
   async function completions(text) {
+    const query = text.trimStart();
+    const modelCommand = /^\/model(?:\s|$)/.test(query) ? "/model"
+      : /^\/settings\s+agent\s+model(?:\s|$)/.test(query) ? MODEL_COMMAND : "";
+    if (!modelCommand && !/^\/settings\s+agent\s+thinking(?:\s|$)/.test(query)) return {};
     const root = getProjectRoot();
     const config = loadConfig(root);
     const thinking = suggestThinkingLevels({ current: config.agentThinking });
-    const lists = { [THINKING_COMMAND]: thinking, [`${MODEL_COMMAND}/thinking`]: thinking };
-    if (text.trimStart().startsWith(`${MODEL_COMMAND} `)) {
+    const lists = { [THINKING_COMMAND]: thinking };
+    if (modelCommand) {
+      lists[`${modelCommand}/thinking`] = thinking;
       const listed = await listModels(root).catch((error) => ({ ok: false, error: error.message }));
       const ids = listed.ok ? listed.models.slice() : [];
       if (config.agentModel && (!listed.ok || listed.allowUnlistedModels) && !ids.includes(config.agentModel)) {
         ids.unshift(config.agentModel);
       }
-      lists[MODEL_COMMAND] = ids.map((id) => ({ id, hasChildren: true, desc: id === config.agentModel ? "current · choose thinking" : "choose thinking" }));
-      lists[MODEL_COMMAND].push({ id: "<manual>", label: "Enter model ID", hasChildren: false,
+      lists[modelCommand] = ids.map((id) => ({ id, hasChildren: true, desc: id === config.agentModel ? "current · choose thinking" : "choose thinking" }));
+      lists[modelCommand].push({ id: "<manual>", label: "Enter model ID", hasChildren: false,
         desc: listed.ok ? "Configure a model by ID" : "Catalog unavailable · enter model ID" });
     }
     return lists;

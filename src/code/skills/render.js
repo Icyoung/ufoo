@@ -1,4 +1,5 @@
 const {
+  buildSkillManifest,
   buildSkillManifests,
   renderSkillManifestSection,
 } = require("./manifest");
@@ -16,6 +17,12 @@ function renderSkillsSection(skills = [], options = {}) {
     const pathText = String(skill.path || "").replace(/\\/g, "/");
     const desc = String(skill.description || skill.shortDescription || "").trim();
     lines.push(`- ${skill.name}: ${desc} (file: ${pathText})`);
+    if (options.compactManifests) {
+      const manifest = buildSkillManifest(skill);
+      if (manifest.workflowSummary && !desc.startsWith(manifest.workflowSummary)) lines.push(`  Workflow: ${manifest.workflowSummary}`);
+      if (manifest.triggers.length) lines.push(`  Triggers: ${manifest.triggers.join(", ")}`);
+      if (manifest.bodyArtifactId) lines.push(`  Body artifact: artifact://${manifest.bodyArtifactId}`);
+    }
   }
 
   lines.push("### How to use skills");
@@ -24,7 +31,7 @@ function renderSkillsSection(skills = [], options = {}) {
   lines.push("- When a skill is selected, read only the specific skill body and nearby referenced files needed for the task.");
   lines.push("- If a skill is ambiguous, missing, or unreadable, say so briefly and continue with the best fallback.");
 
-  if (options.includeManifests !== false) {
+  if (!options.compactManifests && options.includeManifests !== false) {
     const manifests = buildSkillManifests(list);
     const manifestSection = renderSkillManifestSection(manifests);
     if (manifestSection) {

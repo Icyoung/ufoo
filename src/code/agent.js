@@ -604,6 +604,7 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
     provider,
     turnDynamic: skillBodyBlocks.join("\n\n"),
     latestUserMessage: effectiveTaskPrompt,
+    requestKind: options.runtimeContext?.requestKind,
   });
   const systemContext = assembled.systemPrompt;
   state.summary = assembled.summary || state.summary;

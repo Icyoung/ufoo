@@ -1,12 +1,13 @@
 "use strict";
 
+const { createHash } = require("crypto");
 const { estimateTextTokens, estimateMessagesTokens, historyUnits, userInstruction } = require("./contextBudget");
-const { resolveModelContextLimit } = require("./contextWindow");
+const { resolveModelContextLimit, resolveModelInputLimits } = require("./contextWindow");
 const { createTopicSelector } = require("./topicSelector");
 const { normalizeTopic } = require("./turnIndexStore");
 const {
-  stripTurnContextWrapper,
-  stripTurnContextFromContent,
+  TURN_CONTEXT_SOURCE,
+  stripTurnContextFromMessage,
   extractTextFromMessage,
 } = require("./turnAnalyzer");
 
@@ -23,6 +24,7 @@ const DEFAULT_V2_POLICY = Object.freeze({
   minKeepTurns: 2,
   maxOutputTokens: 32768,
   triggerRatio: 0.85,
+  compactRatio: 0.60,
   maxTurnContextRatio: 0.25,
   maxToolResultCharsLevel1: 1200,
   maxToolResultCharsLevel3: 480,
@@ -38,26 +40,14 @@ function copyOwnSymbols(source, target) {
 }
 
 function cloneMessageClean(msg) {
-  if (!msg || typeof msg !== "object") return msg;
-  if (msg.role !== "user") return msg;
-  if (typeof msg.content === "string") {
-    const stripped = stripTurnContextWrapper(msg.content);
-    if (stripped === msg.content) return msg;
-    return copyOwnSymbols(msg, { ...msg, content: stripped });
-  }
-  if (Array.isArray(msg.content)) {
-    const stripped = stripTurnContextFromContent(msg.content);
-    const changed = stripped.length !== msg.content.length || stripped.some((part, idx) => part !== msg.content[idx]);
-    if (!changed) return msg;
-    return copyOwnSymbols(msg, { ...msg, content: stripped });
-  }
-  return msg;
+  return stripTurnContextFromMessage(msg);
 }
 
 function attachTurnContextToMessage(msg, turnContextXml) {
   if (!turnContextXml || !msg || typeof msg !== "object") return msg;
   const cleaned = cloneMessageClean(msg);
   const base = cleaned === msg ? copyOwnSymbols(msg, { ...msg }) : cleaned;
+  Object.defineProperty(base, TURN_CONTEXT_SOURCE, { value: { originalContent: base.content } });
   if (typeof base.content === "string") {
     base.content = base.content ? `${turnContextXml}\n\n${base.content}` : turnContextXml;
     return base;
@@ -386,14 +376,7 @@ function splitHistoryAndCurrentTurn(messages = [], explicitOffset) {
       currentTurnMessages: messages.slice(explicitOffset),
     };
   }
-  const markedIndex = messages.findIndex((msg) => {
-    if (!msg || msg.role !== "user") return false;
-    if (typeof msg.content === "string") return /<turn_context(?:\s+[^>]*)?>/i.test(msg.content);
-    if (Array.isArray(msg.content)) {
-      return msg.content.some((p) => p && p.type === "text" && typeof p.text === "string" && /<turn_context(?:\s+[^>]*)?>/i.test(p.text));
-    }
-    return false;
-  });
+  const markedIndex = messages.findLastIndex(msg => msg?.[TURN_CONTEXT_SOURCE]);
   if (markedIndex >= 0) {
     return {
       historyOffset: markedIndex,
@@ -423,6 +406,8 @@ function createSlidingWindowManager({
   topicSelector = null,
 } = {}) {
   const cfg = { ...DEFAULT_V2_POLICY, ...policy };
+  // Window files from before strategy pinning already belong to a legacy session.
+  const strategy = state => state ? (state.strategyVersion === 2 ? 2 : 1) : (cfg.cacheStrategy === "stable-prefix" ? 2 : 1);
 
   async function prepare({
     messages = [],
@@ -430,6 +415,9 @@ function createSlidingWindowManager({
     systemPrompt = "",
     systemBlocks = null,
     tools = [],
+    turnSupplement = "",
+    transport,
+    request,
     historyOffset: explicitHistoryOffset,
     requestKind = "user",
     turnId = "",
@@ -457,14 +445,30 @@ function createSlidingWindowManager({
 
     let indexedTurns = [];
     let windowState = null;
-    if (turnIndexStore && !isolated) {
-      try { indexedTurns = turnIndexStore.listTurns(); } catch { indexedTurns = []; }
+    if (turnIndexStore) {
+      if (!isolated) {
+        try { indexedTurns = turnIndexStore.listTurns(); } catch { indexedTurns = []; }
+      }
       try { windowState = turnIndexStore.loadWindowState(); } catch { windowState = null; }
     }
 
-    const units = partitionHistoricalMessages(historicalMessages, indexedTurns);
+    const strategyVersion = strategy(windowState);
+    if (isolated) windowState = null;
+    const stablePrefix = strategyVersion === 2;
+    const projectionScope = createHash("sha256").update(JSON.stringify([model, request?.url, request?.requestProfile, transport?.name])).digest("hex");
+    if (windowState?.scope && windowState.scope !== projectionScope) windowState = null;
+    const supplements = new Map((stablePrefix && windowState?.supplements || []).map(entry => [entry.offset, entry]));
+    const sourceDigest = message => createHash("sha256").update(JSON.stringify(message?.content ?? null)).digest("hex");
+
+    const historicToolLimits = new Map((stablePrefix && windowState?.toolLimits || []).map(entry => [entry.offset, entry.limits]));
+    const units = partitionHistoricalMessages(historicalMessages, indexedTurns).map(unit => {
+      const limits = historicToolLimits.get(unit.start);
+      return limits ? { ...unit, messages: unit.messages.map((message, index) => limits[index] ? truncateToolResultsInMessage(message, limits[index]) : message) } : unit;
+    });
     const limitOption = cfg.contextWindowTokens || cfg.limitTokens || Number(process.env.UFOO_CONTEXT_LIMIT_TOKENS) || 0;
-    const modelLimit = resolveModelContextLimit(model, { limit: limitOption });
+    const constraints = { url: request?.url, transport: transport?.name || transport?.id };
+    const modelLimits = resolveModelInputLimits(model, constraints);
+    const modelLimit = Math.min(modelLimits?.contextWindow || Infinity, resolveModelContextLimit(model, { ...constraints, limit: limitOption }));
     const outputOverride = Number(process.env.UFOO_UCODE_MAX_TOKENS);
     const configuredOutput = Number.isFinite(outputOverride) && outputOverride > 0
       ? Math.floor(outputOverride)
@@ -473,9 +477,12 @@ function createSlidingWindowManager({
       1,
       Math.min(modelLimit - 1, cfg.outputReserveTokens ?? Math.min(configuredOutput, Math.floor(modelLimit * 0.2))),
     );
-    const rawMaxInputTokens = Math.max(512, Math.floor((modelLimit - reserveOutput) * cfg.triggerRatio));
+    const explicitInputLimit = Number(cfg.maxInputTokens);
+    const hardInputLimit = Math.min(modelLimit - reserveOutput, modelLimits?.maxInputTokens || Infinity,
+      explicitInputLimit > 0 ? Math.floor(explicitInputLimit) : Infinity);
+    const rawMaxInputTokens = Math.min(hardInputLimit, Math.max(1, Math.floor(hardInputLimit * cfg.triggerRatio)));
 
-    const sysTokens = systemBlocks
+    const sysTokens = constraints.transport === "openai-chat" ? 0 : systemBlocks?.length
       ? estimateTextTokens(JSON.stringify(systemBlocks))
       : estimateTextTokens(systemPrompt);
     const inlineSysTokens = pinnedSystemMessages.length ? estimateMessagesTokens(pinnedSystemMessages) : 0;
@@ -503,16 +510,16 @@ function createSlidingWindowManager({
     const initialHistoryBudget = Math.max(0, maxInputTokens - fixedOverhead - Math.ceil(inlineSysTokens * scaleFactor) - currentTurnTokens);
 
     // Level 0 initial window selection.
-    let windowSelection = selectWindowUnits({
+    const windowSelection = selectWindowUnits({
       units,
       policy: cfg,
       windowState,
       availableHistoryBudget: initialHistoryBudget,
     });
     const sameTurnState = windowState?.cachedTurnContext?.turnId === effectiveTurnId ? windowState : null;
-    let keptUnits = windowSelection.keptUnits;
+    let keptUnits = stablePrefix ? units.filter(unit => unit.start >= (windowState?.firstRetainedOffset || 0)) : windowSelection.keptUnits;
     // Once evicted in this logical turn, never restore a prefix on a later tool round.
-    if (sameTurnState?.evictionLevel > 0 && Array.isArray(sameTurnState.keptTurnIds)) {
+    if (!stablePrefix && sameTurnState?.evictionLevel > 0 && Array.isArray(sameTurnState.keptTurnIds)) {
       const retained = new Set(sameTurnState.keptTurnIds);
       keptUnits = units.filter((unit) => retained.has(unit.turnId)).map((unit) => ({
         ...unit,
@@ -547,6 +554,7 @@ function createSlidingWindowManager({
       if (topicSelector && typeof topicSelector.select === "function") {
         selectionResult = await topicSelector.select({
           currentQuery: currentQueryText,
+          turnId,
           requestKind,
           resume,
           allTurns: indexedTurns.filter((t) => (t.historyOffset || 0) < adjustedHistoryOffset),
@@ -610,10 +618,15 @@ function createSlidingWindowManager({
       }
     };
 
+    let supplementalData = stablePrefix ? (canReuseCachedContext ? sameTurnState.cachedTurnContext.supplement || "" : turnSupplement) : "";
+    const combineSupplement = (xml) => [xml, supplementalData].filter(Boolean).join("\n\n");
     const assembleCandidate = (candidateUnits, candidateCurrent, xml) => {
       const histMsgs = [...pinnedSystemMessages];
       for (const unit of candidateUnits) {
-        for (const msg of unit.messages) histMsgs.push(msg);
+        const [first, ...rest] = unit.messages;
+        const prior = supplements.get(unit.start);
+        histMsgs.push(prior && sourceDigest(first) === prior.sourceDigest ? attachTurnContextToMessage(first, prior.content) : first);
+        for (const message of rest) histMsgs.push(message);
       }
       if (histMsgs.length > pinnedSystemMessages.length && candidateCurrent.length > 0 && (xml || candidateCurrent.length > 1)) {
         const boundaryIdx = histMsgs.length - 1;
@@ -626,8 +639,8 @@ function createSlidingWindowManager({
         histMsgs[boundaryIdx] = boundaryMsg;
       }
       const curMsgs = candidateCurrent.slice();
-      if (xml && curMsgs.length) {
-        curMsgs[0] = attachTurnContextToMessage(curMsgs[0], xml);
+      if (combineSupplement(xml) && curMsgs[0]?.role === "user") {
+        curMsgs[0] = attachTurnContextToMessage(curMsgs[0], combineSupplement(xml));
       }
       const all = [...histMsgs, ...curMsgs];
       return {
@@ -643,7 +656,23 @@ function createSlidingWindowManager({
     const prevForcedLevel = force && windowState ? Number(windowState.evictionLevel || 0) : 0;
 
     // Deterministic Eviction Ladder when overflow detected or forced retry.
-    if (force || assembled.estimatedTokens > maxInputTokens) {
+    if (stablePrefix && (force || initialTokens >= maxInputTokens)) {
+      const target = Math.max(1, Math.floor(hardInputLimit * cfg.compactRatio));
+      let remaining = initialTokens;
+      let trimmed = 0;
+      while (trimmed < keptUnits.length && remaining > target) {
+        const unit = keptUnits[trimmed];
+        const prior = supplements.get(unit.start);
+        remaining -= estTokens(unit.messages) + (prior ? estText(prior.content) : 0);
+        trimmed += 1;
+      }
+      if (trimmed) {
+        keptUnits = keptUnits.slice(trimmed);
+        evictionLevel = Math.max(evictionLevel, 1);
+        await refreshTurnContext(true);
+        assembled = assembleCandidate(keptUnits, workingCurrent, turnContextXml);
+      }
+    } else if (force || assembled.estimatedTokens > maxInputTokens) {
       // Level 1: Drop to minKeepTurns (2) user turns, drop system wakes in L1, truncate large older tool outputs in L1.
       evictionLevel = Math.max(evictionLevel, 1);
       const shrunkSelection = selectWindowUnits({
@@ -680,7 +709,8 @@ function createSlidingWindowManager({
     }
 
     const level2DidNotShrink = force && assembled.estimatedTokens >= Math.floor(initialTokens * 0.9);
-    if (assembled.estimatedTokens > maxInputTokens || (force && (prevForcedLevel >= 2 || level2DidNotShrink))) {
+    const currentTurnLimit = stablePrefix ? hardInputLimit : maxInputTokens;
+    if (assembled.estimatedTokens > currentTurnLimit || (force && (prevForcedLevel >= 2 || level2DidNotShrink))) {
       // Level 3: Emergency compression of intermediate tool outputs inside currentTurnMessages (preserve round 0 user + latest round + thinking signatures).
       evictionLevel = 3;
       keptUnits = [];
@@ -707,9 +737,14 @@ function createSlidingWindowManager({
       }
     }
 
+    if (supplementalData && assembled.estimatedTokens > hardInputLimit) {
+      supplementalData = "";
+      assembled = assembleCandidate(keptUnits, workingCurrent, turnContextXml);
+    }
     const didShrink = assembled.estimatedTokens < initialTokens
       || keptUnits.length < initialKeptCount;
-    if (assembled.estimatedTokens > maxInputTokens || (force && !didShrink)) {
+    const compressionReason = force ? "provider_overflow" : didShrink ? "input_budget" : null;
+    if (assembled.estimatedTokens > hardInputLimit || (force && !didShrink)) {
       throw Object.assign(
         new Error("context exceeds the configured input budget; original history retained"),
         { code: "context_budget_exceeded" },
@@ -732,6 +767,20 @@ function createSlidingWindowManager({
     if (turnIndexStore && !isolated) {
       try {
         turnIndexStore.saveWindowState({
+          version: 2,
+          strategyVersion,
+          scope: projectionScope,
+          firstRetainedOffset: keptUnits[0]?.start ?? adjustedHistoryOffset,
+          supplements: stablePrefix ? [
+            ...keptUnits.map(unit => supplements.get(unit.start)).filter(Boolean),
+            ...(currentFirstMsg?.role === "user" && combineSupplement(turnContextXml) ? [{
+              offset: adjustedHistoryOffset, sourceDigest: sourceDigest(currentFirstMsg), content: combineSupplement(turnContextXml),
+            }] : []),
+          ] : [],
+          toolLimits: stablePrefix ? [
+            ...keptUnits.filter(unit => historicToolLimits.has(unit.start)).map(unit => ({ offset: unit.start, limits: historicToolLimits.get(unit.start) })),
+            ...(Object.keys(currentToolLimits).length ? [{ offset: adjustedHistoryOffset, limits: currentToolLimits }] : []),
+          ] : [],
           anchorTurnId: finalAnchorTurnId,
           evictionLevel,
           currentToolLimits,
@@ -740,6 +789,7 @@ function createSlidingWindowManager({
             turnId: effectiveTurnId,
             anchorTurnId: finalAnchorTurnId,
             xml: turnContextXml,
+            supplement: supplementalData,
             mode: selectionResult.mode,
             activeTopics: selectionResult.activeTopics || [],
             selectedTurnIds: (selectionResult.selectedTurns || []).map((t) => t.turnId),
@@ -771,6 +821,10 @@ function createSlidingWindowManager({
       maxOutputTokens: reserveOutput,
       meta: {
         evictionLevel,
+        compressionReason,
+        strategyVersion,
+        contextWindow: modelLimit,
+        hardInputLimit,
         rawTurnCount: keptUnits.length,
         offWindowCount: offWindowTurns.length,
         selectionMode: selectionResult.mode,
@@ -779,7 +833,9 @@ function createSlidingWindowManager({
     };
   }
 
-  return Object.freeze({ prepare });
+  return Object.freeze({ prepare, strategyVersion() {
+    try { return strategy(turnIndexStore?.loadWindowState()); } catch { return strategy(null); }
+  } });
 }
 
 module.exports = {

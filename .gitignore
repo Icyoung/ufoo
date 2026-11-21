@@ -20,12 +20,18 @@ scripts/*
 !scripts/postinstall.js
 !scripts/postinstall-skills.js
 !scripts/pack-tui.js
+!scripts/pack-desktop.js
 !scripts/smoke-native-messages.js
+crates/ufoo-desktop/resources/runtime/
+crates/ufoo-desktop/gen/
+apps/desktop/*.tsbuildinfo
+!apps/desktop/package-lock.json
 # Keep pre-existing local drafts private; version the maintained references.
 /docs/*
 !/docs/README.md
 !/docs/PROJECT.md
 !/docs/OBSERVABILITY.md
+!/docs/provider-prompt-caching-plan.md
 !/docs/archive/
 /docs/archive/*
 !/docs/archive/AGENT_RUNTIME_REFACTOR.md

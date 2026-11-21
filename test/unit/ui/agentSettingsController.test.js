@@ -13,7 +13,8 @@ const { resolveRuntimeConfig, resolveTransport } = require("../../../src/agents/
 
 describe("custom provider settings", () => {
   let root, ui, publish, logs;
-  const fakeCatalog = async (_url, request) => {
+  const fakeCatalog = async (url, request) => {
+    expect(url).toBe("https://gateway.test/v1/models");
     expect(request.headers.Authorization).toBe("Bearer fixture-custom-key");
     return new Response(JSON.stringify({ data: Array.from({ length: 65 }, (_, i) => ({ id: `model-${i}` })) }),
       { headers: { "content-type": "application/json" } });
@@ -50,6 +51,10 @@ describe("custom provider settings", () => {
     const thinking = buildCompletions({ ...options, text: `${MODEL_COMMAND} model-64 ` });
     expect(thinking.map((item) => item.replace)).toContain(`${MODEL_COMMAND} model-64 high`);
     expect(buildCompletions({ ...options, text: `${MODEL_COMMAND} <manual> ` })).toEqual([]);
+    const alias = { ...options, argumentLists: await ui.completions("/model") };
+    expect(buildCompletions({ ...alias, text: "/model" })).toHaveLength(66);
+    expect(buildCompletions({ ...alias, text: "/model model-64 " }).map((item) => item.replace))
+      .toContain("/model model-64 high");
     expect((await ui.applyModel("model-64", "high")).ok).toBe(true);
     expect(loadConfig(root)).toMatchObject({ agentModel: "model-64", agentThinking: "high" });
     expect((await ui.applyModel("gateway-only-model")).ok).toBe(true);

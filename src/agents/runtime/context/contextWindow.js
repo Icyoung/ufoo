@@ -37,6 +37,9 @@ function resolveModelContextLimit(model = "", options = {}) {
   const override = toTokenCount(options.limit || options.contextLimit);
   if (override > 0) return override;
 
+  const known = resolveModelInputLimits(model, options);
+  if (known) return known.contextWindow;
+
   const id = String(model || "").trim().toLowerCase();
   if (!id) return 200000;
 
@@ -54,6 +57,12 @@ function resolveModelContextLimit(model = "", options = {}) {
   if (/gpt-4|gpt-3\.5/.test(id)) return 128000;
 
   return 200000;
+}
+
+function resolveModelInputLimits(model, { url = "", transport = "" } = {}) {
+  if (transport !== "openai-responses" || !/^https:\/\/api\.openai\.com\/v1\/responses(?:$|[?#])/.test(url)) return null;
+  if (/^gpt-6\.2-(?:sol|astra)(?:-\d{4}-\d\d-\d\d)?$/i.test(model)) return { contextWindow: 1_050_000, maxInputTokens: 922_000 };
+  return null;
 }
 
 function formatTokensK(tokens = 0) {
@@ -116,6 +125,7 @@ module.exports = {
   toTokenCount,
   contextTokensFromUsage,
   resolveModelContextLimit,
+  resolveModelInputLimits,
   formatTokensK,
   formatContextMeter,
   buildContextMeter,

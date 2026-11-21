@@ -87,6 +87,8 @@ function readAgentTrace(projectRoot, options = {}) {
       ...(event.finalTextCharacters != null ? { finalTextCharacters: event.finalTextCharacters } : {}),
       ...(result.code ? { resultCode: result.code } : {}),
       provider: event.provider, model: event.model, transport: event.transport, estimatedInputTokens: event.estimatedInputTokens,
+      modelRequestId: event.modelRequestId, providerRequestId: event.providerRequestId, purpose: event.purpose,
+      channel: event.channel, cacheRequest: event.cacheRequest, compressionReason: event.compressionReason, strategyVersion: event.strategyVersion,
       ...(["model.started", "model.completed", "model.failed"].includes(event.type) ? { modelScope: event.modelScope || "api-call" } : {}),
       summary: clip(event.error?.message || event.error || result.error?.message || result.error || event.text || result.text || event.phase?.type || event.type),
       ...(event.args ? { args: event.args } : {}), ...(event.result ? { result: event.result, ok: result.ok } : {}),

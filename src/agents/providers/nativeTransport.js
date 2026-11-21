@@ -2,10 +2,12 @@
 
 const os = require("os");
 const { resolveCodexUserAgent, resolveGrokClientVersion } = require("./clientIdentity");
-const { randomUUID } = require("crypto");
+const { createHash, randomUUID } = require("crypto");
 const { Agent: UndiciAgent } = require("undici");
-const { normalizeProvider, normalizeKimiModel, resolveCompletionUrl, resolveResponsesUrl, resolveAnthropicMessagesUrl } = require("./runtimeConfig");
+const { normalizeProvider, normalizeKimiModel, resolveResponsesRequestProfile, resolveCompletionUrl, resolveResponsesUrl, resolveAnthropicMessagesUrl } = require("./runtimeConfig");
 const { stableStringify } = require("../runtime/core/stableJson");
+const { observeWireRequest } = require("./transports/requestCacheObservation");
+const { applyAnthropicCacheBreakpoints } = require("./transports/anthropicCache");
 const { systemBlocksToAnthropicPayload } = require("./transports/systemBlocks");
 const { buildResponsesPayload, isResponsesKeepalive, responseEventDelta, parseResponsesEvents, parseResponsesSsePayload } = require("./transports/responsesProtocol");
 
@@ -121,15 +123,6 @@ function createUsageTotals() {
   };
 }
 
-function addUsageTotals(totals, usage = null) {
-  if (!usage || typeof usage !== "object") return totals;
-  totals.input += toUsageInt(usage.input);
-  totals.output += toUsageInt(usage.output);
-  totals.cacheRead += toUsageInt(usage.cacheRead);
-  totals.cacheCreation += toUsageInt(usage.cacheCreation);
-  return totals;
-}
-
 // OpenAI-compatible streams end with one usage chunk carrying whole-turn
 // totals (prompt_tokens_details.cached_tokens counts the cache hits).
 function readOpenAiUsage(raw) {
@@ -138,27 +131,31 @@ function readOpenAiUsage(raw) {
   const details = raw.prompt_tokens_details && typeof raw.prompt_tokens_details === "object"
     ? raw.prompt_tokens_details
     : {};
+  const writes = details.cache_write_tokens ?? details.created_cache_tokens;
   return {
     input: toUsageInt(raw.prompt_tokens),
     output: toUsageInt(raw.completion_tokens),
     cacheRead: details.cached_tokens != null && Number.isFinite(Number(details.cached_tokens)) ? toUsageInt(details.cached_tokens) : null,
-    cacheCreation: toUsageInt(details.cache_write_tokens ?? details.created_cache_tokens),
+    cacheCreation: writes != null && Number.isFinite(Number(writes)) ? toUsageInt(writes) : null,
     inputIncludesCache: true,
   };
 }
 
-// Anthropic reports input/cache tokens once on message_start; output tokens
-// arrive per message_delta. The non-streaming body carries the full totals.
-function readAnthropicUsage(raw, { includeOutput = false } = {}) {
+// Anthropic's streaming counters are cumulative. Preserve missing fields
+// so proxies that omit cache usage do not get credited with a zero hit rate.
+function readAnthropicUsage(raw) {
   if (!raw || typeof raw !== "object") return null;
-  if (!["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"].some(key => raw[key] != null && Number.isFinite(Number(raw[key])))) return null;
-  return {
-    input: toUsageInt(raw.input_tokens),
-    output: includeOutput ? toUsageInt(raw.output_tokens) : 0,
-    cacheRead: toUsageInt(raw.cache_read_input_tokens),
-    cacheCreation: toUsageInt(raw.cache_creation_input_tokens),
-    inputIncludesCache: false,
+  const count = value => value != null && Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : null;
+  const usage = {
+    input: count(raw.input_tokens),
+    output: count(raw.output_tokens),
+    cacheRead: count(raw.cache_read_input_tokens),
+    cacheCreation: count(raw.cache_creation_input_tokens),
   };
+  const ttl5m = count(raw.cache_creation?.ephemeral_5m_input_tokens);
+  const ttl1h = count(raw.cache_creation?.ephemeral_1h_input_tokens);
+  if (ttl5m !== null || ttl1h !== null) usage.cacheWriteByTtl = { "5m": ttl5m, "1h": ttl1h };
+  return Object.values(usage).some(value => value !== null) ? { ...usage, inputIncludesCache: false } : null;
 }
 
 function clipText(value = "", maxChars = 6000) {
@@ -319,6 +316,8 @@ async function runSseRequest({
   signal = null,
   timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
   onPhase = null,
+  onRequest = null,
+  requestObservation = {},
   onNonStream,
   onEvent,
   onTail = null,
@@ -332,6 +331,11 @@ async function runSseRequest({
       // Protocol handlers retain their own accumulators. Once any event has
       // reached one, replay would duplicate text/tool arguments; stop retrying.
       let consumed = false;
+      if (attempt === 0 && typeof onRequest === "function") {
+        const startedAt = nowMs();
+        const credentials = String(headers.authorization || headers.Authorization || headers["x-api-key"] || "");
+        try { onRequest(observeWireRequest({ payload, url, startedAt, credentials, ...requestObservation })); } catch { /* observer only */ }
+      }
       emitPhase(onPhase, { type: "request_start" });
       try {
         response = await fetch(url, {
@@ -439,6 +443,11 @@ async function runOpenAiLikeTurn({
   onTextDelta = null,
   onThinkingDelta = null,
   onPhase = null,
+  onRequest = null,
+  requestScope = "",
+  requestPurpose = "",
+  strategyVersion = 1,
+  sessionId = "",
   signal = null,
   timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
 } = {}) {
@@ -446,7 +455,7 @@ async function runOpenAiLikeTurn({
   const payload = {
     model: normalizedProvider === "kimi" ? normalizeKimiModel(model) : model,
     max_tokens: maxOutputTokens || resolveMaxTokens(DEFAULT_OPENAI_MAX_TOKENS),
-    messages,
+    messages: messages.map(({ responsesContinuation: _continuation, ...message }) => message),
     ...(tools.length ? { tools, tool_choice: "auto" } : {}),
     stream: true,
     // Ask for the terminal usage chunk so token/cache accounting works.
@@ -481,6 +490,8 @@ async function runOpenAiLikeTurn({
     signal,
     timeoutMs,
     onPhase,
+    onRequest,
+    requestObservation: { transport: "openai-chat", sessionId, requestScope, requestPurpose, strategyVersion, requestProfile: normalizedProvider === "kimi" ? "kimi-chat" : "" },
     onNonStream: (data) => {
       const message = data && data.choices && data.choices[0] && data.choices[0].message
         ? data.choices[0].message
@@ -639,7 +650,7 @@ function buildKimiHeaders({ apiKey = "", stream = true } = {}) {
   return headers;
 }
 
-function buildResponsesHeaders({ provider = "", apiKey = "", sessionId = "", accountId = "", url = "" } = {}) {
+function buildResponsesHeaders({ provider = "", requestProfile = "", apiKey = "", sessionId = "", accountId = "", url = "" } = {}) {
   const normalizedProvider = normalizeProvider(provider);
   const headers = {
     "content-type": "application/json",
@@ -648,11 +659,11 @@ function buildResponsesHeaders({ provider = "", apiKey = "", sessionId = "", acc
   };
   if (apiKey) headers.authorization = `Bearer ${apiKey}`;
 
-  if (normalizedProvider === "codex") {
+  if (requestProfile === "codex-subscription") {
     headers["User-Agent"] = resolveCodexUserAgent();
     headers.Originator = "codex-tui";
     headers["Session-Id"] = String(sessionId || randomUUID());
-    if (accountId) headers["Chatgpt-Account-Id"] = String(accountId);
+    if (accountId) headers["chatgpt-account-id"] = String(accountId);
   }
 
   if (normalizedProvider === "grok-build" || normalizedProvider === "xai") {
@@ -682,6 +693,7 @@ async function runResponsesTurn({
   provider = "",
   thinkingLevel = "",
   systemPrompt = "",
+  systemBlocks = null,
   messages = [],
   tools = [],
   maxOutputTokens = null,
@@ -690,19 +702,30 @@ async function runResponsesTurn({
   onTextDelta = null,
   onThinkingDelta = null,
   onPhase = null,
+  onRequest = null,
+  requestScope = "",
+  requestPurpose = "",
+  strategyVersion = 1,
   signal = null,
   timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
 } = {}) {
+  const channel = requestProfile || resolveResponsesRequestProfile(url);
+  const endpointKey = createHash("sha256").update(url).digest("hex");
+  const responsesRequest = { model, channel, endpointKey };
   const payload = buildResponsesPayload({
     model,
     instructions: systemPrompt,
+    systemBlocks,
     messages,
     tools,
     maxOutputTokens: maxOutputTokens || resolveMaxTokens(DEFAULT_OPENAI_MAX_TOKENS),
     reasoningEffort: thinkingLevel === "off" ? "none" : resolveReasoningEffort(thinkingOptions(thinkingLevel)),
     provider: normalizeProvider(provider),
+    requestProfile: channel,
+    endpointKey,
+    strategyVersion,
   });
-  const headers = buildResponsesHeaders({ provider, apiKey, sessionId, accountId, url });
+  const headers = buildResponsesHeaders({ provider, requestProfile, apiKey, sessionId, accountId, url });
   Object.assign(headers, requestHeaders);
   if (requestProfile === "codex-subscription") delete payload.max_output_tokens;
   const frames = [];
@@ -742,6 +765,8 @@ async function runResponsesTurn({
     signal,
     timeoutMs,
     onPhase,
+    onRequest,
+    requestObservation: { transport: "openai-responses", sessionId, requestScope, requestPurpose, strategyVersion, requestProfile: channel },
     onNonStream: (data) => {
       const parsed = parseResponsesEvents([{ event: data && data.type ? data.type : "response", data }], {
         assumeCompleted: true,
@@ -755,6 +780,8 @@ async function runResponsesTurn({
         usage: parsed.usage,
         response: parsed.response,
         responseId: parsed.responseId,
+        actualModel: parsed.response?.model,
+        responsesRequest,
       };
     },
     onEvent: consumeFrame,
@@ -775,6 +802,8 @@ async function runResponsesTurn({
         usage: parsed.usage,
         response: parsed.response,
         responseId: parsed.responseId,
+        actualModel: parsed.response?.model,
+        responsesRequest,
         incompleteDetails: parsed.incompleteDetails,
       };
     },
@@ -826,62 +855,6 @@ function extractAnthropicToolCalls(content = []) {
     }));
 }
 
-const STABLE_HISTORY_BOUNDARY_SYMBOL = Symbol.for("ufoo.stableHistoryBoundary");
-
-function stampAnthropicCacheBlock(msg) {
-  if (!msg || typeof msg !== "object" || Array.isArray(msg)) return msg;
-  if (typeof msg.content === "string") {
-    if (!msg.content) return msg;
-    return {
-      ...msg,
-      content: [
-        {
-          type: "text",
-          text: msg.content,
-          cache_control: { ...ANTHROPIC_CACHE_CONTROL },
-        },
-      ],
-    };
-  }
-  if (Array.isArray(msg.content) && msg.content.length > 0) {
-    const blocks = msg.content.slice();
-    const blockIndex = blocks.length - 1;
-    const block = blocks[blockIndex];
-    if (block && typeof block === "object" && !Array.isArray(block)) {
-      blocks[blockIndex] = {
-        ...block,
-        cache_control: { ...ANTHROPIC_CACHE_CONTROL },
-      };
-      return {
-        ...msg,
-        content: blocks,
-      };
-    }
-  }
-  return msg;
-}
-
-// Mark the ShortStableSnapshot boundary (when present) and the newest message
-// with cache breakpoints so both the cross-turn sliding window prefix and the
-// intra-turn append-only tool loop prefix are served from the prompt cache.
-function withAnthropicCacheBreakpoint(messages = []) {
-  if (!Array.isArray(messages) || messages.length === 0) return messages;
-  const copy = messages.slice();
-  const lastIndex = copy.length - 1;
-  let boundaryIndex = -1;
-  for (let i = lastIndex - 1; i >= 0; i -= 1) {
-    if (copy[i] && copy[i][STABLE_HISTORY_BOUNDARY_SYMBOL]) {
-      boundaryIndex = i;
-      break;
-    }
-  }
-  if (boundaryIndex >= 0) {
-    copy[boundaryIndex] = stampAnthropicCacheBlock(copy[boundaryIndex]);
-  }
-  copy[lastIndex] = stampAnthropicCacheBlock(copy[lastIndex]);
-  return copy;
-}
-
 async function runAnthropicTurn({
   url = "",
   apiKey = "",
@@ -896,14 +869,28 @@ async function runAnthropicTurn({
   onTextDelta = null,
   onThinkingDelta = null,
   onPhase = null,
+  onRequest = null,
+  requestScope = "",
+  requestPurpose = "",
+  strategyVersion = 1,
+  sessionId = "",
   signal = null,
   timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
 } = {}) {
   const payload = {
     model,
     max_tokens: maxOutputTokens || resolveMaxTokens(DEFAULT_ANTHROPIC_MAX_TOKENS),
-    messages: withAnthropicCacheBreakpoint(messages),
-    tools: tools.map((spec) => ({ name: spec.function.name, description: spec.function.description, input_schema: spec.function.parameters })),
+    messages: messages.map(message => {
+      if (!message.responsesContinuation) return message;
+      const { responsesContinuation: _continuation, ...clean } = message;
+      const stableBoundary = Symbol.for("ufoo.stableHistoryBoundary");
+      if (message[stableBoundary]) clean[stableBoundary] = true;
+      return clean;
+    }),
+    tools: tools.map(({ function: spec, cache_control }) => ({
+      name: spec.name, description: spec.description, input_schema: spec.parameters,
+      ...((cache_control || spec.cache_control) ? { cache_control: cache_control || spec.cache_control } : {}),
+    })),
     stream: true,
   };
   const isOpus55 = /^(?:claude-)?opus-5[.-]5(?:$|-)/i.test(model);
@@ -939,6 +926,10 @@ async function runAnthropicTurn({
     }
   }
 
+  applyAnthropicCacheBreakpoints(payload);
+
+  const channel = /^https:\/\/api\.anthropic\.com\/v1\/messages(?:$|[?#])/.test(url)
+    ? (apiKey ? "anthropic-messages" : "claude-subscription") : "anthropic-compatible";
   const headers = {
     "content-type": "application/json",
     "anthropic-version": "2023-06-01",
@@ -952,14 +943,17 @@ async function runAnthropicTurn({
   let responseText = "";
   let nextSyntheticBlockIndex = 0;
   let lastBlockIndex = -1;
-  let usageObserved = false;
-  const turnUsage = {
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheCreation: 0,
-    inputIncludesCache: false,
-  };
+  let turnUsage = null;
+  let responseId;
+  let actualModel;
+  function consumeUsage(raw) {
+    const usage = readAnthropicUsage(raw);
+    if (!usage) return;
+    turnUsage ||= usage;
+    for (const [key, value] of Object.entries(usage)) {
+      if (value !== null) turnUsage[key] = value;
+    }
+  }
 
   return runSseRequest({
     url,
@@ -968,6 +962,8 @@ async function runAnthropicTurn({
     signal,
     timeoutMs,
     onPhase,
+    onRequest,
+    requestObservation: { transport: "anthropic-messages", sessionId, requestScope, requestPurpose, strategyVersion, requestProfile: channel },
     onNonStream: (data) => {
       const content = normalizeAnthropicMessageContent(data && data.content);
       const text = content
@@ -977,14 +973,16 @@ async function runAnthropicTurn({
       if (text && typeof onTextDelta === "function") {
         onTextDelta(text);
       }
-      const usage = readAnthropicUsage(data && data.usage, { includeOutput: true });
-      usageObserved = Boolean(usage);
-      addUsageTotals(turnUsage, usage);
+      consumeUsage(data?.usage);
+      responseId = data?.id;
+      actualModel = data?.model;
       return {
         text,
         assistantContent: content,
         toolCalls: extractAnthropicToolCalls(content),
-        usage: usageObserved ? turnUsage : null,
+        usage: turnUsage,
+        responseId,
+        actualModel,
       };
     },
     onEvent: ({ event, data }) => {
@@ -999,26 +997,14 @@ async function runAnthropicTurn({
       }
 
       if (event === "message_start") {
-        const messageUsage = readAnthropicUsage(
-          payloadChunk.message && typeof payloadChunk.message === "object"
-            ? payloadChunk.message.usage
-            : null
-        );
-        if (messageUsage) {
-          usageObserved = true;
-          turnUsage.input = messageUsage.input;
-          turnUsage.cacheRead = messageUsage.cacheRead;
-          turnUsage.cacheCreation = messageUsage.cacheCreation;
-        }
+        consumeUsage(payloadChunk.message?.usage);
+        responseId = payloadChunk.message?.id;
+        actualModel = payloadChunk.message?.model;
         return;
       }
 
       if (event === "message_delta") {
-        const deltaUsage = payloadChunk.usage && typeof payloadChunk.usage === "object"
-          ? payloadChunk.usage
-          : {};
-        if (deltaUsage.output_tokens != null && Number.isFinite(Number(deltaUsage.output_tokens))) usageObserved = true;
-        turnUsage.output += toUsageInt(deltaUsage.output_tokens);
+        consumeUsage(payloadChunk.usage);
         return;
       }
 
@@ -1178,7 +1164,9 @@ async function runAnthropicTurn({
         text: responseText,
         assistantContent,
         toolCalls: extractAnthropicToolCalls(assistantContent),
-        usage: usageObserved ? turnUsage : null,
+        usage: turnUsage,
+        responseId,
+        actualModel,
       };
     },
   });

@@ -65,38 +65,25 @@ const CONTINUATION_CUES = [
   /^(continue|proceed|go ahead|yes|ok|okay|sure|fix that|fix it|try again|also|and then|now)\b/i,
 ];
 
-function stripTurnContextWrapper(text) {
-  if (typeof text !== "string") return "";
-  return text.replace(/<turn_context(?:\s+[^>]*)?>[\s\S]*?<\/turn_context>\s*/gi, "").trim();
-}
+const TURN_CONTEXT_SOURCE = Symbol.for("ufoo.turnContextSource");
 
-function stripTurnContextFromContent(content) {
-  if (typeof content === "string") return stripTurnContextWrapper(content);
-  if (!Array.isArray(content)) return content;
-  return content
-    .map((part) => {
-      if (!part || typeof part !== "object") return part;
-      if (part.type === "text" && typeof part.text === "string") {
-        const cleaned = stripTurnContextWrapper(part.text);
-        if (!cleaned) return null;
-        return cleaned === part.text ? part : { ...part, text: cleaned };
-      }
-      return part;
-    })
-    .filter(Boolean);
+function stripTurnContextFromMessage(message) {
+  const source = message?.[TURN_CONTEXT_SOURCE];
+  return source ? { ...message, content: source.originalContent } : message;
 }
 
 function extractTextFromMessage(message, { includeThinking = false } = {}) {
   if (!message || typeof message !== "object") return "";
+  message = stripTurnContextFromMessage(message);
   if (typeof message.content === "string") {
-    return message.role === "user" ? stripTurnContextWrapper(message.content) : message.content.trim();
+    return message.content.trim();
   }
   if (!Array.isArray(message.content)) return "";
   const chunks = [];
   for (const part of message.content) {
     if (!part || typeof part !== "object") continue;
     if (part.type === "text" && typeof part.text === "string") {
-      const text = message.role === "user" ? stripTurnContextWrapper(part.text) : part.text;
+      const text = part.text;
       if (text.trim()) chunks.push(text.trim());
     } else if (includeThinking && part.type === "thinking" && typeof part.thinking === "string") {
       if (part.thinking.trim()) chunks.push(part.thinking.trim());
@@ -325,8 +312,8 @@ function classifyTurnKind({ requestKind = "user", prompt = "", turnMessages = []
     return "resumed_interaction";
   }
   const firstUser = (turnMessages || []).find((m) => m && m.role === "user");
-  const instruction = firstUser ? stripTurnContextWrapper(userInstruction(firstUser) || "") : "";
-  if (!instruction && !stripTurnContextWrapper(String(prompt || "")) && (turnMessages || []).length > 0) {
+  const instruction = firstUser ? userInstruction(stripTurnContextFromMessage(firstUser)) : "";
+  if (!instruction && !String(prompt || "") && (turnMessages || []).length > 0) {
     const hasToolResults = (turnMessages || []).some((m) => m && (m.role === "tool" || (Array.isArray(m.content) && m.content.some((p) => p && p.type === "tool_result"))));
     if (hasToolResults) return "tool_continuation";
   }
@@ -365,7 +352,7 @@ function buildDeterministicTurnRecord({
   for (const msg of messages) {
     if (!msg || typeof msg !== "object") continue;
     if (msg.role === "user") {
-      const instruction = stripTurnContextWrapper(userInstruction(msg) || extractTextFromMessage(msg));
+      const instruction = userInstruction(stripTurnContextFromMessage(msg)) || extractTextFromMessage(msg);
       if (instruction) userTexts.push(instruction);
     } else if (msg.role === "assistant") {
       const text = extractTextFromMessage(msg);
@@ -397,7 +384,7 @@ function buildDeterministicTurnRecord({
     }
   }
 
-  const cleanedPrompt = stripTurnContextWrapper(String(prompt || ""));
+  const cleanedPrompt = String(prompt || "");
   const rawUserText = userTexts[0] || cleanedPrompt || (turnKind === "system_wake" ? `[${requestKind}]` : "");
   const finalAssistantText = assistantTexts[assistantTexts.length - 1] || "";
 
@@ -653,7 +640,7 @@ function createAsyncTurnEnricher({
   const queue = [];
 
   async function processOne(item) {
-    const { turn, expectedHash } = item;
+    const { turn, expectedHash, requestContext } = item;
     if (closed || typeof runAuxModel !== "function") return;
     activeController = new AbortController();
     let timedOut = false;
@@ -666,6 +653,7 @@ function createAsyncTurnEnricher({
     try {
       const raw = await runAuxModel({
         purpose: "turn_enrich",
+        requestContext,
         turn,
         existingTopics: store.listTopics().slice(0, 12),
         signal: activeController.signal,
@@ -713,11 +701,11 @@ function createAsyncTurnEnricher({
     })();
   }
 
-  function enqueue(turnRecord) {
+  function enqueue(turnRecord, requestContext) {
     if (closed || !enabled || typeof runAuxModel !== "function") return false;
     if (!turnRecord || !turnRecord.turnId) return false;
     const existingIdx = queue.findIndex((item) => item.turn.turnId === turnRecord.turnId);
-    const entry = { turn: turnRecord, expectedHash: turnRecord.contentHash || "" };
+    const entry = { turn: turnRecord, expectedHash: turnRecord.contentHash || "", requestContext };
     if (existingIdx >= 0) {
       queue[existingIdx] = entry;
     } else {
@@ -756,8 +744,8 @@ function createAsyncTurnEnricher({
 }
 
 module.exports = {
-  stripTurnContextWrapper,
-  stripTurnContextFromContent,
+  TURN_CONTEXT_SOURCE,
+  stripTurnContextFromMessage,
   classifyTurnKind,
   buildDeterministicTurnRecord,
   backfillMissingTurns,

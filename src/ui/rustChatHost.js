@@ -204,6 +204,8 @@ async function runChatRust(projectRoot, options = {}) {
   let activeProjectRoot = projectRoot;
   let globalScope = "controller";
   let multiSession = null;
+  let initialHandoffApplied = false;
+  const ownRequestIds = new Set();
   const internalSubmissions = new Map();
   /** Internal pane agents currently BUS_WATCH'd for multi/side inbound. */
   const watchedInternalAgents = new Set();
@@ -217,15 +219,18 @@ async function runChatRust(projectRoot, options = {}) {
   })();
 
   async function applyAgentSettings(patch) {
+    const root = activeProjectRoot;
     const model = patch.agent_model ?? patch.agentModel;
     if (model) {
-      const current = loadConfig(activeProjectRoot);
+      const current = loadConfig(root);
       const provider = patch.agent_provider ?? patch.agentProvider ?? current.agentProvider;
-      const confirmation = await require("../agents/providers/modelSettings").confirmAgentModel(activeProjectRoot, model,
-        { config: { ...current, agentProvider: provider } });
+      const agentBaseUrl = patch.agent_base_url ?? patch.agentBaseUrl ?? current.agentBaseUrl;
+      const confirmation = await require("../agents/providers/modelSettings").confirmAgentModel(root, model,
+        { config: { ...current, agentProvider: provider, agentBaseUrl } });
       if (!confirmation.allowed) return { ok: false, error: confirmation.error };
     }
-    const applied = applySettingsPatch(activeProjectRoot, patch);
+    if (root !== activeProjectRoot) return { ok: false, error: "The active workspace changed. Try again." };
+    const applied = applySettingsPatch(root, patch);
     if (!applied.ok) return applied;
     Object.assign(settings, loadConfig(activeProjectRoot));
     publish("settings.snapshot", applied.settings);
@@ -719,6 +724,20 @@ async function runChatRust(projectRoot, options = {}) {
         }
         publish("prompt.set_text", { text: "/resume ", if_empty: true });
       },
+      openDesktopApp: async (args = []) => {
+        const { openInDesktopApp } = require("./cliHandoff");
+        const snap = multiSession ? multiSession.getSnapshot() : { mode: "main", focus: {} };
+        const explicitAgent = String(args[0] || "").trim();
+        const focusedAgent = explicitAgent
+          || (snap.focus?.target === "agent" ? snap.focus.agent_id : "")
+          || controller.session.targetAgent
+          || "";
+        return openInDesktopApp({
+          projectRoot: activeProjectRoot || projectRoot,
+          target: focusedAgent || "main",
+          windowMode: focusedAgent ? "" : (snap.mode || "main"),
+        });
+      },
       applyChatSettings: (patch = {}) => {
         if (patch.agentProvider != null) settings.agentProvider = patch.agentProvider;
         publish("settings.snapshot", buildSettingsSnapshot(settings));
@@ -900,8 +919,7 @@ async function runChatRust(projectRoot, options = {}) {
           }
           if (completionRoot !== activeProjectRoot) return { ok: true, stale: true };
         }
-        const settingsLists = /^\/settings\s+agent\s+(?:model|thinking)(?:\s|$)/.test(String(payload.text || "").trimStart())
-          ? await agentSettings.completions(String(payload.text || "")) : {};
+        const settingsLists = await agentSettings.completions(String(payload.text || ""));
         if (completionRoot !== activeProjectRoot) return { ok: true, stale: true };
         const items = fmt.buildCompletions({
           text: String(payload.text || ""),
@@ -1112,6 +1130,8 @@ async function runChatRust(projectRoot, options = {}) {
     escapeBlessed: (value) => String(value || ""),
     resolveAgentDisplayName: getAgentLabel,
     stripBlessedTags: stripTags,
+    isOwnRequestId: (id) => ownRequestIds.has(id),
+    onInteractionClear: () => publish("interaction.clear", {}),
     logMessage: (kind, text) => {
       const normalized = kind === "error" ? "error"
         : kind === "user" ? "user"
@@ -1124,6 +1144,20 @@ async function runChatRust(projectRoot, options = {}) {
       controller.applyStatus(data);
       publishDashboardFromStatus(data);
       if (env.globalMode) publishProjects();
+      if (!initialHandoffApplied && (options.initialAgentId || options.initialWindowMode)) {
+        if (options.initialAgentId && hostApi.isKnownAgent(options.initialAgentId)) {
+          initialHandoffApplied = true;
+          if (hostApi.isInternalAgent(options.initialAgentId)) {
+            hostApi.startSide(options.initialAgentId);
+          } else {
+            controller.session.targetAgent = options.initialAgentId;
+            publish("prompt.set_prefix", { prefix: `›@${getAgentLabel(options.initialAgentId)} ` });
+          }
+        } else if (!options.initialAgentId && options.initialWindowMode) {
+          initialHandoffApplied = true;
+          changeWindowLayout(options.initialWindowMode);
+        }
+      }
     },
     requestStatus: () => controller.requestDaemonStatus(),
     getPending: () => controller.session.pending,
@@ -1234,6 +1268,11 @@ async function runChatRust(projectRoot, options = {}) {
 
   await daemonConnection.connect();
   daemonSend = (req) => {
+    const reqId = req && (req.request_id || req.id);
+    if (reqId) {
+      ownRequestIds.add(String(reqId));
+      if (ownRequestIds.size > 500) ownRequestIds.delete(ownRequestIds.values().next().value);
+    }
     if (req.type === IPC_REQUEST_TYPES.PROMPT) mainSubmissionRev += 1;
     return daemonConnection.send(req);
   };

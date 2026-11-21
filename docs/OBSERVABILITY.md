@@ -32,9 +32,9 @@ MCP 提供只读 `read_agent_metrics`；`read_agent_trace` 的结果及 JSONL fo
 |---|---|---|
 | 执行 | completed、failed、cancelled、interrupted、running、waiting_user、queued | 每个 taskRunId 只计一次；恢复后续执行仍属于原运行。completedOfFinished 的分母只包括四种结束状态。 |
 | 响应 | 排队、首段文字、首段思考摘要、总耗时、活动时间、等待用户时间 | 时间单位为毫秒；首段文字是已观察到的文本输出，不保证是给用户的最终回复。缺失起点/终点返回 null。 |
-| 模型 | 主模型调用、SDK turns、失败、空回复重试、上下文溢出重试、自动续跑 | SDK 内部 HTTP 次数不可见，不推算。模型阶段与工具阶段累计耗时是服务时间，不能当作互不重叠的总耗时分解。 |
+| 模型 | 前台调用、辅助调用、SDK turns、失败和重试 | 辅助请求按检索、摘要增强归回所属任务，前台首段文字计时沿用原口径。SDK 内部 HTTP 次数不可见。 |
 | 工具 | 执行、错误、执行异常、校验拒绝、未配对调用、相同工具参数重复、loop guard 警告/停止 | 执行异常单独计数并保留副作用未知的状态。同参数重复是调查线索，合法轮询或重读也可能重复。进行中的工具及等待用户的工具可以暂时未配对；这不等于失败。 |
-| 用量 | input、output、cacheRead、cacheCreation | 按已有 provider 解析器的字段语义分别汇总，不把 SDK/API 数据或缓存字段重复相加。未回传 usage 不按零计算。部分回传仅汇总可见部分，并标出完整用量覆盖率；不估算费用。 |
+| 用量 | input、output、cacheRead、cacheCreation、cacheWriteByTtl | 模型请求按各 provider 的语义解析。未提供的字段保留未知。写入分档和总量可以单独核对。 |
 | 缓存 | cache.hitRate、cachedTokens、promptTokens、样本和完整覆盖率 | 按 tokens 加权：命中 tokens 总量 / 同批样本的输入总量。OpenAI 的输入总量已含缓存；Anthropic 的分母为 input + cacheRead + cacheCreation。缺少缓存字段或无法确定输入口径的样本不参加缓存率计算；明确回传 cached_tokens=0 才能作为零命中样本。 |
 | 上下文 | contextSelections、windowProjections、maxEvictionLevel、contextSelectMs | 记录话题召回次数与耗时、滑动窗口投影次数及触发的最高水位退让等级（0~3）。 |
 | 协作 | 委派数、报告数、待验收、accepted、rejected、投递不确定、报告到验收延迟 | acceptedOfReviewed = accepted / (accepted + rejected)；没有验收样本时为 null。不会用 done 报告代替 accepted。 |
@@ -55,6 +55,8 @@ Provider/model、thinking、版本、执行引擎指纹、请求类型形成 coh
 `--baseline` 输出指标差值和变化比例；不同任务、样本量、模型或不完整来源可能影响结果，因此它是观测差异，不是因果结论。没有真实质量评分或独立验收的数据，不生成质量评分。
 
 缓存统计同时出现在 CLI、JSON、MCP 和各个 cohort。缓存率只使用同时具备命中量和可确定输入总量的样本，旁边显示样本覆盖情况。基线缓存率比较要求双方所有运行具有完整缓存观测，否则差值保留 null。Responses API 读取 `usage.input_tokens_details.cached_tokens`，Chat Completions 读取 `usage.prompt_tokens_details.cached_tokens`；写缓存 tokens 计入 cacheCreation，不当作缓存命中。指标口径参考 [OpenAI 官方缓存文档](https://developers.openai.com/api/docs/guides/prompt-caching)。旧解析器遗漏后写成零的日志无法还原真实命中量；修复作用于新请求。
+
+`ufoo metrics --json` 在每个运行中展示最近 100 条模型请求，包含用途、通道、模型、请求 ID、缓存策略版本、相邻请求间隔、最早变化位置和压缩原因。前缀比较保存摘要和估算 token 数，进程重启后的首个请求没有前次比较样本。完成任务的 `completedTaskInputCost` 按每次请求的 Standard 输入费率估算，覆盖前台、检索和延后完成的摘要增强。无法定价的请求保留可见用量，并使该任务的 `inputCostUsd` 保持未知。`knownInputCostUsd` 只加总有价格的请求。报价覆盖已登记模型的官方 Responses API 与 Anthropic Messages API，订阅和代理通道提供可见用量。 [OpenAI 定价](https://developers.openai.com/api/docs/pricing) · [Claude 缓存定价](https://platform.claude.com/docs/en/build-with-claude/prompt-caching#pricing)
 
 ## 数据与边界
 

@@ -7,7 +7,7 @@ const { validateWakeOptions } = require("./backgroundHooks");
 
 const CODING_TOOLS = new Set(["read", "read_image", "write", "edit", "bash", "artifact_read"]);
 
-function toolFromSpec(spec) {
+function toolFromSpec(spec, editBudgetNotice) {
   const { name, description, parameters } = spec.function;
   return {
     name, description, inputSchema: parameters,
@@ -32,6 +32,10 @@ function toolFromSpec(spec) {
       }
       if (name === "bash" && args.action === "stop") hooks?.cancel(args.backgroundId);
       const result = await runCoreToolAsync({ ...context, backgroundId, tool: name, args });
+      if (editBudgetNotice && (name === "edit" || name === "write") && result?.ok) {
+        const notice = editBudgetNotice();
+        if (notice) return { ...result, turnBudget: notice };
+      }
       if (backgroundId && !result?.backgroundId) hooks.cancel(backgroundId);
       if (name === "bash" && args.action === "status" && hooks) {
         const state = hooks.snapshot();
@@ -44,12 +48,31 @@ function toolFromSpec(spec) {
   };
 }
 
-function createCodingCapability({ workspaceAccess = null } = {}) {
+// Surface the existing deadline at the first edit and once in the second half.
+// Keeping it on the tool receipt leaves the cached instructions and schemas stable.
+function createEditBudgetNotice({ budgetMs, deadlineAt }) {
+  let lastStage = 0;
+  return () => {
+    const remainingMs = deadlineAt - Date.now();
+    const stage = remainingMs > budgetMs / 2 ? 1 : 2;
+    if (remainingMs <= 0 || stage <= lastStage) return null;
+    lastStage = stage;
+    return {
+      remainingSecondsAtEdit: Math.ceil(remainingMs / 1000),
+      guidance: stage === 1
+        ? "Work in runnable increments. Exercise the affected entry point as soon as a change is usable, leaving time to repair and rerun it."
+        : "Prioritize a focused check of the changed behavior and a previously working path. Rerun the check after any repair.",
+    };
+  };
+}
+
+function createCodingCapability({ workspaceAccess = null, editBudget = null } = {}) {
+  const editBudgetNotice = editBudget && createEditBudgetNotice(editBudget);
   return {
     id: "coding", version: "1.0",
     requires: { providerFeatures: ["tool_calls", "vision"] },
     tools: buildCoreToolSpecs().filter((spec) => CODING_TOOLS.has(spec.function.name)).map((spec) => {
-      const tool = toolFromSpec(spec);
+      const tool = toolFromSpec(spec, editBudgetNotice);
       return workspaceAccess ? { ...tool, async handler(args, context) {
         const result = await workspaceAccess.run({ ...context, tool: tool.name, args }, () => tool.handler(args, context));
         return { ...result, toolCallId: context.toolCallId };

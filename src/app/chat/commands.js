@@ -50,6 +50,7 @@ const COMMAND_TREE = {
     },
   },
   "/clear": { desc: "Clear chat log on screen" },
+  "/model": { desc: "Select a model for the current ufoo provider", hasArguments: true },
   "/group": {
     desc: "Agent group orchestration",
     children: {
@@ -157,6 +158,7 @@ const COMMAND_TREE = {
   "/status": { desc: "Status display" },
   "/task": { desc: "Main agent tasks", children: { list: { desc: "List durable tasks" }, inspect: { desc: "Inspect a child task" }, cancel: { desc: "Cancel a task by run ID" } } },
   "/answer": { desc: "Answer a runtime interaction: /answer <interaction-id> <reply>" },
+  "/app": { desc: "Hand off current project or focused worker to Ufoo Desktop App" },
   "/session": { desc: "Main conversation", children: { show: { desc: "Show conversation ID" }, new: { desc: "Start a conversation with current settings" } } },
   "/ufoo": { desc: "ufoo protocol" },
 };

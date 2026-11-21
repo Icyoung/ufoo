@@ -54,6 +54,15 @@ function messageToTranscriptEvent(message = {}, extra = {}) {
   return normalizeTranscriptEvent(event);
 }
 
+function transcriptMessageFields(event) {
+  const message = { role: event.role };
+  if (event.content !== undefined) message.content = event.content;
+  if (event.toolCalls) message.tool_calls = event.toolCalls;
+  if (event.toolCallId) message.tool_call_id = event.toolCallId;
+  if (event.rawMessage?.responsesContinuation) message.responsesContinuation = event.rawMessage.responsesContinuation;
+  return message;
+}
+
 function readTranscriptFile(filePath = "") {
   try {
     if (!filePath || !fs.existsSync(filePath)) return [];
@@ -141,11 +150,7 @@ function transcriptEventsToMessages(events = [], options = {}) {
       messages.push(event.rawMessage);
       continue;
     }
-    const message = { role: event.role };
-    if (event.content !== undefined) message.content = event.content;
-    if (event.toolCalls) message.tool_calls = event.toolCalls;
-    if (event.toolCallId) message.tool_call_id = event.toolCallId;
-    messages.push(message);
+    messages.push(transcriptMessageFields(event));
   }
   return messages;
 }
@@ -185,6 +190,7 @@ module.exports = {
   appendTranscriptEvent,
   appendTranscriptMessages,
   transcriptEventsToMessages,
+  transcriptMessageFields,
   migrateNlMessagesToTranscript,
   deleteTranscript,
 };

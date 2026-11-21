@@ -255,6 +255,43 @@ describe("ucode native runner", () => {
     expect(runToolCall).not.toHaveBeenCalled();
   });
 
+  test.each([100_000, undefined])("reports a short turn budget only on successful edits (%s ms)", async (timeoutMs) => {
+    let now = Date.now();
+    const clock = jest.spyOn(Date, "now").mockImplementation(() => now);
+    const call = (id, name, args) => ({ id, type: "function", function: { name, arguments: JSON.stringify(args) } });
+    const edits = ids => ids.map(id => call(id, "edit", { path: "a.txt", find: id, replace: "new" }));
+    const toolResponse = calls => makeSseResponse([{ choices: [{ delta: {
+      tool_calls: calls.map((item, index) => ({ ...item, index })),
+    } }] }]);
+    try {
+      runToolCall.mockImplementationOnce(() => ({ ok: true, content: "text" }))
+        .mockImplementationOnce(() => ({ ok: false, error: "find pattern not found" }));
+      global.fetch
+        .mockResolvedValueOnce(toolResponse([call("read", "read", { path: "a.txt" }), ...edits(["failed"]),
+          call("first", "write", { path: "a.txt", content: "test" }), ...edits(["next"])]))
+        .mockImplementationOnce(async () => {
+          now += 55_000;
+          return toolResponse(edits(["later", "last"]));
+        })
+        .mockResolvedValueOnce(makeSseResponse([{ choices: [{ delta: { content: "Done" } }] }]));
+      const result = await runNativeAgentTask({ workspaceRoot, prompt: "Change a.txt", provider: "openai", model: "test", timeoutMs });
+      expect(result.ok).toBe(true);
+      const requests = global.fetch.mock.calls.map(([, options]) => JSON.parse(options.body));
+      const last = requests.at(-1);
+      const receipts = last.messages.filter(msg => msg.role === "tool");
+      expect(receipts).toHaveLength(6);
+      const notices = receipts.flatMap(msg => {
+        const notice = JSON.parse(msg.content).turnBudget;
+        return notice ? [[msg.tool_call_id, notice.remainingSecondsAtEdit]] : [];
+      });
+      expect(notices).toEqual(timeoutMs ? [["first", 100], ["later", 45]] : []);
+      expect(last.tools).toEqual(requests[0].tools);
+      expect(last.messages.filter(msg => msg.role === "system")).toEqual(requests[0].messages.filter(msg => msg.role === "system"));
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   test("returns completed conversation batches when a later provider request throws", async () => {
     global.fetch.mockResolvedValueOnce(makeSseResponse([{ choices: [{ delta: { tool_calls: [{ index: 0, id: "read-before-failure", type: "function",
       function: { name: "read", arguments: '{"path":"a.txt"}' } }] } }] }])).mockRejectedValueOnce(new Error("provider unavailable"));
@@ -341,7 +378,7 @@ describe("ucode native runner", () => {
     }]);
   });
 
-  test("replays encrypted Responses reasoning only in the next provider tool request", async () => {
+  test("replays and persists encrypted Responses reasoning for later provider requests", async () => {
     global.fetch
       .mockResolvedValueOnce(makeResponsesSseResponse([
         {
@@ -420,8 +457,8 @@ describe("ucode native runner", () => {
       type: "function_call_output",
       call_id: "call_read_1",
     });
-    expect(JSON.stringify(result.messages)).not.toContain("encrypted-reasoning-tool-turn");
-    expect(JSON.stringify(result.turnItems)).not.toContain("encrypted-reasoning-tool-turn");
+    expect(result.messages.find(message => message.responsesContinuation)?.responsesContinuation.items[0].encrypted_content).toBe("encrypted-reasoning-tool-turn");
+    expect(result.turnItems.find(message => message.responsesContinuation)?.responsesContinuation.items[0].encrypted_content).toBe("encrypted-reasoning-tool-turn");
   });
 
   test("preserves multi-turn message history between openai-native turns", async () => {

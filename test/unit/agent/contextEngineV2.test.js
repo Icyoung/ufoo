@@ -6,14 +6,14 @@ const path = require("path");
 
 const { createTurnIndexStore } = require("../../../src/agents/runtime/context/turnIndexStore");
 const {
-  stripTurnContextWrapper,
+  stripTurnContextFromMessage,
   classifyTurnKind,
   buildDeterministicTurnRecord,
   backfillMissingTurns,
   createAsyncTurnEnricher,
 } = require("../../../src/agents/runtime/context/turnAnalyzer");
 const { createTopicSelector } = require("../../../src/agents/runtime/context/topicSelector");
-const { createSlidingWindowManager } = require("../../../src/agents/runtime/context/slidingWindowManager");
+const { createSlidingWindowManager, attachTurnContextToMessage } = require("../../../src/agents/runtime/context/slidingWindowManager");
 const { createTurnRecallCapability } = require("../../../src/agents/capabilities/turnRecall");
 const { createSessionJournal } = require("../../../src/agents/runtime/context/sessionJournal");
 const { redactSecrets } = require("../../../src/runtime/privacy/redactor");
@@ -107,9 +107,10 @@ describe("Agent Runtime Context Engine V2", () => {
     expect(fs.existsSync(store.windowFile)).toBe(false);
   });
 
-  test("turnAnalyzer strips wrappers, extracts OpenAI/Anthropic records, backfills, and drains async enricher cleanly", async () => {
-    const wrapped = "<turn_context>\n<topic_map>...</topic_map>\n</turn_context>\n\nCheck `session_nonce` in `src/auth/login.js`";
-    expect(stripTurnContextWrapper(wrapped)).toBe("Check `session_nonce` in `src/auth/login.js`");
+  test("turnAnalyzer removes runtime context, extracts OpenAI/Anthropic records, backfills, and drains async enricher cleanly", async () => {
+    const user = { role: "user", content: "Check `session_nonce` in `src/auth/login.js`" };
+    const wrapped = attachTurnContextToMessage(user, "<turn_context>\n<topic_map>...</topic_map>\n</turn_context>");
+    expect(stripTurnContextFromMessage(wrapped)).toEqual(user);
 
     expect(classifyTurnKind({ requestKind: "worker-report" })).toBe("system_wake");
     expect(classifyTurnKind({ requestKind: "user", resume: true })).toBe("resumed_interaction");
@@ -119,7 +120,7 @@ describe("Agent Runtime Context Engine V2", () => {
       turnIndex: 0,
       historyOffset: 0,
       turnMessages: [
-        { role: "user", content: wrapped },
+        wrapped,
         {
           role: "assistant",
           content: [
@@ -370,7 +371,7 @@ describe("Agent Runtime Context Engine V2", () => {
     const journal = createSessionJournal({ namespace: "ucode" });
     const longDetail = `START_DETAIL ${"line_of_code ".repeat(90)} api_key=sk-ant-recallsecret1234567890 END_DETAIL`;
     journal.appendTurnMessages(root, sid, "t-recall-1", [
-      { role: "user", content: "<turn_context>\n<topic_map>noise</topic_map>\n</turn_context>\nInspect TokenService" },
+      { role: "user", content: "Inspect TokenService. Preserve <turn_context>only staging</turn_context> exactly." },
       { role: "assistant", content: longDetail },
     ]);
     store.upsertTurn({
@@ -395,7 +396,7 @@ describe("Agent Runtime Context Engine V2", () => {
     expect(page1.ok).toBe(true);
     expect(page1.totalPages).toBeGreaterThan(1);
     expect(page1.hasMore).toBe(true);
-    expect(page1.content).not.toContain("<turn_context>");
+    expect(page1.content).toContain("<turn_context>only staging</turn_context>");
 
     const lastPage = await tool.handler({ mode: "detail", turn_id: "t-recall-1", page: page1.totalPages, page_chars: 700 }, { workspaceRoot: root, sessionId: sid });
     expect(lastPage.ok).toBe(true);

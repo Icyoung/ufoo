@@ -3,7 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const { createTurnIndexStore } = require("../../runtime/context/turnIndexStore");
-const { stripTurnContextWrapper } = require("../../runtime/context/turnAnalyzer");
+const { stripTurnContextFromMessage } = require("../../runtime/context/turnAnalyzer");
 const { replayHistory } = require("../../runtime/context/replayHistory");
 const { createSessionJournal } = require("../../runtime/context/sessionJournal");
 const { redactSecrets } = require("../../../runtime/privacy/redactor");
@@ -78,7 +78,7 @@ function loadRawTurnMessages({ workspaceRoot, namespace, sessionId, turn }) {
     if (terminal && terminal.result && Array.isArray(terminal.result.turnItems)) {
       const msgs = [];
       if (acceptedText.trim()) {
-        msgs.push({ role: "user", content: stripTurnContextWrapper(acceptedText) });
+        msgs.push({ role: "user", content: acceptedText });
       }
       for (const m of terminal.result.turnItems) msgs.push(m);
       if (msgs.length > 0) return msgs;
@@ -97,7 +97,7 @@ function loadRawTurnMessages({ workspaceRoot, namespace, sessionId, turn }) {
     if (accepted || terminal) {
       const msgs = [];
       if (acceptedText.trim()) {
-        msgs.push({ role: "user", content: stripTurnContextWrapper(acceptedText) });
+        msgs.push({ role: "user", content: acceptedText });
       }
       if (typeof terminal?.result?.text === "string" && terminal.result.text.trim()) {
         msgs.push({ role: "assistant", content: terminal.result.text });
@@ -116,19 +116,8 @@ function loadRawTurnMessages({ workspaceRoot, namespace, sessionId, turn }) {
 
 function sanitizeMessageForDisplay(msg) {
   if (!msg || typeof msg !== "object") return msg;
-  const copy = { ...msg };
-  if (copy.role === "user") {
-    if (typeof copy.content === "string") {
-      copy.content = stripTurnContextWrapper(copy.content);
-    } else if (Array.isArray(copy.content)) {
-      copy.content = copy.content
-        .map((part) => (part && part.type === "text" && typeof part.text === "string"
-          ? { ...part, text: stripTurnContextWrapper(part.text) }
-          : part))
-        .filter((part) => !(part && part.type === "text" && !part.text));
-    }
-  }
-  return redactSecrets(copy);
+  const { responsesContinuation: _continuation, ...display } = stripTurnContextFromMessage(msg);
+  return redactSecrets(display);
 }
 
 function emitToolEvent(callback, event = {}) {

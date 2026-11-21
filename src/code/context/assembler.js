@@ -3,6 +3,7 @@
 const {
   loadTranscript,
   transcriptEventsToMessages,
+  transcriptMessageFields,
   migrateNlMessagesToTranscript,
 } = require("./transcript");
 const { reduceToolResult } = require("./reducers");
@@ -29,6 +30,7 @@ const {
 } = require("./workingSet");
 const { renderExecutionSegmentContext } = require("./executionSegment");
 const { renderPlanModeContext } = require("./planMode");
+const { shouldFrameAsUserReminder } = require("./userNudge");
 const { drainAgentMailboxForTurn } = require("../runtime/agentWakeup");
 const { stripVisionBase64, degradeVisionContent } = require("../providers/visionBlocks");
 const { DEFAULT_V2_POLICY } = require("../../agents/runtime/context/slidingWindowManager");
@@ -77,11 +79,7 @@ function eventToModelMessage(event = {}, options = {}) {
     return event.rawMessage;
   }
 
-  const message = { role: event.role };
-  if (event.content !== undefined) message.content = event.content;
-  if (event.toolCalls) message.tool_calls = event.toolCalls;
-  if (event.toolCallId) message.tool_call_id = event.toolCallId;
-  return message;
+  return transcriptMessageFields(event);
 }
 
 function selectRecentToolArtifactIds(events = [], limit = DEFAULT_RECENT_TOOL_EVENTS) {
@@ -208,6 +206,7 @@ function sanitizeModelMessages(messages = []) {
         role: "assistant",
         content: message.content == null ? null : message.content,
         tool_calls: message.tool_calls,
+        ...(message.responsesContinuation ? { responsesContinuation: message.responsesContinuation } : {}),
       });
       for (const toolMessage of following) {
         const toolCallId = String(toolMessage.tool_call_id || "").trim();
@@ -339,7 +338,8 @@ function assembleModelContext(session = {}, request = {}, env = process.env) {
     appendSystemPrompt: request.appendSystemPrompt || "",
     overrideSystemPrompt: request.overrideSystemPrompt || "",
     epochDynamic: [
-      renderTaskContract(session.taskContract),
+      renderTaskContract(session.taskContract, { includeObjective: request.requestKind === "system_wake"
+        || shouldFrameAsUserReminder(session.executionState) }),
       renderStateEpoch(session.stateEpoch),
     ].filter(Boolean).join("\n\n"),
     turnDynamic: [
@@ -353,6 +353,8 @@ function assembleModelContext(session = {}, request = {}, env = process.env) {
         }
       })(),
       renderPlanModeContext(session.executionState),
+    ].filter(Boolean).join("\n\n"),
+    turnEvidence: [
       drainAgentMailboxForTurn(session.executionState).text,
       renderProjectSnapshotContext(session.projectSnapshot),
       renderWorkingSetContext(session.workingSet, session),

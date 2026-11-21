@@ -207,6 +207,7 @@ function createChatController({
         ? ports.applyChatSettings
         : null,
       openResumeMenu: typeof ports.openResumeMenu === "function" ? ports.openResumeMenu : null,
+      openDesktopApp: typeof ports.openDesktopApp === "function" ? ports.openDesktopApp : null,
     });
     return commandExecutor;
   }
