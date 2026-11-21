@@ -1,7 +1,7 @@
 "use strict";
 
 const fs = require("fs");
-const { Agent } = require("undici");
+const { Agent, fetch: undiciFetch } = require("undici");
 
 const { getUfooPaths } = require("../../coordination/state/paths");
 const {
@@ -133,7 +133,8 @@ class McpStdioProxy {
     this.projectRoot = options.projectRoot || resolveGlobalControllerProjectRoot();
     this.autoStart = options.autoStart !== false;
     this.ensureDaemon = options.ensureDaemon || (async () => {});
-    this.fetch = options.fetch || globalThis.fetch;
+    // Match fetch to its dispatcher even when Node bundles a different Undici major.
+    this.fetch = options.fetch || undiciFetch;
     // Undici's default headers/body deadlines also apply to fetch. Resident
     // MCP receives must not be ended by that hidden transport timer.
     this.dispatcher = options.dispatcher || (!options.fetch

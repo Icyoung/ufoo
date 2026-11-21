@@ -341,6 +341,11 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
     // Mock lightweight fake GlobalDaemon socket so we test desktopUiHost hermetically and fast
     const daemonSock = path.join(tmp, "ufoo.sock");
     const fakeDaemon = net.createServer((socket) => {
+      // Switching projects disconnects the previous daemon socket, even if
+      // a status response is still in flight.
+      socket.on("error", (error) => {
+        if (!["EPIPE", "ECONNRESET"].includes(error.code)) throw error;
+      });
       let buf = "";
       socket.on("data", (chunk) => {
         buf += chunk.toString("utf8");
@@ -414,6 +419,16 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
       const client = net.createConnection(uiSock);
       await new Promise((resolve) => client.once("connect", resolve));
 
+      async function waitForEnvelope(matches) {
+        const deadline = Date.now() + 3000;
+        while (Date.now() < deadline) {
+          const envelope = envelopes.find(matches);
+          if (envelope) return envelope;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        throw new Error("Timed out waiting for a desktop UI envelope");
+      }
+
       let buffer = "";
       client.on("data", (chunk) => {
         buffer += chunk.toString("utf8");
@@ -434,7 +449,9 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
         },
       })));
 
-      await new Promise((r) => setTimeout(r, 180));
+      await waitForEnvelope((e) => e.name === "projects.tree" && e.payload.projects.some(
+        (p) => p.label === "demo-proj" && p.workers.some((w) => w.label === "cursor-1")
+      ));
       expect(envelopes.some((e) => e.kind === "welcome")).toBe(true);
       expect(envelopes.some((e) => e.name === "app.snapshot")).toBe(true);
       const treeEvent = envelopes.filter((e) => e.name === "projects.tree").pop();
@@ -452,8 +469,7 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
         requestId: "cmd-side",
         payload: { agent_id: "ucode:a1b2c3d4" },
       })));
-      await new Promise((r) => setTimeout(r, 100));
-      const sideResult = envelopes.find((e) => e.kind === "result" && e.request_id === "cmd-side");
+      const sideResult = await waitForEnvelope((e) => e.kind === "result" && e.request_id === "cmd-side");
       expect(sideResult?.payload?.ok).toBe(true);
       expect(sideResult?.payload?.mode).toBe("side");
 
@@ -464,8 +480,7 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
         requestId: "cmd-worker",
         payload: { agent_id: "ucode:a1b2c3d4" },
       })));
-      await new Promise((r) => setTimeout(r, 100));
-      const workerResult = envelopes.find((e) => e.kind === "result" && e.request_id === "cmd-worker");
+      const workerResult = await waitForEnvelope((e) => e.kind === "result" && e.request_id === "cmd-worker");
       expect(workerResult?.payload?.ok).toBe(true);
       expect(workerResult?.payload?.stage_target).toEqual({
         kind: "worker_single",
@@ -476,8 +491,8 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
       const latestTree = () => envelopes.filter((e) => e.name === "projects.tree").at(-1).payload;
       const archiveCommand = async (name, payload) => {
         client.write(encodeMessage(createEnvelope({ kind: "command", name, requestId: name, payload })));
-        await new Promise((resolve) => setTimeout(resolve, 180));
-        expect(envelopes.find((e) => e.request_id === name)?.payload?.ok).toBe(true);
+        const result = await waitForEnvelope((e) => e.kind === "result" && e.request_id === name);
+        expect(result.payload).toMatchObject({ ok: true });
       };
       const root = fs.realpathSync(projectDir);
       await archiveCommand("session.archive", { root, session_id: "ucode:a1b2c3d4" });
