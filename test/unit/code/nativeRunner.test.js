@@ -7,6 +7,7 @@ const mockUndiciAgent = jest.fn(() => mockSseDispatcher);
 
 jest.mock("undici", () => ({
   Agent: mockUndiciAgent,
+  fetch: (...args) => global.fetch(...args),
 }));
 
 jest.mock("../../../src/code/dispatch", () => ({

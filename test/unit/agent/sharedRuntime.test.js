@@ -1,5 +1,10 @@
 "use strict";
 
+jest.mock("undici", () => ({
+  ...jest.requireActual("undici"),
+  fetch: (...args) => global.fetch(...args),
+}));
+
 const fs = require("fs");
 const os = require("os");
 const path = require("path");

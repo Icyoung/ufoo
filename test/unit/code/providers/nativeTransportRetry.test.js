@@ -1,5 +1,10 @@
 "use strict";
 
+jest.mock("undici", () => ({
+  ...jest.requireActual("undici"),
+  fetch: jest.fn((...args) => global.fetch(...args)),
+}));
+
 const { getNativeTransport } = require("../../../../src/agents/providers/nativeTransport");
 const originalFetch = global.fetch;
 const resetError = () => Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error("connection reset"), { code: "ECONNRESET" }) });
@@ -12,12 +17,14 @@ beforeEach(() => { jest.useFakeTimers(); global.fetch = jest.fn(); });
 afterEach(() => { global.fetch = originalFetch; jest.useRealTimers(); });
 
 test("retries transient connections with bounded backoff and identical request input", async () => {
+  const { fetch: undiciFetch } = require("undici");
+  undiciFetch.mockClear();
   global.fetch.mockRejectedValueOnce(resetError()).mockRejectedValueOnce(resetError()).mockResolvedValueOnce(success());
   const phases = [];
   const pending = run({ onPhase: phase => phases.push(phase) });
   await jest.advanceTimersByTimeAsync(3000);
   await expect(pending).resolves.toMatchObject({ text: "done" });
-  expect(global.fetch).toHaveBeenCalledTimes(3);
+  expect(undiciFetch).toHaveBeenCalledTimes(3);
   expect(new Set(global.fetch.mock.calls.map(([, init]) => init.body)).size).toBe(1);
   expect(phases.filter(phase => phase.type === "retry")).toEqual([
     expect.objectContaining({ attempt: 1, max_retries: 3, retry_delay_ms: 1000, code: "ECONNRESET" }),

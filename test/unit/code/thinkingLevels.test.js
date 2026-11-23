@@ -1,5 +1,10 @@
 "use strict";
 
+jest.mock("undici", () => ({
+  ...jest.requireActual("undici"),
+  fetch: (...args) => global.fetch(...args),
+}));
+
 const {
   normalizeThinkingLevel,
   getThinkingLevel,

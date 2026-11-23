@@ -3,7 +3,7 @@
 const os = require("os");
 const { resolveCodexUserAgent, resolveGrokClientVersion } = require("./clientIdentity");
 const { createHash, randomUUID } = require("crypto");
-const { Agent: UndiciAgent } = require("undici");
+const { Agent: UndiciAgent, fetch: undiciFetch } = require("undici");
 const { normalizeProvider, normalizeKimiModel, resolveResponsesRequestProfile, resolveCompletionUrl, resolveResponsesUrl, resolveAnthropicMessagesUrl } = require("./runtimeConfig");
 const { stableStringify } = require("../runtime/core/stableJson");
 const { observeWireRequest } = require("./transports/requestCacheObservation");
@@ -338,7 +338,8 @@ async function runSseRequest({
       }
       emitPhase(onPhase, { type: "request_start" });
       try {
-        response = await fetch(url, {
+        // Use the dependency's fetch so its handler matches the Agent's dispatcher API.
+        response = await undiciFetch(url, {
           method: "POST",
           headers,
           body: JSON.stringify(payload),
