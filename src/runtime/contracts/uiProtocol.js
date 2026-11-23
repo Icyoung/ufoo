@@ -84,6 +84,7 @@ const EVENT_NAMES = Object.freeze([
   "transcript.patch",
   "stream.start",
   "stream.delta",
+  // An optional tool_group_id removes the turn's live tool row.
   "stream.done",
   "thinking.start",
   "thinking.delta",

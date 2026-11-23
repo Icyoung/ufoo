@@ -6,7 +6,7 @@
 
 const fmt = require("./format");
 
-function createToolMergePublisher(publish) {
+function createToolMergePublisher(publish, { idPrefix = "tool-merge" } = {}) {
   let merge = null;
   let mergeId = 1;
   let scope = 0;
@@ -26,14 +26,16 @@ function createToolMergePublisher(publish) {
     const row = merge.entries.length >= 2
       ? `${summary} (Ctrl+O expand)`
       : summary;
+    const id = `${idPrefix}-${merge.id}`;
     publish("tool.group", {
-      id: `tool-merge-${merge.id}`,
+      id,
       summary: row || summary,
       detail,
       expanded_text: detail,
       count: merge.entries.length,
     });
     merge = null;
+    return id;
   }
 
   function pushTool(entry = {}) {
@@ -43,7 +45,7 @@ function createToolMergePublisher(publish) {
     if (merge) {
       const detail = fmt.buildMergedToolExpandedLines(merge.entries).join("\n");
       publish("tool.start", {
-        id: `tool-merge-${merge.id}`,
+        id: `${idPrefix}-${merge.id}`,
         summary: fmt.buildUcodeToolRowText(merge.entries),
         detail,
         expanded_text: detail,

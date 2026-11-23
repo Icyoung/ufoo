@@ -105,6 +105,9 @@ function createAgentSurface(options = {}) {
         row.text = payload.reset ? chunk : row.text + chunk;
       }
     } else if (name === "stream.done") {
+      if (payload.tool_group_id) {
+        entries = entries.filter((row) => row.kind !== "tool" || row.id !== payload.tool_group_id);
+      }
       busy = false;
       status = payload.reason === "error" ? "error" : "ready";
     } else if (["tool.start", "tool.result", "tool.group"].includes(name)) {

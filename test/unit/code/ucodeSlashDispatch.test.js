@@ -62,21 +62,35 @@ describe("dispatchUcodeSlashCommand", () => {
     expect(seen).toEqual(["do thing"]);
   });
 
-  test("resume restores the banner with its dedicated unformatted entry kind", async () => {
+  test("resume restores banner and conversation rows while keeping tools in session messages", async () => {
+    const messages = [
+      { role: "user", content: "Read the file" },
+      { role: "assistant", content: null, tool_calls: [
+        { id: "read-file", function: { name: "read", arguments: '{"path":"notes.txt"}' } },
+      ] },
+      { role: "tool", tool_call_id: "read-file", content: "file contents" },
+      { role: "assistant", content: "I read the file." },
+    ];
+    const state = { nlMessages: [] };
     let entries = [];
     await dispatchUcodeSlashCommand(
       { kind: "resume", sessionId: "s1" },
       {
-        state: { nlMessages: [] },
+        state,
         appendLog: () => {},
         bannerLines: ["UCODE", "Version: 3.0.24"],
-        resumeSession: () => ({ ok: true, sessionId: "s1", restoredMessages: 0 }),
+        resumeSession: () => {
+          state.nlMessages = messages;
+          return { ok: true, sessionId: "s1", restoredMessages: messages.length };
+        },
         replaceTranscript: (next) => { entries = next; },
       },
     );
 
-    expect(entries.slice(0, 2).map((entry) => entry.kind)).toEqual(["banner", "banner"]);
-    expect(entries[2].kind).toBe("spacer");
+    expect(entries.map((entry) => entry.kind)).toEqual(["banner", "banner", "spacer", "user", "assistant", "system"]);
+    expect(state.nlMessages).toBe(messages);
+    expect(state.nlMessages[1].tool_calls[0].id).toBe("read-file");
+    expect(state.nlMessages[2]).toMatchObject({ role: "tool", content: "file contents" });
   });
 
   test("unknown without output is not handled", async () => {

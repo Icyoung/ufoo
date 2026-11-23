@@ -322,13 +322,12 @@ describe("buildCompletions", () => {
 describe("buildUcodeSessionLogEntries", () => {
   const { buildUcodeSessionLogEntries } = require("../../../src/ui/format");
 
-  test("maps user/assistant/tool messages into log rows", () => {
+  test("restores conversation text from messages that also contain tool calls", () => {
     const { entries } = buildUcodeSessionLogEntries([
       { role: "user", content: "fix resume" },
-      { role: "assistant", content: "ok **ready**" },
       {
         role: "assistant",
-        content: null,
+        content: "ok **ready**",
         tool_calls: [{
           id: "c1",
           type: "function",
@@ -341,11 +340,9 @@ describe("buildUcodeSessionLogEntries", () => {
         content: JSON.stringify({ artifactId: "artifact_1", preview: "file contents" }),
       },
     ]);
+    expect(entries.map((row) => row.kind)).toEqual(["user", "assistant"]);
     expect(entries.some((row) => row.kind === "user" && row.text.includes("fix resume"))).toBe(true);
     expect(entries.some((row) => row.kind === "assistant" && row.text.includes("ready"))).toBe(true);
-    expect(entries.some((row) => row.kind === "tool" && row.text === "• Bash ls -la")).toBe(true);
-    expect(entries.some((row) => row.text.includes("artifact_1"))).toBe(false);
-    expect(entries.some((row) => row.kind === "toolDetail")).toBe(false);
   });
 
   test("keeps multiline messages and markdown tables in one transcript block", () => {
@@ -365,7 +362,7 @@ describe("buildUcodeSessionLogEntries", () => {
     expect(entries[1].text).toContain("session.jsonl");
   });
 
-  test("collapses consecutive restored tool calls into one expandable block", () => {
+  test("omits runs of historical tool-only messages", () => {
     const toolMessage = (id, name, args) => ({
       role: "assistant",
       content: null,
@@ -384,11 +381,6 @@ describe("buildUcodeSessionLogEntries", () => {
       { role: "tool", tool_call_id: "c3", content: "ok" },
     ]);
 
-    expect(entries).toHaveLength(1);
-    expect(entries[0]).toMatchObject({ kind: "tool", expanded: false });
-    expect(entries[0].text).toContain("+2 calls");
-    expect(entries[0].text).toContain("Ctrl+O expand");
-    expect(entries[0].detail.split("\n")).toHaveLength(3);
-    expect(entries[0].detail).toContain("Bash pwd");
+    expect(entries).toEqual([]);
   });
 });

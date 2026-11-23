@@ -714,11 +714,8 @@ describe("ucode tui switch", () => {
     });
   });
 
-  test("createSegmentedStreamSession keeps a single top assistant bubble (updating in-place) above a single accumulating tool group", () => {
-    const {
-      createSegmentedStreamSession,
-      normalizeToolLogEntry,
-    } = require("../../../src/ui/rustUcodeHost");
+  test("a streamed turn updates one assistant row and displays the tool group until it finishes", () => {
+    const { createSegmentedStreamSession } = require("../../../src/ui/rustUcodeHost");
     const { createAgentSurface, projectSurfaceEvent } = require("../../../src/ui/agentSurface");
     const { createToolMergePublisher } = require("../../../src/ui/toolMergeBridge");
 
@@ -727,16 +724,11 @@ describe("ucode tui switch", () => {
     const publish = (name, payload) => {
       events.push(projectSurfaceEvent(surface, name, payload));
     };
-    const tools = createToolMergePublisher(publish);
+    const manualTools = createToolMergePublisher(publish);
     const session = createSegmentedStreamSession({
       baseId: "nl-seg",
       publish,
-      tools,
       thinking: { reset: jest.fn(), onThinkingDelta: jest.fn() },
-      onToolEntry: (entry) => {
-        const normalized = normalizeToolLogEntry(entry);
-        if (normalized) tools.pushTool(normalized);
-      },
     });
 
     // Even if a tool executes first on Step 1 before the model speaks on Step 2,
@@ -745,6 +737,8 @@ describe("ucode tui switch", () => {
     session.onDelta("我会把直杆状的腿改成自然收细的鸟腿。");
     session.onToolLog({ tool: "bash", phase: "end", args: { command: "pwd" }, result: { ok: true } });
     session.onToolLog({ tool: "read", phase: "end", args: { path: "AGENTS.md" }, result: { ok: true } });
+    manualTools.pushTool({ tool: "read", detail: "manual.txt" });
+    manualTools.flush();
     session.onThinkingDelta("**正在规划场景**");
     // Step 3 commentary replaces Step 2 commentary in-place (only 1 assistant bubble shown)
     session.onDelta("\n现在开始修改 scene.js。");
@@ -752,11 +746,12 @@ describe("ucode tui switch", () => {
     // Final step updates the single assistant bubble to the latest text
     session.onDelta("全部完成");
     session.onDelta("！");
-    session.finish();
 
     const snap = surface.snapshot();
+    expect(snap.busy).toBe(true);
     expect(snap.entries.map((entry) => entry.kind)).toEqual([
       "assistant",
+      "tool",
       "tool",
     ]);
     expect(snap.entries[0].id).toBe("nl-seg");
@@ -765,5 +760,16 @@ describe("ucode tui switch", () => {
     expect(snap.entries[0].text).not.toContain("现在开始修改");
     expect(snap.entries[1].detail).toContain("Read scene.js");
     expect(snap.entries[1].detail).toContain("Edit scene.js");
+    expect(snap.entries[2].detail).toContain("Read manual.txt");
+
+    session.finish();
+    expect(events.at(-1)).toEqual({
+      name: "stream.done",
+      payload: { id: "nl-seg", tool_group_id: snap.entries[1].id },
+    });
+    expect(surface.snapshot()).toMatchObject({
+      busy: false,
+      entries: [snap.entries[0], snap.entries[2]],
+    });
   });
 });

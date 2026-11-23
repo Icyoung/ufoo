@@ -327,64 +327,12 @@ function toolMessagePreview(message = {}) {
   return raw;
 }
 
-function parseToolCallArguments(call = {}) {
-  const raw = call && call.function && call.function.arguments != null
-    ? call.function.arguments
-    : (call && call.arguments != null ? call.arguments : call && call.input);
-  if (raw && typeof raw === "object") return raw;
-  if (typeof raw !== "string" || !raw.trim()) return {};
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
 function formatToolDisplayName(tool = "") {
   const words = String(tool || "tool")
     .trim()
     .split(/[_\-\s]+/)
     .filter(Boolean);
   return words.map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ") || "Tool";
-}
-
-function formatUcodeToolLine(tool = "", args = {}, payload = {}) {
-  const name = String(tool || "tool").trim().toLowerCase() || "tool";
-  const detail = normalizeToolLogDetail(name, args, payload);
-  return `• ${formatToolDisplayName(name)}${detail ? ` ${detail}` : ""}`;
-}
-
-function collapseConsecutiveUcodeToolEntries(entries = []) {
-  const source = Array.isArray(entries) ? entries : [];
-  const collapsed = [];
-  for (let index = 0; index < source.length;) {
-    const entry = source[index];
-    if (!entry || entry.kind !== "tool") {
-      collapsed.push(entry);
-      index += 1;
-      continue;
-    }
-
-    let end = index + 1;
-    while (end < source.length && source[end] && source[end].kind === "tool") end += 1;
-    const group = source.slice(index, end);
-    if (group.length === 1) {
-      collapsed.push(entry);
-    } else {
-      const detail = group
-        .map((item) => String(item.text || "").replace(/^•\s*/, ""))
-        .join("\n");
-      collapsed.push({
-        ...entry,
-        text: `${String(entry.text || "• Tool")} · +${group.length - 1} calls (Ctrl+O expand)`,
-        detail,
-        expanded: false,
-      });
-    }
-    index = end;
-  }
-  return collapsed;
 }
 
 /**
@@ -408,7 +356,7 @@ function redactUserMessageForLog(text = "") {
 }
 
 /**
- * Convert persisted nlMessages into ucode TUI log rows for resume/history.
+ * Convert persisted user and assistant text into ucode TUI rows for resume/history.
  * Applies the shared ANSI markdown renderer so restored assistant text matches
  * live streaming output.
  */
@@ -455,26 +403,11 @@ function buildUcodeSessionLogEntries(messages = [], options = {}) {
     if (role === "assistant") {
       const text = messageContentText(message);
       if (text) pushLines(text, "assistant");
-      const calls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
-      for (const call of calls) {
-        if (!call || typeof call !== "object") continue;
-        const name = String(
-          (call.function && call.function.name) || call.name || "tool"
-        ).trim();
-        pushLines(formatUcodeToolLine(name, parseToolCallArguments(call)), "tool");
-      }
-      continue;
-    }
-    if (role === "tool") {
-      // The corresponding assistant tool_call already carries the command or
-      // path. Tool-result artifacts are internal storage references and do
-      // not belong in the restored transcript presentation.
-      continue;
     }
   }
 
   return {
-    entries: collapseConsecutiveUcodeToolEntries(entries),
+    entries,
     nextSeq: seq,
     markdownState,
   };
@@ -1439,7 +1372,6 @@ module.exports = {
   buildMergedToolSummaryText,
   buildToolMergeRowText,
   buildUcodeToolRowText,
-  collapseConsecutiveUcodeToolEntries,
   buildCompletions,
   buildUcodeBannerLines,
   buildUcodeSessionLogEntries,

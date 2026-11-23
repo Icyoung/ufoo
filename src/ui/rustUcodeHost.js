@@ -170,18 +170,17 @@ function createLeadingWhitespaceNormalizer() {
 function createSegmentedStreamSession({
   baseId = "stream",
   publish,
-  tools = null,
   thinking = null,
   onToolEntry = null,
 } = {}) {
   const currentId = String(baseId || "stream");
+  const tools = createToolMergePublisher(publish, { idPrefix: `${currentId}-tool-merge` });
   let replaceOnNextDelta = false;
   let hasStreamedAnyText = false;
   let responseStarted = false;
   const thinkingLog = createThinkingLogPublisher(publish, thinking, currentId);
   let normalizeStreamDelta = createLeadingWhitespaceNormalizer();
 
-  if (tools && typeof tools.beginScope === "function") tools.beginScope();
   if (thinking && typeof thinking.reset === "function") thinking.reset();
   publish("stream.start", { id: currentId });
 
@@ -230,13 +229,15 @@ function createSegmentedStreamSession({
     if (hasStreamedAnyText) {
       replaceOnNextDelta = true;
     }
+    const normalized = normalizeToolLogEntry(entry);
+    if (normalized) tools.pushTool(normalized);
     if (typeof onToolEntry === "function") onToolEntry(entry);
   }
 
   function finish() {
-    if (tools && typeof tools.flush === "function") tools.flush();
+    const toolGroupId = tools.flush();
     thinkingLog.stop();
-    publish("stream.done", { id: currentId });
+    publish("stream.done", { id: currentId, tool_group_id: toolGroupId });
   }
 
   return {
@@ -421,10 +422,7 @@ async function runUcodeRust(props = {}) {
     return payload;
   }
 
-  function ingestToolLog(entry) {
-    if (!entry || typeof entry !== "object") return;
-    const normalized = normalizeToolLogEntry(entry);
-    if (normalized) tools.pushTool(normalized);
+  function publishToolPlan(entry) {
     if (
       entry.tool === "plan_graph"
       || entry.tool === "task_run"
@@ -650,9 +648,8 @@ async function runUcodeRust(props = {}) {
       const streamSession = createSegmentedStreamSession({
         baseId: `resume-${Date.now()}`,
         publish,
-        tools,
         thinking,
-        onToolEntry: ingestToolLog,
+        onToolEntry: publishToolPlan,
       });
       try {
         const result = await submit(answerText, props.state, {
@@ -706,9 +703,8 @@ async function runUcodeRust(props = {}) {
       const streamSession = createSegmentedStreamSession({
         baseId: `nl-${Date.now()}`,
         publish,
-        tools,
         thinking,
-        onToolEntry: ingestToolLog,
+        onToolEntry: publishToolPlan,
       });
       try {
         const nlResult = await props.runNaturalLanguageTask(text, props.state, {
@@ -1068,13 +1064,16 @@ async function runUcodeRust(props = {}) {
                     replaceTranscript(entries);
                   },
                   onTool: (tool, args, payload) => {
-                    ingestToolLog({
+                    const entry = {
                       tool,
                       args,
                       phase: payload && payload.ok === false ? "error" : "end",
                       error: (payload && payload.error) || "",
                       result: payload,
-                    });
+                    };
+                    const normalized = normalizeToolLogEntry(entry);
+                    if (normalized) tools.pushTool(normalized);
+                    publishToolPlan(entry);
                     tools.flush();
                   },
                   onBackground: async (task) => {

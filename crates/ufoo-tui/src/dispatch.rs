@@ -557,6 +557,11 @@ fn apply_named_payload(
         }
         "stream.done" => {
             state.flush_pending_delta();
+            if let Some(id) = payload.get("tool_group_id").and_then(|value| value.as_str()) {
+                state
+                    .entries
+                    .retain(|entry| entry.kind != "tool" || entry.id != id);
+            }
             state.status = "ready".into();
             state.busy = false;
             state.status_started = None;
@@ -4284,7 +4289,7 @@ mod tests {
     }
 
     #[test]
-    fn live_tool_group_replaces_detail_so_collapsed_tail_can_keep_moving() {
+    fn live_tool_group_updates_until_stream_done() {
         let mut state = AppState::new("ufoo", "ucode");
         let event = |name: &str, payload: serde_json::Value| {
             Action::Host(Envelope {
@@ -4329,6 +4334,26 @@ mod tests {
         );
         assert!(entry.text.ends_with("(Ctrl+O expand)"));
         assert!(!entry.expanded);
+
+        dispatch(
+            &mut state,
+            event(
+                "stream.delta",
+                json!({ "id": "answer", "text": "Finished." }),
+            ),
+        );
+        dispatch(
+            &mut state,
+            event(
+                "stream.done",
+                json!({ "id": "answer", "tool_group_id": "tools" }),
+            ),
+        );
+
+        assert!(!state.busy);
+        assert_eq!(state.entries.len(), 1);
+        assert_eq!(state.entries[0].kind, "assistant");
+        assert_eq!(state.entries[0].text, "Finished.");
     }
 
     #[test]
