@@ -237,7 +237,11 @@ function createSegmentedStreamSession({
   function finish() {
     const toolGroupId = tools.flush();
     thinkingLog.stop();
-    publish("stream.done", { id: currentId, tool_group_id: toolGroupId });
+    publish("stream.done", {
+      id: currentId,
+      tool_group_id: toolGroupId,
+      thinking_id: thinkingLog.id,
+    });
   }
 
   return {

@@ -278,7 +278,12 @@ function isTableRowLine(line = "") {
   return check(line);
 }
 
-function messageContentText(message = {}) {
+const THINKING_CONTENT_TYPES = new Set([
+  "thinking", "redacted_thinking", "reasoning", "reasoning_text",
+  "reasoning_summary", "reasoning_summary_text", "summary_text",
+]);
+
+function messageContentText(message = {}, { hideThinking = false } = {}) {
   if (!message || typeof message !== "object") return "";
   const content = message.content;
   if (typeof content === "string") return content;
@@ -287,6 +292,7 @@ function messageContentText(message = {}) {
       if (typeof part === "string") return part;
       if (!part || typeof part !== "object") return "";
       const type = String(part.type || "").trim().toLowerCase();
+      if (hideThinking && THINKING_CONTENT_TYPES.has(type)) return "";
       if (type === "image" || type === "image_url") {
         const name = part.fileName
           || (part.path ? require("path").basename(String(part.path)) : "")
@@ -401,7 +407,7 @@ function buildUcodeSessionLogEntries(messages = [], options = {}) {
       continue;
     }
     if (role === "assistant") {
-      const text = messageContentText(message);
+      const text = messageContentText(message, { hideThinking: true });
       if (text) pushLines(text, "assistant");
     }
   }

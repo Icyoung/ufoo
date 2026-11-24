@@ -105,8 +105,11 @@ function createAgentSurface(options = {}) {
         row.text = payload.reset ? chunk : row.text + chunk;
       }
     } else if (name === "stream.done") {
-      if (payload.tool_group_id) {
-        entries = entries.filter((row) => row.kind !== "tool" || row.id !== payload.tool_group_id);
+      const { tool_group_id: toolGroupId, thinking_id: thinkingId } = payload;
+      if (toolGroupId || thinkingId) {
+        entries = entries.filter((row) =>
+          !(row.kind === "tool" && row.id === toolGroupId)
+          && !(row.kind === "thinking" && row.id === thinkingId));
       }
       busy = false;
       status = payload.reason === "error" ? "error" : "ready";

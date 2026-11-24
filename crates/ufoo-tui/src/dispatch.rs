@@ -557,10 +557,14 @@ fn apply_named_payload(
         }
         "stream.done" => {
             state.flush_pending_delta();
-            if let Some(id) = payload.get("tool_group_id").and_then(|value| value.as_str()) {
-                state
-                    .entries
-                    .retain(|entry| entry.kind != "tool" || entry.id != id);
+            let tool_group_id = payload.get("tool_group_id").and_then(|value| value.as_str());
+            let thinking_id = payload.get("thinking_id").and_then(|value| value.as_str());
+            if tool_group_id.is_some() || thinking_id.is_some() {
+                state.entries.retain(|entry| match entry.kind.as_str() {
+                    "tool" => tool_group_id != Some(entry.id.as_str()),
+                    "thinking" => thinking_id != Some(entry.id.as_str()),
+                    _ => true,
+                });
             }
             state.status = "ready".into();
             state.busy = false;
@@ -4208,7 +4212,7 @@ mod tests {
     }
 
     #[test]
-    fn thinking_deltas_update_one_entry_and_ctrl_o_expands_it() {
+    fn thinking_deltas_update_an_expandable_entry_until_stream_done() {
         let mut state = AppState::new("ufoo", "ucode");
         let start = |name: &str, payload: serde_json::Value| {
             Action::Host(Envelope {
@@ -4257,6 +4261,15 @@ mod tests {
             Action::Key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL)),
         );
         assert!(!state.entries.front().expect("thinking entry").expanded);
+
+        dispatch(
+            &mut state,
+            start(
+                "stream.done",
+                json!({ "id": "turn", "thinking_id": "turn-thinking" }),
+            ),
+        );
+        assert!(state.entries.is_empty());
     }
 
     #[test]

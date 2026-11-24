@@ -714,7 +714,7 @@ describe("ucode tui switch", () => {
     });
   });
 
-  test("a streamed turn updates one assistant row and displays the tool group until it finishes", () => {
+  test("a streamed turn displays thinking and its tool group until it finishes", () => {
     const { createSegmentedStreamSession } = require("../../../src/ui/rustUcodeHost");
     const { createAgentSurface, projectSurfaceEvent } = require("../../../src/ui/agentSurface");
     const { createToolMergePublisher } = require("../../../src/ui/toolMergeBridge");
@@ -731,6 +731,8 @@ describe("ucode tui switch", () => {
       thinking: { reset: jest.fn(), onThinkingDelta: jest.fn() },
     });
 
+    session.onThinkingDelta("检查");
+    session.onThinkingDelta("文件");
     // Even if a tool executes first on Step 1 before the model speaks on Step 2,
     // the assistant bubble is placed ABOVE the single accumulating tool group.
     session.onToolLog({ tool: "read", phase: "end", args: { path: "scene.js" }, result: { ok: true } });
@@ -751,6 +753,7 @@ describe("ucode tui switch", () => {
     expect(snap.busy).toBe(true);
     expect(snap.entries.map((entry) => entry.kind)).toEqual([
       "assistant",
+      "thinking",
       "tool",
       "tool",
     ]);
@@ -758,18 +761,23 @@ describe("ucode tui switch", () => {
     expect(snap.entries[0].text).toContain("全部完成！");
     expect(snap.entries[0].text).not.toContain("我会把直杆状的腿改成");
     expect(snap.entries[0].text).not.toContain("现在开始修改");
-    expect(snap.entries[1].detail).toContain("Read scene.js");
-    expect(snap.entries[1].detail).toContain("Edit scene.js");
-    expect(snap.entries[2].detail).toContain("Read manual.txt");
+    expect(snap.entries[1].text).toContain("检查文件");
+    expect(snap.entries[2].detail).toContain("Read scene.js");
+    expect(snap.entries[2].detail).toContain("Edit scene.js");
+    expect(snap.entries[3].detail).toContain("Read manual.txt");
 
     session.finish();
     expect(events.at(-1)).toEqual({
       name: "stream.done",
-      payload: { id: "nl-seg", tool_group_id: snap.entries[1].id },
+      payload: {
+        id: "nl-seg",
+        thinking_id: snap.entries[1].id,
+        tool_group_id: snap.entries[2].id,
+      },
     });
     expect(surface.snapshot()).toMatchObject({
       busy: false,
-      entries: [snap.entries[0], snap.entries[2]],
+      entries: [snap.entries[0], snap.entries[3]],
     });
   });
 });
