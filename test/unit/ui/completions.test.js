@@ -362,6 +362,35 @@ describe("buildUcodeSessionLogEntries", () => {
     expect(entries[1].text).toContain("session.jsonl");
   });
 
+  test("omits tool-provided vision notices and preserves a user's image prompt", () => {
+    const { createSessionJournal } = require("../../../src/agents/runtime/context/sessionJournal");
+    const { visionSummaryText, toOpenAiImagePart, retireMessageImages } = require("../../../src/agents/providers/transports/visionBlocks");
+    const { messageToJournalEvent } = createSessionJournal();
+    const vision = { path: "/tmp/review.png", mediaType: "image/png", bytes: 4, artifactId: "artifact_review", base64: "dGVzdA==" };
+    const notice = visionSummaryText(vision);
+    const image = toOpenAiImagePart(vision);
+    const attachment = { role: "user", content: [{ type: "text", text: notice }, image] };
+    const retired = [attachment];
+    retireMessageImages(retired);
+    const nestedResult = {
+      type: "tool_result",
+      content: [{ type: "text", text: `${notice}\n{"artifactId":"artifact_review"}` }, image],
+    };
+    const { entries } = buildUcodeSessionLogEntries([
+      { role: "user", content: "Review the screenshot" },
+      attachment,
+      messageToJournalEvent(attachment).payload,
+      messageToJournalEvent(retired[0]).payload,
+      messageToJournalEvent({ role: "user", content: [nestedResult, nestedResult] }).payload,
+      { role: "user", content: [{ type: "text", text: `${notice}\nWhy does this appear?` }, image] },
+      { role: "assistant", content: "Done." },
+    ]);
+
+    expect(entries.map((row) => row.kind)).toEqual(["user", "user", "assistant"]);
+    expect(entries[0].text).toBe("› Review the screenshot");
+    expect(entries[1].text).toContain("Why does this appear?[image: image]");
+  });
+
   test("omits runs of historical tool-only messages", () => {
     const toolMessage = (id, name, args) => ({
       role: "assistant",

@@ -361,6 +361,19 @@ function redactUserMessageForLog(text = "") {
   return out.replace(/\n{3,}/g, "\n\n").trim();
 }
 
+const TOOL_VISION_NOTICE_END = " | Visual content is attached for this model call only; call read_image again later if needed.";
+const TOOL_VISION_LOG_BODY = /^(?:\{[^\r\n]*\}\r?\n)?\[image(?:(?:: | already viewed[;:])[^\r\n]*)?\]$/;
+
+function isToolVisionLog(text) {
+  // Replayed tool attachments can carry the user role and a flattened image placeholder.
+  if (!text.startsWith("Image loaded for vision: ")) return false;
+  return text.split(/\r?\n(?=Image loaded for vision: )/).every((block) => {
+    const noticeEnd = block.indexOf(TOOL_VISION_NOTICE_END);
+    if (noticeEnd < 0 || !block.slice(0, noticeEnd).includes(" | mediaType=image/")) return false;
+    return TOOL_VISION_LOG_BODY.test(block.slice(noticeEnd + TOOL_VISION_NOTICE_END.length).trim());
+  });
+}
+
 /**
  * Convert persisted user and assistant text into ucode TUI rows for resume/history.
  * Applies the shared ANSI markdown renderer so restored assistant text matches
@@ -401,7 +414,7 @@ function buildUcodeSessionLogEntries(messages = [], options = {}) {
     const role = String(message.role || "").trim().toLowerCase();
     if (role === "user") {
       const text = redactUserMessageForLog(messageContentText(message));
-      if (!text.trim()) continue;
+      if (!text || isToolVisionLog(text)) continue;
       const lines = text.split(/\r?\n/);
       pushLines(lines.map((line, index) => (index === 0 ? `› ${line}` : line)).join("\n"), "user");
       continue;
