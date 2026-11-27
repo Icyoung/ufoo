@@ -6,7 +6,7 @@ interface MarkdownBlockProps {
 }
 
 const EXTERNAL_URL_RE = /^(?:https?:\/\/|mailto:|tel:|data:)/i;
-const INLINE_FILE_CODE_RE = /^(?:file:\/\/[^\s)]+|\/[A-Za-z0-9._@/-]+\.[A-Za-z0-9]{1,10}(?:#L\d+(?:-L?\d+)?|:\d+(?::\d+)?)?|\.?[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._@-]+)+\.[A-Za-z0-9]{1,10}(?:#L\d+(?:-L?\d+)?|:\d+(?::\d+)?)?|[A-Za-z0-9._-]+\.(?:js|jsx|ts|tsx|mjs|cjs|rs|md|mdx|json|toml|yaml|yml|swift|kt|kts|java|py|go|css|html|sh)(?:#L\d+(?:-L?\d+)?|:\d+(?::\d+)?)?)$/;
+const INLINE_FILE_CODE_RE = /^(?:file:\/\/[^\s)]+|\/[A-Za-z0-9._@/-]+\.[A-Za-z0-9]{1,10}(?:#L\d+(?:-L?\d+)?|:\d+(?::\d+)?)?|\.?[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._@-]+)+\.[A-Za-z0-9]{1,10}(?:#L\d+(?:-L?\d+)?|:\d+(?::\d+)?)?|[A-Za-z0-9._-]+\.(?:js|jsx|ts|tsx|mjs|cjs|rs|md|mdx|json|toml|yaml|yml|swift|kt|kts|java|py|go|css|html|htm|mp4|m4v|mov|webm|ogv|png|jpe?g|gif|webp|svg|bmp|ico|avif|sh)(?:#L\d+(?:-L?\d+)?|:\d+(?::\d+)?)?)$/;
 
 function isLocalFileHref(rawHref: string): boolean {
   const href = String(rawHref || "").trim();
@@ -47,7 +47,7 @@ function renderInlineSegments(
             key={key}
             type="button"
             onClick={() => onOpenFile?.(linkHref)}
-            title={`Open ${linkHref} in Docs`}
+            title={`Open ${linkHref} in Files`}
             className="inline rounded-md border border-white/[0.09] bg-white/[0.05] px-1.5 py-0.5 text-left font-mono text-[12px] text-zinc-200 [overflow-wrap:anywhere] hover:border-white/[0.2] hover:bg-white/[0.1] hover:text-white transition-colors cursor-pointer"
           >
             {linkLabel}
@@ -75,7 +75,7 @@ function renderInlineSegments(
             type="button"
             onClick={() => onOpenFile(trimmed)}
             className="inline rounded bg-zinc-800/90 border border-white/[0.08] px-1.5 py-0.5 text-left font-mono text-[12px] text-zinc-200 [overflow-wrap:anywhere] hover:border-white/[0.22] hover:bg-zinc-800 hover:text-white transition-colors cursor-pointer"
-            title="Open in Docs Inspector"
+            title="Open in Files Inspector"
           >
             {codeSpan}
           </button>

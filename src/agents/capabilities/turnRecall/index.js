@@ -141,7 +141,6 @@ function createTurnRecallCapability(host = {}, { defaultNamespace = "" } = {}) {
         name: "recall_turn",
         description: "Recall earlier turns from the current session index by semantic/keyword search or paginate full raw messages/tool results for a specific turn_id.",
         permissions: [],
-        deferable: true,
         inputSchema: {
           type: "object",
           properties: {
@@ -313,13 +312,11 @@ function createTurnRecallCapability(host = {}, { defaultNamespace = "" } = {}) {
               topics: store.listTopics().slice(0, 12),
             }));
           } catch (error) {
-            emitToolEvent(context.onToolEvent, {
-              tool: "recall_turn",
-              phase: "error",
-              args: safeArgs,
+            return finish({
+              ok: false,
+              code: "recall_turn_failed",
               error: String((error && error.message) || "recall_turn failed"),
             });
-            throw error;
           }
         },
       },

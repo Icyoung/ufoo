@@ -31,6 +31,7 @@ const { loadGlobalProjectRows, buildDashboardPublishPayload, formatLoopSummary }
 const {
   loadWorkspaceChanges,
   loadWorkspaceDocs,
+  readWorkspacePreviewChunk,
   handleWorkspaceContext,
   buildDecisionTidyPrompt,
   detectGitBranch,
@@ -254,7 +255,68 @@ function buildProjectSpeakerIndex(projectRoot, liveMetaMap = null) {
   return index;
 }
 
-function rawHistoryToEntries(rows, speakerIndex = null) {
+const { createBackgroundTaskProgress } = require("./backgroundTaskProgress");
+const { taskLabel } = require("./format/taskLabel");
+
+function readActiveBackgroundTasks(root, sessionId) {
+  const file = path.join(root, ".ufoo/agent/main-control/runtimes/control/snapshot.json");
+  let state;
+  try { state = JSON.parse(fs.readFileSync(file, "utf8")).capabilityState; }
+  catch { return []; }
+  const records = [
+    ...Object.values(state?.["agent-management"]?.value?.tasks || {}),
+    ...Object.values(state?.["task-execution"]?.value?.jobs || {}),
+  ];
+  const result = [];
+  for (const task of records) {
+    if (task.parentSessionId !== sessionId) continue;
+    const waiting = ["planning", "awaiting_registration", "queued"].includes(task.status);
+    if (!waiting && !["running", "delivered"].includes(task.status)) continue;
+    result.push({
+      id: task.taskId || task.taskRunId || task.id,
+      workerId: task.workerId, childSession: task.id,
+      title: task.title || String(task.objective || "Task").split(/[。！？\n]/u)[0],
+      detail: task.report?.summary || task.objective || "",
+      status: waiting ? "queued" : "running",
+    });
+  }
+  return result;
+}
+
+function legacyTaskSpeakerResolver(root) {
+  let labels;
+  let sessions = [];
+  return (speaker) => {
+    const match = /^(?:task )?(?:.*:)?(task_[a-f0-9-]+|delegated-[a-f0-9]+)$/i.exec(speaker);
+    if (!match) return speaker;
+    if (!labels) {
+      labels = new Map();
+      try {
+        const file = path.join(root, ".ufoo/agent/main-control/runtimes/control/snapshot.json");
+        const state = JSON.parse(fs.readFileSync(file, "utf8")).capabilityState;
+        const jobs = Object.values(state?.["task-execution"]?.value?.jobs || {});
+        sessions = jobs.filter(job => /^child-[a-f0-9-]+$/i.test(job.id));
+        const delegated = Object.values(state?.["agent-management"]?.value?.tasks || {});
+        for (const job of [...jobs, ...delegated]) {
+          labels.set(job.taskId || job.taskRunId, taskLabel(job));
+        }
+      } catch { /* Historical task metadata is optional. */ }
+    }
+    while (!labels.has(match[1]) && sessions.length) {
+      const job = sessions.pop();
+      try {
+        const file = path.join(root, ".ufoo/agent/main-task/runtimes", job.id, "snapshot.json");
+        const runs = JSON.parse(fs.readFileSync(file, "utf8")).tasks || {};
+        for (const run of Object.values(runs)) {
+          if (run.request?.runtimeEvent) labels.set(run.taskRunId, taskLabel(job));
+        }
+      } catch { /* Older sessions may have been pruned. */ }
+    }
+    return labels.get(match[1]) || "Task";
+  };
+}
+
+function rawHistoryToEntries(rows, speakerIndex = null, resolveSpeaker = (name) => name) {
   const list = Array.isArray(rows) ? rows : [];
   const KINDS = new Set([
     "system", "user", "assistant", "error", "agent", "report",
@@ -306,6 +368,10 @@ function rawHistoryToEntries(rows, speakerIndex = null) {
         speaker = speaker || match[1];
         text = match[2];
       }
+    } else if (kind === "assistant" && /^(?:task task_[a-f0-9-]+|Task · .+?)\s+·\s+/i.test(text)) {
+      const match = text.match(/^((?:task task_[a-f0-9-]+|Task · .+?))\s+·\s+([\s\S]*)$/i);
+      speaker = speaker || match[1];
+      text = match[2];
     } else if (kind === "assistant" && /^ufoo(?:-agent)?\s*·\s*/i.test(text)) {
       speaker = speaker || "ufoo";
       text = text.replace(/^ufoo(?:-agent)?\s*·\s*/i, "");
@@ -331,7 +397,7 @@ function rawHistoryToEntries(rows, speakerIndex = null) {
       id: String(source.id || `hist-${index}`),
       kind,
       text,
-      speaker,
+      speaker: resolveSpeaker(speaker),
       ...(senderId ? { sender_id: senderId } : {}),
       ...(senderType ? { sender_type: senderType } : {}),
       ...(targetId ? { target_id: targetId } : {}),
@@ -1020,7 +1086,7 @@ async function startDesktopUiHost(options = {}) {
     }
     const speakerIndex = buildProjectSpeakerIndex(activeProjectRoot, controller.session.metaMap);
     const entry = {
-      ...rawHistoryToEntries([{ kind, text: raw, speaker, meta, ts: new Date().toISOString() }], speakerIndex)[0],
+      ...rawHistoryToEntries([{ kind, text: raw, speaker, meta, ts: new Date().toISOString() }], speakerIndex, legacyTaskSpeakerResolver(activeProjectRoot))[0],
       id: `live-${++entrySeq}`,
     };
     publish("transcript.append", entry);
@@ -1568,8 +1634,27 @@ async function startDesktopUiHost(options = {}) {
     };
   }
 
+  let lastBackgroundTasks = "";
+  let activeTasks = [];
+  let taskRoot = "";
+  const withTaskProgress = createBackgroundTaskProgress();
+  function activeTasksForTree(tree) {
+    const project = globalScope === "project" && tree.projects.find(item => item.active);
+    taskRoot = activeProjectRoot;
+    activeTasks = project ? readActiveBackgroundTasks(taskRoot, project.conversationId) : [];
+    return withTaskProgress(taskRoot, activeTasks);
+  }
+  function publishTaskProgress(tasks) {
+    const payload = { project_root: taskRoot, tasks };
+    const signature = JSON.stringify(payload);
+    if (signature === lastBackgroundTasks) return;
+    lastBackgroundTasks = signature;
+    publish("tasks.snapshot", payload);
+  }
+
   function publishProjectsTree(options = {}) {
     const tree = buildProjectsTreePayload();
+    publishTaskProgress(activeTasksForTree(tree));
     const signature = JSON.stringify(tree);
     if (!options.force && signature === lastProjectsTreeSignature) {
       return tree;
@@ -2198,8 +2283,9 @@ async function startDesktopUiHost(options = {}) {
           const speaker = String(action.publisher || "");
           const id = `stream-${speaker || "agent"}-${Date.now()}`;
           streamIds.set(speaker, id);
-          streamLabels.set(speaker, action.displayName || speaker);
-          publish("stream.start", { id, speaker: action.displayName || speaker });
+          const label = legacyTaskSpeakerResolver(activeProjectRoot)(action.displayName || speaker);
+          streamLabels.set(speaker, label);
+          publish("stream.start", { id, speaker: label });
           return;
         }
         if (action.type === "stream/delta") {
@@ -2208,7 +2294,9 @@ async function startDesktopUiHost(options = {}) {
           if (!id) {
             id = `stream-${key || "agent"}-${Date.now()}`;
             streamIds.set(key, id);
-            publish("stream.start", { id, speaker: key });
+            const label = legacyTaskSpeakerResolver(activeProjectRoot)(key);
+            streamLabels.set(key, label);
+            publish("stream.start", { id, speaker: label });
           }
           publish("stream.delta", { id, text: String(action.delta || ""), speaker: streamLabels.get(key) || key });
           return;
@@ -2328,7 +2416,7 @@ async function startDesktopUiHost(options = {}) {
       daemon_connected: daemonConnectionState === "connected",
       daemon_state: daemonConnectionState,
       footer: agents.footer || "",
-      entries: rawHistoryToEntries(history, buildProjectSpeakerIndex(activeProjectRoot, controller.session.metaMap)),
+      entries: rawHistoryToEntries(history, buildProjectSpeakerIndex(activeProjectRoot, controller.session.metaMap), legacyTaskSpeakerResolver(activeProjectRoot)),
       input_history: Array.isArray(inputHistory) ? inputHistory.filter(Boolean) : [],
       agents: agents.agents,
       engine_catalog: buildEngineCatalog(),
@@ -2342,6 +2430,7 @@ async function startDesktopUiHost(options = {}) {
       stage_target: { ...stageTarget },
       pending_interaction: getActivePendingInteraction(),
       pending_interactions: getAllPendingInteractions(),
+      background_tasks: activeTasksForTree(tree),
       queued_messages: buildQueueSnapshotForProject(activeProjectRoot),
       projects: tree.projects,
       workflow: globalScope === "project"
@@ -3681,6 +3770,10 @@ async function startDesktopUiHost(options = {}) {
         return res;
       }
 
+      if (name === "workspace.file.preview") {
+        return readWorkspacePreviewChunk(activeProjectRoot, payload);
+      }
+
       if (name === "workspace.docs") {
         const root = String(payload.projectRoot || activeProjectRoot);
         let fallbackWorktree = String(payload.worktreeRoot || "").trim();
@@ -3955,6 +4048,11 @@ async function startDesktopUiHost(options = {}) {
   const mainRuntimeToolSummaries = new Map();
   const router = createDaemonMessageRouter({
     escapeBlessed: (v) => String(v || ""),
+    resolveTaskLabel: event => {
+      const id = event.taskId || event.taskRunId;
+      const label = legacyTaskSpeakerResolver(activeProjectRoot)(id);
+      return label && label !== id ? label : "Task";
+    },
     resolveAgentDisplayName: getAgentLabel,
     stripBlessedTags: stripTags,
     suppressLifecycleLog: true,
@@ -3976,7 +4074,7 @@ async function startDesktopUiHost(options = {}) {
       }
       if (type === "thinking.delta" && event.text) {
         publish("thinking.delta", {
-          id: `main-thinking-${runId}`,
+          id: `main-thinking-${event.turnId || runId}`,
           text: String(event.text),
         });
         publish("status.set", { text: "Thinking…", busy: true });
@@ -4352,7 +4450,12 @@ async function startDesktopUiHost(options = {}) {
     }
   }
 
-  standalonePollTimer = setInterval(pollStandaloneWorkerSurface, 350);
+  standalonePollTimer = setInterval(() => {
+    pollStandaloneWorkerSurface();
+    if (globalScope === "project" && taskRoot === activeProjectRoot && activeTasks.length) {
+      publishTaskProgress(withTaskProgress(taskRoot, activeTasks));
+    }
+  }, 350);
   standalonePollTimer.unref?.();
   treePollTimer = setInterval(() => {
     void refreshRecoverableForActiveProject().then(() => publishProjectsTree());
@@ -4390,7 +4493,9 @@ async function startDesktopUiHost(options = {}) {
 module.exports = {
   startDesktopUiHost,
   rawHistoryToEntries,
+  legacyTaskSpeakerResolver,
   buildProjectSpeakerIndex,
   sanitizeUiActivityDetail,
   inspectDormantProjectSummary,
+  readActiveBackgroundTasks,
 };

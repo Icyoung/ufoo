@@ -77,6 +77,7 @@ const COMMAND_NAMES = Object.freeze([
   "worker.focus_external",
   "workspace.changes",
   "workspace.docs",
+  "workspace.file.preview",
   "workspace.context",
   "workflow.snapshot",
   "workflow.connect",
@@ -150,6 +151,7 @@ const EVENT_NAMES = Object.freeze([
   "handoff.state",
   "remote.status",
   "queue.snapshot",
+  "tasks.snapshot",
 ]);
 
 function createEnvelope({

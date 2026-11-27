@@ -51,6 +51,12 @@ describe("memory tool handlers", () => {
       count: 1,
       entries: [expect.objectContaining({ title: "User id invariant" })],
     }));
+    const queried = recallHandler(ctx, { query: "UUID v7", tags: ["arch"] });
+    expect(queried).toEqual(expect.objectContaining({
+      ok: true,
+      count: 1,
+      entries: [expect.objectContaining({ id: "mem-0001" })],
+    }));
     expect(fs.readFileSync(path.join(projectRoot, ".ufoo", "memory", "audit.jsonl"), "utf8")).toContain("session-1");
   });
 

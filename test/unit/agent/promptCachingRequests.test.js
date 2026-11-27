@@ -89,6 +89,19 @@ describe("prompt caching across both native entry points", () => {
   });
 
   describe.each(["main", "ucode"])("%s", entry => {
+    test("unconfigured auxiliary model makes only foreground requests", async () => {
+      process.env.OPENAI_API_KEY = "test-api-key";
+      const models = [];
+      global.fetch = jest.fn(async (_url, { body }) => {
+        const request = JSON.parse(body);
+        models.push(request.model);
+        return responsesResult(request, "done");
+      });
+      const run = entryPoint(entry, { rawTurnCount: 2, hardMaxTurns: 3, awaitEnrich: true });
+      for (let i = 0; i < 9; i++) await run(`Inspect module step ${i}.`, `check-${i}`);
+      expect(models).toEqual(Array(9).fill(model));
+    });
+
     test.each([
       ["API key", "https://api.openai.com/v1/responses", "openai-responses"],
       ["subscription", "https://chatgpt.com/backend-api/codex/responses", "codex-subscription"],
@@ -190,6 +203,49 @@ describe("prompt caching across both native entry points", () => {
     expect(historical.content[1].cache_control).toBe(ephemeral);
     expect(result.usage).toMatchObject({ input: 200, output: 11, cacheRead: 400, cacheCreation: 300,
       inputIncludesCache: false, cacheWriteByTtl: { "5m": 100, "1h": 200 } });
+  });
+
+  test.each(["codex", "claude"])("a paused %s turn switches provider with the tool question and answer paired", async start => {
+    const { applySettingsPatch } = require("../../../src/ui/settingsBridge");
+    const next = start === "claude" ? "codex" : "claude";
+    const models = { codex: model, claude: "claude-two" };
+    const settings = provider => ({ agent_provider: provider + "-cli", agent_model: models[provider] });
+    applySettingsPatch(root, settings(start));
+    const resolveProvider = async ({ provider, model }) => ({
+      provider, model, transport: provider === "claude" ? "anthropic-messages" : "openai-responses",
+      baseUrl: "https://runtime.invalid/v1", auth: { apiKey: "test-api-key" },
+    });
+    host = createAgentHost({ projectRoot: root, resolveProvider });
+    const input = { kind: "choice", prompt: "Which module?", options: ["parser", "lexer"] };
+    const json = body => new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+    const question = start === "codex"
+      ? { object: "response", status: "completed", model, output: [
+          { type: "reasoning", id: "prior", encrypted_content: "previous-cipher", summary: [] },
+          { type: "function_call", call_id: "question", name: "ask_user", arguments: JSON.stringify(input) },
+        ] }
+      : { content: [{ type: "tool_use", id: "question", name: "ask_user", input }], usage: {} };
+    global.fetch = jest.fn().mockResolvedValueOnce(json(question)).mockResolvedValueOnce(next === "claude"
+      ? json({ content: [{ type: "text", text: "Continuing." }], usage: {} })
+      : responsesResult({ model }, "Continuing."));
+    const first = await host.runPrompt({ prompt: "Choose the module.", sessionId });
+    expect(first.payload.runtime.status).toBe("waiting_user");
+    expect(applySettingsPatch(root, settings(next)).ok).toBe(true);
+    const runtime = host.getSession(sessionId);
+    const resumed = await runtime.resume({ interactionId: first.payload.runtime.interaction.id, answer: "1" });
+    expect((await runtime.wait(resumed.taskRunId)).status).toBe("completed");
+    const request = JSON.parse(global.fetch.mock.calls[1][1].body);
+    if (next === "claude") {
+      expect(request.messages.flatMap(message => message.content)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: "tool_use", id: "question", name: "ask_user" }),
+        expect.objectContaining({ type: "tool_result", tool_use_id: "question", content: expect.stringContaining("parser") }),
+      ]));
+      expect(JSON.stringify(request.messages)).not.toContain("previous-cipher");
+    } else {
+      expect(request.input).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: "function_call", call_id: "question", name: "ask_user" }),
+        expect.objectContaining({ type: "function_call_output", call_id: "question", output: expect.stringContaining("parser") }),
+      ]));
+    }
   });
 
   test("Responses retains ordered encrypted items and pairs the answer after ask_user and restart", async () => {

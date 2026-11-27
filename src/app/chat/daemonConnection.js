@@ -80,8 +80,28 @@ function createDaemonConnection(options = {}) {
   }
   function deliverRuntime(event) {
     const scope = scopeFor(event);
-    runtimeCursors.set(scope, { projectRoot: event.projectRoot, sessionId: event.sessionId, sequence: Math.max(runtimeCursors.get(scope)?.sequence || 0, event.sequence || 0) });
+    if (!event?.ephemeral && Number.isInteger(event?.sequence) && event.sequence > 0) {
+      runtimeCursors.set(scope, { projectRoot: event.projectRoot, sessionId: event.sessionId, sequence: Math.max(runtimeCursors.get(scope)?.sequence || 0, event.sequence) });
+    }
     handleMessage({ type: IPC_RESPONSE_TYPES.RUNTIME_EVENT, data: event });
+  }
+  function deliverReplayPage(replay, events) {
+    // The socket already orders live events. At a shared journal sequence,
+    // deliver its live prefix (including any final delta) exactly once.
+    const livePositions = new Map();
+    replay.buffered.forEach((event, index) => {
+      if (!event.ephemeral) livePositions.set(event.sequence, index);
+    });
+    let nextLive = 0;
+    for (const event of events) {
+      const position = livePositions.get(event.sequence);
+      if (position !== undefined) {
+        while (nextLive <= position) deliverRuntime(replay.buffered[nextLive++]);
+      } else if (!replay.allowedTasks || replay.allowedTasks.has(event.taskRunId)) {
+        deliverRuntime(event);
+      }
+    }
+    replay.buffered.splice(0, nextLive);
   }
   function receive(msg) {
     if (msg.type === IPC_RESPONSE_TYPES.RUNTIME_EVENT) {
@@ -93,14 +113,13 @@ function createDaemonConnection(options = {}) {
     const replay = runtimeReplays.get(msg.request_id);
     if (msg.type === IPC_RESPONSE_TYPES.ERROR && replay) {
       runtimeReplays.delete(replay.requestId); replayByScope.delete(replay.scope);
-      replay.buffered.sort((a, b) => a.sequence - b.sequence).forEach(deliverRuntime);
+      replay.buffered.forEach(deliverRuntime);
     }
     if (msg.type === IPC_RESPONSE_TYPES.RUNTIME_RESULT && replay) {
-      (msg.data.events || []).filter((event) => !replay.allowedTasks || replay.allowedTasks.has(event.taskRunId)).forEach(deliverRuntime);
+      deliverReplayPage(replay, msg.data.events || []);
       if (msg.data.has_more) { replay.sequence = msg.data.next_sequence; writeReplay(replay); return; }
       runtimeReplays.delete(replay.requestId); replayByScope.delete(replay.scope);
-      const events = replay.buffered;
-      events.sort((a, b) => a.sequence - b.sequence).forEach(deliverRuntime);
+      replay.buffered.forEach(deliverRuntime);
       runtimeCursors.set(replay.scope, { projectRoot: replay.projectRoot, sessionId: replay.sessionId, sequence: Math.max(runtimeCursors.get(replay.scope)?.sequence || 0, msg.data.next_sequence || 0) });
       return;
     }

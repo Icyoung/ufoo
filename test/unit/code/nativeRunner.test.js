@@ -134,11 +134,12 @@ describe("ucode native runner", () => {
     expect(result.ok).toBe(true);
     const file = path.join(workspaceRoot, ".ufoo/agent/ucode/runtimes/observed/events.jsonl");
     const events = fs.readFileSync(file, "utf8").trim().split("\n").map(JSON.parse);
-    expect(events).toEqual(observed);
+    expect(events).toEqual(observed.filter((event) => !event.ephemeral));
+    expect(observed.some((event) => event.type === "thinking.delta" && event.ephemeral === true)).toBe(true);
+    expect(events.some((event) => ["thinking.delta", "message.delta", "model.phase"].includes(event.type))).toBe(false);
     expect(events.every(event => event.taskId === "delegated-native" && event.traceId === "root" && event.parentTaskRunId === "parent")).toBe(true);
     expect(events.filter(event => ["tool.started", "tool.completed"].includes(event.type)).map(event => event.toolCallId)).toEqual(["native-call", "native-call"]);
-    expect(events.find(event => event.type === "model.completed")).toHaveProperty("durationMs");
-    expect(events.some(event => event.type === "thinking.delta")).toBe(true);
+    expect(events.find(event => event.type === "model.completed")).toMatchObject({ durationMs: expect.any(Number), firstThinkingAt: expect.any(String) });
     expect(events.at(-1).type).toBe("task.completed");
   });
 

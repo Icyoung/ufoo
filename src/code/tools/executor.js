@@ -9,28 +9,9 @@ const { persistToolResultToContext } = require("../context/assembler");
 const { emptyExecutionState } = require("../context/executionSegment");
 const { runPlanGraphCommand } = require("../context/planGraphService");
 const { runAskUserTool, syncInteractionFromPlanGraph } = require("../context/userInteraction");
-const fs = require("fs");
-const path = require("path");
-const { createResourceLease } = require("../../agents/runtime/tasks/resourceLease");
-function writerLease(options) {
-  const workspaceRoot = fs.realpathSync(options.workspaceRoot || process.cwd());
-  return { lease: createResourceLease({ file: path.join(workspaceRoot, ".ufoo", "agent", "runtime", "workspace-leases.json") }),
-    key: workspaceRoot, ownerId: options.taskRunId || options.sessionId || `process-${process.pid}` };
-}
-function isReadOnlyBashCall(tool, args) {
-  if (normalizeToolName(tool) !== "bash") return false;
-  const action = String((args && args.action) || "").trim().toLowerCase();
-  return action === "logs" || action === "status" || action === "list";
-}
+
 function runCoreTool(options = {}) {
-  if (!["write", "edit", "bash"].includes(normalizeToolName(options.tool)) || isReadOnlyBashCall(options.tool, options.args)) {
-    return runCoreToolUnlocked(options);
-  }
-  const { lease, key, ownerId } = writerLease(options);
-  const acquired = lease.acquire({ key, ownerId });
-  if (!acquired.ok) return { ...acquired, error: "workspace writer is active" };
-  try { return runCoreToolUnlocked(options); }
-  finally { if (!acquired.reentrant) lease.release({ key, token: acquired.token }); }
+  return runCoreToolUnlocked(options);
 }
 
 const CORE_TOOL_NAMES = new Set([
@@ -298,10 +279,6 @@ function runCoreToolUnlocked({
  * dispatcher so bash can terminate on the caller's AbortSignal.
  */
 async function runCoreToolAsync(options = {}) {
-  if (["write", "edit", "bash"].includes(normalizeToolName(options.tool)) && !isReadOnlyBashCall(options.tool, options.args)) {
-    const { lease, key, ownerId } = writerLease(options);
-    return lease.run({ key, ownerId, signal: options.signal }, () => runCoreToolAsyncUnlocked(options));
-  }
   return runCoreToolAsyncUnlocked(options);
 }
 async function runCoreToolAsyncUnlocked(options = {}) {

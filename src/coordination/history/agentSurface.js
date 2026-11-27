@@ -49,6 +49,7 @@ function createAgentSurfacePublisher(projectRoot, subscriber) {
     }
     const last = batch.at(-1);
     if (["text_delta", "thinking_delta"].includes(safeEvent.type) && last?.type === safeEvent.type
+        && last.task_id === safeEvent.task_id && last.taskRunId === safeEvent.taskRunId
         && String(last.delta || "").length < 32000) last.delta = String(last.delta || "") + String(safeEvent.delta || "");
     else batch.push(safeEvent);
     if (!timer) { timer = setTimeout(drain, 40); timer.unref?.(); }
@@ -174,14 +175,22 @@ function readAgentSurfaceEvents(projectRoot, agentIds, maxBytes = 2 * 1024 * 102
 // character. File offsets, rather than sequence high-water marks, retain late
 // appends from concurrent writers.
 function createAgentSurfaceReader(projectRoot, maxBytes = 2 * 1024 * 1024) {
-  const cursors = new Map();
   const dir = getUfooPaths(projectRoot).busEventsDir;
+  const reader = createJsonlEventReader(dir, () => fs.readdirSync(dir).filter(name => name.endsWith(".jsonl")).sort().slice(-2), maxBytes);
   return {
     read(agentIds) {
       const accepted = new Set(agentIds);
+      return reader.read(event => event.event === "agent_surface" && accepted.has(event.publisher) && event.data?.surface?.type);
+    },
+  };
+}
+
+function createJsonlEventReader(dir, listFiles, maxBytes = 2 * 1024 * 1024) {
+  const cursors = new Map();
+  return {
+    read(accept) {
       let files;
-      try { files = fs.readdirSync(dir).filter((name) => name.endsWith(".jsonl")).sort().slice(-2); }
-      catch { return []; }
+      try { files = listFiles(); } catch { return []; }
       const events = [];
       for (const name of files) {
         let fd;
@@ -217,7 +226,7 @@ function createAgentSurfaceReader(projectRoot, maxBytes = 2 * 1024 * 1024) {
           for (const line of lines) {
             try {
               const event = JSON.parse(line);
-              if (event.event === "agent_surface" && accepted.has(event.publisher) && event.data?.surface?.type) events.push(event);
+              if (accept(event)) events.push(event);
             } catch { /* Ignore unrelated or malformed observations. */ }
           }
         } catch { /* A writer can rotate the file between stat and read. */ }
@@ -230,6 +239,7 @@ function createAgentSurfaceReader(projectRoot, maxBytes = 2 * 1024 * 1024) {
 }
 
 module.exports = {
+  createJsonlEventReader,
   createAgentSurfacePublisher,
   readAgentSurfaceEvents,
   createAgentSurfaceReader,

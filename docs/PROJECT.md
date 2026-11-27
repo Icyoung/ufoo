@@ -47,11 +47,11 @@ Grok/xAI provider work beyond the CLI wrapper is tracked in
 The layered, pluggable runtime migration is documented in
 [AGENT_RUNTIME_REFACTOR.md](archive/AGENT_RUNTIME_REFACTOR.md). Native `ucode` uses the
 shared capability-composed loop alongside the project main agent. The project
-main agent can code, delegate, manage independent tasks,
+main agent can code, delegate tasks to workers,
 and use group/cron services; the global profile only selects projects. The
 document records implemented APIs and conservative recovery boundaries.
 
-The main agent, independent coding tasks and native `ucode` share execution
+The main agent and native `ucode` share execution
 budgets from `src/agents/runtime/core/executionBudget.js`. Model rounds and tool
 calls are unlimited by default, with a 12-hour task deadline. Recoverable tool
 errors warn at 3 consecutive failures and stop at 5, or at 12 failures in the
@@ -74,7 +74,7 @@ so partial streams and completed tools are never replayed by this transport.
 Native inference and `/model` discovery share refreshed credential resolution,
 including the Codex subscription token and account header.
 
-Native main, writable main child tasks and standalone/internal ucode expose the
+The main agent and standalone/internal ucode expose the
 shared `browser` capability (`src/agents/capabilities/browser/`). Its fixed tool
 schema discovers the pinned Playwright MCP tools on demand through
 `src/runtime/browser/playwrightSession.js`; no external tool schemas or live tab
@@ -98,7 +98,7 @@ automatically replayed. Plan mode permits inspection only. A paused runtime may
 add this stateless capability without changing or replaying its existing pending
 work.
 
-Native main, writable main child tasks and standalone/internal ucode also expose
+The main agent and standalone/internal ucode also expose
 the shared `mac-app` capability (`src/agents/capabilities/mac/`, tool `mac_app`,
 permission `mac.control`), excluded from read-only children and the global
 router. On macOS it compiles and caches a self-contained Swift helper
@@ -352,9 +352,7 @@ Important boundaries:
   against live registrations:
   groups with some live members report `partial`, and those with none report
   `inactive`. Main-agent dispatch rejects missing or inactive workers and
-  can address active internal or external agents. A workspace lease denial directs the main
-  agent to delegate, wait, read, or use a separate worktree; it does not
-  authorize closing an existing group to take over its directory.
+  can address active internal or external agents. The main agent partitions shared-repository edits by file or module.
   New native coding registrations and launch operations use `ucode`, with
   `ucode:<session>` subscriber IDs. The retired `ufoo-code` and `ufoo` type
   aliases are not launch or recovery inputs; native journal/session paths stay
@@ -527,7 +525,7 @@ remain intact. Wrappers still own terminal rendering, activity, and lifecycle.
 | `src/agents/activity/` | Activity tracking | Ready/activity detectors and state publishing. |
 | `src/agents/controller/` | Coordination tool execution | Shared controller tool executor bound to daemon ports. |
 | `src/agents/runtime/` | Shared native execution | Capability composition, injected model/tool loop, tool registration/schema/host-grant checks, generic protocol helpers, durable request/command journals, namespaced snapshots, cancellation, and resource-aware scheduling. No coding/daemon/UI implementation imports in the core. |
-| `src/agents/capabilities/` | Business capabilities | Coding, planning/interaction, skills, agent management/routing, discovery, memory, reports, independent tasks, groups, and scheduling. Business policy stays outside the shared core. |
+| `src/agents/capabilities/` | Business capabilities | Coding, planning/interaction, skills, agent management/routing, discovery, memory, reports, groups, and scheduling. Business policy stays outside the shared core. |
 | `src/agents/profiles/` | Agent combinations | Declarative coding, project main, and read-only global-router capability selections; host grants remain authoritative. |
 | `src/code/` | Native `ucode` host | Native entry composition, coding tools, coding context/task state, session codecs/metadata/GC, skills, TUI, `UcodeController`, launcher helpers. Existing protocol/provider entries forward to shared implementations where extracted. |
 | `src/tools/` | Shared tool registry | Controller/worker tool definitions, schemas, handlers, tier permissions. |
@@ -600,9 +598,7 @@ session paths and snapshot codecs remain compatible through namespaced storage
 adapters. `createAgentRuntime().run()` supports the existing ucode host; hosts
 with a runtime store also expose durable `submit`, `resume`, `cancel`, `snapshot`,
 `events`, `wait`, and `close`. `agentHost.js` binds these to project IPC and the
-chat/TUI. Main conversations and child tasks have separate scheduler budgets.
-Directory leases are shared with native ucode; verified worktrees can run
-independently. Accepted requests and paused interactions recover after restart;
+chat/TUI. The main agent and workers can edit separate files in the same checkout concurrently. Accepted requests and paused interactions recover after restart;
 a running round becomes interrupted and uncertain effects are never replayed.
 
 All main conversations use the main runtime, with one `agentProvider` and

@@ -1,6 +1,7 @@
 "use strict";
 
 const { randomUUID } = require("crypto");
+const { toChatMessages } = require("./toolHistory");
 const { assertTransport } = require("./transportContract");
 const {
   extractVisionPayload,
@@ -57,7 +58,13 @@ function createOpenAiChatTransport(deps = {}) {
         messages.push({ role: "user", content: String(prompt || "") });
       }
     },
-    runTurn,
+    runTurn(options) {
+      const messages = toChatMessages(options.messages);
+      if (options.systemPrompt && !messages.some(message => message.role === "system")) {
+        messages.unshift({ role: "system", content: options.systemPrompt });
+      }
+      return runTurn({ ...options, messages });
+    },
     getToolCalls(turnResult) {
       return Array.isArray(turnResult.toolCalls)
         ? turnResult.toolCalls.filter((call) => call && call.function && typeof call.function === "object")

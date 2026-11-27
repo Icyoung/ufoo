@@ -71,12 +71,11 @@ function applySettingsPatch(projectRoot, patch = {}) {
     next.agentThinking = normalizeThinkingLevel(patch.agent_thinking ?? patch.agentThinking);
     if (!next.agentThinking) return { ok: false, error: "Thinking must be off, low, medium, high, xhigh or max" };
   }
-  if (next.agentModel != null && next.agentModel !== current.agentModel) next.agentModelRevision = (Number(current.agentModelRevision) || 0) + 1;
+  const providerChanged = Boolean(next.agentProvider && next.agentProvider !== current.agentProvider);
+  const modelChanged = next.agentModel != null && next.agentModel !== current.agentModel;
+  if (providerChanged || modelChanged) next.agentModelRevision = (Number(current.agentModelRevision) || 0) + 1;
   if (Object.keys(next).length === 0) {
     return { ok: false, error: "empty settings patch" };
-  }
-  if (next.agentProvider && next.agentProvider !== current.agentProvider) {
-    next.agentConversationId = `main-${require("crypto").randomUUID()}`;
   }
   const saved = saveConfig(projectRoot, next);
   return { ok: true, providerChanged: current.agentProvider !== saved.agentProvider, settings: buildSettingsSnapshot(loadConfig(projectRoot)) };

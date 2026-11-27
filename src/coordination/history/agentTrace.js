@@ -79,6 +79,7 @@ function readAgentTrace(projectRoot, options = {}) {
       traceId: event.traceId, taskId: event.taskId || event.request?.taskId, taskRunId: event.taskRunId, parentTaskRunId: event.parentTaskRunId || event.request?.parentTaskRunId,
       parentSessionId: event.parentSessionId, requestId: event.requestId || event.request?.requestId, turnId: event.turnId, toolCallId: event.toolCallId, toolName: event.toolName,
       attemptId: event.attemptId, argumentFingerprint: event.argumentFingerprint || (event.args ? observationFingerprint(event.args) : undefined),
+      firstTextAt: event.firstTextAt, firstThinkingAt: event.firstThinkingAt, streamedCharacters: event.streamedCharacters,
       durationMs: event.durationMs, usage: event.usage || result.usage, status: event.status,
       ...(event.configuration ? { configuration: event.configuration } : {}),
       ...(event.repeatedSteps !== undefined ? { repeatedSteps: event.repeatedSteps } : {}),

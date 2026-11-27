@@ -1,6 +1,7 @@
 "use strict";
 
 const { randomUUID } = require("crypto");
+const { toChatMessages } = require("./toolHistory");
 const { assertTransport } = require("./transportContract");
 const {
   extractVisionPayload,
@@ -39,7 +40,7 @@ function createOpenAiResponsesTransport(deps = {}) {
         content: Array.isArray(userContent) && userContent.length > 0 ? userContent : String(prompt || ""),
       });
     },
-    runTurn,
+    runTurn(options) { return runTurn({ ...options, messages: toChatMessages(options.messages) }); },
     getToolCalls(turnResult) {
       return Array.isArray(turnResult.toolCalls)
         ? turnResult.toolCalls.filter((call) => call && call.function && typeof call.function === "object")

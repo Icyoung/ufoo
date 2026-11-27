@@ -12,7 +12,8 @@ describe("workspace writer coordination", () => {
   let root;
   beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-resource-")); });
   afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
-  test("another process cannot acquire a live lease; dead owners are reclaimed", () => {
+
+  test("explicit resource leases prevent concurrent acquisition by another live process and reclaim dead owners", () => {
     const file = path.join(root, "leases.json");
     const lease = createResourceLease({ file });
     const held = lease.acquire({ key: root, ownerId: "main" });
@@ -25,27 +26,21 @@ describe("workspace writer coordination", () => {
     expect(lease.acquire({ key: root, ownerId: "main-again" }).ok).toBe(true);
     expect(fs.statSync(file).mode & 0o777).toBe(0o600);
   });
-  test("native ucode tools respect a task lease and external workers block main writes", async () => {
-    const access = createWorkspaceAccess({ projectRoot: root, externalWriters: () => ["codex:worker"] });
+
+  test("shared-repo ucode tools and workspace access allow parallel non-overlapping edits without whole-repo workspace_busy", async () => {
+    const access = createWorkspaceAccess({ projectRoot: root });
     const key = fs.realpathSync(root);
-    const held = access.leases.acquire({ key, ownerId: "child-run" });
-    expect(await runCoreToolAsync({ workspaceRoot: root, sessionId: "ucode-other", tool: "write", args: { path: "blocked.txt", content: "bad" } })).toMatchObject({ ok: false, code: "workspace_busy" });
-    expect(fs.existsSync(path.join(root, "blocked.txt"))).toBe(false);
-    const effect = jest.fn();
-    expect(await access.run({ workspaceRoot: root, taskRunId: "main", tool: "bash" }, effect)).toMatchObject({ ok: false, code: "workspace_busy" });
-    expect(effect).not.toHaveBeenCalled();
-    access.leases.release({ key, token: held.token });
-    expect(await runCoreToolAsync({ workspaceRoot: root, sessionId: "ucode-other", tool: "write", args: { path: "allowed.txt", content: "ok" } })).toMatchObject({ ok: true });
-  });
-  test("a parent host and native ucode in a worktree share the directory lease", async () => {
-    const worktree = path.join(root, "linked-worktree");
-    fs.mkdirSync(worktree);
-    const parent = createWorkspaceAccess({ projectRoot: root });
-    const key = fs.realpathSync(worktree);
-    const held = parent.leases.acquire({ key, ownerId: "child-worktree" });
-    expect(await runCoreToolAsync({ workspaceRoot: worktree, sessionId: "native", tool: "write", args: { path: "file.txt", content: "bad" } })).toMatchObject({ ok: false, code: "workspace_busy" });
-    expect(await runCoreToolAsync({ workspaceRoot: root, sessionId: "main", tool: "write", args: { path: "independent.txt", content: "ok" } })).toMatchObject({ ok: true });
-    parent.leases.release({ key, token: held.token });
-    expect(await runCoreToolAsync({ workspaceRoot: worktree, sessionId: "native", tool: "write", args: { path: "file.txt", content: "ok" } })).toMatchObject({ ok: true });
+    const held = access.leases.acquire({ key, ownerId: "other-agent" });
+    try {
+      expect(await runCoreToolAsync({ workspaceRoot: root, sessionId: "ucode-a", tool: "write", args: { path: "module-a.txt", content: "a" } })).toMatchObject({ ok: true });
+      expect(await runCoreToolAsync({ workspaceRoot: root, sessionId: "ucode-b", tool: "write", args: { path: "module-b.txt", content: "b" } })).toMatchObject({ ok: true });
+      expect(fs.readFileSync(path.join(root, "module-a.txt"), "utf8")).toBe("a");
+      expect(fs.readFileSync(path.join(root, "module-b.txt"), "utf8")).toBe("b");
+      const effect = jest.fn().mockResolvedValue({ ok: true });
+      expect(await access.run({ workspaceRoot: root, taskRunId: "main", tool: "bash", args: { command: "npm test" } }, effect)).toMatchObject({ ok: true });
+      expect(effect).toHaveBeenCalledTimes(1);
+    } finally {
+      access.leases.release({ key, token: held.token });
+    }
   });
 });

@@ -21,6 +21,7 @@ import type {
   WorkerSummary,
 } from "../types";
 import { TranscriptStream } from "./TranscriptStream";
+import { BackgroundTaskStrip } from "./BackgroundTaskStrip";
 import { QueuedMessagesTray } from "./QueuedMessagesTray";
 import { AskInteractionDock } from "./AskInteractionDock";
 import { ModelEffortPicker, PermissionPicker } from "./ModelEffortPicker";
@@ -926,6 +927,7 @@ function MainComposer({
         )}
 
         {/* Friendly Desktop Command & @Mention Palette */}
+        {state.scope === "project" && !targetedWorker && <BackgroundTaskStrip key={state.activeRoot} tasks={state.backgroundTasks} />}
         <ComposerCommandMenu
           menu={menu}
           activeIndex={clampedMenuIndex}
@@ -1515,30 +1517,6 @@ export function CenterStage() {
           isSplitLayout ? "min-w-0 md:min-w-[300px]" : "min-w-0"
         }`}
       >
-        {/* Mobile-only Single-Worker Back Strip */}
-        {isWorkerSingle && (
-          <div className="flex md:hidden h-9 shrink-0 items-center justify-between gap-2 border-b border-white/[0.06] bg-zinc-950/70 px-3">
-            <button
-              type="button"
-              onClick={() => currentProject && void selectProjectMain(currentProject.root)}
-              className="inline-flex items-center gap-1.5 rounded-lg py-1 text-[12px] text-zinc-300 hover:text-white cursor-pointer"
-            >
-              <ArrowLeft size={13} />
-              <span className="truncate max-w-[140px]">{currentProject?.label || "Project"}</span>
-            </button>
-            <div className="flex items-center gap-1.5 min-w-0">
-              <BrandIcon
-                brand={selectedWorkerMeta?.type || state.workerSingleFrame?.type}
-                color={workerColorMap[state.stageTarget.agentId]}
-                size={13}
-              />
-              <span className="font-mono text-[12px] font-medium text-zinc-100 truncate max-w-[140px]">
-                {state.workerSingleFrame?.label || selectedWorkerMeta?.label || state.stageTarget.agentId}
-              </span>
-            </div>
-          </div>
-        )}
-
         {/* Top Stage Bar (Desktop >= md; Mobile uses Mobile Top Bar in App.tsx) */}
         <header
           data-tauri-drag-region
@@ -1628,11 +1606,6 @@ export function CenterStage() {
                 {!isSplitLayout && currentProject?.branch && (
                   <span className="hidden sm:inline-block rounded-md border border-white/[0.07] bg-white/[0.03] px-2 py-0.5 font-mono text-[11px] text-zinc-400 truncate max-w-[160px]">
                     {currentProject.branch}
-                  </span>
-                )}
-                {state.busy && (
-                  <span className="text-[11.5px] text-zinc-400 font-mono truncate">
-                    {state.statusText}
                   </span>
                 )}
               </div>
@@ -1822,12 +1795,6 @@ export function CenterStage() {
                   <BrandIcon brand={activeSideWorker.type} color={workerColorMap[activeSideWorker.id]} size={14} />
                   <span className="font-mono text-[12.5px] font-medium text-zinc-100 truncate">
                     {activeSideWorker.label}
-                  </span>
-                  <span className="text-[11px] text-zinc-500 truncate">
-                    {activeSideFrame?.status ||
-                      activeSideWorker.activity_detail ||
-                      activeSideWorker.activity_state ||
-                      "ready"}
                   </span>
                 </button>
               ) : (

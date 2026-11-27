@@ -39,6 +39,37 @@ const BINARY_EXTENSIONS = new Set([
   ".node", ".dylib", ".so", ".dll", ".exe", ".o", ".a",
 ]);
 
+const PREVIEW_MIME = {
+  ".html": "text/html", ".htm": "text/html",
+  ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+  ".webp": "image/webp", ".svg": "image/svg+xml", ".avif": "image/avif",
+  ".ico": "image/x-icon", ".bmp": "image/bmp",
+  ".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm",
+  ".mov": "video/quicktime", ".ogv": "video/ogg",
+};
+
+// Leave room for both base64 layers in the encrypted WebRTC frame.
+const PREVIEW_CHUNK_BYTES = 32 * 1024;
+
+function readWorkspacePreviewChunk(projectRoot, { filePath, offset = 0, revision }) {
+  const { resolved } = resolveWorkspacePath(projectRoot, filePath);
+  if (!PREVIEW_MIME[path.extname(resolved).toLowerCase()]) throw new Error("Unsupported preview format");
+  const fd = fs.openSync(resolved, "r");
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || revision !== previewRevision(stat)) throw new Error("File changed. Reopen it to refresh the preview.");
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > stat.size) throw new Error("Invalid preview offset");
+    const buffer = Buffer.alloc(Math.min(stat.size - offset, PREVIEW_CHUNK_BYTES));
+    const length = fs.readSync(fd, buffer, 0, buffer.length, offset);
+    if (length !== buffer.length) throw new Error("File changed during preview");
+    return { data: buffer.toString("base64"), nextOffset: offset + length };
+  } finally { fs.closeSync(fd); }
+}
+
+function previewRevision(stat) {
+  return [stat.ino, stat.size, stat.mtimeMs].join("-");
+}
+
 const PINNED_DOC_NAMES = [
   "README.md",
   "README.zh-CN.md",
@@ -359,7 +390,7 @@ function collectWorkspaceFiles(root, { maxFiles = 350, maxDepth = 4, query = "" 
         walk(path.join(currentDir, entry.name), depth + 1);
       } else if (entry.isFile()) {
         const ext = path.extname(entry.name).toLowerCase();
-        if (BINARY_EXTENSIONS.has(ext)) continue;
+        if (BINARY_EXTENSIONS.has(ext) && !PREVIEW_MIME[ext]) continue;
         const rel = path.relative(root, path.join(currentDir, entry.name)).split(path.sep).join("/");
         if (needle && !rel.toLowerCase().includes(needle)) continue;
         results.push({
@@ -446,30 +477,36 @@ function loadWorkspaceDocs(projectRoot, options = {}) {
       const { resolved } = resolveWorkspacePath(docRoot, selectedPath);
       if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
         const stat = fs.statSync(resolved);
-        const maxBytes = 256 * 1024;
-        const fd = fs.openSync(resolved, "r");
-        try {
-          const len = Math.min(stat.size, maxBytes);
-          const buf = Buffer.alloc(len);
-          fs.readSync(fd, buf, 0, len, 0);
-          const rawText = redactSecrets(buf.toString("utf8")).replace(/\r\n/g, "\n");
-          const allLines = rawText.split("\n");
-          const startLine = Math.max(1, Number(options.startLine) || 1);
-          const endLine = Math.min(allLines.length, Number(options.endLine) || allLines.length);
-          document = {
-            path: path.relative(docRoot, resolved).split(path.sep).join("/"),
-            absolutePath: resolved,
-            language: inferLanguage(resolved),
-            content: allLines.slice(startLine - 1, endLine).join("\n"),
-            totalLines: allLines.length,
-            startLine,
-            endLine,
-            anchorLine,
-            truncated: stat.size > maxBytes,
-            sizeBytes: stat.size,
-          };
-        } finally {
-          fs.closeSync(fd);
+        const mime = PREVIEW_MIME[path.extname(resolved).toLowerCase()];
+        if (mime) {
+          document = { path: path.relative(docRoot, resolved).split(path.sep).join("/"), absolutePath: resolved,
+            sizeBytes: stat.size, preview: { mime, revision: previewRevision(stat) } };
+        } else {
+          const maxBytes = 256 * 1024;
+          const fd = fs.openSync(resolved, "r");
+          try {
+            const len = Math.min(stat.size, maxBytes);
+            const buf = Buffer.alloc(len);
+            fs.readSync(fd, buf, 0, len, 0);
+            const rawText = redactSecrets(buf.toString("utf8")).replace(/\r\n/g, "\n");
+            const allLines = rawText.split("\n");
+            const startLine = Math.max(1, Number(options.startLine) || 1);
+            const endLine = Math.min(allLines.length, Number(options.endLine) || allLines.length);
+            document = {
+              path: path.relative(docRoot, resolved).split(path.sep).join("/"),
+              absolutePath: resolved,
+              language: inferLanguage(resolved),
+              content: allLines.slice(startLine - 1, endLine).join("\n"),
+              totalLines: allLines.length,
+              startLine,
+              endLine,
+              anchorLine,
+              truncated: stat.size > maxBytes,
+              sizeBytes: stat.size,
+            };
+          } finally {
+            fs.closeSync(fd);
+          }
         }
       } else {
         document = {
@@ -842,6 +879,7 @@ function gitCreatePr(projectRoot, { worktreeRoot = "", title = "", body = "", ba
 module.exports = {
   loadWorkspaceChanges,
   loadWorkspaceDocs,
+  readWorkspacePreviewChunk,
   handleWorkspaceContext,
   buildDecisionTidyPrompt,
   listGitWorktrees,

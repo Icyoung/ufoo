@@ -32,4 +32,38 @@ function replayHistory(events = [], excludeTask = "") {
   return history;
 }
 
-module.exports = { replayHistory, replayTurnMessages };
+function stripProviderSpecificFields(message, { stripResponsesContinuation = false, stripThinkingBlocks = false } = {}) {
+  if (!message || typeof message !== "object") return message;
+  let next = message;
+  if (stripResponsesContinuation && Object.prototype.hasOwnProperty.call(next, "responsesContinuation")) {
+    const { responsesContinuation: _ignored, ...rest } = next;
+    next = rest;
+  }
+  if (stripThinkingBlocks && Array.isArray(next.content)) {
+    const filtered = next.content
+      .filter((block) => block && block.type !== "thinking" && block.type !== "redacted_thinking")
+      .map((block) => {
+        if (block && typeof block === "object" && (block.thoughtSignature || block.signatureModel)) {
+          const { thoughtSignature: _ts, signatureModel: _sm, ...cleanBlock } = block;
+          return cleanBlock;
+        }
+        return block;
+      });
+    next = { ...next, content: filtered };
+  }
+  if (stripThinkingBlocks && Object.prototype.hasOwnProperty.call(next, "reasoning_content")) {
+    const { reasoning_content: _rc, ...rest } = next;
+    next = rest;
+  }
+  return next;
+}
+
+function sanitizeHistoryForTransport(history = [], targetTransport = "") {
+  const normalized = String(targetTransport || "").trim().toLowerCase();
+  const stripResponsesContinuation = normalized !== "openai-responses" && normalized !== "codex-responses";
+  const stripThinkingBlocks = normalized !== "anthropic-messages" && normalized !== "antigravity";
+  if (!stripResponsesContinuation && !stripThinkingBlocks) return history;
+  return history.map((msg) => stripProviderSpecificFields(msg, { stripResponsesContinuation, stripThinkingBlocks }));
+}
+
+module.exports = { replayHistory, replayTurnMessages, sanitizeHistoryForTransport };

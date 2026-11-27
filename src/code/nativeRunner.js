@@ -229,8 +229,17 @@ async function runNativeAgentTask({
   const requestKind = runtimeContext.requestKind || (runtimeContext.taskRunId ? "unknown" : "user");
   const observation = createRuntimeStore({ workspaceRoot, namespace: "ucode", sessionId: nextSessionId, redact: redactSecrets });
   const observationWarnings = [];
+  const EPHEMERAL_OBSERVATION_EVENTS = new Set(["model.phase", "message.delta", "thinking.delta"]);
   const observe = async event => {
     const value = { ...ids, agentId: process.env.UFOO_SUBSCRIBER_ID || "ucode", sessionId: nextSessionId, ...event };
+    if (EPHEMERAL_OBSERVATION_EVENTS.has(value.type)) {
+      if (onRuntimeEvent) {
+        try {
+          await onRuntimeEvent(redactSecrets({ ...value, ephemeral: true, sequence: 0, time: value.time || new Date().toISOString() }));
+        } catch { /* display observers do not own execution */ }
+      }
+      return;
+    }
     let committed = value;
     try {
       const state = observation.append(value);
@@ -326,10 +335,9 @@ async function runNativeAgentTask({
       || process.env.UFOO_UCODE_AUX_MODEL
       || ""
     ).trim();
-    const allowDefaultAux = !process.env.JEST_WORKER_ID
-      || Boolean(effectivePolicy?.enableModelSelector || effectivePolicy?.backgroundEnrich);
+    const optInDefaultAux = Boolean(effectivePolicy?.enableModelSelector || effectivePolicy?.backgroundEnrich);
     const configuredAuxModel = explicitAuxModel
-      || (allowDefaultAux ? String(runtime.auxModel || defaultAuxModelForProvider(runtime.provider) || "").trim() : "");
+      || (optInDefaultAux ? String(runtime.auxModel || defaultAuxModelForProvider(runtime.provider) || "").trim() : "");
     const runAuxModel = typeof effectivePolicy?.runAuxModel === "function"
       ? effectivePolicy.runAuxModel
       : configuredAuxModel

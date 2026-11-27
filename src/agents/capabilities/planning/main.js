@@ -8,7 +8,7 @@ const { getPendingUserInteraction } = require("../../../code/context/userInterac
 function createMainPlanningCapability() {
   const { function: tool } = buildCoreToolSpecs().find((spec) => spec.function.name === "ask_user");
   return { id: "planning", version: "1", requires: { providerFeatures: ["deferred_tools"] }, requestedPermissions: ["interaction.request"],
-    promptSections: ["Decompose complex objectives into independently verifiable tasks. Record explicit objectives and acceptance criteria. Keep dependent tasks queued until their inputs have been verified; use manage_tasks and delegate_task for execution."],
+    promptSections: ["Decompose complex objectives into independently verifiable tasks. Record explicit objectives and acceptance criteria. Keep dependent tasks queued until their inputs have been verified; use delegate_task for parallel or delegated execution."],
     tools: [{ name: tool.name, description: tool.description, inputSchema: tool.parameters,
       permissions: ["interaction.request"], deferable: true,
       handler: (args, context) => runCoreToolAsync({ ...context, tool: tool.name, args }) }],

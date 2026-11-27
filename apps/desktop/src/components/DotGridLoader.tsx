@@ -14,6 +14,7 @@ const DELAYS = ["0ms", "180ms", "540ms", "360ms"] as const;
 export function DotGridLoader({
   size = "sm",
   active = true,
+  queued = false,
   colorClass = "bg-zinc-200",
   inactiveColorClass = "bg-zinc-400/70",
   label = "Loading",
@@ -21,13 +22,14 @@ export function DotGridLoader({
 }: {
   size?: DotGridLoaderSize;
   active?: boolean;
+  queued?: boolean;
   colorClass?: string;
   inactiveColorClass?: string;
   label?: string;
   className?: string;
 }) {
   const cfg = SIZE_CONFIG[size] || SIZE_CONFIG.sm;
-  const dotColor = active ? `${colorClass} agy-plan-dot` : inactiveColorClass;
+  const dotColor = active ? `${colorClass} ${queued ? "agy-queued-dot" : "agy-plan-dot"}` : inactiveColorClass;
 
   return (
     <span
@@ -35,11 +37,11 @@ export function DotGridLoader({
       aria-label={label}
       className={`inline-grid shrink-0 grid-cols-2 ${cfg.box} ${className}`}
     >
-      {DELAYS.map((delay) => (
+      {DELAYS.map((delay, index) => (
         <span
           key={delay}
           className={`rounded-full ${cfg.dot} ${dotColor}`}
-          style={active ? { animationDelay: delay } : undefined}
+          style={active ? { animationDelay: queued ? (index < 2 ? "320ms" : "0ms") : delay } : undefined}
         />
       ))}
     </span>

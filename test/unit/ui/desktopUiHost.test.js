@@ -32,7 +32,7 @@ const {
 const { createDaemonMessageRouter } = require("../../../src/app/chat/daemonMessageRouter");
 const { IPC_RESPONSE_TYPES } = require("../../../src/runtime/contracts/eventContract");
 const { createDesktopArchive } = require("../../../src/ui/desktopArchive");
-const { startDesktopUiHost } = require("../../../src/ui/desktopUiHost");
+const { startDesktopUiHost, readActiveBackgroundTasks } = require("../../../src/ui/desktopUiHost");
 
 function makeTempDir(prefix = "ufd-") {
   const shortBase = process.platform === "darwin" && fs.existsSync("/tmp") ? "/tmp" : os.tmpdir();
@@ -40,6 +40,21 @@ function makeTempDir(prefix = "ufd-") {
 }
 
 describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
+  test("task bubbles show only queued and running work from the current conversation", () => {
+    const root = makeTempDir();
+    try {
+      const dir = path.join(root, ".ufoo/agent/main-control/runtimes/control");
+      fs.mkdirSync(dir, { recursive: true });
+      const job = (taskId, status, parentSessionId = "main") => ({ taskId, status, parentSessionId, title: taskId });
+      fs.writeFileSync(path.join(dir, "snapshot.json"), JSON.stringify({ capabilityState: {
+        "agent-management": { value: { tasks: { a: job("a", "running"), b: job("b", "reported"), c: job("c", "queued", "other") } } },
+        "task-execution": { value: { jobs: { d: job("d", "queued"), e: job("e", "completed") } } },
+      } }));
+      expect(readActiveBackgroundTasks(root, "main").map(task => [task.id, task.status]))
+        .toEqual([["a", "running"], ["d", "queued"]]);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
   test("uiProtocol exposes desktop capabilities, commands, and events", () => {
     expect(RAW_MARKDOWN_CAPABILITY).toBe("markdown-raw-v1");
     expect(DESKTOP_HOST_CAPABILITY).toBe("desktop-host-v1");
@@ -1191,6 +1206,9 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
 
     const fakeDaemon = net.createServer((sock) => {
       daemonSockets.add(sock);
+      sock.on("error", error => {
+        if (!["EPIPE", "ECONNRESET"].includes(error.code)) throw error;
+      });
       sock.on("close", () => daemonSockets.delete(sock));
       let buf = "";
       sock.on("data", (chunk) => {

@@ -29,7 +29,19 @@ describe("modelsCatalog", () => {
     expect(resolveCodexUserAgent({ env: { UFOO_CODEX_USER_AGENT: "explicit-client/1.0" }, codexHome })).toBe("explicit-client/1.0");
     expect(resolveCodexClientVersion({ env: { UFOO_CODEX_CLIENT_VERSION: "0.159.2" }, codexHome })).toBe("0.159.2");
     fs.writeFileSync(cacheFile, "invalid cache");
-    expect(resolveCodexClientVersion({ env: {}, codexHome })).toBe(require("../../../node_modules/@openai/codex-sdk/package.json").version);
+    const sdkVersion = require("../../../node_modules/@openai/codex-sdk/package.json").version;
+    // Isolate package discovery from global CLI and SDK installations.
+    const readFile = fs.readFileSync;
+    const read = jest.spyOn(fs, "readFileSync").mockImplementation((file, ...options) => {
+      if (String(file).endsWith(path.join("@openai", "codex", "package.json"))) throw new Error("CLI not installed");
+      if (String(file).endsWith(path.join("@openai", "codex-sdk", "package.json"))) return JSON.stringify({ name: "@openai/codex-sdk", version: sdkVersion });
+      return readFile(file, ...options);
+    });
+    try {
+      expect(resolveCodexClientVersion({ env: {}, codexHome })).toBe(sdkVersion);
+    } finally {
+      read.mockRestore();
+    }
   });
 
   test("a newer Codex client version bypasses the older cached server catalog", async () => {

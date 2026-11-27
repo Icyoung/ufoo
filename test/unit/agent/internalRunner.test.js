@@ -130,6 +130,40 @@ describe("agent internalRunner stream forwarding", () => {
     } finally { log.mockRestore(); fs.rmSync(projectRoot, { recursive: true, force: true }); }
   });
 
+  test("successful delegated turn auto-reports done and tags bus reply with task_id and parent_session_id", async () => {
+    const projectRoot = makeProjectWithAgent("codex:worker");
+    const report = jest.fn(async () => {});
+    const sender = { report, surface: jest.fn(), enqueue: jest.fn(), flush: async () => {} };
+    const runtime = {
+      enabled: true,
+      thread: {
+        runStreamed: jest.fn(async function* () {
+          yield { type: "turn_completed", finalText: "Parser fixed and tests pass." };
+        }),
+      },
+    };
+    try {
+      const result = await handleEvent(projectRoot, "codex", "codex-cli", "test", "codex:worker", "worker",
+        { seq: 55, publisher: "ufoo-agent", data: { message: "Fix parser", source: "ufoo-agent", dispatch_id: "tool-abc", task_id: "delegated-auto", runtime_context: { traceId: "root", parentTaskRunId: "parent", parentSessionId: "tab-alpha" } } },
+        sender, [], runtime, "", null, null);
+      expect(result.ok).toBe(true);
+      expect(report.mock.calls.map(([entry]) => entry.phase)).toEqual(["start", "done"]);
+      expect(report.mock.calls[1][0]).toMatchObject({
+        task_id: "delegated-auto",
+        phase: "done",
+        summary: "Parser fixed and tests pass.",
+        meta: expect.objectContaining({ auto: true, parentSessionId: "tab-alpha" }),
+      });
+      expect(sender.enqueue).toHaveBeenCalledWith(
+        "ufoo-agent",
+        "Parser fixed and tests pass.",
+        expect.objectContaining({ data: expect.objectContaining({ reply_to_dispatch: "tool-abc", task_id: "delegated-auto", parent_session_id: "tab-alpha" }) })
+      );
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
   test("skips event with no data or message", async () => {
     const busSender = { enqueue: jest.fn(), flush: jest.fn(async () => {}) };
 

@@ -18,6 +18,7 @@ import {
 import { useWorkspace } from "../store/workspaceStore";
 import { ufooBridge } from "../bridge/ufooClient";
 import type { DiffViewMode, DocFileItem, RightInspectorTab } from "../types";
+import { WorkspaceFilePreview } from "./WorkspaceFilePreview";
 import { MarkdownBlock } from "./MarkdownBlock";
 import { RightSidebarIcon } from "./WindowChromeIcons";
 
@@ -961,7 +962,7 @@ function DocsPane() {
               {pinnedFiles.length > 0 && (
                 <div>
                   <div className="px-3 pb-1 text-[10.5px] font-medium text-zinc-500">
-                    Key Docs
+                    Key Files
                   </div>
                   {pinnedFiles.map((f) => {
                     const { name, dir } = splitFilePath(f.path);
@@ -1049,6 +1050,9 @@ function DocsPane() {
           <div className="m-3 rounded-lg border border-rose-500/25 bg-rose-500/10 p-3 text-[12px] text-rose-300">
             {doc.error}
           </div>
+        ) : doc.preview && doc.absolutePath ? (
+          <WorkspaceFilePreview key={doc.absolutePath + doc.preview.revision} filePath={doc.absolutePath}
+            mime={doc.preview.mime} revision={doc.preview.revision} size={doc.sizeBytes || 0} />
         ) : isMarkdown ? (
           <div className="min-w-0 px-5 py-4">
             <MarkdownBlock text={doc.content || ""} onOpenFile={(p) => handleOpenFile(p)} />
@@ -1787,7 +1791,7 @@ export function RightInspector({ mobileFullWidth = false }: { mobileFullWidth?: 
     badge?: number;
   }> = [
     { id: "changes", label: "Changes", badge: changedCount },
-    { id: "docs", label: "Docs" },
+    { id: "docs", label: "Files" },
     { id: "context", label: "Context", badge: openDecisionCount },
   ];
 

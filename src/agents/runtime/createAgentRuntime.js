@@ -9,6 +9,7 @@ const { stableStringify } = require("./core/stableJson");
 const { createRuntimeHooks, formatWakeEvent } = require("./tasks/hooks");
 
 const terminal = new Set(["completed", "failed", "cancelled", "interrupted", "waiting_user"]);
+const EPHEMERAL_EVENTS = new Set(["model.phase", "message.delta", "thinking.delta"]);
 const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch (error) { return error.code !== "ESRCH"; } };
 
 function terminalResult(result) {
@@ -27,6 +28,7 @@ function createAgentRuntime({ profile, transport, capabilities, host = {}, defau
   let pumpPromise = null;
   let controller = null;
   let activeTask = "";
+  let activeTaskMeta = null;
   let activeRun = null;
   let runController = null;
   let closePromise = null;
@@ -67,10 +69,6 @@ function createAgentRuntime({ profile, transport, capabilities, host = {}, defau
     if (state.profile && state.profile !== (profile && profile.id || "custom")) throw new Error("session profile is pinned; use a new session or explicit checkpoint migration");
     if (state.owner && pidAlive(state.owner.pid)) throw Object.assign(new Error("runtime session already owned"), { code: "runtime_busy" });
     const selectedCapabilities = composition.capabilities.map((capability) => capability.id);
-    const matchesAdditively = Array.isArray(state.capabilities)
-      && stableStringify(state.capabilities) === stableStringify(selectedCapabilities.filter((id) => !["turn-recall", "browser", "mac-app"].includes(id) || state.capabilities.includes(id)));
-    if (state.capabilities && stableStringify(state.capabilities) !== stableStringify(selectedCapabilities) && !matchesAdditively
-      && Object.values(state.tasks).some((task) => ["queued", "running", "waiting_user"].includes(task.status))) throw new Error("cannot change capabilities with unfinished state; use a new session or explicit migration");
     interruptedTasks = Object.values(state.tasks).filter((task) => task.status === "running");
     return [...interruptedTasks.map((task) => ({
       type: "task.interrupted", taskRunId: task.taskRunId, error: "owner stopped; inspect effects before resubmitting",
@@ -80,6 +78,38 @@ function createAgentRuntime({ profile, transport, capabilities, host = {}, defau
     try { host.onTasksInterrupted(interruptedTasks); } catch {}
   }
   const record = async (event) => {
+    if (EPHEMERAL_EVENTS.has(event.type)) {
+      const meta = activeTaskMeta && (!event.taskRunId || activeTaskMeta.taskRunId === event.taskRunId)
+        ? activeTaskMeta
+        : (() => {
+          const before = store.read();
+          const task = before.tasks[event.taskRunId];
+          return {
+            sessionId: before.sessionId,
+            requestId: task?.request.requestId || "",
+            taskId: task?.request.taskId || event.taskRunId || "",
+            attemptId: task?.attemptId || "",
+            traceId: task?.request.traceId || task?.request.taskId || event.taskRunId || "",
+            parentTaskRunId: task?.request.parentTaskRunId || "",
+            parentSessionId: task?.request.parentSessionId || "",
+          };
+        })();
+      const transient = {
+        version: 1,
+        ephemeral: true,
+        sequence: 0,
+        time: new Date().toISOString(),
+        projectId: host.projectId || "",
+        agentId: host.agentId || "",
+        ...meta,
+        ...event,
+      };
+      if (host.eventSink) {
+        try { await host.eventSink(transient); }
+        catch (error) { if (host.onObserverError) host.onObserverError(error); }
+      }
+      return null;
+    }
     const before = store.read();
     const task = before.tasks[event.taskRunId];
     event = { version: 1, projectId: host.projectId || "", agentId: host.agentId || "", sessionId: before.sessionId,
@@ -114,6 +144,16 @@ function createAgentRuntime({ profile, transport, capabilities, host = {}, defau
       activeTask = task.taskRunId;
       controller = new AbortController();
       const attemptId = `attempt_${randomUUID()}`;
+      activeTaskMeta = {
+        sessionId: snapshot.sessionId,
+        taskRunId: task.taskRunId,
+        requestId: task.request.requestId || "",
+        taskId: task.request.taskId || task.taskRunId,
+        attemptId,
+        traceId: task.request.traceId || task.request.taskId || task.taskRunId,
+        parentTaskRunId: task.request.parentTaskRunId || "",
+        parentSessionId: task.request.parentSessionId || "",
+      };
       try {
         const execute = async (signal) => {
           await record({ type: "task.started", taskRunId: activeTask, attemptId });
@@ -173,7 +213,7 @@ function createAgentRuntime({ profile, transport, capabilities, host = {}, defau
         }
         await record({ type: cancelled ? "task.cancelled" : "task.failed",
           taskRunId: activeTask, error: error.message, code: error.code || "runtime_error", ...(error.result ? { result: errTerminal } : {}) });
-      } finally { activeTask = ""; controller = null; }
+      } finally { activeTask = ""; activeTaskMeta = null; controller = null; }
     }
   }
   function startPump() {
@@ -205,8 +245,10 @@ function createAgentRuntime({ profile, transport, capabilities, host = {}, defau
         else externalSignal.addEventListener("abort", forwardAbort, { once: true });
       }
       try {
+        const activeTransport = input.transport || transport;
+        assertTransport(activeTransport);
         activeRun = runAgentLoop({
-          ...defaults, ...input, transport,
+          ...defaults, ...input, transport: activeTransport,
           runtimeHooks: hooks,
           tools: composition.tools, policies: composition.policies,
           signal: runController.signal,
@@ -241,7 +283,10 @@ function createAgentRuntime({ profile, transport, capabilities, host = {}, defau
         }
         if (Object.values(current.tasks).filter((task) => task.status === "queued").length >= (host.maxQueuedTasks || 128)) throw Object.assign(new Error("runtime queue is full"), { code: "queue_full" });
         id = `task_${randomUUID()}`;
-        return [{ type: "request.accepted", taskRunId: id, request: { ...request, fingerprint } }];
+        const parent = request.runtimeEvent && current.tasks[request.parentTaskRunId]?.request;
+        const description = request.taskTitle || parent?.taskTitle || parent?.text || request.title || request.text;
+        const taskTitle = description.trim().split(/[。！？\n]/u)[0].slice(0, 72);
+        return [{ type: "request.accepted", taskRunId: id, request: { ...request, taskTitle, fingerprint } }];
       });
       startPump();
       return { accepted: true, requestId: request.requestId, taskRunId: id, status: state.tasks[id].status, sequence: state.sequence };

@@ -83,12 +83,15 @@ function recallHandler(ctx = {}, args = {}) {
     return { ok: true, count: 1, entries, dynamic_memory_tokens: estimateTokens(JSON.stringify(entries)) };
   }
   const tags = normalizeTags(args.tags);
+  const query = String(args.query || "").trim();
   const limit = Number.isFinite(Number(args.limit)) && Number(args.limit) > 0
     ? Math.floor(Number(args.limit))
     : 10;
-  let entries = manager.list({ limit, includeArchived: args.include_archived === true });
+  let entries = query
+    ? manager.search(query, { limit: tags.length ? Math.max(limit * 3, 30) : limit, includeArchived: args.include_archived === true })
+    : manager.list({ limit, includeArchived: args.include_archived === true });
   if (tags.length) {
-    entries = entries.filter((entry) => tags.every((tag) => entry.tags.includes(String(tag).toLowerCase())));
+    entries = entries.filter((entry) => tags.every((tag) => entry.tags.includes(String(tag).toLowerCase()))).slice(0, limit);
   }
   return { ok: true, count: entries.length, entries, dynamic_memory_tokens: estimateTokens(JSON.stringify(entries)) };
 }

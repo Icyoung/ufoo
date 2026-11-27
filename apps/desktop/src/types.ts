@@ -436,6 +436,8 @@ export interface WorkspaceDocsSnapshot {
   document: {
     path: string;
     absolutePath?: string;
+    preview?: { mime: string; revision: string };
+    sizeBytes?: number;
     language?: string;
     content?: string;
     totalLines?: number;
@@ -507,6 +509,14 @@ export interface QueuedMessageItem {
 export interface QueuedMessageBucket {
   items: QueuedMessageItem[];
   paused: boolean;
+}
+
+export interface BackgroundTask {
+  id: string;
+  title: string;
+  progress?: { kind: "text"; text: string } | { kind: "tool"; title: string; status: "running" | "done" | "failed"; text: string };
+  detail: string;
+  status: "queued" | "running";
 }
 
 export interface QueuedMessagesSnapshot {

@@ -69,7 +69,7 @@ function createAgentManagementService({ store, launch, dispatch, wake = async ()
       update((state) => {
         const existing = state.tasks[taskId];
         if (existing && existing.fingerprint !== fingerprint) throw Object.assign(new Error("delegation command conflicts"), { code: "command_conflict" });
-        if (!existing) state.tasks[taskId] = { taskId, fingerprint, objective: args.objective,
+        if (!existing) state.tasks[taskId] = { taskId, fingerprint, title: String(args.title || "").trim() || String(args.objective).trim().split(/[。！？\n]/u)[0].slice(0, 48), objective: args.objective,
           commandIds: [`${commandId}:launch`, `${commandId}:dispatch`],
           acceptanceCriteria: args.acceptance_criteria || [], parentTaskRunId: context.taskRunId || "",
           parentSessionId: context.sessionId || "", traceId: context.traceId || context.taskId || context.taskRunId || taskId,
@@ -88,12 +88,12 @@ function createAgentManagementService({ store, launch, dispatch, wake = async ()
         update((state) => { state.tasks[taskId].workerId = workerId; });
         task = read().tasks[taskId];
       }
-      const message = [args.objective, `Task ID: ${taskId}`, "Controller: ufoo-agent. Report start/progress/done/error with this exact task ID and private scope.",
+      const message = [...(task.title ? [`Task · ${task.title}`] : []), args.objective, `Task ID: ${taskId}`, "Controller: ufoo-agent. Report start/progress/done/error with this exact task ID and private scope.",
         "Use ufoo report --task <id> --scope private --controller ufoo-agent, or MCP report_agent_status with task_id, scope=private, controller_id=ufoo-agent.",
         REPORTING_GUIDANCE,
         `Acceptance criteria: ${JSON.stringify(task.acceptanceCriteria)}`].join("\n\n");
       const receipt = await commands.execute({ commandId: `${commandId}:dispatch`, kind: "dispatch_message", args: { target: task.workerId, message } },
-        () => dispatch({ target: task.workerId, message, taskId, runtimeContext: { traceId: task.traceId,
+        () => dispatch({ target: task.workerId, message, taskId, runtimeContext: { traceId: task.traceId, taskTitle: task.title,
           taskId, parentTaskRunId: task.parentTaskRunId, parentSessionId: task.parentSessionId, parentRequestId: task.parentRequestId } }));
       if (!receipt || receipt.ok === false) return failed(taskId, "dispatch", receipt);
       update((state) => { const entry = state.tasks[taskId]; if (entry.status === "planning") entry.status = "queued"; entry.queuedAt = new Date().toISOString(); entry.dispatchReceipt = receipt; });
@@ -109,7 +109,16 @@ function createAgentManagementService({ store, launch, dispatch, wake = async ()
         const current = state.tasks[entry.task_id];
         current.reportIds.push(reportId);
         if (["accepted", "rejected"].includes(current.status)) return;
-        if (current.report && ["done", "error"].includes(current.report.phase) && ["start", "progress"].includes(entry.phase)) return;
+        const alreadyTerminal = current.report && ["done", "error"].includes(current.report.phase);
+        if (alreadyTerminal && ["start", "progress"].includes(entry.phase)) return;
+        const isAutoReport = Boolean(entry.auto || entry.meta?.auto);
+        if (current.status === "reported" && alreadyTerminal) {
+          if (isAutoReport) return;
+          if (current.report.phase === entry.phase) {
+            if (current.report.auto || current.report.meta?.auto) current.report = entry;
+            return;
+          }
+        }
         current.report = entry;
         current.updatedAt = entry.ts || new Date().toISOString();
         current.status = ["done", "error"].includes(entry.phase) ? "reported" : "running";
@@ -122,15 +131,26 @@ function createAgentManagementService({ store, launch, dispatch, wake = async ()
       if (!["accepted", "rejected"].includes(outcome)) return reject("invalid_arguments", "accept_task requires accepted or rejected outcome");
       const existing = read().tasks[taskId];
       if (!existing || existing.status !== "reported") return reject("invalid_task_state", "task has no unreviewed terminal report");
-      if (outcome === "accepted" && (!String(reason || "").trim() || !evidence.length || existing.report.phase !== "done")) return reject("acceptance_required", "acceptance requires a completed worker report, reason, and validation evidence");
-      if (outcome === "accepted" && (!validateEvidence || validateEvidence(evidence, existing, context) !== true)) return reject("invalid_evidence", "host did not verify the acceptance evidence");
+      const normalizedEvidence = Array.isArray(evidence)
+        ? evidence.map((item) => String(item || "").trim()).filter(Boolean)
+        : [];
+      if (outcome === "accepted" && (!String(reason || "").trim() || existing.report?.phase !== "done")) {
+        return reject("acceptance_required", "acceptance requires a completed worker report and a clear reason");
+      }
+      if (outcome === "accepted" && normalizedEvidence.length > 0 && (!validateEvidence || validateEvidence(normalizedEvidence, existing, context) !== true)) {
+        return reject("invalid_evidence", "host did not verify the acceptance evidence");
+      }
       update((state) => {
         const task = state.tasks[taskId];
         if (!task || task.status !== "reported") throw new Error("task has no unreviewed terminal report");
-        if (outcome === "accepted" && (!String(reason || "").trim() || !evidence.length || task.report.phase !== "done")) throw new Error("acceptance requires a completed worker report, reason, and validation evidence");
-        if (outcome === "accepted" && (!validateEvidence || validateEvidence(evidence, task, context) !== true)) throw new Error("host did not verify the acceptance evidence");
+        if (outcome === "accepted" && (!String(reason || "").trim() || task.report?.phase !== "done")) {
+          throw new Error("acceptance requires a completed worker report and a clear reason");
+        }
+        if (outcome === "accepted" && normalizedEvidence.length > 0 && (!validateEvidence || validateEvidence(normalizedEvidence, task, context) !== true)) {
+          throw new Error("host did not verify the acceptance evidence");
+        }
         task.status = outcome;
-        task.acceptance = { outcome, reason, evidence, time: new Date().toISOString() };
+        task.acceptance = { outcome, reason, evidence: normalizedEvidence, time: new Date().toISOString() };
       });
       return { ok: true, task: read().tasks[taskId] };
     },

@@ -66,17 +66,20 @@ function createEditBudgetNotice({ budgetMs, deadlineAt }) {
   };
 }
 
-function createCodingCapability({ workspaceAccess = null, editBudget = null } = {}) {
+function createCodingCapability({ editBudget = null } = {}) {
   const editBudgetNotice = editBudget && createEditBudgetNotice(editBudget);
   return {
     id: "coding", version: "1.0",
     requires: { providerFeatures: ["tool_calls", "vision"] },
     tools: buildCoreToolSpecs().filter((spec) => CODING_TOOLS.has(spec.function.name)).map((spec) => {
       const tool = toolFromSpec(spec, editBudgetNotice);
-      return workspaceAccess ? { ...tool, async handler(args, context) {
-        const result = await workspaceAccess.run({ ...context, tool: tool.name, args }, () => tool.handler(args, context));
-        return { ...result, toolCallId: context.toolCallId };
-      } } : tool;
+      return {
+        ...tool,
+        async handler(args, context) {
+          const result = await tool.handler(args, context);
+          return result && typeof result === "object" ? { ...result, toolCallId: context.toolCallId } : result;
+        },
+      };
     }),
   };
 }

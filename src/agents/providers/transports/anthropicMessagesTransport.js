@@ -1,5 +1,6 @@
 "use strict";
 
+const { toBlockMessages } = require("./toolHistory");
 const { assertTransport } = require("./transportContract");
 const {
   extractVisionPayload,
@@ -35,7 +36,7 @@ function createAnthropicMessagesTransport(deps = {}) {
         content: Array.isArray(userContent) && userContent.length > 0 ? userContent : String(prompt || ""),
       });
     },
-    runTurn,
+    runTurn(options) { return runTurn({ ...options, messages: toBlockMessages(options.messages) }); },
     getToolCalls(turnResult) {
       return Array.isArray(turnResult.toolCalls) ? turnResult.toolCalls : [];
     },

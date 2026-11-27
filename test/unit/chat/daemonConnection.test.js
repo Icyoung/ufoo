@@ -232,6 +232,29 @@ describe("chat daemonConnection", () => {
     expect(handleMessage).toHaveBeenCalledWith({ type: "status", data: {} });
     connection.markExit(); connection.close();
   });
+  test.each([false, true])("preserves the last live delta before completion (journal overlap %s)", async (overlap) => {
+    const first = new FakeClient();
+    const second = new FakeClient();
+    const { connection, connectClient, handleMessage } = createHarness();
+    connectClient.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+    await connection.connect();
+    const base = { projectRoot: "/project/a", sessionId: "main", taskRunId: "task" };
+    const emit = (client, msg) => client.emit("data", JSON.stringify(msg) + "\n");
+    const started = { ...base, type: "task.started", sequence: 4 };
+    const completed = { ...base, type: "task.completed", sequence: 5 };
+    emit(first, { type: "runtime_event", data: started });
+    first.emit("close");
+    await flushPromises();
+    const replay = second.writes.map(JSON.parse).find(req => req.operation === "events");
+    emit(second, { type: "runtime_event", data: { ...base, type: "message.delta", sequence: 0, ephemeral: true, text: "done" } });
+    emit(second, { type: "runtime_event", data: completed });
+    emit(second, { type: "runtime_result", request_id: replay.request_id,
+      data: { events: overlap ? [completed] : [], next_sequence: overlap ? 5 : 4, has_more: false } });
+    expect(handleMessage.mock.calls.filter(([msg]) => msg.type === "runtime_event").map(([msg]) => msg.data.type))
+      .toEqual(["task.started", "message.delta", "task.completed"]);
+    connection.markExit();
+    connection.close();
+  });
   test("a new client replays active child tasks discovered in status", async () => {
     const client = new FakeClient();
     const { connection, connectClient, handleMessage } = createHarness();

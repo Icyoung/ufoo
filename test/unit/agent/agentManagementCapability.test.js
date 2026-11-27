@@ -67,7 +67,7 @@ describe("agent management and report capabilities", () => {
     expect(launch).toHaveBeenCalledTimes(1);
     expect(dispatch).toHaveBeenCalledTimes(1);
   });
-  test("only mapped terminal reports wake the parent and require evidence before acceptance", async () => {
+  test("only mapped terminal reports wake the parent; acceptance validates supplied evidence and allows reason-only acceptance for completed reports", async () => {
     const wake = jest.fn().mockResolvedValue({ accepted: true });
     const manager = service({ wake, validateEvidence: (evidence) => evidence.includes("test-call-1") });
     const delegated = await manager.delegate(args, { taskRunId: "parent-task", sessionId: "main-session" });
@@ -80,9 +80,35 @@ describe("agent management and report capabilities", () => {
     expect(wake).toHaveBeenCalledTimes(1);
     expect(wake.mock.calls[0][0]).toMatchObject({ parentTaskRunId: "parent-task", taskId: report.task_id });
     expect(manager.snapshot().tasks[report.task_id].status).toBe("reported");
-    expect(manager.accept({ task_id: report.task_id, outcome: "accepted", reason: "looks good" })).toMatchObject({ ok: false, code: "acceptance_required" });
+    expect(manager.accept({ task_id: report.task_id, outcome: "accepted", reason: "   " })).toMatchObject({ ok: false, code: "acceptance_required" });
     expect(manager.accept({ task_id: report.task_id, outcome: "accepted", reason: "validated", evidence: ["fabricated"] })).toMatchObject({ ok: false, code: "invalid_evidence" });
     expect(manager.accept({ task_id: report.task_id, outcome: "accepted", reason: "validated parser behavior", evidence: ["test-call-1"] }).task.status).toBe("accepted");
+
+    const research = await manager.delegate({ ...args, command_id: "delegate-research", objective: "summarize architecture" }, { taskRunId: "parent-task", sessionId: "main-session" });
+    await manager.report({ entry_id: "done-research", task_id: research.task.taskId, agent_id: "codex:worker", phase: "done", summary: "architecture summarized" });
+    expect(manager.accept({ task_id: research.task.taskId, outcome: "accepted", reason: "report directly answers the question" }).task.status).toBe("accepted");
+
+    const errored = await manager.delegate({ ...args, command_id: "delegate-error", objective: "broken step" }, { taskRunId: "parent-task", sessionId: "main-session" });
+    await manager.report({ entry_id: "err-1", task_id: errored.task.taskId, agent_id: "codex:worker", phase: "error", error: "build failed" });
+    expect(manager.accept({ task_id: errored.task.taskId, outcome: "accepted", reason: "cannot accept error" })).toMatchObject({ ok: false, code: "acceptance_required" });
+    expect(manager.accept({ task_id: errored.task.taskId, outcome: "rejected", reason: "worker reported error" }).task.status).toBe("rejected");
+
+    const explicitThenAuto = await manager.delegate({ ...args, command_id: "delegate-dedupe", objective: "avoid double wake" }, { taskRunId: "parent-task", sessionId: "main-session" });
+    const wakesBefore = wake.mock.calls.length;
+    await manager.report({ entry_id: "explicit-done", task_id: explicitThenAuto.task.taskId, agent_id: "codex:worker", phase: "done", summary: "explicit summary" });
+    await manager.report({ entry_id: "auto-done", task_id: explicitThenAuto.task.taskId, agent_id: "codex:worker", phase: "done", summary: "auto summary", meta: { auto: true } });
+    expect(wake.mock.calls.length).toBe(wakesBefore + 1);
+    expect(manager.snapshot().tasks[explicitThenAuto.task.taskId].report.summary).toBe("explicit summary");
+  });
+  test("an explicit done replaces an earlier automatic summary with one parent wake", async () => {
+    const wake = jest.fn().mockResolvedValue({ accepted: true });
+    const manager = service({ wake });
+    const { task } = await manager.delegate(args);
+    const report = { task_id: task.taskId, agent_id: task.workerId, phase: "done" };
+    await manager.report({ ...report, entry_id: "automatic", summary: "Done", meta: { auto: true } });
+    await manager.report({ ...report, entry_id: "explicit", summary: "Validated parser fixtures" });
+    expect(manager.snapshot().tasks[task.taskId].report.entry_id).toBe("explicit");
+    expect(wake).toHaveBeenCalledTimes(1);
   });
   test("durably retries a report wake after the host was unavailable using the same request ID", async () => {
     const wake = jest.fn().mockRejectedValueOnce(new Error("host restarting")).mockResolvedValue({ accepted: true });

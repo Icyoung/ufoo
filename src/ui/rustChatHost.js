@@ -236,7 +236,7 @@ async function runChatRust(projectRoot, options = {}) {
     if (!applied.ok) return applied;
     Object.assign(settings, loadConfig(activeProjectRoot));
     publish("settings.snapshot", applied.settings);
-    if (applied.providerChanged) appendLocal("system", `Provider: ${applied.settings.agent_provider} · new conversation`);
+    if (applied.providerChanged) appendLocal("system", `Provider: ${applied.settings.agent_provider}`);
     if (patch.agent_model != null || patch.agentModel != null) appendLocal("system", `Model: ${applied.settings.agent_model}`);
     if (patch.agent_thinking != null || patch.agentThinking != null) appendLocal("system", `Thinking: ${applied.settings.agent_thinking}`);
     const restart = applied.providerChanged || patch.agent_base_url != null || patch.agent_api_key != null

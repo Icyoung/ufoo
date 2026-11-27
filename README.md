@@ -29,7 +29,7 @@ ufoo gives every coding agent in your repositories a shared control plane, memor
 - **Shared Workspace & Model-Managed Git Worktrees**: Agents and groups share the live project repository directly without forced framework worktree isolation or agent-to-worktree binding. Models decide on demand whether to create git worktrees and can freely read/edit across all linked worktrees of the same repository.
 - **Automatic Group Round Rollup & `read_agent_history`**: When all members of a group finish a round and queues drain, the daemon automatically aggregates every member's final-turn output and wakes `ufoo` to summarize the round; `ufoo` can also query `read_agent_history` anytime across active or archived project agents.
 - **Unified Rust TUI Dashboard (`ufoo` & `ucode`)**: Fast terminal control plane (`main`, `side`, and `multi` split layouts) sharing the exact same `ufoo-ui/1` protocol and persistent background daemon (with optional macOS `launchd` supervision via `ufoo daemon service install`).
-- **Native Agent Runtime & Context Engine V2**: KV-cache-stable sliding turn window, automatic `<turn_context>` topic indexing, `recall_turn` off-window transcript search, structured `plan_graph` / Plan Mode, crash-safe journals, workspace write leases, and token-free background command auto-wake.
+- **Native Agent Runtime & Context Engine V2**: KV-cache-stable sliding turn window, automatic `<turn_context>` topic indexing, `recall_turn` off-window transcript search, structured `plan_graph` / Plan Mode, crash-safe journals, shared-repository editing, and token-free background command auto-wake.
 - **Everyday Chrome (`browser`) & macOS Desktop Automation (`mac_app`)**: Operate your signed-in Chrome via per-tab `BrowserBroker` ownership (`ufoo Browser` MV3 extension) and native macOS apps via `AXUIElement` snapshots, 1:1 logical-point screenshots, and an independent **Agent Mouse** with instant human takeover.
 - **Groups, Shared Memory & Observability**: 7 built-in multi-agent workflow templates, architectural decisions (`/ctx decisions`), durable shared memory (`ufoo memory`), evidence-gated task acceptance, and zero-model `ufoo trace` / `ufoo metrics`.
 
@@ -186,7 +186,7 @@ Cycle three workspace views (`main → side → multi`):
 /status                         Project, daemon, and active agent summary
 /launch <agent> [nickname]      Spawn an embedded SDK or ACP worker (codex, claude, agy, ucode, acp:<id>)
 /resume                         Resume saved internal workers or whole groups (group:<id>)
-/task list | inspect | cancel   Manage independent background coding tasks
+/task list | inspect | cancel   List or inspect tasks, or cancel a session run
 /answer <interaction-id> <text> Reply to a paused ask_user interaction
 /session show | new             Inspect or start a fresh main conversation
 /settings                       Configure provider, custom gateway, model, and thinking effort
@@ -202,7 +202,7 @@ Cycle three workspace views (`main → side → multi`):
 
 ## Native Agent Runtime & `ucode`
 
-`ufoo`'s project main agent, writable child tasks (`manage_tasks`), and `ucode` share a layered, capability-composed runtime (`src/agents/runtime/`).
+`ufoo`'s project main agent and `ucode` share a layered, capability-composed runtime (`src/agents/runtime/`).
 
 ### Context Engine V2 & `recall_turn`
 
@@ -211,11 +211,11 @@ Cycle three workspace views (`main → side → multi`):
 - **Optional Background Aux Enrichment**: When `agentAuxModel` or `ucodeAuxModel` is configured, an asynchronous Phase B enricher refines turn summaries and Tier 2 topic selection off the critical path (zero extra model calls when unconfigured).
 - **Deterministic Overflow Eviction & `recall_turn`**: Tight context budgets trigger a deterministic Level 1–3 eviction ladder instead of blocking LLM compaction calls, while `recall_turn` searches off-window turns or paginates full raw transcripts on demand.
 
-### Plan Mode, Execution Budgets & Workspace Leases
+### Plan Mode, Execution Budgets & Shared Editing
 
 - **Plan Mode & `plan_graph`**: Enable with `/plan on` (or automatically via `plan_graph create`). Blocks direct mutating calls while permitting inspection tools and advancing structured `plan_graph` nodes. Leave with `/plan off`.
 - **Execution & Loop Guards**: Model turns and tool calls are unbounded by default within a 12-hour task deadline (configurable via `ucode --max-tool-calls <N|none>`, `UFOO_UCODE_MAX_TOOL_CALLS`, `UFOO_UCODE_MAX_TOOL_ERRORS`, and `UFOO_UCODE_TASK_TIMEOUT_MS`). Consecutive tool failures warn at 3 and stop at 5 (or 12 of the last 20); repeated identical tool batches halt runaway loops.
-- **Crash Safety & Directory Leases**: Completed turns commit atomically before the next model request. Concurrent managed writers coordinate via directory leases, while isolated `git worktree` checkouts execute in parallel.
+- **Crash Safety & Shared-Repo Collaboration**: Completed turns commit atomically before the next model request. Multiple agents share the repository directly without whole-repo write locks, relying on coordinator task partitioning to avoid overlapping file edits (and optional `git worktree` checkouts when isolation is desired).
 
 ### Token-Free Background Command Auto-Wake
 
@@ -250,7 +250,7 @@ ufoo skills install ufoo-bus-poll --target /path/to/skills
 
 ## Browser & macOS Desktop Automation
 
-Available out of the box in the `ufoo` main agent, writable native child tasks, and `ucode`. Multimodal screenshots attach automatically as provider vision blocks and retire cleanly after viewing.
+Available out of the box in the `ufoo` main agent and `ucode`. Multimodal screenshots attach automatically as provider vision blocks and retire cleanly after viewing.
 
 ### 1. Everyday Chrome (`browser` / `ufoo browser`)
 

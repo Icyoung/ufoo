@@ -182,6 +182,14 @@ function summarizeAgentPerformance(events, tasks = [], queues = [], options = {}
     }
     if (type === "message.delta" && event.textCharacters > 0) { run.firstText ??= timestamp; run.streamedCharacters += event.textCharacters; }
     if (type === "thinking.delta" && event.textCharacters > 0) run.firstThinking ??= timestamp;
+    if (type === "model.completed") {
+      const firstTextTs = time(event.firstTextAt);
+      if (firstTextTs !== null) run.firstText ??= firstTextTs;
+      const firstThinkingTs = time(event.firstThinkingAt);
+      if (firstThinkingTs !== null) run.firstThinking ??= firstThinkingTs;
+      const streamedChars = number(event.streamedCharacters);
+      if (streamedChars !== null && streamedChars > 0) run.streamedCharacters += streamedChars;
+    }
     const modelLifecycle = ["model.started", "model.completed", "model.failed"].includes(type);
     const auxiliary = event.purpose && event.purpose !== "foreground";
     if (modelLifecycle && event.modelRequestId) {

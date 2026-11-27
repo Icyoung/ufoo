@@ -8,7 +8,7 @@ const TOOL_PERMISSIONS = Object.freeze({
   launch_agent: "agents.manage", rename_agent: "agents.manage", close_agent: "agents.manage",
   manage_cron: "schedules.manage", dispatch_message: "coordination.write", ack_bus: "coordination.write",
   delegate_task: "agents.manage", resume_agents: "agents.manage", accept_task: "tasks.accept",
-  manage_tasks: "tasks.execute", manage_group: "groups.manage",
+  manage_group: "groups.manage",
   remember: "memory.write", edit_memory: "memory.write", forget: "memory.write",
   update_decision: "coordination.write",
 });

@@ -8,7 +8,6 @@ const { createAgentRoutingCapability } = require("./agentRouting");
 const { createProjectDiscoveryCapability } = require("./projectDiscovery");
 const { createSharedMemoryCapability } = require("./sharedMemory");
 const { createTaskReportsCapability } = require("./taskReports");
-const { createTaskExecutionCapability } = require("./taskExecution");
 const { createGroupsCapability } = require("./groups");
 const { createSchedulingCapability } = require("./scheduling");
 const { createGlobalRoutingCapability } = require("./globalRouting");
@@ -18,9 +17,9 @@ const { createBrowserCapability } = require("./browser");
 const { createMacCapability } = require("./mac");
 
 function createMainCapabilities(host) {
-  return [createCodingCapability({ workspaceAccess: host.workspaceAccess }), createMainPlanningCapability(), createSkillsCapability(), createTurnRecallCapability(host, { defaultNamespace: "main" }), createBrowserCapability(), createMacCapability(),
+  return [createCodingCapability(), createMainPlanningCapability(), createSkillsCapability(), createTurnRecallCapability(host, { defaultNamespace: "main" }), createBrowserCapability(), createMacCapability(),
     createAgentManagementCapability(host), createAgentRoutingCapability(host), createProjectDiscoveryCapability(host),
-    createSharedMemoryCapability(host), createTaskReportsCapability(host), createTaskExecutionCapability(host), createGroupsCapability(host), createSchedulingCapability(host)];
+    createSharedMemoryCapability(host), createTaskReportsCapability(host), createGroupsCapability(host), createSchedulingCapability(host)];
 }
 function createGlobalCapabilities(host) {
   return [createProjectDiscoveryCapability(host), createGlobalRoutingCapability()];

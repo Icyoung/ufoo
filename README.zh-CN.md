@@ -29,7 +29,7 @@ ufoo 为代码仓库内的所有 AI Agent 提供统一控制面、共享记忆�
 - **实时共享工作区与模型自主 Worktree**：框架层不再强制创建或绑定 Agent 到独立 Worktree，组内与跨组 Agent 直接实时共享主仓库代码；模型可按需自行创建并自由跨本仓库任意关联 Git Worktree 读写协作。
 - **Group 停稳自动汇总与全员历史检索（`read_agent_history`）**：当一个 Group 的全部成员停稳且消息队列清空后，daemon 自动聚合所有成员最后一轮输出并唤醒 `ufoo` 做本轮总结；`ufoo` 也可随时通过 `read_agent_history` 按昵称、Group 或关键词检索项目内任意活跃/已归档 Agent 的历史消息。
 - **一体化 Rust TUI 面板（`ufoo` & `ucode`）**：与桌面端共享 `ufoo-ui/1` 协议和后台持久守护进程（macOS 支持 `ufoo daemon service install` 托管至 `launchd`），终端内即可切换 `main` / `side` / `multi` 分屏布局。
-- **原生 Agent Runtime 与 Context Engine V2**：KV-Cache 友好的滑动窗口、自动 `<turn_context>` 主题索引、跨窗口按需检索 `recall_turn`、结构化 `plan_graph` / Plan Mode、崩溃安全日志、目录写租约与**后台命令零 Token 自动唤醒**。
+- **原生 Agent Runtime 与 Context Engine V2**：KV-Cache 友好的滑动窗口、自动 `<turn_context>` 主题索引、跨窗口按需检索 `recall_turn`、结构化 `plan_graph` / Plan Mode、崩溃安全日志、共享仓库编辑与**后台命令零 Token 自动唤醒**。
 - **日常 Chrome（`browser`）与 macOS 桌面自动化（`mac_app`）**：通过 `ufoo Browser` MV3 扩展与 `BrowserBroker` 标签页级归属操控已登录的日常 Chrome；通过 `AXUIElement` 快照、1:1 逻辑点截图与独立 **Agent 鼠标** 操控原生 macOS 应用并在人工介入时即时避让。
 - **多 Agent Group 编排、共享记忆与可观测性**：内置 7 套专业协作流模板、架构决策（`/ctx decisions`）、持久化共享记忆（`ufoo memory`）、证据门控验收，以及零模型调用的 `ufoo trace` / `ufoo metrics`。
 
@@ -186,7 +186,7 @@ ufoo daemon service uninstall
 /status                         查看项目、daemon 与在线 Agent 状态概览
 /launch <agent> [nickname]      启动内嵌 SDK 或 ACP 子 Agent（codex、claude、agy、ucode、acp:<id>）
 /resume                         恢复已保存的子 Agent 或整组 Group（group:<id>）
-/task list | inspect | cancel   管理独立上下文的后台编码任务
+/task list | inspect | cancel   列出或查看任务，或取消会话中的运行
 /answer <interaction-id> <text> 回复处于 ask_user 等待状态的任务提问
 /session show | new             查看当前会话或基于最新设置开启新主会话
 /settings                       配置主 Agent 或 ucode 的 provider、自定义网关、模型与思考强度
@@ -202,7 +202,7 @@ ufoo daemon service uninstall
 
 ## 原生 Agent Runtime 与 `ucode`
 
-项目主 Agent、可写独立子任务（`manage_tasks`）与 `ucode` 共用分层可组合的原生运行时（`src/agents/runtime/`）。
+项目主 Agent 与 `ucode` 共用分层可组合的原生运行时（`src/agents/runtime/`）。
 
 ### Context Engine V2 与 `recall_turn`
 
@@ -211,11 +211,11 @@ ufoo daemon service uninstall
 - **可选后台异步富化（Aux Model）**：配置 `agentAuxModel` 或 `ucodeAuxModel` 后，后台异步精炼历史轮次摘要与二阶段语义召回；未配置时零额外模型请求。
 - **确定性溢出淘汰与 `recall_turn`**：超长上下文采用 Level 1–3 确定性分级裁剪，避免阻塞式摘要调用；模型可随时调用 `recall_turn` 检索窗口外历史或分页精读原始对话。
 
-### Plan Mode、执行预算与目录写租约
+### Plan Mode、执行预算与共享仓库编辑
 
 - **Plan Mode 与 `plan_graph`**：输入 `/plan on`（或模型调用 `plan_graph create` 后自动开启），拦截直接副作用工具并按 `plan_graph` 节点有序推进；执行 `/plan off` 退出。
 - **执行与死循环防护**：默认不限制工具总次数，单任务超时上限 12 小时（支持 `ucode --max-tool-calls <N|none>`、`UFOO_UCODE_MAX_TOOL_CALLS`、`UFOO_UCODE_MAX_TOOL_ERRORS`、`UFOO_UCODE_TASK_TIMEOUT_MS` 覆盖）。连续报错 3 次告警、5 次熔断（滑动 20 次满 12 次熔断），自动阻断重复死循环。
-- **崩溃安全与并发写锁**：每轮完整批次落盘后再发起下一轮请求；同目录写操作共享互斥租约，独立 `git worktree` 可完全并行写入。
+- **崩溃恢复与共享编辑**：每轮完成后先持久化，再发起下一轮请求。多个 Agent 可以在同一仓库并行编辑，由协调者划分负责的文件或模块。需要隔离时可使用 `git worktree`。
 
 ### 后台命令零轮询自动唤醒
 
@@ -250,7 +250,7 @@ ufoo skills install ufoo-bus-poll --target /path/to/skills
 
 ## 浏览器与 macOS 桌面应用自动化
 
-项目主 Agent、可写独立子任务与 `ucode` 均内置 `browser` 和 `mac_app` 工具；截图通过多模态 Vision 数据块直传模型并在识别后自动清理回收上下文。
+项目主 Agent 与 `ucode` 均内置 `browser` 和 `mac_app` 工具；截图通过多模态 Vision 数据块直传模型并在识别后自动清理回收上下文。
 
 ### 1. 日常 Chrome 操控（`browser` / `ufoo browser`）
 

@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { CaretDown, CaretRight, CaretUp, Check, Copy, Eraser, FileText, Image as ImageIcon } from "@phosphor-icons/react";
+import { CaretDown, CaretRight, CaretUp, Copy, Eraser, FileText, Image as ImageIcon } from "@phosphor-icons/react";
 import type { PendingInteraction, PlanItem, PlanItemStatus, SessionChangedFile, TranscriptEntry } from "../types";
 import { BrandIcon } from "./BrandIcon";
 import { DotGridLoader } from "./DotGridLoader";
@@ -316,8 +316,14 @@ function describeClusterSummary(items: TranscriptEntry[]): string {
   if (tools.length === 1 && thoughts.length === 0) {
     return cleanToolSummary(tools[0].text);
   }
-  const lead = `${tools.length} ${tools.length === 1 ? "step" : "steps"}`;
-  return parts.length > 0 ? `${lead} · ${parts.join(", ")}` : lead;
+  return parts.join(", ");
+}
+
+function thinkingPreview(text: string): string {
+  const clean = stripAnsi(text || "").trim();
+  const headings = Array.from(clean.matchAll(/\*\*([^*]+?)\*\*/g));
+  const latest = headings.at(-1)?.[1] || clean.split(/\n+/).at(-1) || "";
+  return latest.replace(/\s+/g, " ").trim();
 }
 
 function ActivityStepRow({
@@ -330,7 +336,7 @@ function ActivityStepRow({
   const [open, setOpen] = useState(false);
 
   if (entry.kind === "thinking") {
-    const preview = stripAnsi(entry.text || "").replace(/\s+/g, " ").trim();
+    const preview = thinkingPreview(entry.text);
     const isThinkingLive = Boolean(entry.streaming);
     return (
       <div className="text-[11.5px]">
@@ -379,9 +385,6 @@ function ActivityStepRow({
           hasDetail ? "hover:bg-white/[0.04] cursor-pointer" : "cursor-default"
         }`}
       >
-        {isRunning ? null : (
-          <Check size={11} weight="bold" className="shrink-0 text-zinc-500" />
-        )}
         <span className="min-w-0 flex-1 overflow-hidden font-mono text-[11.5px]">
           <span
             className={`inline-block max-w-full truncate align-bottom ${
@@ -418,16 +421,15 @@ function ActivityCluster({
   onOpenFile?: (path: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const tools = items.filter((i) => i.kind === "tool");
-  const runningTool = [...tools].reverse().find((t) => t.tool_status === "running");
-  const latestTool = runningTool || tools[tools.length - 1] || null;
-  const latestItem = runningTool || items[items.length - 1];
-
+  const latest = items[items.length - 1];
   const liveHeadline = (() => {
-    if (latestTool) return cleanToolSummary(latestTool.text);
-    if (latestItem?.kind === "thinking") {
-      const preview = stripAnsi(latestItem.text || "").replace(/\s+/g, " ").trim();
-      return preview ? `Thinking · ${preview.slice(0, 72)}` : "Thinking…";
+    if (latest?.kind === "thinking") {
+      const hint = thinkingPreview(latest.text);
+      return hint || "Thinking…";
+    }
+    if (latest?.kind === "tool") {
+      if (latest.tool_status !== "running" && statusText === "Thinking…") return statusText;
+      return cleanToolSummary(latest.text);
     }
     return statusText || "Working…";
   })();
@@ -443,11 +445,6 @@ function ActivityCluster({
           className="group flex max-w-full items-center gap-2 py-1 text-left text-[12.5px] text-zinc-400 hover:text-zinc-200 transition-colors cursor-pointer"
         >
           <span className="inline-block min-w-0 max-w-full truncate agy-text-shimmer">{liveHeadline}</span>
-          {tools.length > 0 && (
-            <span className="shrink-0 font-mono text-[11.5px] text-zinc-500">
-              {tools.length} {tools.length === 1 ? "step" : "steps"}
-            </span>
-          )}
           <span className="shrink-0 text-zinc-500 group-hover:text-zinc-300">
             {expanded ? <CaretDown size={11} /> : <CaretRight size={11} />}
           </span>
@@ -515,7 +512,7 @@ function TurnFilesEditedCard({
               key={file.path}
               type="button"
               onClick={() => onOpenFile?.(file.open_path || file.path)}
-              title={`Open ${file.path} in Docs`}
+              title={`Open ${file.path} in Files`}
               className="flex w-full items-center justify-between gap-2.5 px-3 py-1.5 text-left hover:bg-white/[0.045] transition-colors cursor-pointer"
             >
               <div className="flex min-w-0 items-baseline gap-2 font-mono text-[11.5px]">
@@ -1219,7 +1216,28 @@ export function TranscriptStream({
     return "";
   };
   const defaultSpeakerNorm = normalizeSpeakerDisplay(defaultSpeaker).toLowerCase();
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const resumeTimer = useRef<number | null>(null);
+  const followedTop = useRef(0);
+
+  const followBottom = () => {
+    const pane = scrollRef.current;
+    if (!pane) return;
+    pane.scrollTop = pane.scrollHeight;
+    followedTop.current = pane.scrollTop;
+  };
+
+  const pauseFollowing = () => {
+    if (resumeTimer.current !== null) window.clearTimeout(resumeTimer.current);
+    resumeTimer.current = window.setTimeout(() => {
+      resumeTimer.current = null;
+      followBottom();
+    }, 15_000);
+  };
+
+  useEffect(() => () => {
+    if (resumeTimer.current !== null) window.clearTimeout(resumeTimer.current);
+  }, []);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const fallbackPlanItems = useMemo(
     () => (Array.isArray(planItems) && planItems.length > 0 ? planItems : parsePlanLinesFallback(planLines)),
@@ -1262,13 +1280,18 @@ export function TranscriptStream({
     lastBlock?.type === "cluster" &&
     (busy || lastBlock.items.some((item) => item.tool_status === "running"));
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  useLayoutEffect(() => {
+    if (resumeTimer.current === null) followBottom();
   }, [entries.length, entries[entries.length - 1]?.text, pendingInteraction?.id, busy]);
 
   return (
     <div
+      ref={scrollRef}
       onContextMenu={handleContextMenu}
+      onWheel={(event) => { if (event.deltaY !== 0) pauseFollowing(); }}
+      onScroll={(event) => {
+        if (event.currentTarget.scrollTop !== followedTop.current || resumeTimer.current !== null) pauseFollowing();
+      }}
       className={`flex-1 overflow-y-auto ${isEmpty ? "flex flex-col" : ""}`}
     >
       {isEmpty ? (
@@ -1548,7 +1571,7 @@ export function TranscriptStream({
             </div>
           )}
 
-          <div ref={bottomRef} className="h-2" />
+          <div className="h-2" />
         </div>
       )}
       {contextMenu && (

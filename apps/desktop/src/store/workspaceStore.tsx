@@ -8,6 +8,7 @@ import { DEFAULT_WORKER_AGENT, WORKER_AGENTS, type WorkerAgent } from "../worker
 import type {
   BridgeTransportMode,
   CompletionItem,
+  BackgroundTask,
   ComposerAttachment,
   ConnectionState,
   DiffViewMode,
@@ -80,6 +81,7 @@ export interface WorkspaceState {
   pendingInteractions: PendingInteraction[];
   planLines: string[];
   planItems: PlanItem[];
+  backgroundTasks: BackgroundTask[];
   queuedMessages: QueuedMessagesSnapshot;
   windowMode: WindowMode;
   sideAgentId: string;
@@ -150,6 +152,7 @@ const initialState: WorkspaceState = {
   pendingInteractions: [],
   planLines: [],
   planItems: [],
+  backgroundTasks: [],
   queuedMessages: { project_root: "", main: { items: [], paused: false }, workers: {} },
   windowMode: "main",
   sideAgentId: "",
@@ -514,6 +517,7 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
           settings: payload.settings || state.settings,
           pendingInteraction: nextHead,
           pendingInteractions: nextQueue,
+          backgroundTasks: payload.background_tasks || [],
           queuedMessages:
             payload.queued_messages && typeof payload.queued_messages === "object"
               ? {
@@ -748,6 +752,9 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
           planLines: Array.isArray(payload.lines) ? payload.lines : [],
           planItems: Array.isArray(payload.items) ? (payload.items as PlanItem[]) : [],
         };
+      }
+      if (name === "tasks.snapshot" && payload.project_root === state.activeRoot) {
+        return { ...state, backgroundTasks: payload.tasks };
       }
       if (name === "queue.snapshot") {
         return {

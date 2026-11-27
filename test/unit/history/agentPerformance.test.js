@@ -96,6 +96,18 @@ describe("observed agent performance", () => {
     expect(report.cohorts).toHaveLength(2);
   });
 
+  test("computes TTFT and streamed characters from model.completed when deltas are ephemeral", () => {
+    const report = summarizeAgentPerformance([
+      event("request.accepted", 0),
+      event("task.started", 1),
+      event("model.started", 1, { turnId: "a", modelScope: "api-call" }),
+      event("model.completed", 5, { turnId: "a", durationMs: 4000, firstThinkingAt: time(2), firstTextAt: time(3), streamedCharacters: 42, usage: { input: 10, output: 12 } }),
+      event("task.completed", 6, { usage: { input: 10, output: 12 }, finalTextCharacters: 42 }),
+    ], [], [], { now: Date.parse(time(7)) });
+    expect(report.summary.latency.firstTextMs).toMatchObject({ samples: 1, p50: 2000 });
+    expect(report.runs[0].timings.firstThinkingMs).toBe(1000);
+  });
+
   test("resumption and duplicate presentation lifecycles preserve one run and separate user waiting", () => {
     const report = summarizeAgentPerformance([
       event("task.started", 0, { attemptId: "first" }), event("task.started", 0, { attemptId: "first" }),

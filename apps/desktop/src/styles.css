@@ -29,6 +29,17 @@
   }
 }
 
+@media (pointer: coarse) {
+  html {
+    touch-action: pan-x pan-y;
+  }
+
+  /* iOS zooms focused controls whose text is smaller than 16px. */
+  input, textarea, select, [contenteditable="true"] {
+    font-size: 16px;
+  }
+}
+
 .selectable-text {
   user-select: text;
 }
@@ -125,6 +136,17 @@
 
 .agy-plan-dot {
   animation: agy-plan-dot 1.1s ease-in-out infinite;
+}
+
+/* Waiting breathes in two rows, running chases clockwise around the grid. */
+@keyframes agy-queued-dot {
+  0%, 48%, 100% { opacity: .28; transform: scale(.82); }
+  24% { opacity: .74; transform: scale(1); }
+}
+.agy-queued-dot { animation: agy-queued-dot 2.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .agy-queued-dot, .agy-plan-dot { animation: none; }
+  .agy-queued-dot:nth-child(n+3) { opacity: .35; }
 }
 
 @keyframes agy-text-shimmer {

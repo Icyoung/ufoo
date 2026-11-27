@@ -1027,13 +1027,7 @@ function startDaemon({
     cronController: null,
     groupOrchestrator: null,
   };
-  const handleRuntimeOps = async (root, ops, manager = processManager, leaseContext = {}) => {
-    if (!ops.some((op) => op.action === "launch") || !runtimeServices.workspaceAccess) return handleOps(root, ops, manager, runtimeServices);
-    const result = await runtimeServices.workspaceAccess.leases.run({ key: fs.realpathSync(root), ownerId: leaseContext.leaseOwnerId || `ops-${require("crypto").randomUUID()}` },
-      () => handleOps(root, ops, manager, runtimeServices));
-    if (result?.code === "workspace_busy") throw Object.assign(new Error("workspace writer is active; inspect or cancel its task before launching workers"), { code: "workspace_busy" });
-    return result;
-  };
+  const handleRuntimeOps = async (root, ops, manager = processManager) => handleOps(root, ops, manager, runtimeServices);
   const daemonCronController = projectRuntime.own("cronController", createDaemonCronController({
     projectRoot,
     dispatch: async ({ taskId, occurrenceId, target, message }) => {
@@ -1157,7 +1151,6 @@ function startDaemon({
     onEvent: (event) => ipcServer.sendToSockets({ type: IPC_RESPONSE_TYPES.RUNTIME_EVENT, data: event }),
   }));
   void mainAgentHost.recover().catch((error) => log(`main runtime recovery failed: ${error.message}`));
-  runtimeServices.workspaceAccess = mainAgentHost.workspaceAccess;
   if (!isGlobalControllerProjectRoot(projectRoot)) {
     groupRoundCoordinator = projectRuntime.own("groupRoundCoordinator", createGroupRoundCoordinator({
       projectRoot,
@@ -1295,7 +1288,12 @@ function startDaemon({
           result = { events: events.slice(0, 1000).map(mainAgentHost.publicEvent), has_more: events.length > 1000,
             next_sequence: events[Math.min(events.length, 1000) - 1]?.sequence || Number(req.after_sequence) || 0 };
         }
-        else if (req.operation === "tasks") result = await mainAgentHost.taskPort.execute(req.arguments || {}, { sessionId: req.session_id || "main-default", requestId: req.request_id });
+        else if (req.operation === "tasks") {
+          const taskArgs = req.arguments || {};
+          if (taskArgs.operation === "inspect") result = mainAgentHost.inspectTask(taskArgs.task_run_id || taskArgs.task_id);
+          else if (!taskArgs.operation || taskArgs.operation === "list") result = mainAgentHost.listTasks();
+          else throw Object.assign(new Error("manage_tasks has been retired; use /task list|inspect|cancel or delegate_task"), { code: "unsupported_operation" });
+        }
         else if (req.operation === "status") result = mainAgentHost.snapshot();
         else if (req.operation === "trace") result = require("../../coordination/history/agentTrace").readAgentTrace(projectRoot, req.arguments || {});
         else throw new Error("unknown agent_runtime operation");

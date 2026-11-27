@@ -1,5 +1,6 @@
 import React, { Component, useEffect, useMemo } from "react";
 import {
+  ArrowLeft,
   BellSimple,
   ChatCircleDots,
   GearSix,
@@ -16,7 +17,7 @@ import { CommandPalette } from "./components/CommandPalette";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { RemoteConnectScreen } from "./components/RemoteConnectScreen";
 import { ApprovalInbox } from "./components/ApprovalInbox";
-import { DotGridLoader } from "./components/DotGridLoader";
+import { BrandIcon } from "./components/BrandIcon";
 import type { MobileTab } from "./types";
 
 class AppErrorBoundary extends Component<
@@ -54,7 +55,7 @@ class AppErrorBoundary extends Component<
 }
 
 function WorkbenchShell() {
-  const { state, dispatch, setWindowMode, canGoBack, canGoForward, goBack, goForward } = useWorkspace();
+  const { state, dispatch, selectProjectMain, setWindowMode, canGoBack, canGoForward, goBack, goForward } = useWorkspace();
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -156,14 +157,10 @@ function WorkbenchShell() {
     [state.projects, state.activeRoot]
   );
 
-  const activeMobileTitle = useMemo(() => {
-    if (state.scope === "controller") return "UFOO";
-    if (state.stageTarget.kind === "worker_single" && state.stageTarget.agentId) {
-      const worker = currentProject?.workers.find((w) => w.id === state.stageTarget.agentId);
-      return state.workerSingleFrame?.label || worker?.label || state.stageTarget.agentId;
-    }
-    return currentProject?.label || "Workspace";
-  }, [state.scope, state.stageTarget, state.workerSingleFrame, currentProject]);
+  const mobileWorkerId = state.scope === "project" && state.stageTarget.kind === "worker_single"
+    ? state.stageTarget.agentId : "";
+  const mobileWorker = currentProject?.workers.find(worker => worker.id === mobileWorkerId);
+  const projectTitle = currentProject?.label || "Workspace";
 
   const totalAttentionCount = useMemo(() => {
     const queueCount = state.pendingInteractions.length || (state.pendingInteraction ? 1 : 0);
@@ -221,14 +218,28 @@ function WorkbenchShell() {
           >
             <List size={19} weight="bold" />
           </button>
-          <div className="flex min-w-0 items-center gap-1.5">
+          {mobileWorkerId ? (
+            <div className="flex min-w-0 items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => void selectProjectMain(state.activeRoot)}
+                aria-label={`Back to ${projectTitle}`}
+                className="inline-flex h-9 min-w-0 items-center gap-1 rounded-lg text-[13px] text-zinc-300"
+              >
+                <ArrowLeft size={15} className="shrink-0" />
+                <span className="truncate">{projectTitle}</span>
+              </button>
+              <span className="text-zinc-600">/</span>
+              <BrandIcon brand={mobileWorker?.type || state.workerSingleFrame?.type} size={14} />
+              <span className="truncate text-[14px] font-semibold">
+                {mobileWorker?.label || state.workerSingleFrame?.label || mobileWorkerId}
+              </span>
+            </div>
+          ) : (
             <span className="truncate text-[14px] font-semibold text-zinc-100">
-              {activeMobileTitle}
+              {state.scope === "controller" ? "UFOO" : projectTitle}
             </span>
-            {state.busy && (
-              <DotGridLoader size="xs" colorClass="bg-blue-400" />
-            )}
-          </div>
+          )}
         </div>
 
         <div className="flex shrink-0 items-center gap-1.5">

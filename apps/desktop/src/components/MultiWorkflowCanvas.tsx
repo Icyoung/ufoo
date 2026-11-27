@@ -1133,13 +1133,6 @@ export function MultiWorkflowCanvas({
                   <span className="font-mono text-[12px] font-medium text-zinc-100 truncate">
                     {worker.label}
                   </span>
-                  {isBusy ? (
-                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400 animate-pulse" />
-                  ) : (
-                    <span className="text-[10.5px] text-zinc-500 truncate">
-                      {frame?.status || worker.activity_state || "ready"}
-                    </span>
-                  )}
                 </div>
 
                 <div className="flex items-center gap-1 shrink-0">

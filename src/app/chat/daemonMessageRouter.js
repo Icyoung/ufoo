@@ -1,5 +1,6 @@
 const { IPC_RESPONSE_TYPES, BUS_STATUS_PHASES } = require("../../runtime/contracts/eventContract");
 const { renderMarkdownLines } = require("../../ui/format/markdownRenderer");
+const { taskLabel } = require("../../ui/format/taskLabel");
 const { decodeEscapedNewlines } = require("./text");
 
 function createDaemonMessageRouter(options = {}) {
@@ -15,6 +16,7 @@ function createDaemonMessageRouter(options = {}) {
     resolveBusStatus = () => {},
     getPending = () => null,
     setPending = () => {},
+    resolveTaskLabel = () => "Task",
     resolveAgentDisplayName = (value) => value,
     consumePendingDelivery = () => false,
     getPendingState = () => null,
@@ -33,6 +35,7 @@ function createDaemonMessageRouter(options = {}) {
     suppressLifecycleLog = false,
   } = options;
   const runtimeSequences = new Map();
+  const taskLabels = new Map();
   const runtimeStreams = new Map();
   const runtimeFinished = new Set();
   const runtimeInteractions = new Set();
@@ -52,15 +55,37 @@ function createDaemonMessageRouter(options = {}) {
     }
   }
   function handleRuntimeEvent(event) {
-    if (!event || !event.sessionId || !Number.isInteger(event.sequence)) return true;
+    if (!event || !event.sessionId) return true;
     const sessionKey = `${event.projectId || ""}:${event.sessionId}`;
-    if (event.sequence <= (runtimeSequences.get(sessionKey) || 0)) return true;
-    runtimeSequences.set(sessionKey, event.sequence);
+    if (!event.ephemeral) {
+      if (!Number.isInteger(event.sequence)) return true;
+      if (event.sequence <= (runtimeSequences.get(sessionKey) || 0)) return true;
+      runtimeSequences.set(sessionKey, event.sequence);
+    }
     if (typeof onRuntimeEvent === "function") {
       try { onRuntimeEvent(event); } catch { /* ignore observer errors */ }
     }
     const key = `${sessionKey}:${event.taskRunId}`;
-    const label = event.agentId === "ufoo-agent" ? "ufoo" : `task ${event.taskRunId}`;
+    if (event.agentId !== "ufoo-agent" && event.type === "request.accepted") {
+      const req = event.request || {};
+      const parent = req.runtimeEvent && req.parentTaskRunId;
+      const label = parent && !req.taskTitle
+        ? taskLabels.get(`${sessionKey}:${parent}`) || resolveTaskLabel({ ...event, taskId: parent })
+        : taskLabel({ title: req.taskTitle || req.title, objective: req.text });
+      taskLabels.set(key, label);
+      if (taskLabels.size > 500) taskLabels.delete(taskLabels.keys().next().value);
+    }
+    const runtimeLabel = () => {
+      if (event.agentId === "ufoo-agent") return "ufoo";
+      const known = taskLabels.get(key);
+      if (known && known !== "Task") return known;
+      const label = event.taskTitle ? taskLabel({ title: event.taskTitle }) : resolveTaskLabel(event);
+      if (label !== "Task") {
+        taskLabels.set(key, label);
+        if (taskLabels.size > 500) taskLabels.delete(taskLabels.keys().next().value);
+      }
+      return label;
+    };
     if (event.type === "request.accepted" && event.agentId === "ufoo-agent") {
       const req = event.request && typeof event.request === "object" ? event.request : {};
       const reqId = String(req.requestId || "").trim();
@@ -78,7 +103,7 @@ function createDaemonMessageRouter(options = {}) {
         onInteractionClear({ id: event.interactionId || "", sessionId: event.sessionId, taskRunId: event.taskRunId });
       }
     } else if (event.type === "message.delta") {
-      const state = beginStream(key, speakerPrefix(label, "white"), "       ", { runtime: true, sessionId: event.sessionId, taskRunId: event.taskRunId });
+      const state = beginStream(key, speakerPrefix(runtimeLabel(), "white"), "       ", { runtime: true, sessionId: event.sessionId, taskRunId: event.taskRunId });
       appendStreamDelta(state, event.text || "");
       runtimeStreams.set(key, true);
     } else if (["task.completed", "task.failed", "task.cancelled", "task.paused", "task.interrupted"].includes(event.type)) {
@@ -88,9 +113,9 @@ function createDaemonMessageRouter(options = {}) {
       } else if (event.type === "task.completed" && event.result?.text) {
         let text = event.result.text;
         if (event.global) { try { text = JSON.parse(text).reply || ""; } catch { text = ""; } }
-        if (text) logMessage("reply", `${speakerPrefix(label, "white")}${escapeBlessed(text)}`);
+        if (text) logMessage("reply", `${speakerPrefix(runtimeLabel(), "white")}${escapeBlessed(text)}`);
       }
-      if (["task.failed", "task.interrupted"].includes(event.type)) logMessage("error", escapeBlessed(`${label}: ${event.error || event.type}`));
+      if (["task.failed", "task.interrupted"].includes(event.type)) logMessage("error", escapeBlessed(`${runtimeLabel()}: ${event.error || event.type}`));
       if (event.type === "task.paused") {
         showInteraction(event.result?.executionState?.pendingUserInteraction, { sessionId: event.sessionId, taskRunId: event.taskRunId });
       } else if (typeof onInteractionClear === "function") {
@@ -110,7 +135,7 @@ function createDaemonMessageRouter(options = {}) {
       : data.task ? [data.task] : [];
     for (const task of tasks) {
       const effects = Object.entries(task.effects || {}).map(([id, effect]) => `${id} (${effect.toolName}: ${effect.status})`).join(", ");
-      logMessage("system", escapeBlessed(`${task.taskRunId || task.taskId || task.id}: ${task.status}${task.error ? ` (${task.error})` : ""}${task.summary ? `\n${task.summary}` : ""}${effects ? `\nEffects to inspect: ${effects}` : ""}`));
+      logMessage("system", escapeBlessed(`${task.title || task.objective ? taskLabel(task) + " · " : ""}${task.taskRunId || task.taskId || task.id}: ${task.status}${task.error ? ` (${task.error})` : ""}${task.summary ? `\n${task.summary}` : ""}${effects ? `\nEffects to inspect: ${effects}` : ""}`));
       if (task.interaction && (!task.status || task.status === "waiting_user")) {
         showInteraction(task.interaction, { sessionId: task.sessionId, taskRunId: task.taskRunId });
       }

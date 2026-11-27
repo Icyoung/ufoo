@@ -248,6 +248,9 @@ async function runAgentLoop({
     let cacheRequest;
     const outputBeforeTurn = aggregated.length;
     let stepStreamedText = false;
+    let firstTextAt = null;
+    let firstThinkingAt = null;
+    let streamedCharacters = 0;
     try { turnResult = await transport.runTurn({
       url: requestUrl, apiKey, model: requestModel, provider, accountId, requestHeaders, requestProfile, thinkingLevel,
       systemPrompt, systemBlocks, messages: providerMessages, tools: requestTools,
@@ -260,12 +263,16 @@ async function runAgentLoop({
         onPhase?.(phase);
       },
       onThinkingDelta(delta) {
-        streamEvents.push(event("thinking.delta", { text: String(delta || "") }).catch(error => { streamEventError ||= error; }));
+        const text = String(delta || "");
+        if (text) firstThinkingAt ??= new Date().toISOString();
+        streamEvents.push(event("thinking.delta", { text }).catch(error => { streamEventError ||= error; }));
         onThinkingDelta?.(delta);
       },
       onTextDelta(chunk) {
         const text = String(chunk || "");
         if (!text) return;
+        firstTextAt ??= new Date().toISOString();
+        streamedCharacters += [...text].length;
         if (!stepStreamedText && aggregated && !aggregated.endsWith("\n") && !/^\s/.test(text)) {
           aggregated += "\n\n";
         }
@@ -294,7 +301,8 @@ async function runAgentLoop({
     }
     contextRetry = false;
     await event("model.completed", { ...modelRequest, cacheRequest, channel: cacheRequest?.channel || modelRequest.channel,
-      model: turnResult?.actualModel || requestModel, usage: turnResult?.usage, providerRequestId: turnResult?.responseId, durationMs: Date.now() - modelStarted });
+      model: turnResult?.actualModel || requestModel, usage: turnResult?.usage, providerRequestId: turnResult?.responseId, durationMs: Date.now() - modelStarted,
+      ...(firstTextAt ? { firstTextAt } : {}), ...(firstThinkingAt ? { firstThinkingAt } : {}), ...(streamedCharacters > 0 ? { streamedCharacters } : {}) });
     activeGuards.ensureActive();
     retireImages(providerMessages);
     if (providerMessages !== messages) retireImages(messages);

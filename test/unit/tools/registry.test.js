@@ -39,7 +39,6 @@ describe("shared tool registry", () => {
       "delegate_task",
       "read_task_reports",
       "accept_task",
-      "manage_tasks",
       "resume_agents",
       "manage_group",
     ]);
@@ -149,7 +148,6 @@ describe("shared tool registry", () => {
       "delegate_task",
       "read_task_reports",
       "accept_task",
-      "manage_tasks",
       "resume_agents",
       "manage_group",
     ]);
@@ -185,7 +183,7 @@ describe("shared tool registry", () => {
     copy.pop();
 
     expect(copy).toHaveLength(SHARED_TOOL_REGISTRY.length - 1);
-    expect(SHARED_TOOL_REGISTRY).toHaveLength(28);
+    expect(SHARED_TOOL_REGISTRY).toHaveLength(27);
   });
 
   test("exports Phase 0 schema fixtures for translator validation", () => {

@@ -377,11 +377,12 @@ const RECALL_SCHEMA = Object.freeze({
   name: "recall",
   tier: "tier1-coordination",
   allowed_tiers: CALLER_TIERS_READ_COORD,
-  description: "Read project memory entries by id or tags.",
+  description: "Read or search project memory entries by id, query, or tags.",
   input_schema: Object.freeze({
     type: "object",
     properties: Object.freeze({
       id: Object.freeze({ type: "string" }),
+      query: Object.freeze({ type: "string" }),
       tags: Object.freeze({
         type: "array",
         items: Object.freeze({ type: "string" }),

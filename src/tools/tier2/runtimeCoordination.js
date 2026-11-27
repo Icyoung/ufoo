@@ -6,7 +6,7 @@ const { assertControllerTier, buildToolError } = require("../handlers/common");
 
 const ports = {
   delegate_task: "agentManagement", read_task_reports: "agentManagement", accept_task: "agentManagement",
-  manage_tasks: "taskScheduler", resume_agents: "agentLifecycle", manage_group: "groups",
+  resume_agents: "agentLifecycle", manage_group: "groups",
 };
 async function execute(name, ctx, args) {
   assertControllerTier(ctx, name);
@@ -18,7 +18,6 @@ async function execute(name, ctx, args) {
     return { ok: true, tasks: (args.task_id ? tasks.filter((task) => task.taskId === args.task_id) : tasks).slice(-100) };
   }
   if (name === "accept_task") return port.accept(args, ctx);
-  if (name === "manage_tasks") return port.execute(args, ctx);
   const commandId = ctx.requestId ? `coord-${require("crypto").createHash("sha256").update(`${ctx.requestId}:${args.command_id}`).digest("hex").slice(0, 32)}` : args.command_id;
   if (name === "resume_agents") {
     if (args.operation === "inspect") return port.inspect(args.target || "");

@@ -386,21 +386,28 @@ async function handleEvent(
   const publisher = evt.publisher || "unknown";
   const dispatchId = publisher === "ufoo-agent" && evt.data.source === "ufoo-agent" && evt.data.dispatch_id;
   const streamToPublisher = !dispatchId && shouldStreamReplyToPublisher(projectRoot, publisher, evt);
-  const sendReply = (text) => dispatchId
-    ? busSender.enqueue(publisher, text, { data: { reply_to_dispatch: dispatchId } })
-    : busSender.enqueue(publisher, text);
   const inherited = normalizeTraceContext(evt.data.runtime_context);
   const taskId = getTaskIdFromEvent(evt) || inherited.taskId || `worker-${randomUUID()}`;
+  const delegated = publisher === "ufoo-agent" && Boolean(getTaskIdFromEvent(evt));
+  const replyData = {};
+  if (dispatchId) replyData.reply_to_dispatch = dispatchId;
+  if (delegated && taskId) replyData.task_id = taskId;
+  if (inherited.parentSessionId) replyData.parent_session_id = inherited.parentSessionId;
+  const hasReplyData = Object.keys(replyData).length > 0;
+  const sendReply = (text) => hasReplyData
+    ? busSender.enqueue(publisher, text, { data: replyData })
+    : busSender.enqueue(publisher, text);
   const runtimeContext = { ...inherited, taskId, traceId: inherited.traceId || taskId,
     taskRunId: `worker-run-${randomUUID()}`, requestId: `bus-${evt.seq || randomUUID()}`, attemptId: `attempt-${randomUUID()}`,
     requestKind: evt.__runtimeWake ? "system_wake" : publisher === "ufoo-agent" && getTaskIdFromEvent(evt) ? "worker-task" : "bus-message" };
   const emitSurface = event => busSender.surface?.({ ...runtimeContext, task_id: taskId, agentId: subscriber,
     provider, model, sessionId: threadRuntime?.thread?.id || "", ...event });
-  const delegated = publisher === "ufoo-agent" && Boolean(getTaskIdFromEvent(evt));
   const reportLifecycle = async (phase, error = "", meta = {}) => {
     if (!delegated || typeof busSender.report !== "function") return;
+    const { summary = "", ...restMeta } = meta && typeof meta === "object" ? meta : {};
     await busSender.report({ task_id: taskId, phase, scope: "private", controller_id: "ufoo-agent", error,
-      meta: { ...runtimeContext, ...meta } });
+      ...(summary ? { summary } : {}),
+      meta: { ...runtimeContext, ...restMeta } });
   };
   emitSurface({
     type: "task_started",
@@ -604,6 +611,9 @@ async function handleThreadedEvent({
     emitSurface({ type: waitingForUser ? "task_paused" : "task_completed", usage: turnUsage, durationMs: Date.now() - started,
       finalTextCharacters: [...reply].length, finalText: reply.slice(0, 8000) });
     if (waitingForUser && tracker?.requestUserInput) tracker.requestUserInput("reply");
+    if (!waitingForUser) {
+      await reportLifecycle("done", "", { summary: reply.slice(0, 600), auto: true });
+    }
 
     const isWorkflowHandoff = incomingSource === "workflow-handoff";
     if (streamToPublisher) {

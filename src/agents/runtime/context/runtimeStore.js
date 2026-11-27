@@ -29,7 +29,7 @@ function projectEvent(state, event) {
   state.sequence = event.sequence;
   if (event.type === "runtime.opened") state.owner = event.owner;
   if (event.type === "runtime.opened" && !state.profile) state.profile = event.owner.profile;
-  if (event.type === "runtime.opened" && !state.capabilities) state.capabilities = event.owner.capabilities;
+  if (event.type === "runtime.opened" && Array.isArray(event.owner?.capabilities)) state.capabilities = event.owner.capabilities;
   if (event.type === "runtime.closed") state.owner = null;
   if (event.type === "runtime.binding") state.binding = event.binding;
   if (event.type === "capability.state_committed") state.capabilityState[event.capabilityId] = { version: event.version, value: event.value };

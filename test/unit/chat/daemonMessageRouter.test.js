@@ -43,6 +43,17 @@ describe("chat daemonMessageRouter", () => {
     expect(options.resolveStatusLine.mock.calls.at(-1)[0]).toContain("Dispatched to: ESC(name:codex:builder)");
     expect(options.resolveStatusLine).not.toHaveBeenCalledWith("{gray-fg}✓{/gray-fg} Done");
   });
+  test("child progress uses the name accepted at task creation", () => {
+    const { router, options } = createHarness();
+    const task = { projectId: "test", sessionId: "child", taskRunId: "task_1234", agentId: "child" };
+    router.handleMessage({ type: IPC_RESPONSE_TYPES.RUNTIME_EVENT, data: {
+      ...task, type: "request.accepted", sequence: 1, request: { title: "渲染海岸场景", text: "生成短片" },
+    } });
+    router.handleMessage({ type: IPC_RESPONSE_TYPES.RUNTIME_EVENT, data: {
+      ...task, type: "message.delta", sequence: 2, text: "正在渲染",
+    } });
+    expect(options.beginStream.mock.calls[0][1]).toContain("Task · 渲染海岸场景");
+  });
   test("parallel runtime streams are separate and duplicate events or final replies are suppressed", () => {
     const { router, options } = createHarness();
     const event = (sessionId, sequence, taskRunId, type, extra = {}) => ({ type: IPC_RESPONSE_TYPES.RUNTIME_EVENT, data: { projectId: "project", sessionId, sequence, taskRunId, agentId: "ufoo-agent", type, ...extra } });
@@ -57,6 +68,16 @@ describe("chat daemonMessageRouter", () => {
     router.handleMessage({ type: IPC_RESPONSE_TYPES.RESPONSE, data: { reply: "Main", runtime: { taskRunId: "a", status: "completed" } } });
     expect(options.finalizeStream.mock.calls[1][0]).toBe("project:child:b");
     expect(options.logMessage).not.toHaveBeenCalled();
+  });
+  test("ephemeral streaming deltas render live without mutating durable sequence deduplication", () => {
+    const { router, options } = createHarness();
+    const ephemeral = (taskRunId, text) => ({ type: IPC_RESPONSE_TYPES.RUNTIME_EVENT, data: { projectId: "project", sessionId: "main", ephemeral: true, sequence: 0, taskRunId, agentId: "ufoo-agent", type: "message.delta", text } });
+    router.handleMessage({ type: IPC_RESPONSE_TYPES.RUNTIME_EVENT, data: { projectId: "project", sessionId: "main", sequence: 3, taskRunId: "run-1", agentId: "ufoo-agent", type: "task.started" } });
+    router.handleMessage(ephemeral("run-1", "Hello "));
+    router.handleMessage(ephemeral("run-1", "world"));
+    router.handleMessage({ type: IPC_RESPONSE_TYPES.RUNTIME_EVENT, data: { projectId: "project", sessionId: "main", sequence: 4, taskRunId: "run-1", agentId: "ufoo-agent", type: "task.completed", result: { text: "Hello world" } } });
+    expect(options.appendStreamDelta).toHaveBeenCalledTimes(2);
+    expect(options.finalizeStream).toHaveBeenCalledTimes(1);
   });
   test("paused runtime interactions show a stable answer command only once", () => {
     const { router, options } = createHarness();

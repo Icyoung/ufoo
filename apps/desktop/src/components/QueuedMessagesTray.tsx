@@ -1,11 +1,12 @@
 import React from "react";
 import {
-  ArrowBendDownRight,
   ArrowUp,
   Paperclip,
   X,
 } from "@phosphor-icons/react";
 import type { QueuedMessageItem } from "../types";
+
+import { DotGridLoader } from "./DotGridLoader";
 
 interface QueuedMessagesTrayProps {
   items: QueuedMessageItem[];
@@ -43,11 +44,7 @@ export function QueuedMessagesTray({
               key={item.id}
               className="group flex items-center gap-2 px-3 py-1.5 text-[12px] hover:bg-white/[0.03] transition-colors"
             >
-              <ArrowBendDownRight
-                size={12}
-                className="shrink-0 text-zinc-500"
-                aria-hidden="true"
-              />
+              <DotGridLoader size="xs" queued label="Queued" colorClass="bg-zinc-400" />
 
               <button
                 type="button"

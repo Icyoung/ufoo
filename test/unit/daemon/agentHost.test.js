@@ -213,19 +213,22 @@ describe("project main agent host", () => {
     const dispatchId = ports.dispatchMessages.mock.calls[0][1][0].dispatch_id;
     const reply = host.receiveWorkerMessage({ publisher: "codex:outside", seq: 10, message: "work finished", data: { reply_to_dispatch: dispatchId } });
     expect((await host.getSession("main-default").wait(reply.taskRunId)).status).toBe("completed");
+    global.fetch.mockResolvedValueOnce(response("Explicit parent received reply."));
+    const explicit = host.receiveWorkerMessage({ publisher: "codex:outside", seq: 11, message: "follow-up",
+      data: { reply_to_dispatch: dispatchId, parent_session_id: "main-explicit" } });
+    expect((await host.getSession("main-explicit").wait(explicit.taskRunId)).status).toBe("completed");
     expect(ports.markPending).toHaveBeenCalledTimes(3);
     expect(ports.markPending).toHaveBeenCalledWith("codex:outside");
   });
 
-  test("external workers support routing, delegation and correlated report wakeups without lifecycle takeover", async () => {
+  test("external workers support delegation and correlated report wakeups without lifecycle takeover or double-wake", async () => {
     const bus = new (require("../../../src/coordination/bus"))(root);
     await bus.init();
     await bus.join("outside", "ucode", "outside", { launchMode: "terminal", parentPid: process.pid });
     const ports = { handleOps: jest.fn(), dispatchMessages: jest.fn(async () => [{ seq: 10, targets: ["ucode:outside"] }]) };
     global.fetch = jest.fn()
-      .mockResolvedValueOnce(response(null, [call("route", "route_agent", { request: "@outside verify this" })]))
       .mockResolvedValueOnce(response(null, [call("delegate", "delegate_task", { command_id: "external-job", target: "outside", objective: "验证" })]))
-      .mockResolvedValueOnce(response(null, [call("blocked", "write", { path: "conflict.txt", content: "unsafe overlap" })]))
+      .mockResolvedValueOnce(response(null, [call("shared-write", "write", { path: "main-side.txt", content: "non-overlapping work" })]))
       .mockResolvedValueOnce(response(null, [call("close", "close_agent", { agent_id: "ucode:outside" })]))
       .mockResolvedValueOnce(response("等待外部验证。"))
       .mockResolvedValueOnce(response("验证已完成。"));
@@ -235,12 +238,13 @@ describe("project main agent host", () => {
     expect(ports.handleOps).not.toHaveBeenCalled();
     expect(ports.dispatchMessages).toHaveBeenCalledTimes(1);
     expect(ports.dispatchMessages.mock.calls[0][1][0].target).toBe("ucode:outside");
-    expect(fs.existsSync(path.join(root, "conflict.txt"))).toBe(false);
+    expect(fs.readFileSync(path.join(root, "main-side.txt"), "utf8")).toBe("non-overlapping work");
     const events = host.getSession("external-session").events().filter(e => e.type === "tool.completed");
-    expect(events.find(e => e.toolCallId === "route").result).toMatchObject({ ok: true, result: { target: "ucode:outside" } });
-    expect(JSON.stringify(events.find(e => e.toolCallId === "blocked").result)).toContain("workspace_busy");
+    expect(events.find(e => e.toolCallId === "shared-write").result.ok).toBe(true);
     expect(JSON.stringify(events.find(e => e.toolCallId === "close").result)).toContain("external_lifecycle");
     const task = Object.values(host.management.snapshot().tasks)[0];
+    // Duplicate bus reply for a tracked delegated task does not trigger a second wake.
+    expect(host.receiveWorkerMessage({ publisher: "ucode:outside", seq: 20, message: "verified", data: { task_id: task.taskId, parent_session_id: "external-session" } })).toBeUndefined();
     await host.management.report({ entry_id: "wrong", phase: "done", task_id: task.taskId, agent_id: "ucode:other" });
     const runtime = host.getSession("external-session");
     expect(Object.values(runtime.snapshot().tasks)).toHaveLength(1);
@@ -252,26 +256,40 @@ describe("project main agent host", () => {
     expect(Object.values(runtime.snapshot().tasks)).toHaveLength(2);
   });
 
-  test("workspace denial preserves group members and gives the main agent delegation guidance", async () => {
+  test("shared repository allows main writes and bash alongside active workers while preserving group members", async () => {
     const EventBus = require("../../../src/coordination/bus");
+    const { getUfooPaths } = require("../../../src/coordination/state/paths");
+    const { updateAgentsData } = require("../../../src/coordination/state/agentsStore");
     const bus = new EventBus(root);
     await bus.init();
     await bus.join("member", "codex", "architect", { launchMode: "internal", parentPid: process.pid });
+    updateAgentsData(getUfooPaths(root).agentsFile, (data) => { data.agents["codex:member"].activity_state = "working"; });
     fs.writeFileSync(path.join(root, "existing.txt"), "existing work");
     global.fetch = jest.fn()
-      .mockResolvedValueOnce(response(null, [call("blocked", "bash", { command: "git status --short" })]))
-      .mockResolvedValueOnce(response(null, [call("read", "read", { path: "existing.txt" })]))
-      .mockResolvedValueOnce(response("Workspace belongs to the existing workers."));
-    const ports = { handleOps: jest.fn(), dispatchMessages: jest.fn() };
+      .mockResolvedValueOnce(response(null, [call("write-ok", "write", { path: "main-edit.txt", content: "shared ok" })]))
+      .mockResolvedValueOnce(response(null, [call("bash-ok", "bash", { command: "node -e 'process.exit(0)'" })]))
+      .mockResolvedValueOnce(response(null, [call("read", "read", { path: "existing.txt" }), call("launch", "launch_agent", { agent: "ucode" })]))
+      .mockResolvedValueOnce(response("Collaborated cleanly in the shared workspace."));
+    const { runCoreToolAsync } = require("../../../src/code/tools/executor");
+    const ports = { handleOps: jest.fn(async () => [{ ok: true, agent_id: "ucode:new" }]), dispatchMessages: jest.fn() };
     host = make({ ports });
-    expect((await host.runPrompt({ prompt: "inspect the workspace", requestId: "preserve-group" })).ok).toBe(true);
-    const messages = JSON.parse(global.fetch.mock.calls[2][1].body).messages;
-    const denied = messages.find((message) => message.tool_call_id === "blocked").content;
-    expect(denied).toContain("workspace_busy");
-    expect(denied).toContain("Do not close workers");
+    const [main, ...workers] = await Promise.all([
+      host.runPrompt({ prompt: "edit main-edit.txt and inspect existing.txt", requestId: "shared-repo-ok" }),
+      ...["worker-a", "worker-b"].map(sessionId => runCoreToolAsync({ workspaceRoot: root, sessionId, tool: "bash",
+        args: { command: `echo ${sessionId} > ${sessionId}.txt` } })),
+    ]);
+    expect(main.ok).toBe(true);
+    expect(workers.map(result => result.ok)).toEqual([true, true]);
+    for (const worker of ["worker-a", "worker-b"]) {
+      expect(fs.readFileSync(path.join(root, worker + ".txt"), "utf8").trim()).toBe(worker);
+    }
+    expect(fs.readFileSync(path.join(root, "main-edit.txt"), "utf8")).toBe("shared ok");
+    const messages = JSON.parse(global.fetch.mock.calls[3][1].body).messages;
+    expect(JSON.parse(messages.find((message) => message.tool_call_id === "write-ok").content).ok).toBe(true);
+    expect(JSON.parse(messages.find((message) => message.tool_call_id === "bash-ok").content).ok).toBe(true);
     expect(messages.find((message) => message.tool_call_id === "read").content).toContain("existing work");
-    expect(messages[0].content).toContain("Never use close_agent or stop a group to free the workspace");
-    expect(ports.handleOps).not.toHaveBeenCalled();
+    expect(messages[0].content).toContain("Multiple agents share this repository directly without whole-repo write locks");
+    expect(ports.handleOps).toHaveBeenCalledTimes(1);
     bus.loadBusData();
     expect(bus.busData.agents["codex:member"].status).toBe("active");
   });
@@ -284,13 +302,17 @@ describe("project main agent host", () => {
     host = make();
     const result = await host.runPrompt({ prompt: "create and verify greeting.txt", requestId: "code-request" });
     expect(result.ok).toBe(true);
-    expect((await host.taskPort.execute({ operation: "inspect", task_run_id: result.payload.runtime.taskRunId })).task).toMatchObject({ status: "completed", effects: {} });
+    expect(host.inspectTask(result.payload.runtime.taskRunId).task).toMatchObject({ status: "completed", effects: {} });
+    expect(host.listTasks().tasks).toEqual(expect.arrayContaining([expect.objectContaining({ taskRunId: result.payload.runtime.taskRunId, status: "completed" })]));
     expect(fs.readFileSync(path.join(root, "greeting.txt"), "utf8")).toBe("hello");
     const tools = JSON.parse(global.fetch.mock.calls[0][1].body).tools.map((tool) => tool.function.name);
     const system = JSON.parse(global.fetch.mock.calls[0][1].body).messages.find((message) => message.role === "system").content;
     expect(system).toContain("same natural language as the user's prompt");
     expect(system).toContain("no bus reply, no lifecycle report, and no final response text");
-    expect(tools).toEqual(expect.arrayContaining(["write", "bash", "delegate_task", "manage_tasks", "accept_task"]));
+    expect(tools).toEqual(expect.arrayContaining(["write", "bash", "delegate_task", "accept_task", "recall", "read_agent_history"]));
+    for (const removed of ["manage_tasks", "route_agent", "read_prompt_history", "read_bus_summary", "read_agent_metrics", "search_memory"]) {
+      expect(tools).not.toContain(removed);
+    }
     const runtime = host.getSession();
     const events = runtime.events();
     expect(events.filter((event) => event.type === "tool.completed").map((event) => event.toolCallId)).toEqual(["write-1", "test-1"]);
@@ -345,28 +367,52 @@ describe("project main agent host", () => {
       else process.env.UFOO_UCODE_MAX_TOOL_CALLS = previous;
     }
   });
-  test("an independent long task leaves the main conversation, status and cancellation responsive", async () => {
-    let entered;
-    let cancelled;
-    const childEntered = new Promise((resolve) => { entered = resolve; });
-    const childCancelled = new Promise((resolve) => { cancelled = resolve; });
-    global.fetch = jest.fn((_url, options) => {
-      const body = JSON.parse(options.body);
-      const child = body.messages.some((message) => message.role === "user" && message.content === "slow objective");
-      if (!child) return Promise.resolve(response("Main conversation is responsive."));
-      entered();
-      return new Promise((resolve, reject) => options.signal.addEventListener("abort", () => reject(Object.assign(new Error("cancelled"), { code: "cancelled" })), { once: true }));
+  test("the five recent delegated outcomes follow completion time, with active tasks retained", async () => {
+    const { createRuntimeStore } = require("../../../src/agents/runtime");
+    const store = createRuntimeStore({ workspaceRoot: fs.realpathSync(root), namespace: "main-control", sessionId: "control" });
+    const tasks = {};
+    for (const [id, day] of [["late", 7], ["oldest", 1], ["two", 2], ["three", 3], ["four", 4], ["five", 5]]) {
+      tasks[id] = { taskId: id, status: "accepted", acceptance: { time: `2026-01-0${day}T00:00:00Z` } };
+    }
+    tasks.active = { taskId: "active", status: "running" };
+    store.append({ type: "capability.state_committed", capabilityId: "agent-management", version: 1, value: { tasks } });
+    global.fetch = jest.fn().mockResolvedValue(response("ok"));
+    host = make();
+    expect((await host.runPrompt({ prompt: "status", requestId: "recent" })).ok).toBe(true);
+    const messages = JSON.parse(global.fetch.mock.calls[0][1].body).messages;
+    const prompt = messages.map(message => typeof message.content === "string" ? message.content : "").join("\n");
+    expect(prompt).toContain('"taskId":"late"');
+    expect(prompt).toContain('"taskId":"active"');
+    expect(prompt).not.toContain('"taskId":"oldest"');
+  });
+
+  test("recover ignores legacy task-execution child jobs in main-control without reviving zombie children", async () => {
+    const { createRuntimeStore } = require("../../../src/agents/runtime");
+    const controlStore = createRuntimeStore({ workspaceRoot: fs.realpathSync(root), namespace: "main-control", sessionId: "control" });
+    controlStore.append({
+      type: "capability.state_committed",
+      capabilityId: "task-execution",
+      version: 1,
+      value: {
+        jobs: {
+          "child-legacy": {
+            id: "child-legacy",
+            requestId: "legacy-req",
+            objective: "stale zombie job",
+            workspaceRoot: fs.realpathSync(root),
+            readOnly: false,
+            parentSessionId: "main-default",
+            status: "running",
+          },
+        },
+      },
     });
-    host = make({ onEvent: (event) => { if (event.type === "task.cancelled") cancelled(); } });
-    const started = await host.taskPort.execute({ operation: "start", command_id: "long-task", objective: "slow objective" }, { sessionId: "main-default", taskRunId: "parent-task" });
-    await childEntered;
-    expect(host.snapshot().children[0].status).toBe("running");
-    expect((await host.runPrompt({ prompt: "give me status", requestId: "status-request" })).payload.reply).toContain("responsive");
-    const cancel = await host.taskPort.execute({ operation: "cancel", task_run_id: started.taskRunId, reason: "user_cancel" });
-    expect(cancel.status).toBe("cancelling");
-    await childCancelled;
-    expect(host.snapshot().children[0].status).toBe("cancelled");
-    expect(await host.taskPort.execute({ operation: "start", command_id: "long-task", objective: "slow objective" }, { sessionId: "main-default" })).toMatchObject({ taskRunId: started.taskRunId });
+    global.fetch = jest.fn().mockResolvedValue(response("Recovered cleanly."));
+    host = make();
+    await host.recover();
+    expect(host.snapshot().children).toEqual([]);
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect((await host.runPrompt({ prompt: "status", requestId: "post-legacy-recover" })).ok).toBe(true);
   });
   test("global router profile cannot execute coding tools or inherit project management permissions", async () => {
     jest.spyOn(os, "homedir").mockReturnValue(root);
@@ -381,32 +427,29 @@ describe("project main agent host", () => {
     expect(retry.messages.find((message) => message.role === "system").content).toContain("same natural language as the user's prompt");
     expect(retry.messages.find((message) => message.tool_call_id === "forbidden-write").content).toContain("unsupported_tool");
   });
-  test("a task cannot select a directory outside its project or verified worktrees", async () => {
-    host = make();
-    await expect(host.taskPort.execute({ operation: "start", command_id: "escape-task", objective: "escape", workspace: os.tmpdir() }, {})).rejects.toThrow("outside the project grant");
-    expect(host.snapshot().children).toEqual([]);
-  });
-  test("verified worktrees run in independent writable task contexts", async () => {
-    const { execFileSync } = require("child_process");
-    execFileSync("git", ["init", "--quiet"], { cwd: root });
-    execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "--quiet", "-m", "baseline"], { cwd: root });
-    const worktree = `${root}-worktree`;
-    execFileSync("git", ["worktree", "add", "--quiet", "--detach", worktree], { cwd: root });
-    try {
-      global.fetch = jest.fn(async (_url, options) => {
-        const messages = JSON.parse(options.body).messages;
-        return messages.some((message) => message.tool_call_id === "worktree-write") ? response("Wrote in worktree.")
-          : response(null, [call("worktree-write", "write", { path: "isolated.txt", content: "child" })]);
-      });
-      host = make();
-      const started = await host.taskPort.execute({ operation: "start", command_id: "worktree-task", objective: "write in isolated workspace", workspace: worktree }, { sessionId: "main-default" });
-      expect((await host.resolveRuntime(started.task.id).wait(started.taskRunId)).status).toBe("completed");
-      expect(fs.readFileSync(path.join(worktree, "isolated.txt"), "utf8")).toBe("child");
-      expect(fs.existsSync(path.join(root, "isolated.txt"))).toBe(false);
-    } finally {
-      if (host) { await host.close(); host = null; }
-      execFileSync("git", ["worktree", "remove", "--force", worktree], { cwd: root });
-    }
+  test("controller tool failures return recoverable tool results instead of aborting the turn with uncertain_effect", async () => {
+    const ports = {
+      handleOps: jest.fn(),
+      dispatchMessages: jest.fn(),
+      groups: {
+        getStatus: jest.fn(() => { throw new Error("group daemon busy"); }),
+        runGroup: jest.fn(async () => { throw new Error("unexpected group startup error"); }),
+      },
+    };
+    global.fetch = jest.fn()
+      .mockResolvedValueOnce(response(null, [call("read-err", "manage_group", { operation: "status" })]))
+      .mockResolvedValueOnce(response(null, [call("write-err", "manage_group", { operation: "start", command_id: "grp-1", target: "dev" })]))
+      .mockResolvedValueOnce(response("Recovered from both controller tool errors."));
+    host = make({ ports });
+    const result = await host.runPrompt({ prompt: "check and start group", requestId: "recoverable-errors", sessionId: "err-session" });
+    expect(result.ok).toBe(true);
+    expect(result.payload.reply).toBe("Recovered from both controller tool errors.");
+    // Only the mutating start command records a durable uncertain receipt; read-only status never does.
+    expect(host.snapshot().uncertainReceipts).toEqual([expect.objectContaining({ kind: "manage_group", commandId: expect.stringMatching(/^coord-/) })]);
+    const events = host.getSession("err-session").events();
+    expect(events.some((e) => e.type === "tool.failed")).toBe(false);
+    expect(events.find((e) => e.type === "tool.completed" && e.toolCallId === "read-err").result).toMatchObject({ ok: false, error: { code: "tool_execution_failed", message: "group daemon busy" } });
+    expect(events.find((e) => e.type === "tool.completed" && e.toolCallId === "write-err").result).toMatchObject({ ok: false, error: { code: "tool_execution_failed", message: "unexpected group startup error" } });
   });
   test("restarted sessions retain provider and model while new sessions use new settings", async () => {
     const resolveProvider = jest.fn(async ({ provider, model }) => ({ provider, model,
@@ -490,60 +533,141 @@ describe("project main agent host", () => {
     expect(JSON.stringify(host.getSession().snapshot())).not.toContain("isolated-");
     expect(fs.existsSync(path.join(root, ".ufoo/config.json"))).toBe(false);
   });
-  test("completion is separate from acceptance and fabricated validation cannot accept a child", async () => {
-    global.fetch = jest.fn().mockImplementation(async () => response("Child completed."));
-    host = make();
-    const accepted = await host.taskPort.execute({ operation: "start", command_id: "child-review", objective: "inspect project", read_only: true }, { sessionId: "main-default" });
-    await host.resolveRuntime(accepted.task.id).wait(accepted.taskRunId);
-    expect((await host.taskPort.execute({ operation: "inspect", task_run_id: accepted.taskRunId }, {})).task.status).toBe("completed");
-    await expect(host.taskPort.execute({ operation: "accept", task_run_id: accepted.taskRunId, reason: "verified", evidence: ["invented"] }, { sessionId: "main-default" })).rejects.toThrow("validation");
-    global.fetch.mockImplementation(async (_url, options) => {
-      const messages = JSON.parse(options.body).messages;
-      const latest = messages.filter((message) => message.role === "user").at(-1);
-      return latest?.content === "verify child" && !messages.some((message) => message.tool_call_id === "validation-1")
-        ? response(null, [call("validation-1", "bash", { command: "node -e 'process.exit(0)'" })]) : response("Validated.");
-    });
-    const reviewed = await host.runPrompt({ prompt: "verify child", requestId: "review-child" });
-    const ctx = { sessionId: "main-default", taskRunId: reviewed.payload.runtime.taskRunId };
-    expect((await host.taskPort.execute({ operation: "accept", task_run_id: accepted.taskRunId, reason: "passed relevant check", evidence: ["validation-1"] }, ctx)).task.status).toBe("accepted");
+  test("accept_task verifies cross-turn read evidence, allows reason-only acceptance, and rejects fabricated IDs or error reports", async () => {
+    const EventBus = require("../../../src/coordination/bus");
+    const bus = new EventBus(root);
+    await bus.init();
+    await bus.join("worker", "ucode", "builder", { launchMode: "internal", parentPid: process.pid });
+    fs.writeFileSync(path.join(root, "output.txt"), "verified content");
+    global.fetch = jest.fn()
+      .mockResolvedValueOnce(response(null, [call("del-1", "delegate_task", { command_id: "job-read", target: "ucode:worker", objective: "produce output.txt" })]))
+      .mockResolvedValueOnce(response("Delegated."))
+      .mockResolvedValueOnce(response(null, [call("read-check-1", "read", { path: "output.txt" })]))
+      .mockResolvedValueOnce(response("Read output.txt."));
+    host = make({ ports: { dispatchMessages: async () => [{ seq: 11, targets: ["ucode:worker"] }] } });
+    await host.runPrompt({ prompt: "delegate output.txt", requestId: "req-del", sessionId: "accept-session" });
+    const delegatedTask = Object.values(host.management.snapshot().tasks)[0];
+    expect(host.inspectTask(delegatedTask.taskId).task).toMatchObject({ taskId: delegatedTask.taskId, status: "queued" });
+
+    // Perform a read check in a separate turn before accepting in another turn.
+    await host.runPrompt({ prompt: "inspect output.txt", requestId: "req-inspect", sessionId: "accept-session" });
+    await host.management.report({ entry_id: "done-1", phase: "done", task_id: delegatedTask.taskId, agent_id: "ucode:worker", summary: "wrote output.txt" });
+    const runtime = host.getSession("accept-session");
+    const wakeTask = Object.values(runtime.snapshot().tasks).find((t) => t.request.taskId === delegatedTask.taskId);
+    if (wakeTask) {
+      global.fetch.mockResolvedValueOnce(response("Wake received."));
+      await runtime.wait(wakeTask.taskRunId);
+    }
+
+    // Fabricated toolCallId is still rejected.
+    expect(host.management.accept({ task_id: delegatedTask.taskId, outcome: "accepted", reason: "checked", evidence: ["invented-id"] }, { sessionId: "accept-session", taskRunId: "other-turn" }))
+      .toMatchObject({ ok: false, code: "invalid_evidence" });
+
+    // Cross-turn read toolCallId is accepted.
+    expect(host.management.accept({ task_id: delegatedTask.taskId, outcome: "accepted", reason: "read output.txt and confirmed content", evidence: ["read-check-1"] }, { sessionId: "accept-session", taskRunId: "other-turn" }).task.status)
+      .toBe("accepted");
+
+    // Reason-only acceptance works for completed non-code/research reports; error reports cannot be accepted.
+    const research = await host.management.delegate({ command_id: "job-research", target: "ucode:worker", objective: "summarize docs" }, { sessionId: "accept-session", requestId: "req-res" });
+    await host.management.report({ entry_id: "done-res", phase: "done", task_id: research.task.taskId, agent_id: "ucode:worker", summary: "docs summarized" });
+    expect(host.management.accept({ task_id: research.task.taskId, outcome: "accepted", reason: "summary covers all requested sections" }, { sessionId: "accept-session" }).task.status)
+      .toBe("accepted");
+
+    const broken = await host.management.delegate({ command_id: "job-broken", target: "ucode:worker", objective: "run failing task" }, { sessionId: "accept-session", requestId: "req-brk" });
+    await host.management.report({ entry_id: "err-brk", phase: "error", task_id: broken.task.taskId, agent_id: "ucode:worker", error: "failed" });
+    expect(host.management.accept({ task_id: broken.task.taskId, outcome: "accepted", reason: "ignore failure" }, { sessionId: "accept-session" }))
+      .toMatchObject({ ok: false, code: "acceptance_required" });
   });
 
-  test("manage_tasks validation errors return recoverable tool results and failed tasks can be rejected without crashing main", async () => {
-    let childCalls = 0;
-    global.fetch = jest.fn(async (_url, options) => {
-      const body = JSON.parse(options.body);
-      const userMsgs = body.messages.filter((m) => m.role === "user").map((m) => String(m.content || ""));
-      if (userMsgs.some((t) => t.includes("failing child work"))) {
-        childCalls += 1;
-        return new Response("bad request", { status: 400 });
-      }
-      if (body.messages.some((m) => m.tool_call_id === "reject-failed")) {
-        return response("Handled failed child cleanly.");
-      }
-      if (body.messages.some((m) => m.tool_call_id === "accept-failed")) {
-        const failedTaskId = host.snapshot().children[0].taskRunId;
-        return response(null, [call("reject-failed", "manage_tasks", { operation: "reject", task_run_id: failedTaskId, reason: "child failed; switching strategy" })]);
-      }
-      if (userMsgs.some((t) => t.includes("handle failed child"))) {
-        const failedTaskId = host.snapshot().children[0].taskRunId;
-        return response(null, [call("accept-failed", "manage_tasks", { operation: "accept", task_run_id: failedTaskId, reason: "trying accept on failed" })]);
-      }
-      return response("ok");
+  test("ephemeral streaming deltas bypass WAL persistence while reaching onEvent live", async () => {
+    const encoder = new TextEncoder();
+    const sseBody = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: "thinking step" } }] })}\n\n`));
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "hello " } }] })}\n\n`));
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "world" } }], usage: { prompt_tokens: 10, completion_tokens: 4 } })}\n\n`));
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        controller.close();
+      },
     });
-    host = make();
-    const started = await host.taskPort.execute({ operation: "start", command_id: "failing-child", objective: "failing child work", read_only: true }, { sessionId: "main-default" });
-    const failedChild = await host.resolveRuntime(started.task.id).wait(started.taskRunId);
-    expect(failedChild.status).toBe("failed");
-    expect(childCalls).toBeGreaterThanOrEqual(1);
+    global.fetch = jest.fn().mockResolvedValueOnce(new Response(sseBody, { headers: { "content-type": "text/event-stream" } }));
+    const liveEvents = [];
+    host = make({ onEvent: (event) => liveEvents.push(event) });
+    const result = await host.runPrompt({ prompt: "stream reply", requestId: "stream-ephemeral", sessionId: "stream-session" });
+    expect(result.ok).toBe(true);
+    expect(result.payload.reply).toBe("hello world");
+    expect(liveEvents.some((e) => e.type === "message.delta" && e.ephemeral === true)).toBe(true);
+    expect(liveEvents.some((e) => e.type === "thinking.delta" && e.ephemeral === true)).toBe(true);
+    const persisted = host.getSession("stream-session").events();
+    expect(persisted.some((e) => ["message.delta", "thinking.delta", "model.phase"].includes(e.type))).toBe(false);
+    expect(persisted.find((e) => e.type === "model.completed")).toMatchObject({ firstTextAt: expect.any(String), firstThinkingAt: expect.any(String), streamedCharacters: 11 });
+  });
 
-    const mainRun = await host.runPrompt({ prompt: "handle failed child", requestId: "recover-failed-child", sessionId: "main-review" });
-    expect(mainRun.ok).toBe(true);
-    expect(mainRun.payload.reply).toBe("Handled failed child cleanly.");
-    expect(host.snapshot().uncertainReceipts).toEqual([]);
-    const events = host.getSession("main-review").events();
-    expect(events.some((e) => e.type === "tool.failed")).toBe(false);
-    const acceptErr = events.find((e) => e.type === "tool.completed" && e.toolCallId === "accept-failed");
-    expect(acceptErr.result).toMatchObject({ ok: false, error: { code: "invalid_task_state", message: expect.stringContaining("completed task") } });
-    expect(host.snapshot().children[0]).toMatchObject({ status: "rejected", executionStatus: "failed" });
+  test("switching agent_provider in settings seamlessly transitions an existing session across transports", async () => {
+    const { saveConfig } = require("../../../src/config");
+    const { applySettingsPatch } = require("../../../src/ui/settingsBridge");
+    saveConfig(root, { agentProvider: "kimi-cli", agentModel: "kimi-one" });
+    const resolveProvider = jest.fn(async ({ provider, model }) => ({
+      provider,
+      model,
+      transport: provider === "claude" ? "anthropic-messages" : "openai-chat",
+      baseUrl: "https://runtime.invalid/v1",
+      auth: { apiKey: "isolated-switch-key" },
+    }));
+    global.fetch = jest.fn()
+      .mockResolvedValueOnce(response("First turn on Kimi."))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ content: [{ type: "text", text: "Second turn on Claude." }], usage: {} }), { headers: { "content-type": "application/json" } }));
+    host = make({ provider: "kimi", model: "kimi-one", resolveProvider });
+    const first = await host.runPrompt({ prompt: "remember alpha_token", requestId: "switch-1", sessionId: "switch-session" });
+    expect(first.ok).toBe(true);
+    applySettingsPatch(root, { agent_provider: "claude-cli", agent_model: "claude-two" });
+    const second = await host.runPrompt({ prompt: "continue on claude", requestId: "switch-2", sessionId: "switch-session" });
+    expect(second.ok).toBe(true);
+    expect(second.payload.reply).toBe("Second turn on Claude.");
+    const claudeReq = JSON.parse(global.fetch.mock.calls[1][1].body);
+    expect(claudeReq.model).toBe("claude-two");
+    expect(JSON.stringify(claudeReq.messages)).toContain("alpha_token");
+  });
+
+  test("supervised permissionMode blocks mutating main tools while permitting reads", async () => {
+    fs.writeFileSync(path.join(root, "notes.txt"), "safe content");
+    global.fetch = jest.fn()
+      .mockResolvedValueOnce(response(null, [call("read-1", "read", { path: "notes.txt" }), call("write-1", "write", { path: "blocked.txt", content: "nope" })]))
+      .mockResolvedValueOnce(response("Read succeeded; write required approval."));
+    host = make();
+    expect(require("../../../src/ui/settingsBridge").applySettingsPatch(root, { permission_mode: "supervised" }).ok).toBe(true);
+    const result = await host.runPrompt({ prompt: "read notes and write blocked.txt", requestId: "supervised-main", sessionId: "sup-session" });
+    expect(result.ok).toBe(true);
+    expect(fs.existsSync(path.join(root, "blocked.txt"))).toBe(false);
+    const events = host.getSession("sup-session").events().filter((e) => e.type === "tool.completed");
+    expect(events.find((e) => e.toolCallId === "read-1").result.ok).toBe(true);
+    expect(events.find((e) => e.toolCallId === "write-1").result).toMatchObject({ ok: false, code: "forbidden_tool" });
+    const tools = host.getSession("sup-session").tools;
+    for (const [name, args] of [["bash", { command: "pwd" }], ["browser", { operation: "status" }], ["mac_app", { operation: "status" }]]) {
+      expect(await tools.execute(name, args, { workspaceRoot: root })).toMatchObject({ code: "forbidden_tool" });
+    }
+  });
+
+  test("receiveWorkerMessage routes non-delegated replies to parent_session_id without cross-session bleed", async () => {
+    global.fetch = jest.fn().mockResolvedValue(response("Received worker update."));
+    host = make();
+    const accepted = host.receiveWorkerMessage({
+      publisher: "ucode:helper",
+      seq: 55,
+      message: "finished audit",
+      data: { parent_session_id: "tab-two" },
+    });
+    expect((await host.getSession("tab-two").wait(accepted.taskRunId)).status).toBe("completed");
+    expect(host.snapshot().sessions.map((s) => s.sessionId)).toEqual(["tab-two"]);
+  });
+
+  test("recall_turn is non-deferable and returns a recoverable error instead of crashing the turn", async () => {
+    const { createTurnRecallCapability } = require("../../../src/agents/capabilities/turnRecall");
+    const cap = createTurnRecallCapability({ projectRoot: root }, { defaultNamespace: "main" });
+    expect(cap.tools[0].deferable).toBeUndefined();
+    const brokenDir = path.join(root, ".ufoo", "agent", "main", "context", "bad-session.turns.jsonl");
+    fs.mkdirSync(brokenDir, { recursive: true });
+    const res = await cap.tools[0].handler({ mode: "search", query: "anything" }, { workspaceRoot: root, sessionId: "bad-session" });
+    expect(res).toMatchObject({ ok: false, code: "recall_turn_failed" });
   });
 });

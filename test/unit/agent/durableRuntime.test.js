@@ -40,6 +40,17 @@ describe("durable shared runtime", () => {
     expect(store.events().map((event) => event.sequence)).toEqual(store.events().map((_, index) => index + 1));
     expect(fs.statSync(store.journal).mode & 0o777).toBe(0o600);
   });
+  test("a runtime wake keeps the task description and receives its own run ID", async () => {
+    const runtime = make(jest.fn().mockResolvedValue(answer("done")));
+    const original = runtime.submit({ requestId: "film", taskTitle: "渲染短片", text: "制作 10 秒成片" });
+    await runtime.wait(original.taskRunId);
+    const wake = runtime.wake({ id: "wake-film", type: "background.exited", ownerTaskRunId: original.taskRunId });
+    expect(wake.taskRunId).not.toBe(original.taskRunId);
+    expect(runtime.snapshot().tasks[wake.taskRunId].request).toMatchObject({
+      parentTaskRunId: original.taskRunId, taskTitle: "渲染短片",
+    });
+    await runtime.wait(wake.taskRunId);
+  });
   test("keeps status responsive and cancels a running provider while preserving queued tasks", async () => {
     let started;
     const entered = new Promise((resolve) => { started = resolve; });
@@ -62,9 +73,9 @@ describe("durable shared runtime", () => {
     expect(() => make(jest.fn(), { profileId: "global-router" })).toThrow("profile is pinned");
   });
 
-  test("adds browser capability to an existing paused session without allowing unrelated capability removal", async () => {
+  test("allows capability additions and retirements on an existing paused session while preserving waiting_user", async () => {
     const store = createRuntimeStore({ workspaceRoot: root, namespace: "main", sessionId: "test-session" });
-    store.append({ type: "runtime.opened", owner: { id: "old", pid: 99999999, profile: "main", capabilities: ["turn-recall"] } });
+    store.append({ type: "runtime.opened", owner: { id: "old", pid: 99999999, profile: "main", capabilities: ["turn-recall", "task-execution"] } });
     store.append({ type: "request.accepted", taskRunId: "paused", request: { requestId: "paused", text: "continue later" } });
     store.append({ type: "task.paused", taskRunId: "paused", result: { interactionId: "question" } });
     const capabilities = [{ id: "turn-recall", version: "1" }, { id: "browser", version: "1" }];
@@ -72,9 +83,13 @@ describe("durable shared runtime", () => {
       transport: transport(jest.fn()), host: { sessionStore: store } });
     runtimes.push(runtime);
     expect(runtime.snapshot().tasks.paused.status).toBe("waiting_user");
+    expect(runtime.snapshot().capabilities).toEqual(["turn-recall", "browser"]);
     await runtime.close();
-    expect(() => createAgentRuntime({ profile: { id: "main", capabilities: ["browser"] }, capabilities: [capabilities[1]],
-      transport: transport(jest.fn()), host: { sessionStore: store } })).toThrow("cannot change capabilities");
+    const trimmed = createAgentRuntime({ profile: { id: "main", capabilities: ["browser"] }, capabilities: [capabilities[1]],
+      transport: transport(jest.fn()), host: { sessionStore: store } });
+    runtimes.push(trimmed);
+    expect(trimmed.snapshot().tasks.paused.status).toBe("waiting_user");
+    expect(trimmed.snapshot().capabilities).toEqual(["browser"]);
   });
 
   test("cancels a paused waiting_user interaction by interactionId and clears its interaction state", async () => {
