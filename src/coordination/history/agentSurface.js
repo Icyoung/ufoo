@@ -42,6 +42,11 @@ function createAgentSurfacePublisher(projectRoot, subscriber) {
     let safeEvent;
     try { safeEvent = JSON.parse(redactSecrets(JSON.stringify(event))); }
     catch (error) { reportError(error); return; }
+    // Stamp observation time at enqueue so live and replayed surfaces derive
+    // identical durations (records are batched before they get a timestamp).
+    if (safeEvent && typeof safeEvent === "object" && !Number.isFinite(safeEvent.observed_at)) {
+      safeEvent.observed_at = Date.now();
+    }
     const last = batch.at(-1);
     if (["text_delta", "thinking_delta"].includes(safeEvent.type) && last?.type === safeEvent.type
         && String(last.delta || "").length < 32000) last.delta = String(last.delta || "") + String(safeEvent.delta || "");

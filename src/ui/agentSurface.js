@@ -99,6 +99,10 @@ function extractFileChangesFromToolOutput(output, toolName = "") {
   return out;
 }
 
+function eventTime(event) {
+  return Number.isFinite(event?.observed_at) ? event.observed_at : Date.now();
+}
+
 function createAgentSurface(options = {}) {
   const maxEntries = options.maxEntries || 1000;
   const maxText = options.maxText || 256000;
@@ -371,7 +375,7 @@ function createAgentSurface(options = {}) {
         ? args.command
         : (typeof args.cmd === "string" ? args.cmd : "");
       const headerContext = rawCommand ? `$ ${rawCommand}` : summary.replace(/^• /, "");
-      tools.set(id, { summary, headerContext, output: "", name, startedAt: Date.now(), files: toolFiles });
+      tools.set(id, { summary, headerContext, output: "", name, startedAt: eventTime(event), files: toolFiles });
       recordChangedFiles(argChanges);
       status = toolStatus(name);
       busy = true;
@@ -414,7 +418,7 @@ function createAgentSurface(options = {}) {
       const detail = [detailHeader, tool.output + exit].filter(Boolean).join("\n");
       const inProgress = event.status === "in_progress";
       if (!inProgress) status = "Waiting for model…";
-      const durationMs = !inProgress && tool.startedAt ? Math.max(0, Date.now() - tool.startedAt) : undefined;
+      const durationMs = !inProgress && tool.startedAt ? Math.max(0, eventTime(event) - tool.startedAt) : undefined;
       return apply("tool.result", {
         id,
         summary: tool.summary,

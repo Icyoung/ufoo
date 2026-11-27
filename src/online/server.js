@@ -480,6 +480,10 @@ class OnlineServer extends EventEmitter {
 
     return new Promise((resolve) => {
       server.close(() => resolve());
+      // Node < 19 keeps idle keep-alive sockets open until keepAliveTimeout
+      // (5s), which stalls close(). Drop them so shutdown is immediate.
+      if (typeof server.closeIdleConnections === "function") server.closeIdleConnections();
+      if (typeof server.closeAllConnections === "function") server.closeAllConnections();
     });
   }
 
