@@ -574,7 +574,7 @@ describe("agent internalRunner stream forwarding", () => {
     );
   });
 
-  test.each(["chat-agent-view", "rust-multi-window", "ufoo-agent"])(
+  test.each(["chat-agent-view", "rust-multi-window", "ufoo-agent", "controller-dispatch"])(
     "thread runtime streams replies for %s source through managed ufoo-agent",
     async (source) => {
       const busSender = {
@@ -586,7 +586,8 @@ describe("agent internalRunner stream forwarding", () => {
         publisher: "ufoo-agent",
         data: {
           message: "task",
-          source,
+          source: source === "controller-dispatch" ? "ufoo-agent" : source,
+          ...(source === "controller-dispatch" && { dispatch_id: "tool-example" }),
         },
       };
       const threadRuntime = {
@@ -613,6 +614,10 @@ describe("agent internalRunner stream forwarding", () => {
           threadRuntime
         );
 
+        if (source === "controller-dispatch") {
+          expect(busSender.enqueue.mock.calls).toEqual([["ufoo-agent", "ok", { data: { reply_to_dispatch: "tool-example" } }]]);
+          return;
+        }
         expect(busSender.enqueue).toHaveBeenCalledWith(
           "ufoo-agent",
           JSON.stringify({ stream: true, delta: "ok" })

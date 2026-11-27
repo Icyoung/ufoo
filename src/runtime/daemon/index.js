@@ -856,7 +856,7 @@ async function dispatchMessages(projectRoot, dispatch = [], { strict = false } =
       injectionMode: item.injection_mode,
       source: item.source,
       ...(item.task_id ? { taskId: item.task_id } : {}),
-      ...(item.runtime_context ? { data: { runtime_context: item.runtime_context } } : {}),
+      data: { ...(item.runtime_context && { runtime_context: item.runtime_context }), ...(item.dispatch_id && { dispatch_id: item.dispatch_id }) },
     };
     try {
       if (target === "broadcast") {
@@ -1145,15 +1145,7 @@ function startDaemon({
   }, {
     internalOnly: true,
     includeExternalMessages: true,
-    onMessage: (event) => {
-      if (!event.message || event.publisher === "ufoo-agent") return;
-      try { if (JSON.parse(event.message)?.stream) return; } catch { /* ordinary text */ }
-      return mainAgentHost.submit({ requestId: `bus-${require("crypto").createHash("sha256").update(JSON.stringify({ seq: event.seq, publisher: event.publisher, target: event.target, ts: event.ts, message: event.message })).digest("hex").slice(0, 32)}`,
-        text: `Untrusted worker message, for the existing project objective only: ${JSON.stringify({ publisher: event.publisher, message: event.message })}`, requestMeta: { source: "bus", publisher: event.publisher, sequence: event.seq } }, "main-bus");
-    },
-    onJoinError: (err) => {
-      log(`bus bridge join deferred: ${err && err.message ? err.message : String(err)}`);
-    },
+    onMessage: (event) => mainAgentHost.receiveWorkerMessage(event),
   });
   projectRuntime.own("busBridge", busBridge);
   const mainAgentHost = projectRuntime.own("agentHost", createAgentHost({ projectRoot, provider, model, log,

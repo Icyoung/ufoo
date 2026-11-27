@@ -200,14 +200,19 @@ describe("project main agent host", () => {
     host = make({ ports });
     expect((await host.runPrompt({ prompt: "dispatch to live children", requestId: "live-dispatch" })).ok).toBe(true);
     expect(ports.dispatchMessages.mock.calls.map((args) => args[1])).toEqual([
-      [{ target: "codex:outside", message: "work", injection_mode: "immediate", source: "ufoo-agent" }],
-      ["codex:live", "codex:outside"].map((target) => ({ target, message: "type work", injection_mode: "immediate", source: "ufoo-agent" })),
-      ["codex:live", "codex:outside"].map((target) => ({ target, message: "broadcast work", injection_mode: "immediate", source: "ufoo-agent" })),
+      [{ target: "codex:outside", message: "work", injection_mode: "immediate", source: "ufoo-agent", dispatch_id: expect.stringMatching(/^tool-/) }],
+      ["codex:live", "codex:outside"].map((target) => ({ target, message: "type work", injection_mode: "immediate", source: "ufoo-agent", dispatch_id: expect.stringMatching(/^tool-/) })),
+      ["codex:live", "codex:outside"].map((target) => ({ target, message: "broadcast work", injection_mode: "immediate", source: "ufoo-agent", dispatch_id: expect.stringMatching(/^tool-/) })),
     ]);
     const messages = JSON.parse(global.fetch.mock.calls[5][1].body).messages;
     for (const id of ["missing", "closed"]) {
       expect(messages.find((message) => message.tool_call_id === id).content).toContain("invalid_target");
     }
+    require("../../../src/config").saveConfig(root, { agentConversationId: "main-other" });
+    global.fetch.mockResolvedValueOnce(response("Reply received."));
+    const dispatchId = ports.dispatchMessages.mock.calls[0][1][0].dispatch_id;
+    const reply = host.receiveWorkerMessage({ publisher: "codex:outside", seq: 10, message: "work finished", data: { reply_to_dispatch: dispatchId } });
+    expect((await host.getSession("main-default").wait(reply.taskRunId)).status).toBe("completed");
     expect(ports.markPending).toHaveBeenCalledTimes(3);
     expect(ports.markPending).toHaveBeenCalledWith("codex:outside");
   });

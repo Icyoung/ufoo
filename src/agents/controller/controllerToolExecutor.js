@@ -73,6 +73,7 @@ async function handleDispatchMessage(ctx, args) {
     const targets = resolveDispatchTargets(ctx, target);
     const receipts = await ctx.dispatchMessages(ctx.projectRoot, (ctx.internalAgentsOnly ? targets : [target]).map((recipient) => ({
       target: recipient,
+      ...(ctx.dispatchId && { dispatch_id: ctx.dispatchId }),
       message,
       injection_mode: options.injectionMode || "immediate",
       source: options.source || publisher,

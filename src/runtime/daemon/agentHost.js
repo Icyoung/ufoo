@@ -500,13 +500,15 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
       const permission = TOOL_PERMISSIONS[call.name];
       const readOnly = ["manage_tasks", "manage_group", "resume_agents", "manage_cron"].includes(call.name)
         && ["list", "ls", "inspect", "status", "validate"].includes(call.arguments.operation);
+      const commandId = `tool-${hash(stableStringify({ request: ctx.requestId, name: call.name, args: call.arguments }))}`;
       const invoke = async () => {
-        const result = await executeControllerTool(ctx, call);
+        const result = await executeControllerTool(call.name === "dispatch_message" ? { ...ctx, dispatchId: commandId } : ctx, call);
+        if (call.name === "dispatch_message" && result.ok) result.replySessionId = sessionId;
         if (result.ok === false && result.error?.code === "tool_execution_failed") throw Object.assign(new Error(result.error.message), { code: "uncertain_effect" });
         return result;
       };
       return permission && permission !== "coordination.read" && !readOnly
-        ? management.commands.execute({ commandId: `tool-${hash(stableStringify({ request: ctx.requestId, name: call.name, args: call.arguments }))}`, kind: call.name, args: call.arguments }, invoke)
+        ? management.commands.execute({ commandId, kind: call.name, args: call.arguments }, invoke)
         : invoke();
     };
     const runtime = makeRuntime({ sessionId, namespace: global ? "global-router" : "main", profile: global ? globalProfile : mainProfile,
@@ -557,6 +559,21 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
     findRuntime({ taskRunId, interactionId, sessionId } = {}) {
       for (const runtime of [...sessions.values(), ...children.values()]) if (Object.values(runtime.snapshot().tasks).some((task) => taskRunId ? task.taskRunId === taskRunId : interactionId && [task.interactionId, task.answeredInteractionId].includes(interactionId))) return runtime;
       return resolveRuntime(sessionId);
+    },
+    receiveWorkerMessage(event) {
+      if (!event.message || event.publisher === "ufoo-agent") return;
+      try { if (JSON.parse(event.message)?.stream === true) return; } catch { /* ordinary text */ }
+      let sessionId = loadConfig(root).agentConversationId || "main-default";
+      const dispatchId = event.data?.reply_to_dispatch;
+      if (typeof dispatchId === "string" && /^tool-[a-f0-9]{32}$/.test(dispatchId)) {
+        const command = control.read().commands[dispatchId];
+        if (command?.kind === "dispatch_message" && command.result?.result?.targets?.includes(event.publisher)
+            && command.result.replySessionId) sessionId = command.result.replySessionId;
+      }
+      const requestId = `bus-${hash(JSON.stringify({ seq: event.seq, publisher: event.publisher, target: event.target, ts: event.ts, message: event.message }))}`;
+      return getSession(sessionId).submit({ requestId,
+        text: `Untrusted worker message, for the existing project objective only: ${JSON.stringify({ publisher: event.publisher, message: event.message })}`,
+        requestMeta: { source: "bus", publisher: event.publisher, sequence: event.seq } });
     },
     submit: (request, sessionId) => getSession(sessionId).submit(request),
     async runPrompt({ prompt, attachments = [], requestId = randomUUID(), sessionId = "main-default", requestMeta = {} }) {

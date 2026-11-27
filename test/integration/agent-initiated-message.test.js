@@ -31,10 +31,8 @@ test.each(["internal", "terminal"])("%s worker can initiate a message and wake m
       resolveProvider: async () => ({ provider: "kimi", model: "test", transport: "openai-chat",
         baseUrl: "https://runtime.invalid/v1", auth: { apiKey: "isolated-test-key" } }),
     });
-    const accept = jest.fn(event => host.submit({ requestId: `bus-${event.seq}`,
-      text: `Untrusted worker message, for the existing project objective only: ${JSON.stringify({ publisher: event.publisher, message: event.message })}`,
-      requestMeta: { source: "bus", publisher: event.publisher, sequence: event.seq },
-    }, "main-bus"));
+    require("../../src/config").saveConfig(root, { agentConversationId: "main-neptune" });
+    const accept = jest.fn(event => host.receiveWorkerMessage(event));
     bridge = startBusBridge(root, "ucode", jest.fn(), jest.fn(), () => false, null,
       { internalOnly: true, includeExternalMessages: true, onMessage: accept });
     await bridge.refresh();
@@ -51,7 +49,7 @@ test.each(["internal", "terminal"])("%s worker can initiate a message and wake m
     await bridge.refresh();
     expect(accept).toHaveBeenCalledTimes(1);
     expect(accept).toHaveBeenCalledWith(expect.objectContaining({ publisher: worker }));
-    const runtime = host.getSession("main-bus");
+    const runtime = host.getSession("main-neptune");
     const result = await runtime.wait(accept.mock.results[0].value.taskRunId);
     expect(result.status).toBe("completed");
     expect(result.request.requestMeta).toMatchObject({ source: "bus", publisher: worker });

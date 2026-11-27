@@ -384,7 +384,11 @@ async function handleEvent(
     .filter(Boolean)
     .join("\n\n");
   const publisher = evt.publisher || "unknown";
-  const streamToPublisher = shouldStreamReplyToPublisher(projectRoot, publisher, evt);
+  const dispatchId = publisher === "ufoo-agent" && evt.data.source === "ufoo-agent" && evt.data.dispatch_id;
+  const streamToPublisher = !dispatchId && shouldStreamReplyToPublisher(projectRoot, publisher, evt);
+  const sendReply = (text) => dispatchId
+    ? busSender.enqueue(publisher, text, { data: { reply_to_dispatch: dispatchId } })
+    : busSender.enqueue(publisher, text);
   const inherited = normalizeTraceContext(evt.data.runtime_context);
   const taskId = getTaskIdFromEvent(evt) || inherited.taskId || `worker-${randomUUID()}`;
   const runtimeContext = { ...inherited, taskId, traceId: inherited.traceId || taskId,
@@ -441,6 +445,7 @@ async function handleEvent(
       busSender,
       emitStreamDelta,
       streamToPublisher,
+      sendReply,
       threadRuntime,
       tracker,
       emitSurface,
@@ -459,7 +464,7 @@ async function handleEvent(
     busSender.enqueue(publisher, JSON.stringify({ stream: true, delta: errorText }));
     busSender.enqueue(publisher, JSON.stringify({ stream: true, done: true, reason: "error" }));
   } else {
-    busSender.enqueue(publisher, errorText);
+    sendReply(errorText);
   }
   await busSender.flush();
   return { ok: false, error: errorText };
@@ -528,6 +533,7 @@ async function handleThreadedEvent({
   busSender,
   emitStreamDelta,
   streamToPublisher = true,
+  sendReply = (text) => busSender.enqueue(publisher, text),
   threadRuntime,
   tracker = null,
   emitSurface = () => {},
@@ -609,7 +615,7 @@ async function handleThreadedEvent({
       // answer, including an explicitly empty ack-only result.
       // Workflow-handoff turns forward strictly along outgoing workflow edges below
       // rather than bouncing back to the upstream node.
-      if (reply && runtimeContext.requestKind !== "system_wake") busSender.enqueue(publisher, reply);
+      if (reply && runtimeContext.requestKind !== "system_wake") sendReply(reply);
     }
 
     if (!waitingForUser && reply && runtimeContext.requestKind !== "system_wake" && projectRoot && subscriber) {
@@ -668,7 +674,7 @@ async function handleThreadedEvent({
         JSON.stringify({ stream: true, done: true, reason: "error" })
       );
     } else if (runtimeContext.requestKind !== "system_wake") {
-      busSender.enqueue(publisher, errorText);
+      sendReply(errorText);
     }
     await busSender.flush();
     return { ok: false, error: errorText };
