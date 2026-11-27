@@ -224,11 +224,21 @@ function extraArgsToObject(extraArgs = []) {
   return result;
 }
 
+function resolveClaudePermissionMode(permissionMode = "") {
+  const mode = String(permissionMode || "").trim().toLowerCase();
+  if (mode === "supervised") return "default";
+  if (mode === "auto_edit") return "acceptEdits";
+  if (mode === "full_access") return "bypassPermissions";
+  return "";
+}
+
 function buildClaudeAgentOptions({
   model = "",
   cwd = "",
   threadId = "",
   extraArgs = [],
+  permissionMode = "",
+  mcpServers = null,
   agentOptions = {},
   opts = {},
 } = {}) {
@@ -239,6 +249,13 @@ function buildClaudeAgentOptions({
   if (model && options.model === undefined) options.model = model;
   if (cwd && options.cwd === undefined) options.cwd = cwd;
   if (options.includePartialMessages === undefined) options.includePartialMessages = true;
+  const mappedPermission = resolveClaudePermissionMode(permissionMode);
+  if (mappedPermission && options.permissionMode === undefined) {
+    options.permissionMode = mappedPermission;
+  }
+  if (mcpServers && typeof mcpServers === "object" && options.mcpServers === undefined) {
+    options.mcpServers = mcpServers;
+  }
   if (options.extraArgs === undefined) {
     const converted = extraArgsToObject(extraArgs);
     if (Object.keys(converted).length > 0) options.extraArgs = converted;
@@ -291,6 +308,8 @@ class ClaudeApiThread {
     clientFactory = defaultClaudeClientFactory,
     streamFactory = defaultClaudeAgentStreamFactory,
     sdk,
+    permissionMode = "",
+    mcpServers = null,
     agentOptions = {},
     maxTokens = 4096,
   } = {}) {
@@ -302,9 +321,35 @@ class ClaudeApiThread {
     this.clientFactory = clientFactory;
     this.streamFactory = streamFactory;
     this.sdk = sdk;
+    this.permissionMode = String(permissionMode || "").trim();
+    this.mcpServers = mcpServers && typeof mcpServers === "object" ? mcpServers : null;
     this.agentOptions = { ...agentOptions };
     this.maxTokens = maxTokens;
     this.messages = [];
+  }
+
+  configure({ model, thinkingLevel, permissionMode } = {}) {
+    if (model !== undefined) {
+      this.model = String(model || "").trim();
+    }
+    if (thinkingLevel !== undefined) {
+      const raw = String(thinkingLevel || "").trim().toLowerCase();
+      const mapped = raw === "xhigh" ? "max"
+        : ["low", "medium", "high", "max"].includes(raw) ? raw : "";
+      const nextOpts = { ...this.agentOptions };
+      if (raw === "off" || raw === "none" || !mapped) delete nextOpts.effort;
+      else nextOpts.effort = mapped;
+      this.agentOptions = nextOpts;
+    }
+    if (permissionMode !== undefined) {
+      const nextPerm = String(permissionMode || "").trim().toLowerCase();
+      if (nextPerm) this.permissionMode = nextPerm;
+    }
+    return {
+      model: this.model,
+      thinkingLevel: String(this.agentOptions.effort || ""),
+      permissionMode: this.permissionMode,
+    };
   }
 
   async *runStreamed(input, opts = {}) {
@@ -324,6 +369,8 @@ class ClaudeApiThread {
       cwd: this.cwd,
       threadId: this.id,
       extraArgs: this.extraArgs,
+      permissionMode: this.permissionMode,
+      mcpServers: this.mcpServers,
       agentOptions: this.agentOptions,
       opts,
     });
@@ -338,9 +385,10 @@ class ClaudeApiThread {
     });
     const state = createClaudeEventState({ threadId: this.id });
     let threadStarted = false;
-    let sawStreamEvents = false;
+    let sawStreamEventsForMessage = false;
     let sawText = false;
     let sawTurnCompleted = false;
+    const emittedToolCallIds = new Set();
 
     const emitThreadStarted = function* emitThreadStarted(self, sessionId = "") {
       const nextId = String(sessionId || self.id || "").trim();
@@ -386,11 +434,14 @@ class ClaudeApiThread {
       }
 
       if (message.type === "stream_event") {
-        sawStreamEvents = true;
+        sawStreamEventsForMessage = true;
         const events = normalizeClaudeEvent(message.event || {}, state);
         for (const event of events) {
           if (!event || typeof event !== "object") continue;
           if (event.type === "text_delta" && event.delta) sawText = true;
+          if (event.type === "tool_call" && event.toolCallId) {
+            emittedToolCallIds.add(event.toolCallId);
+          }
           // A message ends before Claude executes its tools and continues.
           // Only the SDK result ends the complete agent turn.
           if (event.type === "turn_completed") continue;
@@ -400,12 +451,25 @@ class ClaudeApiThread {
       }
 
       if (message.type === "assistant") {
-        if (sawStreamEvents) continue;
+        const hadStreamForMessage = sawStreamEventsForMessage;
+        sawStreamEventsForMessage = false;
         const events = normalizeClaudeMessage(message.message || {});
         for (const event of events) {
           if (!event || typeof event !== "object") continue;
-          if (event.type === "text_delta" && event.delta) sawText = true;
           if (event.type === "turn_completed") continue;
+          if (hadStreamForMessage) {
+            // Even when stream events ran, backfill any tool_use block that wasn't
+            // emitted via partial content_block_stop so tool calls are never lost.
+            if (event.type === "tool_call" && event.toolCallId && !emittedToolCallIds.has(event.toolCallId)) {
+              emittedToolCallIds.add(event.toolCallId);
+              yield redactUfooEvent(event);
+            }
+            continue;
+          }
+          if (event.type === "text_delta" && event.delta) sawText = true;
+          if (event.type === "tool_call" && event.toolCallId) {
+            emittedToolCallIds.add(event.toolCallId);
+          }
           yield redactUfooEvent(event);
         }
         continue;

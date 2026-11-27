@@ -26,6 +26,7 @@ function replayHistory(events = [], excludeTask = "") {
   for (const [id, request] of requests) {
     const event = terminal.get(id);
     if (id === excludeTask || !event) continue;
+    if (event.type === "task.cancelled" && event.error === "interaction_dismissed") continue;
     history.push(...replayTurnMessages(request, event));
   }
   return history;

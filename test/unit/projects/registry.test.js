@@ -199,6 +199,18 @@ describe("projects registry", () => {
       expect(validated.status).toBe("running");
       expect(validated.validation.pid_alive).toBe(true);
       expect(validated.validation.socket_alive).toBe(true);
+
+      const restartedGlobal = validateProjectRuntime({
+        ...base,
+        daemon_pid: 999999,
+        status: "running",
+      }, {
+        staleTtlMs: 1,
+        nowMs: Date.parse("2026-03-06T10:00:10.000Z"),
+      });
+      expect(restartedGlobal.status).toBe("dormant");
+      expect(restartedGlobal.validation.socket_alive).toBe(true);
+      expect(restartedGlobal.validation.project_exists).toBe(true);
     } finally {
       await new Promise((resolve) => server.close(resolve));
     }

@@ -40,7 +40,7 @@ async function launchAgentHandler(ctx = {}, args = {}) {
   assertControllerTier(ctx, "launch_agent");
   const audit = extractAuditFields(ctx);
   const agent = normalizeInternalAgentType(args.agent);
-  if (!agent) guardInvalidArgs(ctx, "launch_agent", "requires internal codex, claude or ucode");
+  if (!agent) guardInvalidArgs(ctx, "launch_agent", "requires internal codex, claude, ucode, agy or acp:<id>");
 
   const op = {
     action: "launch",

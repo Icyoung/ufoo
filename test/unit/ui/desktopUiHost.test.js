@@ -19,6 +19,7 @@ const {
   loadWorkspaceChanges,
   loadWorkspaceDocs,
   handleWorkspaceContext,
+  buildDecisionTidyPrompt,
 } = require("../../../src/ui/workspaceInspector");
 const {
   buildHandoffUrl,
@@ -46,6 +47,10 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
       "project.add",
       "project.archive",
       "session.archive",
+      "session.unarchive",
+      "session.rename",
+      "session.pin",
+      "session.delete",
       "side.select",
       "worker.focus_view",
       "worker.launch",
@@ -56,6 +61,10 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
       "handoff.to_cli",
       "handoff.open_url",
       "cli.install_shims",
+      "daemon.service.status",
+      "daemon.service.install",
+      "daemon.service.uninstall",
+      "daemon.restart",
     ]) {
       expect(COMMAND_NAMES).toContain(cmd);
     }
@@ -66,6 +75,7 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
       "workspace.docs.snapshot",
       "workspace.context.snapshot",
       "handoff.state",
+      "host.connection",
     ]) {
       expect(EVENT_NAMES).toContain(evt);
     }
@@ -89,10 +99,25 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
       reopened.restoreProject(root);
       expect(archive.read().projects).toEqual([]);
       expect(archive.read().sessions).toHaveLength(2);
+      archive.restoreSession(root, "worker-1");
+      expect(archive.read().sessions).toEqual([{ root: otherRoot, id: "worker-1" }]);
+
+      const { createDesktopSessionPrefs } = require("../../../src/ui/desktopSessionPrefs");
+      const prefs = createDesktopSessionPrefs(tmp);
+      prefs.setLabel(root, "worker-1", "Refactor Auth");
+      prefs.setPinned(root, "worker-1", true);
+      prefs.setArchivedMeta(root, "worker-1", { type: "codex", label: "Refactor Auth", internal: true });
+      expect(prefs.read().labels).toEqual([{ root, id: "worker-1", label: "Refactor Auth" }]);
+      expect(prefs.read().pinned).toHaveLength(1);
+      expect(prefs.read().archivedMeta[0]).toMatchObject({ root, id: "worker-1", type: "codex" });
+      prefs.rekeySession(root, "worker-1", "worker-2");
+      expect(prefs.read().labels[0].id).toBe("worker-2");
+      prefs.purgeSession(root, "worker-2");
+      expect(prefs.read()).toEqual({ pinned: [], labels: [], archivedMeta: [] });
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
-  });
+  }, 15000);
 
   test("Go Window targets a registered terminal session or Codex thread before falling back to an app", async () => {
     const platform = Object.getOwnPropertyDescriptor(process, "platform");
@@ -137,11 +162,13 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
     const logged = [];
     const interactions = [];
     const cleared = [];
+    const synced = [];
     const router = createDaemonMessageRouter({
       isOwnRequestId: (id) => id === "own-req-1",
       logMessage: (kind, text) => logged.push({ kind, text }),
       onInteractionRequest: (item) => interactions.push(item),
       onInteractionClear: (item) => cleared.push(item),
+      onInteractionsSync: (list) => synced.push(list),
     });
 
     // Own request must NOT duplicate user bubble
@@ -214,6 +241,47 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
     });
     expect(cleared).toHaveLength(1);
     expect(cleared[0].id).toBe("int-42");
+
+    // STATUS must ignore non-waiting_user tasks and forward sessionId/taskRunId for live ones
+    router.handleMessage({
+      type: IPC_RESPONSE_TYPES.STATUS,
+      data: {
+        agent_runtime: {
+          sessions: [{
+            sessionId: "main-bus",
+            tasks: [
+              {
+                taskRunId: "run-done",
+                status: "running",
+                interaction: { id: "int-stale", prompt: "Already answered" },
+              },
+              {
+                taskRunId: "run-wait",
+                status: "waiting_user",
+                interaction: { id: "int-live", prompt: "Still waiting" },
+              },
+            ],
+          }],
+          children: [],
+        },
+      },
+    });
+    expect(interactions.map((i) => i.id)).toEqual(["int-42", "int-live"]);
+    expect(interactions[1]).toMatchObject({ id: "int-live", sessionId: "main-bus", taskRunId: "run-wait" });
+    expect(synced.at(-1).map((i) => i.id)).toEqual(["int-live"]);
+
+    const { shouldSkipChatHistoryEntry } = require("../../../src/app/chat/historyStore");
+    const { replayHistory } = require("../../../src/agents/runtime/context/replayHistory");
+    expect(shouldSkipChatHistoryEntry("system", "Approve schema?\n\n/answer ui_abc123 <reply>")).toBe(true);
+    expect(replayHistory([
+      { type: "request.accepted", taskRunId: "t-dismissed", request: { text: "old prompt" } },
+      { type: "task.cancelled", taskRunId: "t-dismissed", error: "interaction_dismissed" },
+      { type: "request.accepted", taskRunId: "t-ok", request: { text: "real prompt" } },
+      { type: "task.completed", taskRunId: "t-ok", result: { text: "real reply" } },
+    ])).toEqual([
+      { role: "user", content: "real prompt" },
+      { role: "assistant", content: "real reply" },
+    ]);
   });
 
   test("workspaceInspector reads git changes, docs with line anchors, decisions, and shared memory", () => {
@@ -241,6 +309,18 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
       expect(docs.document.language).toBe("javascript");
       expect(docs.document.content).toContain("const x = 42;");
 
+      // Absolute path inside .ufoo/ opens cleanly even when called with a worktreeRoot fallback
+      const reportDir = path.join(tmp, ".ufoo", "context");
+      const fakeWorktree = path.join(tmp, ".ufoo", "worktrees", "codex-wt");
+      fs.mkdirSync(reportDir, { recursive: true });
+      fs.mkdirSync(fakeWorktree, { recursive: true });
+      const reportAbs = path.join(reportDir, "decision-memory-review.md");
+      fs.writeFileSync(reportAbs, "# Decision Review\n\nAll 11 facts verified.\n", "utf8");
+      const reportDoc = loadWorkspaceDocs(tmp, { filePath: reportAbs, worktreeRoot: fakeWorktree });
+      expect(reportDoc.document.path).toBe(".ufoo/context/decision-memory-review.md");
+      expect(reportDoc.document.language).toBe("markdown");
+      expect(reportDoc.document.content).toContain("All 11 facts verified.");
+
       // Escape attempts are rejected safely
       const escaped = loadWorkspaceDocs(tmp, { filePath: "../../etc/passwd" });
       expect(escaped.document.error).toMatch(/escapes workspace root/i);
@@ -264,6 +344,54 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
       expect(ctx.openDecisionCount).toBe(0);
       expect(ctx.decisions[0].status).toBe("resolved");
 
+      // Create 2 more open decisions to test tidy prompt, update_decision tool, delete, and clear
+      const created2 = handleWorkspaceContext(tmp, {
+        operation: "decision.create",
+        title: "Temporary migration flag",
+        decision: "Drop after rollout.",
+      });
+      const tempFile = created2.actionResult.file;
+      const created3 = handleWorkspaceContext(tmp, {
+        operation: "decision.create",
+        title: "Keep daemon socket protocol stable",
+        decision: "Use versioned IPC envelopes.",
+      });
+      const keepFile = created3.actionResult.file;
+
+      const tidyPlan = buildDecisionTidyPrompt(tmp);
+      expect(tidyPlan.openCount).toBe(2);
+      expect(tidyPlan.files).toEqual(expect.arrayContaining([tempFile, keepFile]));
+      expect(tidyPlan.prompt).toContain("update_decision");
+      expect(tidyPlan.prompt).toContain("ask_user");
+      expect(tidyPlan.prompt).toContain("remember");
+
+      // Agent native update_decision tool archives stale decision cleanly
+      const { updateDecisionHandler } = require("../../../src/tools/handlers/decisions");
+      const toolRes = updateDecisionHandler(
+        { projectRoot: tmp, subscriber: "ufoo-agent" },
+        { file: tempFile, status: "archived", reason: "Rollout completed" }
+      );
+      expect(toolRes).toMatchObject({ ok: true, file: tempFile, status: "archived" });
+
+      ctx = handleWorkspaceContext(tmp, { operation: "snapshot" });
+      expect(ctx.openDecisionCount).toBe(1);
+      expect(ctx.archivedDecisionCount).toBe(1);
+      expect(ctx.decisions.find((d) => d.file === tempFile)?.resolution_note).toBe("Rollout completed");
+
+      // Single delete removes only target file
+      ctx = handleWorkspaceContext(tmp, { operation: "decision.delete", file: createdFile });
+      expect(ctx.decisions.map((d) => d.file)).not.toContain(createdFile);
+      expect(ctx.decisions).toHaveLength(2);
+
+      // Clear closed removes archived/resolved while preserving open
+      ctx = handleWorkspaceContext(tmp, { operation: "decision.clear", scope: "closed" });
+      expect(ctx.decisions.map((d) => d.file)).toEqual([keepFile]);
+
+      // Clear all empties decisions
+      ctx = handleWorkspaceContext(tmp, { operation: "decision.clear", scope: "all" });
+      expect(ctx.decisions).toHaveLength(0);
+      expect(ctx.openDecisionCount).toBe(0);
+
       ctx = handleWorkspaceContext(tmp, {
         operation: "memory.add",
         title: "GUI Daemon Rule",
@@ -275,7 +403,7 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
-  });
+  }, 15000);
 
   test("cliHandoff builds/parses deep links, wakes running desktop over socket, and installs CLI shims", async () => {
     const tmp = makeTempDir("ufoo-handoff-");
@@ -330,7 +458,7 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
       await server.close();
       fs.rmSync(tmp, { recursive: true, force: true });
     }
-  });
+  }, 15000);
 
   test("desktopUiHost authenticates, publishes project+worker tree, switches window modes and worker views", async () => {
     const tmp = makeTempDir("ufoo-dhost-");
@@ -387,6 +515,27 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
             })}\n`);
           } else if (req.type === "bus_send") {
             socket.write(`${JSON.stringify({ type: "bus_send_ok", request_id: req.request_id })}\n`);
+            socket.write(`${JSON.stringify({
+              type: "bus",
+              data: {
+                event: "message",
+                publisher: "ufoo-agent",
+                target: req.target,
+                source: req.source || "",
+                message: req.message || "",
+              },
+            })}\n`);
+          } else if (req.type === "prompt") {
+            socket.write(`${JSON.stringify({
+              type: "runtime_event",
+              data: {
+                type: "task.started",
+                agentId: "ufoo-agent",
+                sessionId: "main-default",
+                taskRunId: "run-1",
+                sequence: 1,
+              },
+            })}\n`);
           }
         }
       });
@@ -395,6 +544,13 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
 
     const controllerDir = path.join(tmp, "controller");
     fs.mkdirSync(path.join(controllerDir, ".ufoo", "run"), { recursive: true });
+    // Regression: an archived project deleted from disk must never crash startup
+    fs.mkdirSync(path.join(controllerDir, ".ufoo", "ui"), { recursive: true });
+    fs.writeFileSync(
+      path.join(controllerDir, ".ufoo", "ui", "desktop-archive.json"),
+      JSON.stringify({ projects: [{ root: path.join(tmp, "deleted-folder-enoent") }], sessions: [] }),
+      "utf8"
+    );
     // Point controller ufoo.sock to our fake daemon via symlink
     fs.symlinkSync(daemonSock, path.join(controllerDir, ".ufoo", "run", "ufoo.sock"));
 
@@ -419,8 +575,8 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
       const client = net.createConnection(uiSock);
       await new Promise((resolve) => client.once("connect", resolve));
 
-      async function waitForEnvelope(matches) {
-        const deadline = Date.now() + 3000;
+      async function waitForEnvelope(matches, timeoutMs = 3000) {
+        const deadline = Date.now() + timeoutMs;
         while (Date.now() < deadline) {
           const envelope = envelopes.find(matches);
           if (envelope) return envelope;
@@ -488,6 +644,138 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
       });
       expect(envelopes.some((e) => e.name === "worker.view.frame" && e.payload.agent_id === "ucode:a1b2c3d4")).toBe(true);
 
+      // Query per-agent models & thinking levels + configure worker runtime
+      client.write(encodeMessage(createEnvelope({
+        kind: "command",
+        name: "worker.models",
+        requestId: "cmd-wmodels",
+        payload: { agent_id: "ucode:a1b2c3d4" },
+      })));
+      const wModelsRes = await waitForEnvelope((e) => e.kind === "result" && e.request_id === "cmd-wmodels", 9000);
+      expect(wModelsRes?.payload?.ok).toBe(true);
+      expect(Array.isArray(wModelsRes?.payload?.thinking_levels)).toBe(true);
+
+      client.write(encodeMessage(createEnvelope({
+        kind: "command",
+        name: "worker.configure",
+        requestId: "cmd-wcfg",
+        payload: {
+          agent_id: "ucode:a1b2c3d4",
+          model: "claude-sonnet-4-6",
+          thinking_level: "high",
+          permission_mode: "supervised",
+        },
+      })));
+      const wCfgRes = await waitForEnvelope((e) => e.kind === "result" && e.request_id === "cmd-wcfg");
+      expect(wCfgRes?.payload?.ok).toBe(true);
+      expect(wCfgRes?.payload?.model).toBe("claude-sonnet-4-6");
+      expect(wCfgRes?.payload?.thinking_level).toBe("high");
+      expect(wCfgRes?.payload?.permission_mode).toBe("supervised");
+      const updatedFrame = envelopes.filter((e) => e.name === "worker.view.frame" && e.payload.agent_id === "ucode:a1b2c3d4").at(-1);
+      expect(updatedFrame?.payload?.model).toBe("claude-sonnet-4-6");
+      expect(updatedFrame?.payload?.thinking_level).toBe("high");
+      expect(updatedFrame?.payload?.permission_mode).toBe("supervised");
+
+      // Direct submit inside Worker Single View renders local user bubble and never leaks into ufoo main transcript
+      const mainCountBeforeWorkerSend = envelopes.filter((e) => e.name === "transcript.append").length;
+      client.write(encodeMessage(createEnvelope({
+        kind: "command",
+        name: "multi.raw",
+        requestId: "cmd-wsend",
+        payload: {
+          agent_id: "ucode:a1b2c3d4",
+          input: "hello ucode directly",
+          cursor: 20,
+          input_revision: 1,
+          submit: true,
+        },
+      })));
+      const wSendRes = await waitForEnvelope((e) => e.kind === "result" && e.request_id === "cmd-wsend");
+      expect(wSendRes?.payload?.ok).toBe(true);
+      const afterSendFrame = envelopes.filter((e) => e.name === "worker.view.frame" && e.payload.agent_id === "ucode:a1b2c3d4").at(-1);
+      expect(afterSendFrame?.payload?.entries?.some((e) => e.kind === "user" && e.text === "hello ucode directly")).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      const leakedMain = envelopes.slice(mainCountBeforeWorkerSend).filter(
+        (e) => e.name === "transcript.append" && String(e.payload?.text || "").includes("hello ucode directly")
+      );
+      expect(leakedMain).toHaveLength(0);
+
+      // Seed disk agent metadata so worker.configure persists and survives subsequent thin daemon STATUS refreshes
+      const agentsFile = path.join(projectDir, ".ufoo", "agent", "all-agents.json");
+      fs.mkdirSync(path.dirname(agentsFile), { recursive: true });
+      fs.writeFileSync(agentsFile, JSON.stringify({
+        schema_version: 1,
+        agents: {
+          "ucode:a1b2c3d4": {
+            agent_type: "ucode",
+            nickname: "ucode-1",
+            status: "active",
+            launch_mode: "internal",
+            model: "gpt-6.1-sol",
+            thinking_level: "medium",
+            permission_mode: "auto_edit",
+          },
+        },
+      }), "utf8");
+
+      const frameCountBeforeConfigure = envelopes.length;
+      client.write(encodeMessage(createEnvelope({
+        kind: "command",
+        name: "worker.configure",
+        requestId: "cmd-wcfg-persist",
+        payload: { agent_id: "ucode:a1b2c3d4", model: "gpt-6.2-sol", thinking_level: "high" },
+      })));
+      const wCfgPersistRes = await waitForEnvelope((e) => e.kind === "result" && e.request_id === "cmd-wcfg-persist");
+      expect(wCfgPersistRes?.payload).toMatchObject({ ok: true, model: "gpt-6.2-sol", thinking_level: "high" });
+      const configuredFrame = envelopes.slice(frameCountBeforeConfigure)
+        .filter((e) => e.name === "worker.view.frame" && e.payload.agent_id === "ucode:a1b2c3d4")
+        .at(-1);
+      expect(configuredFrame?.payload).toMatchObject({ model: "gpt-6.2-sol", thinking_level: "high" });
+
+      // Trigger a thin daemon STATUS push (fakeDaemon omits model/thinking_level from active_meta)
+      // and verify the worker's configured model is NOT reverted to default.
+      const beforeStatusRefresh = envelopes.length;
+      client.write(encodeMessage(createEnvelope({
+        kind: "command",
+        name: "multi.raw",
+        requestId: "cmd-trigger-status",
+        payload: { agent_id: "ucode:a1b2c3d4", input: "status ping", submit: true },
+      })));
+      await waitForEnvelope((e) => e.kind === "result" && e.request_id === "cmd-trigger-status");
+      await waitForEnvelope((e, idx) => idx >= beforeStatusRefresh && e.name === "agents.snapshot");
+      const frameAfterStatus = envelopes
+        .filter((e) => e.name === "worker.view.frame" && e.payload.agent_id === "ucode:a1b2c3d4")
+        .at(-1);
+      expect(frameAfterStatus?.payload).toMatchObject({ model: "gpt-6.2-sol", thinking_level: "high" });
+      const treeAfterStatus = envelopes.filter((e) => e.name === "projects.tree").at(-1)?.payload;
+      const workerRowAfterStatus = treeAfterStatus?.projects
+        ?.find((p) => p.root === fs.realpathSync(projectDir))
+        ?.workers?.find((w) => w.id === "ucode:a1b2c3d4");
+      expect(workerRowAfterStatus).toMatchObject({ model: "gpt-6.2-sol", thinking_level: "high" });
+
+      // Clear internal worker & clear ufoo main conversation
+      client.write(encodeMessage(createEnvelope({
+        kind: "command",
+        name: "worker.clear",
+        requestId: "cmd-wclear",
+        payload: { agent_id: "ucode:a1b2c3d4" },
+      })));
+      const wClearRes = await waitForEnvelope((e) => e.kind === "result" && e.request_id === "cmd-wclear");
+      expect(wClearRes?.payload?.ok).toBe(true);
+      const clearedFrame = envelopes.filter((e) => e.name === "worker.view.frame" && e.payload.agent_id === "ucode:a1b2c3d4").at(-1);
+      expect(clearedFrame?.payload?.entries).toEqual([]);
+
+      client.write(encodeMessage(createEnvelope({
+        kind: "command",
+        name: "chat.clear",
+        requestId: "cmd-cclear",
+        payload: {},
+      })));
+      const cClearRes = await waitForEnvelope((e) => e.kind === "result" && e.request_id === "cmd-cclear");
+      expect(cClearRes?.payload?.ok).toBe(true);
+      expect(String(cClearRes?.payload?.conversation_id || "")).toMatch(/^main-/);
+      expect(envelopes.some((e) => e.name === "transcript.reset" && Array.isArray(e.payload.entries) && e.payload.entries.length === 0)).toBe(true);
+
       const latestTree = () => envelopes.filter((e) => e.name === "projects.tree").at(-1).payload;
       const archiveCommand = async (name, payload) => {
         client.write(encodeMessage(createEnvelope({ kind: "command", name, requestId: name, payload })));
@@ -495,9 +783,39 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
         expect(result.payload).toMatchObject({ ok: true });
       };
       const root = fs.realpathSync(projectDir);
+      // Rename & Pin before Archive / Unarchive / Delete
+      await archiveCommand("session.rename", { root, session_id: "cursor:99887766", label: "Auth Review" });
+      expect(latestTree().projects.find((p) => p.root === root).workers.find((w) => w.id === "cursor:99887766")?.label).toBe("Auth Review");
+
+      await archiveCommand("session.pin", { root, session_id: "cursor:99887766", pinned: true });
+      const pinnedWorkers = latestTree().projects.find((p) => p.root === root).workers;
+      expect(pinnedWorkers[0].id).toBe("cursor:99887766");
+      expect(pinnedWorkers[0].pinned).toBe(true);
+
       await archiveCommand("session.archive", { root, session_id: "ucode:a1b2c3d4" });
       expect(latestTree().stage_target.kind).toBe("project_main");
+
+      // Submitting to ufoo main immediately enters busy loading state
+      const statusCountBeforeMain = envelopes.filter((e) => e.name === "status.set").length;
+      client.write(encodeMessage(createEnvelope({
+        kind: "command",
+        name: "input.submit",
+        requestId: "cmd-main-prompt",
+        payload: { text: "check status", target_agent: "", input_target: "main" },
+      })));
+      const mainSubmitRes = await waitForEnvelope((e) => e.kind === "result" && e.request_id === "cmd-main-prompt");
+      expect(mainSubmitRes?.payload?.ok).toBe(true);
+      const busyStatusEvents = envelopes.filter((e) => e.name === "status.set").slice(statusCountBeforeMain);
+      expect(busyStatusEvents.some((e) => e.payload?.busy === true)).toBe(true);
       expect(latestTree().projects.find((p) => p.root === root).workers.map((w) => w.id)).not.toContain("ucode:a1b2c3d4");
+      expect(latestTree().projects.find((p) => p.root === root).archived.map((a) => a.id)).toContain("ucode:a1b2c3d4");
+
+      await archiveCommand("session.unarchive", { root, session_id: "ucode:a1b2c3d4", resume: false });
+      expect(latestTree().projects.find((p) => p.root === root).archived.map((a) => a.id)).not.toContain("ucode:a1b2c3d4");
+
+      await archiveCommand("session.delete", { root, session_id: "ucode:a1b2c3d4" });
+      expect(latestTree().projects.find((p) => p.root === root).workers.map((w) => w.id)).not.toContain("ucode:a1b2c3d4");
+      expect(latestTree().projects.find((p) => p.root === root).archived.map((a) => a.id)).not.toContain("ucode:a1b2c3d4");
 
       await archiveCommand("project.archive", { root });
       expect(latestTree().scope).toBe("controller");
@@ -505,6 +823,19 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
 
       await archiveCommand("project.add", { root });
       expect(latestTree().projects.some((p) => p.root === root)).toBe(true);
+
+      // Switching to another project with agent_id: "main" must land directly on project_main on first click
+      const secondProjectDir = path.join(tmp, "second-proj");
+      fs.mkdirSync(secondProjectDir, { recursive: true });
+      const secondRoot = fs.realpathSync(secondProjectDir);
+      const beforeCount = envelopes.length;
+      await archiveCommand("worker.focus_view", { root: secondRoot, agent_id: "main" });
+      const afterEvents = envelopes.slice(beforeCount);
+      const switchedSnap = [...afterEvents].reverse().find((m) => m.name === "app.snapshot");
+      expect(switchedSnap).toBeTruthy();
+      expect(switchedSnap.payload.active_root).toBe(secondRoot);
+      expect(switchedSnap.payload.stage_target).toEqual({ kind: "project_main", agentId: "" });
+      expect(afterEvents.some((m) => m.name === "worker.view.frame" && m.payload?.agent_id === "main")).toBe(false);
 
       client.destroy();
     } finally {
@@ -514,5 +845,273 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
       await new Promise((resolve) => fakeDaemon.close(resolve));
       fs.rmSync(tmp, { recursive: true, force: true });
     }
+  }, 15000);
+
+  test("taskControl configure RPC and SDK threads support live model, thinking, and permission updates", async () => {
+    const tmp = makeTempDir("ufoo-wctl-");
+    const { startTaskControlServer, configureInternalAgent, clearInternalAgent } = require("../../../src/agents/internal/taskControl");
+    const { CodexSdkThread } = require("../../../src/agents/providers/codexThreadProvider");
+    const { ClaudeApiThread } = require("../../../src/agents/providers/claudeThreadProvider");
+    const { getUfooPaths } = require("../../../src/coordination/state/paths");
+
+    const ufooPaths = getUfooPaths(tmp);
+    fs.mkdirSync(path.dirname(ufooPaths.agentsFile), { recursive: true });
+    fs.writeFileSync(ufooPaths.agentsFile, JSON.stringify({
+      agents: {
+        "claude:test1": {
+          status: "active",
+          pid: process.pid,
+          agent_type: "claude",
+          launch_mode: "internal",
+        },
+      },
+    }), "utf8");
+
+    const applied = [];
+    let clearedCount = 0;
+    const server = await startTaskControlServer(tmp, "claude:test1", {
+      cancel: () => ({ ok: true, cancelled: false }),
+      async configure(patch) {
+        applied.push(patch);
+        return { ok: true, ...patch };
+      },
+      async clear() {
+        clearedCount += 1;
+        return { ok: true, cleared: true, cleared_surface: true };
+      },
+    });
+    try {
+      const res = await configureInternalAgent(tmp, "claude:test1", {
+        model: "claude-opus-4-6",
+        thinking_level: "max",
+        permission_mode: "full_access",
+      });
+      expect(res).toMatchObject({ ok: true, model: "claude-opus-4-6", thinking_level: "max", permission_mode: "full_access" });
+      expect(applied).toHaveLength(1);
+
+      const clearRes = await clearInternalAgent(tmp, "claude:test1");
+      expect(clearRes).toMatchObject({ ok: true, cleared: true, cleared_surface: true });
+      expect(clearedCount).toBe(1);
+
+      const codexThread = new CodexSdkThread({ model: "gpt-5-codex", permissionMode: "auto_edit" });
+      codexThread.sdkThread = { fake: true };
+      const codexRes = codexThread.configure({ model: "gpt-5.4", thinkingLevel: "xhigh", permissionMode: "supervised" });
+      expect(codexRes).toEqual({ model: "gpt-5.4", thinkingLevel: "xhigh", permissionMode: "supervised" });
+      expect(codexThread.sdkThread).toBeNull();
+
+      const claudeThread = new ClaudeApiThread({ model: "claude-sonnet-4-6", permissionMode: "auto_edit" });
+      const claudeRes = claudeThread.configure({ model: "claude-opus-4-6", thinkingLevel: "high", permissionMode: "full_access" });
+      expect(claudeRes).toEqual({ model: "claude-opus-4-6", thinkingLevel: "high", permissionMode: "full_access" });
+      expect(claudeThread.agentOptions.effort).toBe("high");
+    } finally {
+      await server.close();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  test("resolves historical inactive speaker brands and strips redundant provider activity_detail subtitles", () => {
+    const {
+      buildProjectSpeakerIndex,
+      rawHistoryToEntries,
+      sanitizeUiActivityDetail,
+    } = require("../../../src/ui/desktopUiHost");
+    const tmp = makeTempDir("ufoo-speaker-");
+    const projectDir = path.join(tmp, "Neptune");
+    fs.mkdirSync(path.join(projectDir, ".ufoo", "agent"), { recursive: true });
+    fs.writeFileSync(
+      path.join(projectDir, ".ufoo", "agent", "all-agents.json"),
+      JSON.stringify({
+        schema_version: 1,
+        agents: {
+          "codex:db12e17d": {
+            agent_type: "codex",
+            nickname: "neptune-architect",
+            scoped_nickname: "neptune-architect",
+            status: "inactive",
+            group_member_id: "architect",
+            last_seen: "2026-11-26T15:08:54.125Z",
+          },
+        },
+      }),
+      "utf8"
+    );
+    try {
+      const index = buildProjectSpeakerIndex(projectDir);
+      const entries = rawHistoryToEntries(
+        [{ type: "system", text: "architect · 复核新增最高风险", meta: { speaker: "" } }],
+        index
+      );
+      expect(entries[0]).toMatchObject({
+        sender_id: "codex:db12e17d",
+        sender_type: "codex",
+      });
+
+      expect(sanitizeUiActivityDetail("agy-cli")).toBe("");
+      expect(sanitizeUiActivityDetail("codex-cli")).toBe("");
+      expect(sanitizeUiActivityDetail("claude-cli")).toBe("");
+      expect(sanitizeUiActivityDetail("ucode")).toBe("");
+      expect(sanitizeUiActivityDetail("runner")).toBe("");
+      expect(sanitizeUiActivityDetail("Editing cache.js")).toBe("Editing cache.js");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
+
+  test("session.delete preserves worktrees shared by other group members and workspace.worktree.remove refuses active/dirty worktrees", async () => {
+    const { spawnSync } = require("child_process");
+    const tmp = makeTempDir("ufoo-shared-wt-");
+    const projectDir = path.join(tmp, "repo");
+    fs.mkdirSync(projectDir, { recursive: true });
+    const git = (cwd, args) => {
+      const r = spawnSync("git", args, { cwd, encoding: "utf8" });
+      if (r.status !== 0) throw new Error(r.stderr);
+    };
+    git(projectDir, ["init"]);
+    git(projectDir, ["config", "user.email", "test@ufoo.dev"]);
+    git(projectDir, ["config", "user.name", "ufoo test"]);
+    fs.writeFileSync(path.join(projectDir, "a.txt"), "hello\n", "utf8");
+    git(projectDir, ["add", "a.txt"]);
+    git(projectDir, ["commit", "-m", "init"]);
+
+    const sharedWt = path.join(projectDir, ".ufoo", "worktrees", "group-shared");
+    fs.mkdirSync(path.dirname(sharedWt), { recursive: true });
+    git(projectDir, ["worktree", "add", "-b", "ufoo/group-shared", sharedWt, "HEAD"]);
+
+    const agentsFile = path.join(projectDir, ".ufoo", "agent", "all-agents.json");
+    fs.mkdirSync(path.dirname(agentsFile), { recursive: true });
+    fs.writeFileSync(agentsFile, JSON.stringify({
+      schema_version: 1,
+      agents: {
+        "codex:m1": {
+          agent_type: "codex",
+          nickname: "architect",
+          status: "inactive",
+          launch_mode: "internal",
+          worktree_root: sharedWt,
+          worktree_branch: "ufoo/group-shared",
+          group_id: "g1",
+        },
+        "codex:m2": {
+          agent_type: "codex",
+          nickname: "builder",
+          status: "active",
+          pid: process.pid,
+          launch_mode: "internal",
+          worktree_root: sharedWt,
+          worktree_branch: "ufoo/group-shared",
+          group_id: "g1",
+        },
+      },
+    }), "utf8");
+
+    const daemonSock = path.join(tmp, "ufoo.sock");
+    const fakeDaemon = net.createServer((socket) => {
+      socket.on("error", () => {});
+      let buf = "";
+      socket.on("data", (chunk) => {
+        buf += chunk.toString("utf8");
+        const lines = buf.split("\n");
+        buf = lines.pop() || "";
+        for (const line of lines.filter(Boolean)) {
+          const req = JSON.parse(line);
+          if (req.type === "status") {
+            socket.write(`${JSON.stringify({
+              type: "status",
+              data: {
+                projectRoot: projectDir,
+                active: ["codex:m2"],
+                active_meta: [{
+                  id: "codex:m2",
+                  nickname: "builder",
+                  agent_type: "codex",
+                  launch_mode: "internal",
+                  worktree_root: sharedWt,
+                  worktree_branch: "ufoo/group-shared",
+                  group_id: "g1",
+                }],
+              },
+            })}\n`);
+          } else if (req.type === "list_recoverable_agents") {
+            socket.write(`${JSON.stringify({ type: "response", data: { recoverable: { recoverable: [], groups: [] } } })}\n`);
+          }
+        }
+      });
+    });
+    await new Promise((resolve) => fakeDaemon.listen(daemonSock, resolve));
+
+    const controllerDir = path.join(tmp, "controller");
+    fs.mkdirSync(path.join(controllerDir, ".ufoo", "run"), { recursive: true });
+    fs.symlinkSync(daemonSock, path.join(controllerDir, ".ufoo", "run", "ufoo.sock"));
+    const prevControllerEnv = process.env.UFOO_GLOBAL_CONTROLLER_ROOT;
+    process.env.UFOO_GLOBAL_CONTROLLER_ROOT = controllerDir;
+    const uiSock = path.join(tmp, "ui.sock");
+    const handoffSock = path.join(tmp, "handoff.sock");
+    let hostHandle = null;
+    try {
+      hostHandle = await startDesktopUiHost({
+        controllerRoot: controllerDir,
+        initialProjectRoot: projectDir,
+        socketPath: uiSock,
+        authToken: "wt-secret",
+        handoffSocketPath: handoffSock,
+        isRunning: () => true,
+        startDaemon: () => {},
+      });
+      const client = net.createConnection(uiSock);
+      await new Promise((resolve) => client.once("connect", resolve));
+      const envelopes = [];
+      let rawBuf = "";
+      client.on("data", (chunk) => {
+        rawBuf += chunk.toString("utf8");
+        const lines = rawBuf.split("\n");
+        rawBuf = lines.pop() || "";
+        for (const line of lines.filter(Boolean)) envelopes.push(JSON.parse(line));
+      });
+      const waitFor = (pred, timeoutMs = 4000) => new Promise((resolve, reject) => {
+        const start = Date.now();
+        const tick = () => {
+          const hit = envelopes.find(pred);
+          if (hit) return resolve(hit);
+          if (Date.now() - start > timeoutMs) return reject(new Error("timeout"));
+          setTimeout(tick, 20);
+        };
+        tick();
+      });
+      client.write(encodeMessage(createEnvelope({ kind: "hello", name: "hello", payload: { auth_token: "wt-secret" } })));
+      await waitFor((e) => e.kind === "welcome");
+
+      // Deleting codex:m1 must NOT remove sharedWt because codex:m2 still uses it
+      client.write(encodeMessage(createEnvelope({
+        kind: "command",
+        name: "session.delete",
+        requestId: "cmd-del-m1",
+        payload: { root: projectDir, session_id: "codex:m1" },
+      })));
+      const delRes = await waitFor((e) => e.kind === "result" && e.request_id === "cmd-del-m1");
+      expect(delRes.payload.ok).toBe(true);
+      expect(delRes.payload.worktree_removed).toBe(false);
+      expect(delRes.payload.worktree_shared_by).toContain("builder");
+      expect(fs.existsSync(sharedWt)).toBe(true);
+
+      // Direct workspace.worktree.remove must refuse while codex:m2 is active
+      client.write(encodeMessage(createEnvelope({
+        kind: "command",
+        name: "workspace.worktree.remove",
+        requestId: "cmd-rm-inuse",
+        payload: { projectRoot: projectDir, worktreePath: sharedWt, force: true },
+      })));
+      const inUseRes = await waitFor((e) => e.kind === "result" && e.request_id === "cmd-rm-inuse");
+      expect(inUseRes.payload.ok).toBe(false);
+      expect(inUseRes.payload.in_use).toBe(true);
+      expect(fs.existsSync(sharedWt)).toBe(true);
+
+      client.destroy();
+    } finally {
+      if (prevControllerEnv === undefined) delete process.env.UFOO_GLOBAL_CONTROLLER_ROOT;
+      else process.env.UFOO_GLOBAL_CONTROLLER_ROOT = prevControllerEnv;
+      if (hostHandle) await hostHandle.close();
+      await new Promise((resolve) => fakeDaemon.close(resolve));
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 15000);
 });

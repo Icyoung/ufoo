@@ -381,10 +381,15 @@ function collectWorkspaceFiles(root, { maxFiles = 350, maxDepth = 4, query = "" 
   return results;
 }
 
-function normalizeRequestedDocPath(root, requested = "") {
+function normalizeRequestedDocPath(root, requested = "", altRoot = "") {
   let clean = String(requested || "").trim();
   if (!clean) return "";
   clean = clean.replace(/^file:\/\//i, "");
+  try {
+    clean = decodeURIComponent(clean);
+  } catch {
+    // keep original if not valid URI encoding
+  }
   let lineAnchor = 0;
   const hashMatch = clean.match(/#L(\d+)(?:-L?\d+)?$/i);
   if (hashMatch) {
@@ -396,20 +401,31 @@ function normalizeRequestedDocPath(root, requested = "") {
     lineAnchor = lineAnchor || Number.parseInt(colonMatch[1], 10) || 0;
     clean = clean.slice(0, colonMatch.index);
   }
+  let resolvedRoot = root;
   if (path.isAbsolute(clean)) {
     const candidate = safeCanonicalRoot(path.dirname(clean));
     const full = path.join(candidate, path.basename(clean));
     if (isPathInside(root, full)) {
       clean = path.relative(root, full).split(path.sep).join("/");
+      resolvedRoot = root;
+    } else if (altRoot && isPathInside(altRoot, full)) {
+      clean = path.relative(altRoot, full).split(path.sep).join("/");
+      resolvedRoot = altRoot;
+    }
+  } else if (altRoot && altRoot !== root) {
+    const inPrimary = path.resolve(root, clean);
+    const inAlt = path.resolve(altRoot, clean);
+    if (!fs.existsSync(inPrimary) && fs.existsSync(inAlt)) {
+      resolvedRoot = altRoot;
     }
   }
-  return { path: clean, anchorLine: lineAnchor };
+  return { path: clean, anchorLine: lineAnchor, root: resolvedRoot };
 }
 
 function loadWorkspaceDocs(projectRoot, options = {}) {
   const root = safeCanonicalRoot(projectRoot);
   const targetRoot = options.worktreeRoot && isPathInside(root, path.resolve(options.worktreeRoot))
-    ? path.resolve(options.worktreeRoot)
+    ? safeCanonicalRoot(options.worktreeRoot)
     : root;
   const files = collectWorkspaceFiles(targetRoot, {
     query: options.query || "",
@@ -417,16 +433,17 @@ function loadWorkspaceDocs(projectRoot, options = {}) {
   });
 
   const parsedTarget = options.filePath
-    ? normalizeRequestedDocPath(targetRoot, options.filePath)
+    ? normalizeRequestedDocPath(targetRoot, options.filePath, root)
     : null;
   const defaultFile = (files.find((f) => f.pinned) || files[0] || {}).path || "";
   const selectedPath = (parsedTarget && parsedTarget.path) || defaultFile;
   const anchorLine = (parsedTarget && parsedTarget.anchorLine) || Number(options.anchorLine) || 0;
+  const docRoot = (parsedTarget && parsedTarget.root) || targetRoot;
 
   let document = null;
   if (selectedPath) {
     try {
-      const { resolved } = resolveWorkspacePath(targetRoot, selectedPath);
+      const { resolved } = resolveWorkspacePath(docRoot, selectedPath);
       if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
         const stat = fs.statSync(resolved);
         const maxBytes = 256 * 1024;
@@ -440,7 +457,7 @@ function loadWorkspaceDocs(projectRoot, options = {}) {
           const startLine = Math.max(1, Number(options.startLine) || 1);
           const endLine = Math.min(allLines.length, Number(options.endLine) || allLines.length);
           document = {
-            path: path.relative(targetRoot, resolved).split(path.sep).join("/"),
+            path: path.relative(docRoot, resolved).split(path.sep).join("/"),
             absolutePath: resolved,
             language: inferLanguage(resolved),
             content: allLines.slice(startLine - 1, endLine).join("\n"),
@@ -454,6 +471,11 @@ function loadWorkspaceDocs(projectRoot, options = {}) {
         } finally {
           fs.closeSync(fd);
         }
+      } else {
+        document = {
+          path: selectedPath,
+          error: `File not found: ${selectedPath}`,
+        };
       }
     } catch (err) {
       document = {
@@ -525,32 +547,44 @@ function createStructuredDecision(projectRoot, input = {}) {
 function updateDecisionStatus(projectRoot, input = {}) {
   const root = safeCanonicalRoot(projectRoot);
   const manager = new DecisionsManager(root);
-  const targetFile = path.basename(String(input.file || "").trim());
-  const nextStatus = String(input.status || "").trim().toLowerCase();
-  if (!targetFile || !["open", "resolved", "superseded"].includes(nextStatus)) {
-    throw new Error("Valid decision file and status (open|resolved|superseded) are required");
+  return manager.setStatus(input.file, input.status, {
+    actor: input.actor || process.env.USER || "user",
+    reason: input.reason || "",
+  });
+}
+
+function buildDecisionTidyPrompt(projectRoot) {
+  const root = safeCanonicalRoot(projectRoot);
+  const manager = new DecisionsManager(root);
+  const openDecisions = manager.readDecisions().filter(
+    (item) => String(item.status || "open").trim().toLowerCase() === "open"
+  );
+  if (openDecisions.length === 0) {
+    return { openCount: 0, files: [], prompt: "" };
   }
-  const filePath = path.join(manager.decisionsDir, targetFile);
-  if (!fs.existsSync(filePath)) {
-    throw new Error(`Decision not found: ${targetFile}`);
-  }
-  const raw = fs.readFileSync(filePath, "utf8");
-  const parsed = matter(raw);
-  const nextData = {
-    ...parsed.data,
-    status: nextStatus,
+
+  const listLines = openDecisions
+    .map((item, idx) => `${idx + 1}. \`${item.file}\` — ${item.title}`)
+    .join("\n");
+
+  const prompt = [
+    `请帮我一键整理当前项目的未关闭 Decisions（共 ${openDecisions.length} 条）：`,
+    listLines,
+    "",
+    "请严格按以下两阶段执行：",
+    "1. **逐条分析与归档决策**：阅读每条未关闭 decision 文件内容，并结合当前仓库现状判断：",
+    "   - 如果仍属于未解决或持续需要关注的活跃决策，保持 `open`；",
+    "   - 如果是临时决策、已经实现/解决、已过时或不再有持续跟踪价值，直接调用 `update_decision` 工具将其状态更新为 `archived`（并填写简短 `reason`）。",
+    "2. **长期价值提取与 Memory 确认**：完成所有未关闭 decision 的状态处理后，先用 `search_memory` / `recall` 检查已有项目 Memory 避免重复，再提炼值得长期沉淀的架构原则、约定或项目约束：",
+    "   - 如果有值得存入 Memory 的候选内容，请先不要直接写入，先给出本次整理结果摘要（保留 open / 已归档清单）和建议存入 Memory 的候选条目（标题、摘要、tags），然后调用 `ask_user` 在对话框中向我确认是否存入 Memory（如提供「全部存入 Memory」「暂不存入」等选项）；待我确认后再调用 `remember` 工具写入。",
+    "   - 如果没有值得存入 Memory 的内容，直接输出本次整理摘要即可。",
+  ].join("\n");
+
+  return {
+    openCount: openDecisions.length,
+    files: openDecisions.map((item) => item.file),
+    prompt,
   };
-  if (nextStatus !== "open") {
-    nextData.resolved_at = new Date().toISOString();
-    nextData.resolved_by = String(input.actor || process.env.USER || "user");
-  } else {
-    delete nextData.resolved_at;
-    delete nextData.resolved_by;
-  }
-  const updated = matter.stringify(`${parsed.content.trim()}\n`, nextData);
-  fs.writeFileSync(filePath, updated, "utf8");
-  writeDecisionsIndexQuiet(manager);
-  return { file: targetFile, status: nextStatus };
 }
 
 function handleWorkspaceContext(projectRoot, payload = {}) {
@@ -558,11 +592,16 @@ function handleWorkspaceContext(projectRoot, payload = {}) {
   const operation = String(payload.operation || "snapshot").trim();
   const decisionsManager = new DecisionsManager(root);
   const memoryManager = new MemoryManager(root, { ensure: operation.startsWith("memory.") });
+  let metaResult = null;
 
   if (operation === "decision.create") {
-    createStructuredDecision(root, payload);
+    metaResult = createStructuredDecision(root, payload);
   } else if (operation === "decision.set_status") {
-    updateDecisionStatus(root, payload);
+    metaResult = updateDecisionStatus(root, payload);
+  } else if (operation === "decision.delete") {
+    metaResult = decisionsManager.deleteDecision(payload.file);
+  } else if (operation === "decision.clear") {
+    metaResult = decisionsManager.clearDecisions({ status: payload.scope || payload.status || "all" });
   } else if (operation === "memory.add") {
     memoryManager.add({
       title: payload.title,
@@ -588,6 +627,7 @@ function handleWorkspaceContext(projectRoot, payload = {}) {
     title: item.title,
     author: item.data?.author || decisionsManager.extractField(item.body, "Author") || item.data?.nickname || "",
     date: item.data?.created_at || decisionsManager.extractField(item.body, "Date") || "",
+    resolution_note: item.data?.resolution_note || "",
     body: redactSecrets(item.body || ""),
   }));
 
@@ -600,6 +640,9 @@ function handleWorkspaceContext(projectRoot, payload = {}) {
     projectRoot: root,
     decisions,
     openDecisionCount: decisions.filter((d) => d.status === "open").length,
+    archivedDecisionCount: decisions.filter((d) => d.status === "archived").length,
+    resolvedDecisionCount: decisions.filter((d) => d.status === "resolved" || d.status === "superseded").length,
+    ...(metaResult ? { actionResult: metaResult } : {}),
     memories: memories.map((m) => ({
       id: m.id,
       title: m.title,
@@ -612,10 +655,202 @@ function handleWorkspaceContext(projectRoot, payload = {}) {
   };
 }
 
+function resolveWorktreeTarget(projectRoot, worktreeRoot = "") {
+  const root = safeCanonicalRoot(projectRoot);
+  const requested = String(worktreeRoot || "").trim();
+  if (!requested) return root;
+  const candidate = safeCanonicalRoot(requested);
+  if (candidate === root) return root;
+  const known = listGitWorktrees(root);
+  if (known.some((wt) => safeCanonicalRoot(wt.path) === candidate) && fs.existsSync(candidate)) {
+    return candidate;
+  }
+  throw new Error(`Worktree no longer exists or is not registered: ${requested}`);
+}
+
+function resolveWorktreeTargetSafe(projectRoot, worktreeRoot = "") {
+  try {
+    return { ok: true, cwd: resolveWorktreeTarget(projectRoot, worktreeRoot) };
+  } catch (err) {
+    return { ok: false, error: err && err.message ? err.message : String(err) };
+  }
+}
+
+function assertSafeRepoRelativeFile(targetRoot, filePath = "") {
+  const rel = String(filePath || "").trim();
+  if (!rel) throw new Error("filePath is required");
+  const resolved = resolveWorkspacePath(targetRoot, rel);
+  const abs = typeof resolved === "string" ? resolved : String(resolved.resolved || resolved.abs || "");
+  const normalizedRel = typeof resolved === "object" && resolved.relative
+    ? String(resolved.relative).replace(/\\/g, "/")
+    : path.relative(targetRoot, abs).replace(/\\/g, "/");
+  return { rel: normalizedRel, abs };
+}
+
+function gitStage(projectRoot, { worktreeRoot = "", filePath = "", all = false } = {}) {
+  const target = resolveWorktreeTargetSafe(projectRoot, worktreeRoot);
+  if (!target.ok) return target;
+  const cwd = target.cwd;
+  if (all || !filePath) {
+    const res = runGit(cwd, ["add", "-A"]);
+    return res.ok ? { ok: true } : { ok: false, error: res.stderr || "git add -A failed" };
+  }
+  const { rel } = assertSafeRepoRelativeFile(cwd, filePath);
+  const res = runGit(cwd, ["add", "--", rel]);
+  return res.ok ? { ok: true, filePath: rel } : { ok: false, error: res.stderr || "git add failed" };
+}
+
+function gitUnstage(projectRoot, { worktreeRoot = "", filePath = "", all = false } = {}) {
+  const target = resolveWorktreeTargetSafe(projectRoot, worktreeRoot);
+  if (!target.ok) return target;
+  const cwd = target.cwd;
+  if (all || !filePath) {
+    const res = runGit(cwd, ["reset", "HEAD"]);
+    return res.ok ? { ok: true } : { ok: false, error: res.stderr || "git reset HEAD failed" };
+  }
+  const { rel } = assertSafeRepoRelativeFile(cwd, filePath);
+  const res = runGit(cwd, ["reset", "HEAD", "--", rel]);
+  return res.ok ? { ok: true, filePath: rel } : { ok: false, error: res.stderr || "git reset failed" };
+}
+
+function gitDiscard(projectRoot, { worktreeRoot = "", filePath = "", kind = "" } = {}) {
+  const target = resolveWorktreeTargetSafe(projectRoot, worktreeRoot);
+  if (!target.ok) return target;
+  const cwd = target.cwd;
+  const { rel, abs } = assertSafeRepoRelativeFile(cwd, filePath);
+  if (kind === "untracked") {
+    try {
+      fs.rmSync(abs, { recursive: true, force: true });
+      return { ok: true, filePath: rel, removed: true };
+    } catch (err) {
+      return { ok: false, error: err && err.message ? err.message : String(err) };
+    }
+  }
+  runGit(cwd, ["reset", "HEAD", "--", rel]);
+  const res = runGit(cwd, ["checkout", "--", rel]);
+  if (!res.ok) {
+    // Untracked fallback when caller omitted kind
+    const ls = runGit(cwd, ["ls-files", "--error-unmatch", "--", rel]);
+    if (!ls.ok && fs.existsSync(abs)) {
+      fs.rmSync(abs, { recursive: true, force: true });
+      return { ok: true, filePath: rel, removed: true };
+    }
+    return { ok: false, error: res.stderr || "git checkout failed" };
+  }
+  return { ok: true, filePath: rel };
+}
+
+function gitSuggestCommitMessage(projectRoot, { worktreeRoot = "" } = {}) {
+  const target = resolveWorktreeTargetSafe(projectRoot, worktreeRoot);
+  if (!target.ok) return target;
+  const cwd = target.cwd;
+  const status = runGit(cwd, ["status", "--porcelain"]);
+  if (!status.ok || !status.stdout.trim()) {
+    return { ok: true, message: "" };
+  }
+  const files = status.stdout
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => line.slice(3).trim().split(" -> ").pop());
+  if (files.length === 0) return { ok: true, message: "" };
+  const topDir = files[0].includes("/") ? files[0].split("/")[0] : "";
+  const allDocs = files.every((f) => f.endsWith(".md") || f.startsWith("docs/"));
+  const allTests = files.every((f) => f.includes("test"));
+  const prefix = allDocs ? "docs" : (allTests ? "test" : "chore");
+  const scope = topDir && !["src", "apps", "crates"].includes(topDir) ? `(${topDir})` : "";
+  const summary = files.length === 1
+    ? `update ${path.basename(files[0])}`
+    : `update ${files.length} files (${files.slice(0, 2).map((f) => path.basename(f)).join(", ")}${files.length > 2 ? ", …" : ""})`;
+  return { ok: true, message: `${prefix}${scope}: ${summary}` };
+}
+
+function gitCommit(projectRoot, { worktreeRoot = "", message = "", stageAll = false } = {}) {
+  const target = resolveWorktreeTargetSafe(projectRoot, worktreeRoot);
+  if (!target.ok) return target;
+  const cwd = target.cwd;
+  const msg = String(message || "").trim();
+  if (!msg) return { ok: false, error: "Commit message is required" };
+  if (stageAll) {
+    const addRes = runGit(cwd, ["add", "-A"]);
+    if (!addRes.ok) return { ok: false, error: addRes.stderr || "git add -A failed" };
+  } else {
+    const cached = runGit(cwd, ["diff", "--cached", "--name-only"]);
+    if (!cached.stdout.trim()) {
+      const addRes = runGit(cwd, ["add", "-A"]);
+      if (!addRes.ok) return { ok: false, error: addRes.stderr || "git add -A failed" };
+    }
+  }
+  const res = runGit(cwd, ["commit", "-m", msg]);
+  if (!res.ok) return { ok: false, error: res.stderr || res.stdout || "git commit failed" };
+  const sha = runGit(cwd, ["rev-parse", "--short", "HEAD"]).stdout.trim();
+  return { ok: true, sha, output: res.stdout.trim() };
+}
+
+function gitPush(projectRoot, { worktreeRoot = "" } = {}) {
+  const target = resolveWorktreeTargetSafe(projectRoot, worktreeRoot);
+  if (!target.ok) return target;
+  const cwd = target.cwd;
+  const branch = detectGitBranch(cwd);
+  if (!branch || branch === "HEAD") {
+    return { ok: false, error: "Cannot push from detached HEAD" };
+  }
+  const res = runGit(cwd, ["push", "-u", "origin", branch], 30000);
+  if (!res.ok) return { ok: false, error: res.stderr || res.stdout || "git push failed" };
+  return { ok: true, branch, output: (res.stdout || res.stderr).trim() };
+}
+
+function gitCreatePr(projectRoot, { worktreeRoot = "", title = "", body = "", base = "" } = {}) {
+  const target = resolveWorktreeTargetSafe(projectRoot, worktreeRoot);
+  if (!target.ok) return target;
+  const cwd = target.cwd;
+  const branch = detectGitBranch(cwd);
+  if (!branch || branch === "HEAD") {
+    return { ok: false, error: "Cannot create PR from detached HEAD" };
+  }
+  const args = ["pr", "create"];
+  if (title) args.push("--title", String(title));
+  else args.push("--fill");
+  if (body) args.push("--body", String(body));
+  if (base) args.push("--base", String(base));
+  try {
+    const gh = spawnSync("gh", args, { cwd, encoding: "utf8", timeout: 30000 });
+    if (gh.status === 0) {
+      const out = String(gh.stdout || "").trim();
+      const urlMatch = out.match(/https?:\/\/\S+/);
+      return { ok: true, url: urlMatch ? urlMatch[0] : "", output: out };
+    }
+    if (gh.error && gh.error.code === "ENOENT") {
+      // Fallback: build compare URL from origin remote
+      const remote = runGit(cwd, ["remote", "get-url", "origin"]).stdout.trim();
+      const ghMatch = remote.match(/github\.com[:/]([^/]+\/[^/.]+?)(?:\.git)?$/);
+      const compareUrl = ghMatch ? `https://github.com/${ghMatch[1]}/compare/${encodeURIComponent(branch)}?expand=1` : "";
+      return {
+        ok: false,
+        needsGhCli: true,
+        compareUrl,
+        error: compareUrl
+          ? `GitHub CLI (gh) not installed. Open compare URL: ${compareUrl}`
+          : "GitHub CLI (gh) is not installed",
+      };
+    }
+    return { ok: false, error: String(gh.stderr || gh.stdout || "gh pr create failed").trim() };
+  } catch (err) {
+    return { ok: false, error: err && err.message ? err.message : String(err) };
+  }
+}
+
 module.exports = {
   loadWorkspaceChanges,
   loadWorkspaceDocs,
   handleWorkspaceContext,
+  buildDecisionTidyPrompt,
   listGitWorktrees,
   detectGitBranch,
+  gitStage,
+  gitUnstage,
+  gitDiscard,
+  gitSuggestCommitMessage,
+  gitCommit,
+  gitPush,
+  gitCreatePr,
 };

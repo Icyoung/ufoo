@@ -76,6 +76,31 @@ describe("durable shared runtime", () => {
     expect(() => createAgentRuntime({ profile: { id: "main", capabilities: ["browser"] }, capabilities: [capabilities[1]],
       transport: transport(jest.fn()), host: { sessionStore: store } })).toThrow("cannot change capabilities");
   });
+
+  test("cancels a paused waiting_user interaction by interactionId and clears its interaction state", async () => {
+    const store = createRuntimeStore({ workspaceRoot: root, namespace: "main", sessionId: "cancel-interaction-session" });
+    store.append({ type: "runtime.opened", owner: { id: "old", pid: 99999999, profile: "main", capabilities: [] } });
+    store.append({ type: "request.accepted", taskRunId: "paused-1", request: { requestId: "paused-1", text: "wait" } });
+    store.append({ type: "task.paused", taskRunId: "paused-1", result: { interactionId: "ui_question_1" } });
+    const runtime = createAgentRuntime({
+      profile: { id: "main", capabilities: [] },
+      capabilities: [],
+      transport: transport(jest.fn()),
+      host: { sessionStore: store },
+    });
+    runtimes.push(runtime);
+    expect(runtime.snapshot().tasks["paused-1"].status).toBe("waiting_user");
+    expect(runtime.cancel({ interactionId: "ui_question_1", reason: "user_cancel" })).toEqual({
+      taskRunId: "paused-1",
+      status: "cancelled",
+    });
+    expect(runtime.snapshot().tasks["paused-1"]).toMatchObject({
+      status: "cancelled",
+      interactionId: "",
+      result: null,
+    });
+    await runtime.close();
+  });
   test("marks interrupted effects as uncertain without replaying the provider or tool", async () => {
     const store = createRuntimeStore({ workspaceRoot: root, namespace: "main", sessionId: "test-session" });
     store.append({ type: "runtime.opened", owner: { id: "dead-owner", pid: 99999999, profile: "main" } });

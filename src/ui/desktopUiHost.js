@@ -13,11 +13,16 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
+const { execFileSync } = require("child_process");
 const { createUiHostServer, createAuthToken } = require("./uiHostServer");
+const { createRemoteRelayBridge } = require("./remoteRelayBridge");
 const { createDesktopArchive } = require("./desktopArchive");
+const { createDesktopSessionPrefs } = require("./desktopSessionPrefs");
 const { createToolMergePublisher } = require("./toolMergeBridge");
 const { createRustMultiSession } = require("./rustMultiSession");
 const { createAgentSurface } = require("./agentSurface");
+const { toolStatus, statusForAgentPhase } = require("./agentPresentation");
+const fmt = require("./format");
 const { writeMultiPaneBusEvent } = require("./multiPaneBusMirror");
 const { buildSettingsSnapshot, applySettingsPatch } = require("./settingsBridge");
 const { createAgentSettingsController } = require("./agentSettingsController");
@@ -27,8 +32,25 @@ const {
   loadWorkspaceChanges,
   loadWorkspaceDocs,
   handleWorkspaceContext,
+  buildDecisionTidyPrompt,
   detectGitBranch,
+  gitStage,
+  gitUnstage,
+  gitDiscard,
+  gitSuggestCommitMessage,
+  gitCommit,
+  gitPush,
+  gitCreatePr,
 } = require("./workspaceInspector");
+const { detectInstalledAcpAgents } = require("../agents/providers/acpRegistry");
+const { isAgyAvailable, listAgyCliModels } = require("../agents/providers/agyThreadProvider");
+const { mergeManagedWorktree, removeManagedWorktree } = require("../runtime/worktree/worktreeManager");
+const {
+  probeOnboardingState,
+  saveOnboardingState,
+  launchLoginInTerminal,
+  configureExternalHostMcp,
+} = require("./onboardingProbe");
 const {
   createDesktopHandoffServer,
   parseHandoffUrl,
@@ -40,11 +62,17 @@ const { createChatController } = require("../app/chat/ChatController");
 const { createDaemonMessageRouter } = require("../app/chat/daemonMessageRouter");
 const { bootstrapEnvironment, ensureSubscriberId } = require("../app/chat/bootstrap");
 const { loadInternalAgentTranscript } = require("../app/chat/internalAgentLogHistory");
-const { readAgentSurfaceEvents, createAgentSurfaceReader } = require("../coordination/history/agentSurface");
+const { clearChatHistory } = require("../app/chat/historyStore");
+const {
+  readAgentSurfaceEvents,
+  createAgentSurfaceReader,
+  createAgentSurfacePublisher,
+} = require("../coordination/history/agentSurface");
 const { listReports } = require("../coordination/report/store");
 const { getUfooPaths } = require("../coordination/state/paths");
-const { loadAgentsData } = require("../coordination/state/agentsStore");
+const { loadAgentsData, updateAgentsData } = require("../coordination/state/agentsStore");
 const { isAgentPidAlive } = require("../coordination/bus/utils");
+const { closeAgent, getRecoverableAgents } = require("../runtime/daemon/ops");
 const { isInternalAgentMeta, isInternalDashboardEvent } = require("../runtime/contracts/agentMode");
 const {
   createEnvelope,
@@ -57,12 +85,35 @@ const {
 const { IPC_REQUEST_TYPES, IPC_RESPONSE_TYPES } = require("../runtime/contracts/eventContract");
 const { resolveDaemonEndpoint, routeDaemonRequest } = require("../runtime/daemon/endpoint");
 const {
+  getLaunchdServiceStatus,
+  installLaunchdService,
+  uninstallLaunchdService,
+  restartLaunchdService,
+  readDaemonPid,
+} = require("../runtime/daemon/launchdService");
+const {
   canonicalProjectRoot,
   buildProjectId,
   upsertProjectRuntime,
   resolveGlobalControllerProjectRoot,
 } = require("../runtime/projects");
-const { loadConfig, normalizeAgentProvider, defaultAgentModelForProvider } = require("../config");
+const { loadConfig, saveConfig, normalizeAgentProvider, defaultAgentModelForProvider } = require("../config");
+const { normalizeThinkingLevel } = require("../agents/providers/thinkingLevels");
+const { configureInternalAgent, clearInternalAgent } = require("../agents/internal/taskControl");
+const { persistAgentRuntimeMeta, clearProviderSessionId } = require("../agents/internal/internalRunner");
+const {
+  connectWorkflowEdge,
+  disconnectWorkflowEdge,
+  disbandAdhocGroup,
+  renameAdhocGroup,
+  getWorkflowSnapshot,
+  saveNodePositions,
+} = require("../orchestration/groups/workflowGraph");
+const {
+  stageAttachments,
+  normalizeAttachmentList,
+  formatAttachmentPromptSummary,
+} = require("../runtime/attachments");
 const {
   loadDynamicCompletionSources,
   loadResumeCompletionSources,
@@ -79,7 +130,130 @@ function stripTags(value) {
     .replace(/\{close\}/g, "}");
 }
 
-function rawHistoryToEntries(rows) {
+const REDUNDANT_ACTIVITY_DETAIL_RE = /^(?:runner|ucode|codex|claude|agy|kimi|grok|codex-cli|claude-cli|agy-cli|kimi-cli|grok-cli|acp[:_-][a-z0-9._-]+)$/i;
+
+function sanitizeUiActivityDetail(detail) {
+  const text = String(detail || "").trim();
+  if (!text || REDUNDANT_ACTIVITY_DETAIL_RE.test(text)) return "";
+  return text;
+}
+
+function buildProjectSpeakerIndex(projectRoot, liveMetaMap = null) {
+  const index = new Map();
+  index.set("ufoo", { id: "ufoo-agent", type: "ufoo" });
+  index.set("ufoo-agent", { id: "ufoo-agent", type: "ufoo" });
+  if (!projectRoot) return index;
+
+  const projectPrefix = `${path.basename(projectRoot).toLowerCase()}-`;
+  const register = (key, info) => {
+    const clean = String(key || "").trim().toLowerCase();
+    if (!clean || !info.type || index.has(clean)) return;
+    index.set(clean, info);
+  };
+
+  const candidates = [];
+  if (liveMetaMap && typeof liveMetaMap.entries === "function") {
+    for (const [id, meta] of liveMetaMap.entries()) {
+      if (!meta || typeof meta !== "object") continue;
+      candidates.push({ id, meta, live: true });
+    }
+  }
+  try {
+    const { agentsFile } = getUfooPaths(projectRoot);
+    if (fs.existsSync(agentsFile)) {
+      const data = loadAgentsData(agentsFile);
+      for (const [id, meta] of Object.entries(data?.agents || {})) {
+        if (!meta || typeof meta !== "object") continue;
+        candidates.push({ id, meta, live: meta.status === "active" });
+      }
+    }
+  } catch {
+    // ignore disk read errors
+  }
+
+  candidates.sort((a, b) => {
+    if (a.live !== b.live) return a.live ? -1 : 1;
+    const aTime = String(a.meta.last_seen || a.meta.joined_at || "");
+    const bTime = String(b.meta.last_seen || b.meta.joined_at || "");
+    return bTime.localeCompare(aTime);
+  });
+
+  for (const { id, meta } of candidates) {
+    if (!id || id === "ufoo-agent" || id.endsWith(":ufoo-agent")) continue;
+    const type = String(meta.agent_type || meta.type || (id.includes(":") ? id.split(":")[0] : "") || "").trim();
+    if (!type) continue;
+    const label = String(meta.display_nickname || meta.nickname || meta.group_member_id || "").trim();
+    const info = { id, type, label };
+    register(id, info);
+    register(meta.display_nickname, info);
+    register(meta.nickname, info);
+    register(meta.scoped_nickname, info);
+    register(meta.group_member_id, info);
+    for (const rawName of [meta.display_nickname, meta.nickname, meta.scoped_nickname]) {
+      const lower = String(rawName || "").trim().toLowerCase();
+      if (projectPrefix.length > 1 && lower.startsWith(projectPrefix) && lower.length > projectPrefix.length) {
+        register(lower.slice(projectPrefix.length), info);
+      }
+    }
+  }
+
+  try {
+    const { groupsDir } = getUfooPaths(projectRoot);
+    if (fs.existsSync(groupsDir)) {
+      const groupFiles = fs.readdirSync(groupsDir)
+        .filter((file) => file.endsWith(".json"))
+        .map((file) => {
+          const fullPath = path.join(groupsDir, file);
+          let mtimeMs = 0;
+          try { mtimeMs = fs.statSync(fullPath).mtimeMs || 0; } catch {}
+          return { fullPath, mtimeMs };
+        })
+        .sort((a, b) => b.mtimeMs - a.mtimeMs);
+      for (const { fullPath } of groupFiles) {
+        const parsed = JSON.parse(fs.readFileSync(fullPath, "utf8"));
+        for (const member of Array.isArray(parsed?.members) ? parsed.members : []) {
+          if (!member || typeof member !== "object") continue;
+          const memberIds = [
+            member.subscriber_id,
+            member.previous_subscriber_id,
+            member.bootstrapped_subscriber_id,
+            ...(Array.isArray(member.launch?.subscriber_ids) ? member.launch.subscriber_ids : []),
+            ...(Array.isArray(member.previous_subscriber_ids) ? member.previous_subscriber_ids : []),
+          ].map((v) => String(v || "").trim()).filter(Boolean);
+          const primaryId = memberIds[0] || "";
+          const type = String(
+            member.type
+            || member.agent
+            || (primaryId.includes(":") ? primaryId.split(":")[0] : "")
+            || ""
+          ).trim();
+          if (!type) continue;
+          const label = String(
+            member.nickname
+            || member.template_agent_id
+            || member.member_id
+            || member.scoped_nickname
+            || ""
+          ).trim();
+          const info = { id: primaryId || type, type, label };
+          for (const subId of memberIds) {
+            register(subId, { ...info, id: subId });
+          }
+          register(member.member_id, info);
+          register(member.template_agent_id, info);
+          register(member.nickname, info);
+          register(member.scoped_nickname, info);
+        }
+      }
+    }
+  } catch {
+    // ignore group read errors
+  }
+
+  return index;
+}
+
+function rawHistoryToEntries(rows, speakerIndex = null) {
   const list = Array.isArray(rows) ? rows : [];
   const KINDS = new Set([
     "system", "user", "assistant", "error", "agent", "report",
@@ -101,20 +275,72 @@ function rawHistoryToEntries(rows) {
         speaker = speaker || match[1];
         text = match[2];
       }
-    } else if (kind === "assistant" && /^ufoo\s*·\s*/.test(text)) {
+    } else if (kind === "assistant" && /^ufoo(?:-agent)?\s*·\s*/i.test(text)) {
       speaker = speaker || "ufoo";
-      text = text.replace(/^ufoo\s*·\s*/, "");
+      text = text.replace(/^ufoo(?:-agent)?\s*·\s*/i, "");
+    }
+    let senderId = String(source.sender_id || meta.sender_id || "");
+    let senderType = String(source.sender_type || meta.sender_type || "");
+    if (speakerIndex && typeof speakerIndex.get === "function") {
+      let lookupName = speaker || senderId;
+      if (!lookupName) {
+        const attributed = text.match(/^([a-zA-Z0-9][a-zA-Z0-9_.:-]{0,47})\s*·\s+[\s\S]+$/);
+        if (attributed) lookupName = attributed[1];
+      }
+      const hit = lookupName ? speakerIndex.get(String(lookupName).trim().toLowerCase()) : null;
+      if (hit) {
+        if (!senderId && hit.id) senderId = hit.id;
+        if (!senderType && hit.type) senderType = hit.type;
+        if (hit.label && speaker && speaker.includes(":") && speaker !== hit.label) {
+          speaker = hit.label;
+        }
+      }
     }
     return {
       id: String(source.id || `hist-${index}`),
       kind,
       text,
       speaker,
+      ...(senderId ? { sender_id: senderId } : {}),
+      ...(senderType ? { sender_type: senderType } : {}),
       detail: stripTags(source.detail || source.expanded_text || meta.detail || meta.expanded_text || ""),
       expanded: false,
       ts: source.ts || "",
     };
   });
+}
+
+function resolveProviderForWorkerType(workerType, config = {}) {
+  const raw = String(workerType || "").trim().toLowerCase();
+  if (!raw || raw === "main" || raw === "ufoo-agent") {
+    return normalizeAgentProvider(config.agentProvider || "codex-cli");
+  }
+  if (raw === "codex" || raw === "codex-cli") return "codex-cli";
+  if (raw === "claude" || raw === "claude-code" || raw === "claude-cli") return "claude-cli";
+  if (raw === "ucode") return normalizeAgentProvider(config.ucodeProvider || config.agentProvider || "codex-cli");
+  if (raw === "acp-kimi" || raw === "acp:kimi" || raw === "kimi") return "kimi-cli";
+  if (raw === "acp-grok" || raw === "acp:grok" || raw === "grok") return "grok-cli";
+  if (raw === "agy" || raw === "agy-cli" || raw === "antigravity" || raw === "acp:agy" || raw === "acp-agy") return "agy-cli";
+  return "";
+}
+
+function thinkingLevelsForProvider(provider = "") {
+  const p = String(provider || "").trim().toLowerCase();
+  if (p === "claude-cli") return ["off", "low", "medium", "high", "max"];
+  if (p === "codex-cli") return ["off", "low", "medium", "high", "xhigh"];
+  if (p === "agy-cli" || p === "agy") return ["low", "medium", "high", "xhigh"];
+  return ["off", "low", "medium", "high", "xhigh", "max"];
+}
+
+function resolveWorkerDisplayModel(meta = {}, workerType = "", config = {}) {
+  if (meta.model) return String(meta.model);
+  const provider = resolveProviderForWorkerType(workerType, config);
+  if (!provider) return "";
+  if (workerType === "ucode" && config.ucodeModel) return String(config.ucodeModel);
+  if (normalizeAgentProvider(config.agentProvider) === provider && config.agentModel) {
+    return String(config.agentModel);
+  }
+  return defaultAgentModelForProvider(provider) || "";
 }
 
 function inspectDormantProjectSummary(projectRoot) {
@@ -142,6 +368,7 @@ function inspectDormantProjectSummary(projectRoot) {
   try {
     const paths = getUfooPaths(projectRoot);
     if (fs.existsSync(paths.agentsFile)) {
+      const cfg = loadConfig(projectRoot) || {};
       const data = loadAgentsData(paths.agentsFile) || {};
       for (const [id, meta] of Object.entries(data.agents || {})) {
         if (!meta || meta.status !== "active") continue;
@@ -150,19 +377,25 @@ function inspectDormantProjectSummary(projectRoot) {
         const alive = meta.mcp_bridge === true || !pid || isAgentPidAlive(pid);
         if (!alive) continue;
         const internal = isInternalAgentMeta(meta);
+        const workerType = String(meta.agent_type || meta.type || id.split(":")[0] || "worker");
         out.workers.push({
           id,
           label: String(meta.display_nickname || meta.nickname || id),
-          type: String(meta.agent_type || meta.type || id.split(":")[0] || "worker"),
+          type: workerType,
           internal,
           external: !internal,
           activity_state: String(meta.activity_state || "idle"),
-          activity_detail: String(meta.activity_detail || ""),
+          activity_detail: sanitizeUiActivityDetail(meta.activity_detail),
           group_id: String(meta.group_id || ""),
           group_member_id: String(meta.group_member_id || ""),
           group_template_alias: String(meta.group_template_alias || ""),
           host_name: String(meta.host_name || ""),
           launch_mode: String(meta.launch_mode || ""),
+          worktree_root: String(meta.worktree_root || ""),
+          worktree_branch: String(meta.worktree_branch || ""),
+          model: resolveWorkerDisplayModel(meta, workerType, cfg),
+          thinking_level: String(meta.thinking_level || cfg.agentThinking || "medium"),
+          permission_mode: String(meta.permission_mode || cfg.permissionMode || "auto_edit"),
         });
       }
     }
@@ -180,6 +413,7 @@ async function startDesktopUiHost(options = {}) {
     ? canonicalProjectRoot(options.initialProjectRoot)
     : controllerRoot;
   const desktopArchive = createDesktopArchive(controllerRoot);
+  const sessionPrefs = createDesktopSessionPrefs(controllerRoot);
 
   const shortTmp = process.platform === "darwin" && fs.existsSync("/tmp") ? "/tmp" : os.tmpdir();
   const uiSocketPath = options.socketPath || path.join(
@@ -219,26 +453,166 @@ async function startDesktopUiHost(options = {}) {
   const { createDaemonConnection } = require("../app/chat/daemonConnection");
   const { createDaemonCoordinator } = require("../app/chat/daemonCoordinator");
   const { isRunning } = require("../runtime/daemon");
+  const stopDaemonFn = typeof options.stopDaemon === "function" ? options.stopDaemon : stopDaemon;
+
+  const startDaemonForTransport = (root) => {
+    if (
+      !options.startDaemon
+      && root === daemonRoot
+      && process.platform === "darwin"
+      && getLaunchdServiceStatus({ controllerRoot: daemonRoot }).loaded
+    ) {
+      const kick = restartLaunchdService({ controllerRoot: daemonRoot });
+      if (kick.ok) return;
+    }
+    return startDaemonFn(root);
+  };
 
   const daemonTransport = createDaemonTransport({
     projectRoot: controllerRoot,
     sockPath: initialEndpoint.socketPath,
     daemonRoot,
     isRunning: isDaemonRunning,
-    startDaemon: startDaemonFn,
+    startDaemon: startDaemonForTransport,
+    stopDaemon: stopDaemonFn,
     connectWithRetry,
   });
 
   let entrySeq = 0;
   let mainSubmissionRev = 0;
   let hostRef = null;
+  let remoteBridge = null;
   let daemonSend = () => {};
   let daemonCoordinator = null;
+  let daemonConnectionState = "reconnecting";
   let activeProjectRoot = controllerRoot;
   let globalScope = "controller";
   let multiSession = null;
   let stageTarget = { kind: "project_main", agentId: "" };
-  let activePendingInteraction = null;
+  let routerRef = null;
+  const pendingInteractions = new Map();
+  const dismissedInteractions = new Map();
+  const DISMISSED_INTERACTION_TTL_MS = 20000;
+  let lastPublishedInteractionKey = "";
+
+  function isDismissedInteraction(id) {
+    if (!id) return false;
+    const until = dismissedInteractions.get(id);
+    if (!until) return false;
+    if (Date.now() > until) {
+      dismissedInteractions.delete(id);
+      return false;
+    }
+    return true;
+  }
+
+  function markInteractionDismissed(id) {
+    if (!id) return;
+    dismissedInteractions.set(id, Date.now() + DISMISSED_INTERACTION_TTL_MS);
+  }
+
+  function getAllPendingInteractions() {
+    const size = pendingInteractions.size;
+    return [...pendingInteractions.values()].map((item) => ({
+      ...item,
+      projectRoot: item.projectRoot || activeProjectRoot,
+      queue_count: size,
+    }));
+  }
+
+  function getActivePendingInteraction() {
+    const first = pendingInteractions.values().next().value || null;
+    if (!first) return null;
+    return {
+      ...first,
+      projectRoot: first.projectRoot || activeProjectRoot,
+      queue_count: pendingInteractions.size,
+    };
+  }
+
+  function syncPublishedInteraction(force = false) {
+    const current = getActivePendingInteraction();
+    const queue = getAllPendingInteractions();
+    const nextKey = current ? `${current.id}:${current.queue_count || 1}` : "";
+    if (!force && nextKey === lastPublishedInteractionKey) return;
+    lastPublishedInteractionKey = nextKey;
+    if (current) {
+      publish("interaction.request", { ...current, queue });
+    } else {
+      publish("interaction.clear", { queue: [] });
+    }
+  }
+
+  function enqueuePendingInteraction(interaction) {
+    const id = String(interaction?.id || "").trim();
+    if (!id || isDismissedInteraction(id)) return false;
+    const existing = pendingInteractions.get(id) || {};
+    pendingInteractions.set(id, { ...existing, ...interaction, id });
+    syncPublishedInteraction();
+    return true;
+  }
+
+  function removePendingInteraction({ id = "", taskRunId = "" } = {}, { markDismissed = false } = {}) {
+    let removed = false;
+    const targetId = String(id || "").trim();
+    const targetTask = String(taskRunId || "").trim();
+    if (targetId && pendingInteractions.has(targetId)) {
+      pendingInteractions.delete(targetId);
+      removed = true;
+    }
+    if (targetTask) {
+      for (const [key, item] of pendingInteractions.entries()) {
+        if (item?.taskRunId && item.taskRunId === targetTask) {
+          pendingInteractions.delete(key);
+          if (markDismissed) markInteractionDismissed(key);
+          removed = true;
+        }
+      }
+    }
+    if (markDismissed && targetId) markInteractionDismissed(targetId);
+    if (removed) syncPublishedInteraction();
+    return removed;
+  }
+
+  function reconcilePendingInteractions(liveList = []) {
+    const now = Date.now();
+    for (const [id, until] of dismissedInteractions.entries()) {
+      if (now > until) dismissedInteractions.delete(id);
+    }
+    const liveIds = new Set();
+    let changed = false;
+    for (const item of liveList) {
+      const id = String(item?.id || "").trim();
+      if (!id || isDismissedInteraction(id)) continue;
+      liveIds.add(id);
+      const existing = pendingInteractions.get(id);
+      if (!existing || (!existing.taskRunId && item.taskRunId) || (!existing.sessionId && item.sessionId)) {
+        pendingInteractions.set(id, { ...(existing || {}), ...item, id });
+        changed = true;
+      }
+    }
+    for (const [id] of pendingInteractions.entries()) {
+      // Keep local settings picker interactions; prune daemon interactions no longer waiting_user
+      if (id.startsWith("settings-")) continue;
+      if (!liveIds.has(id)) {
+        pendingInteractions.delete(id);
+        changed = true;
+      }
+    }
+    if (changed) {
+      syncPublishedInteraction();
+      publishProjectsTree();
+    }
+  }
+
+  function clearAllPendingInteractionsLocal() {
+    pendingInteractions.clear();
+    dismissedInteractions.clear();
+    lastPublishedInteractionKey = "";
+    if (routerRef && typeof routerRef.resetSessionState === "function") {
+      routerRef.resetSessionState();
+    }
+  }
   const streamIds = new Map();
   const streamLabels = new Map();
   const ownRequestIds = new Set();
@@ -251,6 +625,19 @@ async function startDesktopUiHost(options = {}) {
   let standalonePollTimer = null;
   let treePollTimer = null;
   const recoverableCache = new Map();
+  const deletedSessionGuard = new Map();
+  const DELETED_SESSION_GUARD_MS = 10000;
+
+  function isRecentlyDeletedSession(root, id) {
+    const key = `${safeCanonicalRoot(root)}\0${id}`;
+    const until = deletedSessionGuard.get(key);
+    if (!until) return false;
+    if (Date.now() > until) {
+      deletedSessionGuard.delete(key);
+      return false;
+    }
+    return true;
+  }
 
   const settings = (() => {
     try {
@@ -260,22 +647,38 @@ async function startDesktopUiHost(options = {}) {
     }
   })();
 
+  const recentEvents = [];
+  const MAX_RECENT_EVENTS = 250;
+
+  function recordEvent(envelope) {
+    if (!envelope || typeof envelope !== "object") return;
+    recentEvents.push(envelope);
+    if (recentEvents.length > MAX_RECENT_EVENTS) {
+      recentEvents.splice(0, recentEvents.length - MAX_RECENT_EVENTS);
+    }
+  }
+
   function publish(name, payload) {
     if (!hostRef) return;
-    hostRef.broadcast(hostRef.createEvent(name, payload, {
+    const envelope = hostRef.createEvent(name, payload, {
       surface: "desktop",
       project_id: activeProjectRoot,
       view_id: stageTarget.kind === "worker_single" ? stageTarget.agentId : "main",
-    }));
+    });
+    recordEvent(envelope);
+    hostRef.broadcast(envelope);
+    remoteBridge?.broadcast(envelope);
   }
 
   function publishLossy(name, payload) {
     if (!hostRef) return;
-    hostRef.broadcast(hostRef.createLossyEvent(name, payload, {
+    const envelope = hostRef.createLossyEvent(name, payload, {
       surface: "desktop",
       project_id: activeProjectRoot,
       view_id: stageTarget.kind === "worker_single" ? stageTarget.agentId : "main",
-    }));
+    });
+    hostRef.broadcast(envelope);
+    remoteBridge?.broadcast(envelope);
   }
 
   function historyOptions() {
@@ -288,13 +691,19 @@ async function startDesktopUiHost(options = {}) {
 
   function appendLocal(kind, text, speaker = "") {
     const raw = String(text == null ? "" : text);
+    const { appendChatHistory, shouldSkipChatHistoryEntry } = require("../app/chat/historyStore");
+    if (shouldSkipChatHistoryEntry(kind, raw, { speaker })) {
+      const statusSummary = stripTags(raw).replace(/^ufoo(?:-agent)?\s*·\s*/i, "").trim();
+      if (statusSummary) publish("status.set", { text: statusSummary, busy: false });
+      return null;
+    }
+    const speakerIndex = buildProjectSpeakerIndex(activeProjectRoot, controller.session.metaMap);
     const entry = {
-      ...rawHistoryToEntries([{ kind, text: raw, speaker, ts: new Date().toISOString() }])[0],
+      ...rawHistoryToEntries([{ kind, text: raw, speaker, ts: new Date().toISOString() }], speakerIndex)[0],
       id: `live-${++entrySeq}`,
     };
     publish("transcript.append", entry);
     try {
-      const { appendChatHistory } = require("../app/chat/historyStore");
       appendChatHistory(activeProjectRoot, kind, raw, { speaker }, historyOptions());
     } catch {
       // best-effort persistence
@@ -304,12 +713,271 @@ async function startDesktopUiHost(options = {}) {
 
   function isInternalChild(agentId) {
     const id = String(agentId || "");
-    return id !== "ufoo-agent" && !id.endsWith(":ufoo-agent") && isInternalAgentMeta(controller.session.metaMap.get(id));
+    if (!id || id === "ufoo-agent" || id.endsWith(":ufoo-agent")) return false;
+    const meta = controller.session.metaMap.get(id) || readDiskAgentMeta(activeProjectRoot, id);
+    return isInternalAgentMeta(meta);
+  }
+
+  function findSessionCustomLabel(root, id, prefs = sessionPrefs.read()) {
+    const cleanRoot = safeCanonicalRoot(root);
+    const hit = (prefs.labels || []).find((item) => safeCanonicalRoot(item.root) === cleanRoot && item.id === id);
+    return hit ? String(hit.label || "").trim() : "";
+  }
+
+  function readDiskAgentMeta(root, id) {
+    try {
+      const { agentsFile } = getUfooPaths(root);
+      if (!fs.existsSync(agentsFile)) return null;
+      const data = loadAgentsData(agentsFile);
+      return (data && data.agents && data.agents[id]) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  function resolveAgentMeta(root, id) {
+    const liveMeta = root === activeProjectRoot ? controller.session.metaMap.get(id) : null;
+    const diskMeta = readDiskAgentMeta(root, id);
+    if (!liveMeta && !diskMeta) return null;
+    if (!liveMeta) return diskMeta;
+    if (!diskMeta) return liveMeta;
+    const merged = { ...diskMeta, ...liveMeta };
+    for (const key of [
+      "agent_type",
+      "model",
+      "thinking_level",
+      "permission_mode",
+      "worktree_root",
+      "worktree_branch",
+      "group_id",
+      "group_member_id",
+      "group_template_alias",
+      "provider_session_id",
+    ]) {
+      if (!merged[key] && diskMeta[key]) merged[key] = diskMeta[key];
+    }
+    return merged;
+  }
+
+  async function stopInternalWorkerForSession(root, id, metaHint = null) {
+    const meta = metaHint || (root === activeProjectRoot ? controller.session.metaMap.get(id) : null) || readDiskAgentMeta(root, id);
+    if (!meta || !isInternalAgentMeta(meta)) return false;
+    const diskMeta = readDiskAgentMeta(root, id);
+    const pid = Number.parseInt(diskMeta?.pid ?? meta.pid, 10);
+    const activeOnDisk = diskMeta ? diskMeta.status === "active" : meta.status !== "inactive";
+    let stopped = false;
+
+    if (root === activeProjectRoot) {
+      daemonSend({ type: IPC_REQUEST_TYPES.CLOSE_AGENT, agent_id: id });
+      stopped = true;
+    }
+
+    // For dormant projects or direct process cleanup (never kill our own host/test process)
+    if (diskMeta && (activeOnDisk || (Number.isInteger(pid) && pid > 0 && pid !== process.pid && isAgentPidAlive(pid)))) {
+      if (!Number.isInteger(pid) || pid !== process.pid) {
+        try {
+          await closeAgent(root, id);
+          stopped = true;
+        } catch {
+          // ignore closeAgent errors; fallback handled by daemon/cleanup
+        }
+      }
+    }
+    return stopped;
+  }
+
+  function isWorktreeClean(worktreePath) {
+    try {
+      const out = execFileSync("git", ["-C", worktreePath, "status", "--porcelain"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 4000,
+      });
+      return String(out || "").trim().length === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  function findAgentsUsingWorktree(root, worktreePath, { excludeAgentId = "", activeOnly = false } = {}) {
+    const targetWt = safeCanonicalRoot(worktreePath);
+    const projectNorm = safeCanonicalRoot(root);
+    if (!targetWt || targetWt === projectNorm) return [];
+    const excluded = String(excludeAgentId || "").trim();
+    const users = new Map();
+
+    const consider = (id, meta, forceActive = false) => {
+      const agentId = String(id || "").trim();
+      if (!agentId || agentId === excluded || agentId === "ufoo-agent" || agentId.endsWith(":ufoo-agent")) return;
+      if (!meta || typeof meta !== "object") return;
+      const wt = meta.worktree_root ? safeCanonicalRoot(meta.worktree_root) : "";
+      if (!wt || wt !== targetWt) return;
+      if (activeOnly && !forceActive) {
+        if (meta.status !== "active") return;
+        const pid = Number.parseInt(meta.pid, 10);
+        if (Number.isInteger(pid) && pid > 0 && !isAgentPidAlive(pid)) return;
+      }
+      users.set(agentId, String(meta.display_nickname || meta.nickname || agentId));
+    };
+
+    if (projectNorm === activeProjectRoot) {
+      for (const [id, meta] of controller.session.metaMap.entries()) {
+        consider(id, meta, true);
+      }
+    }
+    try {
+      const { agentsFile, groupsDir } = getUfooPaths(root);
+      if (fs.existsSync(agentsFile)) {
+        const data = loadAgentsData(agentsFile);
+        for (const [id, meta] of Object.entries(data?.agents || {})) {
+          consider(id, meta, false);
+        }
+      }
+      if (fs.existsSync(groupsDir)) {
+        for (const file of fs.readdirSync(groupsDir)) {
+          if (!file.endsWith(".json")) continue;
+          const group = JSON.parse(fs.readFileSync(path.join(groupsDir, file), "utf8"));
+          const groupWt = group?.worktree_root ? safeCanonicalRoot(group.worktree_root) : "";
+          if (!groupWt || groupWt !== targetWt) continue;
+          if (activeOnly && !["active", "partial"].includes(String(group.status || ""))) continue;
+          for (const member of Array.isArray(group.members) ? group.members : []) {
+            const mid = String(member?.subscriber_id || "").trim();
+            if (!mid || mid === excluded) continue;
+            if (activeOnly && member.status !== "active" && member.status !== "reused") continue;
+            if (!users.has(mid)) {
+              users.set(mid, String(member.nickname || member.member_id || mid));
+            }
+          }
+        }
+      }
+    } catch {
+      // ignore registry/group read errors
+    }
+    return [...users.values()];
+  }
+
+  function cleanupSessionPerAgentFiles(root, id) {
+    try {
+      const paths = getUfooPaths(root);
+      const safeId = String(id || "").replace(/[^a-zA-Z0-9._-]/g, "_");
+      const candidates = [
+        path.join(paths.busQueuesDir, `${id}.jsonl`),
+        path.join(paths.busQueuesDir, `${safeId}.jsonl`),
+        path.join(paths.busOffsetsDir, `${id}.offset`),
+        path.join(paths.busOffsetsDir, `${safeId}.offset`),
+        path.join(paths.runDir, `task-control-${safeId}.sock`),
+      ];
+      for (const filePath of candidates) {
+        try {
+          if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+        } catch {
+          // ignore individual cleanup errors
+        }
+      }
+    } catch {
+      // ignore path resolution errors
+    }
+  }
+
+  function readGroupMemberInfo(root, id) {
+    const targetId = String(id || "").trim();
+    if (!root || !targetId) return null;
+    try {
+      const { groupsDir } = getUfooPaths(root);
+      if (!fs.existsSync(groupsDir)) return null;
+      const groupFiles = fs.readdirSync(groupsDir)
+        .filter((file) => file.endsWith(".json"))
+        .map((file) => {
+          const fullPath = path.join(groupsDir, file);
+          let mtimeMs = 0;
+          try { mtimeMs = fs.statSync(fullPath).mtimeMs || 0; } catch {}
+          return { fullPath, mtimeMs };
+        })
+        .sort((a, b) => b.mtimeMs - a.mtimeMs);
+      for (const { fullPath } of groupFiles) {
+        let parsed = null;
+        try {
+          parsed = JSON.parse(fs.readFileSync(fullPath, "utf8"));
+        } catch {
+          continue;
+        }
+        const members = Array.isArray(parsed?.members) ? parsed.members : [];
+        for (const member of members) {
+          if (!member || typeof member !== "object") continue;
+          const ids = [
+            member.subscriber_id,
+            member.previous_subscriber_id,
+            member.bootstrapped_subscriber_id,
+            ...(Array.isArray(member.launch?.subscriber_ids) ? member.launch.subscriber_ids : []),
+            ...(Array.isArray(member.previous_subscriber_ids) ? member.previous_subscriber_ids : []),
+          ].map((v) => String(v || "").trim()).filter(Boolean);
+          if (!ids.includes(targetId)) continue;
+          const label = String(
+            member.nickname
+            || member.template_agent_id
+            || member.member_id
+            || member.scoped_nickname
+            || ""
+          ).trim();
+          const type = String(
+            member.type
+            || member.agent
+            || (targetId.includes(":") ? targetId.split(":")[0] : "")
+            || "worker"
+          ).trim();
+          return { label, type };
+        }
+      }
+    } catch {
+      return null;
+    }
+    return null;
   }
 
   function getAgentLabel(agentId) {
-    const meta = controller.session.metaMap.get(agentId) || {};
-    return String(meta.display_nickname || meta.nickname || agentId);
+    const custom = findSessionCustomLabel(activeProjectRoot, agentId);
+    if (custom) return custom;
+    const meta = controller.session.metaMap.get(agentId) || readDiskAgentMeta(activeProjectRoot, agentId) || {};
+    const direct = String(meta.display_nickname || meta.nickname || "").trim();
+    if (direct) return direct;
+    const groupMember = readGroupMemberInfo(activeProjectRoot, agentId);
+    if (groupMember?.label) return groupMember.label;
+    return String(agentId);
+  }
+
+  function resolveSenderInfo(senderId, senderKind = "") {
+    const id = String(senderId || "").trim();
+    if (!id) return null;
+    if (senderKind === "coordinator" || id === "ufoo-agent" || id.endsWith(":ufoo-agent")) {
+      return {
+        sender_id: "ufoo-agent",
+        sender_kind: "coordinator",
+        sender_label: "ufoo",
+        sender_type: "ufoo",
+      };
+    }
+    const liveMeta = controller.session.metaMap.get(id) || null;
+    const diskMeta = liveMeta ? null : readDiskAgentMeta(activeProjectRoot, id);
+    const meta = liveMeta || diskMeta || {};
+    const groupMember = (!meta.display_nickname && !meta.nickname)
+      ? readGroupMemberInfo(activeProjectRoot, id)
+      : null;
+    const custom = findSessionCustomLabel(activeProjectRoot, id);
+    const label = custom
+      || String(meta.display_nickname || meta.nickname || groupMember?.label || id);
+    const type = String(
+      meta.agent_type
+      || meta.type
+      || groupMember?.type
+      || (id.includes(":") ? id.split(":")[0] : "")
+      || "worker"
+    );
+    return {
+      sender_id: id,
+      sender_kind: senderKind || "peer",
+      sender_label: label,
+      sender_type: type,
+    };
   }
 
   function getHandoffAgentMeta(agentId) {
@@ -334,40 +1002,99 @@ async function startDesktopUiHost(options = {}) {
 
   function buildActiveProjectWorkerRows() {
     const list = [];
+    const cfg = (() => {
+      try { return loadConfig(activeProjectRoot) || {}; } catch { return {}; }
+    })();
     for (const id of controller.session.agents) {
       if (id === "ufoo-agent" || id.endsWith(":ufoo-agent")) continue;
-      const meta = controller.session.metaMap.get(id) || {};
+      const meta = resolveAgentMeta(activeProjectRoot, id) || {};
       const internal = isInternalAgentMeta(meta);
+      const workerType = String(meta.agent_type || meta.type || id.split(":")[0] || "worker");
       list.push({
         id,
         label: getAgentLabel(id),
-        type: String(meta.agent_type || meta.type || id.split(":")[0] || "worker"),
+        type: workerType,
         internal,
         external: !internal,
         activity_state: String(meta.activity_state || "idle"),
-        activity_detail: String(meta.activity_detail || ""),
+        activity_detail: sanitizeUiActivityDetail(meta.activity_detail),
         group_id: String(meta.group_id || ""),
         group_member_id: String(meta.group_member_id || ""),
         group_template_alias: String(meta.group_template_alias || ""),
         host_name: String(meta.host_name || ""),
         launch_mode: String(meta.launch_mode || ""),
+        worktree_root: String(meta.worktree_root || ""),
+        worktree_branch: String(meta.worktree_branch || ""),
+        model: resolveWorkerDisplayModel(meta, workerType, cfg),
+        thinking_level: String(meta.thinking_level || cfg.agentThinking || "medium"),
+        permission_mode: String(meta.permission_mode || cfg.permissionMode || "auto_edit"),
       });
     }
     return list;
   }
 
+  function safeCanonicalRoot(raw) {
+    const text = String(raw || "").trim();
+    if (!text) return "";
+    try {
+      return canonicalProjectRoot(text);
+    } catch {
+      return path.resolve(text);
+    }
+  }
+
   function listUnarchivedProjects(archive = desktopArchive.read()) {
-    const archivedRoots = new Set(archive.projects.map(({ root }) => root));
-    return loadGlobalProjectRows(activeProjectRoot).filter(({ root }) => !archivedRoots.has(root));
+    const archivedRoots = new Set((archive.projects || []).map(({ root }) => safeCanonicalRoot(root)).filter(Boolean));
+    return loadGlobalProjectRows(activeProjectRoot).filter(({ root }) => !archivedRoots.has(safeCanonicalRoot(root)));
+  }
+
+  let lastProjectsTreeSignature = "";
+  let lastWorkflowSignature = "";
+
+  function publishWorkflowSnapshot(force = false) {
+    if (globalScope !== "project") {
+      if (force || lastWorkflowSignature !== "empty") {
+        lastWorkflowSignature = "empty";
+        publish("workflow.snapshot", { project_root: "", groups: [], edges: [], positions: {} });
+      }
+      return null;
+    }
+    const snap = getWorkflowSnapshot(activeProjectRoot);
+    const sig = JSON.stringify({
+      root: snap.project_root,
+      groups: snap.groups,
+      edges: snap.edges,
+    });
+    if (!force && sig === lastWorkflowSignature) return snap;
+    lastWorkflowSignature = sig;
+    publish("workflow.snapshot", snap);
+    return snap;
+  }
+  const branchCache = new Map();
+  const BRANCH_CACHE_TTL_MS = 10000;
+
+  function detectGitBranchCached(root) {
+    const now = Date.now();
+    const hit = branchCache.get(root);
+    if (hit && now - hit.ts < BRANCH_CACHE_TTL_MS) return hit.branch;
+    const branch = detectGitBranch(root);
+    branchCache.set(root, { branch, ts: now });
+    return branch;
   }
 
   function buildProjectsTreePayload() {
     const archive = desktopArchive.read();
-    const rawProjects = listUnarchivedProjects(archive);
-    const seen = new Set(rawProjects.map((r) => r.root));
+    const prefs = sessionPrefs.read();
+    const archivedRoots = new Set((archive.projects || []).map(({ root }) => safeCanonicalRoot(root)).filter(Boolean));
+    const byRoot = new Map();
+    for (const row of listUnarchivedProjects(archive)) {
+      const root = safeCanonicalRoot(row.root);
+      if (!root || archivedRoots.has(root) || byRoot.has(root)) continue;
+      byRoot.set(root, { ...row, root });
+    }
     if (activeProjectRoot && activeProjectRoot !== controllerRoot
-      && !archive.projects.some(({ root }) => root === activeProjectRoot) && !seen.has(activeProjectRoot)) {
-      rawProjects.unshift({
+      && !archivedRoots.has(activeProjectRoot) && !byRoot.has(activeProjectRoot)) {
+      byRoot.set(activeProjectRoot, {
         id: buildProjectId(activeProjectRoot),
         label: path.basename(activeProjectRoot) || activeProjectRoot,
         root: activeProjectRoot,
@@ -376,25 +1103,131 @@ async function startDesktopUiHost(options = {}) {
       });
     }
 
+    const rawProjects = Array.from(byRoot.values()).sort(
+      (a, b) => String(a.label || "").localeCompare(String(b.label || ""), "en", { sensitivity: "base" })
+        || a.root.localeCompare(b.root)
+    );
+
     const projects = rawProjects.map((row) => {
       const isCurrent = row.root === activeProjectRoot && globalScope === "project";
       const dormant = inspectDormantProjectSummary(row.root);
-      const workers = isCurrent ? buildActiveProjectWorkerRows() : dormant.workers;
-      const archivedIds = new Set(archive.sessions.filter(({ root }) => root === row.root).map(({ id }) => id));
+      const rawWorkers = isCurrent ? buildActiveProjectWorkerRows() : dormant.workers;
+      const archivedEntries = (archive.sessions || []).filter(({ root }) => safeCanonicalRoot(root) === row.root);
+      const archivedIds = new Set(archivedEntries.map(({ id }) => id));
+
+      const labelsMap = new Map();
+      for (const item of prefs.labels || []) {
+        if (safeCanonicalRoot(item.root) === row.root && item.id && item.label) {
+          labelsMap.set(item.id, item.label);
+        }
+      }
+      const pinnedMap = new Map();
+      for (const item of prefs.pinned || []) {
+        if (safeCanonicalRoot(item.root) === row.root && item.id) {
+          pinnedMap.set(item.id, item.pinnedAt || "");
+        }
+      }
+      const archivedMetaMap = new Map();
+      for (const item of prefs.archivedMeta || []) {
+        if (safeCanonicalRoot(item.root) === row.root && item.id) {
+          archivedMetaMap.set(item.id, item);
+        }
+      }
+
+      const workers = rawWorkers
+        .filter(({ id }) => !archivedIds.has(id) && !isRecentlyDeletedSession(row.root, id))
+        .map((w, idx) => ({
+          ...w,
+          label: labelsMap.get(w.id) || w.label,
+          pinned: pinnedMap.has(w.id),
+          pinned_at: pinnedMap.get(w.id) || "",
+          _idx: idx,
+        }))
+        .sort((a, b) => {
+          if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+          if (a.pinned && b.pinned) {
+            const cmp = String(a.pinned_at || "").localeCompare(String(b.pinned_at || ""));
+            if (cmp !== 0) return cmp;
+          }
+          return a._idx - b._idx;
+        })
+        .map(({ _idx, ...rest }) => rest);
+
+      const rawRecoverable = recoverableCache.get(row.root) || [];
+      const recoverableById = new Map(rawRecoverable.map((r) => [r.id, r]));
+      const recoverable = rawRecoverable
+        .filter(({ id }) => !archivedIds.has(id) && !isRecentlyDeletedSession(row.root, id))
+        .map((item) => ({
+          ...item,
+          label: labelsMap.get(item.id) || item.label || item.id,
+          type: String(
+            item.type
+              || item.agent
+              || (!String(item.id || "").startsWith("group:") && String(item.id || "").includes(":")
+                ? String(item.id).split(":")[0]
+                : "")
+          ),
+        }));
+
+      const diskAgents = (() => {
+        try {
+          const { agentsFile } = getUfooPaths(row.root);
+          return fs.existsSync(agentsFile) ? (loadAgentsData(agentsFile)?.agents || {}) : {};
+        } catch {
+          return {};
+        }
+      })();
+      const liveWorkerById = new Map(rawWorkers.map((w) => [w.id, w]));
+
+      const archived = archivedEntries
+        .map(({ id }) => {
+          const stored = archivedMetaMap.get(id);
+          const diskMeta = diskAgents[id] || null;
+          const live = liveWorkerById.get(id) || null;
+          const rec = recoverableById.get(id) || null;
+          const label = labelsMap.get(id)
+            || live?.label
+            || String(diskMeta?.display_nickname || diskMeta?.nickname || "")
+            || stored?.label
+            || rec?.label
+            || id;
+          const type = live?.type
+            || String(diskMeta?.agent_type || diskMeta?.type || "")
+            || stored?.type
+            || id.split(":")[0]
+            || "worker";
+          const worktreeBranch = live?.worktree_branch
+            || String(diskMeta?.worktree_branch || "")
+            || stored?.worktreeBranch
+            || "";
+          return {
+            id,
+            label,
+            type,
+            archived_at: stored?.archivedAt || "",
+            worktree_branch: worktreeBranch,
+            recoverable: Boolean(rec || diskMeta?.provider_session_id),
+            active: Boolean(live),
+            internal: stored !== undefined ? Boolean(stored.internal) : Boolean(live ? live.internal : isInternalAgentMeta(diskMeta)),
+          };
+        })
+        .sort((a, b) => String(b.archived_at || "").localeCompare(String(a.archived_at || "")));
+
       return {
         id: row.id || buildProjectId(row.root),
         label: row.label || path.basename(row.root),
         root: row.root,
-        branch: detectGitBranch(row.root),
+        branch: detectGitBranchCached(row.root),
         status: row.status || "running",
         active: isCurrent,
         selectedAsMain: isCurrent && stageTarget.kind === "project_main",
         selectedWorkerId: isCurrent && stageTarget.kind === "worker_single" ? stageTarget.agentId : "",
         mainBusy: isCurrent ? Boolean(controller.session.pending) || dormant.mainBusy : dormant.mainBusy,
-        waitingUser: isCurrent ? Boolean(activePendingInteraction) || dormant.waitingUser : dormant.waitingUser,
+        waitingUser: isCurrent ? Boolean(getActivePendingInteraction()) : dormant.waitingUser,
         conversationId: dormant.conversationId,
-        workers: workers.filter(({ id }) => !archivedIds.has(id)),
-        recoverable: (recoverableCache.get(row.root) || []).filter(({ id }) => !archivedIds.has(id)),
+        workers,
+        recoverable,
+        archived,
       };
     });
 
@@ -407,8 +1240,13 @@ async function startDesktopUiHost(options = {}) {
     };
   }
 
-  function publishProjectsTree() {
+  function publishProjectsTree(options = {}) {
     const tree = buildProjectsTreePayload();
+    const signature = JSON.stringify(tree);
+    if (!options.force && signature === lastProjectsTreeSignature) {
+      return tree;
+    }
+    lastProjectsTreeSignature = signature;
     publish("projects.tree", tree);
     publish("projects.snapshot", {
       global_mode: true,
@@ -422,7 +1260,7 @@ async function startDesktopUiHost(options = {}) {
 
   function ensureStandaloneSurface(agentId) {
     if (!standaloneSurfaces.has(agentId)) {
-      const surface = createAgentSurface();
+      const surface = createAgentSurface({ rawMarkdown: true });
       const initial = loadInternalAgentTranscript(activeProjectRoot, agentId, {
         maxEvents: 300,
         maxEntries: 300,
@@ -435,13 +1273,23 @@ async function startDesktopUiHost(options = {}) {
       if (events.length) {
         surface.apply("transcript.reset", { entries: [] });
         for (const evt of events) {
+          const seq = Number(evt.seq) || 0;
+          if (seq > 0 && seq <= maxSeq) continue;
+          if (seq > 0) maxSeq = seq;
           surface.accept(evt.data.surface);
-          maxSeq = Math.max(maxSeq, evt.seq || 0);
         }
       }
       standaloneSurfaces.set(agentId, { surface, seq: maxSeq });
     }
     return standaloneSurfaces.get(agentId);
+  }
+
+  function acceptStandaloneSurfaceEvent(agentId, surfaceEvent, seq = 0) {
+    const holder = ensureStandaloneSurface(agentId);
+    const numSeq = Number(seq) || 0;
+    if (numSeq > 0 && numSeq <= holder.seq) return false;
+    if (numSeq > 0) holder.seq = numSeq;
+    return holder.surface.accept(surfaceEvent || {});
   }
 
   function pollStandaloneWorkerSurface() {
@@ -454,46 +1302,137 @@ async function startDesktopUiHost(options = {}) {
       standaloneReaderRoot = activeProjectRoot;
       standaloneReader = createAgentSurfaceReader(activeProjectRoot);
     }
-    const holder = ensureStandaloneSurface(agentId);
     let dirty = false;
     for (const evt of standaloneReader.read([agentId])) {
-      if ((evt.seq || 0) > holder.seq) {
-        holder.seq = evt.seq || holder.seq;
-        if (holder.surface.accept(evt.data.surface)) dirty = true;
+      if (acceptStandaloneSurfaceEvent(agentId, evt.data?.surface, evt.seq)) {
+        dirty = true;
       }
     }
     if (dirty) publishStandaloneWorkerFrame(agentId);
   }
 
+  const worktreeChangesCache = new Map();
+  const WORKTREE_CHANGES_TTL_MS = 2500;
+
+  function normalizeSessionChangedFiles(rawList = [], worktreeRoot = "") {
+    const projectNorm = safeCanonicalRoot(activeProjectRoot);
+    const wtNorm = worktreeRoot ? safeCanonicalRoot(worktreeRoot) : projectNorm;
+    const byKey = new Map();
+
+    const addItem = (rawPath, kind = "modified", additions, deletions) => {
+      const text = String(rawPath || "").trim();
+      if (!text) return;
+      let displayPath = text;
+      let openPath = text;
+      if (path.isAbsolute(text)) {
+        const absDir = safeCanonicalRoot(path.dirname(text));
+        const absFull = path.join(absDir, path.basename(text));
+        if (wtNorm && (absFull === wtNorm || absFull.startsWith(`${wtNorm}${path.sep}`))) {
+          displayPath = path.relative(wtNorm, absFull).split(path.sep).join("/");
+          openPath = absFull;
+        } else if (projectNorm && (absFull === projectNorm || absFull.startsWith(`${projectNorm}${path.sep}`))) {
+          displayPath = path.relative(projectNorm, absFull).split(path.sep).join("/");
+          openPath = absFull;
+        }
+      } else {
+        displayPath = text.replace(/^\.\//, "");
+        openPath = displayPath;
+      }
+      const prev = byKey.get(displayPath);
+      byKey.set(displayPath, {
+        path: displayPath,
+        open_path: prev?.open_path || openPath,
+        kind: prev?.kind === "added" && kind === "modified" ? "added" : (kind || prev?.kind || "modified"),
+        ...(Number.isFinite(additions) ? { additions } : prev?.additions !== undefined ? { additions: prev.additions } : {}),
+        ...(Number.isFinite(deletions) ? { deletions } : prev?.deletions !== undefined ? { deletions: prev.deletions } : {}),
+      });
+    };
+
+    for (const item of rawList || []) {
+      addItem(item.path, item.kind);
+    }
+
+    // If the worker owns a dedicated worktree, merge live git status & line stats (cached 2.5s)
+    if (wtNorm && projectNorm && wtNorm !== projectNorm && fs.existsSync(wtNorm)) {
+      const now = Date.now();
+      let cached = worktreeChangesCache.get(wtNorm);
+      if (!cached || now - cached.ts > WORKTREE_CHANGES_TTL_MS) {
+        try {
+          const snap = loadWorkspaceChanges(activeProjectRoot, { worktreeRoot: wtNorm });
+          cached = { ts: now, files: Array.isArray(snap?.files) ? snap.files : [] };
+        } catch {
+          cached = { ts: now, files: [] };
+        }
+        worktreeChangesCache.set(wtNorm, cached);
+      }
+      for (const f of cached.files) {
+        const k = f.kind === "untracked" ? "added" : f.kind;
+        addItem(f.path, k, f.additions, f.deletions);
+      }
+    }
+
+    return [...byKey.values()];
+  }
+
   function buildStandaloneWorkerFrame(agentId) {
     const id = String(agentId || "").trim();
-    const meta = controller.session.metaMap.get(id) || {};
+    const meta = resolveAgentMeta(activeProjectRoot, id) || {};
     const internal = isInternalAgentMeta(meta);
     const draft = standaloneDrafts.get(id) || { text: "", revision: 0 };
+    const cfg = (() => {
+      try { return loadConfig(activeProjectRoot) || {}; } catch { return {}; }
+    })();
+    const workerType = String(meta.agent_type || meta.type || id.split(":")[0] || (internal ? "worker" : "external"));
 
     if (internal) {
       const holder = ensureStandaloneSurface(id);
       const snap = holder.surface.snapshot();
+      const wtRoot = String(meta.worktree_root || meta.cwd || activeProjectRoot);
+      const sessionChanged = normalizeSessionChangedFiles(snap.changed_files || [], wtRoot);
+      const statsByOpenPath = new Map();
+      const statsByDisplayPath = new Map();
+      for (const cf of sessionChanged) {
+        statsByDisplayPath.set(cf.path, cf);
+        if (cf.open_path) statsByOpenPath.set(cf.open_path, cf);
+      }
       return {
         project_root: activeProjectRoot,
         agent_id: id,
         label: getAgentLabel(id),
-        type: String(meta.agent_type || meta.type || id.split(":")[0] || "worker"),
+        type: workerType,
         internal: true,
         external: false,
-        entries: snap.entries.map((e) => ({
-          ...e,
-          text: stripTags(e.text || ""),
-          detail: stripTags(e.detail || ""),
-        })),
+        entries: snap.entries.map((e) => {
+          const senderInfo = e.sender_id ? resolveSenderInfo(e.sender_id, e.sender_kind) : null;
+          return {
+            ...e,
+            ...(senderInfo || {}),
+            text: stripTags(e.text || ""),
+            detail: stripTags(e.detail || ""),
+            ...(Array.isArray(e.changed_files) && e.changed_files.length > 0
+              ? {
+                changed_files: e.changed_files.map((item) => {
+                  const normalized = normalizeSessionChangedFiles([item], "")[0] || item;
+                  const enriched = statsByOpenPath.get(normalized.open_path)
+                    || statsByDisplayPath.get(normalized.path);
+                  return enriched ? { ...normalized, ...enriched } : normalized;
+                }),
+              }
+              : {}),
+          };
+        }),
         status: snap.status || String(meta.activity_state || "ready"),
         busy: Boolean(snap.busy || meta.activity_state === "working"),
         usage: snap.usage || "",
         plan: snap.plan || [],
-        activity_detail: String(meta.activity_detail || ""),
+        changed_files: sessionChanged,
+        activity_detail: sanitizeUiActivityDetail(meta.activity_detail),
         group_id: String(meta.group_id || ""),
         group_template_alias: String(meta.group_template_alias || ""),
-        worktree_root: String(meta.worktree_root || meta.cwd || activeProjectRoot),
+        worktree_root: wtRoot,
+        model: resolveWorkerDisplayModel(meta, workerType, cfg),
+        thinking_level: String(meta.thinking_level || cfg.agentThinking || "medium"),
+        permission_mode: String(meta.permission_mode || cfg.permissionMode || "auto_edit"),
         input: draft.text,
         input_revision: draft.revision,
       };
@@ -502,13 +1441,16 @@ async function startDesktopUiHost(options = {}) {
     const entries = loadInternalAgentTranscript(activeProjectRoot, id, {
       maxEvents: 400,
       maxEntries: 300,
+    }).map((e) => {
+      const senderInfo = e.sender_id ? resolveSenderInfo(e.sender_id, e.sender_kind) : null;
+      return senderInfo ? { ...e, ...senderInfo } : e;
     });
     const reports = listReports(activeProjectRoot, { agent: id, num: 25 });
     return {
       project_root: activeProjectRoot,
       agent_id: id,
       label: getAgentLabel(id),
-      type: String(meta.agent_type || meta.type || id.split(":")[0] || "external"),
+      type: workerType,
       internal: false,
       external: true,
       entries,
@@ -517,10 +1459,13 @@ async function startDesktopUiHost(options = {}) {
       busy: meta.activity_state === "working",
       usage: "",
       plan: [],
-      activity_detail: String(meta.activity_detail || ""),
+      activity_detail: sanitizeUiActivityDetail(meta.activity_detail),
       host_name: String(meta.host_name || meta.launch_mode || "terminal"),
       launch_mode: String(meta.launch_mode || "external"),
       worktree_root: String(meta.cwd || activeProjectRoot),
+      model: resolveWorkerDisplayModel(meta, workerType, cfg),
+      thinking_level: String(meta.thinking_level || cfg.agentThinking || "medium"),
+      permission_mode: String(meta.permission_mode || cfg.permissionMode || "auto_edit"),
       input: draft.text,
       input_revision: draft.revision,
     };
@@ -634,7 +1579,7 @@ async function startDesktopUiHost(options = {}) {
     if (multiSession) multiSession.stop({ clearDrafts: false });
     standaloneSurfaces.clear();
     standaloneReader = null;
-    activePendingInteraction = null;
+    clearAllPendingInteractionsLocal();
 
     const targetEndpoint = resolveDaemonEndpoint(root, { controllerRoot });
     const targetDaemonRoot = targetEndpoint.scope === "global"
@@ -657,8 +1602,10 @@ async function startDesktopUiHost(options = {}) {
     if (archived) desktopArchive.restoreProject(root);
     activeProjectRoot = root;
     globalScope = root === controllerRoot ? "controller" : "project";
-    stageTarget = switchOpts.agentId
-      ? { kind: "worker_single", agentId: String(switchOpts.agentId).trim() }
+    const rawSwitchAgentId = String(switchOpts.agentId || "").trim();
+    const normalizedSwitchAgentId = rawSwitchAgentId && rawSwitchAgentId !== "main" ? rawSwitchAgentId : "";
+    stageTarget = normalizedSwitchAgentId
+      ? { kind: "worker_single", agentId: normalizedSwitchAgentId }
       : { kind: "project_main", agentId: "" };
 
     Object.assign(settings, loadConfig(activeProjectRoot) || {});
@@ -672,6 +1619,7 @@ async function startDesktopUiHost(options = {}) {
     controller.requestDaemonStatus();
     publish("app.snapshot", buildSnapshot());
     publishProjectsTree();
+    publishWorkflowSnapshot(true);
     publishRightInspectorAll();
 
     if (switchOpts.windowMode && ["main", "side", "multi"].includes(switchOpts.windowMode) && stageTarget.kind === "project_main") {
@@ -684,7 +1632,7 @@ async function startDesktopUiHost(options = {}) {
 
   async function switchToControllerRoot() {
     if (multiSession) multiSession.stop({ clearDrafts: false });
-    activePendingInteraction = null;
+    clearAllPendingInteractionsLocal();
     stageTarget = { kind: "project_main", agentId: "" };
 
     const controllerEndpoint = resolveDaemonEndpoint(controllerRoot, { controllerRoot });
@@ -707,6 +1655,7 @@ async function startDesktopUiHost(options = {}) {
     controller.session.labelMap.clear();
     publish("app.snapshot", buildSnapshot());
     publishProjectsTree();
+    publishWorkflowSnapshot(true);
     return { ok: true, project_root: controllerRoot };
   }
 
@@ -734,7 +1683,10 @@ async function startDesktopUiHost(options = {}) {
               : "system";
         appendLocal(normalized, stripTags(text));
       },
-      setStatus: (text) => publish("status.set", { text: stripTags(text || "ready") }),
+      setStatus: (text, opts = {}) => publish("status.set", {
+        text: stripTags(text || "ready"),
+        ...(typeof opts?.busy === "boolean" ? { busy: opts.busy } : {}),
+      }),
       appendHistory: (type, text, meta = {}) => {
         const { appendChatHistory } = require("../app/chat/historyStore");
         appendChatHistory(activeProjectRoot, type, stripTags(text), meta, historyOptions());
@@ -826,10 +1778,18 @@ async function startDesktopUiHost(options = {}) {
             streamLabels.delete(key);
           }
           publish("status.set", { text: "ready", busy: false });
+          if (globalScope === "project") {
+            try {
+              publish("workspace.context.snapshot", handleWorkspaceContext(activeProjectRoot, { operation: "snapshot" }));
+            } catch {
+              // ignore background refresh error
+            }
+          }
           return;
         }
         if (action.type === "log/clear") {
-          publish("transcript.reset", {});
+          clearChatHistory(activeProjectRoot, historyOptions());
+          publish("transcript.reset", { entries: [] });
         }
       },
     },
@@ -862,6 +1822,8 @@ async function startDesktopUiHost(options = {}) {
     publish,
     publishLossy,
     getLabel: getAgentLabel,
+    resolveSenderInfo,
+    rawMarkdown: true,
   });
 
   function publishRightInspectorAll() {
@@ -875,6 +1837,30 @@ async function startDesktopUiHost(options = {}) {
     }
   }
 
+  function buildEngineCatalog() {
+    const builtin = [
+      { id: "codex", agentType: "codex", label: "Codex", kind: "sdk", available: true, description: "OpenAI Codex SDK" },
+      { id: "claude", agentType: "claude", label: "Claude Code", kind: "sdk", available: true, description: "Anthropic Claude Agent SDK" },
+      { id: "agy", agentType: "agy", label: "Antigravity", kind: "native", available: isAgyAvailable(), description: "Google Antigravity (agy)" },
+      { id: "ucode", agentType: "ucode", label: "ucode", kind: "native", available: true, description: "ufoo Native Coding Engine" },
+    ];
+    let acp = [];
+    try {
+      acp = detectInstalledAcpAgents(activeProjectRoot).map((item) => ({
+        id: item.agentType,
+        agentType: item.agentType,
+        label: item.label,
+        kind: "acp",
+        available: Boolean(item.available),
+        command: item.command,
+        description: item.description || "ACP Agent",
+      }));
+    } catch {
+      acp = [];
+    }
+    return [...builtin, ...acp];
+  }
+
   function buildSnapshot() {
     const { loadChatHistory, loadInputHistory } = require("../app/chat/historyStore");
     const history = loadChatHistory(activeProjectRoot, 250, historyOptions());
@@ -882,13 +1868,19 @@ async function startDesktopUiHost(options = {}) {
     const agents = controller.getAgentsSnapshot();
     const settingsSnap = buildSettingsSnapshot(loadConfig(activeProjectRoot) || settings);
     const tree = buildProjectsTreePayload();
+    const activeNode = tree.projects.find((p) => p.active);
+    const mainBusy = Boolean(controller.session.pending || activeNode?.mainBusy);
     return {
-      status: "ready",
+      status: mainBusy ? "Thinking…" : "ready",
+      busy: mainBusy,
       package_version: PACKAGE_VERSION,
+      daemon_connected: daemonConnectionState === "connected",
+      daemon_state: daemonConnectionState,
       footer: agents.footer || "",
-      entries: rawHistoryToEntries(history),
+      entries: rawHistoryToEntries(history, buildProjectSpeakerIndex(activeProjectRoot, controller.session.metaMap)),
       input_history: Array.isArray(inputHistory) ? inputHistory.filter(Boolean) : [],
       agents: agents.agents,
+      engine_catalog: buildEngineCatalog(),
       settings: settingsSnap,
       agent_provider: settingsSnap.agent_provider,
       provider_options: settingsSnap.provider_options,
@@ -897,8 +1889,13 @@ async function startDesktopUiHost(options = {}) {
       active_root: activeProjectRoot,
       scope: globalScope,
       stage_target: { ...stageTarget },
-      pending_interaction: activePendingInteraction,
+      pending_interaction: getActivePendingInteraction(),
+      pending_interactions: getAllPendingInteractions(),
       projects: tree.projects,
+      workflow: globalScope === "project"
+        ? getWorkflowSnapshot(activeProjectRoot)
+        : { project_root: "", groups: [], edges: [], positions: {} },
+      onboarding_needed: !require("./onboardingProbe").readOnboardingState(controllerRoot).completed && tree.projects.length === 0,
       cron: agents.cron && agents.cron.tasks ? agents.cron.tasks : [],
       loop: agents.loop || null,
       loop_summary: formatLoopSummary(agents.loop || null),
@@ -931,6 +1928,52 @@ async function startDesktopUiHost(options = {}) {
     return { ok: true, ...state };
   }
 
+  function buildInitialClientEnvelopes() {
+    if (!hostRef) return [];
+    const envelopes = [
+      createEnvelope({
+        kind: "snapshot",
+        name: "app.snapshot",
+        seq: hostRef.nextSeq(),
+        scope: { surface: "desktop", project_id: activeProjectRoot },
+        payload: buildSnapshot(),
+      }),
+      createEnvelope({
+        kind: "event",
+        name: "projects.tree",
+        seq: hostRef.nextSeq(),
+        scope: { surface: "desktop", project_id: activeProjectRoot },
+        payload: buildProjectsTreePayload(),
+      }),
+    ];
+    if (globalScope === "project" && activeProjectRoot) {
+      try {
+        envelopes.push(createEnvelope({
+          kind: "event",
+          name: "workspace.changes.snapshot",
+          seq: hostRef.nextSeq(),
+          scope: { surface: "desktop", project_id: activeProjectRoot },
+          payload: loadWorkspaceChanges(activeProjectRoot),
+        }));
+      } catch {
+        // ignore inspector error on initial sync
+      }
+      try {
+        envelopes.push(createEnvelope({
+          kind: "event",
+          name: "workspace.context.snapshot",
+          seq: hostRef.nextSeq(),
+          scope: { surface: "desktop", project_id: activeProjectRoot },
+          payload: handleWorkspaceContext(activeProjectRoot),
+        }));
+      } catch {
+        // ignore context error on initial sync
+      }
+    }
+    return envelopes;
+  }
+
+  let commandHandlerRef = null;
   const host = createUiHostServer({
     socketPath: uiSocketPath,
     authToken: uiAuthToken,
@@ -953,22 +1996,58 @@ async function startDesktopUiHost(options = {}) {
       });
       socket.write(encodeMessage(snap));
       multiSession?.publishFrames();
-      publishProjectsTree();
+      publishProjectsTree({ force: true });
       if (stageTarget.kind === "worker_single" && stageTarget.agentId) {
         publishStandaloneWorkerFrame(stageTarget.agentId);
       }
       publishRightInspectorAll();
     },
-    async onCommand(cmd) {
+    onCommand: (cmd) => commandHandlerRef(cmd),
+  });
+
+  commandHandlerRef = async function handleUiCommand(cmd) {
       const name = String(cmd.name || "");
       const payload = cmd.payload && typeof cmd.payload === "object" ? cmd.payload : {};
 
       if (name === "app.exit") return { ok: true };
 
+      if (name === "remote.status") {
+        if (!remoteBridge) return { ok: false, error: "Remote bridge is not enabled" };
+        return remoteBridge.getStatus();
+      }
+      if (name === "remote.enable") {
+        if (!remoteBridge) return { ok: false, error: "Remote bridge is not enabled" };
+        return remoteBridge.enable({
+          ...(payload.relay_url !== undefined ? { relay_url: payload.relay_url } : {}),
+          ...(payload.web_base_url !== undefined ? { web_base_url: payload.web_base_url } : {}),
+          ...(payload.auth_token !== undefined ? { auth_token: payload.auth_token } : {}),
+          ...(payload.allow_insecure_ws !== undefined ? { allow_insecure_ws: Boolean(payload.allow_insecure_ws) } : {}),
+        });
+      }
+      if (name === "remote.disable") {
+        if (!remoteBridge) return { ok: false, error: "Remote bridge is not enabled" };
+        return remoteBridge.disable();
+      }
+      if (name === "remote.pair.create") {
+        if (!remoteBridge) return { ok: false, error: "Remote bridge is not enabled" };
+        return remoteBridge.createPairing({
+          ttlMs: payload.ttl_ms ?? payload.expires_in_ms,
+          webBaseUrl: payload.web_base_url || "",
+        });
+      }
+      if (name === "remote.devices.list") {
+        if (!remoteBridge) return { ok: false, error: "Remote bridge is not enabled" };
+        return remoteBridge.listDevices({ includeRevoked: Boolean(payload.include_revoked) });
+      }
+      if (name === "remote.devices.revoke") {
+        if (!remoteBridge) return { ok: false, error: "Remote bridge is not enabled" };
+        return remoteBridge.revokeDevice(payload.client_id || payload.clientId || "");
+      }
+
       if (name === "ui.resync.request") {
         publish("app.snapshot", buildSnapshot());
         multiSession?.publishFrames();
-        publishProjectsTree();
+        publishProjectsTree({ force: true });
         if (stageTarget.kind === "worker_single" && stageTarget.agentId) {
           publishStandaloneWorkerFrame(stageTarget.agentId);
         }
@@ -1005,15 +2084,204 @@ async function startDesktopUiHost(options = {}) {
             if (!result.ok && !missing) return result;
           }
           if (!missing) desktopArchive.archiveProject(root);
-        } else {
-          if (!id) return { ok: false, error: "Missing session ID" };
-          desktopArchive.archiveSession(root, id);
-          if (activeProjectRoot === root && stageTarget.kind === "worker_single" && stageTarget.agentId === id) {
-            changeWindowLayout("main");
+          publishProjectsTree({ force: true });
+          return missing ? { ok: true, silent: true } : { ok: true };
+        }
+
+        if (!id) return { ok: false, error: "Missing session ID" };
+        const meta = (root === activeProjectRoot ? controller.session.metaMap.get(id) : null) || readDiskAgentMeta(root, id);
+        const recItem = (recoverableCache.get(root) || []).find((r) => r.id === id);
+        const customLabel = findSessionCustomLabel(root, id);
+        const label = customLabel
+          || String(meta?.display_nickname || meta?.nickname || "")
+          || String(recItem?.label || "")
+          || id;
+        const workerType = String(meta?.agent_type || meta?.type || id.split(":")[0] || "worker");
+        const worktreeBranch = String(meta?.worktree_branch || "");
+        const internal = meta ? isInternalAgentMeta(meta) : true;
+
+        const stopped = await stopInternalWorkerForSession(root, id, meta);
+        sessionPrefs.setPinned(root, id, false);
+        sessionPrefs.setArchivedMeta(root, id, {
+          label,
+          type: workerType,
+          archivedAt: new Date().toISOString(),
+          worktreeBranch,
+          internal,
+        });
+        desktopArchive.archiveSession(root, id);
+        if (activeProjectRoot === root && stageTarget.kind === "worker_single" && stageTarget.agentId === id) {
+          changeWindowLayout("main");
+        }
+        publishProjectsTree({ force: true });
+        return { ok: true, stopped };
+      }
+
+      if (name === "session.unarchive") {
+        const target = String(payload.root || activeProjectRoot).trim();
+        const id = String(payload.session_id || "").trim();
+        if (!target) return { ok: false, error: "Missing project root" };
+        if (!id) return { ok: false, error: "Missing session ID" };
+        const root = safeCanonicalRoot(target);
+        desktopArchive.restoreSession(root, id);
+        sessionPrefs.clearArchivedMeta(root, id);
+
+        const isLive = root === activeProjectRoot
+          ? controller.session.agents.includes(id)
+          : inspectDormantProjectSummary(root).workers.some((w) => w.id === id);
+
+        let resumed = false;
+        if (!isLive && payload.resume !== false) {
+          let canResume = false;
+          try {
+            const rec = getRecoverableAgents(root, id);
+            canResume = Boolean(rec && Array.isArray(rec.recoverable) && rec.recoverable.length > 0);
+          } catch {
+            canResume = false;
+          }
+          if (canResume) {
+            if (activeProjectRoot !== root) {
+              await switchToProjectRoot(root);
+            }
+            await controller.submitInput(`/resume ${id}`);
+            await refreshRecoverableForActiveProject();
+            resumed = true;
           }
         }
-        publishProjectsTree();
-        return missing ? { ok: true, silent: true } : { ok: true };
+        publishProjectsTree({ force: true });
+        return { ok: true, id, active: isLive, resumed };
+      }
+
+      if (name === "session.rename") {
+        const target = String(payload.root || activeProjectRoot).trim();
+        const id = String(payload.session_id || "").trim();
+        const label = String(payload.label || "").trim().slice(0, 80);
+        if (!target) return { ok: false, error: "Missing project root" };
+        if (!id) return { ok: false, error: "Missing session ID" };
+        if (!label) return { ok: false, error: "Session name cannot be empty" };
+        const root = safeCanonicalRoot(target);
+
+        sessionPrefs.setLabel(root, id, label);
+        try {
+          const { agentsFile } = getUfooPaths(root);
+          if (fs.existsSync(agentsFile)) {
+            updateAgentsData(agentsFile, (data) => {
+              if (!data.agents || !data.agents[id]) return false;
+              data.agents[id].nickname = label;
+              data.agents[id].display_nickname = label;
+              return true;
+            }, { source: "desktop.session.rename" });
+          }
+        } catch {
+          // ignore disk registry write error; UI label pref is still persisted
+        }
+        if (root === activeProjectRoot) {
+          const meta = controller.session.metaMap.get(id);
+          if (meta) {
+            meta.nickname = label;
+            meta.display_nickname = label;
+          }
+          controller.session.labelMap.set(id, label);
+        }
+        publishProjectsTree({ force: true });
+        if (root === activeProjectRoot && stageTarget.kind === "worker_single" && stageTarget.agentId === id) {
+          publishStandaloneWorkerFrame(id);
+        }
+        return { ok: true, id, label };
+      }
+
+      if (name === "session.pin") {
+        const target = String(payload.root || activeProjectRoot).trim();
+        const id = String(payload.session_id || "").trim();
+        if (!target) return { ok: false, error: "Missing project root" };
+        if (!id) return { ok: false, error: "Missing session ID" };
+        const root = safeCanonicalRoot(target);
+        const currentlyPinned = (sessionPrefs.read().pinned || []).some(
+          (item) => safeCanonicalRoot(item.root) === root && item.id === id
+        );
+        const nextPinned = payload.pinned !== undefined ? Boolean(payload.pinned) : !currentlyPinned;
+        sessionPrefs.setPinned(root, id, nextPinned);
+        publishProjectsTree({ force: true });
+        return { ok: true, id, pinned: nextPinned };
+      }
+
+      if (name === "session.delete") {
+        const target = String(payload.root || activeProjectRoot).trim();
+        const id = String(payload.session_id || "").trim();
+        if (!target) return { ok: false, error: "Missing project root" };
+        if (!id) return { ok: false, error: "Missing session ID" };
+        const root = safeCanonicalRoot(target);
+        const meta = (root === activeProjectRoot ? controller.session.metaMap.get(id) : null) || readDiskAgentMeta(root, id);
+        deletedSessionGuard.set(`${root}\0${id}`, Date.now() + DELETED_SESSION_GUARD_MS);
+
+        await stopInternalWorkerForSession(root, id, meta);
+
+        try {
+          const { agentsFile } = getUfooPaths(root);
+          if (fs.existsSync(agentsFile)) {
+            updateAgentsData(agentsFile, (data) => {
+              if (!data.agents || !Object.prototype.hasOwnProperty.call(data.agents, id)) return false;
+              delete data.agents[id];
+              return true;
+            }, { source: "desktop.session.delete" });
+          }
+        } catch {
+          // ignore registry delete errors
+        }
+
+        cleanupSessionPerAgentFiles(root, id);
+        desktopArchive.purgeSession(root, id);
+        sessionPrefs.purgeSession(root, id);
+
+        let worktreeRemoved = false;
+        let worktreeKept = "";
+        let worktreeSharedBy = [];
+        const wtRoot = meta?.worktree_root ? safeCanonicalRoot(meta.worktree_root) : "";
+        if (wtRoot && wtRoot !== root && fs.existsSync(wtRoot) && payload.remove_worktree !== false) {
+          worktreeSharedBy = findAgentsUsingWorktree(root, wtRoot, { excludeAgentId: id, activeOnly: false });
+          if (worktreeSharedBy.length > 0) {
+            worktreeKept = wtRoot;
+          } else if (payload.force_worktree === true || isWorktreeClean(wtRoot)) {
+            try {
+              const rmRes = removeManagedWorktree({
+                projectRoot: root,
+                worktreePath: wtRoot,
+                force: Boolean(payload.force_worktree),
+                deleteBranch: false,
+              });
+              if (rmRes?.ok) worktreeRemoved = true;
+              else worktreeKept = wtRoot;
+            } catch {
+              worktreeKept = wtRoot;
+            }
+          } else {
+            worktreeKept = wtRoot;
+          }
+        }
+
+        if (recoverableCache.has(root)) {
+          recoverableCache.set(root, (recoverableCache.get(root) || []).filter((item) => item.id !== id));
+        }
+        if (root === activeProjectRoot) {
+          controller.session.agents = controller.session.agents.filter((agentId) => agentId !== id);
+          controller.session.metaMap.delete(id);
+          controller.session.labelMap.delete(id);
+          standaloneSurfaces.delete(id);
+          standaloneDrafts.delete(id);
+          if (stageTarget.kind === "worker_single" && stageTarget.agentId === id) {
+            changeWindowLayout("main");
+          }
+          controller.requestDaemonStatus();
+        }
+        publishProjectsTree({ force: true });
+        return {
+          ok: true,
+          id,
+          deleted: true,
+          worktree_removed: worktreeRemoved,
+          worktree_kept: worktreeKept,
+          ...(worktreeSharedBy.length > 0 ? { worktree_shared_by: worktreeSharedBy } : {}),
+        };
       }
 
       if (name === "project.switch") {
@@ -1031,11 +2299,12 @@ async function startDesktopUiHost(options = {}) {
 
       if (name === "worker.focus_view") {
         const targetRoot = String(payload.root || payload.projectRoot || activeProjectRoot).trim();
-        const agentId = String(payload.agent_id || payload.agentId || "").trim();
-        if (targetRoot && canonicalProjectRoot(targetRoot) !== activeProjectRoot) {
+        const rawAgentId = String(payload.agent_id || payload.agentId || "").trim();
+        const agentId = rawAgentId === "main" ? "" : rawAgentId;
+        if (targetRoot && safeCanonicalRoot(targetRoot) !== activeProjectRoot) {
           return switchToProjectRoot(targetRoot, { agentId });
         }
-        if (!agentId || agentId === "main") {
+        if (!agentId) {
           stageTarget = { kind: "project_main", agentId: "" };
           reconcileInternalWatches();
           publishProjectsTree();
@@ -1047,7 +2316,171 @@ async function startDesktopUiHost(options = {}) {
         reconcileInternalWatches();
         publishProjectsTree();
         const frame = publishStandaloneWorkerFrame(agentId);
+        // Auto-sync Changes inspector to the worker's worktree if it owns one
+        try {
+          const wtRoot = frame?.worktree_root || controller.session.metaMap.get(agentId)?.worktree_root || "";
+          if (wtRoot && wtRoot !== activeProjectRoot) {
+            publish("workspace.changes.snapshot", loadWorkspaceChanges(activeProjectRoot, { worktreeRoot: wtRoot }));
+          }
+        } catch {
+          // ignore inspector sync error
+        }
         return { ok: true, stage_target: stageTarget, frame };
+      }
+
+      if (name === "chat.clear") {
+        const nextConversationId = `main-${crypto.randomUUID()}`;
+        try {
+          saveConfig(activeProjectRoot, { agentConversationId: nextConversationId });
+        } catch {
+          // ignore config write error on read-only root
+        }
+        controller.session.runtimeSessionId = nextConversationId;
+        controller.session.pending = null;
+        streamIds.clear();
+        streamLabels.clear();
+        clearChatHistory(activeProjectRoot, historyOptions());
+        publish("transcript.reset", { entries: [] });
+        publish("plan.set", { lines: [] });
+        publish("status.set", { text: "ready", busy: false });
+        publishProjectsTree();
+        return { ok: true, conversation_id: nextConversationId };
+      }
+
+      if (name === "worker.clear") {
+        const agentId = String(payload.agent_id || payload.agentId || (stageTarget.kind === "worker_single" ? stageTarget.agentId : "")).trim();
+        if (!agentId) return { ok: false, error: "agent_id required" };
+        const meta = controller.session.metaMap.get(agentId) || {};
+        if (!isInternalAgentMeta(meta)) {
+          return { ok: false, error: "Clear is only available for internal agents" };
+        }
+        const liveRes = await clearInternalAgent(activeProjectRoot, agentId)
+          .catch((err) => ({ ok: false, error: err && err.message ? err.message : "clear failed" }));
+        const contextReset = Boolean(liveRes && liveRes.ok);
+        if (!contextReset) {
+          clearProviderSessionId(activeProjectRoot, agentId);
+        }
+        if (!liveRes?.cleared_surface) {
+          try {
+            const pub = createAgentSurfacePublisher(activeProjectRoot, agentId);
+            pub.enqueue({ type: "surface_cleared", agentId });
+            await pub.flush();
+          } catch {
+            // ignore surface log write failure
+          }
+        }
+        if (stageTarget.kind === "worker_single" && stageTarget.agentId === agentId) {
+          pollStandaloneWorkerSurface();
+        }
+        const holder = ensureStandaloneSurface(agentId);
+        holder.surface.accept({ type: "surface_cleared" });
+        if (multiSession && typeof multiSession.clearPane === "function") {
+          multiSession.clearPane(agentId);
+        }
+        if (stageTarget.kind === "worker_single" && stageTarget.agentId === agentId) {
+          publishStandaloneWorkerFrame(agentId);
+        }
+        publishProjectsTree();
+        return {
+          ok: true,
+          agent_id: agentId,
+          context_reset: contextReset,
+          ...(contextReset ? {} : { warning: liveRes?.error || "Worker runner predates live clear; view cleared" }),
+        };
+      }
+
+      if (name === "workflow.snapshot") {
+        const snap = publishWorkflowSnapshot(true);
+        return { ok: true, ...(snap || { project_root: "", groups: [], edges: [], positions: {} }) };
+      }
+
+      if (name === "workflow.connect") {
+        if (globalScope !== "project") return { ok: false, error: "Select a project first" };
+        const res = connectWorkflowEdge(activeProjectRoot, {
+          from: payload.from,
+          to: payload.to,
+          kind: payload.kind || "handoff",
+        });
+        if (res.ok) {
+          if (res.snapshot) {
+            lastWorkflowSignature = JSON.stringify({
+              root: res.snapshot.project_root,
+              groups: res.snapshot.groups,
+              edges: res.snapshot.edges,
+            });
+            publish("workflow.snapshot", res.snapshot);
+          }
+          controller.requestDaemonStatus();
+          publishProjectsTree({ force: true });
+        }
+        return res;
+      }
+
+      if (name === "workflow.disconnect") {
+        if (globalScope !== "project") return { ok: false, error: "Select a project first" };
+        const res = disconnectWorkflowEdge(activeProjectRoot, {
+          edgeId: payload.edge_id || payload.edgeId || "",
+          from: payload.from || "",
+          to: payload.to || "",
+        });
+        if (res.ok) {
+          if (res.snapshot) {
+            lastWorkflowSignature = JSON.stringify({
+              root: res.snapshot.project_root,
+              groups: res.snapshot.groups,
+              edges: res.snapshot.edges,
+            });
+            publish("workflow.snapshot", res.snapshot);
+          }
+          controller.requestDaemonStatus();
+          publishProjectsTree({ force: true });
+        }
+        return res;
+      }
+
+      if (name === "workflow.disband") {
+        if (globalScope !== "project") return { ok: false, error: "Select a project first" };
+        const res = disbandAdhocGroup(activeProjectRoot);
+        if (res.ok && res.snapshot) {
+          lastWorkflowSignature = JSON.stringify({
+            root: res.snapshot.project_root,
+            groups: res.snapshot.groups,
+            edges: res.snapshot.edges,
+          });
+          publish("workflow.snapshot", res.snapshot);
+        }
+        controller.requestDaemonStatus();
+        publishProjectsTree({ force: true });
+        return res;
+      }
+
+      if (name === "workflow.rename") {
+        if (globalScope !== "project") return { ok: false, error: "Select a project first" };
+        const res = renameAdhocGroup(activeProjectRoot, payload.name);
+        if (res.ok && res.snapshot) {
+          lastWorkflowSignature = JSON.stringify({
+            root: res.snapshot.project_root,
+            groups: res.snapshot.groups,
+            edges: res.snapshot.edges,
+          });
+          publish("workflow.snapshot", res.snapshot);
+        }
+        return res;
+      }
+
+      if (name === "workflow.layout") {
+        if (globalScope !== "project") return { ok: false, error: "Select a project first" };
+        const positions = saveNodePositions(activeProjectRoot, payload.positions || {});
+        return { ok: true, positions };
+      }
+
+      if (name === "attachment.stage") {
+        const targetRoot = activeProjectRoot || controllerRoot;
+        if (!targetRoot) return { ok: false, error: "No active workspace" };
+        return stageAttachments(targetRoot, {
+          paths: Array.isArray(payload.paths) ? payload.paths : [],
+          uploads: Array.isArray(payload.uploads) ? payload.uploads : [],
+        });
       }
 
       if (name === "side.select") {
@@ -1077,27 +2510,62 @@ async function startDesktopUiHost(options = {}) {
       if (name === "multi.expand") return multiSession.handleExpand(payload);
 
       if (name === "multi.raw") {
+        const attachments = normalizeAttachmentList(payload.attachments || []);
+        const formatWorkerEcho = (rawMsg) => {
+          if (attachments.length === 0) return rawMsg;
+          const tags = attachments.map((att) => `[${att.kind === "image" ? "image" : "file"}: ${att.name}]`).join(" ");
+          return rawMsg.trim() ? `${rawMsg.trim()}\n${tags}` : tags;
+        };
         if (stageTarget.kind === "worker_single" && payload.agent_id === stageTarget.agentId) {
           const id = stageTarget.agentId;
           const text = String(payload.input ?? "");
           const rev = Number(payload.input_revision) || 0;
           standaloneDrafts.set(id, { text: payload.submit ? "" : text, revision: rev });
-          if (payload.submit && text.trim()) {
-            const holder = isInternalAgentMeta(controller.session.metaMap.get(id))
+          if (payload.submit && (text.trim() || attachments.length > 0)) {
+            const effectiveMsg = formatAttachmentPromptSummary(text, attachments);
+            const echoMsg = formatWorkerEcho(text);
+            const holder = isInternalChild(id)
               ? ensureStandaloneSurface(id)
               : null;
-            holder?.surface.accept({ type: "task_submitted", message: text });
+            if (holder && echoMsg) {
+              holder.surface.apply("transcript.append", { kind: "user", text: echoMsg, sender_kind: "user" });
+              holder.surface.accept({ type: "task_submitted", message: effectiveMsg });
+            }
             daemonSend({
               type: IPC_REQUEST_TYPES.BUS_SEND,
               request_id: `worker-send-${crypto.randomUUID()}`,
               target: id,
-              message: text,
+              message: effectiveMsg,
+              ...(attachments.length > 0 ? { attachments } : {}),
               injection_mode: "immediate",
               source: "ufoo-desktop-worker",
             });
           }
           publishStandaloneWorkerFrame(id);
           return { ok: true, input_revision: rev };
+        }
+        if (payload.submit === true && attachments.length > 0) {
+          const id = String(payload.agent_id || "").trim();
+          const text = String(payload.input ?? "");
+          const effectiveMsg = formatAttachmentPromptSummary(text, attachments);
+          const echoMsg = formatWorkerEcho(text);
+          if (id) {
+            if (echoMsg) {
+              multiSession.acceptEvent(id, { type: "task_started", message: echoMsg, source: "ufoo-desktop-worker" });
+            }
+            multiSession.acceptEvent(id, { type: "task_submitted", message: effectiveMsg });
+            multiSession.publishFrames();
+            daemonSend({
+              type: IPC_REQUEST_TYPES.BUS_SEND,
+              request_id: `worker-send-${crypto.randomUUID()}`,
+              target: id,
+              message: effectiveMsg,
+              attachments,
+              injection_mode: "immediate",
+              source: "ufoo-desktop-worker",
+            });
+            return { ok: true, agent_id: id, input_revision: Number(payload.input_revision) || 0 };
+          }
         }
         return multiSession.handleRaw(payload);
       }
@@ -1241,20 +2709,336 @@ async function startDesktopUiHost(options = {}) {
       if (name === "interaction.respond") {
         const settingsReply = await agentSettings.respond(payload);
         if (settingsReply) return settingsReply;
-        const interactionId = String(payload.id || activePendingInteraction?.id || "").trim();
-        const answerText = String(payload.text ?? payload.answer ?? "").trim();
-        if (interactionId && !payload.cancelled) {
-          daemonSend({
-            type: IPC_REQUEST_TYPES.AGENT_RUNTIME,
-            operation: "resume",
-            interaction_id: interactionId,
-            answer: answerText,
-          });
+        if (payload.dismiss_all === true) {
+          const allItems = [...pendingInteractions.values()];
+          for (const item of allItems) {
+            if (!item || !item.id || item.id.startsWith("settings-")) continue;
+            markInteractionDismissed(item.id);
+            pendingInteractions.delete(item.id);
+            daemonSend({
+              type: IPC_REQUEST_TYPES.AGENT_RUNTIME,
+              operation: "cancel",
+              interaction_id: item.id,
+              task_run_id: item.taskRunId || "",
+              session_id: item.sessionId || "",
+              reason: "interaction_dismissed",
+            });
+          }
+          syncPublishedInteraction(true);
+          publishProjectsTree();
+          controller.requestDaemonStatus();
+          return { ok: true, dismissed: allItems.length };
         }
-        activePendingInteraction = null;
-        publish("interaction.clear", { id: interactionId });
+        const currentHead = getActivePendingInteraction();
+        const interactionId = String(payload.id || currentHead?.id || "").trim();
+        const target = (interactionId && pendingInteractions.get(interactionId)) || currentHead || null;
+        const answerText = String(payload.text ?? payload.answer ?? "").trim();
+        if (interactionId) {
+          if (payload.cancelled) {
+            daemonSend({
+              type: IPC_REQUEST_TYPES.AGENT_RUNTIME,
+              operation: "cancel",
+              interaction_id: interactionId,
+              task_run_id: target?.taskRunId || "",
+              session_id: target?.sessionId || "",
+              reason: "interaction_dismissed",
+            });
+          } else {
+            daemonSend({
+              type: IPC_REQUEST_TYPES.AGENT_RUNTIME,
+              operation: "resume",
+              interaction_id: interactionId,
+              task_run_id: target?.taskRunId || "",
+              session_id: target?.sessionId || "",
+              answer: answerText,
+            });
+          }
+          removePendingInteraction(
+            { id: interactionId, taskRunId: target?.taskRunId || "" },
+            { markDismissed: true }
+          );
+        }
+        syncPublishedInteraction(true);
         publishProjectsTree();
+        controller.requestDaemonStatus();
         return { ok: true };
+      }
+
+      if (name === "agents.catalog") {
+        return { ok: true, engines: buildEngineCatalog() };
+      }
+
+      if (name === "onboarding.probe") {
+        const tree = buildProjectsTreePayload();
+        const data = await probeOnboardingState({
+          controllerRoot,
+          projectRoot: activeProjectRoot,
+          existingProjectsCount: tree.projects.length,
+        });
+        publish("onboarding.state", data);
+        return { ok: true, data };
+      }
+
+      if (name === "onboarding.complete") {
+        if (payload.agent_provider) {
+          await applyAgentSettings({ agent_provider: String(payload.agent_provider) }).catch(() => {});
+        }
+        const saved = saveOnboardingState(controllerRoot, {
+          completed: true,
+          skipped: Boolean(payload.skipped),
+        });
+        return { ok: true, state: saved };
+      }
+
+      if (name === "onboarding.open_login") {
+        return launchLoginInTerminal(payload.engine || payload.id || "", {
+          dryRun: Boolean(payload.dryRun),
+        });
+      }
+
+      if (name === "onboarding.configure_mcp") {
+        return configureExternalHostMcp(payload.host || "codex", { controllerRoot });
+      }
+
+      if (name === "ui.events.since") {
+        const sinceSeq = Number(payload.seq || 0);
+        const oldestSeq = recentEvents.length ? Number(recentEvents[0].seq || 0) : 0;
+        const resyncRequired = Boolean(
+          sinceSeq > 0 && recentEvents.length >= MAX_RECENT_EVENTS && oldestSeq > sinceSeq + 1
+        );
+        const events = resyncRequired ? [] : recentEvents.filter((evt) => Number(evt.seq || 0) > sinceSeq);
+        return {
+          ok: true,
+          events,
+          resync_required: resyncRequired,
+          latest_seq: recentEvents.length ? recentEvents[recentEvents.length - 1].seq : sinceSeq,
+        };
+      }
+
+      if (name === "worker.models") {
+        const root = activeProjectRoot;
+        const current = loadConfig(root);
+        const agentId = String(payload.agent_id || payload.agentId || "").trim();
+        const isMain = !agentId || agentId === "main";
+        const meta = isMain ? {} : (resolveAgentMeta(root, agentId) || {});
+        const workerType = isMain
+          ? "main"
+          : String(payload.agent_type || meta.agent_type || meta.type || agentId.split(":")[0] || "worker");
+        const resolvedProvider = resolveProviderForWorkerType(workerType, current);
+        const currentModel = isMain
+          ? String(current.agentModel || defaultAgentModelForProvider(resolvedProvider) || "")
+          : resolveWorkerDisplayModel(meta, workerType, current);
+        const currentThinking = isMain
+          ? String(current.agentThinking || "medium")
+          : String(meta.thinking_level || current.agentThinking || "medium");
+        const levels = thinkingLevelsForProvider(resolvedProvider);
+
+        if (!resolvedProvider) {
+          return {
+            ok: true,
+            agent_id: agentId || "main",
+            provider: workerType,
+            models: currentModel ? [currentModel] : [],
+            default_model: currentModel,
+            current_model: currentModel,
+            current_thinking: currentThinking,
+            thinking_levels: levels,
+            allow_custom: true,
+          };
+        }
+
+        const defaultModel = defaultAgentModelForProvider(resolvedProvider) || "";
+        let catalog = { ok: false, models: [], allowUnlistedModels: resolvedProvider === "custom" };
+        if (resolvedProvider === "agy-cli" && !isMain) {
+          const cliCatalog = await listAgyCliModels().catch(() => ({ ok: false, models: [] }));
+          if (cliCatalog.ok && Array.isArray(cliCatalog.models) && cliCatalog.models.length > 0) {
+            catalog = { ok: true, models: cliCatalog.models, allowUnlistedModels: false };
+          }
+        }
+        if (!catalog.ok || !Array.isArray(catalog.models) || catalog.models.length === 0) {
+          catalog = await listAgentModels(root, {
+            config: { ...current, agentProvider: resolvedProvider, agentModel: currentModel || defaultModel },
+          }).catch(() => ({ ok: false, models: [], allowUnlistedModels: resolvedProvider === "custom" }));
+        }
+        if (resolvedProvider === "agy-cli" && (!catalog.ok || !Array.isArray(catalog.models) || catalog.models.length === 0)) {
+          const cliCatalog = await listAgyCliModels().catch(() => ({ ok: false, models: [] }));
+          if (cliCatalog.ok && Array.isArray(cliCatalog.models) && cliCatalog.models.length > 0) {
+            catalog = { ok: true, models: cliCatalog.models, allowUnlistedModels: false };
+          }
+        }
+        const catalogModels = Array.isArray(catalog.models) ? catalog.models : [];
+        const models = Array.from(new Set([
+          ...catalogModels,
+          ...(defaultModel ? [defaultModel] : []),
+          ...(currentModel ? [currentModel] : []),
+        ].filter(Boolean)));
+        return {
+          ok: true,
+          agent_id: agentId || "main",
+          provider: resolvedProvider,
+          models,
+          default_model: defaultModel,
+          current_model: currentModel || defaultModel,
+          current_thinking: currentThinking,
+          thinking_levels: levels,
+          allow_custom: Boolean(catalog.allowUnlistedModels || resolvedProvider === "custom"),
+        };
+      }
+
+      if (name === "worker.configure") {
+        const agentId = String(payload.agent_id || payload.agentId || "").trim();
+        const modelRaw = payload.model !== undefined ? String(payload.model || "").trim() : undefined;
+        const thinkingRaw = (payload.thinking_level ?? payload.thinkingLevel) !== undefined
+          ? String(payload.thinking_level ?? payload.thinkingLevel ?? "").trim()
+          : undefined;
+        const permRaw = (payload.permission_mode ?? payload.permissionMode) !== undefined
+          ? String(payload.permission_mode ?? payload.permissionMode ?? "").trim().toLowerCase()
+          : undefined;
+
+        let normalizedThinking;
+        if (thinkingRaw !== undefined) {
+          normalizedThinking = normalizeThinkingLevel(thinkingRaw);
+          if (!normalizedThinking) {
+            return { ok: false, error: "Thinking effort must be off, low, medium, high, xhigh, or max" };
+          }
+        }
+        if (permRaw !== undefined && !["supervised", "auto_edit", "full_access"].includes(permRaw)) {
+          return { ok: false, error: "Permission mode must be supervised, auto_edit, or full_access" };
+        }
+
+        if (!agentId || agentId === "main") {
+          const patch = {};
+          if (modelRaw !== undefined) patch.agent_model = modelRaw;
+          if (normalizedThinking !== undefined) patch.agent_thinking = normalizedThinking;
+          if (permRaw !== undefined) patch.permission_mode = permRaw;
+          return applyAgentSettings(patch);
+        }
+
+        const meta = resolveAgentMeta(activeProjectRoot, agentId) || getHandoffAgentMeta(agentId);
+        if (!meta) return { ok: false, error: "Worker not found" };
+        if (!isInternalAgentMeta(meta)) {
+          return { ok: false, error: "External agents manage their own model and permissions" };
+        }
+
+        const cfg = (() => {
+          try { return loadConfig(activeProjectRoot) || {}; } catch { return {}; }
+        })();
+        const workerType = String(meta.agent_type || meta.type || agentId.split(":")[0] || "worker");
+        const resolvedProvider = resolveProviderForWorkerType(workerType, cfg);
+
+        let effectiveModel = modelRaw;
+        let effectiveThinking = normalizedThinking;
+        if (resolvedProvider === "agy-cli") {
+          if (effectiveModel !== undefined && effectiveThinking === undefined) {
+            const tierMatch = effectiveModel.match(/-(low|medium|high|xhigh)$/i);
+            if (tierMatch) effectiveThinking = tierMatch[1].toLowerCase();
+          } else if (effectiveModel === undefined && effectiveThinking !== undefined) {
+            const existingModel = resolveWorkerDisplayModel(meta, workerType, cfg);
+            const baseMatch = existingModel.match(/^(.+)-(low|medium|high|xhigh)$/i);
+            if (baseMatch) {
+              const candidate = `${baseMatch[1]}-${effectiveThinking}`;
+              const cliCatalog = await listAgyCliModels().catch(() => ({ ok: false, models: [] }));
+              if (cliCatalog.ok && Array.isArray(cliCatalog.models) && cliCatalog.models.includes(candidate)) {
+                effectiveModel = candidate;
+              }
+            }
+          }
+        }
+
+        const runtimePatch = {};
+        if (effectiveModel !== undefined) runtimePatch.model = effectiveModel;
+        if (effectiveThinking !== undefined) runtimePatch.thinking_level = effectiveThinking;
+        if (permRaw !== undefined) runtimePatch.permission_mode = permRaw;
+
+        const liveRes = await configureInternalAgent(activeProjectRoot, agentId, runtimePatch);
+        const persistedFields = {
+          ...(effectiveModel !== undefined ? { model: liveRes?.model || effectiveModel } : {}),
+          ...(effectiveThinking !== undefined ? { thinking_level: liveRes?.thinking_level || effectiveThinking } : {}),
+          ...(permRaw !== undefined ? { permission_mode: liveRes?.permission_mode || permRaw } : {}),
+        };
+        persistAgentRuntimeMeta(activeProjectRoot, agentId, persistedFields);
+        const existingMeta = resolveAgentMeta(activeProjectRoot, agentId) || {};
+        controller.session.metaMap.set(agentId, { ...existingMeta, ...persistedFields });
+        publishProjectsTree({ force: true });
+        if (stageTarget.kind === "worker_single" && stageTarget.agentId === agentId) {
+          publishStandaloneWorkerFrame(agentId);
+        }
+        if (multiSession?.isActive()) {
+          multiSession.publishFrames();
+        }
+        return {
+          ok: true,
+          agent_id: agentId,
+          live: Boolean(liveRes?.ok),
+          ...persistedFields,
+          ...(liveRes?.ok ? {} : { warning: "Saved to worker metadata; restart worker if live control is unavailable." }),
+        };
+      }
+
+      if (name === "session.set_permission") {
+        const mode = String(payload.mode || payload.permission_mode || "").trim().toLowerCase();
+        const agentId = String(payload.agent_id || payload.agentId || "").trim();
+        if (agentId && agentId !== "main") {
+          const meta = resolveAgentMeta(activeProjectRoot, agentId) || getHandoffAgentMeta(agentId);
+          if (meta && isInternalAgentMeta(meta)) {
+            const liveRes = await configureInternalAgent(activeProjectRoot, agentId, { permission_mode: mode });
+            persistAgentRuntimeMeta(activeProjectRoot, agentId, { permission_mode: mode });
+            const existingMeta = resolveAgentMeta(activeProjectRoot, agentId) || {};
+            controller.session.metaMap.set(agentId, { ...existingMeta, permission_mode: mode });
+            publishProjectsTree({ force: true });
+            if (stageTarget.kind === "worker_single" && stageTarget.agentId === agentId) {
+              publishStandaloneWorkerFrame(agentId);
+            }
+            return { ok: true, agent_id: agentId, permission_mode: mode, live: Boolean(liveRes?.ok) };
+          }
+        }
+        return applyAgentSettings({ permission_mode: mode });
+      }
+
+      if (name === "worker.handoff") {
+        const sourceId = String(payload.source_agent_id || stageTarget.agentId || "").trim();
+        const targetEngine = String(payload.target_engine || payload.agent || "").trim();
+        if (!targetEngine) return { ok: false, error: "Target engine is required" };
+        const sourceMeta = sourceId ? (controller.session.metaMap.get(sourceId) || {}) : {};
+        const worktreeRoot = String(sourceMeta.worktree_root || activeProjectRoot);
+        const sourceEntries = sourceId && standaloneSurfaces.has(sourceId)
+          ? standaloneSurfaces.get(sourceId).surface.getSnapshot().entries.slice(-8)
+          : [];
+        const digest = sourceEntries
+          .map((entry) => `[${entry.kind}] ${String(entry.text || "").slice(0, 260)}`)
+          .join("\n");
+        const handoffPrompt = [
+          `[Mid-Thread Handoff from ${sourceMeta.display_nickname || sourceId || "previous session"}]`,
+          worktreeRoot !== activeProjectRoot ? `Workspace/Worktree: ${worktreeRoot}` : "",
+          payload.note ? `User Note: ${String(payload.note)}` : "",
+          digest ? `Recent Context:\n${digest}` : "",
+          "Continue seamlessly from this state without repeating already completed work.",
+        ].filter(Boolean).join("\n\n");
+
+        const launchResp = await requestDaemon(activeProjectRoot, {
+          type: IPC_REQUEST_TYPES.LAUNCH_AGENT,
+          agent: targetEngine,
+          count: 1,
+          internal_only: true,
+          worktreeMode: "none",
+          groupWorktreeRoot: worktreeRoot,
+        }, { controllerRoot, fullResponse: true, timeoutMs: 30000 });
+        const launch = launchResp?.opsResults?.find(({ action }) => action === "launch");
+        if (launch?.ok === false) return { ok: false, error: launch.error || "Handoff launch failed" };
+        const newId = Array.isArray(launch?.subscriber_ids) ? launch.subscriber_ids[0] : "";
+        if (newId) {
+          daemonSend({
+            type: IPC_REQUEST_TYPES.BUS_SEND,
+            request_id: `handoff-${crypto.randomUUID()}`,
+            target: newId,
+            message: handoffPrompt,
+            injection_mode: "immediate",
+            source: "ufoo-desktop-handoff",
+          });
+          stageTarget = { kind: "worker_single", agentId: newId };
+          publishProjectsTree({ force: true });
+        }
+        return { ok: true, agent_id: newId, target_engine: targetEngine };
       }
 
       if (name === "workspace.changes") {
@@ -1264,15 +3048,141 @@ async function startDesktopUiHost(options = {}) {
         return { ok: true, data: snap };
       }
 
+      if (name === "workspace.git.stage") {
+        const root = String(payload.projectRoot || activeProjectRoot);
+        const res = gitStage(root, payload);
+        if (res.ok) publish("workspace.changes.snapshot", loadWorkspaceChanges(root, { worktreeRoot: payload.worktreeRoot }));
+        return res;
+      }
+
+      if (name === "workspace.git.unstage") {
+        const root = String(payload.projectRoot || activeProjectRoot);
+        const res = gitUnstage(root, payload);
+        if (res.ok) publish("workspace.changes.snapshot", loadWorkspaceChanges(root, { worktreeRoot: payload.worktreeRoot }));
+        return res;
+      }
+
+      if (name === "workspace.git.discard") {
+        const root = String(payload.projectRoot || activeProjectRoot);
+        const res = gitDiscard(root, payload);
+        if (res.ok) publish("workspace.changes.snapshot", loadWorkspaceChanges(root, { worktreeRoot: payload.worktreeRoot }));
+        return res;
+      }
+
+      if (name === "workspace.git.suggest_commit") {
+        const root = String(payload.projectRoot || activeProjectRoot);
+        return gitSuggestCommitMessage(root, payload);
+      }
+
+      if (name === "workspace.git.commit") {
+        const root = String(payload.projectRoot || activeProjectRoot);
+        const res = gitCommit(root, payload);
+        if (res.ok) publish("workspace.changes.snapshot", loadWorkspaceChanges(root, { worktreeRoot: payload.worktreeRoot }));
+        return res;
+      }
+
+      if (name === "workspace.git.push") {
+        const root = String(payload.projectRoot || activeProjectRoot);
+        return gitPush(root, payload);
+      }
+
+      if (name === "workspace.git.create_pr") {
+        const root = String(payload.projectRoot || activeProjectRoot);
+        return gitCreatePr(root, payload);
+      }
+
+      if (name === "workspace.worktree.merge") {
+        const root = String(payload.projectRoot || activeProjectRoot);
+        const activeUsers = payload.worktreePath
+          ? findAgentsUsingWorktree(root, payload.worktreePath, { activeOnly: true })
+          : [];
+        const res = mergeManagedWorktree({
+          projectRoot: root,
+          branch: payload.branch,
+          targetBranch: payload.targetBranch || "",
+          squash: Boolean(payload.squash),
+          worktreePath: payload.worktreePath || "",
+          removeAfter: Boolean(payload.removeAfter) && activeUsers.length === 0,
+        });
+        if (res.ok) publish("workspace.changes.snapshot", loadWorkspaceChanges(root, {}));
+        return activeUsers.length > 0 && payload.removeAfter
+          ? { ...res, worktree_kept: payload.worktreePath, worktree_shared_by: activeUsers }
+          : res;
+      }
+
+      if (name === "workspace.worktree.remove") {
+        const root = String(payload.projectRoot || activeProjectRoot);
+        const wtPath = String(payload.worktreePath || "").trim();
+        if (wtPath) {
+          const activeUsers = findAgentsUsingWorktree(root, wtPath, { activeOnly: true });
+          if (activeUsers.length > 0) {
+            return {
+              ok: false,
+              in_use: true,
+              error: `Worktree is still in use by active worker(s): ${activeUsers.join(", ")}`,
+            };
+          }
+          if (payload.force !== true && fs.existsSync(wtPath) && !isWorktreeClean(wtPath)) {
+            return {
+              ok: false,
+              dirty: true,
+              error: "Worktree has uncommitted changes. Commit, revert, or confirm force removal.",
+            };
+          }
+        }
+        const res = removeManagedWorktree({
+          projectRoot: root,
+          worktreePath: wtPath,
+          branch: payload.branch || "",
+          force: Boolean(payload.force),
+          deleteBranch: Boolean(payload.deleteBranch),
+        });
+        if (res.ok) publish("workspace.changes.snapshot", loadWorkspaceChanges(root, {}));
+        return res;
+      }
+
       if (name === "workspace.docs") {
         const root = String(payload.projectRoot || activeProjectRoot);
-        const snap = loadWorkspaceDocs(root, payload);
+        let fallbackWorktree = String(payload.worktreeRoot || "").trim();
+        if (!fallbackWorktree && stageTarget.kind === "worker_single" && stageTarget.agentId) {
+          const wt = controller.session.metaMap.get(stageTarget.agentId)?.worktree_root;
+          if (wt) fallbackWorktree = String(wt);
+        }
+        const snap = loadWorkspaceDocs(root, {
+          ...payload,
+          ...(fallbackWorktree ? { worktreeRoot: fallbackWorktree } : {}),
+        });
         publish("workspace.docs.snapshot", snap);
         return { ok: true, data: snap };
       }
 
       if (name === "workspace.context") {
         const root = String(payload.projectRoot || activeProjectRoot);
+        if (String(payload.operation || "").trim() === "decision.tidy") {
+          if (safeCanonicalRoot(root) === controllerRoot) {
+            return { ok: false, error: "Select a project workspace before tidying decisions" };
+          }
+          const plan = buildDecisionTidyPrompt(root);
+          if (plan.openCount === 0) {
+            return { ok: false, error: "No open decisions to tidy" };
+          }
+          if (safeCanonicalRoot(root) !== activeProjectRoot) {
+            const sw = await switchToProjectRoot(root);
+            if (!sw?.ok) return sw || { ok: false, error: "Could not switch project" };
+          }
+          if (stageTarget.kind !== "project_main") {
+            stageTarget = { kind: "project_main", agentId: "" };
+            reconcileInternalWatches();
+            publishProjectsTree({ force: true });
+            publish("window.set", multiSession.getSnapshot());
+            multiSession.publishFrames();
+          }
+          controller.session.targetAgent = null;
+          await controller.submitInput(plan.prompt);
+          const snap = handleWorkspaceContext(activeProjectRoot, { operation: "snapshot" });
+          publish("workspace.context.snapshot", snap);
+          return { ok: true, started: true, openCount: plan.openCount, files: plan.files, data: snap };
+        }
         const snap = handleWorkspaceContext(root, payload);
         publish("workspace.context.snapshot", snap);
         return { ok: true, data: snap };
@@ -1310,6 +3220,105 @@ async function startDesktopUiHost(options = {}) {
         });
       }
 
+      if (name === "daemon.service.status") {
+        const launchd = getLaunchdServiceStatus({ controllerRoot: daemonRoot });
+        return {
+          ok: true,
+          supported: Boolean(launchd.supported),
+          daemon_running: Boolean(isDaemonRunning(daemonRoot)),
+          daemon_pid: readDaemonPid(daemonRoot),
+          daemon_state: daemonConnectionState,
+          daemon_connected: daemonConnectionState === "connected",
+          launchd,
+        };
+      }
+
+      if (name === "daemon.service.install") {
+        const res = installLaunchdService({
+          controllerRoot: daemonRoot,
+          isRunning: isDaemonRunning,
+          stopDaemon: stopDaemonFn,
+          dryRun: Boolean(payload.dryRun),
+        });
+        if (!res.ok) return res;
+        if (!payload.dryRun) {
+          daemonConnection.close();
+          await new Promise((r) => setTimeout(r, 350));
+          await daemonConnection.connect();
+          controller.requestDaemonStatus();
+        }
+        const launchd = getLaunchdServiceStatus({ controllerRoot: daemonRoot });
+        return {
+          ok: true,
+          supported: Boolean(launchd.supported),
+          daemon_running: Boolean(isDaemonRunning(daemonRoot)),
+          daemon_pid: readDaemonPid(daemonRoot),
+          daemon_state: daemonConnectionState,
+          daemon_connected: daemonConnectionState === "connected",
+          launchd,
+        };
+      }
+
+      if (name === "daemon.service.uninstall") {
+        const res = uninstallLaunchdService({
+          controllerRoot: daemonRoot,
+          dryRun: Boolean(payload.dryRun),
+        });
+        if (!res.ok) return res;
+        if (!payload.dryRun) {
+          daemonConnection.close();
+          if (!isDaemonRunning(daemonRoot)) {
+            startDaemonFn(controllerRoot);
+            await new Promise((r) => setTimeout(r, 400));
+          }
+          await daemonConnection.connect();
+          controller.requestDaemonStatus();
+        }
+        const launchd = getLaunchdServiceStatus({ controllerRoot: daemonRoot });
+        return {
+          ok: true,
+          supported: Boolean(launchd.supported),
+          daemon_running: Boolean(isDaemonRunning(daemonRoot)),
+          daemon_pid: readDaemonPid(daemonRoot),
+          daemon_state: daemonConnectionState,
+          daemon_connected: daemonConnectionState === "connected",
+          launchd,
+        };
+      }
+
+      if (name === "daemon.restart") {
+        const launchdBefore = getLaunchdServiceStatus({ controllerRoot: daemonRoot });
+        if (launchdBefore.loaded && process.platform === "darwin") {
+          daemonConnection.close();
+          const kick = restartLaunchdService({ controllerRoot: daemonRoot });
+          await new Promise((r) => setTimeout(r, 450));
+          await daemonConnection.connect();
+          controller.requestDaemonStatus();
+          const launchdAfter = getLaunchdServiceStatus({ controllerRoot: daemonRoot });
+          return {
+            ok: Boolean(kick.ok),
+            via: "launchd",
+            error: kick.error || undefined,
+            daemon_running: Boolean(isDaemonRunning(daemonRoot)),
+            daemon_pid: readDaemonPid(daemonRoot),
+            daemon_state: daemonConnectionState,
+            daemon_connected: daemonConnectionState === "connected",
+            launchd: launchdAfter,
+          };
+        }
+        await daemonCoordinator.restart();
+        const launchdAfter = getLaunchdServiceStatus({ controllerRoot: daemonRoot });
+        return {
+          ok: daemonConnectionState === "connected" || Boolean(isDaemonRunning(daemonRoot)),
+          via: "coordinator",
+          daemon_running: Boolean(isDaemonRunning(daemonRoot)),
+          daemon_pid: readDaemonPid(daemonRoot),
+          daemon_state: daemonConnectionState,
+          daemon_connected: daemonConnectionState === "connected",
+          launchd: launchdAfter,
+        };
+      }
+
       if (name === "cron.stop") {
         const id = String(payload.id || "").trim();
         if (!id) return { ok: false, error: "missing cron id" };
@@ -1320,18 +3329,27 @@ async function startDesktopUiHost(options = {}) {
 
       if (name === "input.submit") {
         const text = String(payload.text || "");
+        const attachments = normalizeAttachmentList(payload.attachments || []);
         if (stageTarget.kind === "worker_single" && stageTarget.agentId && !text.trimStart().startsWith("/")) {
           const workerId = stageTarget.agentId;
-          if (!text.trim()) return { ok: true, routed: "empty" };
+          if (!text.trim() && attachments.length === 0) return { ok: true, routed: "empty" };
+          const effectiveMsg = formatAttachmentPromptSummary(text, attachments);
+          const tags = attachments.map((att) => `[${att.kind === "image" ? "image" : "file"}: ${att.name}]`).join(" ");
+          const echoMsg = attachments.length > 0 ? (text.trim() ? `${text.trim()}\n${tags}` : tags) : text;
           standaloneDrafts.set(workerId, { text: "", revision: (standaloneDrafts.get(workerId)?.revision || 0) + 1 });
-          if (isInternalAgentMeta(controller.session.metaMap.get(workerId))) {
-            ensureStandaloneSurface(workerId).surface.accept({ type: "task_submitted", message: text });
+          if (isInternalChild(workerId)) {
+            const holder = ensureStandaloneSurface(workerId);
+            if (echoMsg) {
+              holder.surface.apply("transcript.append", { kind: "user", text: echoMsg, sender_kind: "user" });
+            }
+            holder.surface.accept({ type: "task_submitted", message: effectiveMsg });
           }
           daemonSend({
             type: IPC_REQUEST_TYPES.BUS_SEND,
             request_id: `worker-submit-${crypto.randomUUID()}`,
             target: workerId,
-            message: text,
+            message: effectiveMsg,
+            ...(attachments.length > 0 ? { attachments } : {}),
             injection_mode: "immediate",
             source: "ufoo-desktop-worker",
           });
@@ -1346,40 +3364,121 @@ async function startDesktopUiHost(options = {}) {
         );
         if (!routing.ok) return routing;
         controller.session.targetAgent = routing.target;
+        const isMainChatTurn = !routing.target && !text.trimStart().startsWith("/") && !text.trimStart().startsWith("!");
+        if (isMainChatTurn && (text.trim() || attachments.length > 0)) {
+          publish("status.set", { text: "Thinking…", busy: true });
+        }
         const beforeSubmit = mainSubmissionRev;
-        await controller.submitInput(text);
+        await controller.submitInput(text, { attachments });
         if (!routing.target && beforeSubmit === mainSubmissionRev) {
           publish("status.set", { text: "ready", busy: false });
         }
-        return { ok: true, routed: text.trim() ? "submit" : "empty" };
+        return { ok: true, routed: (text.trim() || attachments.length > 0) ? "submit" : "empty" };
       }
 
       return { ok: false, error: `Unsupported command: ${name}` };
-    },
-  });
+  };
 
   hostRef = host;
   await host.listen();
 
+  const mainRuntimeToolSummaries = new Map();
   const router = createDaemonMessageRouter({
     escapeBlessed: (v) => String(v || ""),
     resolveAgentDisplayName: getAgentLabel,
     stripBlessedTags: stripTags,
+    suppressLifecycleLog: true,
     isOwnRequestId: (id) => ownRequestIds.has(id),
+    onRuntimeEvent: (event) => {
+      if (!event || event.agentId !== "ufoo-agent") return;
+      if (event.projectRoot && safeCanonicalRoot(event.projectRoot) !== safeCanonicalRoot(activeProjectRoot)) return;
+      const type = String(event.type || "");
+      const runId = String(event.taskRunId || "main");
+      if (type === "request.accepted" || type === "task.started" || type === "model.started") {
+        publish("status.set", { text: "Thinking…", busy: true });
+        return;
+      }
+      if (type === "model.phase") {
+        const phaseText = statusForAgentPhase(event.phase || {});
+        if (phaseText) publish("status.set", { text: phaseText, busy: true });
+        return;
+      }
+      if (type === "thinking.delta" && event.text) {
+        publish("thinking.delta", {
+          id: `main-thinking-${runId}`,
+          text: String(event.text),
+        });
+        publish("status.set", { text: "Thinking…", busy: true });
+        return;
+      }
+      if (type === "tool.started") {
+        const callId = String(event.toolCallId || `${runId}-${Date.now()}`);
+        const name = String(event.toolName || "tool");
+        const summary = String(event.toolSummary || `• ${fmt.formatToolDisplayName(name)}`);
+        mainRuntimeToolSummaries.set(callId, summary);
+        if (mainRuntimeToolSummaries.size > 200) {
+          mainRuntimeToolSummaries.delete(mainRuntimeToolSummaries.keys().next().value);
+        }
+        publish("tool.start", {
+          id: `main-tool-${callId}`,
+          tool_name: name,
+          tool_status: "running",
+          summary,
+        });
+        publish("status.set", { text: toolStatus(name), busy: true });
+        return;
+      }
+      if (type === "tool.completed" || type === "tool.failed" || type === "tool.rejected") {
+        const callId = String(event.toolCallId || "");
+        const name = String(event.toolName || "tool");
+        const baseSummary = mainRuntimeToolSummaries.get(callId) || `• ${fmt.formatToolDisplayName(name)}`;
+        const isError = type !== "tool.completed" || event.result?.ok === false;
+        const summary = isError && !baseSummary.startsWith("• Failed: ")
+          ? baseSummary.replace(/^• /, "• Failed: ")
+          : baseSummary;
+        const errorDetail = String(event.error || event.result?.error || "").trim();
+        publish("tool.result", {
+          id: `main-tool-${callId || `${runId}-${Date.now()}`}`,
+          tool_name: name,
+          tool_status: isError ? "error" : "done",
+          summary,
+          ...(errorDetail ? { detail: errorDetail } : {}),
+        });
+        publish("status.set", { text: "Thinking…", busy: true });
+        return;
+      }
+      if (["task.completed", "task.failed", "task.cancelled", "task.paused", "task.interrupted"].includes(type)) {
+        publish("status.set", {
+          text: type === "task.paused" ? "Waiting for reply…" : "ready",
+          busy: false,
+        });
+      }
+    },
     onInteractionRequest: (interaction) => {
-      activePendingInteraction = interaction;
-      publish("interaction.request", interaction);
+      if (!enqueuePendingInteraction(interaction)) return;
       publishProjectsTree();
+      if (globalScope === "project") {
+        try {
+          publish("workspace.context.snapshot", handleWorkspaceContext(activeProjectRoot, { operation: "snapshot" }));
+        } catch {
+          // ignore background refresh error
+        }
+      }
     },
     onInteractionClear: (info) => {
-      activePendingInteraction = null;
-      publish("interaction.clear", info || {});
-      publishProjectsTree();
+      const removed = removePendingInteraction(
+        { id: info?.id || "", taskRunId: info?.taskRunId || "" },
+        { markDismissed: Boolean(info?.id) }
+      );
+      if (removed) publishProjectsTree();
+    },
+    onInteractionsSync: (liveInteractions) => {
+      reconcilePendingInteractions(liveInteractions);
     },
     logMessage: (kind, text) => {
       const normalized = kind === "error" ? "error"
         : kind === "user" ? "user"
-          : kind === "assistant" ? "assistant"
+          : (kind === "assistant" || kind === "reply") ? "assistant"
             : "system";
       appendLocal(normalized, stripTags(text));
     },
@@ -1402,6 +3501,7 @@ async function startDesktopUiHost(options = {}) {
         loop_summary: payload.loop_summary,
       });
       publishProjectsTree();
+      publishWorkflowSnapshot();
       if (stageTarget.kind === "worker_single" && stageTarget.agentId) {
         publishStandaloneWorkerFrame(stageTarget.agentId);
       }
@@ -1445,6 +3545,7 @@ async function startDesktopUiHost(options = {}) {
       publishProjectsTree();
     },
   });
+  routerRef = router;
 
   const daemonConnection = createDaemonConnection({
     connectClient: daemonTransport.connectClient.bind(daemonTransport),
@@ -1471,16 +3572,34 @@ async function startDesktopUiHost(options = {}) {
       }
       if (msg.type === IPC_RESPONSE_TYPES.STATUS) {
         const root = msg.data && (msg.data.projectRoot || msg.data.project_root);
-        if (root && canonicalProjectRoot(root) !== canonicalProjectRoot(activeProjectRoot)) return;
+        if (root && safeCanonicalRoot(root) !== safeCanonicalRoot(activeProjectRoot)) return;
       }
       if (msg.type === IPC_RESPONSE_TYPES.BUS) {
+        const busEvt = msg.data || {};
+        if (
+          globalScope === "project"
+          && (busEvt.event === "message" || (!busEvt.event && busEvt.data?.message))
+          && busEvt.publisher
+          && busEvt.target
+          && busEvt.target !== "*"
+          && busEvt.publisher !== busEvt.target
+        ) {
+          publish("workflow.pulse", {
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            from: String(busEvt.publisher),
+            to: String(busEvt.target),
+            edge_id: String(busEvt.data?.workflow_edge_id || ""),
+            group_id: String(busEvt.data?.workflow_group_id || ""),
+            preview: String(busEvt.data?.message || "").slice(0, 80),
+            ts: Date.now(),
+          });
+        }
         if (stageTarget.kind === "worker_single" && stageTarget.agentId) {
           const evtData = msg.data || {};
           if (evtData.event === "agent_surface" && evtData.publisher === stageTarget.agentId) {
-            const holder = ensureStandaloneSurface(stageTarget.agentId);
-            holder.seq = Math.max(holder.seq, evtData.seq || 0);
-            holder.surface.accept(evtData.data?.surface || {});
-            publishStandaloneWorkerFrame(stageTarget.agentId);
+            if (acceptStandaloneSurfaceEvent(stageTarget.agentId, evtData.data?.surface, evtData.seq)) {
+              publishStandaloneWorkerFrame(stageTarget.agentId);
+            }
           } else if (!isInternalAgentMeta(controller.session.metaMap.get(stageTarget.agentId))) {
             publishStandaloneWorkerFrame(stageTarget.agentId);
           }
@@ -1498,6 +3617,33 @@ async function startDesktopUiHost(options = {}) {
           // ignore mirror errors
         }
         if (msg.data?.event === "agent_surface") return;
+        const busSource = String(busEvt.source || busEvt.data?.source || "").trim();
+        // Direct UI submissions to a worker pane belong strictly to that worker's
+        // surface — never echo them as "ufoo-agent · ..." in the main ufoo transcript.
+        if ([
+          "ufoo-desktop",
+          "ufoo-desktop-worker",
+          "ufoo-desktop-handoff",
+          "rust-multi-window",
+          "chat-internal-agent-view",
+        ].includes(busSource)) {
+          return;
+        }
+        // Internal worker stream chunks are rendered cleanly on the worker's own
+        // surface; do not leak raw "\nTool: ..." stream deltas into ufoo main chat.
+        if (busEvt.publisher && isInternalChild(busEvt.publisher)) {
+          const rawMsg = typeof busEvt.message === "string"
+            ? busEvt.message
+            : (typeof busEvt.data?.message === "string" ? busEvt.data.message : "");
+          if (rawMsg && rawMsg.trimStart().startsWith("{")) {
+            try {
+              const parsed = JSON.parse(rawMsg);
+              if (parsed && parsed.stream) return;
+            } catch {
+              // not a stream envelope
+            }
+          }
+        }
       }
       if (msg.type === IPC_RESPONSE_TYPES.BUS_SEND_OK) {
         controller.requestDaemonStatus();
@@ -1510,7 +3656,15 @@ async function startDesktopUiHost(options = {}) {
     },
     queueStatusLine: (text) => publish("status.set", { text: stripTags(text) }),
     resolveStatusLine: (text) => publish("status.set", { text: stripTags(text || "ready") }),
-    logMessage: (kind, text) => appendLocal(kind === "error" ? "error" : "system", stripTags(text)),
+    logMessage: (_kind, text) => publish("status.set", { text: stripTags(text || "ready"), busy: false }),
+    onConnectionStateChange: (nextState) => {
+      daemonConnectionState = nextState;
+      publish("host.connection", {
+        source: "daemon",
+        state: nextState,
+        connected: nextState === "connected",
+      });
+    },
   });
 
   daemonCoordinator = createDaemonCoordinator({
@@ -1522,7 +3676,7 @@ async function startDesktopUiHost(options = {}) {
     isDaemonRunning: isRunning,
     queueStatusLine: (text) => publish("status.set", { text: stripTags(text) }),
     resolveStatusLine: (text) => publish("status.set", { text: stripTags(text || "ready") }),
-    logMessage: (kind, text) => appendLocal(kind === "error" ? "error" : "system", stripTags(text)),
+    logMessage: (_kind, text) => publish("status.set", { text: stripTags(text || "ready"), busy: false }),
   });
 
   await daemonConnection.connect();
@@ -1563,6 +3717,30 @@ async function startDesktopUiHost(options = {}) {
     await handoffServer.listen().catch(() => {});
   }
 
+  if (options.enableRemoteBridge !== false) {
+    remoteBridge = createRemoteRelayBridge({
+      remoteDir: options.remoteDir,
+      deviceName: options.remoteDeviceName || "",
+      dispatchCommand: (env) => commandHandlerRef(env),
+      buildInitialEnvelopes: buildInitialClientEnvelopes,
+      nextSeq: () => host.nextSeq(),
+      rtcPeerConnectionFactory: options.rtcPeerConnectionFactory || null,
+      onStatusChange: (status) => {
+        publish("remote.status", status);
+      },
+    });
+    if (options.remoteRelayUrl && options.enableRemote !== false) {
+      await remoteBridge.enable({
+        relay_url: options.remoteRelayUrl,
+        ...(options.remoteWebBaseUrl ? { web_base_url: options.remoteWebBaseUrl } : {}),
+        ...(options.remoteAuthToken ? { auth_token: options.remoteAuthToken } : {}),
+        allow_insecure_ws: options.remoteAllowInsecureWs !== false,
+      });
+    } else {
+      await remoteBridge.startIfEnabled().catch(() => {});
+    }
+  }
+
   standalonePollTimer = setInterval(pollStandaloneWorkerSurface, 350);
   standalonePollTimer.unref?.();
   treePollTimer = setInterval(() => {
@@ -1573,6 +3751,7 @@ async function startDesktopUiHost(options = {}) {
   async function close() {
     clearInterval(standalonePollTimer);
     clearInterval(treePollTimer);
+    if (remoteBridge) await remoteBridge.close().catch(() => {});
     if (handoffServer) await handoffServer.close().catch(() => {});
     if (multiSession?.isActive()) {
       try { multiSession.stop(); } catch {}
@@ -1587,6 +3766,7 @@ async function startDesktopUiHost(options = {}) {
     socketPath: uiSocketPath,
     authToken: uiAuthToken,
     handoffSocketPath: handoffServer ? handoffServer.socketPath : "",
+    remoteBridge,
     getActiveProjectRoot: () => activeProjectRoot,
     getStageTarget: () => ({ ...stageTarget }),
     applyIncomingHandoff,
@@ -1597,5 +3777,7 @@ async function startDesktopUiHost(options = {}) {
 module.exports = {
   startDesktopUiHost,
   rawHistoryToEntries,
+  buildProjectSpeakerIndex,
+  sanitizeUiActivityDetail,
   inspectDormantProjectSummary,
 };

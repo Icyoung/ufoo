@@ -176,9 +176,16 @@ function normalizeClaudeEvent(event = {}, state = createClaudeEventState()) {
       blockState.toolCallId = String(block.id || block.tool_use_id || "");
       blockState.name = String(block.name || "");
       blockState.jsonText = block.input && Object.keys(block.input).length ? safeStringify(block.input) : "";
+      if (blockState.name) {
+        return [{ type: "phase", phase: { type: "tool_request", name: blockState.name } }];
+      }
     }
     if (blockState.type === "text" && blockState.text) return [{ type: "text_delta", delta: blockState.text, itemType: "text" }];
-    if (blockState.type === "thinking" && block.thinking) return [{ type: "thinking_delta", delta: String(block.thinking) }];
+    if (blockState.type === "thinking") {
+      return block.thinking
+        ? [{ type: "thinking_delta", delta: String(block.thinking) }]
+        : [{ type: "phase", phase: { type: "thinking" } }];
+    }
     return [];
   }
 

@@ -59,7 +59,7 @@ function createAgentManagementService({ store, launch, dispatch, wake = async ()
       if (!/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,100}$/.test(id)) return reject("invalid_arguments", "delegate_task requires safe command_id");
       if (!String(args.objective || "").trim()) return reject("invalid_arguments", "delegate_task requires objective");
       if (!args.target && !args.agent) return reject("invalid_arguments", "delegate_task requires an existing target or an agent type to create");
-      if (!args.target && !normalizeInternalAgentType(args.agent)) return reject("invalid_arguments", "delegate_task supports internal codex, claude or ucode workers only");
+      if (!args.target && !normalizeInternalAgentType(args.agent)) return reject("invalid_arguments", "delegate_task supports internal codex, claude, ucode, agy or acp:<id> workers only");
       const scope = context.requestId ? `${context.requestId}:${id}` : id;
       const commandId = `delegate-${digest(scope)}`;
       const taskId = `delegated-${digest(scope)}`;

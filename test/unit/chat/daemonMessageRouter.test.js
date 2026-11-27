@@ -282,6 +282,29 @@ describe("chat daemonMessageRouter", () => {
     );
   });
 
+  test("suppressLifecycleLog omits launch/close confirmations from chat transcript while updating status line", () => {
+    const { router, options } = createHarness({ suppressLifecycleLog: true });
+
+    router.handleMessage({
+      type: IPC_RESPONSE_TYPES.RESPONSE,
+      data: {
+        reply: "Closed codex:1",
+        ops: [{ action: "close", agent_id: "codex:1" }],
+      },
+    });
+    router.handleMessage({
+      type: IPC_RESPONSE_TYPES.RESPONSE,
+      data: {
+        reply: "Launched 1 claude agent(s)",
+        ops: [{ action: "launch", agent: "claude", count: 1 }],
+      },
+    });
+
+    expect(options.logMessage).not.toHaveBeenCalled();
+    expect(options.resolveStatusLine).toHaveBeenCalledTimes(2);
+    expect(options.requestStatus).toHaveBeenCalled();
+  });
+
   test("stream payload routes through stream tracker methods", () => {
     const { router, options } = createHarness();
 

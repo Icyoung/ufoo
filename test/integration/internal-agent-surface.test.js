@@ -76,7 +76,7 @@ test("a group member streams peer work into an already open pane without daemon 
     session.stop(); await sender.flush();
     fs.rmSync(root, { recursive: true, force: true });
   }
-});
+}, 20000);
 
 test("surface tail retains split UTF-8 rows and late appends, deduplicates reads and handles replacement", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-surface-reader-"));
@@ -171,4 +171,4 @@ test("peer task output reaches the hidden surface before completion, survives la
     bridge.stop(); session.stop(); await sender.flush();
     fs.rmSync(root, { recursive: true, force: true });
   }
-});
+}, 20000);

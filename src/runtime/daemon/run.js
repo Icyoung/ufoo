@@ -4,6 +4,12 @@ const { startDaemon, stopDaemon, isRunning } = require("./index");
 const { startGlobalDaemon } = require("./globalDaemon");
 const { restartDaemonLifecycleSync } = require("./restart");
 const {
+  getLaunchdServiceStatus,
+  installLaunchdService,
+  uninstallLaunchdService,
+  restartLaunchdService,
+} = require("./launchdService");
+const {
   loadConfig,
   defaultAgentModelForProvider,
   normalizeDaemonTopology,
@@ -102,7 +108,52 @@ function runDaemonCli(argv) {
     }
     return;
   }
+  if (cmd === "service" || cmd === "--service") {
+    const rest = argv.slice(2);
+    const sub = String(rest.find((arg) => !String(arg).startsWith("-")) || "status").trim().toLowerCase();
+    const jsonOut = rest.includes("--json");
+    const dryRun = rest.includes("--dry-run");
+    const controllerRoot = resolveGlobalControllerProjectRoot();
+    let result;
+    if (sub === "status") {
+      result = { ok: true, ...getLaunchdServiceStatus({ controllerRoot }) };
+    } else if (sub === "install" || sub === "enable") {
+      result = installLaunchdService({ controllerRoot, dryRun });
+    } else if (sub === "uninstall" || sub === "disable" || sub === "remove") {
+      result = uninstallLaunchdService({ controllerRoot, dryRun });
+    } else if (sub === "restart" || sub === "kickstart") {
+      result = restartLaunchdService({ controllerRoot });
+    } else {
+      throw new Error("daemon service requires status|install|uninstall|restart");
+    }
+    if (jsonOut) {
+      // eslint-disable-next-line no-console
+      console.log(JSON.stringify(result, null, 2));
+    } else if (dryRun && result.plistXml) {
+      // eslint-disable-next-line no-console
+      console.log(result.plistXml);
+    } else if (!result.ok) {
+      // eslint-disable-next-line no-console
+      console.error(`launchd service ${sub} failed: ${result.error || "unknown error"}`);
+    } else {
+      const stateLabel = result.loaded
+        ? `loaded (${result.state}${result.pid ? `, pid ${result.pid}` : ""})`
+        : (result.installed ? "installed (unloaded)" : "not installed");
+      // eslint-disable-next-line no-console
+      console.log(`${result.label}: ${stateLabel}`);
+    }
+    if (!result.ok) process.exitCode = 1;
+    return;
+  }
   if (cmd === "restart" || cmd === "--restart") {
+    if (useGlobalRuntimeHost && process.platform === "darwin" && !process.env.UFOO_DAEMON_CHILD) {
+      const svc = getLaunchdServiceStatus({ controllerRoot: daemonRoot });
+      if (svc.loaded) {
+        const kick = restartLaunchdService({ controllerRoot: daemonRoot });
+        if (!kick.ok) process.exitCode = 1;
+        return;
+      }
+    }
     const result = restartDaemonLifecycleSync({
       projectRoot: daemonRoot,
       isRunning,

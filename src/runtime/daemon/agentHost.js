@@ -33,6 +33,13 @@ const { readBusSummaryHandler } = require("../../tools/handlers/readBusSummary")
 const { isInternalAgentMeta } = require("../contracts/agentMode");
 const { getUfooPaths } = require("../../coordination/state/paths");
 const { loadAgentsData } = require("../../coordination/state/agentsStore");
+const { retireMessageImages } = require("../../agents/providers/transports/visionBlocks");
+const {
+  normalizeAttachmentList,
+  loadAttachmentModelContext,
+  buildUserMessageContent,
+  formatAttachmentPromptSummary,
+} = require("../attachments");
 const { readOpenDecisionsHandler } = require("../../tools/handlers/readOpenDecisions");
 const { listProjectRuntimes, isGlobalControllerProjectRoot } = require("../projects");
 const { canonicalProjectRoot, buildProjectId } = require("../projects/projectId");
@@ -44,19 +51,21 @@ const { buildDeterministicTurnRecord, backfillMissingTurns, createAsyncTurnEnric
 const { createTopicSelector } = require("../../agents/runtime/context/topicSelector");
 const { createSlidingWindowManager } = require("../../agents/runtime/context/slidingWindowManager");
 const { replayHistory } = require("../../agents/runtime/context/replayHistory");
+const uiFmt = require("../../ui/format");
 
 const hash = (value) => createHash("sha256").update(value).digest("hex").slice(0, 32);
 const safeId = (value) => /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,100}$/.test(value || "");
+const codedError = (code, message) => Object.assign(new Error(message), { code });
 const MAIN_GRANTS = ["workspace.read", "workspace.write", "workspace.execute", "interaction.request", "coordination.read", "coordination.write", "agents.manage", "memory.write", "tasks.accept", "tasks.execute", "groups.manage", "schedules.manage", "browser.control", "mac.control"];
 
 function resolveTaskWorkspace(projectRoot, requested = "") {
   const target = canonicalProjectRoot(requested || projectRoot);
   if (target === projectRoot) return target;
   const top = spawnSync("git", ["rev-parse", "--show-toplevel"], { cwd: projectRoot, encoding: "utf8", timeout: 3000 });
-  if (top.status !== 0 || canonicalProjectRoot(top.stdout.trim()) !== projectRoot) throw new Error("task workspace is outside the project grant");
+  if (top.status !== 0 || canonicalProjectRoot(top.stdout.trim()) !== projectRoot) throw codedError("workspace_out_of_grant", "task workspace is outside the project grant");
   const result = spawnSync("git", ["worktree", "list", "--porcelain", "-z"], { cwd: projectRoot, encoding: "utf8", timeout: 3000 });
   const roots = result.status === 0 ? result.stdout.split("\0").filter((item) => item.startsWith("worktree ")).map((item) => canonicalProjectRoot(item.slice(9))) : [];
-  if (!roots.includes(target)) throw new Error("task workspace must be a verified worktree of this project");
+  if (!roots.includes(target)) throw codedError("workspace_out_of_grant", "task workspace must be a verified worktree of this project");
   return target;
 }
 
@@ -75,6 +84,15 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
   let closed = false;
   const publicEvent = (event) => {
     const safe = { ...event };
+    if (safe.type === "tool.started" && safe.toolName && !safe.toolSummary) {
+      try {
+        const detail = uiFmt.normalizeToolLogDetail(safe.toolName, safe.args || {}, {});
+        const normalized = uiFmt.normalizeToolMergeEntry({ tool: safe.toolName, detail, isError: false });
+        safe.toolSummary = uiFmt.buildUcodeToolRowText([normalized]);
+      } catch {
+        // ignore summary formatting errors
+      }
+    }
     delete safe.args;
     if (safe.result) safe.result = safe.type === "tool.completed"
       ? { ok: safe.result.ok, code: safe.result.code, error: safe.result.error, toolCallId: safe.toolCallId }
@@ -139,16 +157,16 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
     },
   });
   const taskPort = { async execute(args, context = {}) {
-    if (global && args.operation !== "list") throw new Error("global router has no coding task grant");
+    if (global && args.operation !== "list") throw codedError("forbidden_operation", "global router has no coding task grant");
     if (args.operation === "list") return { ok: true, tasks: Object.values(jobs()).map(publicChild) };
     if (args.operation === "start") {
-      if (!safeId(args.command_id) || !String(args.objective || "").trim()) throw new Error("task start requires command_id and objective");
+      if (!safeId(args.command_id) || !String(args.objective || "").trim()) throw codedError("invalid_arguments", "task start requires command_id and objective");
       const scope = context.requestId ? `task-${hash(`${context.requestId}:${args.command_id}`)}` : args.command_id;
       const id = `child-${hash(scope)}`;
       const workspaceRoot = resolveTaskWorkspace(root, args.workspace);
       updateJobs((items) => {
         const fingerprint = hash(stableStringify(args));
-        if (items[id] && items[id].fingerprint !== fingerprint) throw new Error("task command conflicts");
+        if (items[id] && items[id].fingerprint !== fingerprint) throw codedError("command_conflict", "task command conflicts");
         if (!items[id]) items[id] = { id, requestId: scope, fingerprint, objective: args.objective, workspaceRoot,
           readOnly: args.read_only === true, parentSessionId: context.sessionId, parentTaskRunId: context.taskRunId, status: "queued" };
       });
@@ -162,17 +180,25 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
       for (const [sessionId, runtime] of sessions) {
         const task = runtime.snapshot().tasks[args.task_run_id];
         if (task) return { ok: true, task: { taskRunId: task.taskRunId, sessionId, status: task.status, error: task.error,
-          summary: task.result?.text?.slice(-6000) || "", effects: task.effects, interaction: task.result?.executionState?.pendingUserInteraction || null } };
+          summary: task.result?.text?.slice(-6000) || "", effects: task.effects,
+          interaction: task.status === "waiting_user" ? (task.result?.executionState?.pendingUserInteraction || null) : null } };
       }
     }
-    if (!job) throw new Error("task not found in this project");
+    if (!job) throw codedError("task_not_found", "task not found in this project");
     const runtime = getChild(job);
     if (args.operation === "cancel") return { ok: true, ...runtime.cancel({ taskRunId: job.taskRunId, reason: args.reason }) };
     if (["accept", "reject"].includes(args.operation)) {
       const task = runtime.snapshot().tasks[job.taskRunId];
       if (job.review === "accepted") return { ok: true, task: publicChild(job) };
-      if (task?.status !== "completed" || !String(args.reason || "").trim()) throw new Error("review requires a completed task and a reason");
-      if (args.operation === "accept" && !validateEvidence(args.evidence, context, job.completedAt)) throw new Error("acceptance requires successful main validation toolCallIds after completion");
+      if (args.operation === "reject" && job.review === "rejected") return { ok: true, task: publicChild(job) };
+      const hasReason = Boolean(String(args.reason || "").trim());
+      const terminalForReject = ["completed", "failed", "cancelled"].includes(task?.status);
+      if (!hasReason || (args.operation === "accept" ? task?.status !== "completed" : !terminalForReject)) {
+        throw codedError("invalid_task_state", "review requires a completed task and a reason");
+      }
+      if (args.operation === "accept" && !validateEvidence(args.evidence, context, job.completedAt)) {
+        throw codedError("missing_validation_evidence", "acceptance requires successful main validation toolCallIds after completion");
+      }
       updateJobs((items) => { items[job.id].review = args.operation === "accept" ? "accepted" : "rejected";
         items[job.id].reviewReason = args.reason; items[job.id].evidence = args.evidence || []; });
     }
@@ -195,7 +221,7 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
     const task = runtime && runtime.snapshot().tasks[job.taskRunId];
     return { id: job.id, taskRunId: job.taskRunId, objective: job.objective, workspaceRoot: job.workspaceRoot,
       status: job.review || task?.status || job.status, executionStatus: task?.status || job.status,
-      sessionId: job.id, interaction: task?.result?.executionState?.pendingUserInteraction || null,
+      sessionId: job.id, interaction: task?.status === "waiting_user" ? (task.result?.executionState?.pendingUserInteraction || null) : null,
       reviewReason: job.reviewReason || "", summary: task?.result?.text?.slice(-6000) || job.summary || "", error: task?.error || "" };
   }
   function makeRuntime({ sessionId, namespace, profile, capabilities, host, workspaceRoot = root, child = null }) {
@@ -327,7 +353,7 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
       const instructionFile = path.join(workspaceRoot, "AGENTS.md");
       const instructions = fs.existsSync(instructionFile) ? fs.readFileSync(instructionFile, "utf8").slice(0, 16000) : "";
       const history = child && !request.runtimeEvent ? [] : replayHistory(store.events(), task.taskRunId);
-      const attachments = (request.attachments || []).map((attachment) => resolveWorkspacePath(workspaceRoot, typeof attachment === "string" ? attachment : attachment.path).resolved);
+      const attachmentCtx = loadAttachmentModelContext(request.attachments || [], workspaceRoot);
       const stablePrefix = contextManager.strategyVersion() === 2;
       const resolvedUrl = typeof transport.resolveUrl === "function" ? transport.resolveUrl(resolved.baseUrl) : resolved.baseUrl;
       latestResolvedAuth = {
@@ -343,13 +369,22 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
         ? buildCodingTaskPrompt({ workspaceRoot, instructions, skillBlocks, toolNames: runtime.tools.names() })
         : buildMainAgentPrompt({ global, workspaceRoot, skillBlocks, toolNames: runtime.tools.names(),
           promptSections: runtime.promptSections, context: stablePrefix ? [] : context, instructions: global ? "" : instructions });
+      const basePromptText = resumed ? "" : formatAttachmentPromptSummary(request.text, attachmentCtx.attachments);
+      const fullPromptText = resumed
+        ? ""
+        : [basePromptText, attachmentCtx.promptAppendix].filter(Boolean).join("\n\n");
+      const userContent = !resumed && attachmentCtx.visionPayloads.length > 0
+        ? buildUserMessageContent(fullPromptText, attachmentCtx.visionPayloads, "anthropic")
+        : null;
       return { workspaceRoot, sessionId, projectId, agentId: child ? child.id : "ufoo-agent", artifactNamespace: namespace,
         model: resolved.model, provider: resolved.provider === "claude" ? "anthropic" : resolved.provider,
         baseUrl: resolved.baseUrl, apiKey: resolved.auth?.apiKey || "", requestHeaders: resolved.auth?.headers || {},
         accountId: latestResolvedAuth.accountId, requestProfile: latestResolvedAuth.requestProfile,
         thinkingLevel: currentConfig.agentThinking || "medium",
         requestKind: request.runtimeEvent ? "system_wake" : child ? "coding-task" : request.report ? "worker-report" : request.parentTaskRunId ? "task-result" : "user",
-        prompt: resumed ? "" : request.text + (attachments.length ? `\n\nWorkspace attachments (read with read/read_image): ${JSON.stringify(attachments)}` : ""), historyMessages: history,
+        prompt: fullPromptText,
+        ...(userContent ? { userContent } : {}),
+        historyMessages: history,
         systemPrompt,
         ...(stablePrefix && !child && resolved.requestProfile === "codex-subscription"
           ? { systemBlocks: [{ layer: "sessionStable", text: systemPrompt }] } : {}),
@@ -386,6 +421,7 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
         },
         async onTurnSettled({ task, outcome = "completed", error = "", messages = [], historyOffset = 0 } = {}) {
           if (!task || !task.taskRunId) return null;
+          if (outcome === "cancelled" && error === "interaction_dismissed") return null;
           const existingTurns = turnIndexStore.listTurns();
           const existing = existingTurns.find((item) => item.turnId === task.taskRunId) || null;
           const requestKind = task.request?.runtimeEvent ? "system_wake" : child ? "coding-task" : task.request?.report ? "worker-report" : task.request?.parentTaskRunId ? "task-result" : "user";
@@ -448,6 +484,7 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
             flushChildWakes();
           }
         }, onError: (error) => log(error.message) },
+      defaults: { retireImages: retireMessageImages },
     });
     return runtime;
   }
@@ -498,8 +535,11 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
   function flushChildWakes() {
     for (const job of Object.values(jobs())) {
       if (!job.pendingWake) continue;
+      const guidance = job.status === "completed"
+        ? "Review the outcome and continue the parent objective."
+        : "The task did not complete (no acceptance review is required; decide whether to retry with adjusted instructions, delegate differently, or continue the parent objective).";
       getSession(job.parentSessionId || "main-default").submit({ requestId: job.pendingWake,
-        text: `Independent task ${job.taskRunId} is ${job.status}. Summary: ${job.summary}. Review the outcome and continue the parent objective.`, parentTaskRunId: job.parentTaskRunId });
+        text: `Independent task ${job.taskRunId} is ${job.status}. Summary: ${job.summary}. ${guidance}`, parentTaskRunId: job.parentTaskRunId });
       updateJobs((items) => { if (items[job.id].pendingWake === job.pendingWake) items[job.id].pendingWake = ""; });
     }
   }
@@ -519,9 +559,16 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
       return resolveRuntime(sessionId);
     },
     submit: (request, sessionId) => getSession(sessionId).submit(request),
-    async runPrompt({ prompt, requestId = randomUUID(), sessionId = "main-default", requestMeta = {} }) {
+    async runPrompt({ prompt, attachments = [], requestId = randomUUID(), sessionId = "main-default", requestMeta = {} }) {
       const runtime = getSession(sessionId);
-      const accepted = runtime.submit({ requestId, text: prompt, requestMeta });
+      const normalizedAttachments = normalizeAttachmentList(attachments);
+      const effectiveText = formatAttachmentPromptSummary(prompt, normalizedAttachments);
+      const accepted = runtime.submit({
+        requestId,
+        text: effectiveText,
+        ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
+        requestMeta,
+      });
       const task = await runtime.wait(accepted.taskRunId);
       if (["failed", "cancelled", "interrupted"].includes(task.status)) return { ok: false, error: task.error, taskRunId: task.taskRunId };
       let payload = { reply: typeof task.result?.finalText === "string" ? task.result.finalText : task.result?.text || "", dispatch: [], ops: [] };
@@ -538,11 +585,12 @@ function createAgentHost({ projectRoot, provider, model, ports = {}, onEvent = (
         payload.dispatch = [];
         payload.ops = [];
       }
-      payload.runtime = { ...accepted, status: task.status, sessionId, interaction: task.result?.executionState?.pendingUserInteraction || null };
+      payload.runtime = { ...accepted, status: task.status, sessionId, interaction: task.status === "waiting_user" ? (task.result?.executionState?.pendingUserInteraction || null) : null };
       return { ok: true, payload };
     },
     snapshot: () => ({ sessions: [...sessions].map(([sessionId, runtime]) => ({ sessionId, sequence: runtime.snapshot().sequence,
-      tasks: Object.values(runtime.snapshot().tasks).map((task) => ({ taskRunId: task.taskRunId, requestId: task.request.requestId, status: task.status, error: task.error, interaction: task.result?.executionState?.pendingUserInteraction || null })) })),
+      tasks: Object.values(runtime.snapshot().tasks).map((task) => ({ taskRunId: task.taskRunId, requestId: task.request.requestId, status: task.status, error: task.error,
+        interaction: task.status === "waiting_user" ? (task.result?.executionState?.pendingUserInteraction || null) : null })) })),
       children: Object.values(jobs()).map(publicChild), delegated: Object.values(management.snapshot().tasks), scheduler: scheduler.snapshot(), conversations: conversationScheduler.snapshot(),
       uncertainReceipts: Object.values(control.read().commands).filter((command) => command.status === "uncertain").map(({ commandId, kind, time }) => ({ commandId, kind, time })) }),
     async recover() {

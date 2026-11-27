@@ -206,4 +206,52 @@ describe("daemon status", () => {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
   });
+
+  test("preserves worker model, thinking, permission, worktree, and group fields in active_meta", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ufoo-status-"));
+    try {
+      const paths = getUfooPaths(projectRoot);
+      fs.mkdirSync(path.dirname(paths.agentsFile), { recursive: true });
+      fs.writeFileSync(
+        paths.agentsFile,
+        JSON.stringify({
+          agents: {
+            "agy:8727f751": {
+              agent_type: "agy",
+              status: "active",
+              pid: process.pid,
+              nickname: "agy-1",
+              launch_mode: "internal",
+              model: "gemini-4-hydrogen-medium",
+              thinking_level: "medium",
+              permission_mode: "full_access",
+              worktree_root: "/tmp/wt-agy",
+              worktree_branch: "feat/agy",
+              group_id: "grp-1",
+              group_member_id: "lead",
+              group_template_alias: "dev-pair",
+              provider_session_id: "sess-123",
+            },
+          },
+        }, null, 2)
+      );
+
+      const status = buildStatus(projectRoot);
+      expect(status.active_meta[0]).toEqual(expect.objectContaining({
+        id: "agy:8727f751",
+        agent_type: "agy",
+        model: "gemini-4-hydrogen-medium",
+        thinking_level: "medium",
+        permission_mode: "full_access",
+        worktree_root: "/tmp/wt-agy",
+        worktree_branch: "feat/agy",
+        group_id: "grp-1",
+        group_member_id: "lead",
+        group_template_alias: "dev-pair",
+        provider_session_id: "sess-123",
+      }));
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
 });

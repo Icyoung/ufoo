@@ -907,13 +907,15 @@ describe("internalRunner codex thread mode", () => {
     });
 
     expect(runtime.enabled).toBe(true);
-    expect(createCodexThreadProvider).toHaveBeenCalledWith({
+    expect(createCodexThreadProvider).toHaveBeenCalledWith(expect.objectContaining({
       model: "gpt-5-codex",
       cwd: projectRoot,
       extraArgs: ["--model", "gpt-5-codex"],
       tools: [],
+      permissionMode: "auto_edit",
       threadOptions: { modelReasoningEffort: "medium" },
-    });
+    }));
+    expect(createCodexThreadProvider.mock.calls[0][0]).toHaveProperty("mcpConfig");
 
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });

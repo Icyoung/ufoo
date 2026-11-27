@@ -28,7 +28,7 @@ permissions:
 
 jobs:
   verify:
-    name: Verify supported runtimes and native messaging
+    name: Verify supported runtimes and builds
     uses: ./.github/workflows/ci.yml
 
   build-tui:

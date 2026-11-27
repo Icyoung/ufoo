@@ -27,13 +27,19 @@ Published binaries are defined in `package.json`.
 
 | Binary | Main file | Responsibility |
 |---|---|---|
-| `ufoo` | `bin/ufoo.js` | Main CLI, chat dashboard, daemons, global MCP server/proxy, project commands, bus/context/memory/report/group/online commands. |
-| `uclaude` | `bin/uclaude.js` | Claude Code wrapper with bootstrap, identity, bus registration, and resume metadata. |
-| `ucodex` | `bin/ucodex.js` | Codex wrapper with bootstrap, identity, bus registration, and resume metadata. |
-| `uagy` | `bin/uagy.js` | Antigravity wrapper with bootstrap, identity, and conversation resume capture. |
-| `ugrok` | `bin/ugrok.js` | Grok Build wrapper with bootstrap, identity, and bus registration. |
-| `ukimi` | `bin/ukimi.js` | Kimi Code wrapper with bootstrap, identity, bus registration, and resume metadata. |
-| `ucode` | `bin/ucode.js` | Native ufoo coding-agent CLI/TUI. |
+| `ufoo` | `bin/ufoo.js` | Main CLI, chat dashboard, Desktop App launcher, ACP Server (`ufoo acp`), daemons, global MCP server/proxy, project commands, bus/context/memory/report/group/online commands. |
+| `ucode` | `bin/ucode.js` | Native ufoo coding-agent CLI/TUI and standalone ACP Server (`ucode --acp`). |
+
+### v5 Three-Layer Agent Interop (SDK + ACP + MCP)
+
+PTY CLI wrappers (`uclaude`, `ucodex`, `uagy`, `ugrok`, `ukimi`) and `node-pty` have been removed. Agent interoperability now follows a clean three-layer contract:
+
+- **Native SDK Workers**: Claude Agent SDK (`src/agents/providers/claudeThreadProvider.js`) and Codex SDK (`src/agents/providers/codexThreadProvider.js`), plus bundled native `ucode` (`src/code/internalThread.js`).
+- **Bidirectional ACP Layer**:
+  - **ACP Client** (`src/agents/providers/acpRegistry.js`, `acpThreadProvider.js`, `acpEventTranslator.js`, `src/agents/acp/jsonRpcStdio.js`): connects any ACP-compliant CLI (`gemini`, `opencode`, `kimi`, `goose`, `grok`, or custom `acpAgents`) as a first-class managed worker with unified permission gating and automatic `ufoo` MCP injection.
+  - **ACP Server** (`src/agents/acp/acpServer.js`, exposed via `ufoo acp` and `ucode --acp`): lets external ACP hosts (Zed, JetBrains, Neovim, T3 Code) drive `ufoo` directly.
+- **Focused MCP Cooperation Layer** (`src/runtime/daemon/workerMcpInjection.js`, `mcpHttpServer.js`, `mcpServer.js`): auto-injected into managed SDK/ACP workers with external polling/lifecycle tools hidden (`register_agent`, `poll_inbox`, `wait_for_message`, `ack_bus`, `unregister_agent`), while external native CLIs connect via Skill + MCP without wrappers.
+- **Shared Workspace & Model-Managed Worktrees** (`src/code/tools/common.js`, `src/runtime/worktree/worktreeManager.js`): framework-level automatic worktree isolation and agent-to-worktree binding are disabled by default so agents and groups share live code directly. Models decide on demand whether to create git worktrees, and `resolveWorkspacePath` allows free cross-worktree read/write access across all registered git worktrees of the same repository while still rejecting paths outside the repo.
 
 Grok/xAI provider work beyond the CLI wrapper is tracked in
 [GROK_PROVIDER_V2.md](archive/GROK_PROVIDER_V2.md).

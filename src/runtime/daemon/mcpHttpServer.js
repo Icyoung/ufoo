@@ -21,6 +21,7 @@ const {
   createMcpContent,
   invokeTool,
 } = require("./mcpServer");
+const { MANAGED_WORKER_HIDDEN_MCP_TOOLS } = require("./workerMcpInjection");
 const {
   createSocketProjectRuntimeGateway,
 } = require("./projectRuntimeGateway");
@@ -192,7 +193,7 @@ class GlobalMcpHttpServer {
     };
   }
 
-  createProtocolServer() {
+  createProtocolServer({ managedWorker = false } = {}) {
     const protocolServer = new Server({
       name: "ufoo-global-mcp",
       version: PACKAGE_JSON.version || "0.0.0",
@@ -200,15 +201,28 @@ class GlobalMcpHttpServer {
       capabilities: {
         tools: { listChanged: false },
       },
-      instructions: "Route every project-scoped tool through a project_root returned by read_project_registry.",
+      instructions: managedWorker
+        ? "You are a daemon-managed ufoo worker. Use these collaboration tools for shared decisions, memory, messaging, and status reporting; new turns are delivered automatically by your host."
+        : "Route every project-scoped tool through a project_root returned by read_project_registry.",
     });
 
-    protocolServer.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: buildToolList(),
-    }));
+    protocolServer.setRequestHandler(ListToolsRequestSchema, async () => {
+      const tools = buildToolList();
+      return {
+        tools: managedWorker
+          ? tools.filter((tool) => !MANAGED_WORKER_HIDDEN_MCP_TOOLS.has(tool.name))
+          : tools,
+      };
+    });
 
     protocolServer.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
       const name = String(request.params.name || "").trim();
+      if (managedWorker && MANAGED_WORKER_HIDDEN_MCP_TOOLS.has(name)) {
+        return createMcpContent({
+          ok: false,
+          error: `Tool "${name}" is disabled for daemon-managed workers; your host runtime owns lifecycle and turn delivery.`,
+        });
+      }
       const args = request.params.arguments && typeof request.params.arguments === "object"
         ? request.params.arguments
         : {};
@@ -235,9 +249,9 @@ class GlobalMcpHttpServer {
     return protocolServer;
   }
 
-  createSession() {
+  createSession(options = {}) {
     let transport;
-    const protocolServer = this.createProtocolServer();
+    const protocolServer = this.createProtocolServer(options);
     transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => crypto.randomUUID(),
       enableJsonResponse: true,
@@ -284,7 +298,8 @@ class GlobalMcpHttpServer {
         return;
       }
       if (!session && !sessionId && isInitializeRequest(body)) {
-        session = this.createSession();
+        const managedWorker = String(req.headers["x-ufoo-launch-mode"] || "").trim().toLowerCase() === "internal";
+        session = this.createSession({ managedWorker });
         await session.protocolServer.connect(session.transport);
       } else if (!session) {
         rpcError(res, sessionId ? 404 : 400, "Bad Request: no valid MCP session");

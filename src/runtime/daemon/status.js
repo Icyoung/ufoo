@@ -158,6 +158,7 @@ function buildStatus(projectRoot, options = {}) {
     const activity_detail = meta?.activity_detail || "";
     return {
       id,
+      agent_type: meta?.agent_type || "",
       nickname,
       scoped_nickname,
       display_nickname: nickname,
@@ -168,6 +169,15 @@ function buildStatus(projectRoot, options = {}) {
       activity_state,
       activity_since,
       activity_detail,
+      model: meta?.model || "",
+      thinking_level: meta?.thinking_level || "",
+      permission_mode: meta?.permission_mode || "",
+      worktree_root: meta?.worktree_root || "",
+      worktree_branch: meta?.worktree_branch || "",
+      group_id: meta?.group_id || "",
+      group_member_id: meta?.group_member_id || "",
+      group_template_alias: meta?.group_template_alias || "",
+      provider_session_id: meta?.provider_session_id || "",
       native_delivery: meta?.native_delivery || "",
       native_delivery_ready: meta?.native_delivery_ready === true,
       native_delivery_version: meta?.native_delivery_version || "",

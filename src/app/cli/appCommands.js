@@ -14,7 +14,7 @@ function printAppHelp() {
   console.log("  --agent <id>         Focus a specific Worker Agent in single-agent view");
   console.log("  --window <mode>      Open project root in main, side, or multi window mode");
   console.log("  --doc <path>         Open a workspace document in the Right Inspector");
-  console.log("  --install-cli        Install ufoo/ucode/uclaude/ucodex shims to ~/.ufoo/bin");
+  console.log("  --install-cli        Install ufoo/ucode shims to ~/.ufoo/bin");
   console.log("  --zshrc              Append ~/.ufoo/bin to ~/.zshrc when used with --install-cli");
   console.log("  --json               Print structured JSON result");
   console.log("  -h, --help           Show help");

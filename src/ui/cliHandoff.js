@@ -19,11 +19,6 @@ const { requestActivate } = require("../runtime/terminal/adapters/hostAdapter");
 const CLI_BINARIES = Object.freeze([
   "ufoo",
   "ucode",
-  "uclaude",
-  "ucodex",
-  "uagy",
-  "ugrok",
-  "ukimi",
 ]);
 
 function getDesktopRunDir(homedir = os.homedir()) {

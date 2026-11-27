@@ -50,6 +50,7 @@ async function loadResumeCompletionSources(root, request = require("../app/chat/
   agents.sort((a, b) => String(b.lastSeen || "").localeCompare(String(a.lastSeen || "")) || a.id.localeCompare(b.id));
   return [
     ...agents.map((item) => ({ id: item.id, label: item.display_nickname || item.nickname || item.id,
+      type: String(item.agent || (String(item.id || "").includes(":") ? String(item.id).split(":")[0] : "")),
       desc: `${item.agent} · session ${item.sessionId}` })),
     ...(recovery.groups || []).map((group) => ({ id: `group:${group.group_id}`,
       desc: `Group · ${group.template_alias || group.group_id} · ${group.members.length} recoverable agents` })),
@@ -179,7 +180,7 @@ async function runChatRust(projectRoot, options = {}) {
     env.startDaemon(projectRoot);
   }
 
-  const { connectWithRetry } = require("../app/chat/transport");
+  const { connectWithRetry, stopDaemon: stopDaemonTransport } = require("../app/chat/transport");
   const { createDaemonTransport } = require("../app/chat/daemonTransport");
   const { createDaemonConnection } = require("../app/chat/daemonConnection");
 
@@ -190,6 +191,7 @@ async function runChatRust(projectRoot, options = {}) {
     daemonRoot: initialDaemonRoot,
     isRunning: env.isRunning,
     startDaemon: env.startDaemon,
+    stopDaemon: stopDaemonTransport,
     connectWithRetry,
   });
 
@@ -1242,10 +1244,7 @@ async function runChatRust(projectRoot, options = {}) {
     },
     queueStatusLine: (text) => publish("status.set", { text: stripTags(text) }),
     resolveStatusLine: (text) => publish("status.set", { text: stripTags(text || "ready") }),
-    logMessage: (kind, text) => {
-      const normalized = kind === "error" ? "error" : "system";
-      appendLocal(normalized, stripTags(text));
-    },
+    logMessage: (_kind, text) => publish("status.set", { text: stripTags(text || "ready"), busy: false }),
   });
 
   const { createDaemonCoordinator } = require("../app/chat/daemonCoordinator");
@@ -1260,10 +1259,7 @@ async function runChatRust(projectRoot, options = {}) {
     isDaemonRunning: isRunning,
     queueStatusLine: (text) => publish("status.set", { text: stripTags(text) }),
     resolveStatusLine: (text) => publish("status.set", { text: stripTags(text || "ready") }),
-    logMessage: (kind, text) => {
-      const normalized = kind === "error" ? "error" : "system";
-      appendLocal(normalized, stripTags(text));
-    },
+    logMessage: (_kind, text) => publish("status.set", { text: stripTags(text || "ready"), busy: false }),
   });
 
   await daemonConnection.connect();

@@ -10,6 +10,7 @@ const TOOL_PERMISSIONS = Object.freeze({
   delegate_task: "agents.manage", resume_agents: "agents.manage", accept_task: "tasks.accept",
   manage_tasks: "tasks.execute", manage_group: "groups.manage",
   remember: "memory.write", edit_memory: "memory.write", forget: "memory.write",
+  update_decision: "coordination.write",
 });
 
 /** Shared definitions retain the same schemas and tier checks used by MCP. */

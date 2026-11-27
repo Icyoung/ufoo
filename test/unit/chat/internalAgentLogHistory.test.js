@@ -49,7 +49,7 @@ describe("internal agent log history", () => {
     ]);
 
     expect(loadInternalAgentTranscript(projectRoot, "codex:1")).toEqual([
-      { id: "history-1", kind: "user", text: "assigned task" },
+      { id: "history-1", kind: "user", sender_kind: "user", text: "assigned task" },
       { id: "history-2", kind: "assistant", text: "done\nwith detail" },
     ]);
   });
@@ -103,10 +103,10 @@ describe("internal agent log history", () => {
     ]);
 
     expect(loadInternalAgentTranscript(projectRoot, "codex:1")).toEqual([
-      { id: "history-1", kind: "user", text: "for builder nickname" },
+      { id: "history-1", kind: "user", sender_kind: "user", text: "for builder nickname" },
     ]);
     expect(loadInternalAgentTranscript(projectRoot, "codex:2")).toEqual([
-      { id: "history-2", kind: "user", text: "for reviewer scoped nickname" },
+      { id: "history-2", kind: "user", sender_kind: "user", text: "for reviewer scoped nickname" },
     ]);
   });
 
@@ -190,7 +190,7 @@ describe("internal agent log history", () => {
     ]);
     expect(loadInternalAgentTranscript(projectRoot, "claude-code:1", { maxEntries: 2 })).toEqual([
       { id: "history-2", kind: "assistant", text: "First paragraph\n\nSecond paragraph\n```js\n  const value = 1;\n```" },
-      { id: "history-3", kind: "user", text: "second task\nwith detail" },
+      { id: "history-3", kind: "user", sender_kind: "user", text: "second task\nwith detail" },
     ]);
   });
 
@@ -205,6 +205,98 @@ describe("internal agent log history", () => {
     expect(loadInternalAgentTranscript(projectRoot, "ucode:1")).toEqual([
       { id: "history-1", kind: "assistant", text: "first" },
       { id: "history-3", kind: "assistant", text: "second" },
+    ]);
+  });
+
+  test("resolves pruned and resumed group member subscriber IDs to nicknames instead of raw IDs", () => {
+    const { projectRoot, paths } = createProject({
+      "codex:builder-live": { nickname: "builder", agent_type: "codex" },
+    });
+    fs.mkdirSync(paths.groupsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(paths.groupsDir, "build-lane-old.json"),
+      JSON.stringify({
+        members: [
+          {
+            nickname: "reviewer",
+            type: "codex",
+            subscriber_id: "codex:1670b65b",
+          },
+        ],
+      })
+    );
+    fs.writeFileSync(
+      path.join(paths.groupsDir, "build-lane-resumed.json"),
+      JSON.stringify({
+        members: [
+          {
+            nickname: "reviewer",
+            type: "codex",
+            subscriber_id: "codex:34716971",
+            previous_subscriber_id: "codex:71217ac9",
+          },
+        ],
+      })
+    );
+    writeJsonl(path.join(paths.busEventsDir, "2026-11-26.jsonl"), [
+      {
+        seq: 1,
+        event: "agent_renamed",
+        publisher: "ufoo-agent",
+        target: "*",
+        data: { agent_id: "claude:old999", old_nickname: "claude-1", new_nickname: "architect" },
+      },
+      {
+        seq: 2,
+        event: "message",
+        publisher: "codex:1670b65b",
+        target: "codex:builder-live",
+        data: { message: "from old group run" },
+      },
+      {
+        seq: 3,
+        event: "message",
+        publisher: "codex:71217ac9",
+        target: "codex:builder-live",
+        data: { message: "from resumed previous id" },
+      },
+      {
+        seq: 4,
+        event: "message",
+        publisher: "claude:old999",
+        target: "codex:builder-live",
+        data: { message: "from renamed pruned agent" },
+      },
+    ]);
+
+    expect(loadInternalAgentTranscript(projectRoot, "codex:builder-live")).toEqual([
+      {
+        id: "history-2",
+        kind: "user",
+        sender_kind: "peer",
+        sender_id: "codex:1670b65b",
+        sender_label: "reviewer",
+        sender_type: "codex",
+        text: "from old group run",
+      },
+      {
+        id: "history-3",
+        kind: "user",
+        sender_kind: "peer",
+        sender_id: "codex:71217ac9",
+        sender_label: "reviewer",
+        sender_type: "codex",
+        text: "from resumed previous id",
+      },
+      {
+        id: "history-4",
+        kind: "user",
+        sender_kind: "peer",
+        sender_id: "claude:old999",
+        sender_label: "architect",
+        sender_type: "claude",
+        text: "from renamed pruned agent",
+      },
     ]);
   });
 });

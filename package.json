@@ -1,7 +1,7 @@
 {
   "name": "u-foo",
-  "version": "4.1.5",
-  "description": "Multi-Agent Workspace Protocol. Just add u. claude → uclaude, codex → ucodex.",
+  "version": "5.0.0",
+  "description": "Multi-Agent Workspace Control Plane & Collaborative Coding Runtime (SDK + ACP + MCP).",
   "license": "SEE LICENSE IN LICENSE",
   "homepage": "https://ufoo.dev",
   "repository": {
@@ -24,11 +24,6 @@
   ],
   "bin": {
     "ufoo": "bin/ufoo.js",
-    "uclaude": "bin/uclaude.js",
-    "ucodex": "bin/ucodex.js",
-    "uagy": "bin/uagy.js",
-    "ugrok": "bin/ugrok.js",
-    "ukimi": "bin/ukimi.js",
     "ucode": "bin/ucode.js"
   },
   "files": [
@@ -69,7 +64,6 @@
     "chalk": "^4.1.2",
     "commander": "^13.1.0",
     "gray-matter": "^4.0.3",
-    "node-pty": "^1.1.0",
     "proper-lockfile": "^4.1.2",
     "undici": "^6.29.1",
     "ws": "^8.19.0"

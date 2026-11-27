@@ -1,11 +1,29 @@
 "use strict";
 
-const INTERNAL_AGENT_TYPES = Object.freeze(["codex", "claude", "ucode"]);
+const INTERNAL_AGENT_TYPES = Object.freeze(["codex", "claude", "ucode", "agy"]);
+
+function isAcpAgentType(value = "") {
+  const type = String(value || "").trim().toLowerCase();
+  return (type.startsWith("acp:") && type.length > 4) || (type.startsWith("acp-") && type.length > 4);
+}
+
+function extractAcpAgentId(value = "") {
+  const type = String(value || "").trim().toLowerCase();
+  if (type.startsWith("acp:")) return type.slice(4).replace(/[^a-z0-9._-]/g, "");
+  if (type.startsWith("acp-")) return type.slice(4).replace(/[^a-z0-9._-]/g, "");
+  return "";
+}
 
 function normalizeInternalAgentType(value = "") {
   const type = String(value || "").trim().toLowerCase();
   if (type === "claude-code") return "claude";
-  return INTERNAL_AGENT_TYPES.includes(type) ? type : "";
+  if (type === "antigravity" || type === "agy-cli" || type === "acp:agy" || type === "acp-agy") return "agy";
+  if (INTERNAL_AGENT_TYPES.includes(type)) return type;
+  if (isAcpAgentType(type)) {
+    const id = extractAcpAgentId(type);
+    return id ? `acp-${id}` : "";
+  }
+  return "";
 }
 
 function isInternalAgentMeta(meta = {}) {
@@ -23,4 +41,11 @@ function isInternalDashboardEvent(data = {}, getMeta = () => null) {
   return isInternalAgentMeta(getMeta(agentId));
 }
 
-module.exports = { INTERNAL_AGENT_TYPES, normalizeInternalAgentType, isInternalAgentMeta, isInternalDashboardEvent };
+module.exports = {
+  INTERNAL_AGENT_TYPES,
+  isAcpAgentType,
+  extractAcpAgentId,
+  normalizeInternalAgentType,
+  isInternalAgentMeta,
+  isInternalDashboardEvent,
+};

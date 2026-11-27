@@ -8,16 +8,55 @@ function createDaemonConnection(options = {}) {
     queueStatusLine,
     resolveStatusLine,
     logMessage,
+    onConnectionStateChange = null,
     transformRequest: transformRequestOption = (request) => request,
     switchConnectionTimeoutMs = 18000,
+    reconnectBackoffMs = [1000, 2000, 4000, 8000, 15000],
   } = options;
 
   let connectClient = connectClientOption;
   let transformRequest = transformRequestOption;
   let client = null;
   let reconnectPromise = null;
+  let reconnectTimer = null;
+  let reconnectFailures = 0;
   let exitRequested = false;
   let connectionLostNotified = false;
+  let connectionState = "disconnected";
+
+  function notifyConnectionState(nextState) {
+    if (connectionState === nextState) return;
+    connectionState = nextState;
+    if (typeof onConnectionStateChange === "function") {
+      try {
+        onConnectionStateChange(nextState);
+      } catch {
+        // ignore listener errors
+      }
+    }
+  }
+
+  function clearReconnectTimer() {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+  }
+
+  function scheduleReconnectRetry() {
+    if (exitRequested || reconnectTimer || (client && !client.destroyed)) return;
+    const schedule = Array.isArray(reconnectBackoffMs) && reconnectBackoffMs.length
+      ? reconnectBackoffMs
+      : [1000, 2000, 4000, 8000, 15000];
+    const delay = schedule[Math.min(reconnectFailures, schedule.length - 1)];
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      if (!exitRequested && (!client || client.destroyed)) {
+        void ensureConnected();
+      }
+    }, delay);
+    if (typeof reconnectTimer.unref === "function") reconnectTimer.unref();
+  }
   const pendingRequests = [];
   const MAX_PENDING_REQUESTS = 50;
   const STATUS_KEY_RECONNECT = "daemon-reconnect";
@@ -137,9 +176,12 @@ function createDaemonConnection(options = {}) {
 
   function attachClient(newClient) {
     if (!newClient) return;
+    clearReconnectTimer();
     detachClient();
     client = newClient;
+    reconnectFailures = 0;
     connectionLostNotified = false;
+    notifyConnectionState("connected");
     let buffer = "";
     client.on("data", (data) => {
       buffer += data.toString("utf8");
@@ -159,6 +201,7 @@ function createDaemonConnection(options = {}) {
         client = null;
       }
       if (exitRequested) return;
+      notifyConnectionState("reconnecting");
       if (!connectionLostNotified) {
         connectionLostNotified = true;
       }
@@ -175,12 +218,17 @@ function createDaemonConnection(options = {}) {
     if (client && !client.destroyed) return true;
     if (exitRequested) return false;
     if (reconnectPromise) return reconnectPromise;
+    clearReconnectTimer();
+    notifyConnectionState("reconnecting");
     queueStatusLine("Reconnecting to daemon", { key: STATUS_KEY_RECONNECT });
     reconnectPromise = (async () => {
       const newClient = await connectClient();
       if (!newClient) {
+        reconnectFailures += 1;
+        notifyConnectionState("offline");
         resolveStatusLine("{gray-fg}✗{/gray-fg} Daemon offline", { key: STATUS_KEY_RECONNECT });
         logMessage("error", "{white-fg}✗{/white-fg} Failed to reconnect to daemon");
+        scheduleReconnectRetry();
         return false;
       }
       attachClient(newClient);
@@ -198,8 +246,14 @@ function createDaemonConnection(options = {}) {
 
   async function connect() {
     if (client && !client.destroyed) return true;
+    notifyConnectionState("reconnecting");
     const newClient = await connectClient();
-    if (!newClient) return false;
+    if (!newClient) {
+      reconnectFailures += 1;
+      notifyConnectionState("offline");
+      scheduleReconnectRetry();
+      return false;
+    }
     attachClient(newClient);
     return true;
   }
@@ -262,11 +316,13 @@ function createDaemonConnection(options = {}) {
   }
 
   function close() {
+    clearReconnectTimer();
     detachClient();
   }
 
   function markExit() {
     exitRequested = true;
+    clearReconnectTimer();
   }
 
   function getState() {

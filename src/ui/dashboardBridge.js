@@ -12,7 +12,6 @@ function loadGlobalProjectRows(activeProjectRoot = "") {
     listProjectRuntimes,
     filterVisibleProjectRuntimes,
     isGlobalControllerProjectRoot,
-    markProjectStopped,
     canonicalProjectRoot,
   } = require("../runtime/projects");
 
@@ -26,27 +25,28 @@ function loadGlobalProjectRows(activeProjectRoot = "") {
     }
   }
 
-  let rows = listProjectRuntimes({ validate: true, cleanupTmp: true }) || [];
-  for (const row of rows) {
-    const status = String((row && row.status) || "").trim().toLowerCase();
-    const root = resolveRoot(row);
-    if (status === "stale" && root && !isGlobalControllerProjectRoot(root)) {
-      try {
-        markProjectStopped(root);
-      } catch {
-        // ignore
-      }
-    }
-  }
+  let rows = listProjectRuntimes({ validate: true, cleanupTmp: false }) || [];
   rows = filterVisibleProjectRuntimes(rows);
-  rows = rows.filter((row) => !isGlobalControllerProjectRoot(resolveRoot(row)));
-  return rows.map((row) => ({
-    id: row.project_id || row.project_root || "",
-    label: row.project_name || (row.project_root ? path.basename(row.project_root) : ""),
-    root: row.project_root || "",
-    status: row.status || "",
-    active: resolveRoot(row) === String(activeProjectRoot || ""),
-  }));
+  rows = rows.filter((row) => {
+    if (row && row.validation && row.validation.project_exists === false) return false;
+    const root = resolveRoot(row);
+    return Boolean(root) && !isGlobalControllerProjectRoot(root);
+  });
+  const deduped = new Map();
+  for (const row of rows) {
+    const root = resolveRoot(row);
+    if (!root || deduped.has(root)) continue;
+    deduped.set(root, {
+      id: row.project_id || root,
+      label: row.project_name || path.basename(root) || root,
+      root,
+      status: row.status || "",
+      active: root === String(activeProjectRoot || ""),
+    });
+  }
+  return Array.from(deduped.values()).sort(
+    (a, b) => a.label.localeCompare(b.label, "en", { sensitivity: "base" }) || a.root.localeCompare(b.root)
+  );
 }
 
 function cronTasksFromStatus(data = {}) {

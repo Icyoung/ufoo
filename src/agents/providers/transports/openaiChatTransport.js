@@ -34,13 +34,28 @@ function createOpenAiChatTransport(deps = {}) {
     name: "openai-chat",
     features: Object.freeze(["tool_calls", "streaming", "vision", "deferred_tools"]),
     resolveUrl,
-    prepareMessages({ messages, systemPrompt, prompt }) {
+    prepareMessages({ messages, systemPrompt, prompt, userContent }) {
       const systemText = String(systemPrompt || "").trim();
       const hasSystem = messages.some((entry) => String(entry.role || "").trim() === "system");
       if (systemText && !hasSystem) {
         messages.unshift({ role: "system", content: systemText });
       }
-      messages.push({ role: "user", content: String(prompt || "") });
+      if (Array.isArray(userContent) && userContent.length > 0) {
+        const normalized = userContent.map((block) => {
+          if (block && block.type === "image" && block.source && block.source.type === "base64" && block.source.data) {
+            return {
+              type: "image_url",
+              image_url: {
+                url: `data:${block.source.media_type || "image/png"};base64,${block.source.data}`,
+              },
+            };
+          }
+          return block;
+        });
+        messages.push({ role: "user", content: normalized });
+      } else {
+        messages.push({ role: "user", content: String(prompt || "") });
+      }
     },
     runTurn,
     getToolCalls(turnResult) {

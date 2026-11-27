@@ -1,6 +1,7 @@
 export const WORKER_AGENTS = [
   { id: "codex", label: "Codex" },
   { id: "claude", label: "Claude Code" },
+  { id: "agy", label: "Antigravity" },
   { id: "ucode", label: "Ucode" },
 ] as const;
 

@@ -59,6 +59,7 @@ describe("agent claudeEventTranslator", () => {
     expect(events).toEqual([
       { type: "turn_started", turnId: "msg-1" },
       { type: "text_delta", delta: "hello ", itemType: "text" },
+      { type: "phase", phase: { type: "tool_request", name: "route_agent" } },
       {
         type: "tool_call",
         toolCallId: "tool-1",

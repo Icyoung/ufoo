@@ -39,4 +39,18 @@ describe("bin group command contracts", () => {
     expect(result.stderr).toContain("invalid JSON");
     expect(result.stderr).not.toContain("Template not found");
   });
+
+  test("CLI group run and solo run always set internal_only so deleted wrappers are never invoked", () => {
+    const runSource = fs.readFileSync(path.join(REPO_ROOT, "src", "app", "cli", "run.js"), "utf8");
+    const launchGroupBlocks = [...runSource.matchAll(/type:\s*"launch_group"[\s\S]{0,420}?\}\);/g)];
+    expect(launchGroupBlocks.length).toBeGreaterThanOrEqual(2);
+    for (const match of launchGroupBlocks) {
+      expect(match[0]).toContain("internal_only: true");
+    }
+    const launchAgentBlocks = [...runSource.matchAll(/type:\s*"launch_agent"[\s\S]{0,420}?\}\);/g)];
+    expect(launchAgentBlocks.length).toBeGreaterThanOrEqual(3);
+    for (const match of launchAgentBlocks) {
+      expect(match[0]).toContain("internal_only: true");
+    }
+  });
 });

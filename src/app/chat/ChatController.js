@@ -139,7 +139,7 @@ function createChatController({
       parseCommand,
       escapeBlessed: (value) => String(value == null ? "" : value),
       logMessage: view.logMessage,
-      resolveStatusLine: (text) => view.setStatus(text),
+      resolveStatusLine: (text) => view.setStatus(text, { busy: false }),
       renderScreen: () => {},
       clearLog: typeof ports.clearLog === "function"
         ? ports.clearLog
@@ -257,7 +257,7 @@ function createChatController({
         },
       }),
       executeCommand: async (text) => ensureCommandExecutor().executeCommand(text),
-      queueStatusLine: (text) => view.setStatus(text),
+      queueStatusLine: (text) => view.setStatus(text, { busy: true }),
       send: (req) => daemonSend(req),
       logMessage: view.logMessage,
       getAgentLabel,
@@ -307,9 +307,9 @@ function createChatController({
     return submitHandler;
   }
 
-  async function submitInput(text) {
+  async function submitInput(text, options = {}) {
     const handler = ensureSubmitHandler();
-    await handler.handleSubmit(text);
+    await handler.handleSubmit(text, options);
   }
 
   function start(options = {}) {

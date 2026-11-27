@@ -56,4 +56,53 @@ describe("chat history replay", () => {
       expect.objectContaining({ kind: "user", text: "› hello" }),
     ]);
   });
+
+  test("transient daemon disconnect/reconnect chatter is neither persisted nor replayed", () => {
+    const file = path.join(root, ".ufoo", "chat", "history.jsonl");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    // Seed legacy polluted history lines on disk
+    fs.writeFileSync(file, [
+      JSON.stringify({ ts: "2026-07-31T15:06:05.857Z", type: "error", text: "✗ Failed to reconnect to daemon", meta: {} }),
+      JSON.stringify({ ts: "2026-07-31T15:06:23.863Z", type: "system", text: "{gray-fg}✓{/gray-fg} Daemon reconnected", meta: {} }),
+      JSON.stringify({ ts: "2026-07-31T15:16:05.486Z", type: "user", text: "› hello", meta: {} }),
+    ].join("\n") + "\n", "utf8");
+
+    // Attempting to append new disconnect/reconnect chatter must be ignored
+    appendChatHistory(root, "error", "✗ Failed to reconnect to daemon");
+    appendChatHistory(root, "system", "Switching daemon connection");
+    appendChatHistory(root, "error", "Custom ephemeral warning", { transient: true });
+    // Real user / assistant / provider error messages are preserved
+    appendChatHistory(root, "error", "provider request failed (401)");
+
+    const loaded = loadChatHistory(root);
+    expect(loaded).toHaveLength(2);
+    expect(loaded[0].text).toBe("› hello");
+    expect(loaded[1].text).toBe("provider request failed (401)");
+  });
+
+  test("UI operational echoes and agent launch/close lifecycle chatter are excluded from chat history", () => {
+    const file = path.join(root, ".ufoo", "chat", "history.jsonl");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, [
+      JSON.stringify({ ts: "2026-08-17T04:10:18.135Z", type: "user", text: "› Toggling multi-pane view", meta: {} }),
+      JSON.stringify({ ts: "2026-08-17T04:10:18.137Z", type: "system", text: "Entered multi-window (Ctrl+W focus · Ctrl+Q exit).", meta: {} }),
+      JSON.stringify({ ts: "2026-08-17T04:10:36.285Z", type: "system", text: "{white-fg}ufoo{/white-fg} {gray-fg}·{/gray-fg} Closed codex:3f689ff6", meta: {} }),
+      JSON.stringify({ ts: "2026-08-17T04:10:38.221Z", type: "user", text: "› Launching a claude agent", meta: {} }),
+      JSON.stringify({ ts: "2026-08-17T04:10:39.067Z", type: "reply", text: "{white-fg}ufoo{/white-fg} {gray-fg}·{/gray-fg} Launched claude:abc123", meta: {} }),
+      JSON.stringify({ ts: "2026-08-17T04:10:54.022Z", type: "user", text: "› Showing settings", meta: {} }),
+      JSON.stringify({ ts: "2026-08-17T04:10:54.025Z", type: "system", text: "✓ Message delivered", meta: {} }),
+      JSON.stringify({ ts: "2026-08-17T04:11:00.000Z", type: "user", text: "› Please fix the login bug", meta: {} }),
+      JSON.stringify({ ts: "2026-08-17T04:11:05.000Z", type: "assistant", text: "Fixed token refresh in auth.js", meta: { speaker: "ufoo" } }),
+    ].join("\n") + "\n", "utf8");
+
+    appendChatHistory(root, "reply", "ufoo · Closed codex:9999");
+    appendChatHistory(root, "system", "Entering agent architect…");
+    appendChatHistory(root, "system", "Returned from agent (activate).");
+    appendChatHistory(root, "user", "› Setting agent provider to codex");
+
+    const loaded = loadChatHistory(root);
+    expect(loaded).toHaveLength(2);
+    expect(loaded[0].text).toBe("› Please fix the login bug");
+    expect(loaded[1].text).toBe("Fixed token refresh in auth.js");
+  });
 });

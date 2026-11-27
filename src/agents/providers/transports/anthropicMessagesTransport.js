@@ -29,10 +29,10 @@ function createAnthropicMessagesTransport(deps = {}) {
     name: "anthropic-messages",
     features: Object.freeze(["tool_calls", "streaming", "vision", "deferred_tools"]),
     resolveUrl,
-    prepareMessages({ messages, prompt }) {
+    prepareMessages({ messages, prompt, userContent }) {
       messages.push({
         role: "user",
-        content: String(prompt || ""),
+        content: Array.isArray(userContent) && userContent.length > 0 ? userContent : String(prompt || ""),
       });
     },
     runTurn,

@@ -48,7 +48,7 @@ function projectEvent(state, event) {
   if (event.type === "interaction.answered") {
     const callId = task.result?.executionState?.pendingUserInteraction?.resume?.toolCallId;
     if (callId) delete task.effects[callId];
-    Object.assign(task, { status: "queued", answer: event.answer, answeredInteractionId: event.interactionId });
+    Object.assign(task, { status: "queued", answer: event.answer, interactionId: "", answeredInteractionId: event.interactionId });
   }
   if (["task.completed", "task.failed", "task.cancelled", "task.interrupted"].includes(event.type)) {
     const result = event.result ? { text: event.result.text, ...(typeof event.result.finalText === "string" ? { finalText: event.result.finalText } : {}), usage: event.result.usage, toolCallsExecuted: event.result.toolCallsExecuted,

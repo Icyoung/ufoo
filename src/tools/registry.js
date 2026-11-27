@@ -3,6 +3,7 @@ const readBusSummary = require("./tier0/readBusSummary");
 const readOpenDecisions = require("./tier0/readOpenDecisions");
 const readProjectRegistry = require("./tier0/readProjectRegistry");
 const readPromptHistory = require("./tier0/readPromptHistory");
+const readAgentHistory = require("./tier0/readAgentHistory");
 const readAgentTrace = require("./tier0/readAgentTrace");
 const readAgentMetrics = require("./tier0/readAgentMetrics");
 const ackBus = require("./tier1/ackBus");
@@ -14,6 +15,7 @@ const remember = require("./tier1/remember");
 const routeAgent = require("./tier1/routeAgent");
 const searchHistory = require("./tier1/searchHistory");
 const searchMemory = require("./tier1/searchMemory");
+const updateDecision = require("./tier1/updateDecision");
 const closeAgent = require("./tier2/closeAgent");
 const launchAgent = require("./tier2/launchAgent");
 const manageCron = require("./tier2/manageCron");
@@ -31,6 +33,7 @@ const SHARED_TOOL_REGISTRY = Object.freeze([
   readAgentTrace,
   readBusSummary,
   readPromptHistory,
+  readAgentHistory,
   readOpenDecisions,
   listAgents,
   readProjectRegistry,
@@ -43,6 +46,7 @@ const SHARED_TOOL_REGISTRY = Object.freeze([
   searchHistory,
   editMemory,
   forget,
+  updateDecision,
   launchAgent,
   renameAgent,
   closeAgent,

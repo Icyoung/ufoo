@@ -177,4 +177,36 @@ describe("chat daemonTransport", () => {
       sockPath: "/tmp/global.sock",
     });
   });
+
+  test("recycles wedged daemon when PID is running but primary retries fail and stopDaemon is provided", async () => {
+    const recovered = { id: "recovered" };
+    const connectWithRetry = jest.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(recovered);
+    const stopDaemon = jest.fn(() => true);
+    const startDaemon = jest.fn();
+    const isRunning = jest.fn(() => true);
+    const transport = createDaemonTransport({
+      projectRoot: "/tmp/project",
+      daemonRoot: "/tmp/global-controller",
+      sockPath: "/tmp/global.sock",
+      isRunning,
+      stopDaemon,
+      startDaemon,
+      connectWithRetry,
+      restartDelayMs: 0,
+      stuckRecoveryStopWaitMs: 0,
+    });
+
+    const connected = await transport.connectClient();
+
+    expect(connected).toBe(recovered);
+    expect(stopDaemon).toHaveBeenCalledTimes(1);
+    expect(stopDaemon).toHaveBeenCalledWith("/tmp/global-controller", {
+      source: "daemon-transport:stuck-recovery",
+    });
+    expect(startDaemon).toHaveBeenCalledTimes(1);
+    expect(startDaemon).toHaveBeenCalledWith("/tmp/global-controller");
+    expect(connectWithRetry).toHaveBeenCalledTimes(2);
+  });
 });

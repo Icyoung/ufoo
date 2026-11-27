@@ -248,4 +248,34 @@ describe("chat daemonConnection", () => {
     expect(handleMessage.mock.calls.filter(([message]) => message.type === "runtime_event").map(([message]) => message.data.text)).toEqual(["current"]);
     connection.markExit(); connection.close();
   });
+
+  test("notifies connection state transitions and auto-retries after offline backoff", async () => {
+    const first = new FakeClient();
+    const recovered = new FakeClient();
+    const states = [];
+    const { connection, connectClient } = createHarness({
+      onConnectionStateChange: (st) => states.push(st),
+      reconnectBackoffMs: [15, 30],
+    });
+    connectClient
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(recovered);
+
+    await connection.connect();
+    expect(states).toEqual(["reconnecting", "connected"]);
+
+    first.emit("close");
+    await flushPromises();
+    await flushPromises();
+    expect(states).toEqual(["reconnecting", "connected", "reconnecting", "offline"]);
+
+    // Wait for backoff retry timer to fire and recover
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(connectClient).toHaveBeenCalledTimes(3);
+    expect(connection.getState().client).toBe(recovered);
+    expect(states[states.length - 1]).toBe("connected");
+    connection.markExit();
+    connection.close();
+  });
 });

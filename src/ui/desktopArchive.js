@@ -35,6 +35,8 @@ function createDesktopArchive(controllerRoot) {
     archiveProject: (root) => update({ root }, true),
     restoreProject: (root) => update({ root }, false),
     archiveSession: (root, id) => update({ root, id }, true),
+    restoreSession: (root, id) => update({ root, id }, false),
+    purgeSession: (root, id) => update({ root, id }, false),
   };
 }
 

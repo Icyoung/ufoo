@@ -50,6 +50,9 @@ const DEFAULT_CONFIG = {
   agentThinking: "medium",
   agentModelRevision: 0,
   autoResume: false,
+  worktreePolicy: "never",
+  permissionMode: "auto_edit",
+  acpAgents: [],
 };
 
 const DEFAULT_UCODE_CONFIG = {
@@ -76,6 +79,31 @@ const DEFAULT_MAC_CONFIG = Object.freeze({
   takeoverGuard: true,
   schemaVersion: 1,
 });
+
+function normalizeWorktreePolicy(value) {
+  const v = String(value || "").trim().toLowerCase();
+  if (v === "always" || v === "never" || v === "auto") return v;
+  return DEFAULT_CONFIG.worktreePolicy;
+}
+
+function normalizePermissionMode(value) {
+  const v = String(value || "").trim().toLowerCase();
+  if (v === "supervised" || v === "auto_edit" || v === "full_access") return v;
+  return DEFAULT_CONFIG.permissionMode;
+}
+
+function normalizeAcpAgents(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((entry) => entry && typeof entry === "object" && String(entry.id || entry.name || "").trim() && String(entry.command || "").trim())
+    .map((entry) => ({
+      id: String(entry.id || entry.name).trim().toLowerCase().replace(/^acp[:_-]/, ""),
+      label: String(entry.label || entry.displayName || entry.id || entry.name).trim(),
+      command: String(entry.command).trim(),
+      args: Array.isArray(entry.args) ? entry.args.map((a) => String(a)) : [],
+      ...(entry.env && typeof entry.env === "object" ? { env: { ...entry.env } } : {}),
+    }));
+}
 
 function normalizeAuxModel(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -267,6 +295,15 @@ function loadConfig(projectRoot) {
       claudeOauthTokenPath: normalizeClaudeOauthTokenPath(raw.claudeOauthTokenPath),
       claudeOauthRefreshWindowSec: normalizeClaudeOauthRefreshWindowSec(raw.claudeOauthRefreshWindowSec),
       autoResume: typeof raw.autoResume === "boolean" ? raw.autoResume : DEFAULT_CONFIG.autoResume,
+      worktreePolicy: normalizeWorktreePolicy(
+        Object.prototype.hasOwnProperty.call(raw, "worktreePolicy") ? raw.worktreePolicy : globalRaw.worktreePolicy
+      ),
+      permissionMode: normalizePermissionMode(
+        Object.prototype.hasOwnProperty.call(raw, "permissionMode") ? raw.permissionMode : globalRaw.permissionMode
+      ),
+      acpAgents: normalizeAcpAgents(
+        Array.isArray(raw.acpAgents) && raw.acpAgents.length > 0 ? raw.acpAgents : globalRaw.acpAgents
+      ),
       // Merge ucode fields from global config so callers still see them
       ...loadGlobalUcodeConfig(),
     };
@@ -323,6 +360,13 @@ function saveConfig(projectRoot, config) {
     merged.claudeOauthTokenPath = normalizeClaudeOauthTokenPath(merged.claudeOauthTokenPath);
     merged.claudeOauthRefreshWindowSec = normalizeClaudeOauthRefreshWindowSec(merged.claudeOauthRefreshWindowSec);
     merged.autoResume = typeof merged.autoResume === "boolean" ? merged.autoResume : DEFAULT_CONFIG.autoResume;
+    merged.worktreePolicy = normalizeWorktreePolicy(merged.worktreePolicy);
+    merged.permissionMode = normalizePermissionMode(merged.permissionMode);
+    if (Array.isArray(merged.acpAgents) && merged.acpAgents.length > 0) {
+      merged.acpAgents = normalizeAcpAgents(merged.acpAgents);
+    } else {
+      delete merged.acpAgents;
+    }
     writeFileAtomic(target, JSON.stringify(merged, null, 2), { mode: 0o600 });
     return merged;
   });

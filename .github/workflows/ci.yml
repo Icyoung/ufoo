@@ -47,13 +47,8 @@ jobs:
       - name: Version probe
         run: ./target/release/ufoo-tui --version
 
-  native-messages:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, macos-15-intel]
-        provider: [codex, claude]
-    runs-on: ${{ matrix.os }}
+  desktop-ui:
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -62,9 +57,8 @@ jobs:
           node-version: "22"
           cache: npm
       - run: npm ci
-      - name: Install verified vendor CLIs
-        run: npm install -g @openai/codex@0.160.1 @anthropic-ai/claude-code@2.1.204
-      - name: Native and legacy delivery with isolated credentials and local fake inference
+      - run: npm --prefix apps/desktop ci
+      - name: Build desktop UI and verify runtime entrypoints
         run: |
-          node scripts/smoke-native-messages.js ${{ matrix.provider }}
-          node scripts/smoke-native-messages.js ${{ matrix.provider }} --legacy
+          npm run desktop:ui:build
+          node -e "require('./src/app/chat'); require('./src/ui/desktopUiHost'); require('./src/agents/acp/acpServer'); console.log('ok')"

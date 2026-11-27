@@ -46,22 +46,22 @@ class RepoDoctor {
     }
   }
 
-  reportNative() {
-    const { probeNativeCapabilities } = require("../../../agents/launch/nativeCapabilities");
-    const { loadAgentsData } = require("../../../coordination/state/agentsStore");
-    const { getUfooPaths } = require("../../../coordination/state/paths");
-    const { listNativeReceipts } = require("../../../coordination/bus/nativeReceipts");
-    console.log("Native message delivery:");
-    for (const agentType of ["codex", "claude-code"]) {
-      const capability = probeNativeCapabilities({ agentType });
-      console.log(`- ${agentType}: ${capability.version || "unavailable"} (${capability.supported ? "version compatible; runtime readiness still required" : capability.reason})`);
-    }
-    const agentsFile = getUfooPaths(process.cwd()).agentsFile;
-    if (!fs.existsSync(agentsFile)) return;
-    for (const [id, meta] of Object.entries(loadAgentsData(agentsFile).agents)) {
-      if (meta.native_delivery) console.log(`- ${id}: ${meta.native_delivery}, ready=${meta.native_delivery_ready === true}${meta.native_delivery_diagnostic ? `, ${meta.native_delivery_diagnostic}` : ""}`);
-      const uncertain = listNativeReceipts(process.cwd(), id).filter((receipt) => ["unknown", "inflight"].includes(receipt.state));
-      if (uncertain.length) console.log(`- ${id}: ${uncertain.length} uncertain receipt(s); inspect with ufoo bus deliveries ${id}`);
+  reportEngines() {
+    console.log("Worker engines (SDK + ACP + Native):");
+    console.log("- native: ucode (bundled)");
+    console.log("- sdk: codex (@openai/codex-sdk), claude (@anthropic-ai/claude-agent-sdk)");
+    try {
+      const { detectInstalledAcpAgents } = require("../../../agents/providers/acpRegistry");
+      const acpAgents = detectInstalledAcpAgents(process.cwd());
+      if (acpAgents.length === 0) {
+        console.log("- acp: none detected (configure custom entries via acpAgents in ~/.ufoo/config.json)");
+      } else {
+        for (const item of acpAgents) {
+          console.log(`- acp:${item.id} (${item.label}): ${item.available ? `ready (${item.command})` : "not installed"}`);
+        }
+      }
+    } catch {
+      console.log("- acp: registry not initialized");
     }
   }
 
@@ -104,7 +104,7 @@ class RepoDoctor {
     if (fs.existsSync(busSkill)) console.log(`- ufoo-bus: ${busSkill}`);
     this.reportTui();
     this.reportMcp();
-    this.reportNative();
+    this.reportEngines();
     this.reportBrowser();
 
     if (this.failed) {

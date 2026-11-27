@@ -670,7 +670,12 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
       workspaceRoot,
       provider,
       model,
+      permissionMode: state.permissionMode || "",
+      authorizeTool: options.authorizeTool || state.authorizeTool || null,
       prompt: effectiveTaskPrompt,
+      ...(Array.isArray(options.attachments) && options.attachments.length > 0
+        ? { attachments: options.attachments }
+        : {}),
       systemPrompt: systemContext,
       systemBlocks: assembled.systemBlocks || null,
       messages: historyMessages,
@@ -1224,6 +1229,8 @@ async function resumeAfterUserInteraction(answerText = "", state = {}, options =
     workspaceRoot,
     provider: state.provider,
     model: state.model,
+    permissionMode: state.permissionMode || "",
+    authorizeTool: options.authorizeTool || state.authorizeTool || null,
     prompt: "",
     systemPrompt: systemContext,
     systemBlocks: assembled.systemBlocks || null,

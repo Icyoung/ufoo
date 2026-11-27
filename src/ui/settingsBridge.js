@@ -22,6 +22,9 @@ function buildSettingsSnapshot(settings = {}) {
     agent_thinking: settings.agentThinking || "medium",
     custom_base_url: settings.agentBaseUrl || "",
     custom_key_set: Boolean(settings.agentApiKey),
+    worktree_policy: settings.worktreePolicy || "never",
+    permission_mode: settings.permissionMode || "auto_edit",
+    acp_agents: Array.isArray(settings.acpAgents) ? settings.acpAgents : [],
     provider_options: PROVIDER_OPTIONS.map((opt) => ({ ...opt })),
   };
 }
@@ -37,6 +40,23 @@ function applySettingsPatch(projectRoot, patch = {}) {
   }
   for (const [snake, camel] of [["agent_model", "agentModel"], ["agent_base_url", "agentBaseUrl"], ["agent_api_key", "agentApiKey"]]) {
     if (patch[snake] != null || patch[camel] != null) next[camel] = String(patch[snake] ?? patch[camel]).trim();
+  }
+  if (patch.worktree_policy != null || patch.worktreePolicy != null) {
+    const rawPolicy = String(patch.worktree_policy ?? patch.worktreePolicy).trim().toLowerCase();
+    if (!["auto", "always", "never"].includes(rawPolicy)) {
+      return { ok: false, error: "Worktree policy must be auto, always, or never" };
+    }
+    next.worktreePolicy = rawPolicy;
+  }
+  if (patch.permission_mode != null || patch.permissionMode != null) {
+    const rawPerm = String(patch.permission_mode ?? patch.permissionMode).trim().toLowerCase();
+    if (!["supervised", "auto_edit", "full_access"].includes(rawPerm)) {
+      return { ok: false, error: "Permission mode must be supervised, auto_edit, or full_access" };
+    }
+    next.permissionMode = rawPerm;
+  }
+  if (Array.isArray(patch.acp_agents) || Array.isArray(patch.acpAgents)) {
+    next.acpAgents = patch.acp_agents ?? patch.acpAgents;
   }
   if (next.agentBaseUrl) {
     try {

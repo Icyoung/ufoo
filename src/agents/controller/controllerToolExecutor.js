@@ -142,7 +142,7 @@ async function handleLaunchAgent(ctx, args) {
 
   const agent = normalizeInternalAgentType(args.agent);
   if (!agent) {
-    throw buildStructuredError("invalid_arguments", "launch_agent requires internal codex, claude or ucode");
+    throw buildStructuredError("invalid_arguments", "launch_agent requires internal codex, claude, ucode, agy or acp:<id>");
   }
 
   const op = {
@@ -240,7 +240,7 @@ async function executeControllerTool(ctx, toolCall = {}) {
     };
   } catch (err) {
     const error = err && typeof err === "object" && err.code
-      ? err
+      ? { ...err, ...buildStructuredError(err.code, err.message || String(err)) }
       : buildStructuredError("tool_execution_failed", err && err.message ? err.message : String(err || "tool failed"));
 
     observer.emit("tool_call_finished", {

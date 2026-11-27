@@ -61,7 +61,7 @@ function createDaemonIpcServer(options = {}) {
       const status = buildStatus(projectRoot);
       const currentActiveJson = JSON.stringify(status.active);
       const currentMetaJson = JSON.stringify(
-        (status.active_meta || []).map((m) => `${m.id}:${m.activity_state || ""}`)
+        (status.active_meta || []).map((m) => `${m.id}:${m.activity_state || ""}:${m.model || ""}:${m.thinking_level || ""}:${m.permission_mode || ""}`)
       );
       if (currentActiveJson !== lastActiveJson || currentMetaJson !== lastMetaJson) {
         lastActiveJson = currentActiveJson;

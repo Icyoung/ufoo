@@ -78,6 +78,16 @@ async function main() {
     runDaemonCli(["daemon", ...argv.slice(1)]);
     return;
   }
+  if (cmd === "acp") {
+    const { runUfooAcpServer } = require("../src/agents/acp/acpServer");
+    const agentIdx = argv.indexOf("--agent");
+    const agent = agentIdx >= 0 && argv[agentIdx + 1] ? String(argv[agentIdx + 1]).trim() : "main";
+    await runUfooAcpServer({
+      projectRoot: chatProjectRoot,
+      agent,
+    });
+    return;
+  }
   if (cmd === "mcp") {
     if (argv.includes("--help") || argv.includes("-h")) {
       printMcpHelp();
@@ -90,8 +100,6 @@ async function main() {
     } else if (operation === "configure") {
       const { runMcpConfigureCli } = require("../src/runtime/daemon/mcpConfigure");
       runMcpConfigureCli(argv[2], { dryRun: argv.includes("--dry-run") });
-    } else if (operation === "channel") {
-      await require("../src/runtime/daemon/claudeChannel").runClaudeChannel();
     } else {
       await runMcpServer({
         autoStart: !argv.includes("--no-auto-start"),
@@ -120,156 +128,51 @@ async function main() {
     const target = argv[1];
     if (!target) {
       console.error("Error: resume requires an agent type or nickname");
-      console.error("Usage: ufoo resume <ucode|uclaude|ucodex|ugrok|nickname>");
+      console.error("Usage: ufoo resume <ucode|claude|codex|agy|acp:<id>|nickname>");
       console.error("");
       console.error("Examples:");
-      console.error("  ufoo resume ucode      # Start new ucode agent");
-      console.error("  ufoo resume ucode-1    # Resume agent with nickname ucode-1");
-      console.error("  ufoo resume uclaude    # Start new uclaude agent");
+      console.error("  ufoo resume ucode      # Start interactive native ucode agent");
+      console.error("  ufoo resume claude     # Launch managed Claude Code SDK worker");
+      console.error("  ufoo resume codex      # Launch managed Codex SDK worker");
+      console.error("  ufoo resume agy        # Launch managed Antigravity (agy) worker");
       process.exitCode = 1;
       return;
     }
 
-    const { execSync } = require("child_process");
     const path = require("path");
     const { spawn } = require("child_process");
+    const targetLower = target.toLowerCase();
 
-    // First check if it's a nickname for an existing online agent
-    let targetAgent = null;
-    try {
-      const statusOutput = execSync("ufoo bus status", { encoding: "utf8", cwd: process.cwd() });
-
-      // Parse online agents
-      const onlineAgents = [];
-      const lines = statusOutput.split("\n");
-      let inOnlineSection = false;
-
-      for (const line of lines) {
-        if (line.includes("Online agents:")) {
-          inOnlineSection = true;
-          continue;
-        }
-        if (inOnlineSection) {
-          const trimmedLine = line.trim();
-          if (!trimmedLine) continue;
-          if (trimmedLine.includes("Event statistics:") || trimmedLine.includes("===")) {
-            inOnlineSection = false;
-            continue;
-          }
-          // Parse agent line: "ucode:abc123 (nickname)"
-          const agentMatch = trimmedLine.match(/^[-\s]*([a-z-]+:[a-f0-9]+|[a-z-]+)(?:\s+\(([^)]+)\))?/i);
-          if (agentMatch) {
-            const subscriberId = agentMatch[1];
-            const nickname = agentMatch[2] || "";
-            onlineAgents.push({ subscriberId, nickname });
-          }
-        }
-      }
-
-      // Check if target matches any online agent's nickname
-      for (const agent of onlineAgents) {
-        if (agent.nickname && agent.nickname === target) {
-          targetAgent = agent;
-          break;
-        }
-      }
-    } catch (err) {
-      // Ignore errors from bus status check
-    }
-
-    if (targetAgent) {
-      // Found an online agent with this nickname
-      // Determine the agent type from subscriber ID
-      const subscriberId = targetAgent.subscriberId;
-      const [agentType, sessionId] = subscriberId.split(":");
-
-      let scriptName = "";
-      let displayName = "";
-
-      if (agentType === "ucode") {
-        scriptName = "ucode.js";
-        displayName = "ucode";
-      } else if (agentType === "claude-code") {
-        scriptName = "uclaude.js";
-        displayName = "uclaude";
-      } else if (agentType === "codex") {
-        scriptName = "ucodex.js";
-        displayName = "ucodex";
-      } else if (agentType === "grok") {
-        scriptName = "ugrok.js";
-        displayName = "ugrok";
-      } else if (agentType === "kimi") {
-        scriptName = "ukimi.js";
-        displayName = "ukimi";
-      } else {
-        console.error(`Error: Unable to determine agent type for ${subscriberId}`);
-        process.exitCode = 1;
-        return;
-      }
-
-      console.log(`Resuming ${displayName} session for ${targetAgent.nickname} (${subscriberId})`);
-
-      // Set environment variable to indicate this is a resume
-      const scriptPath = path.join(__dirname, scriptName);
-      const env = { ...process.env };
-
-      // Pass the subscriber ID so the agent can reuse the same identity
-      env.UFOO_SUBSCRIBER_ID = subscriberId;
-
-      // Spawn the agent process - it will reuse the subscriber ID
-      const child = spawn(process.execPath, [scriptPath], {
+    if (targetLower === "ucode") {
+      const scriptPath = path.join(__dirname, "ucode.js");
+      console.log("Starting new ucode session...");
+      const child = spawn(process.execPath, [scriptPath, ...argv.slice(2)], {
         stdio: "inherit",
         cwd: process.cwd(),
-        env,
+        env: process.env,
       });
-
       child.on("exit", (code) => {
         process.exit(code || 0);
       });
-
       return;
     }
 
-    // Not an existing online agent - check if it's an agent type to launch
-    const targetLower = target.toLowerCase();
-    let scriptName = "";
-
-    if (targetLower === "ucode") {
-      scriptName = "ucode.js";
-    } else if (targetLower === "uclaude" || targetLower === "claude-code" || targetLower === "claude") {
-      scriptName = "uclaude.js";
-    } else if (targetLower === "ucodex" || targetLower === "codex" || targetLower === "openai") {
-      scriptName = "ucodex.js";
-    } else if (targetLower === "ugrok" || targetLower === "grok" || targetLower === "grok-build" || targetLower === "xai") {
-      scriptName = "ugrok.js";
-    } else if (targetLower === "ukimi" || targetLower === "kimi" || targetLower === "kimi-cli" || targetLower === "kimi-code") {
-      scriptName = "ukimi.js";
-    } else {
-      // Not a valid agent type - might be an offline agent nickname
-      console.error(`Error: Agent '${target}' is not online and is not a valid agent type`);
-      console.error("");
-      console.error("Valid agent types: ucode, uclaude, ucodex, ugrok, ukimi");
-      console.error("");
-      console.error("To see online agents, run: ufoo bus status");
-      process.exitCode = 1;
-      return;
-    }
-
-    // Run the agent script directly for a new session
-    const scriptPath = path.join(__dirname, scriptName);
-    console.log(`Starting new ${target} session...`);
-
-    // Spawn the agent process and inherit stdio for interactive mode
-    const child = spawn(process.execPath, [scriptPath], {
-      stdio: "inherit",
-      cwd: process.cwd(),
-      env: process.env,
-    });
-
-    child.on("exit", (code) => {
-      process.exit(code || 0);
-    });
-
+    const { requestDaemon, ensureDaemonRunning } = require("../src/app/chat/transport");
+    const projectRoot = process.cwd();
+    await ensureDaemonRunning(projectRoot);
+    const normalized = targetLower === "claude-code"
+      ? "claude"
+      : (targetLower === "openai"
+        ? "codex"
+        : (targetLower === "antigravity" || targetLower === "agy-cli" ? "agy" : targetLower));
+    const isDirectEngine = normalized === "claude"
+      || normalized === "codex"
+      || normalized === "agy"
+      || normalized.startsWith("acp:");
+    const resp = await requestDaemon(projectRoot, isDirectEngine
+      ? { type: "launch_agent", agent: normalized, count: 1, internal_only: true }
+      : { type: "resume_agent", target }, { fullResponse: true });
+    console.log(resp?.data?.reply || resp?.reply || `Resumed ${target}`);
     return;
   }
 

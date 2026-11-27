@@ -120,4 +120,29 @@ describe("recoverable tool failure protection", () => {
     await expect(fixture.run()).rejects.toThrow("unknown side effects");
     expect(fixture.requests).toHaveLength(1);
   });
+
+  test("nonFatalLookup misses do not trigger the consecutive error kill-switch", async () => {
+    const fixture = setup({ batchSize: 6 });
+    let round = 0;
+    fixture.execute.mockImplementation(async () => ({ ok: false, code: "ENOENT", nonFatalLookup: true, error: "ENOENT: missing" }));
+    fixture.runTurn.mockImplementation(async (request) => {
+      fixture.requests.push(JSON.parse(JSON.stringify({ tools: request.tools, messages: request.messages })));
+      round += 1;
+      if (round === 1) {
+        return {
+          text: "",
+          toolCalls: Array.from({ length: 6 }, (_, n) => ({
+            id: `miss_${n}`,
+            type: "function",
+            function: { name: "probe", arguments: JSON.stringify({ n }) },
+          })),
+        };
+      }
+      return { text: "Recovered after missing file probes.", toolCalls: [] };
+    });
+    const result = await fixture.run();
+    expect(fixture.execute).toHaveBeenCalledTimes(6);
+    expect(result.stopReason).toBeUndefined();
+    expect(result.finalText).toBe("Recovered after missing file probes.");
+  });
 });

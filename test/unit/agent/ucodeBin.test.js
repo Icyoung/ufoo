@@ -2,6 +2,8 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
+const { EventEmitter } = require("events");
+
 async function withIsolatedBinMocks({
   resolved,
   runtimePrepared = {},
@@ -9,17 +11,24 @@ async function withIsolatedBinMocks({
   setupImpl = async () => ({ prompted: false }),
 } = {}) {
   const launchMock = jest.fn();
-  const launcherCtor = jest.fn(() => ({ launch: launchMock }));
+  const spawnMock = jest.fn((cmd, args) => {
+    launchMock(args);
+    const child = new EventEmitter();
+    return child;
+  });
   const resolveUcodeLaunchMock = jest.fn(() => resolved);
   const prepareUcodeRuntimeConfigMock = jest.fn(() => runtimePrepared);
   const prepareUcodeBootstrapMock = jest.fn(bootstrapImpl);
   const setupMock = jest.fn(setupImpl);
 
+  jest.doMock("child_process", () => ({
+    ...jest.requireActual("child_process"),
+    spawn: spawnMock,
+  }));
   jest.doMock("../../../src/app/cli/setupCommands", () => ({
     maybeRunFirstTimeSetup: setupMock,
   }));
 
-  jest.doMock("../../../src/agents/launch/launcher", () => launcherCtor);
   jest.doMock("../../../src/code/launcher/ucode", () => ({
     resolveUcodeLaunch: resolveUcodeLaunchMock,
   }));
@@ -39,8 +48,8 @@ async function withIsolatedBinMocks({
 
   return {
     launchMock,
+    spawnMock,
     setupMock,
-    launcherCtor,
     resolveUcodeLaunchMock,
     prepareUcodeRuntimeConfigMock,
     prepareUcodeBootstrapMock,

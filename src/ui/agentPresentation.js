@@ -5,9 +5,37 @@ const fmt = require("./format");
 const { buildContextMeter } = require("../agents/runtime/context/contextWindow");
 
 function toolStatus(name = "tool") {
-  const aliases = { Read: "read", Write: "write", Edit: "edit", Bash: "bash", TodoWrite: "plan_graph", plan: "plan_graph" };
-  const key = aliases[name] || String(name).toLowerCase();
-  return `${fmt.TOOL_LABELS[key] || `Calling ${name}`}…`;
+  const aliases = {
+    Read: "read",
+    Write: "write",
+    Edit: "edit",
+    MultiEdit: "multiedit",
+    NotebookEdit: "notebookedit",
+    Bash: "bash",
+    Grep: "grep",
+    Glob: "glob",
+    WebSearch: "web_search",
+    WebFetch: "web_fetch",
+    Agent: "agent",
+    Task: "task",
+    TodoWrite: "plan_graph",
+    plan: "plan_graph",
+    update_plan: "plan_graph",
+    run_command: "bash",
+    view_file: "read",
+    write_to_file: "write",
+    replace_file_content: "edit",
+    multi_replace_file_content: "multiedit",
+    grep_search: "grep",
+    find_by_name: "glob",
+    list_dir: "glob",
+    search_web: "web_search",
+  };
+  const raw = String(name || "tool").trim();
+  const stripped = raw.replace(/^mcp__[^_]+(?:_[^_]+)*__/i, "").replace(/^[a-z0-9_-]+\./i, "");
+  const key = aliases[raw] || aliases[stripped] || stripped.toLowerCase();
+  const friendly = fmt.TOOL_LABELS[key] || `Calling ${fmt.formatToolDisplayName(raw)}`;
+  return `${friendly}…`;
 }
 
 function statusForAgentPhase(event = {}) {
@@ -27,12 +55,17 @@ function statusForAgentPhase(event = {}) {
 
 function contextMeterForUsage(usage = {}, model = "", provider = "") {
   if (usage.contextMeter?.label) return usage.contextMeter;
-  return buildContextMeter({ model, usage: {
-    input: usage.input_tokens ?? usage.prompt_tokens ?? usage.input ?? 0,
-    cacheRead: usage.cache_read_tokens ?? usage.cache_read_input_tokens ?? usage.cached_input_tokens ?? usage.cacheRead ?? 0,
-    cacheCreation: usage.cache_creation_tokens ?? usage.cache_creation_input_tokens ?? usage.cacheCreation ?? 0,
-    inputIncludesCache: provider === "claude-cli" || provider === "anthropic" ? false : true,
-  } });
+  const limitTokens = Number(usage.context_window ?? usage.contextWindow);
+  return buildContextMeter({
+    model,
+    ...(Number.isFinite(limitTokens) && limitTokens > 0 ? { limitTokens } : {}),
+    usage: {
+      input: usage.input_tokens ?? usage.prompt_tokens ?? usage.input ?? 0,
+      cacheRead: usage.cache_read_tokens ?? usage.cache_read_input_tokens ?? usage.cached_input_tokens ?? usage.cacheRead ?? 0,
+      cacheCreation: usage.cache_creation_tokens ?? usage.cache_creation_input_tokens ?? usage.cacheCreation ?? 0,
+      inputIncludesCache: provider === "claude-cli" || provider === "anthropic" ? false : true,
+    },
+  });
 }
 
 function planLinesFromItems(items = []) {

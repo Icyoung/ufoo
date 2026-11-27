@@ -502,4 +502,43 @@ describe("project main agent host", () => {
     const ctx = { sessionId: "main-default", taskRunId: reviewed.payload.runtime.taskRunId };
     expect((await host.taskPort.execute({ operation: "accept", task_run_id: accepted.taskRunId, reason: "passed relevant check", evidence: ["validation-1"] }, ctx)).task.status).toBe("accepted");
   });
+
+  test("manage_tasks validation errors return recoverable tool results and failed tasks can be rejected without crashing main", async () => {
+    let childCalls = 0;
+    global.fetch = jest.fn(async (_url, options) => {
+      const body = JSON.parse(options.body);
+      const userMsgs = body.messages.filter((m) => m.role === "user").map((m) => String(m.content || ""));
+      if (userMsgs.some((t) => t.includes("failing child work"))) {
+        childCalls += 1;
+        return new Response("bad request", { status: 400 });
+      }
+      if (body.messages.some((m) => m.tool_call_id === "reject-failed")) {
+        return response("Handled failed child cleanly.");
+      }
+      if (body.messages.some((m) => m.tool_call_id === "accept-failed")) {
+        const failedTaskId = host.snapshot().children[0].taskRunId;
+        return response(null, [call("reject-failed", "manage_tasks", { operation: "reject", task_run_id: failedTaskId, reason: "child failed; switching strategy" })]);
+      }
+      if (userMsgs.some((t) => t.includes("handle failed child"))) {
+        const failedTaskId = host.snapshot().children[0].taskRunId;
+        return response(null, [call("accept-failed", "manage_tasks", { operation: "accept", task_run_id: failedTaskId, reason: "trying accept on failed" })]);
+      }
+      return response("ok");
+    });
+    host = make();
+    const started = await host.taskPort.execute({ operation: "start", command_id: "failing-child", objective: "failing child work", read_only: true }, { sessionId: "main-default" });
+    const failedChild = await host.resolveRuntime(started.task.id).wait(started.taskRunId);
+    expect(failedChild.status).toBe("failed");
+    expect(childCalls).toBeGreaterThanOrEqual(1);
+
+    const mainRun = await host.runPrompt({ prompt: "handle failed child", requestId: "recover-failed-child", sessionId: "main-review" });
+    expect(mainRun.ok).toBe(true);
+    expect(mainRun.payload.reply).toBe("Handled failed child cleanly.");
+    expect(host.snapshot().uncertainReceipts).toEqual([]);
+    const events = host.getSession("main-review").events();
+    expect(events.some((e) => e.type === "tool.failed")).toBe(false);
+    const acceptErr = events.find((e) => e.type === "tool.completed" && e.toolCallId === "accept-failed");
+    expect(acceptErr.result).toMatchObject({ ok: false, error: { code: "invalid_task_state", message: expect.stringContaining("completed task") } });
+    expect(host.snapshot().children[0]).toMatchObject({ status: "rejected", executionStatus: "failed" });
+  });
 });

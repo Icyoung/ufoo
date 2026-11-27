@@ -2,6 +2,17 @@ function getTextFromItem(item) {
   if (!item || typeof item !== "object") return "";
   if (typeof item.text === "string") return item.text;
   if (item.item && typeof item.item.text === "string") return item.item.text;
+  if (Array.isArray(item.summary)) {
+    const joined = item.summary
+      .map((entry) => {
+        if (typeof entry === "string") return entry;
+        if (entry && typeof entry.text === "string") return entry.text;
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n");
+    if (joined) return joined;
+  }
   if (Array.isArray(item.content)) {
     return item.content
       .map((entry) => (entry && typeof entry.text === "string" ? entry.text : ""))
@@ -101,10 +112,15 @@ function normalizeCodexEvent(event = {}, state = createCodexEventState()) {
           ? output.slice((previous.output || "").length) : output;
         remember({ output, completed: type === "item.completed" });
         if (!delta && type !== "item.completed") return null;
-        return { type: "tool_result", toolCallId: key, output: delta,
-          ...(item.exit_code !== undefined ? { exitCode: item.exit_code } : {}), status: item.status || "" };
+        return {
+          type: "tool_result",
+          toolCallId: key,
+          output: delta,
+          ...(item.exit_code !== undefined ? { exitCode: item.exit_code } : {}),
+          ...(item.status === "failed" || item.error ? { is_error: true } : {}),
+          status: item.status || "",
+        };
       }
-      remember({ started: true, output: "" });
       const nativeTools = {
         command_execution: { name: "bash", args: { command: item.command || "" } },
         file_change: { name: "apply_patch", args: { path: (item.changes || []).map((change) => change.path).join(", ") } },
@@ -113,12 +129,29 @@ function normalizeCodexEvent(event = {}, state = createCodexEventState()) {
         todo_list: { name: "plan", args: { items: item.items || [] } },
       };
       const tool = nativeTools[itemType] || { name: item.name || "", args: item.arguments || item.args || {} };
-      return {
+      const started = {
         type: "tool_call",
         name: tool.name,
         toolCallId: item.id || item.tool_call_id || "",
         args: tool.args,
       };
+      if (type === "item.completed" && ["command_execution", "mcp_tool_call"].includes(itemType)) {
+        const output = itemType === "command_execution" ? String(item.aggregated_output || "") : item.result || item.error || "";
+        remember({ started: true, output, completed: true });
+        return [
+          started,
+          {
+            type: "tool_result",
+            toolCallId: started.toolCallId,
+            output,
+            ...(item.exit_code !== undefined ? { exitCode: item.exit_code } : {}),
+            ...(item.status === "failed" || item.error ? { is_error: true } : {}),
+            status: item.status || "completed",
+          },
+        ];
+      }
+      remember({ started: true, output: "" });
+      return started;
     }
 
     if (itemType === "tool_result") {

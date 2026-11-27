@@ -5,9 +5,104 @@
 const fmt = require("./format");
 const { toolStatus, statusForAgentPhase, planLinesFromItems } = require("./agentPresentation");
 
+const FILE_MUTATION_TOOL_RE = /^(?:apply_patch|edit|write|multiedit|notebookedit|edit_file|write_file|write_to_file|replace_in_file|replace_file_content|multi_replace_file_content|create_file|delete_file|multi_edit|patch_file|modify_file)$/i;
+
+const DIRECT_USER_SOURCES = new Set([
+  "ufoo-desktop",
+  "ufoo-desktop-worker",
+  "ufoo-desktop-handoff",
+  "chat-direct",
+  "chat-agent-view",
+  "chat-internal-agent-view",
+  "rust-multi-window",
+  "user",
+]);
+
+function classifyIncomingSender(event = {}) {
+  const publisher = String(event.publisher || "").trim();
+  const source = String(event.source || "").trim().toLowerCase();
+  const requestKind = String(event.requestKind || "").trim().toLowerCase();
+  if (DIRECT_USER_SOURCES.has(source)) {
+    return { sender_kind: "user", sender_id: "" };
+  }
+  if (!publisher || publisher === "user" || publisher === "unknown") {
+    return { sender_kind: "user", sender_id: "" };
+  }
+  if (publisher === "ufoo-agent" || publisher.endsWith(":ufoo-agent")) {
+    if (
+      requestKind === "worker-task"
+      || source === "ufoo-agent"
+      || source === "group"
+      || source === "group-bootstrap"
+      || source === "workflow-handoff"
+    ) {
+      return { sender_kind: "coordinator", sender_id: "ufoo-agent" };
+    }
+    return { sender_kind: "user", sender_id: "" };
+  }
+  return { sender_kind: "peer", sender_id: publisher };
+}
+
+function normalizeFileChangeKind(rawKind = "", toolName = "") {
+  const k = String(rawKind || "").trim().toLowerCase();
+  if (k === "add" || k === "added" || k === "create" || k === "created") return "added";
+  if (k === "delete" || k === "deleted" || k === "remove" || k === "removed") return "deleted";
+  if (k === "update" || k === "updated" || k === "modify" || k === "modified" || k === "edit") return "modified";
+  const t = String(toolName || "").trim().toLowerCase();
+  if (t.includes("create")) return "added";
+  if (t.includes("delete") || t.includes("remove")) return "deleted";
+  return "modified";
+}
+
+function extractFilePathsFromToolArgs(toolName = "", args = {}) {
+  const name = String(toolName || "").trim();
+  const lower = name.toLowerCase();
+  const isMutation = FILE_MUTATION_TOOL_RE.test(lower)
+    || /\b(?:edit|write|patch|create|delete|modify)\b/i.test(lower);
+  if (!isMutation || !args || typeof args !== "object") return [];
+  const rawPaths = [];
+  const push = (val, kindHint = "") => {
+    if (typeof val !== "string") return;
+    for (const part of val.split(",")) {
+      const clean = part.trim();
+      if (clean && !clean.startsWith("http://") && !clean.startsWith("https://")) {
+        rawPaths.push({ path: clean, kind: normalizeFileChangeKind(kindHint, name) });
+      }
+    }
+  };
+  if (args.file_path) push(args.file_path);
+  if (args.path) push(args.path);
+  if (args.target_file) push(args.target_file);
+  if (args.TargetFile) push(args.TargetFile);
+  if (Array.isArray(args.paths)) {
+    for (const p of args.paths) push(p);
+  }
+  if (Array.isArray(args.locations)) {
+    for (const loc of args.locations) {
+      if (loc && typeof loc.path === "string") push(loc.path);
+    }
+  }
+  return rawPaths;
+}
+
+function extractFileChangesFromToolOutput(output, toolName = "") {
+  if (!output || typeof output !== "object") return [];
+  const out = [];
+  const changes = Array.isArray(output.changes) ? output.changes : [];
+  for (const item of changes) {
+    if (!item || typeof item !== "object" || !item.path) continue;
+    out.push({
+      path: String(item.path).trim(),
+      kind: normalizeFileChangeKind(item.kind || item.type || item.status, toolName),
+    });
+  }
+  return out;
+}
+
 function createAgentSurface(options = {}) {
   const maxEntries = options.maxEntries || 1000;
   const maxText = options.maxText || 256000;
+  const rawMarkdown = options.rawMarkdown === true;
   let entries = [];
   let sequence = 0;
   let turn = "turn-0";
@@ -26,10 +121,24 @@ function createAgentSurface(options = {}) {
   const background = new Map();
   let contextUsage = "";
   const tools = new Map();
+  const changedFiles = new Map();
   const renderedEntries = new WeakMap();
 
+  function recordChangedFiles(items = []) {
+    for (const item of items) {
+      if (!item || !item.path) continue;
+      const cleanPath = String(item.path).trim();
+      if (!cleanPath) continue;
+      const existing = changedFiles.get(cleanPath);
+      const nextKind = existing && existing.kind === "added" && item.kind === "modified"
+        ? "added"
+        : (item.kind || "modified");
+      changedFiles.set(cleanPath, { path: cleanPath, kind: nextKind });
+    }
+  }
+
   function presentEntry(row) {
-    if (!["assistant", "thinking"].includes(row.kind) || /\x1b\[/.test(row.text)) return { ...row };
+    if (rawMarkdown || !["assistant", "thinking"].includes(row.kind) || /\x1b\[/.test(row.text)) return { ...row };
     let cached = renderedEntries.get(row);
     if (!cached || cached.source !== row.text) {
       cached = { source: row.text, text: fmt.renderLogLinesWithMarkdownAnsi(row.text, { inCodeBlock: false }).join("\n") };
@@ -70,6 +179,7 @@ function createAgentSurface(options = {}) {
     if (name === "transcript.reset") {
       entries = (payload.entries || []).map((row) => ({ detail: "", speaker: "", expanded: false, ...row }));
       tools.clear();
+      changedFiles.clear();
     } else if (name === "transcript.append") {
       const row = payload.entry || payload;
       Object.assign(entry(row.id || `entry-${++sequence}`, row.kind || "system"), row);
@@ -111,13 +221,28 @@ function createAgentSurface(options = {}) {
           !(row.kind === "tool" && row.id === toolGroupId)
           && !(row.kind === "thinking" && row.id === thinkingId));
       }
+      for (const row of entries) {
+        if (row.streaming) row.streaming = false;
+        if (row.kind === "tool" && row.tool_status === "running") {
+          row.tool_status = payload.reason === "error" ? "error" : "done";
+        }
+      }
       busy = false;
       status = payload.reason === "error" ? "error" : "ready";
     } else if (["tool.start", "tool.result", "tool.group"].includes(name)) {
       const row = entry(payload.id || `tool-${++sequence}`, "tool");
       row.text = String(payload.summary || payload.text || "tool");
       row.detail = String(payload.detail || payload.expanded_text || "");
-      if (row.detail && !row.text.includes("Ctrl+O") && row.detail.includes("\n")) row.text += " (Ctrl+O expand)";
+      if (payload.turn_id) row.turn_id = payload.turn_id;
+      if (payload.tool_name) row.tool_name = payload.tool_name;
+      if (payload.tool_status) {
+        row.tool_status = payload.tool_status;
+      }
+      if (Array.isArray(payload.changed_files) && payload.changed_files.length > 0) {
+        row.changed_files = payload.changed_files;
+      }
+      if (Number.isFinite(payload.duration_ms)) row.duration_ms = payload.duration_ms;
+      if (!rawMarkdown && row.detail && !row.text.includes("Ctrl+O") && row.detail.includes("\n")) row.text += " (Ctrl+O expand)";
     } else if (name === "status.set") {
       status = String(payload.text || "ready");
       if (typeof payload.busy === "boolean") busy = payload.busy;
@@ -136,6 +261,24 @@ function createAgentSurface(options = {}) {
 
   function accept(event = {}) {
     const type = event.type;
+    if (type === "surface_cleared") {
+      entries.length = 0;
+      changedFiles.clear();
+      tools.clear();
+      submitted.length = 0;
+      background.clear();
+      plan = [];
+      idlePlanHint = "";
+      usage = "";
+      contextUsage = "";
+      runningTask = false;
+      waiting = false;
+      busy = false;
+      startedAt = 0;
+      activityOwnsStatus = false;
+      status = "ready";
+      return apply("transcript.reset", { entries: [] });
+    }
     if (type === "task_submitted") {
       submitted.push({ message: String(event.message || ""), at: Date.now() });
       waiting = false;
@@ -165,8 +308,15 @@ function createAgentSurface(options = {}) {
       tools.clear();
       const message = String(event.message || "");
       const last = entries[entries.length - 1];
+      const sender = classifyIncomingSender(event);
       if (message && queued < 0 && !(last?.kind === "user" && last.text === message)) {
-        apply("transcript.append", { id: `${turn}-user`, kind: "user", text: message });
+        apply("transcript.append", {
+          id: `${turn}-user`,
+          kind: "user",
+          text: message,
+          sender_kind: sender.sender_kind,
+          ...(sender.sender_id ? { sender_id: sender.sender_id } : {}),
+        });
       }
       status = "Waiting for model…";
       return apply("stream.start", {});
@@ -214,29 +364,68 @@ function createAgentSurface(options = {}) {
       const detail = fmt.normalizeToolLogDetail(name.toLowerCase(), { ...args, path: args.path || args.file_path }, {});
       const normalized = fmt.normalizeToolMergeEntry({ tool: name.toLowerCase(), detail, isError: false });
       const summary = fmt.buildUcodeToolRowText([normalized]) || `• ${name}`;
-      tools.set(id, { summary, output: "" });
+      const argChanges = extractFilePathsFromToolArgs(name, args);
+      const toolFiles = new Map();
+      for (const ch of argChanges) toolFiles.set(ch.path, ch);
+      const rawCommand = typeof args.command === "string"
+        ? args.command
+        : (typeof args.cmd === "string" ? args.cmd : "");
+      const headerContext = rawCommand ? `$ ${rawCommand}` : summary.replace(/^• /, "");
+      tools.set(id, { summary, headerContext, output: "", name, startedAt: Date.now(), files: toolFiles });
+      recordChangedFiles(argChanges);
       status = toolStatus(name);
       busy = true;
       if (["plan", "TodoWrite", "update_plan"].includes(name)) {
         apply("plan.set", { lines: planLinesFromItems(args.items || args.todos || args.plan || []) });
       }
-      return apply("tool.start", { id, summary });
+      return apply("tool.start", {
+        id,
+        summary,
+        turn_id: turn,
+        tool_name: name,
+        tool_status: "running",
+        ...(toolFiles.size > 0 ? { changed_files: [...toolFiles.values()] } : {}),
+      });
     }
     if (type === "tool_result") {
       const id = `${turn}-tool-${String(event.toolCallId || "tool")}`;
-      const tool = tools.get(id) || { summary: "• Tool", output: "" };
+      const tool = tools.get(id) || { summary: "• Tool", headerContext: "Tool", output: "", name: "tool", startedAt: 0, files: new Map() };
       const output = typeof event.output === "string" ? event.output
         : Array.isArray(event.output) ? event.output.map((block) => block?.text || "").join("\n")
         : event.output == null ? "" : typeof event.output === "object"
           ? [event.output.stdout, event.output.stderr, event.output.content, event.output.error].filter((text) => typeof text === "string" && text).join("\n") || JSON.stringify(event.output)
           : String(event.output);
       tool.output = (tool.output + output).slice(-64000);
+      const outChanges = extractFileChangesFromToolOutput(event.output, tool.name);
+      if (!tool.files) tool.files = new Map();
+      for (const ch of outChanges) {
+        const prev = tool.files.get(ch.path);
+        tool.files.set(ch.path, {
+          path: ch.path,
+          kind: prev && prev.kind === "added" && ch.kind === "modified" ? "added" : ch.kind,
+        });
+      }
       tools.set(id, tool);
-      if (event.is_error || (Number.isFinite(event.exitCode) && event.exitCode !== 0)) tool.summary = tool.summary.replace(/^• /, "• Failed: ");
+      recordChangedFiles(outChanges);
+      const isError = Boolean(event.is_error || (Number.isFinite(event.exitCode) && event.exitCode !== 0));
+      if (isError && !tool.summary.startsWith("• Failed: ")) tool.summary = tool.summary.replace(/^• /, "• Failed: ");
       const exit = Number.isFinite(event.exitCode) && event.exitCode !== 0 ? `\n[exit ${event.exitCode}]` : "";
-      const detail = [tool.summary.replace(/^• /, ""), tool.output + exit].filter(Boolean).join("\n");
-      if (event.status !== "in_progress") status = "Waiting for model…";
-      return apply("tool.result", { id, summary: tool.summary, detail });
+      const detailHeader = tool.headerContext || tool.summary.replace(/^• /, "");
+      const detail = [detailHeader, tool.output + exit].filter(Boolean).join("\n");
+      const inProgress = event.status === "in_progress";
+      if (!inProgress) status = "Waiting for model…";
+      const durationMs = !inProgress && tool.startedAt ? Math.max(0, Date.now() - tool.startedAt) : undefined;
+      return apply("tool.result", {
+        id,
+        summary: tool.summary,
+        detail,
+        turn_id: turn,
+        tool_name: tool.name,
+        tool_status: inProgress ? "running" : (isError ? "error" : "done"),
+        is_error: isError,
+        ...(tool.files.size > 0 ? { changed_files: [...tool.files.values()] } : {}),
+        ...(durationMs !== undefined ? { duration_ms: durationMs } : {}),
+      });
     }
     if (["task_completed", "task_failed", "task_cancelled", "task_paused"].includes(type)) {
       if (event.error) apply("transcript.append", { kind: "error", text: event.error });
@@ -301,7 +490,16 @@ function createAgentSurface(options = {}) {
     const failed = bg.filter((task) => ["failed", "stopped", "killed"].includes(task.status)).length;
     const suffix = [running && `${running} running`, done && `${done} done`, failed && `${failed} failed`].filter(Boolean).join("/");
     const label = `${status}${!busy && status === "ready" && idlePlanHint ? ` · ${idlePlanHint}` : ""}${submitted.length > 1 || (submitted.length && runningTask) ? ` · queued ${submitted.length} · Alt+Enter immediately` : ""}${suffix ? ` · BG ${suffix}` : ""}`;
-    return { entries: entries.map(presentEntry), status: label, busy, usage, plan: plan.slice(), revision, started_at: startedAt };
+    return {
+      entries: entries.map(presentEntry),
+      status: label,
+      busy,
+      usage,
+      plan: plan.slice(),
+      changed_files: [...changedFiles.values()],
+      revision,
+      started_at: startedAt,
+    };
   }
 
   return { apply, accept, snapshot, getEntry, toggleExpanded };

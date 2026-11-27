@@ -28,7 +28,9 @@ function createDaemonMessageRouter(options = {}) {
     isOwnRequestId = () => false,
     onInteractionRequest = null,
     onInteractionClear = null,
+    onInteractionsSync = null,
     onRuntimeEvent = null,
+    suppressLifecycleLog = false,
   } = options;
   const runtimeSequences = new Map();
   const runtimeStreams = new Map();
@@ -36,12 +38,18 @@ function createDaemonMessageRouter(options = {}) {
   const runtimeInteractions = new Set();
   const renderedPeerRequests = new Set();
   function showInteraction(interaction, context = {}) {
-    if (!interaction || runtimeInteractions.has(interaction.id)) return;
+    if (!interaction || !interaction.id || runtimeInteractions.has(interaction.id)) return;
     runtimeInteractions.add(interaction.id);
     if (typeof onInteractionRequest === "function") {
       onInteractionRequest({ ...interaction, ...context });
     }
-    logMessage("system", escapeBlessed(`${interaction.prompt}\n${(interaction.options || []).map((option) => `[${option.key}] ${option.label}`).join("  ")}\n/answer ${interaction.id} <reply>`));
+    if (!(suppressLifecycleLog && typeof onInteractionRequest === "function")) {
+      logMessage(
+        "system",
+        escapeBlessed(`${interaction.prompt}\n${(interaction.options || []).map((option) => `[${option.key}] ${option.label}`).join("  ")}\n/answer ${interaction.id} <reply>`),
+        { transient: true, persist: false }
+      );
+    }
   }
   function handleRuntimeEvent(event) {
     if (!event || !event.sessionId || !Number.isInteger(event.sequence)) return true;
@@ -83,7 +91,11 @@ function createDaemonMessageRouter(options = {}) {
         if (text) logMessage("reply", `${speakerPrefix(label, "white")}${escapeBlessed(text)}`);
       }
       if (["task.failed", "task.interrupted"].includes(event.type)) logMessage("error", escapeBlessed(`${label}: ${event.error || event.type}`));
-      if (event.type === "task.paused") showInteraction(event.result?.executionState?.pendingUserInteraction, { sessionId: event.sessionId, taskRunId: event.taskRunId });
+      if (event.type === "task.paused") {
+        showInteraction(event.result?.executionState?.pendingUserInteraction, { sessionId: event.sessionId, taskRunId: event.taskRunId });
+      } else if (typeof onInteractionClear === "function") {
+        onInteractionClear({ id: event.interactionId || "", sessionId: event.sessionId, taskRunId: event.taskRunId });
+      }
       runtimeFinished.add(event.taskRunId);
       if (runtimeFinished.size > 500) runtimeFinished.delete(runtimeFinished.values().next().value);
       requestStatus();
@@ -99,7 +111,9 @@ function createDaemonMessageRouter(options = {}) {
     for (const task of tasks) {
       const effects = Object.entries(task.effects || {}).map(([id, effect]) => `${id} (${effect.toolName}: ${effect.status})`).join(", ");
       logMessage("system", escapeBlessed(`${task.taskRunId || task.taskId || task.id}: ${task.status}${task.error ? ` (${task.error})` : ""}${task.summary ? `\n${task.summary}` : ""}${effects ? `\nEffects to inspect: ${effects}` : ""}`));
-      showInteraction(task.interaction);
+      if (task.interaction && (!task.status || task.status === "waiting_user")) {
+        showInteraction(task.interaction, { sessionId: task.sessionId, taskRunId: task.taskRunId });
+      }
     }
     for (const receipt of data.uncertainReceipts || []) logMessage("system", escapeBlessed(`Outcome unknown: ${receipt.commandId} (${receipt.kind}). Inspect effects before resubmitting.`));
     if (!tasks.length) resolveStatusLine(escapeBlessed(data.status || (data.accepted ? "Accepted" : "Done")));
@@ -213,8 +227,24 @@ function createDaemonMessageRouter(options = {}) {
     }
 
     updateDashboard(data);
-    for (const session of data.agent_runtime?.sessions || []) for (const task of session.tasks || []) showInteraction(task.interaction);
-    for (const task of data.agent_runtime?.children || []) showInteraction(task.interaction);
+    const liveInteractions = [];
+    for (const session of data.agent_runtime?.sessions || []) {
+      for (const task of session.tasks || []) {
+        if (!task?.interaction || (task.status && task.status !== "waiting_user")) continue;
+        const item = { ...task.interaction, sessionId: session.sessionId, taskRunId: task.taskRunId };
+        liveInteractions.push(item);
+        showInteraction(task.interaction, { sessionId: session.sessionId, taskRunId: task.taskRunId });
+      }
+    }
+    for (const task of data.agent_runtime?.children || []) {
+      if (!task?.interaction || (task.status && task.status !== "waiting_user")) continue;
+      const item = { ...task.interaction, sessionId: task.sessionId, taskRunId: task.taskRunId };
+      liveInteractions.push(item);
+      showInteraction(task.interaction, { sessionId: task.sessionId, taskRunId: task.taskRunId });
+    }
+    if (typeof onInteractionsSync === "function" && data.agent_runtime) {
+      onInteractionsSync(liveInteractions);
+    }
     return false;
   }
 
@@ -341,8 +371,10 @@ function createDaemonMessageRouter(options = {}) {
       );
       // Suppress lifecycle confirmations from chat history — status line plus structured payload is enough.
       if (isLifecycleStatusOnly) {
-        const summary = buildLifecycleSummary(payload, msg);
-        if (summary) logMessage("reply", `${speakerPrefix("ufoo", "white")}${escapeBlessed(summary)}`);
+        if (!suppressLifecycleLog) {
+          const summary = buildLifecycleSummary(payload, msg);
+          if (summary) logMessage("reply", `${speakerPrefix("ufoo", "white")}${escapeBlessed(summary)}`);
+        }
       } else if (!isGroupStartedConfirmation) {
         logMessage("reply", `${speakerPrefix("ufoo", "white")}${escapeBlessed(replyText)}`);
       }
@@ -579,8 +611,13 @@ function createDaemonMessageRouter(options = {}) {
     return false;
   }
 
+  function resetSessionState() {
+    runtimeInteractions.clear();
+  }
+
   return {
     handleMessage,
+    resetSessionState,
   };
 }
 

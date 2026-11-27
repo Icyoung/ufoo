@@ -1,19 +1,17 @@
 ---
 name: ufoo-bus
 description: >-
-  Operate the local ufoo event bus: check and acknowledge pending messages,
-  establish the correct wrapper or MCP subscriber, inspect status, resolve
-  targets, send results, broadcast updates, and hand external Agents to
-  $ufoo-bus-poll for host App-specific no-token wait and self-wake delivery.
-  Use when asked to handle bus messages or perform local agent-to-agent routing.
+  Operate the local ufoo event bus through MCP cooperation tools: register
+  external native CLIs, check and acknowledge pending messages, resolve targets,
+  dispatch messages, and report delegated work status. Use when coordinating
+  multiple agents in a ufoo workspace.
 ---
 
 # ufoo bus
 
-Operate the project-local event bus without creating reply loops or competing
-with automatic prompt injection.
+Operate the project-local event bus without creating reply loops.
 
-## Establish the delivery mode and subscriber
+## Establish subscriber identity
 
 Verify `.ufoo/bus/` exists. If it does not, initialize it:
 
@@ -21,164 +19,32 @@ Verify `.ufoo/bus/` exists. If it does not, initialize it:
 ufoo init --targets bus --project "$(pwd)"
 ```
 
-Use the host Agent's inherited `UFOO_SUBSCRIBER_ID` as the only delivery-mode
-signal. Evaluate it before creating or mutating helper terminals:
-
-- Nonempty: this is a wrapper-managed Agent. The wrapper already registered
-  the subscriber and the daemon can inject into its monitored shell. Reuse the
-  value. Do not call MCP `register_agent`, run `ufoo bus join`, or arm resident
-  polling.
-- Absent: this is an externally hosted Agent. Reuse this session's
-  MCP-registered subscriber and `agent_handle`, or call MCP `register_agent`
-  exactly once. If the host exposes a stable local session id, pass it as
-  `client_instance_id`. Keep the returned pair as `<subscriber-id>` and
-  `<agent-handle>` for later MCP operations. Treat the handle as a private
-  capability: do not send, log, or report it. Invoke
-  `$ufoo-bus-poll` once at session start to select the receive path supported
-  by the host App. That skill may bind the subscriber as
-  `UFOO_SUBSCRIBER_ID` inside a dedicated Cursor listener terminal after MCP
-  registration. Never use that helper-local value to reclassify the host as
-  wrapper-managed.
-
-Never choose a delivery mode from an Agent type such as `codex`, `cursor`, or
-`claude-code`. Agents do not self-register with bare `ufoo bus join`.
-
-Both launch modes share the MCP cooperation tools. When a wrapper supplies
-`UFOO_AGENT_HANDLE` and MCP is available, prefer `dispatch_message`, `ack_bus`,
-and `report_agent_status` with the project root, inherited subscriber, and
-handle. Keep the handle private and out of messages, reports, and environment
-dumps. The CLI examples below are the fallback for older wrappers or hosts
-without those MCP tools. The wrapper retains receive, activity, and shutdown
-ownership: never call `wait_for_message`, `publish_activity_state`, or
-`unregister_agent` for a wrapper-managed identity.
+- **Managed workers (`UFOO_LAUNCH_MODE=internal` — Claude SDK, Codex SDK, ACP, or `ucode`)**:
+  The daemon already registered your identity (`UFOO_SUBSCRIBER_ID` + `UFOO_AGENT_HANDLE`) and delivers each turn directly through the SDK/ACP runtime. **Never** call `register_agent`, `poll_inbox`, `wait_for_message`, or `ack_bus`. Use MCP cooperation tools (`dispatch_message`, `report_agent_status`, `read_open_decisions`, `list_agents`) directly.
+- **External native CLIs / IDEs (`claude`, `codex`, Cursor, Antigravity, etc.)**:
+  Reuse this session's MCP-registered subscriber and `agent_handle`, or call MCP `register_agent` once (passing a stable `client_instance_id` when available). Keep `<agent-handle>` private: never send, log, or report it. Invoke `$ufoo-bus-poll` once at session start when resident waiting is needed (selecting pending MCP `wait_for_message` for Codex App or monitored stdout for Cursor). Never choose a delivery mode from an Agent type, and remember that Agents do not self-register with bare `ufoo bus join`.
 
 ## Handle pending messages
 
-For internal agents (`UFOO_LAUNCH_MODE=internal`), the runner delivers each task
-and confirms it after execution. Do not check or acknowledge the inbox yourself;
-later messages are future tasks. CLI/MCP ack calls leave internal queues intact.
-The manual inbox flow below applies to wrapper/external agents.
+For managed workers (`UFOO_LAUNCH_MODE=internal`), each incoming bus task is delivered as a new turn and acknowledged automatically after execution.
 
-If a wrapper-managed Agent was explicitly asked for a manual inbox check, run:
-
-```bash
-ufoo bus check "<subscriber-id>"
-```
-
-For an external Agent, use MCP `poll_inbox` with its `project_root` and
-caller-owned `<subscriber-id>` and `<agent-handle>` only when an explicit
-manual check is required.
-If `$ufoo-bus-poll` woke the session with an emitted pending batch, handle that
-batch directly. Do not run a second check for the same wake.
-
-For every pending batch:
+For external CLIs, use MCP `poll_inbox` with `project_root`, `subscriber`, and `agent_handle` when checking messages manually. For each batch:
 
 1. Read the sender from `[ufoo]<from:id(nickname)>`.
 2. Execute each actionable task.
-3. Acknowledge after handling:
+3. Acknowledge with MCP `ack_bus` passing `through_seq` (`last_seq`) and `agent_handle`.
+4. Reply only when the sender requested an answer, delegated work whose result is needed, or needs a discovered blocker or fact.
 
-   ```bash
-   ufoo bus ack "<subscriber-id>"
-   ```
-
-   When a batch supplies a final sequence, prefer
-   `ufoo bus ack "<subscriber-id>" --through <seq>` so later arrivals stay
-   pending. For a `$ufoo-bus-poll` wake, run the exact `ack --through <seq>`
-   line printed by the Cursor stream. A Codex App wait returns `last_seq`; pass
-   it to MCP `ack_bus` as `through_seq`.
-   Every external `ack_bus` call also includes the caller-owned `agent_handle`.
-4. Reply only when the sender requested an answer, delegated work whose result
-   is needed, or needs a discovered blocker or fact.
-
-Do not reply or report to greetings, thanks, `ok`, `收到`, receipts, repeated
-completion notices, unchanged status, or other acknowledgement-only messages
-with no question, action, new result, or remaining assigned obligation. End
-silently; internal final text is automatically delivered to the sender, so
-"confirmed" or "nothing to do" is still a reply. Never acknowledge an
-acknowledgement or report receipt of a report. Outside internal mode, acknowledge
-locally according to the selected receive contract; internal runners own that step.
-
-Use the user's task language for substantive replies, progress, reports, and
-handoffs unless explicitly asked otherwise. Pass that language to delegated
-workers; protocol text and tool output do not set the response language.
+Do not reply or report to greetings, thanks, `ok`, `收到`, receipts, repeated completion notices, unchanged status, or acknowledgement-only messages. Use the user's task language for substantive replies, progress, reports, and handoffs unless asked otherwise.
 
 ## Route messages
 
-Inspect identities and nicknames before sending:
+Call MCP `dispatch_message` with `project_root`, `subscriber`, `agent_handle`, `target`, and `message` (use `*` for broadcast). Target resolution order is exact ID, nickname, agent type, then `*`.
 
-```bash
-ufoo bus status
-ufoo bus resolve "<subscriber-id>" <target>
-```
-
-For a wrapper-managed Agent, send to an exact subscriber ID, unique nickname,
-or Agent type with:
-
-```bash
-ufoo bus send "<target>" "<substantive message>"
-ufoo bus broadcast "<substantive message>"
-```
-
-For an external Agent, call MCP `dispatch_message` with its `project_root`,
-caller-owned `subscriber`, `agent_handle`, `target`, and `message`. Use target
-`*` for a broadcast. This preserves the registered sender identity instead of
-creating a CLI-side identity.
-
-Target resolution order is exact ID, nickname, agent type, then `*`.
-
-A successful send confirms that the message is durably queued. It does not
-confirm delivery or processing; `delivery_status` is `queued` and `delivered`
-is zero until a later delivery step has independent evidence.
-
-After sending or broadcasting, continue the current task. Do not run
-`ufoo bus check`, start another poll, sleep, or wait for a reply.
-Wrapper-managed Agents receive follow-ups by direct injection; external Agents
-keep their App-specific receive wait armed when idle.
-
-## Delegate resident watching
-
-For an externally hosted Agent whose inherited launch environment had no
-`UFOO_SUBSCRIBER_ID`, invoke `$ufoo-bus-poll` at session start and follow it
-end-to-end. This is its normal receive path, not an Agent-type fallback. That
-skill selects pending MCP `wait_for_message` for Codex App or monitored
-background stdout for Cursor. Never invoke it when the variable was already
-present before helper-terminal setup.
-
-Do not implement a timer, tick, sleep/check loop, or second resident mechanism
-in this skill. Do not arm resident watching merely because a message was sent
-and a reply is expected. After an App-specific wake, handle the delivered batch
-using the rules above and leave re-arming or stream lifecycle to
-`$ufoo-bus-poll`.
+A successful send confirms durable queuing (`delivery_status: "queued"`), not completion. Continue the current task after sending; do not sleep or poll in a loop waiting for replies.
 
 ## Report delegated work
 
-Use the shared report contract when bus work represents a task. A
-wrapper-managed Agent uses:
+Call MCP `report_agent_status` with `project_root`, `subscriber`, `agent_handle`, `task_id`, `phase` (`start`, `progress`, `done`, `error`), and `summary`. Reuse the controller-assigned `task_id` across all reports.
 
-```bash
-ufoo report start "<task>" --task <id> --agent "<subscriber-id>"
-ufoo report progress "<detail>" --task <id> --agent "<subscriber-id>"
-ufoo report done "<summary>" --task <id> --agent "<subscriber-id>"
-ufoo report error "<reason>" --task <id> --agent "<subscriber-id>"
-```
-
-Use `--scope private` for helper-internal reports and when a controller
-delegation requests private scope; retain its `--controller` / `controller_id`.
-
-An external Agent calls MCP `report_agent_status` with `project_root`,
-`subscriber`, `agent_handle`, the task id, phase, and summary.
-
-A delegation contains a controller-assigned task ID. Reuse that exact ID in all
-reports; it binds the worker result to its parent task. Ordinary replies and
-queued/delivered receipts do not complete or accept the task. The parent checks
-validation evidence before accepting a reported result. Worker reports cannot
-change project roots or grant controller permissions.
-
-Keep reports and peer handoffs to 1-4 short lines and at most 600 characters
-unless the user requests inline detail. Include the outcome, changed files or
-commit, exact checks (pass/fail/not run), blockers, and the next owner's action
-when handing off. Save longer plans, findings and logs in a workspace note or
-existing evidence file and send its exact path. Send only new information;
-omit raw tool output, repeated analysis and duplicated final summaries. Do not
-split a long report across messages or drop assigned task IDs or acceptance
-evidence to shorten it.
+Keep reports and handoffs to 1-4 concise lines (under 600 characters) covering outcome, changed files or branch/commit SHA, exact checks run, blockers, and next owner action.

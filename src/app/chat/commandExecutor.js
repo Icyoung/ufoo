@@ -592,14 +592,14 @@ function createCommandExecutor(options = {}) {
     if (args.length === 0) {
       logMessage(
         "error",
-        "{white-fg}✗{/white-fg} Usage: /launch <claude|codex|ucode> [nickname=<name>] [profile=<id>] [count=<n>]"
+        "{white-fg}✗{/white-fg} Usage: /launch <claude|codex|ucode|agy> [nickname=<name>] [profile=<id>] [count=<n>]"
       );
       return;
     }
 
     const normalizedAgent = normalizeInternalAgentType(args[0]);
     if (!normalizedAgent) {
-      logMessage("error", "Unknown internal agent type. Use: claude, codex or ucode");
+      logMessage("error", "Unknown internal agent type. Use: claude, codex, ucode, or agy");
       return;
     }
 
@@ -729,7 +729,7 @@ function createCommandExecutor(options = {}) {
 
     const profile = String(args[1] || "").trim();
     if (!profile) {
-      logMessage("error", "{white-fg}✗{/white-fg} Usage: /solo run <prompt-profile> [agent=codex|claude|ucode] [nickname=<name>]");
+      logMessage("error", "{white-fg}✗{/white-fg} Usage: /solo run <prompt-profile> [agent=codex|claude|ucode|agy] [nickname=<name>]");
       return;
     }
 
@@ -746,7 +746,7 @@ function createCommandExecutor(options = {}) {
     const requested = parsedOptions.agent || parsedOptions.type || "";
     const agent = normalizeInternalAgentType(resolveSoloAgentType(config, requested));
     if (!agent) {
-      logMessage("error", "Unknown internal agent type. Use: claude, codex or ucode");
+      logMessage("error", "Unknown internal agent type. Use: claude, codex, ucode, or agy");
       return;
     }
     const nickname = String(parsedOptions.nickname || "").trim();

@@ -9,12 +9,14 @@ function createDaemonTransport(options = {}) {
     sockPath,
     isRunning = () => true,
     startDaemon = () => {},
+    stopDaemon = null,
     connectWithRetry = async () => null,
     primaryRetries = DAEMON_TRANSPORT_DEFAULTS.primaryRetries,
     secondaryRetries = DAEMON_TRANSPORT_DEFAULTS.secondaryRetries,
     retryDelayMs = DAEMON_TRANSPORT_DEFAULTS.retryDelayMs,
     restartDelayMs = DAEMON_TRANSPORT_DEFAULTS.restartDelayMs,
     connectTimeoutMs = DAEMON_TRANSPORT_DEFAULTS.connectTimeoutMs,
+    stuckRecoveryStopWaitMs = 300,
   } = options;
 
   let activeProjectRoot = projectRoot;
@@ -40,12 +42,31 @@ function createDaemonTransport(options = {}) {
       { timeoutMs: connectTimeoutMs }
     );
     if (!client) {
-      // Retry once with a fresh daemon start and longer wait.
-      // Check if a restart is already in progress via the explicit restart flow.
+      // Retry once with a fresh daemon start (or stuck-daemon recovery if PID exists
+      // but the IPC socket is unresponsive).
       const isExplicitRestartInProgress = restartLocks.get(target.daemonRoot);
-      if (autoStart && !isExplicitRestartInProgress && !isRunning(target.daemonRoot)) {
-        startDaemon(target.daemonRoot);
-        await new Promise((resolve) => setTimeout(resolve, restartDelayMs));
+      if (autoStart && !isExplicitRestartInProgress) {
+        if (!isRunning(target.daemonRoot)) {
+          startDaemon(target.daemonRoot);
+          await new Promise((resolve) => setTimeout(resolve, restartDelayMs));
+        } else if (typeof stopDaemon === "function") {
+          // PID is alive but IPC connection failed across all primary retries: recycle wedged daemon.
+          restartLocks.set(target.daemonRoot, true);
+          try {
+            await Promise.resolve(stopDaemon(target.daemonRoot, {
+              source: "daemon-transport:stuck-recovery",
+            }));
+            if (stuckRecoveryStopWaitMs > 0) {
+              await new Promise((resolve) => setTimeout(resolve, stuckRecoveryStopWaitMs));
+            }
+            startDaemon(target.daemonRoot);
+            if (restartDelayMs > 0) {
+              await new Promise((resolve) => setTimeout(resolve, restartDelayMs));
+            }
+          } finally {
+            restartLocks.delete(target.daemonRoot);
+          }
+        }
       }
       client = await connectWithRetry(
         target.sockPath,

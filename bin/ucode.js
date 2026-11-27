@@ -11,7 +11,7 @@
  */
 
 const fs = require("fs");
-const AgentLauncher = require("../src/agents/launch/launcher");
+const { spawn } = require("child_process");
 const { resolveUcodeLaunch } = require("../src/code/launcher/ucode");
 const { prepareUcodeBootstrap } = require("../src/code/launcher/ucodeBootstrap");
 const { prepareUcodeRuntimeConfig } = require("../src/code/launcher/ucodeRuntimeConfig");
@@ -177,11 +177,33 @@ if (mode !== "always" && bootstrapFile && !fs.existsSync(bootstrapFile) && !pres
 }
 
 (async () => {
+  if (cleanArgs.includes("--acp")) {
+    const { runUfooAcpServer } = require("../src/agents/acp/acpServer");
+    await runUfooAcpServer({
+      projectRoot: process.cwd(),
+      agent: "ucode",
+    });
+    return;
+  }
   try {
     await maybeRunFirstTimeSetup({ surface: "ucode", argv: cleanArgs });
   } catch {
     // First-run setup must never block launching ucode
   }
-  const launcher = new AgentLauncher(resolved.agentType, resolved.command);
-  launcher.launch(resolved.args);
+  const child = spawn(resolved.command, resolved.args, {
+    stdio: "inherit",
+    cwd: process.cwd(),
+    env: process.env,
+  });
+  child.on("error", (err) => {
+    console.error(`[ucode] failed to launch: ${err && err.message ? err.message : String(err)}`);
+    process.exitCode = 1;
+  });
+  child.on("exit", (code, signal) => {
+    if (signal) {
+      process.kill(process.pid, signal);
+      return;
+    }
+    process.exitCode = typeof code === "number" ? code : 0;
+  });
 })();

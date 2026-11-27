@@ -39,6 +39,7 @@ async function handlePromptRequest({
   log = () => {},
 } = {}) {
   const text = String(req.text ?? req.prompt ?? "");
+  const attachments = Array.isArray(req.attachments) ? req.attachments : [];
   const requestMeta = req.request_meta && typeof req.request_meta === "object" && !Array.isArray(req.request_meta)
     ? req.request_meta : {};
   const requestId = String(req.request_id || req.message_id || req.msg_id || req.id || "").trim() || undefined;
@@ -60,6 +61,7 @@ async function handlePromptRequest({
       targetProjectRoot: route.project_root,
       targetProjectName: route.project_name,
       prompt: route.prompt || text,
+      ...(attachments.length > 0 ? { attachments } : {}),
       routeReason: route.reason,
       requestMeta,
     });
@@ -93,6 +95,7 @@ async function handlePromptRequest({
     const handled = await runMainAgent({
       projectRoot,
       originalPrompt: text,
+      ...(attachments.length > 0 ? { attachments } : {}),
       requestId,
       sessionId,
       requestMeta,

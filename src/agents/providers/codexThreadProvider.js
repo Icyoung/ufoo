@@ -1,5 +1,6 @@
 const { createCodexEventState, normalizeCodexEvent } = require("./codexEventTranslator");
 const { redactUfooEvent } = require("../../runtime/privacy/redactor");
+const { loadAttachmentModelContext } = require("../../runtime/attachments");
 
 async function resolveCodexSdk() {
   try {
@@ -20,16 +21,47 @@ function resolveCodexConstructor(sdk) {
   return Codex;
 }
 
-function buildCodexOptions({ codexOptions = {} } = {}) {
-  return { ...codexOptions };
+function buildCodexOptions({ codexOptions = {}, mcpConfig = null } = {}) {
+  const next = { ...codexOptions };
+  if (mcpConfig && typeof mcpConfig === "object") {
+    const existingConfig = next.config && typeof next.config === "object" ? next.config : {};
+    const existingServers = existingConfig.mcp_servers && typeof existingConfig.mcp_servers === "object"
+      ? existingConfig.mcp_servers
+      : {};
+    const injectedServers = mcpConfig.mcp_servers && typeof mcpConfig.mcp_servers === "object"
+      ? mcpConfig.mcp_servers
+      : {};
+    next.config = {
+      ...mcpConfig,
+      ...existingConfig,
+      mcp_servers: {
+        ...injectedServers,
+        ...existingServers,
+      },
+    };
+  }
+  return next;
+}
+
+function resolveCodexPermissionOptions(permissionMode = "") {
+  const mode = String(permissionMode || "").trim().toLowerCase();
+  if (mode === "supervised") {
+    return { approvalPolicy: "on-request", sandboxMode: "workspace-write" };
+  }
+  if (mode === "auto_edit") {
+    return { approvalPolicy: "on-failure", sandboxMode: "danger-full-access" };
+  }
+  return { approvalPolicy: "never", sandboxMode: "danger-full-access" };
 }
 
 function buildThreadOptions({
   model = "",
   cwd = "",
+  permissionMode = "",
   threadOptions = {},
 } = {}) {
   const options = { ...threadOptions };
+  const perm = resolveCodexPermissionOptions(permissionMode);
   if (model && options.model === undefined) {
     options.model = model;
   }
@@ -40,12 +72,10 @@ function buildThreadOptions({
     options.skipGitRepoCheck = true;
   }
   if (options.sandboxMode === undefined) {
-    // Internal workers currently need host access for simulators and build
-    // caches. Keep explicit caller restrictions intact for permission controls.
-    options.sandboxMode = "danger-full-access";
+    options.sandboxMode = perm.sandboxMode;
   }
   if (options.approvalPolicy === undefined) {
-    options.approvalPolicy = "never";
+    options.approvalPolicy = perm.approvalPolicy;
   }
   // SDK workspace-write disables sockets unless explicitly enabled. Coding
   // tools need local services too (ADB, Gradle, dev servers), not just HTTP.
@@ -61,24 +91,40 @@ function buildTurnOptions(opts = {}) {
     tools,
     timeoutMs,
     runtimeContext,
+    attachments,
     ...turnOptions
   } = opts || {};
   void history;
   void tools;
   void timeoutMs;
   void runtimeContext;
+  void attachments;
   return turnOptions;
+}
+
+function buildCodexInput(input, opts = {}) {
+  const text = String(input || "");
+  const rawAttachments = Array.isArray(opts && opts.attachments) ? opts.attachments : [];
+  if (rawAttachments.length === 0) return text;
+  const ctx = loadAttachmentModelContext(rawAttachments, opts.cwd || "");
+  if (!ctx.imagePaths || ctx.imagePaths.length === 0) return text;
+  return [
+    { type: "text", text },
+    ...ctx.imagePaths.map((imgPath) => ({ type: "local_image", path: imgPath })),
+  ];
 }
 
 async function* defaultCodexStreamFactory({
   thread,
   input,
+  cwd = "",
   opts = {},
 }) {
   if (!thread || typeof thread.runStreamed !== "function") {
     throw new Error("Codex SDK thread requires runStreamed support");
   }
-  const streamed = await thread.runStreamed(String(input || ""), buildTurnOptions(opts));
+  const codexInput = buildCodexInput(input, { ...opts, cwd });
+  const streamed = await thread.runStreamed(codexInput, buildTurnOptions(opts));
   const events = streamed && streamed.events ? streamed.events : streamed;
   if (!events || typeof events[Symbol.asyncIterator] !== "function") {
     throw new Error("Codex SDK runStreamed did not return an async event stream");
@@ -99,6 +145,8 @@ class CodexSdkThread {
     sdkThread,
     threadId = "",
     tools = [],
+    permissionMode = "",
+    mcpConfig = null,
     codexOptions = {},
     threadOptions = {},
   } = {}) {
@@ -111,9 +159,49 @@ class CodexSdkThread {
     this.codexClient = codexClient || null;
     this.sdkThread = sdkThread || null;
     this.tools = Array.isArray(tools) ? tools.slice() : [];
-    this.codexOptions = buildCodexOptions({ codexOptions });
+    this.permissionMode = String(permissionMode || "").trim();
+    this.codexOptions = buildCodexOptions({ codexOptions, mcpConfig });
     this.threadOptions = { ...threadOptions };
     this.messages = [];
+  }
+
+  configure({ model, thinkingLevel, permissionMode } = {}) {
+    let changed = false;
+    if (model !== undefined) {
+      const nextModel = String(model || "").trim();
+      if (nextModel !== this.model) {
+        this.model = nextModel;
+        changed = true;
+      }
+    }
+    if (thinkingLevel !== undefined) {
+      const raw = String(thinkingLevel || "").trim().toLowerCase();
+      const mapped = raw === "off" || raw === "none" ? "minimal"
+        : raw === "max" ? "xhigh"
+          : ["minimal", "low", "medium", "high", "xhigh"].includes(raw) ? raw : "";
+      const nextOpts = { ...this.threadOptions };
+      if (mapped) nextOpts.modelReasoningEffort = mapped;
+      else delete nextOpts.modelReasoningEffort;
+      if (nextOpts.modelReasoningEffort !== this.threadOptions.modelReasoningEffort) {
+        this.threadOptions = nextOpts;
+        changed = true;
+      }
+    }
+    if (permissionMode !== undefined) {
+      const nextPerm = String(permissionMode || "").trim().toLowerCase();
+      if (nextPerm && nextPerm !== this.permissionMode) {
+        this.permissionMode = nextPerm;
+        changed = true;
+      }
+    }
+    if (changed) {
+      this.sdkThread = null;
+    }
+    return {
+      model: this.model,
+      thinkingLevel: String(this.threadOptions.modelReasoningEffort || ""),
+      permissionMode: this.permissionMode,
+    };
   }
 
   async getCodexClient() {
@@ -132,6 +220,7 @@ class CodexSdkThread {
     const options = buildThreadOptions({
       model: this.model,
       cwd: this.cwd,
+      permissionMode: this.permissionMode,
       threadOptions: this.threadOptions,
     });
     this.sdkThread = this.id && typeof client.resumeThread === "function"
@@ -199,6 +288,8 @@ class CodexThreadProvider {
     sdk,
     codexClient,
     tools = [],
+    permissionMode = "",
+    mcpConfig = null,
     codexOptions = {},
     threadOptions = {},
   } = {}) {
@@ -209,7 +300,8 @@ class CodexThreadProvider {
     this.sdk = sdk || null;
     this.codexClient = codexClient || null;
     this.tools = Array.isArray(tools) ? tools.slice() : [];
-    this.codexOptions = buildCodexOptions({ codexOptions });
+    this.permissionMode = String(permissionMode || "").trim();
+    this.codexOptions = buildCodexOptions({ codexOptions, mcpConfig });
     this.threadOptions = { ...threadOptions };
   }
 
@@ -222,6 +314,7 @@ class CodexThreadProvider {
       sdk: this.sdk,
       codexClient: this.codexClient,
       tools: this.tools,
+      permissionMode: this.permissionMode,
       codexOptions: this.codexOptions,
       threadOptions: this.threadOptions,
     });
@@ -237,6 +330,7 @@ class CodexThreadProvider {
       codexClient: this.codexClient,
       threadId,
       tools: this.tools,
+      permissionMode: this.permissionMode,
       codexOptions: this.codexOptions,
       threadOptions: this.threadOptions,
     });
@@ -251,7 +345,9 @@ module.exports = {
   CodexSdkThread,
   CodexThreadProvider,
   createCodexThreadProvider,
+  buildCodexOptions,
   buildThreadOptions,
+  buildCodexInput,
   defaultCodexStreamFactory,
   resolveCodexSdk,
 };

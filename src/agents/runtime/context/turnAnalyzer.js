@@ -494,7 +494,7 @@ function backfillMissingTurns({
     // Match replayHistory: accepted order, one final event per task, no paused snapshots.
     for (const [taskRunId, start] of accepted) {
       const event = terminalByTask.get(taskRunId);
-      if (!event) continue;
+      if (!event || (event.type === "task.cancelled" && event.error === "interaction_dismissed")) continue;
       const turnIndex = replayTurnIndex++;
       const turnMessages = replayTurnMessages(start.request, event);
       const historyOffset = cursor;

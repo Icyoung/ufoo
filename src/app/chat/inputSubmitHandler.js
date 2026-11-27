@@ -2,6 +2,7 @@ const { IPC_REQUEST_TYPES } = require("../../runtime/contracts/eventContract");
 const { decodeEscapedNewlines } = require("./text");
 const { describeCommandForChat, shouldEchoCommandInChat } = require("./commands");
 const { parseShellCommand, runShellCommand: defaultRunShellCommand } = require("./shellCommand");
+const { normalizeAttachmentList, formatAttachmentPromptSummary } = require("../../runtime/attachments");
 
 function createInputSubmitHandler(options = {}) {
   const {
@@ -59,10 +60,18 @@ function createInputSubmitHandler(options = {}) {
     return true;
   }
 
-  async function handleSubmit(value) {
-    const text = decodeEscapedNewlines(value).trim();
+  function formatEchoWithAttachments(messageText, attachments = []) {
+    if (!attachments.length) return messageText;
+    const tags = attachments.map((att) => `[${att.kind === "image" ? "image" : "file"}: ${att.name}]`).join(" ");
+    return messageText ? `${messageText}\n${tags}` : tags;
+  }
 
-    if (!text) {
+  async function handleSubmit(value, submitOptions = {}) {
+    const rawText = decodeEscapedNewlines(value).trim();
+    const attachments = normalizeAttachmentList(submitOptions.attachments || []);
+    const text = rawText;
+
+    if (!text && attachments.length === 0) {
       if (state.targetAgent) {
         const handled = await tryActivateTargetAgent(state.targetAgent);
         if (handled) return;
@@ -71,7 +80,7 @@ function createInputSubmitHandler(options = {}) {
       return;
     }
 
-    commitInputHistory(text);
+    if (text) commitInputHistory(text);
 
     const shellCommand = parseShellCommand(text);
     if (shellCommand) {
@@ -112,16 +121,18 @@ function createInputSubmitHandler(options = {}) {
         return;
       }
       const label = getAgentLabel(state.targetAgent);
+      const effectiveMessage = formatAttachmentPromptSummary(text, attachments);
       logMessage(
         "user",
-        userEcho(text, label)
+        userEcho(formatEchoWithAttachments(text, attachments), label)
       );
       renderScreen();  // Immediately render the user message
       markPendingDelivery(state.targetAgent);
       send({
         type: IPC_REQUEST_TYPES.BUS_SEND,
         target: state.targetAgent,
-        message: text,
+        message: effectiveMessage,
+        ...(attachments.length > 0 ? { attachments } : {}),
         injection_mode: "immediate",
         source: "chat-direct",
       });
@@ -150,10 +161,10 @@ function createInputSubmitHandler(options = {}) {
         focusInput();
         return;
       }
-      const message = atTarget.message.trim();
+      const message = formatAttachmentPromptSummary(atTarget.message.trim(), attachments);
       logMessage(
         "user",
-        userEcho(message, atTarget.target)
+        userEcho(formatEchoWithAttachments(atTarget.message.trim(), attachments), atTarget.target)
       );
       renderScreen();  // Immediately render the user message
       markPendingDelivery(resolvedTarget);
@@ -161,6 +172,7 @@ function createInputSubmitHandler(options = {}) {
         type: IPC_REQUEST_TYPES.BUS_SEND,
         target: resolvedTarget,
         message,
+        ...(attachments.length > 0 ? { attachments } : {}),
         injection_mode: "immediate",
         source: "chat-direct",
       });
@@ -206,18 +218,20 @@ function createInputSubmitHandler(options = {}) {
         logMessage("error", "Invalid selection.");
       }
     } else {
-      state.pending = { original: text };
+      const effectiveText = formatAttachmentPromptSummary(text, attachments);
+      state.pending = { original: effectiveText };
       queueStatusLine("ufoo-agent processing");
       send({
         type: IPC_REQUEST_TYPES.PROMPT,
-        text,
+        text: effectiveText,
+        ...(attachments.length > 0 ? { attachments } : {}),
         request_meta: {
           source: "chat-dialog",
           dispatch_default_injection_mode: "immediate",
           allow_relevance_queue: true,
         },
       });
-      logMessage("user", userEcho(text));
+      logMessage("user", userEcho(formatEchoWithAttachments(text, attachments)));
       renderScreen();  // Render plain text message immediately
     }
 

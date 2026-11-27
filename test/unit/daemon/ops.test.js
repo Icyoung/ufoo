@@ -311,7 +311,7 @@ describe("daemon ops internal launch", () => {
     expect(spawn.mock.calls[0][2].env.UFOO_SKIP_DEFAULT_BOOTSTRAP).toBe("1");
   });
 
-  test.each(["grok", "kimi", "agy"])("internal %s launch fails before registering or spawning a worker", async (agent) => {
+  test.each(["grok", "kimi"])("internal %s launch fails before registering or spawning a worker", async (agent) => {
     writeConfig({ launchMode: "auto" });
     const agentsFile = getUfooPaths(projectRoot).agentsFile;
     const before = fs.existsSync(agentsFile) ? fs.readFileSync(agentsFile, "utf8") : null;

@@ -139,6 +139,30 @@ describe("daemon ipcServer", () => {
     expect(socket.write).toHaveBeenCalledTimes(2);
   });
 
+  test("pushes status when active_meta model or thinking_level changes", () => {
+    jest.useFakeTimers();
+    let callCount = 0;
+    const buildStatus = jest.fn(() => {
+      callCount += 1;
+      const model = callCount <= 1 ? "gemini-4-carbon-high" : "gemini-4-hydrogen-medium";
+      const thinking = callCount <= 1 ? "high" : "medium";
+      return {
+        active: ["agy:8727f751"],
+        active_meta: [{ id: "agy:8727f751", activity_state: "ready", model, thinking_level: thinking }],
+      };
+    });
+    const { server } = createServerHarness({ buildStatus });
+
+    const socket = createFakeSocket();
+    server.server._handler(socket);
+
+    jest.advanceTimersByTime(25);
+    expect(socket.write).toHaveBeenCalledTimes(1);
+
+    jest.advanceTimersByTime(25);
+    expect(socket.write).toHaveBeenCalledTimes(2);
+  });
+
   test("does NOT push when active and meta are both unchanged", () => {
     jest.useFakeTimers();
     const buildStatus = jest.fn(() => ({

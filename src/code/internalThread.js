@@ -7,13 +7,19 @@ const { buildPlanSetPayload } = require("../ui/agentPresentation");
 
 function createInternalCodingThread(options = {}) {
   const workspaceRoot = options.workspaceRoot || process.cwd();
+  const { normalizeThinkingLevel, applyThinkingLevelToEnv } = require("./thinkingLevels");
   const resolved = agent.resolveUcodeProviderModel({ workspaceRoot, model: options.model || "" });
+  const initialThinking = normalizeThinkingLevel(options.thinkingLevel || process.env.UFOO_UCODE_THINKING || "") || "medium";
+  applyThinkingLevelToEnv(initialThinking, process.env);
   const state = {
     workspaceRoot, ...resolved, engine: "ufoo-core",
+    thinking: initialThinking,
+    permissionMode: String(options.permissionMode || process.env.UFOO_PERMISSION_MODE || "auto_edit").trim().toLowerCase(),
+    ...(typeof options.authorizeTool === "function" ? { authorizeTool: options.authorizeTool } : {}),
     context: agent.buildNlContext({ workspaceRoot, ...resolved }),
     nlMessages: [], sessionId: options.sessionId || `ucode-${randomUUID()}`,
   };
-  if (options.sessionId) {
+  if (options.sessionId && options.resume !== false) {
     const restored = agent.resumeSessionState(state, options.sessionId, workspaceRoot);
     if (restored?.ok === false) throw new Error(restored.error || `Could not resume session: ${options.sessionId}`);
   }
@@ -43,6 +49,9 @@ function createInternalCodingThread(options = {}) {
     const callbacks = {
       signal: controller.signal,
       runtimeContext: runOptions.runtimeContext || {},
+      ...(Array.isArray(runOptions.attachments) && runOptions.attachments.length > 0
+        ? { attachments: runOptions.attachments }
+        : {}),
       onRuntimeEvent: event => push({ type: "runtime_event", event }),
       onDelta: (delta) => push({ type: "text_delta", delta }),
       onThinkingDelta: (delta) => push({ type: "thinking_delta", delta }),
@@ -107,9 +116,58 @@ function createInternalCodingThread(options = {}) {
     }
   }
 
-  return { id: state.sessionId, runStreamed,
+  function configure({ model, thinkingLevel, permissionMode } = {}) {
+    if (model !== undefined) {
+      const nextModel = String(model || "").trim();
+      if (nextModel) {
+        state.model = nextModel;
+        state.context = agent.buildNlContext({ workspaceRoot, provider: state.provider, model: state.model });
+      }
+    }
+    if (thinkingLevel !== undefined) {
+      const normalized = normalizeThinkingLevel(thinkingLevel);
+      if (normalized) {
+        state.thinking = normalized;
+        applyThinkingLevelToEnv(normalized, process.env);
+      }
+    }
+    if (permissionMode !== undefined) {
+      const nextPerm = String(permissionMode || "").trim().toLowerCase();
+      if (nextPerm) {
+        state.permissionMode = nextPerm;
+        try { process.env.UFOO_PERMISSION_MODE = nextPerm; } catch {}
+      }
+    }
+    return {
+      model: state.model,
+      thinkingLevel: state.thinking,
+      permissionMode: state.permissionMode,
+    };
+  }
+
+  function clear() {
+    if (abort) {
+      try { abort.abort("user_cleared"); } catch {}
+    }
+    state.nlMessages = [];
+    state.executionState = undefined;
+    state.contextMeter = undefined;
+    state.sessionId = `ucode-${randomUUID()}`;
+    state.context = agent.buildNlContext({ workspaceRoot, provider: state.provider, model: state.model });
+    return { ok: true, sessionId: state.sessionId };
+  }
+
+  return {
+    get id() { return state.sessionId; },
+    get model() { return state.model; },
+    get thinkingLevel() { return state.thinking; },
+    get permissionMode() { return state.permissionMode; },
+    configure,
+    clear,
+    runStreamed,
     async pollWakes(deliver) { wakeDelivery = deliver; try { await wakeHost.tick(); } finally { wakeDelivery = null; } },
-    close: async () => { wakeHost.close(); if (abort) abort.abort("runtime_closed"); } };
+    close: async () => { wakeHost.close(); if (abort) abort.abort("runtime_closed"); },
+  };
 }
 
 module.exports = { createInternalCodingThread };

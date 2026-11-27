@@ -17,6 +17,7 @@
 
 const crypto = require("crypto");
 const fs = require("fs");
+const path = require("path");
 const { getUfooPaths } = require("../coordination/state/paths");
 const { isInternalAgentMeta } = require("../runtime/contracts/agentMode");
 const { createPaneManager } = require("../app/chat/multiWindow/paneManager");
@@ -65,8 +66,10 @@ function createRustMultiSession(options = {}) {
     publish = () => {},
     publishLossy = null,
     getLabel = (id) => id,
+    resolveSenderInfo = null,
     projectRoot = "",
     getProjectRoot = () => projectRoot,
+    rawMarkdown = false,
   } = options;
 
   let sessionId = null;
@@ -141,7 +144,7 @@ function createRustMultiSession(options = {}) {
   function surfaceFor(agentId) {
     if (!isInternalAgentMeta(getAgentMeta(agentId))) return null;
     if (!surfaces.has(agentId)) {
-      const surface = createAgentSurface();
+      const surface = createAgentSurface({ rawMarkdown });
       const opts = ensurePaneMeta(agentId);
       if (Array.isArray(opts.initialEntries)) {
         surface.apply("transcript.reset", { entries: opts.initialEntries });
@@ -286,24 +289,73 @@ function createRustMultiSession(options = {}) {
     if (deferred) scheduleFlush();
   }
 
+  function normalizeChangedFile(item, root) {
+    const rawPath = String(item?.path || "").trim();
+    if (!rawPath) return null;
+    let displayPath = rawPath.replace(/\\/g, "/");
+    if (root && path.isAbsolute(rawPath)) {
+      const rel = path.relative(root, rawPath).replace(/\\/g, "/");
+      if (rel && !rel.startsWith("..") && !path.isAbsolute(rel)) {
+        displayPath = rel;
+      }
+    }
+    return {
+      path: displayPath,
+      open_path: rawPath,
+      kind: String(item?.kind || "modified"),
+    };
+  }
+
   function publishFrame(agentId) {
     if (!active || !paneManager) return;
     const pane = paneManager.getPane(agentId);
     if (!pane) return;
     const view = pane.surface.snapshot();
+    const root = getProjectRoot();
     const meta = (() => {
       try { return getAgentMeta(agentId) || {}; } catch { return {}; }
     })();
+    const enrichEntrySender = (entry) => {
+      const labelIsRawId = !entry?.sender_label || entry.sender_label === entry.sender_id;
+      if (!entry || !entry.sender_id || (!labelIsRawId && entry.sender_type)) return entry;
+      if (typeof resolveSenderInfo === "function") {
+        const info = resolveSenderInfo(entry.sender_id, entry.sender_kind);
+        if (info) return { ...entry, ...info };
+      }
+      if (entry.sender_kind === "coordinator" || entry.sender_id === "ufoo-agent" || String(entry.sender_id).endsWith(":ufoo-agent")) {
+        return { ...entry, sender_kind: "coordinator", sender_label: "ufoo", sender_type: "ufoo" };
+      }
+      const senderMeta = (() => {
+        try { return getAgentMeta(entry.sender_id) || {}; } catch { return {}; }
+      })();
+      return {
+        ...entry,
+        sender_label: String(getLabel(entry.sender_id) || senderMeta.display_nickname || senderMeta.nickname || entry.sender_id),
+        sender_type: String(senderMeta.agent_type || senderMeta.type || String(entry.sender_id).split(":")[0] || "worker"),
+      };
+    };
+    const entries = (Array.isArray(view.entries) ? view.entries : []).map((rawEntry) => {
+      const entry = enrichEntrySender(rawEntry);
+      if (!Array.isArray(entry?.changed_files) || entry.changed_files.length === 0) return entry;
+      const files = entry.changed_files
+        .map((item) => normalizeChangedFile(item, root))
+        .filter(Boolean);
+      return files.length ? { ...entry, changed_files: files } : entry;
+    });
+    const changedFiles = (Array.isArray(view.changed_files) ? view.changed_files : [])
+      .map((item) => normalizeChangedFile(item, root))
+      .filter(Boolean);
     const payload = {
       session_id: sessionId,
       agent_id: agentId,
       label: String(getLabel(agentId) || agentId),
       mode: "internal",
-      entries: view.entries,
+      entries,
       status: view.status || String(meta.activity_state || "ready"),
       busy: view.busy,
       usage: view.usage,
       plan: view.plan,
+      changed_files: changedFiles,
       revision: view.revision,
       started_at: view.started_at,
       activity_detail: String(meta.activity_detail || ""),
@@ -683,6 +735,23 @@ function createRustMultiSession(options = {}) {
     }
   }
 
+  function clearPane(agentId) {
+    const view = surfaces.get(agentId);
+    if (view && view.surface) {
+      view.surface.accept({ type: "surface_cleared" });
+    }
+    const pane = paneManager && paneManager.getPane(agentId);
+    if (pane && pane.surface && pane.surface !== view?.surface) {
+      pane.surface.accept({ type: "surface_cleared" });
+    }
+    if (pane) pane.scrollOffset = 0;
+    if (active && pane) {
+      publishFrame(agentId);
+    } else if (view) {
+      markDirty(agentId);
+    }
+  }
+
   return {
     start,
     setLayout,
@@ -704,6 +773,7 @@ function createRustMultiSession(options = {}) {
     syncAgents,
     markDirty,
     writeToPane,
+    clearPane,
     listInternalAgentIds,
     acceptEvent,
     publishFrames,

@@ -226,14 +226,13 @@ function createTestOrchestrator(handleOps) {
         expect(resolveInternalModel({ projectRoot, provider, extraArgs: bootstrap.extraArgs, env: {} })).toBe(setting.model);
         expect(resolveInternalCodexEffort(bootstrap.extraArgs)).toBe(setting.reasoning_effort);
       } else if (type === "agy") {
-        expect(op.agent).toBe("ucode");
-        expect(op.extra_env).toMatchObject({ UFOO_UCODE_PROVIDER: "agy", UFOO_UCODE_BOOTSTRAP_FILE: expect.any(String) });
-        expect(result.group.members[index].model_provider).toBe("agy");
-        const { resolveInternalModel } = require("../../../src/agents/internal/internalRunner");
-        const model = resolveInternalModel({ projectRoot, provider: "ucode", extraArgs: op.extra_args, env: {} });
+        expect(op.agent).toBe("agy");
+        expect(op.extra_args).toContain("-i");
+        const { resolveInternalBootstrap, resolveInternalModel } = require("../../../src/agents/internal/internalRunner");
+        const bootstrap = resolveInternalBootstrap({ projectRoot, agentType: "agy", extraArgs: op.extra_args, env: {} });
+        expect(bootstrap.promptText).toContain("UFOO");
+        const model = resolveInternalModel({ projectRoot, provider: "agy-cli", extraArgs: bootstrap.extraArgs, env: {} });
         expect(model).toBe(setting.model);
-        expect(require("../../../src/code/agent").resolveUcodeProviderModel({ workspaceRoot: projectRoot, provider: op.extra_env.UFOO_UCODE_PROVIDER, model }))
-          .toMatchObject({ provider: "agy", model: setting.model });
       } else {
         expect(op.extra_args).toContain("--append-system-prompt");
         expect(op.extra_args).not.toContain("-c");
@@ -321,7 +320,7 @@ function createTestOrchestrator(handleOps) {
       expect(result.members).toHaveLength(template.agents.length);
       for (const member of result.members) {
         const expected = template.agents.find(agent => agent.nickname === member.nickname).model_config[type];
-        expect(member).toMatchObject({ ...expected, type: type === "agy" ? "ucode" : type, model_source: type });
+        expect(member).toMatchObject({ ...expected, type, model_source: type });
         expect(member.model).toBeTruthy();
         count++;
       }

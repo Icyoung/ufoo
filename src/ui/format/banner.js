@@ -52,9 +52,9 @@ function showUfooBanner(options = {}) {
 
   // 右侧信息
   const infoLines = [
-    `${chalk.cyan.bold(`v${version}`)} ${chalk.gray("Multi-Agent Workspace Protocol")}`,
+    `${chalk.cyan.bold(`v${version}`)} ${chalk.gray("Multi-Agent Workspace Control Plane")}`,
     "",
-    chalk.dim("uclaude") + chalk.gray(" · ") + chalk.dim("ucodex") + chalk.gray(" · ") + chalk.dim("ucode") + chalk.gray(" · ") + chalk.dim("ufoo init") + chalk.gray(" · ") + chalk.dim("ufoo ctx") + chalk.gray(" · ") + chalk.dim("ufoo bus"),
+    chalk.dim("ufoo app") + chalk.gray(" · ") + chalk.dim("ucode") + chalk.gray(" · ") + chalk.dim("ufoo acp") + chalk.gray(" · ") + chalk.dim("ufoo mcp") + chalk.gray(" · ") + chalk.dim("ufoo ctx") + chalk.gray(" · ") + chalk.dim("ufoo bus"),
   ];
 
   // 输出：Logo 和信息并排显示

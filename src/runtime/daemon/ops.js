@@ -16,7 +16,8 @@ const {
 } = require("../terminal/adapters/hostAdapter");
 const { resolveDefaultManualBootstrap } = require("../../agents/prompts/defaultBootstrap");
 const { detectLaunchEnvironment } = require("../../agents/launch/launchEnvironment");
-const { isInternalAgentMeta, normalizeInternalAgentType } = require("../contracts/agentMode");
+const { isInternalAgentMeta, normalizeInternalAgentType, isAcpAgentType } = require("../contracts/agentMode");
+const { resolveWorkerWorktreePlan, createManagedWorktree } = require("../worktree/worktreeManager");
 const { loadRecoveryGroups, resolveRecoveryGroup, associateAgentWithGroup, recordGroupMemberResume } = require("./agentRecoveryGroups");
 const { buildGroupModelArgs, buildGroupModelEnv } = require("../../orchestration/groups/modelConfig");
 
@@ -28,6 +29,7 @@ function normalizeLaunchAgent(agent = "") {
   if (value === "grok" || value === "ugrok" || value === "grok-build" || value === "xai") return "grok";
   if (value === "kimi" || value === "kimi-cli" || value === "kimi-code") return "kimi";
   if (value === "ucode") return "ucode";
+  if (isAcpAgentType(value)) return normalizeInternalAgentType(value);
   return "";
 }
 
@@ -38,6 +40,7 @@ function toBusAgentType(agent = "") {
   if (agent === "grok") return "grok";
   if (agent === "kimi") return "kimi";
   if (agent === "ucode") return "ucode";
+  if (isAcpAgentType(agent)) return normalizeInternalAgentType(agent);
   return "";
 }
 
@@ -689,7 +692,7 @@ async function spawnInternalAgent(
   extraArgs = [],
   options = {}
 ) {
-  if (!normalizeInternalAgentType(agent)) throw new Error(`unsupported internal agent type: ${agent}; use codex, claude or ucode`);
+  if (!normalizeInternalAgentType(agent)) throw new Error(`unsupported internal agent type: ${agent}; use codex, claude, ucode, agy, or acp:<id>`);
   const runner = resolveUfooRunnerPath();
   const logDir = getUfooPaths(projectRoot).runDir;
   fs.mkdirSync(logDir, { recursive: true });
@@ -743,6 +746,14 @@ async function spawnInternalAgent(
     }, { validateParentPid: true, notifyDaemon: false });
     const finalNickname = joinResult.nickname || requestedNickname || "";
 
+    // Framework-level worktree isolation is disabled: all workers and groups
+    // share the project repository directly and are never bound to a single
+    // worktree; models may freely create and operate across git worktrees.
+    const configForWt = loadConfig(projectRoot);
+    const effectivePermissionMode = String(
+      options.permissionMode || extraEnv.UFOO_PERMISSION_MODE || configForWt.permissionMode || "auto_edit"
+    ).trim();
+
     const managedBootstrap = applyDefaultManagedBootstrap(projectRoot, normalizedAgent, extraArgs, extraEnv);
     const runnerCmd = "agent-runner";
     const args = managedBootstrap.args;
@@ -759,16 +770,19 @@ async function spawnInternalAgent(
         UFOO_NICKNAME: finalNickname,
         UFOO_LAUNCH_MODE: "internal",
         UFOO_PARENT_PID: String(originalPid),
+        UFOO_PERMISSION_MODE: effectivePermissionMode,
         ...(providerSessionId ? { UFOO_PROVIDER_SESSION_ID: providerSessionId } : {}),
       },
     });
 
-    // Update bus data with the actual child PID so isMetaActive
-    // can detect when the runner process dies.
+    // Update bus data with the actual child PID & permission metadata
     try {
       bus.loadBusData();
       if (bus.busData.agents && bus.busData.agents[subscriberId]) {
         bus.busData.agents[subscriberId].pid = child.pid;
+        bus.busData.agents[subscriberId].worktree_root = "";
+        bus.busData.agents[subscriberId].worktree_branch = "";
+        bus.busData.agents[subscriberId].permission_mode = effectivePermissionMode;
       }
       bus.saveBusData();
     } catch {
@@ -993,7 +1007,7 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
   }
 
   if (mode === "internal") {
-    if (!normalizeInternalAgentType(normalizedAgent)) throw new Error(`unsupported internal agent type: ${agent}; use codex, claude or ucode`);
+    if (!normalizeInternalAgentType(normalizedAgent)) throw new Error(`unsupported internal agent type: ${agent}; use codex, claude, ucode, agy, or acp:<id>`);
     const result = await spawnInternalAgent(
       projectRoot,
       normalizedAgent,
@@ -1002,7 +1016,16 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
       processManager,
       launchEnvObject,
       extraArgs,
-      {}
+      {
+        worktreeMode: options.worktreeMode || "",
+        worktreePolicy: options.worktreePolicy || "",
+        groupId: options.groupId || "",
+        groupWorktreeRoot: options.groupWorktreeRoot || "",
+        groupBranch: options.groupBranch || "",
+        groupActiveWritableCount: options.groupActiveWritableCount || 0,
+        readonly: Boolean(options.readonly),
+        permissionMode: options.permissionMode || "",
+      }
     );
     return { mode, launchScope, subscriberIds: result.subscriberIds };
   }
@@ -1135,8 +1158,11 @@ async function launchAgent(projectRoot, agent, count = 1, nickname = "", process
 function normalizeAgentType(agentType) {
   if (agentType === "claude-code") return "claude";
   if (agentType === "codex") return "codex";
+  if (agentType === "agy" || agentType === "antigravity" || agentType === "agy-cli") return "agy";
   if (agentType === "grok") return "grok";
+  if (agentType === "kimi") return "kimi";
   if (agentType === "ucode") return "ucode";
+  if (isAcpAgentType(agentType)) return normalizeInternalAgentType(agentType);
   return agentType;
 }
 
@@ -1213,7 +1239,15 @@ function collectRecoverableAgents(projectRoot, target = "", options = {}) {
       continue;
     }
     const agent = normalizeAgentType(meta.agent_type);
-    if (agent !== "codex" && agent !== "claude" && agent !== "agy" && agent !== "grok" && agent !== "kimi" && agent !== "ucode") {
+    if (
+      agent !== "codex"
+      && agent !== "claude"
+      && agent !== "agy"
+      && agent !== "grok"
+      && agent !== "kimi"
+      && agent !== "ucode"
+      && !isAcpAgentType(agent)
+    ) {
       skipped.push({ id, reason: "unsupported agent type" });
       continue;
     }
@@ -1273,16 +1307,31 @@ async function resumeAgents(projectRoot, target = "", processManager = null, opt
       // daemon-managed runner and replace the old recoverable registration.
       // The provider session is still reused via the normal provider args.
       // eslint-disable-next-line no-await-in-loop
+      const priorPermissionMode = String(item.meta.permission_mode || "").trim();
+      const priorModel = String(item.meta.model || "").trim();
+      const priorThinking = String(item.meta.thinking_level || "").trim();
+      const groupModelEnv = buildGroupModelEnv(item.agent, item.modelSettings);
       const launchResult = await spawnInternalAgent(
         projectRoot,
         item.agent,
         1,
         nickname,
         processManager,
-        { UFOO_SKIP_SESSION_RESOLVE: "1", UFOO_SCOPED_NICKNAME: item.meta.scoped_nickname || "",
-          ...buildGroupModelEnv(item.agent, item.modelSettings) },
+        {
+          UFOO_SKIP_SESSION_RESOLVE: "1",
+          UFOO_SCOPED_NICKNAME: item.meta.scoped_nickname || "",
+          ...groupModelEnv,
+          ...(!groupModelEnv.UFOO_AGENT_MODEL && priorModel ? { UFOO_AGENT_MODEL: priorModel } : {}),
+          ...(priorThinking ? { UFOO_AGENT_THINKING: priorThinking } : {}),
+          ...(priorPermissionMode ? { UFOO_PERMISSION_MODE: priorPermissionMode } : {}),
+        },
         args,
-        { replaceAgentId: item.id, providerSessionId: sessionId }
+        {
+          replaceAgentId: item.id,
+          providerSessionId: sessionId,
+          permissionMode: priorPermissionMode,
+          groupId: item.association.group_id || item.meta.group_id || "",
+        }
       );
       resumedId = launchResult.subscriberIds && launchResult.subscriberIds[0]
         ? launchResult.subscriberIds[0]

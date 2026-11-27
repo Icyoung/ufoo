@@ -5,13 +5,15 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use tauri::menu::{AboutMetadata, Menu, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID, WINDOW_SUBMENU_ID};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::process::{Child, Command as TokioCommand};
 use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex};
-use tokio::time::{timeout, Duration};
+use tokio::time::{sleep, timeout, Duration, Instant};
 
 struct RuntimePaths {
     node_bin: PathBuf,
@@ -23,6 +25,8 @@ struct BridgeState {
     tx: AsyncMutex<Option<mpsc::UnboundedSender<String>>>,
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, String>>>>>,
     child: Mutex<Option<Child>>,
+    client_ready: AtomicBool,
+    exiting: AtomicBool,
 }
 
 fn generate_auth_token() -> String {
@@ -118,15 +122,74 @@ fn resolve_runtime_paths(app: &AppHandle) -> Result<RuntimePaths, String> {
     })
 }
 
-async fn start_ui_host_bridge(app: AppHandle, state: Arc<BridgeState>) -> Result<(), String> {
-    let paths = resolve_runtime_paths(&app)?;
+fn emit_connection_event(app: &AppHandle, connected: bool, state: &str, detail: Option<&str>) {
+    let mut payload = json!({
+        "source": "sidecar",
+        "connected": connected,
+        "state": state,
+    });
+    if let Some(msg) = detail {
+        if !msg.is_empty() {
+            payload["detail"] = json!(msg);
+        }
+    }
+    let _ = app.emit(
+        "ufoo://ui-event",
+        json!({
+            "protocol": "ufoo-ui/1",
+            "kind": "event",
+            "name": "host.connection",
+            "payload": payload,
+        }),
+    );
+}
+
+fn send_resync_request(tx: &mpsc::UnboundedSender<String>) {
+    let resync = json!({
+        "protocol": "ufoo-ui/1",
+        "kind": "command",
+        "name": "ui.resync.request",
+        "request_id": "webview-ready-resync",
+        "payload": {}
+    });
+    let _ = tx.send(format!("{resync}\n"));
+}
+
+async fn cleanup_session(state: &Arc<BridgeState>, sock_path: &Path) {
+    {
+        let mut tx_guard = state.tx.lock().await;
+        *tx_guard = None;
+    }
+    {
+        let mut pending = state.pending.lock().unwrap();
+        for (_id, sender) in pending.drain() {
+            let _ = sender.send(Err("Desktop UI host reconnecting".to_string()));
+        }
+    }
+    let child_opt = {
+        let mut guard = state.child.lock().unwrap();
+        guard.take()
+    };
+    if let Some(mut child) = child_opt {
+        let _ = child.start_kill();
+        let _ = timeout(Duration::from_secs(2), child.wait()).await;
+    }
+    let _ = fs::remove_file(sock_path);
+}
+
+async fn run_ui_host_session(
+    app: &AppHandle,
+    state: &Arc<BridgeState>,
+    generation: u64,
+) -> Result<(), String> {
+    let paths = resolve_runtime_paths(app)?;
     let token = generate_auth_token();
     let sock_dir = if Path::new("/tmp").exists() {
         PathBuf::from("/tmp")
     } else {
         std::env::temp_dir()
     };
-    let sock_path = sock_dir.join(format!("ufoo-dt-{}.sock", std::process::id()));
+    let sock_path = sock_dir.join(format!("ufoo-dt-{}-{}.sock", std::process::id(), generation));
     let _ = fs::remove_file(&sock_path);
 
     let mut cmd = TokioCommand::new(&paths.node_bin);
@@ -158,35 +221,53 @@ async fn start_ui_host_bridge(app: AppHandle, state: Arc<BridgeState>) -> Result
     }
 
     let mut stdout_lines = BufReader::new(stdout).lines();
-    let ready_line = timeout(Duration::from_secs(15), stdout_lines.next_line())
-        .await
-        .map_err(|_| "Timed out waiting for desktopUiHost readiness".to_string())?
-        .map_err(|e| format!("Readiness read error: {e}"))?
-        .ok_or_else(|| "desktopUiHost exited before readiness".to_string())?;
+    let ready_line = match timeout(Duration::from_secs(15), stdout_lines.next_line()).await {
+        Ok(Ok(Some(line))) => line,
+        Ok(Ok(None)) => {
+            cleanup_session(state, &sock_path).await;
+            return Err("desktopUiHost exited before readiness".to_string());
+        }
+        Ok(Err(e)) => {
+            cleanup_session(state, &sock_path).await;
+            return Err(format!("Readiness read error: {e}"));
+        }
+        Err(_) => {
+            cleanup_session(state, &sock_path).await;
+            return Err("Timed out waiting for desktopUiHost readiness".to_string());
+        }
+    };
 
-    let ready_json: Value = serde_json::from_str(&ready_line)
-        .map_err(|e| format!("Invalid readiness JSON ({ready_line}): {e}"))?;
+    let ready_json: Value = match serde_json::from_str(&ready_line) {
+        Ok(val) => val,
+        Err(e) => {
+            cleanup_session(state, &sock_path).await;
+            return Err(format!("Invalid readiness JSON ({ready_line}): {e}"));
+        }
+    };
     let actual_sock = ready_json
         .get("socketPath")
         .and_then(Value::as_str)
         .map(PathBuf::from)
-        .unwrap_or(sock_path);
+        .unwrap_or_else(|| sock_path.clone());
 
     // Keep draining child stdout so pipe never blocks
     tokio::spawn(async move {
         while let Ok(Some(_)) = stdout_lines.next_line().await {}
     });
 
-    let stream = UnixStream::connect(&actual_sock)
-        .await
-        .map_err(|e| format!("Failed to connect UI socket {}: {e}", actual_sock.display()))?;
+    let stream = match UnixStream::connect(&actual_sock).await {
+        Ok(s) => s,
+        Err(e) => {
+            cleanup_session(state, &actual_sock).await;
+            return Err(format!(
+                "Failed to connect UI socket {}: {e}",
+                actual_sock.display()
+            ));
+        }
+    };
     let (read_half, mut write_half) = stream.into_split();
 
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
-    {
-        let mut tx_guard = state.tx.lock().await;
-        *tx_guard = Some(tx.clone());
-    }
 
     // Writer loop
     tokio::spawn(async move {
@@ -197,7 +278,7 @@ async fn start_ui_host_bridge(app: AppHandle, state: Arc<BridgeState>) -> Result
         }
     });
 
-    // Send ufoo-ui/1 hello handshake
+    // Send ufoo-ui/1 hello handshake BEFORE publishing tx so all commands are strictly ordered after hello.
     let hello = json!({
         "protocol": "ufoo-ui/1",
         "kind": "hello",
@@ -216,55 +297,109 @@ async fn start_ui_host_bridge(app: AppHandle, state: Arc<BridgeState>) -> Result
     });
     let _ = tx.send(format!("{hello}\n"));
 
-    // Reader loop
-    let pending_map = state.pending.clone();
-    let app_for_reader = app.clone();
-    tokio::spawn(async move {
-        let mut reader = BufReader::new(read_half).lines();
-        while let Ok(Some(line)) = reader.next_line().await {
-            if line.trim().is_empty() {
-                continue;
-            }
-            let Ok(env) = serde_json::from_str::<Value>(&line) else {
-                continue;
-            };
-            let kind = env.get("kind").and_then(Value::as_str).unwrap_or("");
-            let name = env.get("name").and_then(Value::as_str).unwrap_or("");
+    {
+        let mut tx_guard = state.tx.lock().await;
+        *tx_guard = Some(tx.clone());
+    }
 
-            if kind == "result" || kind == "error" {
-                if let Some(req_id) = env.get("request_id").and_then(Value::as_str) {
-                    let sender = pending_map.lock().unwrap().remove(req_id);
-                    if let Some(tx_done) = sender {
-                        let payload = env.get("payload").cloned().unwrap_or_else(|| json!({}));
-                        if kind == "error" {
-                            let msg = payload
-                                .get("error")
-                                .and_then(Value::as_str)
-                                .unwrap_or("UI command failed")
-                                .to_string();
-                            let _ = tx_done.send(Err(msg));
-                        } else {
-                            let _ = tx_done.send(Ok(payload));
+    // If webview already mounted before sidecar connected (or after a sidecar restart),
+    // trigger an immediate resync so the UI snaps straight back to Online.
+    if state.client_ready.load(Ordering::SeqCst) {
+        send_resync_request(&tx);
+    }
+
+    emit_connection_event(app, true, "connected", None);
+
+    // Reader loop runs inline until the sidecar closes or crashes.
+    let mut reader = BufReader::new(read_half).lines();
+    let mut read_err: Option<String> = None;
+    loop {
+        match reader.next_line().await {
+            Ok(Some(line)) => {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let Ok(env) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                let kind = env.get("kind").and_then(Value::as_str).unwrap_or("");
+                let name = env.get("name").and_then(Value::as_str).unwrap_or("");
+
+                if kind == "result" || kind == "error" {
+                    if let Some(req_id) = env.get("request_id").and_then(Value::as_str) {
+                        let sender = state.pending.lock().unwrap().remove(req_id);
+                        if let Some(tx_done) = sender {
+                            let payload = env.get("payload").cloned().unwrap_or_else(|| json!({}));
+                            if kind == "error" {
+                                let msg = payload
+                                    .get("error")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("UI command failed")
+                                    .to_string();
+                                let _ = tx_done.send(Err(msg));
+                            } else {
+                                let _ = tx_done.send(Ok(payload));
+                            }
+                            continue;
                         }
-                        continue;
                     }
                 }
-            }
 
-            // Bring macOS window forward on incoming CLI -> App handoff
-            if name == "handoff.state" {
-                if let Some(win) = app_for_reader.get_webview_window("main") {
-                    let _ = win.unminimize();
-                    let _ = win.show();
-                    let _ = win.set_focus();
+                // Bring macOS window forward on incoming CLI -> App handoff
+                if name == "handoff.state" {
+                    if let Some(win) = app.get_webview_window("main") {
+                        let _ = win.unminimize();
+                        let _ = win.show();
+                        let _ = win.set_focus();
+                    }
                 }
+
+                let _ = app.emit("ufoo://ui-event", env);
             }
-
-            let _ = app_for_reader.emit("ufoo://ui-event", env);
+            Ok(None) => break,
+            Err(err) => {
+                read_err = Some(format!("UI host socket read error: {err}"));
+                break;
+            }
         }
-    });
+    }
 
+    cleanup_session(state, &actual_sock).await;
+    if let Some(err) = read_err {
+        return Err(err);
+    }
     Ok(())
+}
+
+async fn supervise_ui_host_bridge(app: AppHandle, state: Arc<BridgeState>) {
+    const BACKOFF_MS: [u64; 4] = [500, 1000, 2000, 5000];
+    let mut failure_streak: usize = 0;
+    let mut generation: u64 = 0;
+
+    while !state.exiting.load(Ordering::SeqCst) {
+        generation = generation.saturating_add(1);
+        let started = Instant::now();
+        let outcome = run_ui_host_session(&app, &state, generation).await;
+
+        if state.exiting.load(Ordering::SeqCst) {
+            break;
+        }
+
+        let detail = match &outcome {
+            Ok(()) => "Desktop UI host exited unexpectedly; restarting".to_string(),
+            Err(err) => err.clone(),
+        };
+        eprintln!("[Ufoo] sidecar supervisor (gen {generation}): {detail}");
+
+        if started.elapsed() >= Duration::from_secs(5) {
+            failure_streak = 0;
+        } else {
+            failure_streak = (failure_streak + 1).min(BACKOFF_MS.len() - 1);
+        }
+        let delay_ms = BACKOFF_MS[failure_streak];
+        emit_connection_event(&app, false, "reconnecting", Some(&detail));
+        sleep(Duration::from_millis(delay_ms)).await;
+    }
 }
 
 #[tauri::command]
@@ -278,7 +413,7 @@ async fn ufoo_send_command(
         let guard = state.tx.lock().await;
         guard
             .clone()
-            .ok_or_else(|| "Desktop UI host is still starting".to_string())?
+            .ok_or_else(|| "Desktop UI host is reconnecting".to_string())?
     };
 
     let (done_tx, done_rx) = oneshot::channel();
@@ -315,18 +450,13 @@ async fn ufoo_send_command(
 
 #[tauri::command]
 async fn ufoo_client_ready(state: State<'_, Arc<BridgeState>>) -> Result<Value, String> {
+    state.client_ready.store(true, Ordering::SeqCst);
     let tx_opt = state.tx.lock().await.clone();
     if let Some(tx) = tx_opt {
-        let resync = json!({
-            "protocol": "ufoo-ui/1",
-            "kind": "command",
-            "name": "ui.resync.request",
-            "request_id": "webview-ready-resync",
-            "payload": {}
-        });
-        let _ = tx.send(format!("{resync}\n"));
+        send_resync_request(&tx);
+        return Ok(json!({ "ok": true, "connected": true }));
     }
-    Ok(json!({ "ok": true }))
+    Ok(json!({ "ok": true, "connected": false }))
 }
 
 #[tauri::command]
@@ -384,17 +514,135 @@ async fn ufoo_open_project_in_finder(root: String) -> Result<(), String> {
     }
 }
 
+fn build_app_menu(app_handle: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let config = app_handle.config();
+    let app_name = config
+        .product_name
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "Ufoo".to_string());
+    let about_metadata = AboutMetadata {
+        name: Some(app_name.clone()),
+        version: config
+            .version
+            .clone()
+            .or_else(|| Some(app_handle.package_info().version.to_string())),
+        copyright: config.bundle.copyright.clone(),
+        authors: config.bundle.publisher.clone().map(|p| vec![p]),
+        ..Default::default()
+    };
+
+    let window_menu = Submenu::with_id_and_items(
+        app_handle,
+        WINDOW_SUBMENU_ID,
+        "Window",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(app_handle, None)?,
+            &PredefinedMenuItem::maximize(app_handle, None)?,
+            #[cfg(target_os = "macos")]
+            &PredefinedMenuItem::separator(app_handle)?,
+            &PredefinedMenuItem::close_window(app_handle, None)?,
+        ],
+    )?;
+
+    let help_menu = Submenu::with_id_and_items(
+        app_handle,
+        HELP_SUBMENU_ID,
+        "Help",
+        true,
+        &[
+            #[cfg(not(target_os = "macos"))]
+            &PredefinedMenuItem::about(
+                app_handle,
+                Some(&format!("About {app_name}")),
+                Some(about_metadata.clone()),
+            )?,
+        ],
+    )?;
+
+    Menu::with_items(
+        app_handle,
+        &[
+            #[cfg(target_os = "macos")]
+            &Submenu::with_items(
+                app_handle,
+                &app_name,
+                true,
+                &[
+                    &PredefinedMenuItem::about(
+                        app_handle,
+                        Some(&format!("About {app_name}")),
+                        Some(about_metadata),
+                    )?,
+                    &PredefinedMenuItem::separator(app_handle)?,
+                    &PredefinedMenuItem::services(app_handle, None)?,
+                    &PredefinedMenuItem::separator(app_handle)?,
+                    &PredefinedMenuItem::hide(app_handle, Some(&format!("Hide {app_name}")))?,
+                    &PredefinedMenuItem::hide_others(app_handle, None)?,
+                    &PredefinedMenuItem::show_all(app_handle, None)?,
+                    &PredefinedMenuItem::separator(app_handle)?,
+                    &PredefinedMenuItem::quit(app_handle, Some(&format!("Quit {app_name}")))?,
+                ],
+            )?,
+            #[cfg(not(any(
+                target_os = "linux",
+                target_os = "dragonfly",
+                target_os = "freebsd",
+                target_os = "netbsd",
+                target_os = "openbsd"
+            )))]
+            &Submenu::with_items(
+                app_handle,
+                "File",
+                true,
+                &[
+                    &PredefinedMenuItem::close_window(app_handle, None)?,
+                    #[cfg(not(target_os = "macos"))]
+                    &PredefinedMenuItem::quit(app_handle, Some(&format!("Quit {app_name}")))?,
+                ],
+            )?,
+            &Submenu::with_items(
+                app_handle,
+                "Edit",
+                true,
+                &[
+                    &PredefinedMenuItem::undo(app_handle, None)?,
+                    &PredefinedMenuItem::redo(app_handle, None)?,
+                    &PredefinedMenuItem::separator(app_handle)?,
+                    &PredefinedMenuItem::cut(app_handle, None)?,
+                    &PredefinedMenuItem::copy(app_handle, None)?,
+                    &PredefinedMenuItem::paste(app_handle, None)?,
+                    &PredefinedMenuItem::select_all(app_handle, None)?,
+                ],
+            )?,
+            #[cfg(target_os = "macos")]
+            &Submenu::with_items(
+                app_handle,
+                "View",
+                true,
+                &[&PredefinedMenuItem::fullscreen(app_handle, None)?],
+            )?,
+            &window_menu,
+            &help_menu,
+        ],
+    )
+}
+
 fn main() {
     let bridge_state = Arc::new(BridgeState {
         tx: AsyncMutex::new(None),
         pending: Arc::new(Mutex::new(HashMap::new())),
         child: Mutex::new(None),
+        client_ready: AtomicBool::new(false),
+        exiting: AtomicBool::new(false),
     });
 
     let state_for_setup = bridge_state.clone();
     let state_for_exit = bridge_state.clone();
 
     let app = tauri::Builder::default()
+        .menu(build_app_menu)
         .manage(bridge_state)
         .invoke_handler(tauri::generate_handler![
             ufoo_send_command,
@@ -419,18 +667,7 @@ fn main() {
             let handle = app.handle().clone();
             let st = state_for_setup.clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(err) = start_ui_host_bridge(handle.clone(), st).await {
-                    eprintln!("[ufoo-desktop] bridge startup error: {err}");
-                    let _ = handle.emit(
-                        "ufoo://ui-event",
-                        json!({
-                            "protocol": "ufoo-ui/1",
-                            "kind": "event",
-                            "name": "status.set",
-                            "payload": { "text": err, "busy": false }
-                        }),
-                    );
-                }
+                supervise_ui_host_bridge(handle, st).await;
             });
 
             Ok(())
@@ -440,6 +677,7 @@ fn main() {
 
     app.run(move |_app_handle, event| {
         if let RunEvent::Exit = event {
+            state_for_exit.exiting.store(true, Ordering::SeqCst);
             let mut guard = state_for_exit.child.lock().unwrap();
             if let Some(mut child) = guard.take() {
                 let _ = child.start_kill();

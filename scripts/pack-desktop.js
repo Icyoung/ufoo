@@ -9,12 +9,12 @@
  *   - `bin/node`     (Managed Node.js executable)
  *   - `bin/ufoo-tui` (Rust TUI binary for seamless CLI handoff)
  *   - `ufoo-core/`   (Complete ufoo JS runtime + production node_modules)
- *   - `shims/`       (Portable CLI shims: ufoo, ucode, uclaude, ucodex, uagy, ugrok, ukimi)
+ *   - `shims/`       (Portable CLI shims: ufoo, ucode)
  *
  * Usage:
- *   node scripts/pack-desktop.js --icons-only  # generate app icons only
- *   node scripts/pack-desktop.js --stage-only  # build frontend + tui + stage runtime
- *   node scripts/pack-desktop.js               # full stage + cargo build -p ufoo-desktop --release
+ *   node scripts/pack-desktop.js --icons-only               # generate app icons only
+ *   node scripts/pack-desktop.js --stage-only [--skip-icons] # build frontend + tui + stage runtime
+ *   node scripts/pack-desktop.js                            # full stage + cargo build -p ufoo-desktop --release
  */
 
 const fs = require("fs");
@@ -119,7 +119,7 @@ function stageBundledRuntime() {
   }
 
   // 3. Stage ufoo-core JS runtime & production dependencies
-  for (const rel of ["bin", "src", "templates", "SKILLS", "OPTIONAL_SKILLS", "package.json"]) {
+  for (const rel of ["bin", "src", "extensions", "templates", "SKILLS", "OPTIONAL_SKILLS", "package.json"]) {
     const from = path.join(ROOT, rel);
     if (!fs.existsSync(from)) continue;
     const to = path.join(coreDir, rel);
@@ -130,7 +130,7 @@ function stageBundledRuntime() {
   copyTreeFiltered(path.join(ROOT, "node_modules"), path.join(coreDir, "node_modules"));
 
   // 4. Generate portable relocatable shims
-  for (const cliName of ["ufoo", "ucode", "uclaude", "ucodex", "uagy", "ugrok", "ukimi"]) {
+  for (const cliName of ["ufoo", "ucode"]) {
     const shimPath = path.join(shimsDir, cliName);
     const content = [
       "#!/bin/sh",
@@ -147,8 +147,16 @@ function stageBundledRuntime() {
   console.log(`[pack-desktop] staged self-contained runtime at ${STAGED_RUNTIME}`);
 }
 
+function hasExistingDesktopIcons() {
+  const required = ["32x32.png", "128x128.png", "128x128@2x.png", "icon.icns", "icon.ico", "icon.png"];
+  return required.every((name) => fs.existsSync(path.join(ICONS_DIR, name)));
+}
+
 function main(argv = process.argv.slice(2)) {
-  ensureDesktopIcons();
+  const skipIcons = argv.includes("--skip-icons") && hasExistingDesktopIcons();
+  if (!skipIcons) {
+    ensureDesktopIcons();
+  }
   if (argv.includes("--icons-only")) return;
 
   runChecked("npm", ["--prefix", path.join(ROOT, "apps", "desktop"), "run", "build"]);
@@ -157,7 +165,7 @@ function main(argv = process.argv.slice(2)) {
   if (argv.includes("--stage-only")) return;
 
   runChecked("cargo", ["build", "-p", "ufoo-desktop", "--release"]);
-  console.log("[pack-desktop] build complete: target/release/ufoo-desktop");
+  console.log("[pack-desktop] build complete: target/release/Ufoo");
 }
 
 if (require.main === module) {

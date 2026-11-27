@@ -35,7 +35,20 @@ const TOOL_LABELS = {
   read_image: "Reading image",
   write: "Writing file",
   edit: "Editing file",
+  apply_patch: "Applying patch",
+  multiedit: "Editing files",
+  notebookedit: "Editing notebook",
   bash: "Running command",
+  grep: "Searching code",
+  glob: "Finding files",
+  web_search: "Searching web",
+  websearch: "Searching web",
+  web_fetch: "Fetching page",
+  webfetch: "Fetching page",
+  agent: "Running subagent",
+  task: "Running task",
+  dispatch_message: "Sending message",
+  report_agent_status: "Reporting status",
   artifact_read: "Reading artifact",
   recall_turn: "Recalling past turn",
   browser: "Using browser",
@@ -333,10 +346,48 @@ function toolMessagePreview(message = {}) {
   return raw;
 }
 
+const FRIENDLY_TOOL_NAMES = {
+  apply_patch: "Edit",
+  multiedit: "Edit",
+  web_search: "Web Search",
+  websearch: "Web Search",
+  web_fetch: "Web Fetch",
+  webfetch: "Web Fetch",
+  todowrite: "Update Plan",
+  update_plan: "Update Plan",
+  dispatch_message: "Send Message",
+  report_agent_status: "Report Status",
+  read_project_registry: "Project Registry",
+  read_bus_summary: "Bus Summary",
+  read_open_decisions: "Open Decisions",
+  read_prompt_history: "Prompt History",
+  list_agents: "List Agents",
+};
+
+function stripMcpToolPrefix(tool = "") {
+  const raw = String(tool || "").trim();
+  const lower = raw.toLowerCase();
+  const mcpMatch = lower.match(/^mcp__([^_]+(?:_[^_]+)*)__(.+)$/);
+  if (mcpMatch) return { server: mcpMatch[1], tool: mcpMatch[2] };
+  const dotIdx = lower.indexOf(".");
+  if (dotIdx > 0 && dotIdx < lower.length - 1) {
+    return { server: lower.slice(0, dotIdx), tool: lower.slice(dotIdx + 1) };
+  }
+  return { server: "", tool: lower };
+}
+
 function formatToolDisplayName(tool = "") {
-  const words = String(tool || "tool")
-    .trim()
-    .split(/[_\-\s]+/)
+  const raw = String(tool || "tool").trim();
+  if (!raw) return "Tool";
+  const parsed = stripMcpToolPrefix(raw);
+  if (FRIENDLY_TOOL_NAMES[parsed.tool]) {
+    return FRIENDLY_TOOL_NAMES[parsed.tool];
+  }
+  const normalizedTarget = parsed.server
+    ? (parsed.server === "ufoo" ? parsed.tool : `${parsed.server} ${parsed.tool}`)
+    : raw;
+  const words = normalizedTarget
+    .split(/[_\-.\s]+/)
     .filter(Boolean);
   return words.map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ") || "Tool";
 }
@@ -690,6 +741,41 @@ function formatPendingElapsed(ms = 0) {
   return `${totalSeconds} s`;
 }
 
+function unwrapShellCommand(raw = "") {
+  let cmd = String(raw || "").trim();
+  if (!cmd) return "";
+  // Unwrap Codex/agent shell wrappers like `/bin/zsh -lc "..."` or `/bin/bash -c '...'`
+  const wrapper = cmd.match(/^(?:\/usr\/bin\/env\s+)?(?:\/bin\/|\/usr\/bin\/)?(?:zsh|bash|sh)\s+-(?:lc|cl|c)\s+([\s\S]+)$/);
+  if (wrapper) {
+    let inner = wrapper[1].trim();
+    if (
+      (inner.startsWith("\"") && inner.endsWith("\"") && inner.length >= 2)
+      || (inner.startsWith("'") && inner.endsWith("'") && inner.length >= 2)
+    ) {
+      const quote = inner[0];
+      inner = inner.slice(1, -1);
+      if (quote === "\"") {
+        inner = inner.replace(/\\(["\\$`])/g, "$1");
+      }
+    }
+    cmd = inner.trim();
+  }
+  return cmd;
+}
+
+function summarizeCommandLine(raw = "", maxChars = 110) {
+  const unwrapped = unwrapShellCommand(raw);
+  if (!unwrapped) return "";
+  const lines = unwrapped.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  let single = lines[0] || "";
+  if (lines.length > 1) {
+    single = `${single} … (+${lines.length - 1} lines)`;
+  }
+  single = single.replace(/\s+/g, " ").trim();
+  if (single.length <= maxChars) return single;
+  return `${single.slice(0, Math.max(0, maxChars - 1))}…`;
+}
+
 function normalizeBashToolCommand(args = {}, payload = {}) {
   const argObj = args && typeof args === "object" ? args : {};
   const resObj = payload && typeof payload === "object" ? payload : {};
@@ -706,7 +792,7 @@ function normalizeBashToolCommand(args = {}, payload = {}) {
     const offsetPart = action === "logs" && Number.isFinite(argObj.offset) ? `@${argObj.offset}` : "";
     return [`bg ${action}`, bgId, offsetPart, statusPart].filter(Boolean).join(" · ");
   }
-  const command = String(argObj.command || argObj.cmd || "").trim();
+  const command = summarizeCommandLine(argObj.command || argObj.cmd || "");
   if (argObj.background || resObj.kind === "background_bash") {
     const statusPart = resObj.status
       ? String(resObj.status)
@@ -725,20 +811,61 @@ function shortenPathDetail(value = "", maxChars = 72) {
   return `…${text.slice(-(limit - 1))}`;
 }
 
+function compactSingleLine(value = "", maxChars = 72) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, Math.max(0, maxChars - 1))}…`;
+}
+
 function normalizeToolLogDetail(tool = "", args = {}, payload = {}) {
-  const name = String(tool || "").trim().toLowerCase();
+  const rawName = String(tool || "").trim().toLowerCase();
+  const parsedTool = stripMcpToolPrefix(rawName);
+  const name = parsedTool.tool || rawName;
   const argObj = args && typeof args === "object" ? args : {};
   const resObj = payload && typeof payload === "object" ? payload : {};
 
   if (name === "bash") return normalizeBashToolCommand(argObj, resObj);
 
-  if (name === "read" || name === "write" || name === "edit") {
-    const pathText = String(argObj.path || resObj.path || "").trim();
+  if (name === "read" || name === "write" || name === "edit" || name === "apply_patch" || name === "multiedit" || name === "notebookedit") {
+    const pathText = String(argObj.path || argObj.file_path || argObj.notebook_path || resObj.path || "").trim();
     return shortenPathDetail(pathText);
   }
 
+  if (name === "grep" || name === "glob") {
+    const pattern = compactSingleLine(argObj.pattern || argObj.query || "", 44);
+    const pathText = shortenPathDetail(argObj.path || "", 40);
+    return [pattern, pathText].filter(Boolean).join(" · ");
+  }
+
+  if (name === "web_search" || name === "websearch") {
+    return compactSingleLine(argObj.query || argObj.q || "", 80);
+  }
+
+  if (name === "web_fetch" || name === "webfetch") {
+    return compactSingleLine(argObj.url || "", 80);
+  }
+
+  if (name === "agent" || name === "task") {
+    const sub = compactSingleLine(argObj.subagent_type || "", 24);
+    const desc = compactSingleLine(argObj.description || argObj.prompt || "", 60);
+    return [sub, desc].filter(Boolean).join(" · ");
+  }
+
+  if (name === "dispatch_message") {
+    const target = String(argObj.target || argObj.recipient || "").trim();
+    const msg = compactSingleLine(argObj.message || argObj.text || "", 60);
+    return [target ? `@${target.replace(/^@/, "")}` : "", msg].filter(Boolean).join(" · ");
+  }
+
+  if (name === "report_agent_status") {
+    const phase = String(argObj.phase || argObj.status || "").trim();
+    const summary = compactSingleLine(argObj.summary || argObj.message || "", 64);
+    return [phase, summary].filter(Boolean).join(" · ");
+  }
+
   if (name === "read_image") {
-    const pathText = String(argObj.path || resObj.path || resObj.fileName || "").trim();
+    const pathText = String(argObj.path || argObj.file_path || resObj.path || resObj.fileName || "").trim();
     const base = pathText ? require("path").basename(pathText) : "image";
     return `[image: ${base}]`;
   }
@@ -778,7 +905,19 @@ function normalizeToolLogDetail(tool = "", args = {}, payload = {}) {
     return [op, shortenPathDetail(target, 42)].filter(Boolean).join(" · ");
   }
 
-  const fallback = String(argObj.path || argObj.command || argObj.cmd || "").trim();
+  const fallback = String(
+    argObj.path
+    || argObj.file_path
+    || argObj.command
+    || argObj.cmd
+    || argObj.query
+    || argObj.pattern
+    || argObj.url
+    || argObj.target
+    || argObj.summary
+    || argObj.description
+    || "",
+  ).trim();
   return shortenPathDetail(fallback);
 }
 
@@ -1405,12 +1544,14 @@ module.exports = {
   findLogicalLineStart,
   findTrailingEscapeTagPrefix,
   formatPendingElapsed,
+  formatToolDisplayName,
   loadActiveAgents,
   moveCursorByWord,
   moveCursorHorizontally,
   moveCursorToVisualLineBoundary,
   moveCursorVertically,
   normalizeBashToolCommand,
+  unwrapShellCommand,
   normalizeModelLabel,
   normalizeToolLogDetail,
   normalizeToolMergeEntry,

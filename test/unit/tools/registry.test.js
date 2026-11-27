@@ -18,6 +18,7 @@ describe("shared tool registry", () => {
       "read_agent_trace",
       "read_bus_summary",
       "read_prompt_history",
+      "read_agent_history",
       "read_open_decisions",
       "list_agents",
       "read_project_registry",
@@ -30,6 +31,7 @@ describe("shared tool registry", () => {
       "search_history",
       "edit_memory",
       "forget",
+      "update_decision",
       "launch_agent",
       "rename_agent",
       "close_agent",
@@ -126,6 +128,7 @@ describe("shared tool registry", () => {
       "read_agent_trace",
       "read_bus_summary",
       "read_prompt_history",
+      "read_agent_history",
       "read_open_decisions",
       "list_agents",
       "read_project_registry",
@@ -138,6 +141,7 @@ describe("shared tool registry", () => {
       "search_history",
       "edit_memory",
       "forget",
+      "update_decision",
       "launch_agent",
       "rename_agent",
       "close_agent",
@@ -154,6 +158,7 @@ describe("shared tool registry", () => {
       "read_agent_trace",
       "read_bus_summary",
       "read_prompt_history",
+      "read_agent_history",
       "read_open_decisions",
       "list_agents",
       "read_project_registry",
@@ -166,6 +171,7 @@ describe("shared tool registry", () => {
       "search_history",
       "edit_memory",
       "forget",
+      "update_decision",
     ]);
   });
 
@@ -179,7 +185,7 @@ describe("shared tool registry", () => {
     copy.pop();
 
     expect(copy).toHaveLength(SHARED_TOOL_REGISTRY.length - 1);
-    expect(SHARED_TOOL_REGISTRY).toHaveLength(26);
+    expect(SHARED_TOOL_REGISTRY).toHaveLength(28);
   });
 
   test("exports Phase 0 schema fixtures for translator validation", () => {

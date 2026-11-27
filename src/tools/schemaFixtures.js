@@ -75,6 +75,50 @@ const READ_PROMPT_HISTORY_SCHEMA = Object.freeze({
   }),
 });
 
+const READ_AGENT_HISTORY_SCHEMA = Object.freeze({
+  schema_version: SCHEMA_VERSION,
+  name: "read_agent_history",
+  tier: "tier0-read",
+  allowed_tiers: CALLER_TIERS_READ_COORD,
+  description: "Read full chronological message and reply history for any agent (active, stopped, or archived) or group in the current project. Supports filtering by agent nickname, subscriber ID, group:<id>, or keyword query with pagination.",
+  input_schema: Object.freeze({
+    type: "object",
+    properties: Object.freeze({
+      agent: Object.freeze({ type: "string", description: "Optional agent nickname (e.g. architect, builder), subscriber ID, or group:<group_id|alias>. Omit to read recent messages across all project agents." }),
+      query: Object.freeze({ type: "string", description: "Optional case-insensitive keyword filter." }),
+      limit: Object.freeze({ type: "integer", minimum: 1, maximum: 100, default: 20 }),
+      before_seq: Object.freeze({ type: "integer", minimum: 1, description: "Pagination cursor: return entries older than this sequence number." }),
+      max_chars: Object.freeze({ type: "integer", minimum: 100, maximum: 8000, default: 1600 }),
+      include_tools: Object.freeze({ type: "boolean", default: false, description: "Include concise tool call/result summaries from worker surfaces." }),
+      max_days: Object.freeze({ type: "integer", minimum: 1, maximum: 30, default: 7 }),
+    }),
+    additionalProperties: false,
+  }),
+  output_schema: Object.freeze({
+    type: "object",
+    required: ["ok", "project_root", "count", "has_more", "entries"],
+    properties: Object.freeze({
+      ok: Object.freeze({ type: "boolean" }),
+      project_root: Object.freeze({ type: "string" }),
+      scanned_files: Object.freeze({ type: "integer" }),
+      filter: Object.freeze({ type: "object", additionalProperties: true }),
+      count: Object.freeze({ type: "integer" }),
+      total_matched: Object.freeze({ type: "integer" }),
+      has_more: Object.freeze({ type: "boolean" }),
+      next_before_seq: Object.freeze({ type: Object.freeze(["integer", "null"]) }),
+      agents: Object.freeze({
+        type: "array",
+        items: Object.freeze({ type: "object", additionalProperties: true }),
+      }),
+      entries: Object.freeze({
+        type: "array",
+        items: Object.freeze({ type: "object", additionalProperties: true }),
+      }),
+    }),
+    additionalProperties: false,
+  }),
+});
+
 const READ_OPEN_DECISIONS_SCHEMA = Object.freeze({
   schema_version: SCHEMA_VERSION,
   name: "read_open_decisions",
@@ -99,6 +143,36 @@ const READ_OPEN_DECISIONS_SCHEMA = Object.freeze({
       }),
     }),
     additionalProperties: false,
+  }),
+});
+
+const UPDATE_DECISION_SCHEMA = Object.freeze({
+  schema_version: SCHEMA_VERSION,
+  name: "update_decision",
+  tier: "tier1-coord",
+  allowed_tiers: CALLER_TIERS_READ_COORD,
+  description: "Update the status of a project decision file (open, resolved, archived, or superseded) and rebuild the decisions index.",
+  input_schema: Object.freeze({
+    type: "object",
+    required: ["file", "status"],
+    properties: Object.freeze({
+      file: Object.freeze({ type: "string", minLength: 1 }),
+      status: Object.freeze({ type: "string", enum: ["open", "resolved", "archived", "superseded"] }),
+      reason: Object.freeze({ type: "string" }),
+    }),
+    additionalProperties: false,
+  }),
+  output_schema: Object.freeze({
+    type: "object",
+    required: ["ok", "file", "status"],
+    properties: Object.freeze({
+      ok: Object.freeze({ type: "boolean" }),
+      file: Object.freeze({ type: "string" }),
+      status: Object.freeze({ type: "string" }),
+      title: Object.freeze({ type: "string" }),
+      reason: Object.freeze({ type: "string" }),
+    }),
+    additionalProperties: true,
   }),
 });
 
@@ -626,7 +700,9 @@ const PHASE0_TOOL_SCHEMAS = Object.freeze({
   read_agent_trace: READ_AGENT_TRACE_SCHEMA,
   read_bus_summary: READ_BUS_SUMMARY_SCHEMA,
   read_prompt_history: READ_PROMPT_HISTORY_SCHEMA,
+  read_agent_history: READ_AGENT_HISTORY_SCHEMA,
   read_open_decisions: READ_OPEN_DECISIONS_SCHEMA,
+  update_decision: UPDATE_DECISION_SCHEMA,
   list_agents: LIST_AGENTS_SCHEMA,
   read_project_registry: READ_PROJECT_REGISTRY_SCHEMA,
   route_agent: ROUTE_AGENT_SCHEMA,
@@ -651,7 +727,9 @@ module.exports = {
   SCHEMA_VERSION,
   READ_BUS_SUMMARY_SCHEMA,
   READ_PROMPT_HISTORY_SCHEMA,
+  READ_AGENT_HISTORY_SCHEMA,
   READ_OPEN_DECISIONS_SCHEMA,
+  UPDATE_DECISION_SCHEMA,
   LIST_AGENTS_SCHEMA,
   READ_PROJECT_REGISTRY_SCHEMA,
   ROUTE_AGENT_SCHEMA,

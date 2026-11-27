@@ -1,0 +1,286 @@
+name: macOS Desktop Build
+
+# Build self-contained Ufoo.app & .dmg installers for macOS (Apple Silicon & Intel).
+#
+# Triggers:
+#   - Push to master when desktop app / packaging files change (uploads workflow artifacts)
+#   - Push tag v* (uploads artifacts + attaches .dmg and SHA256SUMS.txt to GitHub Release)
+#   - Manual workflow_dispatch (optional arch filter & optional GitHub Release upload)
+#
+# Optional Apple Signing / Notarization Secrets (ad-hoc signed when omitted):
+#   - APPLE_CERTIFICATE          (base64-encoded .p12 Developer ID Application certificate)
+#   - APPLE_CERTIFICATE_PASSWORD (.p12 export password)
+#   - APPLE_SIGNING_IDENTITY     (e.g. "Developer ID Application: Your Name (TEAMID)")
+#   - APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID (for Apple notarization)
+
+on:
+  push:
+    branches: [master]
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: "Target macOS architecture"
+        type: choice
+        default: "all"
+        options:
+          - all
+          - arm64
+          - x64
+      publish_release:
+        description: "Attach built .dmg files to GitHub Release (uses v<package.json version>)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-desktop-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  prepare:
+    name: Resolve Build Matrix
+    runs-on: ubuntu-24.04
+    outputs:
+      should_build: ${{ steps.plan.outputs.should_build }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine whether macOS build should run
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+          INPUT_ARCH: ${{ inputs.arch || 'all' }}
+        run: |
+          set -euo pipefail
+          SHOULD_BUILD="false"
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" || "$REF" == refs/tags/v* ]]; then
+            SHOULD_BUILD="true"
+          else
+            # On master pushes, build only when desktop UI, Tauri crate, packaging, or this workflow changed
+            if [[ -z "$BEFORE_SHA" || "$BEFORE_SHA" == "0000000000000000000000000000000000000000" ]]; then
+              SHOULD_BUILD="true"
+            elif ! git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+              if git diff --name-only HEAD~1 HEAD -- \
+                apps/desktop crates/ufoo-desktop scripts/pack-desktop.js package.json .github/workflows/macos-desktop.yml \
+                | grep -q .; then
+                SHOULD_BUILD="true"
+              fi
+            else
+              if git diff --name-only "$BEFORE_SHA" "$HEAD_SHA" -- \
+                apps/desktop crates/ufoo-desktop scripts/pack-desktop.js package.json .github/workflows/macos-desktop.yml \
+                | grep -q .; then
+                SHOULD_BUILD="true"
+              fi
+            fi
+          fi
+
+          ARM64='{"os":"macos-26","arch":"arm64","target":"aarch64-apple-darwin","mach_arch":"arm64","label":"Apple Silicon (arm64)"}'
+          X64='{"os":"macos-15-intel","arch":"x64","target":"x86_64-apple-darwin","mach_arch":"x86_64","label":"Intel (x64)"}'
+
+          case "$INPUT_ARCH" in
+            arm64) MATRIX="{\"include\":[${ARM64}]}" ;;
+            x64)   MATRIX="{\"include\":[${X64}]}" ;;
+            *)     MATRIX="{\"include\":[${ARM64},${X64}]}" ;;
+          esac
+
+          echo "should_build=${SHOULD_BUILD}" >> "$GITHUB_OUTPUT"
+          echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
+          echo "should_build=${SHOULD_BUILD}, arch=${INPUT_ARCH}"
+
+  build-macos:
+    name: Build macOS Desktop (${{ matrix.label }})
+    needs: [prepare]
+    if: needs.prepare.outputs.should_build == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ufoo-desktop-${{ matrix.arch }}
+
+      - name: Verify version and sync Tauri metadata
+        run: |
+          set -euo pipefail
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          echo "VERSION=${PKG_VERSION}" >> "$GITHUB_ENV"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG_VERSION="${GITHUB_REF_NAME#v}"
+            if [[ "$TAG_VERSION" != "$PKG_VERSION" ]]; then
+              echo "Tag v${TAG_VERSION} does not match package.json version ${PKG_VERSION}" >&2
+              exit 1
+            fi
+          fi
+          node -e '
+            const fs = require("fs");
+            const p = "crates/ufoo-desktop/tauri.conf.json";
+            const cfg = JSON.parse(fs.readFileSync(p, "utf8"));
+            cfg.version = process.env.VERSION;
+            fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + "\n");
+          '
+          echo "Building Ufoo Desktop v${PKG_VERSION} for ${{ matrix.label }}"
+
+      - name: Install production core and desktop UI dependencies
+        run: |
+          set -euo pipefail
+          npm ci --omit=dev
+          npm --prefix apps/desktop ci
+
+      - name: Stage self-contained runtime (UI + ufoo-tui + Node + ufoo-core)
+        run: |
+          set -euo pipefail
+          node scripts/pack-desktop.js --stage-only --skip-icons
+          file crates/ufoo-desktop/resources/runtime/bin/node | grep -q "${{ matrix.mach_arch }}"
+          file crates/ufoo-desktop/resources/runtime/bin/ufoo-tui | grep -q "${{ matrix.mach_arch }}"
+
+      - name: Build Ufoo.app bundle with Tauri v2
+        working-directory: crates/ufoo-desktop
+        env:
+          CI: "true"
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [[ -z "${!v:-}" ]]; then
+              unset "$v"
+            fi
+          done
+          npx --yes @tauri-apps/cli@^2 build --bundles app --target "${{ matrix.target }}"
+
+      - name: Verify bundle and package .dmg
+        env:
+          HAS_APPLE_CERT: ${{ secrets.APPLE_SIGNING_IDENTITY != '' }}
+        run: |
+          set -euo pipefail
+          APP_PATH="target/${{ matrix.target }}/release/bundle/macos/Ufoo.app"
+          if [[ ! -d "$APP_PATH" ]]; then
+            APP_PATH="crates/ufoo-desktop/target/${{ matrix.target }}/release/bundle/macos/Ufoo.app"
+          fi
+          if [[ ! -d "$APP_PATH" ]]; then
+            echo "Ufoo.app bundle not found" >&2
+            find target crates/ufoo-desktop/target -maxdepth 5 -name "Ufoo.app" 2>/dev/null || true
+            exit 1
+          fi
+
+          # Verify Mach-O architectures and self-contained JS host runtime inside Ufoo.app
+          file "$APP_PATH/Contents/MacOS/Ufoo" | grep -q "${{ matrix.mach_arch }}"
+          RT_DIR="$APP_PATH/Contents/Resources/resources/runtime"
+          if [[ ! -d "$RT_DIR" ]]; then
+            RT_DIR="$APP_PATH/Contents/Resources/runtime"
+          fi
+          test -x "$RT_DIR/bin/node"
+          test -x "$RT_DIR/bin/ufoo-tui"
+          test -f "$RT_DIR/ufoo-core/src/ui/desktopUiHostCli.js"
+          "$RT_DIR/bin/node" -e "require('$RT_DIR/ufoo-core/src/ui/desktopUiHost'); console.log('desktopUiHost ok')"
+
+          # Ad-hoc sign bundled executables and app bundle when Apple Developer cert is not configured
+          if [[ "$HAS_APPLE_CERT" != "true" ]]; then
+            codesign --force --sign - "$RT_DIR/bin/node"
+            codesign --force --sign - "$RT_DIR/bin/ufoo-tui"
+            codesign --force --deep --sign - "$APP_PATH"
+          fi
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH" || true
+
+          OUT_DIR="dist/desktop"
+          mkdir -p "$OUT_DIR"
+          DMG_NAME="Ufoo_${VERSION}_darwin_${{ matrix.arch }}.dmg"
+          STAGING_DIR="$(mktemp -d)"
+          trap 'rm -rf "$STAGING_DIR"' EXIT
+          cp -R "$APP_PATH" "$STAGING_DIR/Ufoo.app"
+          ln -s /Applications "$STAGING_DIR/Applications"
+
+          hdiutil create \
+            -volname "Ufoo ${VERSION}" \
+            -srcfolder "$STAGING_DIR" \
+            -ov \
+            -format UDZO \
+            "${OUT_DIR}/${DMG_NAME}"
+
+          (cd "$OUT_DIR" && shasum -a 256 "${DMG_NAME}" > "${DMG_NAME}.sha256")
+          ls -lh "$OUT_DIR"
+
+      - name: Upload macOS Desktop artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ufoo-desktop-darwin-${{ matrix.arch }}
+          path: dist/desktop/*
+          retention-days: 30
+          if-no-files-found: error
+
+  publish-release:
+    name: Attach macOS Installers to GitHub Release
+    needs: [prepare, build-macos]
+    if: >-
+      needs.prepare.outputs.should_build == 'true' &&
+      needs.build-macos.result == 'success' &&
+      (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_release == true))
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download macOS Desktop artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ufoo-desktop-darwin-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create or update GitHub Release with macOS .dmg assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="v$(node -p "require('./package.json').version")"
+          fi
+
+          cd release-assets
+          cat *.sha256 > SHA256SUMS.txt
+          ls -lh
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" *.dmg SHA256SUMS.txt --clobber
+          else
+            gh release create "$TAG" *.dmg SHA256SUMS.txt \
+              --title "Ufoo ${TAG}" \
+              --generate-notes
+          fi

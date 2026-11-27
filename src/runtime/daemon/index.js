@@ -22,6 +22,7 @@ const { scheduleProviderSessionResolve, resolveSessionFromFile, persistProviderS
 const { createTerminalAdapterRouter } = require("../terminal/adapterRouter");
 const { createDaemonCronController } = require("./cronOps");
 const { createGroupOrchestrator } = require("./groupOrchestrator");
+const { createGroupRoundCoordinator } = require("./groupRoundCoordinator");
 const { DeliveryScheduler } = require("./deliveryScheduler");
 const { normalizeFormat, renderGroupDiagramFromTemplate, renderGroupDiagramFromRuntime } = require("../../orchestration/groups/diagram");
 const { handlePromptRequest } = require("./promptRequest");
@@ -1128,8 +1129,10 @@ function startDaemon({
     return entry;
   };
 
+  let groupRoundCoordinator = null;
   const busBridge = startBusBridge(projectRoot, provider, (evt) => {
     ipcServer.sendToSockets({ type: IPC_RESPONSE_TYPES.BUS, data: evt });
+    if (groupRoundCoordinator) groupRoundCoordinator.notify();
   }, (status) => {
     ipcServer.sendToSockets({ type: IPC_RESPONSE_TYPES.STATUS, data: status });
   }, () => ipcServer.hasClients(), async (report, meta = {}) => {
@@ -1163,12 +1166,48 @@ function startDaemon({
   }));
   void mainAgentHost.recover().catch((error) => log(`main runtime recovery failed: ${error.message}`));
   runtimeServices.workspaceAccess = mainAgentHost.workspaceAccess;
+  if (!isGlobalControllerProjectRoot(projectRoot)) {
+    groupRoundCoordinator = projectRuntime.own("groupRoundCoordinator", createGroupRoundCoordinator({
+      projectRoot,
+      log,
+      onGroupSettled: async (rollup) => {
+        const cfg = loadConfig(projectRoot);
+        const targetSessionId = (rollup.parentSessionId && rollup.parentSessionId !== "main-default")
+          ? rollup.parentSessionId
+          : (String(cfg?.agentConversationId || "").trim() || "main-default");
+        const runtime = mainAgentHost.getSession(targetSessionId);
+        const tasks = Object.values(runtime.snapshot().tasks || {});
+        const parentTask = (rollup.parentTaskRunId && runtime.snapshot().tasks?.[rollup.parentTaskRunId])
+          || tasks.filter((t) => t?.request?.text && !t.request.runtimeEvent).at(-1);
+        const responseLanguageSource = parentTask?.request?.responseLanguageSource
+          || parentTask?.request?.text
+          || "";
+        runtime.submit({
+          requestId: rollup.requestId,
+          text: rollup.prompt,
+          parentTaskRunId: rollup.parentTaskRunId || parentTask?.taskRunId || "",
+          runtimeEvent: true,
+          responseLanguageSource,
+          requestMeta: {
+            source: "group_round",
+            group_id: rollup.groupId,
+            group_label: rollup.groupLabel,
+            round_id: rollup.roundId,
+            origin: rollup.origin,
+          },
+        });
+      },
+    }));
+    groupRoundCoordinator.start();
+  }
   projectRuntime.canSuspendHook = () => !mainAgentHost.hasPendingHooks() && !mainAgentHost.snapshot().sessions.some((session) => session.tasks.some((task) => ["queued", "running"].includes(task.status)))
-    && !mainAgentHost.snapshot().children.some((task) => ["queued", "running"].includes(task.status));
+    && !mainAgentHost.snapshot().children.some((task) => ["queued", "running"].includes(task.status))
+    && !(groupRoundCoordinator && groupRoundCoordinator.hasActiveRounds());
   const deliveryScheduler = new DeliveryScheduler(projectRoot, {
     log,
     emitDelivery: async ({ subscriber, event, status, error, errorCode } = {}) => {
       mainAgentHost.management.delivery({ subscriber, event, status, errorCode });
+      if (groupRoundCoordinator) groupRoundCoordinator.notify();
       if (status === "error") {
         log(`delivery failed subscriber=${subscriber || "unknown"} error=${error || "unknown"}`);
       }
@@ -1257,7 +1296,7 @@ function startDaemon({
           : ["submit", "events"].includes(req.operation) ? mainAgentHost.resolveRuntime(req.session_id || "main-default") : null;
         let result;
         if (req.operation === "submit") result = session.submit({ requestId: req.request_id, text: req.text, attachments: req.attachments || [] });
-        else if (req.operation === "cancel") result = session.cancel({ taskRunId: req.task_run_id, reason: req.reason });
+        else if (req.operation === "cancel") result = session.cancel({ taskRunId: req.task_run_id, interactionId: req.interaction_id, reason: req.reason });
         else if (req.operation === "resume") result = await session.resume({ interactionId: req.interaction_id, answer: req.answer });
         else if (req.operation === "events") {
           const events = session.events({ after: Number(req.after_sequence) || 0 });
@@ -1328,11 +1367,12 @@ function startDaemon({
         projectRoot,
         req,
         socket,
-        runMainAgent: ({ originalPrompt, requestId, sessionId, requestMeta }) => mainAgentHost.runPrompt({ prompt: originalPrompt, requestId, sessionId, requestMeta }),
+        runMainAgent: ({ originalPrompt, attachments, requestId, sessionId, requestMeta }) => mainAgentHost.runPrompt({ prompt: originalPrompt, attachments, requestId, sessionId, requestMeta }),
         forwardProjectPrompt: async ({
           targetProjectRoot,
           targetProjectName,
           prompt,
+          attachments = [],
           routeReason,
           requestMeta = {},
         }) => {
@@ -1377,6 +1417,7 @@ function startDaemon({
           const routedRequest = {
             type: IPC_REQUEST_TYPES.PROMPT,
             text: String(prompt || ""),
+            ...(Array.isArray(attachments) && attachments.length > 0 ? { attachments } : {}),
             request_meta: nextMeta,
             request_id: req.request_id || req.message_id || req.id,
             session_id: req.session_id,
@@ -1418,8 +1459,9 @@ function startDaemon({
     }
     if (req.type === IPC_REQUEST_TYPES.BUS_SEND) {
       // Direct bus send request from chat UI
-      const { target, message, injection_mode, source } = req;
-      if (!target || !message) {
+      const { target, message, injection_mode, source, attachments } = req;
+      const normalizedAtts = Array.isArray(attachments) ? attachments : [];
+      if (!target || (!message && normalizedAtts.length === 0)) {
         socket.write(
           `${JSON.stringify({
             type: IPC_RESPONSE_TYPES.ERROR,
@@ -1433,9 +1475,10 @@ function startDaemon({
       try {
         const publisher = busBridge.getSubscriber() || "ufoo-agent";
         const eventBus = new EventBus(projectRoot);
-        const result = await eventBus.send(target, message, publisher, {
+        const result = await eventBus.send(target, message || "Attached files", publisher, {
           injectionMode: injection_mode,
           source,
+          ...(normalizedAtts.length > 0 ? { data: { message: message || "Attached files", attachments: normalizedAtts } } : {}),
         });
         const resolvedTargets = Array.isArray(result && result.targets) ? result.targets : [];
         for (const resolvedTarget of resolvedTargets) {
@@ -2603,6 +2646,7 @@ function startDaemon({
     });
 
     ipcServer.stop();
+    if (groupRoundCoordinator) groupRoundCoordinator.stop();
     deliveryScheduler.stop();
     busBridge.stop();
     projectRuntime.dispose();

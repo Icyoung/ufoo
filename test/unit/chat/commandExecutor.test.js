@@ -379,7 +379,7 @@ describe("chat commandExecutor", () => {
     await executor.handleLaunchCommand(["ufoo", "nickname=core2"]);
 
     expect(options.send).not.toHaveBeenCalled();
-    expect(logs.some((entry) => entry.text.includes("Unknown internal agent type. Use: claude, codex or ucode"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("Unknown internal agent type. Use: claude, codex, ucode, or agy"))).toBe(true);
   });
 
   test("handleLaunchCommand forwards prompt profile", async () => {
@@ -1344,7 +1344,7 @@ describe("chat commandExecutor", () => {
     expect(logs.some((e) => e.text.includes("init boom"))).toBe(true);
   });
 
-  test.each(["agy", "kimi", "grok", "ufoo-code", "ufoo"])("dashboard rejects unsupported worker %s without sending or scheduling", async (agent) => {
+  test.each(["kimi", "grok", "ufoo-code", "ufoo"])("dashboard rejects unsupported worker %s without sending or scheduling", async (agent) => {
     const { executor, options, logs } = createHarness();
     await executor.handleLaunchCommand([agent]);
     await executor.handleSoloCommand(["run", "reviewer", `agent=${agent}`]);

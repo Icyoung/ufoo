@@ -131,7 +131,7 @@ describe("agent management and report capabilities", () => {
     expect(runGroup).toHaveBeenCalledTimes(2);
     expect(runGroup.mock.calls[0][0].instance).not.toBe(runGroup.mock.calls[1][0].instance);
   });
-  test.each(["grok", "agy", "kimi"])("delegation rejects unsupported internal worker %s before recording effects", async (agent) => {
+  test.each(["grok", "kimi"])("delegation rejects unsupported internal worker %s before recording effects", async (agent) => {
     const launch = jest.fn(); const dispatch = jest.fn();
     const management = service({ launch, dispatch });
     expect(await management.delegate({ ...args, agent })).toMatchObject({ ok: false, code: "invalid_arguments" });

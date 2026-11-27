@@ -8,6 +8,7 @@ function resolveSoloAgentType(config = {}, requestedAgent = "") {
   const requested = asTrimmedString(requestedAgent).toLowerCase();
   if (requested === "claude" || requested === "uclaude" || requested === "claude-code") return "claude";
   if (requested === "codex" || requested === "ucodex" || requested === "openai") return "codex";
+  if (requested === "agy" || requested === "uagy" || requested === "antigravity" || requested === "agy-cli") return "agy";
   if (requested === "grok" || requested === "ugrok" || requested === "grok-build" || requested === "xai") return "grok";
   if (requested === "ucode") return "ucode";
 
@@ -15,6 +16,7 @@ function resolveSoloAgentType(config = {}, requestedAgent = "") {
 
   const provider = asTrimmedString(config && config.agentProvider).toLowerCase();
   if (provider === "claude-cli") return "claude";
+  if (provider === "agy-cli" || provider === "agy") return "agy";
   if (provider === "ucode") return "ucode";
   return "codex";
 }

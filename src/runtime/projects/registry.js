@@ -243,12 +243,18 @@ function validateProjectRuntime(entry = {}, options = {}) {
   const lastSeenMs = Number.isNaN(parsedLastSeen.getTime()) ? null : parsedLastSeen.getTime();
   const ageMs = lastSeenMs === null ? null : Math.max(0, nowMs - lastSeenMs);
 
+  const projectExists = projectPathExists(entry.project_root);
   let status = normalizeStatus(entry.status, "running");
   if (running) {
     status = "running";
   } else if (status === "stopped" || status === "dormant" || status === "failed") {
     // Respect explicit lifecycle state even when the compatibility project
     // socket is intentionally absent.
+  } else if (socketAlive && projectExists && status === "running") {
+    // Under a restarted global daemon the shared socket stays alive while
+    // older project records still carry the prior daemon PID. Keep existing
+    // workspaces visible as dormant instead of flapping through stale/stopped.
+    status = "dormant";
   } else if (ageMs === null || ageMs > staleTtlMs) {
     status = "stale";
   }
@@ -257,7 +263,7 @@ function validateProjectRuntime(entry = {}, options = {}) {
     ...entry,
     status,
     validation: {
-      project_exists: projectPathExists(entry.project_root),
+      project_exists: projectExists,
       pid_alive: pidAlive,
       socket_alive: socketAlive,
       stale_ttl_ms: staleTtlMs,

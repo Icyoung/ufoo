@@ -2,6 +2,8 @@ const fs = require("fs");
 const path = require("path");
 const matter = require("gray-matter");
 
+const VALID_DECISION_STATUSES = Object.freeze(["open", "resolved", "archived", "superseded"]);
+
 /**
  * 决策管理器
  * 处理项目决策日志的读取、过滤和显示
@@ -241,9 +243,9 @@ class DecisionsManager {
   }
 
   /**
-   * 写入索引文件
+   * 静默写入索引文件（不输出 console）
    */
-  writeIndex() {
+  writeIndexQuiet() {
     const decisions = this.readDecisions();
     const entries = this.buildIndexEntries(decisions);
 
@@ -252,8 +254,115 @@ class DecisionsManager {
     const lines = entries.map((e) => JSON.stringify(e));
     const output = lines.length ? `${lines.join("\n")}\n` : "";
     fs.writeFileSync(this.indexFile, output, "utf8");
+    return entries;
+  }
 
+  /**
+   * 写入索引文件
+   */
+  writeIndex() {
+    const entries = this.writeIndexQuiet();
     console.log(`Wrote ${entries.length} entries to ${this.indexFile}`);
+  }
+
+  /**
+   * 安全解析决策文件路径（防止路径穿越）
+   */
+  resolveDecisionFilePath(file) {
+    const raw = String(file || "").trim();
+    const base = path.basename(raw);
+    if (!raw || !base || base !== raw || !base.endsWith(".md")) {
+      throw new Error(`Invalid decision file name: ${raw || "(empty)"}`);
+    }
+    return {
+      file: base,
+      filePath: path.join(this.decisionsDir, base),
+    };
+  }
+
+  /**
+   * 更新单条决策状态 (open | resolved | archived | superseded)
+   */
+  setStatus(file, status, options = {}) {
+    const { file: targetFile, filePath } = this.resolveDecisionFilePath(file);
+    const nextStatus = String(status || "").trim().toLowerCase();
+    if (!VALID_DECISION_STATUSES.includes(nextStatus)) {
+      throw new Error(`Invalid decision status: ${status}. Expected one of: ${VALID_DECISION_STATUSES.join(", ")}`);
+    }
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`Decision not found: ${targetFile}`);
+    }
+    const raw = fs.readFileSync(filePath, "utf8");
+    const parsed = matter(raw);
+    const nextData = {
+      ...parsed.data,
+      status: nextStatus,
+    };
+    const now = new Date().toISOString();
+    const actor = String(options.actor || process.env.UFOO_NICKNAME || process.env.USER || "user").trim();
+    const reason = String(options.reason || "").trim();
+    if (nextStatus !== "open") {
+      nextData.resolved_at = now;
+      nextData.resolved_by = actor;
+      if (nextStatus === "archived") nextData.archived_at = now;
+      else delete nextData.archived_at;
+      if (reason) nextData.resolution_note = reason;
+    } else {
+      delete nextData.resolved_at;
+      delete nextData.resolved_by;
+      delete nextData.archived_at;
+      delete nextData.resolution_note;
+    }
+    const updated = matter.stringify(`${parsed.content.trim()}\n`, nextData);
+    fs.writeFileSync(filePath, updated, "utf8");
+    this.writeIndexQuiet();
+
+    const firstLine = parsed.content.trim().split("\n")[0] || "";
+    const title = firstLine.startsWith("#") ? firstLine.replace(/^#+\s*/, "").trim() : targetFile;
+    return { file: targetFile, status: nextStatus, title, reason: reason || "" };
+  }
+
+  /**
+   * 永久删除单条决策文件
+   */
+  deleteDecision(file) {
+    const { file: targetFile, filePath } = this.resolveDecisionFilePath(file);
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`Decision not found: ${targetFile}`);
+    }
+    fs.unlinkSync(filePath);
+    this.writeIndexQuiet();
+    return { file: targetFile, deleted: true };
+  }
+
+  /**
+   * 批量清空决策文件 (scope: all | closed | archived | resolved | superseded | open)
+   */
+  clearDecisions(options = {}) {
+    const scope = String(options.status || options.scope || "all").trim().toLowerCase() || "all";
+    const decisions = this.readDecisions();
+    const targets = decisions.filter((d) => {
+      if (scope === "all") return true;
+      if (scope === "closed" || scope === "non_open") return d.status !== "open";
+      return d.status === scope;
+    });
+    const deletedFiles = [];
+    for (const item of targets) {
+      try {
+        if (fs.existsSync(item.filePath)) {
+          fs.unlinkSync(item.filePath);
+          deletedFiles.push(item.file);
+        }
+      } catch {
+        // ignore individual unlink failures
+      }
+    }
+    this.writeIndexQuiet();
+    return {
+      scope,
+      deletedCount: deletedFiles.length,
+      deletedFiles,
+    };
   }
 
   /**
@@ -321,4 +430,5 @@ class DecisionsManager {
   }
 }
 
+DecisionsManager.VALID_STATUSES = VALID_DECISION_STATUSES;
 module.exports = DecisionsManager;

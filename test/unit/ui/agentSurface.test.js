@@ -153,3 +153,125 @@ test("bounded state evicts old output and keeps native tool stdout readable", ()
   expect(tool.detail).toContain("[exit 2]");
   expect(tool.text).toContain("Failed");
 });
+
+test("rawMarkdown preserves raw Markdown, tracks tool_status lifecycle, and aggregates session changed_files", () => {
+  const view = createAgentSurface({ rawMarkdown: true });
+  view.accept({ type: "task_started", task_id: "t1", message: "review decisions" });
+  view.accept({ type: "tool_call", toolCallId: "c1", name: "apply_patch", args: { path: "/repo/.ufoo/context/report.md" } });
+  expect(view.snapshot().entries.find((e) => e.kind === "tool")).toMatchObject({
+    tool_name: "apply_patch",
+    tool_status: "running",
+  });
+  view.accept({
+    type: "tool_result",
+    toolCallId: "c1",
+    status: "completed",
+    output: { changes: [{ path: "/repo/.ufoo/context/report.md", kind: "add" }] },
+  });
+  expect(view.snapshot().entries.find((e) => e.kind === "tool")).toMatchObject({
+    tool_status: "done",
+  });
+  view.accept({ type: "tool_call", toolCallId: "c2", name: "Edit", args: { file_path: "src/app.js" } });
+  view.accept({ type: "tool_result", toolCallId: "c2", status: "completed", output: "ok" });
+  view.accept({ type: "text_delta", delta: "**11 组**见[分析报告](/repo/.ufoo/context/report.md)" });
+  view.accept({ type: "task_completed" });
+
+  const snap = view.snapshot();
+  const assistant = snap.entries.find((e) => e.kind === "assistant");
+  const tools = snap.entries.filter((e) => e.kind === "tool");
+  expect(assistant.text).toBe("**11 组**见[分析报告](/repo/.ufoo/context/report.md)");
+  expect(assistant.text).not.toContain("\x1b[");
+  expect(tools[0].changed_files).toEqual([
+    { path: "/repo/.ufoo/context/report.md", kind: "added" },
+  ]);
+  expect(tools[1].changed_files).toEqual([
+    { path: "src/app.js", kind: "modified" },
+  ]);
+  expect(snap.changed_files).toEqual([
+    { path: "/repo/.ufoo/context/report.md", kind: "added" },
+    { path: "src/app.js", kind: "modified" },
+  ]);
+
+  view.accept({ type: "surface_cleared" });
+  const clearedSnap = view.snapshot();
+  expect(clearedSnap.entries).toEqual([]);
+  expect(clearedSnap.changed_files).toEqual([]);
+  expect(clearedSnap.plan).toEqual([]);
+  expect(clearedSnap.busy).toBe(false);
+  expect(clearedSnap.status).toBe("ready");
+});
+
+test("classifies incoming peer, coordinator, and direct user senders and normalizes Codex/Claude tool rows", () => {
+  const view = createAgentSurface({ rawMarkdown: true });
+
+  // Direct user message (via desktop UI source)
+  view.accept({
+    type: "task_started",
+    task_id: "t-user",
+    publisher: "ufoo-agent",
+    source: "ufoo-desktop-worker",
+    requestKind: "bus-message",
+    message: "Please audit startup latency",
+  });
+  // Peer agent message (e.g. reviewer -> architect)
+  view.accept({
+    type: "task_started",
+    task_id: "t-peer",
+    publisher: "codex:1670b65b",
+    requestKind: "bus-message",
+    message: "Independent review complete",
+  });
+  // Coordinator delegation (ufoo-agent -> worker)
+  view.accept({
+    type: "task_started",
+    task_id: "t-coord",
+    publisher: "ufoo-agent",
+    requestKind: "worker-task",
+    message: "Run tests in worktree",
+  });
+
+  // Codex shell-wrapped bash + MCP tool + Claude Grep/MCP tools
+  view.accept({
+    type: "tool_call",
+    toolCallId: "bash1",
+    name: "bash",
+    args: { command: '/bin/zsh -lc "rg -n getSessionId shared/src"' },
+  });
+  view.accept({
+    type: "tool_result",
+    toolCallId: "bash1",
+    output: "shared/src/Analytics.kt:12",
+  });
+  view.accept({
+    type: "tool_call",
+    toolCallId: "mcp1",
+    name: "ufoo.dispatch_message",
+    args: { target: "builder", message: "Please double-check B1" },
+  });
+  view.accept({
+    type: "tool_call",
+    toolCallId: "grep1",
+    name: "Grep",
+    args: { pattern: "HttpTimeout", path: "shared/src" },
+  });
+  view.accept({
+    type: "tool_call",
+    toolCallId: "cmcp1",
+    name: "mcp__ufoo__report_agent_status",
+    args: { phase: "done", summary: "Audit complete" },
+  });
+
+  const snap = view.snapshot();
+  const users = snap.entries.filter((e) => e.kind === "user");
+  expect(users[0]).toMatchObject({ sender_kind: "user" });
+  expect(users[0].sender_id).toBeUndefined();
+  expect(users[1]).toMatchObject({ sender_kind: "peer", sender_id: "codex:1670b65b" });
+  expect(users[2]).toMatchObject({ sender_kind: "coordinator", sender_id: "ufoo-agent" });
+
+  const tools = snap.entries.filter((e) => e.kind === "tool");
+  expect(tools[0].text).toBe("• Bash rg -n getSessionId shared/src");
+  expect(tools[0].detail).toContain("shared/src/Analytics.kt:12");
+  expect(tools[1].text).toBe("• Send Message @builder · Please double-check B1");
+  expect(tools[2].text).toBe("• Grep HttpTimeout · shared/src");
+  expect(tools[3].text).toBe("• Report Status done · Audit complete");
+});

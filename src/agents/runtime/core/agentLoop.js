@@ -33,7 +33,7 @@ function createExecutionGuards({ signal = null, timeoutMs = 43200000 } = {}) {
 /** Shared model/tool loop. All business policies and tools are injected. */
 async function runAgentLoop({
   transport, tools, policies = [], workspaceRoot = process.cwd(),
-  prompt = "", systemPrompt = "", systemBlocks = null, turnSupplement = "", historyMessages = [],
+  prompt = "", userContent = null, systemPrompt = "", systemBlocks = null, turnSupplement = "", historyMessages = [],
   model = "", baseUrl = "", apiKey = "", provider = "", accountId = "", requestHeaders = {}, requestProfile = "",
   thinkingLevel = "", requestKind = "unknown",
   timeoutMs = 43200000, onStreamDelta = null, onThinkingDelta = null,
@@ -58,7 +58,7 @@ async function runAgentLoop({
   const activeGuards = guards ? { ensureActive() { signalGuards.ensureActive(); guards.ensureActive(); } } : signalGuards;
   const messages = sanitizeMessages(clone(historyMessages));
   const historyOffset = restoredHistoryOffset ?? (resume ? 0 : messages.filter(message => message.role !== "system").length);
-  if (!resume) transport.prepareMessages({ messages, systemPrompt, prompt });
+  if (!resume) transport.prepareMessages({ messages, systemPrompt, prompt, userContent });
   const outputStart = messages.length;
   const companionItems = new Set();
   const currentTurnItems = () => clone(messages.slice(outputStart).filter((message, index) => {
@@ -106,6 +106,7 @@ async function runAgentLoop({
     toolCallsExecuted += 1;
     const failed = !result || result.ok === false;
     if (failed) toolErrors += 1;
+    if (failed && result && result.nonFatalLookup === true) return;
     const action = toolErrorGuard.observe(failed);
     if (action) {
       await event(action.kind === "stop" ? "loop.stopped" : "loop.warning", action);

@@ -320,7 +320,11 @@ function resolveAutoAgentType(projectRoot, requestedType, internalOnly = false) 
 
   const provider = asTrimmedString(loadConfig(projectRoot).agentProvider);
   if (provider === "claude-cli") return "claude";
-  if (internalOnly) return provider === "codex-cli" ? "codex" : "ucode";
+  if (internalOnly) {
+    if (provider === "codex-cli") return "codex";
+    if (provider === "agy-cli") return "agy";
+    return "ucode";
+  }
   if (provider === "ucode") return "ucode";
   if (provider === "agy-cli") return "agy";
   if (provider === "kimi-cli") return "kimi";
@@ -482,6 +486,7 @@ function buildDefaultRuntime({
   const templateInfo = templateEntry && templateEntry.data && templateEntry.data.template
     ? templateEntry.data.template
     : {};
+  const rawTemplateEdges = Array.isArray(templateEntry?.data?.edges) ? templateEntry.data.edges : [];
   const createdAt = nowIso();
   return {
     group_id: groupId,
@@ -499,6 +504,13 @@ function buildDefaultRuntime({
     started_at: createdAt,
     updated_at: createdAt,
     errors: [],
+    edges: rawTemplateEdges
+      .filter((e) => e && asTrimmedString(e.from) && asTrimmedString(e.to))
+      .map((e) => ({
+        from: asTrimmedString(e.from),
+        to: asTrimmedString(e.to),
+        kind: asTrimmedString(e.kind) || "task",
+      })),
     members: plan.map((item, idx) => ({
       index: idx,
       template_agent_id: item.id || "",
@@ -832,7 +844,7 @@ function createGroupOrchestrator(options = {}) {
     });
 
     const unsupported = params.internal_only === true && compiled.executionPlan.find((item) => !normalizeInternalAgentType(item.type));
-    if (unsupported) return { ok: false, status: "failed", error: `unsupported internal agent type: ${unsupported.type}; use codex, claude or ucode` };
+    if (unsupported) return { ok: false, status: "failed", error: `unsupported internal agent type: ${unsupported.type}; use codex, claude, ucode, or agy` };
 
     if (dryRun) {
       return {
@@ -884,10 +896,16 @@ function createGroupOrchestrator(options = {}) {
     const eventBus = new EventBus(projectRoot);
     const tmuxLayoutContext = { mode: "group-right-column" };
 
+    // Groups share the main project repository directly without framework-level
+    // worktree isolation; models may create or operate across git worktrees freely.
+    runtime.worktree_root = "";
+    runtime.worktree_branch = "";
+
     for (let i = 0; i < compiled.executionPlan.length; i += 1) {
       const item = compiled.executionPlan[i];
       const member = runtime.members[i];
       const extraEnv = buildGroupModelEnv(item.type, item);
+      extraEnv.UFOO_GROUP_ID = groupId;
       if (item.bootstrap_required) {
         extraEnv.UFOO_SKIP_DEFAULT_BOOTSTRAP = "1";
       }

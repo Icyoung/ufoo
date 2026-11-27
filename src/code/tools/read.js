@@ -49,8 +49,12 @@ function runReadTool(input = {}, options = {}) {
       content,
     };
   } catch (err) {
+    const code = err && typeof err.code === "string" ? err.code : "";
+    const nonFatalLookup = code === "ENOENT" || code === "EISDIR" || code === "ENOTDIR";
     return {
       ok: false,
+      ...(code ? { code } : {}),
+      ...(nonFatalLookup ? { nonFatalLookup: true } : {}),
       error: err && err.message ? err.message : "read failed",
     };
   }

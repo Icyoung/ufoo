@@ -119,3 +119,21 @@ test("a pending native question receives the literal reply without bootstrap/tas
   expect(events).toContainEqual({ type: "text_delta", delta: "accepted" });
   await thread.close();
 });
+
+test("internal ucode thread with resume:false starts fresh without loading a snapshot, and supervised mode denies write/exec tools", async () => {
+  agent.resumeSessionState.mockClear();
+  const thread = createInternalCodingThread({ sessionId: "fresh-acp-1", resume: false, permissionMode: "supervised" });
+  expect(thread.id).toBe("fresh-acp-1");
+  expect(thread.permissionMode).toBe("supervised");
+  expect(agent.resumeSessionState).not.toHaveBeenCalled();
+  await thread.close();
+
+  const { createPermissionAuthorizer } = require("../../../src/code/nativeRunner");
+  const auth = createPermissionAuthorizer({ permissionMode: "supervised" });
+  expect(typeof auth).toBe("function");
+  expect(await auth({ name: "read", permissions: ["workspace.read"] })).toBe(true);
+  expect(await auth({ name: "ask_user", permissions: ["interaction.request"] })).toBe(true);
+  expect(await auth({ name: "write", permissions: ["workspace.write"] })).toBe(false);
+  expect(await auth({ name: "bash", permissions: ["workspace.execute"] })).toBe(false);
+  expect(createPermissionAuthorizer({ permissionMode: "auto_edit" })).toBeNull();
+});

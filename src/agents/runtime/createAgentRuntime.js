@@ -270,22 +270,31 @@ function createAgentRuntime({ profile, transport, capabilities, host = {}, defau
       startPump();
       return { accepted: true, taskRunId: task.taskRunId };
     },
-    cancel({ taskRunId, reason = "user_cancel" } = {}) {
+    cancel({ taskRunId, interactionId, reason = "user_cancel" } = {}) {
       requireStore();
-      const task = store.read().tasks[taskRunId];
+      const snapshotTasks = store.read().tasks;
+      let task = taskRunId ? snapshotTasks[taskRunId] : null;
+      if (!task && interactionId) {
+        task = Object.values(snapshotTasks).find(
+          (item) => item.status === "waiting_user" && item.interactionId === interactionId
+        ) || Object.values(snapshotTasks).find(
+          (item) => [item.interactionId, item.answeredInteractionId].includes(interactionId)
+        ) || null;
+      }
       if (!task) throw new Error("task not found");
-      hooks?.cancelOwner(taskRunId);
-      store.transaction(state => Object.values(state.tasks).filter(item => item.request.runtimeEvent && item.request.parentTaskRunId === taskRunId && item.status === "queued")
+      const targetId = task.taskRunId;
+      hooks?.cancelOwner(targetId);
+      store.transaction(state => Object.values(state.tasks).filter(item => item.request.runtimeEvent && item.request.parentTaskRunId === targetId && item.status === "queued")
         .map(item => ({ type: "task.cancelled", taskRunId: item.taskRunId, error: reason })));
-      if (controller && store.read().tasks[activeTask]?.request.runtimeEvent && store.read().tasks[activeTask]?.request.parentTaskRunId === taskRunId) controller.abort(reason);
+      if (controller && store.read().tasks[activeTask]?.request.runtimeEvent && store.read().tasks[activeTask]?.request.parentTaskRunId === targetId) controller.abort(reason);
       notify();
-      if (terminal.has(task.status) && task.status !== "waiting_user") return { taskRunId, status: task.status };
-      if (activeTask === taskRunId && controller) {
-        store.append({ type: "task.cancel_requested", taskRunId, reason });
+      if (terminal.has(task.status) && task.status !== "waiting_user") return { taskRunId: targetId, status: task.status };
+      if (activeTask === targetId && controller) {
+        store.append({ type: "task.cancel_requested", taskRunId: targetId, reason });
         controller.abort(reason);
-      } else store.append({ type: "task.cancelled", taskRunId, error: reason });
+      } else store.append({ type: "task.cancelled", taskRunId: targetId, error: reason });
       notify();
-      return { taskRunId, status: activeTask === taskRunId ? "cancelling" : "cancelled" };
+      return { taskRunId: targetId, status: activeTask === targetId ? "cancelling" : "cancelled" };
     },
     snapshot() { return store ? store.read() : { running, closed }; },
     events(input) { requireStore(); return store.events(input); },

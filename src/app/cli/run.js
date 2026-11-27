@@ -749,8 +749,8 @@ async function runCli(argv) {
 
     program
       .command("launch")
-      .description("Launch an agent (uclaude, ucodex, uagy, ugrok, ukimi, ucode)")
-      .argument("<agent>", "Agent type: uclaude|ucodex|uagy|ugrok|ukimi|ucode|claude|codex|agy|grok|kimi")
+      .description("Launch a managed worker agent (claude, codex, ucode, acp:<id>)")
+      .argument("<agent>", "Agent type: claude|codex|ucode|acp:<id>")
       .argument("[nickname]", "Optional nickname for the agent")
       .option("--profile <id>", "Prompt profile to assign after launch")
       .action(async (agent, nickname, opts) => {
@@ -758,24 +758,21 @@ async function runCli(argv) {
           const projectRoot = process.cwd();
           await ensureDaemonRunning(projectRoot);
 
-          // Normalize agent type
-          const agentLower = agent.toLowerCase();
+          const agentLower = String(agent || "").trim().toLowerCase();
           let normalizedAgent = "";
-          if (agentLower === "uclaude" || agentLower === "claude-code" || agentLower === "claude") {
+          if (agentLower === "claude-code" || agentLower === "claude") {
             normalizedAgent = "claude";
-          } else if (agentLower === "ucodex" || agentLower === "codex" || agentLower === "openai") {
+          } else if (agentLower === "codex" || agentLower === "openai") {
             normalizedAgent = "codex";
-          } else if (agentLower === "uagy" || agentLower === "agy" || agentLower === "antigravity") {
+          } else if (agentLower === "agy" || agentLower === "antigravity") {
             normalizedAgent = "agy";
-          } else if (agentLower === "ugrok" || agentLower === "grok" || agentLower === "grok-build" || agentLower === "xai") {
-            normalizedAgent = "grok";
-          } else if (agentLower === "ukimi" || agentLower === "kimi" || agentLower === "kimi-cli" || agentLower === "kimi-code") {
-            normalizedAgent = "kimi";
           } else if (agentLower === "ucode") {
             normalizedAgent = "ucode";
+          } else if (agentLower.startsWith("acp:") && agentLower.length > 4) {
+            normalizedAgent = agentLower;
           } else {
             console.error(`Unknown agent type: ${agent}`);
-            console.error("Valid types: uclaude, ucodex, uagy, ugrok, ukimi, ucode, claude, codex, agy, grok, kimi");
+            console.error("Valid types: claude, codex, agy, ucode, acp:<id>");
             process.exitCode = 1;
             return;
           }
@@ -786,8 +783,7 @@ async function runCli(argv) {
             nickname: nickname || "",
             prompt_profile: opts.profile || "",
             count: 1,
-            ...collectHostLaunchRequestContext(),
-            ...collectTmuxLaunchRequestContext(),
+            internal_only: true,
           });
           const reply = resp?.data?.reply || `Launching ${normalizedAgent} agent...`;
           console.log(reply);
@@ -849,6 +845,7 @@ async function runCli(argv) {
             nickname: String(opts.nickname || "").trim(),
             prompt_profile: promptProfile,
             count: 1,
+            internal_only: true,
             launch_scope: scope,
             ...collectHostLaunchRequestContext(),
             ...collectTmuxLaunchRequestContext(),
@@ -1219,6 +1216,7 @@ async function runCli(argv) {
             type: "launch_group",
             alias,
             instance: opts.instance || "",
+            internal_only: true,
             dry_run: opts.dryRun === true,
             ...collectHostLaunchRequestContext(),
             ...collectTmuxLaunchRequestContext(),
@@ -1346,6 +1344,7 @@ async function runCli(argv) {
       .option("--insecure", "Allow any token (dev only)")
       .option("--tls-cert <path>", "TLS certificate file")
       .option("--tls-key <path>", "TLS private key file")
+      .option("--web-dir <dir>", "Optional static directory to serve the Web/Mobile remote PWA")
       .action(async (opts) => {
         try {
           await runOnlineCommand("server", { opts }, {
@@ -1498,6 +1497,106 @@ async function runCli(argv) {
           process.exitCode = 1;
         }
       });
+
+    const registerRemoteSubcommands = (parentCmd) => {
+      parentCmd
+        .command("status")
+        .description("Show remote E2EE access status, device identity, and paired devices")
+        .option("--all", "Include revoked devices")
+        .option("--json", "Output JSON")
+        .option("--remote-dir <path>", "Override ~/.ufoo/remote directory")
+        .action(async (opts) => {
+          try {
+            await runOnlineCommand("remote", { action: "status", opts }, { mode: "commander" });
+          } catch (err) {
+            console.error(err.message || String(err));
+            process.exitCode = 1;
+          }
+        });
+      parentCmd
+        .command("pair")
+        .description("Generate a one-time E2EE pairing code and QR code for Web/Mobile remote access")
+        .option("--relay <url>", "ufoo-online WebSocket relay URL")
+        .option("--web-url <url>", "Web/PWA client base URL for QR deep links")
+        .option("--token <tok>", "Optional relay auth token")
+        .option("--ttl <seconds>", "Pairing code TTL in seconds", "300")
+        .option("--allow-insecure-ws", "Allow ws:// to non-localhost (LAN dev)")
+        .option("--no-wait", "Exit immediately after printing pairing code without waiting")
+        .option("--json", "Output JSON")
+        .option("--remote-dir <path>", "Override ~/.ufoo/remote directory")
+        .action(async (opts) => {
+          try {
+            await runOnlineCommand("remote", { action: "pair", opts }, { mode: "commander" });
+          } catch (err) {
+            console.error(err.message || String(err));
+            process.exitCode = 1;
+          }
+        });
+      parentCmd
+        .command("devices")
+        .description("List paired remote Web/Mobile devices")
+        .option("--all", "Include revoked devices")
+        .option("--json", "Output JSON")
+        .option("--remote-dir <path>", "Override ~/.ufoo/remote directory")
+        .action(async (opts) => {
+          try {
+            await runOnlineCommand("remote", { action: "devices", opts }, { mode: "commander" });
+          } catch (err) {
+            console.error(err.message || String(err));
+            process.exitCode = 1;
+          }
+        });
+      parentCmd
+        .command("revoke")
+        .description("Revoke a paired remote device by client ID")
+        .argument("<client-id>", "Paired client ID to revoke")
+        .option("--json", "Output JSON")
+        .option("--remote-dir <path>", "Override ~/.ufoo/remote directory")
+        .action(async (clientId, opts) => {
+          try {
+            await runOnlineCommand("remote", { action: "revoke", target: clientId, opts }, { mode: "commander" });
+          } catch (err) {
+            console.error(err.message || String(err));
+            process.exitCode = 1;
+          }
+        });
+      parentCmd
+        .command("enable")
+        .description("Enable outbound remote access relay in ~/.ufoo/remote/config.json")
+        .option("--relay <url>", "ufoo-online WebSocket relay URL")
+        .option("--web-url <url>", "Web/PWA client base URL")
+        .option("--token <tok>", "Optional relay auth token")
+        .option("--allow-insecure-ws", "Allow ws:// to non-localhost (LAN dev)")
+        .option("--json", "Output JSON")
+        .option("--remote-dir <path>", "Override ~/.ufoo/remote directory")
+        .action(async (opts) => {
+          try {
+            await runOnlineCommand("remote", { action: "enable", opts }, { mode: "commander" });
+          } catch (err) {
+            console.error(err.message || String(err));
+            process.exitCode = 1;
+          }
+        });
+      parentCmd
+        .command("disable")
+        .description("Disable outbound remote access relay")
+        .option("--json", "Output JSON")
+        .option("--remote-dir <path>", "Override ~/.ufoo/remote directory")
+        .action(async (opts) => {
+          try {
+            await runOnlineCommand("remote", { action: "disable", opts }, { mode: "commander" });
+          } catch (err) {
+            console.error(err.message || String(err));
+            process.exitCode = 1;
+          }
+        });
+    };
+
+    const onlineRemote = online.command("remote").description("Manage E2EE remote Web/Mobile device pairing");
+    registerRemoteSubcommands(onlineRemote);
+
+    const remoteTop = program.command("remote").description("Manage E2EE remote Web/Mobile device pairing");
+    registerRemoteSubcommands(remoteTop);
 
     const bus = program.command("bus").description("Project bus commands");
     bus
@@ -1874,6 +1973,8 @@ async function runCli(argv) {
     console.log("  ufoo online connect --nickname <name> [--join <ch>] [--room <id> --room-password <pwd>] [...]");
     console.log("  ufoo online send --nickname <name> --text <msg> [--channel <ch>] [--room <id>]");
     console.log("  ufoo online inbox <nickname> [--clear] [--unread]");
+    console.log("  ufoo remote <status|pair|devices|revoke|enable|disable> [--relay <url>] [--json]");
+    console.log("  ufoo online remote <status|pair|devices|revoke|enable|disable> [--relay <url>] [--json]");
     console.log("  ufoo bus join <session> <agent-type> [nickname] --wake-url <url> --wake-key-file <path> [--wake-adapter bearer-json]");
     console.log("  ufoo bus wake <target> [--reason <reason>] [--no-shake]");
     console.log("  ufoo bus poll [subscriber] [--ack | --follow --interval <seconds>]");
@@ -2301,6 +2402,7 @@ async function runCli(argv) {
             type: "launch_group",
             alias,
             instance,
+            internal_only: true,
             dry_run: dryRun,
             ...collectHostLaunchRequestContext(),
             ...collectTmuxLaunchRequestContext(),
@@ -2438,6 +2540,7 @@ async function runCli(argv) {
             nickname,
             prompt_profile: profile,
             count: 1,
+            internal_only: true,
             launch_scope: scope,
             ...collectHostLaunchRequestContext(),
             ...collectTmuxLaunchRequestContext(),
@@ -2446,6 +2549,23 @@ async function runCli(argv) {
           return;
         }
         throw new Error(`Unknown solo action: ${sub || "(empty)"}`);
+      } catch (err) {
+        console.error(err.message || String(err));
+        process.exitCode = 1;
+      }
+    })();
+    return;
+  }
+  if (cmd === "remote") {
+    (async () => {
+      try {
+        await runOnlineCommand("remote", { argv: ["remote", ...rest] }, {
+          mode: "fallback",
+          onlineAuthHeaders,
+          projectRoot: process.cwd(),
+          collectOptionValues,
+          collectOption,
+        });
       } catch (err) {
         console.error(err.message || String(err));
         process.exitCode = 1;

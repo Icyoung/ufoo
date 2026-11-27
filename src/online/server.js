@@ -5,6 +5,13 @@ const path = require("path");
 const crypto = require("crypto");
 const EventEmitter = require("events");
 const WebSocket = require("ws");
+const { generateToken, hashToken } = require("./tokens");
+const {
+  validatePublicKeyJwk,
+  sanitizePublicKeyJwk,
+  generatePairCode,
+  hashPairCodeSync,
+} = require("./remoteCrypto");
 
 /**
  * ufoo-online (Phase 1)
@@ -81,6 +88,172 @@ class OnlineServer extends EventEmitter {
     // Step 7: TLS support
     this.tlsCert = options.tlsCert || null;
     this.tlsKey = options.tlsKey || null;
+
+    // Phase 5: Device registry, one-time pairing, P2P signaling, and E2EE relay
+    this.devices = new Map(); // device_id -> device record
+    this.pairingCodes = new Map(); // code_hash -> pairing slot
+    this.pendingClaims = new Map(); // claim_id -> pending claim awaiting host approval
+    this.pairAuthFailures = new Map(); // ip -> { count, lockedUntil }
+    this.maxPairAuthFailures = options.maxPairAuthFailures ?? 10;
+    this.pairAuthLockoutMs = options.pairAuthLockoutMs ?? 60000;
+    this.maxRelayFrameBytes = options.maxRelayFrameBytes ?? 512 * 1024; // 512 KB
+    this.maxPairTtlMs = options.maxPairTtlMs ?? 15 * 60 * 1000; // 15 min cap
+    this.pairClaimTimeoutMs = options.pairClaimTimeoutMs ?? 15000;
+    this.deviceHeartbeatIntervalMs = options.deviceHeartbeatIntervalMs ?? 15000;
+    this.relayRateLimitMax = options.relayRateLimitMax ?? Math.max(this.rateLimitMax * 5, 300);
+
+    // Optional static Web/Mobile PWA hosting for non-/ufoo/online routes
+    this.webAppDir = options.webAppDir ? path.resolve(options.webAppDir) : null;
+  }
+
+  static mimeTypeForExt(ext) {
+    switch (String(ext || "").toLowerCase()) {
+      case ".html":
+        return "text/html; charset=utf-8";
+      case ".js":
+      case ".mjs":
+        return "application/javascript; charset=utf-8";
+      case ".css":
+        return "text/css; charset=utf-8";
+      case ".json":
+        return "application/json; charset=utf-8";
+      case ".webmanifest":
+        return "application/manifest+json; charset=utf-8";
+      case ".svg":
+        return "image/svg+xml";
+      case ".png":
+        return "image/png";
+      case ".jpg":
+      case ".jpeg":
+        return "image/jpeg";
+      case ".webp":
+        return "image/webp";
+      case ".ico":
+        return "image/x-icon";
+      case ".woff":
+        return "font/woff";
+      case ".woff2":
+        return "font/woff2";
+      case ".wasm":
+        return "application/wasm";
+      case ".txt":
+        return "text/plain; charset=utf-8";
+      default:
+        return "application/octet-stream";
+    }
+  }
+
+  serveStaticWebApp(req, res, pathname, search = "") {
+    if (!this.webAppDir) return false;
+    let rootReal;
+    try {
+      rootReal = fs.realpathSync(this.webAppDir);
+    } catch {
+      return false;
+    }
+
+    if (pathname === "/") {
+      const location = `/remote/${search || ""}`;
+      res.writeHead(302, this.corsHeaders({ Location: location, "Cache-Control": "no-cache" }));
+      res.end();
+      return true;
+    }
+
+    let decodedPath;
+    try {
+      decodedPath = decodeURIComponent(pathname || "/");
+    } catch {
+      res.writeHead(400, this.corsHeaders({ "Content-Type": "text/plain" }));
+      res.end("Bad Request\n");
+      return true;
+    }
+
+    if (decodedPath.includes("\0")) {
+      res.writeHead(400, this.corsHeaders({ "Content-Type": "text/plain" }));
+      res.end("Bad Request\n");
+      return true;
+    }
+
+    const relPath = decodedPath.replace(/^\/+/, "");
+    const rawCandidate = relPath ? path.resolve(rootReal, relPath) : path.join(rootReal, "index.html");
+    const relFromRoot = path.relative(rootReal, rawCandidate);
+    if (relFromRoot.startsWith("..") || path.isAbsolute(relFromRoot)) {
+      res.writeHead(403, this.corsHeaders({ "Content-Type": "text/plain" }));
+      res.end("Forbidden\n");
+      return true;
+    }
+
+    let targetPath = rawCandidate;
+    let stat = null;
+    try {
+      stat = fs.statSync(targetPath);
+      if (stat.isDirectory()) {
+        targetPath = path.join(targetPath, "index.html");
+        stat = fs.statSync(targetPath);
+      }
+    } catch {
+      stat = null;
+    }
+
+    if (!stat || !stat.isFile()) {
+      const hasFileExt = path.extname(relPath) !== "";
+      if (hasFileExt) {
+        res.writeHead(404, this.corsHeaders({ "Content-Type": "text/plain" }));
+        res.end("Not Found\n");
+        return true;
+      }
+      targetPath = path.join(rootReal, "index.html");
+      try {
+        stat = fs.statSync(targetPath);
+      } catch {
+        return false;
+      }
+      if (!stat.isFile()) return false;
+    }
+
+    let targetReal;
+    try {
+      targetReal = fs.realpathSync(targetPath);
+    } catch {
+      res.writeHead(404, this.corsHeaders({ "Content-Type": "text/plain" }));
+      res.end("Not Found\n");
+      return true;
+    }
+
+    const realRel = path.relative(rootReal, targetReal);
+    if (realRel.startsWith("..") || path.isAbsolute(realRel)) {
+      res.writeHead(403, this.corsHeaders({ "Content-Type": "text/plain" }));
+      res.end("Forbidden\n");
+      return true;
+    }
+
+    const ext = path.extname(targetReal);
+    const isImmutableAsset = realRel.startsWith(`assets${path.sep}`);
+    const cacheControl = isImmutableAsset
+      ? "public, max-age=31536000, immutable"
+      : "no-cache";
+
+    const headers = this.corsHeaders({
+      "Content-Type": OnlineServer.mimeTypeForExt(ext),
+      "Content-Length": String(stat.size),
+      "Cache-Control": cacheControl,
+      "X-Content-Type-Options": "nosniff",
+    });
+
+    res.writeHead(200, headers);
+    if (req.method === "HEAD") {
+      res.end();
+      return true;
+    }
+    const stream = fs.createReadStream(targetReal);
+    stream.on("error", () => {
+      if (!res.headersSent) {
+        res.writeHead(500, this.corsHeaders({ "Content-Type": "text/plain" }));
+      }
+      res.end();
+    });
+    stream.pipe(res);
+    return true;
   }
 
   parseRequestUrl(rawUrl) {
@@ -200,11 +373,27 @@ class OnlineServer extends EventEmitter {
         return;
       }
 
+      if (pathname === "/ufoo/online/health") {
+        res.writeHead(200, this.corsHeaders({ "Content-Type": "text/plain" }));
+        res.end("ufoo-online: running\n");
+        return;
+      }
+
       if (pathname.startsWith("/ufoo/online/channels")) {
         // Step 4: HTTP auth
         if (!this.authenticateHttp(req, res)) return;
         this.handleChannelsRequest(req, res);
         return;
+      }
+
+      if (
+        this.webAppDir
+        && (req.method === "GET" || req.method === "HEAD")
+        && !pathname.startsWith("/ufoo/online")
+      ) {
+        if (this.serveStaticWebApp(req, res, pathname, parsedUrl.search || "")) {
+          return;
+        }
       }
 
       res.writeHead(200, this.corsHeaders({ "Content-Type": "text/plain" }));
@@ -276,6 +465,11 @@ class OnlineServer extends EventEmitter {
     this.wsServer = null;
 
     this.stopIdleSweep();
+
+    for (const claim of this.pendingClaims.values()) {
+      if (claim.timer) clearTimeout(claim.timer);
+    }
+    this.pendingClaims.clear();
 
     if (wsServer) {
       wsServer.clients.forEach((client) => client.terminate());
@@ -742,6 +936,18 @@ class OnlineServer extends EventEmitter {
           this.roomAuthFailures.delete(key);
         }
       }
+
+      // Phase 5: prune expired pairing codes and pairing auth failure windows
+      for (const [codeHash, slot] of this.pairingCodes) {
+        if (slot.expires_at <= now || (slot.claimed && now - slot.claimed_at > 60000)) {
+          this.pairingCodes.delete(codeHash);
+        }
+      }
+      for (const [key, info] of this.pairAuthFailures) {
+        if (info.lockedUntil > 0 && info.lockedUntil <= now) {
+          this.pairAuthFailures.delete(key);
+        }
+      }
     }, this.sweepIntervalMs);
     if (this.sweepTimer.unref) this.sweepTimer.unref();
   }
@@ -819,7 +1025,11 @@ class OnlineServer extends EventEmitter {
       client.rateLimitWindowStart = now;
     }
     client.messageCount++;
-    if (client.messageCount > this.rateLimitMax) {
+    const limit =
+      client.authed && (client.role === "device" || client.role === "remote_client")
+        ? this.relayRateLimitMax
+        : this.rateLimitMax;
+    if (client.messageCount > limit) {
       this.sendError(client.ws, "Rate limit exceeded", true, "RATE_LIMITED");
       return false;
     }
@@ -863,6 +1073,43 @@ class OnlineServer extends EventEmitter {
         return;
       case "event":
         this.handleEvent(client, message);
+        return;
+      // Phase 5: Device registry, pairing, P2P signaling & zero-knowledge E2EE relay
+      case "device.register":
+        this.handleDeviceRegister(client, message);
+        return;
+      case "device.heartbeat":
+        this.handleDeviceHeartbeat(client, message);
+        return;
+      case "device.status":
+        this.handleDeviceStatus(client, message);
+        return;
+      case "pair.create":
+        this.handlePairCreate(client, message);
+        return;
+      case "pair.claim":
+        this.handlePairClaim(client, message);
+        return;
+      case "pair.approve":
+        this.handlePairApprove(client, message);
+        return;
+      case "pair.reject":
+        this.handlePairReject(client, message);
+        return;
+      case "pair.revoke":
+        this.handlePairRevoke(client, message);
+        return;
+      case "remote.auth":
+        this.handleRemoteAuth(client, message);
+        return;
+      case "signal.offer":
+      case "signal.answer":
+      case "signal.ice":
+      case "signal.probe":
+        this.handleSignal(client, message);
+        return;
+      case "relay.frame":
+        this.handleRelayFrame(client, message);
         return;
       default:
         this.sendError(client.ws, "Unknown message type", false, "UNKNOWN_TYPE");
@@ -1270,7 +1517,793 @@ class OnlineServer extends EventEmitter {
     this.send(client.ws, { type: "leave_ack", ok: true, room: roomId });
   }
 
+  // --- Phase 5: Device Registry, One-Time Pairing, P2P Signaling & E2EE Relay ---
+
+  sanitizeCandidates(raw) {
+    if (!Array.isArray(raw)) return [];
+    const out = [];
+    for (const item of raw.slice(0, 16)) {
+      if (!item || typeof item !== "object") continue;
+      const address = String(item.address || item.host || "").trim().slice(0, 128);
+      if (!address) continue;
+      const kind = String(item.kind || "lan").trim().slice(0, 32);
+      const port = Number.isFinite(Number(item.port)) ? Number(item.port) : undefined;
+      out.push(port !== undefined ? { kind, address, port } : { kind, address });
+    }
+    return out;
+  }
+
+  verifyTokenHashTimingSafe(expectedHash, rawToken) {
+    if (!expectedHash || !rawToken) return false;
+    const actualHash = hashToken(String(rawToken));
+    const a = Buffer.from(String(expectedHash), "utf8");
+    const b = Buffer.from(actualHash, "utf8");
+    if (a.length === 0 || a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
+  }
+
+  checkPairBruteForce(client) {
+    const key = client.ws._remoteIp || "unknown";
+    const info = this.pairAuthFailures.get(key);
+    if (info && info.lockedUntil > Date.now()) {
+      this.sendError(client.ws, "Too many failed pairing/auth attempts, try again later", true, "PAIR_AUTH_LOCKED");
+      return false;
+    }
+    return true;
+  }
+
+  recordPairFailure(client) {
+    const key = client.ws._remoteIp || "unknown";
+    const info = this.pairAuthFailures.get(key) || { count: 0, lockedUntil: 0 };
+    info.count += 1;
+    if (info.count >= this.maxPairAuthFailures) {
+      info.lockedUntil = Date.now() + this.pairAuthLockoutMs;
+      info.count = 0;
+    }
+    this.pairAuthFailures.set(key, info);
+  }
+
+  clearPairFailure(client) {
+    const key = client.ws._remoteIp || "unknown";
+    this.pairAuthFailures.delete(key);
+  }
+
+  addActiveRemoteClient(device, clientId, remoteClient) {
+    let set = device.activeRemoteClients.get(clientId);
+    if (!set) {
+      set = new Set();
+      device.activeRemoteClients.set(clientId, set);
+    }
+    set.add(remoteClient);
+  }
+
+  handleDeviceRegister(client, message) {
+    const deviceId = String(message.device_id || "").trim();
+    const idErr = this.validateIdentifier(deviceId, "device_id");
+    if (idErr) {
+      this.sendError(client.ws, idErr, true, "DEVICE_INVALID");
+      return;
+    }
+    if (!validatePublicKeyJwk(message.public_key)) {
+      this.sendError(client.ws, "Valid ECDH P-256 public_key is required", true, "DEVICE_KEY_INVALID");
+      return;
+    }
+
+    if (!client.authed && !this.allowAnyToken) {
+      const tokenToCheck = message.token_hash || message.token;
+      if (!tokenToCheck || !this.allowedTokens.has(tokenToCheck)) {
+        this.sendError(client.ws, "Invalid token", true, "AUTH_TOKEN_INVALID");
+        return;
+      }
+    }
+
+    const deviceName = String(message.device_name || deviceId).trim().slice(0, this.maxIdLength);
+    const cleanPubKey = sanitizePublicKeyJwk(message.public_key);
+    const candidates = this.sanitizeCandidates(message.candidates);
+    const now = Date.now();
+
+    let device = this.devices.get(deviceId);
+    if (device && device.ws && device.ws !== client.ws) {
+      this.sendError(device.ws, "Device registered from another connection", true, "DEVICE_REPLACED");
+    }
+
+    if (!device) {
+      device = {
+        device_id: deviceId,
+        device_name: deviceName,
+        public_key: cleanPubKey,
+        candidates,
+        ws: client.ws,
+        client,
+        online: true,
+        registered_at: new Date(now).toISOString(),
+        last_seen: now,
+        pairedClients: new Map(),
+        activeRemoteClients: new Map(),
+      };
+      this.devices.set(deviceId, device);
+    } else {
+      device.device_name = deviceName;
+      device.public_key = cleanPubKey;
+      device.candidates = candidates;
+      device.ws = client.ws;
+      device.client = client;
+      device.online = true;
+      device.last_seen = now;
+    }
+
+    if (Array.isArray(message.paired_clients)) {
+      const allowedIds = new Set();
+      for (const entry of message.paired_clients) {
+        if (!entry || typeof entry !== "object") continue;
+        const cid = String(entry.client_id || "").trim();
+        const th = String(entry.token_hash || "").trim();
+        if (!cid || !th || this.validateIdentifier(cid, "client_id")) continue;
+        allowedIds.add(cid);
+        const existingPair = device.pairedClients.get(cid);
+        device.pairedClients.set(cid, {
+          client_id: cid,
+          label: String(entry.label || existingPair?.label || "Remote Client").slice(0, 64),
+          client_public_key: validatePublicKeyJwk(entry.client_public_key)
+            ? sanitizePublicKeyJwk(entry.client_public_key)
+            : (existingPair?.client_public_key || null),
+          token_hash: th,
+          paired_at: entry.paired_at || existingPair?.paired_at || new Date(now).toISOString(),
+          last_seen: existingPair?.last_seen || new Date(now).toISOString(),
+          revoked: false,
+        });
+      }
+      // Disconnect any active remote clients that the host no longer trusts
+      for (const [cid, pair] of device.pairedClients.entries()) {
+        if (!allowedIds.has(cid)) {
+          pair.revoked = true;
+          const activeSet = device.activeRemoteClients.get(cid);
+          if (activeSet) {
+            for (const remote of activeSet) {
+              this.sendError(remote.ws, "Remote client access revoked", true, "CLIENT_REVOKED");
+            }
+            device.activeRemoteClients.delete(cid);
+          }
+        }
+      }
+    }
+
+    client.authed = true;
+    client.role = "device";
+    client.deviceId = deviceId;
+
+    this.send(client.ws, {
+      type: "device.registered",
+      ok: true,
+      device_id: deviceId,
+      device_name: device.device_name,
+      server_time: new Date(now).toISOString(),
+      heartbeat_interval_ms: this.deviceHeartbeatIntervalMs,
+    });
+  }
+
+  handleDeviceHeartbeat(client, message) {
+    if (!client.authed || client.role !== "device" || !client.deviceId) {
+      this.sendError(client.ws, "Device registration required", false, "DEVICE_REQUIRED");
+      return;
+    }
+    if (message.device_id && String(message.device_id) !== client.deviceId) {
+      this.sendError(client.ws, "Device ID mismatch", false, "DEVICE_MISMATCH");
+      return;
+    }
+    const device = this.devices.get(client.deviceId);
+    if (!device || device.ws !== client.ws) {
+      this.sendError(client.ws, "Device session not active", true, "DEVICE_INACTIVE");
+      return;
+    }
+    device.last_seen = Date.now();
+    device.online = true;
+    if (Array.isArray(message.candidates)) {
+      device.candidates = this.sanitizeCandidates(message.candidates);
+    }
+    this.send(client.ws, {
+      type: "device.heartbeat_ack",
+      ok: true,
+      device_id: device.device_id,
+      ts: new Date(device.last_seen).toISOString(),
+    });
+  }
+
+  handleDeviceStatus(client, message) {
+    if (!this.requireAuth(client)) return;
+    const deviceId = String(message.device_id || (client.role === "device" ? client.deviceId : client.remoteDeviceId) || "").trim();
+    if (!deviceId) {
+      this.sendError(client.ws, "Missing device_id", false, "DEVICE_MISSING");
+      return;
+    }
+    const device = this.devices.get(deviceId);
+    const isOwner = client.role === "device" && client.deviceId === deviceId;
+    const isPaired = Boolean(
+      client.role === "remote_client"
+      && client.remoteDeviceId === deviceId
+      && device
+      && device.pairedClients.get(client.remoteClientId)
+      && !device.pairedClients.get(client.remoteClientId).revoked
+    );
+
+    const payload = {
+      type: "device.status",
+      ok: true,
+      device_id: deviceId,
+      online: Boolean(device && device.online),
+      device_name: device ? device.device_name : "",
+      last_seen: device ? new Date(device.last_seen).toISOString() : null,
+    };
+    if (device && (isOwner || isPaired)) {
+      payload.candidates = device.candidates;
+      payload.active_clients = device.activeRemoteClients.size;
+    }
+    this.send(client.ws, payload);
+  }
+
+  handlePairCreate(client, message) {
+    if (!client.authed || client.role !== "device" || !client.deviceId) {
+      this.sendError(client.ws, "Device registration required", false, "DEVICE_REQUIRED");
+      return;
+    }
+    const device = this.devices.get(client.deviceId);
+    if (!device || device.ws !== client.ws) {
+      this.sendError(client.ws, "Device session not active", true, "DEVICE_INACTIVE");
+      return;
+    }
+
+    let codeHash = "";
+    let generatedCode = "";
+    if (typeof message.code_hash === "string" && /^[a-f0-9]{64}$/i.test(message.code_hash.trim())) {
+      codeHash = message.code_hash.trim().toLowerCase();
+    } else if (typeof message.code === "string" && message.code.trim()) {
+      codeHash = hashPairCodeSync(message.code);
+    } else {
+      generatedCode = generatePairCode(8);
+      codeHash = hashPairCodeSync(generatedCode);
+    }
+
+    if (!codeHash) {
+      this.sendError(client.ws, "Invalid pairing code", false, "PAIR_CODE_INVALID");
+      return;
+    }
+
+    const rawTtl = Number(message.ttl_ms ?? message.expires_in_ms ?? 300000);
+    const ttlMs = Number.isFinite(rawTtl)
+      ? Math.max(50, Math.min(rawTtl, this.maxPairTtlMs))
+      : 300000;
+    const now = Date.now();
+    const pairId = String(message.pair_id || `pair_${crypto.randomBytes(8).toString("hex")}`).slice(0, this.maxIdLength);
+
+    this.pairingCodes.set(codeHash, {
+      pair_id: pairId,
+      code_hash: codeHash,
+      device_id: device.device_id,
+      device_name: device.device_name,
+      host_public_key: device.public_key,
+      created_at: now,
+      expires_at: now + ttlMs,
+      claimed: false,
+      claimed_at: 0,
+    });
+
+    const response = {
+      type: "pair.created",
+      ok: true,
+      pair_id: pairId,
+      device_id: device.device_id,
+      expires_at: new Date(now + ttlMs).toISOString(),
+    };
+    if (generatedCode) response.pair_code = generatedCode;
+    this.send(client.ws, response);
+  }
+
+  handlePairClaim(client, message) {
+    if (!this.checkPairBruteForce(client)) return;
+
+    const clientId = String(message.client_id || "").trim();
+    const idErr = this.validateIdentifier(clientId, "client_id");
+    if (idErr) {
+      this.sendError(client.ws, idErr, false, "PAIR_CLAIM_INVALID");
+      return;
+    }
+    if (!validatePublicKeyJwk(message.client_public_key)) {
+      this.sendError(client.ws, "Valid ECDH P-256 client_public_key is required", false, "PAIR_CLAIM_INVALID");
+      return;
+    }
+
+    let codeHash = "";
+    if (typeof message.code_hash === "string" && /^[a-f0-9]{64}$/i.test(message.code_hash.trim())) {
+      codeHash = message.code_hash.trim().toLowerCase();
+    } else if (typeof message.code === "string" && message.code.trim()) {
+      codeHash = hashPairCodeSync(message.code);
+    }
+
+    const slot = codeHash ? this.pairingCodes.get(codeHash) : null;
+    if (!slot) {
+      this.recordPairFailure(client);
+      this.sendError(client.ws, "Invalid pairing code", false, "PAIR_CODE_INVALID");
+      return;
+    }
+    if (message.device_id && String(message.device_id).trim() !== slot.device_id) {
+      this.recordPairFailure(client);
+      this.sendError(client.ws, "Pairing code does not match device", false, "PAIR_CODE_INVALID");
+      return;
+    }
+    if (Date.now() > slot.expires_at) {
+      this.pairingCodes.delete(codeHash);
+      this.recordPairFailure(client);
+      this.sendError(client.ws, "Pairing code expired", false, "PAIR_CODE_EXPIRED");
+      return;
+    }
+    if (slot.claimed) {
+      this.recordPairFailure(client);
+      this.sendError(client.ws, "Pairing code already used", false, "PAIR_CODE_USED");
+      return;
+    }
+
+    const device = this.devices.get(slot.device_id);
+    if (!device || !device.online || !device.ws || device.ws.readyState !== WebSocket.OPEN) {
+      this.sendError(client.ws, "Host device is offline", false, "DEVICE_OFFLINE");
+      return;
+    }
+
+    // One-time atomic consumption
+    slot.claimed = true;
+    slot.claimed_at = Date.now();
+
+    const claimId = `claim_${crypto.randomBytes(12).toString("hex")}`;
+    const label = String(message.label || "Remote Client").trim().slice(0, 64);
+    const cleanClientPub = sanitizePublicKeyJwk(message.client_public_key);
+    const clientNonce = String(message.client_nonce || "").slice(0, 128);
+    const claimProof = String(message.claim_proof || "").slice(0, 256);
+
+    const timer = setTimeout(() => {
+      const pending = this.pendingClaims.get(claimId);
+      if (!pending) return;
+      this.pendingClaims.delete(claimId);
+      this.sendError(pending.remoteClient.ws, "Host did not respond to pairing request", false, "PAIR_TIMEOUT");
+    }, this.pairClaimTimeoutMs);
+    if (timer.unref) timer.unref();
+
+    this.pendingClaims.set(claimId, {
+      claim_id: claimId,
+      pair_id: slot.pair_id,
+      code_hash: codeHash,
+      device_id: device.device_id,
+      client_id: clientId,
+      label,
+      client_public_key: cleanClientPub,
+      client_nonce: clientNonce,
+      claim_proof: claimProof,
+      remoteClient: client,
+      timer,
+    });
+    client.pendingClaimId = claimId;
+
+    this.send(device.ws, {
+      type: "pair.claim.request",
+      claim_id: claimId,
+      pair_id: slot.pair_id,
+      device_id: device.device_id,
+      client_id: clientId,
+      label,
+      client_public_key: cleanClientPub,
+      client_nonce: clientNonce,
+      claim_proof: claimProof,
+    });
+  }
+
+  handlePairApprove(client, message) {
+    if (!client.authed || client.role !== "device" || !client.deviceId) {
+      this.sendError(client.ws, "Device registration required", false, "DEVICE_REQUIRED");
+      return;
+    }
+    const claimId = String(message.claim_id || "").trim();
+    const claim = this.pendingClaims.get(claimId);
+    if (!claim || claim.device_id !== client.deviceId) {
+      this.sendError(client.ws, "Pending pairing claim not found", false, "CLAIM_NOT_FOUND");
+      return;
+    }
+    const device = this.devices.get(client.deviceId);
+    if (!device || device.ws !== client.ws) {
+      this.sendError(client.ws, "Device session not active", true, "DEVICE_INACTIVE");
+      return;
+    }
+
+    if (claim.timer) clearTimeout(claim.timer);
+    this.pendingClaims.delete(claimId);
+    claim.remoteClient.pendingClaimId = null;
+
+    const remoteToken = generateToken(32);
+    const tokenHash = hashToken(remoteToken);
+    const pairedAt = new Date().toISOString();
+
+    device.pairedClients.set(claim.client_id, {
+      client_id: claim.client_id,
+      label: claim.label,
+      client_public_key: claim.client_public_key,
+      token_hash: tokenHash,
+      paired_at: pairedAt,
+      last_seen: pairedAt,
+      revoked: false,
+    });
+
+    const remoteClient = claim.remoteClient;
+    remoteClient.authed = true;
+    remoteClient.role = "remote_client";
+    remoteClient.remoteDeviceId = device.device_id;
+    remoteClient.remoteClientId = claim.client_id;
+    this.addActiveRemoteClient(device, claim.client_id, remoteClient);
+    this.clearPairFailure(remoteClient);
+
+    const hostPubKey = validatePublicKeyJwk(message.host_public_key)
+      ? sanitizePublicKeyJwk(message.host_public_key)
+      : device.public_key;
+
+    this.send(client.ws, {
+      type: "pair.approved_ack",
+      ok: true,
+      claim_id: claimId,
+      client_id: claim.client_id,
+      label: claim.label,
+      token_hash: tokenHash,
+      paired_at: pairedAt,
+    });
+
+    this.send(remoteClient.ws, {
+      type: "pair.claimed",
+      ok: true,
+      device_id: device.device_id,
+      device_name: String(message.device_name || device.device_name),
+      client_id: claim.client_id,
+      host_public_key: hostPubKey,
+      host_nonce: String(message.host_nonce || ""),
+      host_proof: String(message.host_proof || ""),
+      remote_token: remoteToken,
+      candidates: device.candidates,
+    });
+  }
+
+  handlePairReject(client, message) {
+    if (!client.authed || client.role !== "device" || !client.deviceId) {
+      this.sendError(client.ws, "Device registration required", false, "DEVICE_REQUIRED");
+      return;
+    }
+    const claimId = String(message.claim_id || "").trim();
+    const claim = this.pendingClaims.get(claimId);
+    if (!claim || claim.device_id !== client.deviceId) {
+      this.sendError(client.ws, "Pending pairing claim not found", false, "CLAIM_NOT_FOUND");
+      return;
+    }
+    if (claim.timer) clearTimeout(claim.timer);
+    this.pendingClaims.delete(claimId);
+    claim.remoteClient.pendingClaimId = null;
+
+    this.recordPairFailure(claim.remoteClient);
+    this.sendError(
+      claim.remoteClient.ws,
+      String(message.reason || "Pairing rejected by host"),
+      false,
+      "PAIR_REJECTED"
+    );
+    this.send(client.ws, {
+      type: "pair.rejected_ack",
+      ok: true,
+      claim_id: claimId,
+    });
+  }
+
+  handlePairRevoke(client, message) {
+    if (!client.authed || client.role !== "device" || !client.deviceId) {
+      this.sendError(client.ws, "Device registration required", false, "DEVICE_REQUIRED");
+      return;
+    }
+    const device = this.devices.get(client.deviceId);
+    if (!device || device.ws !== client.ws) {
+      this.sendError(client.ws, "Device session not active", true, "DEVICE_INACTIVE");
+      return;
+    }
+    const targetClientId = String(message.client_id || "").trim();
+    if (!targetClientId) {
+      this.sendError(client.ws, "Missing client_id", false, "CLIENT_ID_MISSING");
+      return;
+    }
+
+    const existing = device.pairedClients.get(targetClientId);
+    if (existing) {
+      existing.revoked = true;
+      existing.revoked_at = new Date().toISOString();
+    } else {
+      device.pairedClients.set(targetClientId, {
+        client_id: targetClientId,
+        revoked: true,
+        revoked_at: new Date().toISOString(),
+        token_hash: "",
+      });
+    }
+
+    const activeSet = device.activeRemoteClients.get(targetClientId);
+    if (activeSet) {
+      for (const remote of activeSet) {
+        this.sendError(remote.ws, "Remote client access revoked", true, "CLIENT_REVOKED");
+      }
+      device.activeRemoteClients.delete(targetClientId);
+    }
+
+    this.send(client.ws, {
+      type: "pair.revoked",
+      ok: true,
+      client_id: targetClientId,
+    });
+  }
+
+  handleRemoteAuth(client, message) {
+    if (!this.checkPairBruteForce(client)) return;
+
+    const deviceId = String(message.device_id || "").trim();
+    const clientId = String(message.client_id || "").trim();
+    const remoteToken = String(message.remote_token || "").trim();
+    if (!deviceId || !clientId || !remoteToken) {
+      this.recordPairFailure(client);
+      this.sendError(client.ws, "Missing device_id, client_id, or remote_token", true, "REMOTE_AUTH_INVALID");
+      return;
+    }
+
+    const device = this.devices.get(deviceId);
+    if (!device) {
+      this.sendError(client.ws, "Host device is offline", true, "DEVICE_OFFLINE");
+      return;
+    }
+
+    const pair = device.pairedClients.get(clientId);
+    if (!pair || pair.revoked) {
+      this.recordPairFailure(client);
+      this.sendError(client.ws, "Remote client is not paired or has been revoked", true, "CLIENT_REVOKED");
+      return;
+    }
+
+    if (!this.verifyTokenHashTimingSafe(pair.token_hash, remoteToken)) {
+      this.recordPairFailure(client);
+      this.sendError(client.ws, "Invalid remote access token", true, "REMOTE_AUTH_INVALID");
+      return;
+    }
+
+    if (!device.online || !device.ws || device.ws.readyState !== WebSocket.OPEN) {
+      this.sendError(client.ws, "Host device is offline", true, "DEVICE_OFFLINE");
+      return;
+    }
+
+    pair.last_seen = new Date().toISOString();
+    client.authed = true;
+    client.role = "remote_client";
+    client.remoteDeviceId = deviceId;
+    client.remoteClientId = clientId;
+    this.addActiveRemoteClient(device, clientId, client);
+    this.clearPairFailure(client);
+
+    this.send(client.ws, {
+      type: "remote.auth_ok",
+      ok: true,
+      device_id: device.device_id,
+      device_name: device.device_name,
+      client_id: clientId,
+      online: true,
+      host_public_key: device.public_key,
+      candidates: device.candidates,
+    });
+
+    this.send(device.ws, {
+      type: "remote.peer_online",
+      device_id: device.device_id,
+      client_id: clientId,
+      label: pair.label,
+    });
+  }
+
+  handleSignal(client, message) {
+    if (!this.requireAuth(client)) return;
+
+    if (client.role === "remote_client") {
+      const deviceId = client.remoteDeviceId;
+      if (message.device_id && String(message.device_id) !== deviceId) {
+        this.sendError(client.ws, "Not paired with target device", false, "PEER_NOT_PAIRED");
+        return;
+      }
+      const device = this.devices.get(deviceId);
+      const pair = device ? device.pairedClients.get(client.remoteClientId) : null;
+      if (!pair || pair.revoked) {
+        this.sendError(client.ws, "Remote client access revoked", true, "CLIENT_REVOKED");
+        return;
+      }
+      if (!device || !device.online || !device.ws || device.ws.readyState !== WebSocket.OPEN) {
+        this.sendError(client.ws, "Host device is offline", false, "DEVICE_OFFLINE");
+        return;
+      }
+      const forwarded = {
+        type: message.type,
+        device_id: deviceId,
+        from_client_id: client.remoteClientId,
+      };
+      if (message.signal_id !== undefined) forwarded.signal_id = String(message.signal_id).slice(0, 128);
+      if (message.sdp !== undefined) forwarded.sdp = message.sdp;
+      if (message.candidate !== undefined) forwarded.candidate = message.candidate;
+      if (message.probe !== undefined) forwarded.probe = message.probe;
+      if (message.payload !== undefined) forwarded.payload = message.payload;
+      this.send(device.ws, forwarded);
+      return;
+    }
+
+    if (client.role === "device") {
+      const device = this.devices.get(client.deviceId);
+      if (!device || device.ws !== client.ws) {
+        this.sendError(client.ws, "Device session not active", true, "DEVICE_INACTIVE");
+        return;
+      }
+      const targetClientId = String(message.target_client_id || "").trim();
+      if (!targetClientId) {
+        this.sendError(client.ws, "Missing target_client_id", false, "TARGET_MISSING");
+        return;
+      }
+      const pair = device.pairedClients.get(targetClientId);
+      if (!pair || pair.revoked) {
+        this.sendError(client.ws, "Target client is not paired", false, "PEER_NOT_PAIRED");
+        return;
+      }
+      const recipients = device.activeRemoteClients.get(targetClientId);
+      if (!recipients || recipients.size === 0) {
+        this.sendError(client.ws, "Remote client is offline", false, "PEER_OFFLINE");
+        return;
+      }
+      const forwarded = {
+        type: message.type,
+        device_id: device.device_id,
+        target_client_id: targetClientId,
+      };
+      if (message.signal_id !== undefined) forwarded.signal_id = String(message.signal_id).slice(0, 128);
+      if (message.sdp !== undefined) forwarded.sdp = message.sdp;
+      if (message.candidate !== undefined) forwarded.candidate = message.candidate;
+      if (message.probe !== undefined) forwarded.probe = message.probe;
+      if (message.payload !== undefined) forwarded.payload = message.payload;
+      for (const remote of recipients) {
+        this.send(remote.ws, forwarded);
+      }
+      return;
+    }
+
+    this.sendError(client.ws, "Signaling requires paired device or remote client", false, "PEER_NOT_PAIRED");
+  }
+
+  handleRelayFrame(client, message) {
+    if (!this.requireAuth(client)) return;
+
+    if (message.frame === undefined || message.frame === null) {
+      this.sendError(client.ws, "Missing opaque frame payload", false, "RELAY_FRAME_INVALID");
+      return;
+    }
+    const frameBytes = Buffer.byteLength(JSON.stringify(message.frame), "utf8");
+    if (frameBytes > this.maxRelayFrameBytes) {
+      this.sendError(client.ws, "Relay frame exceeds size limit", false, "RELAY_FRAME_TOO_LARGE");
+      return;
+    }
+
+    // Zero-Knowledge invariant: never inspect or decrypt `message.frame`; route only between verified paired peers.
+    const ts = new Date().toISOString();
+
+    if (client.role === "remote_client") {
+      const deviceId = client.remoteDeviceId;
+      if (message.device_id && String(message.device_id) !== deviceId) {
+        this.sendError(client.ws, "Not paired with target device", false, "PEER_NOT_PAIRED");
+        return;
+      }
+      const device = this.devices.get(deviceId);
+      const pair = device ? device.pairedClients.get(client.remoteClientId) : null;
+      if (!pair || pair.revoked) {
+        this.sendError(client.ws, "Remote client access revoked", true, "CLIENT_REVOKED");
+        return;
+      }
+      if (!device || !device.online || !device.ws || device.ws.readyState !== WebSocket.OPEN) {
+        this.sendError(client.ws, "Host device is offline", false, "DEVICE_OFFLINE");
+        return;
+      }
+      pair.last_seen = ts;
+      this.send(device.ws, {
+        type: "relay.frame",
+        device_id: deviceId,
+        from_client_id: client.remoteClientId,
+        frame: message.frame,
+        ts,
+      });
+      return;
+    }
+
+    if (client.role === "device") {
+      const device = this.devices.get(client.deviceId);
+      if (!device || device.ws !== client.ws) {
+        this.sendError(client.ws, "Device session not active", true, "DEVICE_INACTIVE");
+        return;
+      }
+      const targetClientId = String(message.target_client_id || "").trim();
+      if (!targetClientId) {
+        this.sendError(client.ws, "Missing target_client_id", false, "TARGET_MISSING");
+        return;
+      }
+      const pair = device.pairedClients.get(targetClientId);
+      if (!pair || pair.revoked) {
+        this.sendError(client.ws, "Target client is not paired", false, "PEER_NOT_PAIRED");
+        return;
+      }
+      const recipients = device.activeRemoteClients.get(targetClientId);
+      if (!recipients || recipients.size === 0) {
+        this.sendError(client.ws, "Remote client is offline", false, "PEER_OFFLINE");
+        return;
+      }
+      for (const remote of recipients) {
+        this.send(remote.ws, {
+          type: "relay.frame",
+          device_id: device.device_id,
+          target_client_id: targetClientId,
+          frame: message.frame,
+          ts,
+        });
+      }
+      return;
+    }
+
+    this.sendError(client.ws, "Relay requires paired device or remote client", false, "PEER_NOT_PAIRED");
+  }
+
   cleanupClient(client) {
+    // Phase 5: clean up pending pairing claim if client disconnected mid-claim
+    if (client.pendingClaimId) {
+      const pending = this.pendingClaims.get(client.pendingClaimId);
+      if (pending) {
+        if (pending.timer) clearTimeout(pending.timer);
+        this.pendingClaims.delete(client.pendingClaimId);
+      }
+      client.pendingClaimId = null;
+    }
+
+    // Phase 5: clean up device or remote client state
+    if (client.role === "device" && client.deviceId) {
+      const device = this.devices.get(client.deviceId);
+      if (device && device.ws === client.ws) {
+        device.online = false;
+        device.ws = null;
+        device.client = null;
+        for (const remoteSet of device.activeRemoteClients.values()) {
+          for (const remote of remoteSet) {
+            this.send(remote.ws, { type: "device.offline", device_id: device.device_id });
+          }
+        }
+        for (const [claimId, claim] of this.pendingClaims.entries()) {
+          if (claim.device_id === device.device_id) {
+            if (claim.timer) clearTimeout(claim.timer);
+            this.pendingClaims.delete(claimId);
+            this.sendError(claim.remoteClient.ws, "Host device went offline", false, "DEVICE_OFFLINE");
+          }
+        }
+      }
+    } else if (client.role === "remote_client" && client.remoteDeviceId && client.remoteClientId) {
+      const device = this.devices.get(client.remoteDeviceId);
+      if (device) {
+        const set = device.activeRemoteClients.get(client.remoteClientId);
+        if (set) {
+          set.delete(client);
+          if (set.size === 0) {
+            device.activeRemoteClients.delete(client.remoteClientId);
+            if (device.online && device.ws) {
+              this.send(device.ws, {
+                type: "remote.peer_offline",
+                device_id: device.device_id,
+                client_id: client.remoteClientId,
+              });
+            }
+          }
+        }
+      }
+    }
+
     if (client.subscriberId) {
       this.clientsById.delete(client.subscriberId);
     }

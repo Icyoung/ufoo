@@ -166,7 +166,7 @@ describe("daemon resumeAgents", () => {
     expect(saved.agents[restored.id].agent_type).toBe("ucode");
   });
 
-  test.each(["ufoo-code", "ufoo", "kimi", "agy", "grok"])("internal recovery refuses retired or unsupported type %s", async (type) => {
+  test.each(["ufoo-code", "ufoo", "kimi", "grok"])("internal recovery refuses retired or unsupported type %s", async (type) => {
     writeConfig({ launchMode: "auto" });
     writeAgents({ [`${type}:old`]: { agent_type: type, status: "inactive", launch_mode: "internal", provider_session_id: "old-session" } });
     const result = await resumeAgents(projectRoot, `${type}:old`, null, { internalOnly: true });
@@ -216,5 +216,61 @@ describe("daemon resumeAgents", () => {
     const again = await resumeAgents(projectRoot, "group:dev-team", null, { internalOnly: true });
     expect(again.resumed).toEqual([]);
     expect(spawn).toHaveBeenCalledTimes(2);
+  });
+
+  test("launch and resume keep workers unbound to worktrees while preserving permission_mode, model, thinking, and acp:* workers", async () => {
+    const { launchAgent } = require("../../../src/runtime/daemon/ops");
+    const priorWt = path.join(projectRoot, ".ufoo", "worktrees", "existing-wt");
+    fs.mkdirSync(priorWt, { recursive: true });
+    writeConfig({ launchMode: "internal", permissionMode: "auto_edit" });
+
+    // Workers launch directly in projectRoot without framework worktree binding
+    await launchAgent(projectRoot, "codex", 1, "first-solo", null, { internalOnly: true });
+    const firstCall = spawn.mock.calls[0];
+    expect(firstCall[2].cwd).toBe(projectRoot);
+    expect(firstCall[2].env.UFOO_WORKTREE_ROOT).toBeUndefined();
+    spawn.mockClear();
+
+    writeAgents({
+      "codex:sup1": {
+        agent_type: "codex",
+        nickname: "sup-worker",
+        status: "inactive",
+        launch_mode: "internal",
+        provider_session_id: "sess-sup-1",
+        worktree_root: priorWt,
+        worktree_branch: "ufoo/existing-wt",
+        permission_mode: "supervised",
+        model: "gpt-6.2-sol",
+        thinking_level: "high",
+      },
+      "acp:gemini:g1": {
+        agent_type: "acp-gemini",
+        nickname: "gemini-1",
+        status: "inactive",
+        launch_mode: "internal",
+        provider_session_id: "acp-sess-1",
+        permission_mode: "supervised",
+      },
+    });
+
+    const list = getRecoverableAgents(projectRoot, "", { internalOnly: true });
+    expect(list.recoverable.map((r) => r.id).sort()).toEqual(["acp:gemini:g1", "codex:sup1"]);
+
+    const resumed = await resumeAgents(projectRoot, "", null, { internalOnly: true });
+    expect(resumed.resumed).toHaveLength(2);
+    expect(resumed.skipped).toHaveLength(0);
+
+    const codexCall = spawn.mock.calls.find(([, args]) => args.includes("codex"));
+    expect(codexCall[2].cwd).toBe(projectRoot);
+    expect(codexCall[2].env.UFOO_WORKTREE_ROOT).toBeUndefined();
+    expect(codexCall[2].env.UFOO_WORKTREE_BRANCH).toBeUndefined();
+    expect(codexCall[2].env.UFOO_PERMISSION_MODE).toBe("supervised");
+    expect(codexCall[2].env.UFOO_AGENT_MODEL).toBe("gpt-6.2-sol");
+    expect(codexCall[2].env.UFOO_AGENT_THINKING).toBe("high");
+
+    const acpCall = spawn.mock.calls.find(([, args]) => args.includes("acp-gemini"));
+    expect(acpCall).toBeTruthy();
+    expect(acpCall[2].env.UFOO_PERMISSION_MODE).toBe("supervised");
   });
 });
