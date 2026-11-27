@@ -360,7 +360,7 @@ function createDaemonMessageRouter(options = {}) {
       resolveStatusLine(`{gray-fg}←{/gray-fg} ${escapeBlessed(replyText)}`);
       const ops = Array.isArray(payload.ops) ? payload.ops : [];
       const isLifecycleStatusOnly = ops.length > 0
-        && ops.every((op) => op && (op.action === "close" || op.action === "launch"));
+        && ops.every((op) => op && (op.action === "close" || op.action === "launch" || op.action === "resume"));
       const group = payload.group && typeof payload.group === "object" ? payload.group : null;
       const isGroupStartedConfirmation = Boolean(
         group &&

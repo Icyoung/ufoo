@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { FileText, Image as ImageIcon, Paperclip, X } from "@phosphor-icons/react";
 import type { ComposerAttachment } from "../types";
 import { isTauriEnvironment } from "../bridge/ufooClient";
+import { DotGridLoader } from "./DotGridLoader";
 
 export function formatAttachmentSize(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "";
@@ -168,7 +169,7 @@ export function AttachmentStrip({
 
       {staging && (
         <div className="inline-flex items-center gap-1.5 rounded-xl border border-white/[0.08] bg-white/[0.03] px-2.5 py-1.5 text-[11px] text-zinc-400">
-          <span className="h-2.5 w-2.5 animate-spin rounded-full border-[1.5px] border-zinc-500 border-t-zinc-200" />
+          <DotGridLoader size="xs" colorClass="bg-zinc-300" label="Attaching" />
           <span>Attaching…</span>
         </div>
       )}

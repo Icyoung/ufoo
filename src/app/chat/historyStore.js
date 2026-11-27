@@ -29,7 +29,14 @@ const TRANSIENT_CONNECTION_PATTERNS = Object.freeze([
 
 const OPERATIONAL_LIFECYCLE_PATTERNS = Object.freeze([
   /^(?:launched|closed|resumed)\s+(?:a\s+|an\s+|\d+\s+)?[a-z0-9_.:-]+/i,
-  /^stopped\s+\d+\s+agent\(s\)/i,
+  /^resuming\s+(?:agents?|group|worker|\S+)/i,
+  /^(?:launching|closing|stopping|starting|restarting)\s+(?:project\b|daemon\b|group\b|solo\b|agent\b|[a-z0-9_.:-]+)/i,
+  /^(?:switching|switched|opening|opened)\s+project(?::|\s)/i,
+  /^(?:running\s+(?:health|context)\s+check|initializing\s+ufoo\b|installing\s+skills\b)/i,
+  /^daemon\s+(?:already running|started|stopped|restarted|is running|is not running)\b/i,
+  /^project\s+\S+\s+daemon\s+already\s+stopped\b/i,
+  /^stopped\s+(?:\d+\s+(?:agent|cron\s+task)\(s\)|cron\s+task\s+\S+)/i,
+  /^cron\s+(?:scheduled|started)\s+\S+/i,
   /^closed project\b/i,
   /^found\s+\d+\s+recoverable agent\(s\)/i,
   /^(?:entered|exited)\s+(?:multi|side)-window\b/i,
@@ -39,9 +46,15 @@ const OPERATIONAL_LIFECYCLE_PATTERNS = Object.freeze([
   /^window layouts unavailable\b/i,
   /^launch mode:\s*\S+/i,
   /^message delivered$/i,
+  /^(?:delivered to|message sent to)\s+\S+/i,
+  /^[a-z0-9_.:-]+\s+done$/i,
+  /^handed off to ufoo desktop\b/i,
+  /^task queued for:\s*/i,
+  /^(?:activated|renamed)\s+\S+/i,
+  /^choose an agent or group from the \/resume menu\b/i,
   /^settings:$/i,
-  /^ucode config (?:updated|cleared)\b/i,
-  /^ufoo-agent:\s+already\s+\S+/i,
+  /^ucode\s+config(?::|\s+(?:updated|cleared)\b)/i,
+  /^(?:ufoo-agent|assistant-engine|gate router)\s*(?:config\s+(?:updated|cleared)|:\s+\S+)/i,
   /^thinking:\s*(?:off|low|medium|high|xhigh|max)$/i,
   /^\/(?:model|settings|multi|window|close|launch|provider|daemon|project|open|resume|answer)\b/i,
   /^(?:settings saved|model set to|thinking set to|provider set to)\b/i,
@@ -51,12 +64,13 @@ const OPERATIONAL_LIFECYCLE_PATTERNS = Object.freeze([
 ]);
 
 const OPERATIONAL_BULLET_PATTERNS = Object.freeze([
-  /^•\s*(?:agent|router|ucode|use|provider|model|url|transport):\s+/i,
+  /^•\s*(?:agent|router|ucode|use|provider|model|url|transport|key|tip|thinking|controllerMode|allowed modes|defaults):\s+/i,
   /^•\s*\S+\s+\[[^\]]+\]\s+\([^)]+\)\s*->\s*\S+/i,
 ]);
 
 const OPERATIONAL_USER_ECHO_PATTERNS = Object.freeze([
   /^›\s*(?:showing settings|updating settings|showing agent provider|setting agent provider to\b|toggling multi-pane view|setting launch mode to\b|launching\s+(?:a\s+|an\s+|\d+\s+|group\b|solo\b|agent\b|codex\b|claude\b|ucode\b|agy\b|antigravity\b|ufoo\b)|closing\s+|stopping\s+(?:group\b|the ufoo daemon|cron task\b)|starting the ufoo daemon|restarting the ufoo daemon|checking daemon status|switching to project\b|opening project\b|showing current project|listing running projects|resuming\s+|choose an agent or group to resume|opening\s+settings|switching\s+window|clearing the chat log|activating\s+)/i,
+  /^[›→]\s*\/(?:model|settings|multi|window|close|launch|provider|daemon|project|open|resume|answer|clear)\b/i,
 ]);
 
 function stripFormattingTags(text = "") {
@@ -68,7 +82,7 @@ function stripFormattingTags(text = "") {
 function normalizeOperationalText(text = "") {
   return stripFormattingTags(text)
     .replace(/^(?:ufoo(?:-agent)?\s*·\s*)/i, "")
-    .replace(/^[✓✗•›←→]\s*/, "")
+    .replace(/^[✓✗⚙⚠•›←→]\s*/, "")
     .trim();
 }
 
@@ -92,13 +106,22 @@ function isOperationalUiHistoryEntry(type = "", text = "", meta = {}) {
     if (meta.operational === true || meta.ui_event === true) return true;
   }
   const normalizedType = String(type || "").trim().toLowerCase();
-  if (normalizedType === "tool" || normalizedType === "thinking" || normalizedType === "bus") {
+  if (normalizedType === "status") {
+    return true;
+  }
+  if (normalizedType === "tool" || normalizedType === "thinking" || normalizedType === "assistant") {
     return false;
   }
   const cleaned = stripFormattingTags(text);
   if (!cleaned) return false;
+  if (normalizedType === "bus") {
+    return /^↔?\s*[^:\n]+:\s*$/.test(cleaned);
+  }
   if (normalizedType === "user") {
     return OPERATIONAL_USER_ECHO_PATTERNS.some((pattern) => pattern.test(cleaned));
+  }
+  if (normalizedType === "reply" && cleaned.includes("\n")) {
+    return false;
   }
   if (normalizedType === "system" && /(?:^|\n)\/answer\s+\S+\s+<reply>\s*$/i.test(cleaned)) {
     return true;

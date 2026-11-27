@@ -235,7 +235,7 @@ function planRecovery(nodes = []) {
   const failures = nodes.filter(node => node.status === "failed" || node.status === "blocked")
     .map(node => ({ nodeId: node.id, tool: node.tool || "", error: String(node.error || node.result?.error || node.result?.summary || "blocked").slice(0, 1000) }));
   return failures.length ? { needed: true, failures,
-    hint: "Inspect is read-only and cannot retry failed nodes. Correct the plan using patch, or use control.skip_node/control.cancel_subtree for obsolete nodes. If recovery requires user input, explain the concrete blocker." } : null;
+    hint: "Inspect is read-only and cannot retry failed nodes. Recover using control.retry_node (optionally with updated args), patch.update_node / patch.remove_node / patch.expand_node / patch.remove_dependency, or control.skip_node / control.fail_node / control.cancel_subtree. If recovery requires user input, explain the concrete blocker." } : null;
 }
 
 function accepted(payload = {}) {
@@ -338,7 +338,7 @@ function applyStatusesFromStore(compiledNodes = [], storeNodes = [], options = {
     const old = prior.get(node.id);
     const sourceStatus = String(node.status || "").trim();
     let status = "pending";
-    if (preferSourceStatus && sourceStatus && sourceStatus !== "pending") {
+    if (preferSourceStatus && sourceStatus) {
       status = sourceStatus;
     } else if (old && old.status) {
       status = old.status;
@@ -354,11 +354,13 @@ function applyStatusesFromStore(compiledNodes = [], storeNodes = [], options = {
         attempt: Number.isFinite(node.attempt) ? node.attempt : 0,
       };
     }
+    const resetToPending = preferSourceStatus && status === "pending" && old.status && old.status !== "pending";
     return {
       ...node,
       status,
-      result: (preferSourceStatus && node.result) ? node.result : (old.result || node.result || null),
-      error: (preferSourceStatus && node.error) ? node.error : (old.error || node.error || ""),
+      result: resetToPending ? null : ((preferSourceStatus && node.result) ? node.result : (old.result || node.result || null)),
+      error: resetToPending ? "" : ((preferSourceStatus && node.error) ? node.error : (old.error || node.error || "")),
+      lease: resetToPending ? null : (old.lease || node.lease || null),
       stopKind: node.stopKind || old.stopKind || "",
       attempt: Number.isFinite(node.attempt) ? node.attempt : (Number.isFinite(old.attempt) ? old.attempt : 0),
       parentTaskId: node.parentTaskId || old.parentTaskId || "",
@@ -526,13 +528,18 @@ function projectPlanView(planGraph = {}) {
     }));
 }
 
-function inspectPlanGraph(planGraph = {}) {
+function inspectPlanGraph(planGraph = {}, options = {}) {
   const nodes = Array.isArray(planGraph.nodes) ? planGraph.nodes : [];
   const { readyNodes, waitingNodes } = summarizeReadyWaiting(
     nodes.map((node) => ({ ...node, status: node.status || "pending" })),
   );
   return accepted({
     graphId: planGraph.graphId || "",
+    ...(options.archived ? {
+      archived: true,
+      archiveReason: String(planGraph.archiveReason || "archived"),
+      activeGraphId: String(options.activeGraphId || ""),
+    } : {}),
     commandRevision: Number(planGraph.specRevision) || 0,
     stateRevision: Number(planGraph.stateRevision) || 0,
     revision: Number(planGraph.specRevision) || 0,
@@ -550,6 +557,7 @@ function inspectPlanGraph(planGraph = {}) {
       status: node.status || "pending",
       tool: node.tool || "",
       title: node.title || node.objective || "",
+      ...(node.content || node.objective ? { content: node.content || node.objective } : {}),
       dependsOn: Array.isArray(node.dependsOn) ? node.dependsOn : [],
       parentTaskId: node.parentTaskId || "",
       execution: node.execution || "",
@@ -557,7 +565,7 @@ function inspectPlanGraph(planGraph = {}) {
       ...(node.error || node.result?.error ? { error: String(node.error || node.result.error).slice(0, 1000) } : {}),
     })),
     planView: projectPlanView(planGraph),
-    recovery: planRecovery(nodes),
+    recovery: options.archived ? null : planRecovery(nodes),
     validationWarnings: [],
   });
 }
@@ -584,6 +592,7 @@ function selectGraphForCommand(executionState = null, command = {}) {
   if (primary.graphId) state.graphs[primary.graphId] = primary;
 
   const requested = String(command && command.graphId || "").trim();
+  const operation = String(command && command.operation || "").trim().toLowerCase();
   if (!requested) {
     return {
       ok: true,
@@ -609,10 +618,29 @@ function selectGraphForCommand(executionState = null, command = {}) {
       primaryGraphId: String(primary.graphId || ""),
     };
   }
+  if (operation === "inspect" && Array.isArray(state.archivedPlans)) {
+    const archived = [...state.archivedPlans].reverse().find(
+      (entry) => entry && String(entry.graphId || "") === requested,
+    );
+    if (archived) {
+      return {
+        ok: true,
+        graph: archived,
+        isPrimary: false,
+        isArchived: true,
+        primaryGraphId: String(primary.graphId || ""),
+      };
+    }
+  }
+  const availableGraphIds = Object.keys(state.graphs || {}).filter(Boolean);
+  const hint = availableGraphIds.length > 0
+    ? ` (active graphs: ${availableGraphIds.join(", ")})`
+    : " (no active graphs)";
   return {
     ok: false,
     code: "GRAPH_NOT_FOUND",
-    message: `graphId ${requested} not found`,
+    message: `graphId ${requested} not found${hint}`,
+    availableGraphIds,
   };
 }
 
@@ -654,12 +682,22 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
     const payload = rejected([{
       code: selected.code || "GRAPH_NOT_FOUND",
       message: selected.message || "graph not found",
+      ...(Array.isArray(selected.availableGraphIds) ? { availableGraphIds: selected.availableGraphIds } : {}),
     }]);
     return { ...payload, executionState, modelPayload: payload };
   }
 
   const primaryGraphId = selected.primaryGraphId
     || String(executionState.planGraph && executionState.planGraph.graphId || "");
+
+  if (operation === "inspect") {
+    const payload = inspectPlanGraph(selected.graph, {
+      archived: Boolean(selected.isArchived),
+      activeGraphId: primaryGraphId,
+    });
+    return { ...payload, executionState, modelPayload: payload };
+  }
+
   const priorMode = executionState.mode || "single_action";
   // Work on the selected graph for this command; restore primary afterward if child.
   if (!selected.isPrimary) {
@@ -708,6 +746,7 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
   }
 
   function resumeChildTaskLoopIfNeeded(payload = null) {
+    if (options.skipTaskLoopResume === true) return null;
     if (selected.isPrimary) return null;
     if (!payload || payload.status !== "accepted") return null;
     if (typeof options.runTool !== "function") return null;
@@ -738,12 +777,6 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
     };
   }
 
-  if (operation === "inspect") {
-    const payload = inspectPlanGraph(planGraph);
-    restorePrimaryGraph();
-    return { ...payload, executionState, modelPayload: payload };
-  }
-
   if (operation === "control") {
     const { runControlActions } = require("../runtime/taskControl");
     const controlResult = runControlActions(executionState, {
@@ -764,13 +797,15 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
     const statusOps = new Set([
       "complete_task",
       "skip_node",
+      "retry_node",
+      "fail_node",
       "cancel_subtree",
       "cancel_task",
       "fail_task",
       "mark_task_failed",
     ]);
     const touchedStatus = (Array.isArray(command.actions) ? command.actions : [])
-      .some((a) => statusOps.has(String(a && a.op || "").trim().toLowerCase()));
+      .some((a) => statusOps.has(String(a && (a.op || a.type || a.action) || "").trim().toLowerCase()));
     if (
       controlResult.ok
       && touchedStatus
@@ -955,6 +990,7 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
   let nodesUpdated = [];
   let replacedGraphId = "";
 
+  let patchOpCount = 0;
   if (operation === "create") {
     if (selected.isPrimary && planGraph.graphId) {
       replacedGraphId = String(planGraph.graphId);
@@ -984,10 +1020,11 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
     );
   } else if (operation === "patch") {
     const ops = Array.isArray(command.operations) ? command.operations.map(normalizeExpandOp) : [];
+    patchOpCount = ops.length;
     // Freeze: reject patch that mutates running task_loop contract fields.
     const { getTaskExecutionKind } = require("./planGraph");
     for (const op of ops) {
-      const type = String(op && (op.op || op.type) || "").trim().toLowerCase();
+      const type = String(op && (op.op || op.type || op.action) || "").trim().toLowerCase();
       if (type === "add_node" && op.node && getTaskExecutionKind(op.node) === "task_loop") {
         // Disallow nesting task_loop when current graph is owned by a task_loop
         if (planGraph.owner && planGraph.owner.kind === "task_loop") {
@@ -1003,10 +1040,12 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
         const existing = (planGraph.nodes || []).find((n) => n && n.id === targetId);
         if (existing && existing.status === "running" && getTaskExecutionKind(existing) === "task_loop") {
           const touchesSpec = type === "expand_node"
+            || type === "update_node"
+            || type === "remove_node"
             || type === "add_dependency"
             || type === "remove_dependency"
             || (type === "add_node" && op.node)
-            || Boolean(op.objective || op.title || op.execution || op.dependsOn);
+            || Boolean(op.objective || op.content || op.title || op.execution || op.dependsOn);
           if (touchesSpec) {
             const payload = rejected([{
               code: "RUNNING_TASK_SPEC_FROZEN",
@@ -1080,7 +1119,7 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
   }
 
   const mergedNodes = applyStatusesFromStore(preferredCompile.nodes, preferredNodes, {
-    preferSourceStatus: true,
+    preferSourceStatus: false,
   });
   if (operation === "create") {
     for (const node of mergedNodes) {
@@ -1093,7 +1132,7 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
 
   const specRevision = operation === "create"
     ? 1
-    : (Number(planGraph.specRevision) || 0) + 1;
+    : (patchOpCount > 0 ? (Number(planGraph.specRevision) || 0) + 1 : (Number(planGraph.specRevision) || 0));
   if (operation === "create") {
     executionState.planGraph = {
       ...emptyPlanGraphState(),
@@ -1145,7 +1184,9 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
   executionState.mode = "plan_graph";
 
   const afterIds = listNodeIds(mergedNodes);
+  const afterSet = new Set(afterIds);
   const nodesAdded = afterIds.filter((id) => !beforeIds.has(id));
+  const nodesRemoved = Array.from(beforeIds).filter((id) => !afterSet.has(id));
 
   let advance = {
     status: "completed",
@@ -1216,11 +1257,13 @@ function runPlanGraphCommand(commandInput = {}, options = {}) {
     changes: {
       nodesAdded,
       nodesUpdated: Array.from(new Set(nodesUpdated)),
+      ...(nodesRemoved.length ? { nodesRemoved } : {}),
       ...(replacedGraphId ? { replacedGraphId } : {}),
       ...(terminal ? { archivedGraphId: terminal.archivedGraphId } : {}),
     },
     nodesAdded,
     nodesUpdated: Array.from(new Set(nodesUpdated)),
+    ...(nodesRemoved.length ? { nodesRemoved } : {}),
     readyNodes,
     waitingNodes,
     waitingFor: terminal ? null : (live.waitingFor || null),

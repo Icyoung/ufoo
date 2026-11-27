@@ -5,6 +5,7 @@ import { ufooBridge } from "../bridge/ufooClient";
 import { useWorkspace } from "../store/workspaceStore";
 import type { PermissionMode, WorkerModelCatalogResponse } from "../types";
 import { BrandIcon, resolveBrandKey } from "./BrandIcon";
+import { DotGridLoader } from "./DotGridLoader";
 
 const EFFORT_LABELS: Record<string, string> = {
   off: "Off",
@@ -259,8 +260,9 @@ export function ModelEffortPicker({
 
               <div ref={listRef} className="max-h-72 overflow-y-auto space-y-0.5">
                 {loading && models.length === 0 ? (
-                  <div className="px-2.5 py-3 text-center text-[12px] text-zinc-500">
-                    Loading models…
+                  <div className="flex items-center justify-center gap-2 px-2.5 py-3 text-[12px] text-zinc-500">
+                    <DotGridLoader size="xs" colorClass="bg-zinc-400" />
+                    <span>Loading models…</span>
                   </div>
                 ) : models.length === 0 ? (
                   <div className="px-2.5 py-2.5 text-[12px] text-zinc-500">

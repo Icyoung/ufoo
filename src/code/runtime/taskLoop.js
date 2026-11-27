@@ -6,7 +6,7 @@
  * as long as executionState.taskRuns is persisted with the session.
  */
 
-const { createPlanId } = require("../context/planGraph");
+const { createPlanId, deriveConcisePlanTitle } = require("../context/planGraph");
 const {
   emptyPlanGraphState,
   runPlanGraphCommand,
@@ -70,10 +70,13 @@ function createChildGraphState({
   parentNodeId = "",
   taskRunId = "",
   objective = "",
+  title = "",
 } = {}) {
   const graph = emptyPlanGraphState();
+  const goal = String(objective || "").trim();
+  const shortTitle = String(title || "").trim() || deriveConcisePlanTitle(goal) || "Execute task";
   graph.graphId = createPlanId("child");
-  graph.objective = String(objective || "").trim();
+  graph.objective = goal;
   graph.owner = taskLoopOwner(taskRunId);
   graph.parentGraphId = String(parentGraphId || "").trim();
   graph.parentNodeId = String(parentNodeId || "").trim();
@@ -81,8 +84,9 @@ function createChildGraphState({
     {
       id: "root",
       type: "task",
-      title: objective || "Execute task",
-      objective: objective || "Execute task",
+      title: shortTitle,
+      content: goal || shortTitle,
+      objective: goal || shortTitle,
       execution: { kind: "expand" },
       dependsOn: [],
       status: "pending",
@@ -104,9 +108,12 @@ function emitParentReadyChanged(executionState = null) {
 }
 
 function syncParentNodeFromRun(executionState = null, run = null) {
-  if (!run) return;
-  const parent = getGraph(executionState, run.parentGraphId) || executionState.planGraph;
+  if (!run || !run.parentNodeId) return;
+  const parent = run.parentGraphId
+    ? getGraph(executionState, run.parentGraphId)
+    : null;
   if (!parent || !Array.isArray(parent.nodes)) return;
+  if (run.childGraphId && parent.graphId === run.childGraphId) return;
   const node = parent.nodes.find((n) => n && n.id === run.parentNodeId);
   if (!node) return;
   if (!node.runtime || typeof node.runtime !== "object") node.runtime = {};
@@ -266,7 +273,7 @@ function processTaskRun(executionState = null, taskRunId = "", options = {}) {
   }
 
   const parent = live.parentGraphId
-    ? (getGraph(executionState, live.parentGraphId) || executionState.planGraph)
+    ? getGraph(executionState, live.parentGraphId)
     : null;
   const standalone = !live.parentNodeId;
   const focus = buildTaskFocus({
@@ -328,6 +335,7 @@ function processTaskRun(executionState = null, taskRunId = "", options = {}) {
       executionState,
       runTool: wrappedRunTool,
       autoAdvance: true,
+      skipTaskLoopResume: true,
       knownTools: options.knownTools,
     });
     const after = getGraph(executionState, live.childGraphId);

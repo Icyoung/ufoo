@@ -52,6 +52,36 @@ const TOOL_ALIASES = Object.freeze({
 const SIDE_EFFECT_TOOLS = new Set(["write", "edit"]);
 const REF_PATTERN = /\$\{([a-zA-Z0-9_-]+)((?:\.[a-zA-Z0-9_]+|\[\d+\])*)\}/g;
 
+// Plain-string args carrying source code or shell commands must not trigger
+// implicit `${var.prop}` graph output reference parsing/substitution. Callers
+// that intentionally inject upstream outputs into these fields can still use
+// explicit `{ $ref: ... }` or `{ $template: ... }` objects.
+const CODE_LITERAL_ARG_KEYS_BY_TOOL = Object.freeze({
+  edit: new Set(["find", "replace", "old_string", "new_string"]),
+  write: new Set(["content"]),
+  bash: new Set(["command"]),
+});
+
+function deriveConcisePlanTitle(text = "", maxChars = 72) {
+  const clean = String(text || "").replace(/\s+/g, " ").trim();
+  if (!clean) return "";
+  const limit = Number.isFinite(maxChars) && maxChars > 8 ? Math.floor(maxChars) : 72;
+  if (clean.length <= limit) return clean;
+  const firstLine = String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .find(Boolean) || clean;
+  const clause = firstLine.split(/[。；;\n]|(?:\.\s+)/)[0].trim();
+  const candidate = clause.length >= 6 ? clause : firstLine;
+  if (candidate.length <= limit) return candidate;
+  const slice = candidate.slice(0, limit - 1);
+  const lastSpace = slice.lastIndexOf(" ");
+  if (lastSpace > Math.floor(limit * 0.55)) {
+    return `${slice.slice(0, lastSpace).trim()}…`;
+  }
+  return `${slice.trim()}…`;
+}
+
 function createPlanId(prefix = "plan") {
   return `${prefix}_${Date.now().toString(36)}_${randomUUID().slice(0, 6)}`;
 }
@@ -96,8 +126,15 @@ function normalizePlanNode(source = {}, fallbackId = "node") {
     };
   }
   if (base.type === "task") {
-    const title = String(source.title || "").trim();
-    const objective = String(source.objective || title || "").trim();
+    const rawTitle = String(source.title || "").trim();
+    const rawContent = String(
+      source.content != null ? source.content
+        : (source.objective != null ? source.objective
+          : (source.description != null ? source.description
+            : (source.details != null ? source.details : ""))),
+    ).trim();
+    const objective = rawContent || rawTitle;
+    const title = rawTitle || deriveConcisePlanTitle(rawContent);
     let execution;
     if (source.execution && typeof source.execution === "object" && !Array.isArray(source.execution)) {
       const kindRaw = String(source.execution.kind || "inline_llm").trim().toLowerCase();
@@ -128,6 +165,7 @@ function normalizePlanNode(source = {}, fallbackId = "node") {
       ...base,
       type: "task",
       title: title || objective,
+      content: objective,
       objective,
       successCriteria: Array.isArray(source.successCriteria)
         ? source.successCriteria.map(String)
@@ -314,6 +352,28 @@ function collectRefsFromValue(value, out = new Set()) {
   return out;
 }
 
+function getLiteralArgKeysForTool(tool = "") {
+  const resolved = resolveToolName(tool).toLowerCase();
+  return CODE_LITERAL_ARG_KEYS_BY_TOOL[resolved] || null;
+}
+
+function collectRefsFromToolArgs(tool = "", args = null, out = new Set()) {
+  if (!args || typeof args !== "object" || Array.isArray(args)) {
+    return collectRefsFromValue(args, out);
+  }
+  const literalKeys = getLiteralArgKeysForTool(tool);
+  if (!literalKeys) {
+    return collectRefsFromValue(args, out);
+  }
+  for (const [key, value] of Object.entries(args)) {
+    if (literalKeys.has(key) && typeof value === "string") {
+      continue;
+    }
+    collectRefsFromValue(value, out);
+  }
+  return out;
+}
+
 function resolveToolName(tool = "") {
   const raw = String(tool || "").trim();
   if (!raw) return "";
@@ -474,8 +534,25 @@ function compilePlanGraph(input = {}, options = {}) {
   }
 
   for (const node of byId.values()) {
+    if (node.type !== "tool") continue;
+    const resolved = resolveToolName(node.tool);
+    if (!resolved) {
+      errors.push(`tool node ${node.id} missing tool`);
+      continue;
+    }
+    node.tool = resolved;
+    if (knownTools.size > 0 && !knownTools.has(resolved.toLowerCase())) {
+      warnings.push(`unknown tool ${resolved} on node ${node.id}`);
+    }
+  }
+
+  for (const node of byId.values()) {
     const refs = new Set();
-    collectRefsFromValue(node.args, refs);
+    if (node.type === "tool") {
+      collectRefsFromToolArgs(node.tool, node.args, refs);
+    } else {
+      collectRefsFromValue(node.args, refs);
+    }
     collectRefsFromValue(node.inputs, refs);
     for (const ref of refs) {
       if (ref === node.id) {
@@ -490,19 +567,6 @@ function compilePlanGraph(input = {}, options = {}) {
         node.dependsOn.push(ref);
         warnings.push(`inferred dependsOn ${ref} for ${node.id}`);
       }
-    }
-  }
-
-  for (const node of byId.values()) {
-    if (node.type !== "tool") continue;
-    const resolved = resolveToolName(node.tool);
-    if (!resolved) {
-      errors.push(`tool node ${node.id} missing tool`);
-      continue;
-    }
-    node.tool = resolved;
-    if (knownTools.size > 0 && !knownTools.has(resolved.toLowerCase())) {
-      warnings.push(`unknown tool ${resolved} on node ${node.id}`);
     }
   }
 
@@ -607,6 +671,25 @@ function resolveValue(value, outputs = new Map()) {
   return value;
 }
 
+function resolveToolArgs(tool = "", args = {}, outputs = new Map()) {
+  if (!args || typeof args !== "object" || Array.isArray(args)) {
+    return resolveValue(args, outputs);
+  }
+  const literalKeys = getLiteralArgKeysForTool(tool);
+  if (!literalKeys) {
+    return resolveValue(args, outputs);
+  }
+  const out = {};
+  for (const [key, item] of Object.entries(args)) {
+    if (literalKeys.has(key) && typeof item === "string") {
+      out[key] = item;
+    } else {
+      out[key] = resolveValue(item, outputs);
+    }
+  }
+  return out;
+}
+
 function normalizeNodeResult(result = {}) {
   const source = result && typeof result === "object" ? result : {};
   const ok = source.ok !== false && source.status !== "failed";
@@ -641,11 +724,11 @@ function getReadyNodes(nodeMap = new Map()) {
   for (const node of nodeMap.values()) {
     if (node.status !== "pending") continue;
     const deps = normalizeDependsOn(node.dependsOn);
-    const allSucceeded = deps.every((depId) => {
+    const allSatisfied = deps.every((depId) => {
       const dep = nodeMap.get(depId);
-      return dep && dep.status === "succeeded";
+      return dep && (dep.status === "succeeded" || dep.status === "skipped");
     });
-    if (allSucceeded) ready.push(node);
+    if (allSatisfied) ready.push(node);
   }
   ready.sort(compareNodeOrder);
   return ready;
@@ -692,11 +775,32 @@ function blockDependents(nodeMap, failedId) {
       if (node.status !== "pending") continue;
       const blocked = normalizeDependsOn(node.dependsOn).some((depId) => {
         const dep = nodeMap.get(depId);
-        return dep && (dep.status === "failed" || dep.status === "blocked" || dep.status === "skipped" || dep.status === "cancelled");
+        return dep && (dep.status === "failed" || dep.status === "blocked" || dep.status === "cancelled");
       });
       if (blocked) {
         node.status = "blocked";
         node.error = `blocked by ${failedId}`;
+        changed = true;
+      }
+    }
+  }
+}
+
+function reconcileBlockedNodes(nodes = []) {
+  const list = Array.isArray(nodes) ? nodes : [];
+  const byId = new Map(list.filter(Boolean).map((node) => [node.id, node]));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const node of list) {
+      if (!node || node.status !== "blocked") continue;
+      const stillBlocked = normalizeDependsOn(node.dependsOn).some((depId) => {
+        const dep = byId.get(depId);
+        return dep && (dep.status === "failed" || dep.status === "blocked" || dep.status === "cancelled");
+      });
+      if (!stillBlocked) {
+        node.status = "pending";
+        node.error = "";
         changed = true;
       }
     }
@@ -905,14 +1009,14 @@ function executePlanGraph(input = {}, options = {}) {
         parallel,
         workerId,
         leaseMs,
-        resolveArgs: (node) => resolveValue(node.args || {}, outputs),
+        resolveArgs: (node) => resolveToolArgs(node.tool, node.args || {}, outputs),
       });
       if (batch.length === 0) {
         // All ready tools conflicted; fall through to controls or deadlock.
       } else {
         let failFastTriggered = false;
         for (const node of batch) {
-          const args = resolveValue(node.args || {}, outputs);
+          const args = resolveToolArgs(node.tool, node.args || {}, outputs);
           let raw;
           try {
             raw = runTool({
@@ -1086,11 +1190,11 @@ function applyPlanOperations(planInput = {}, operations = []) {
       errors.push(`expand_node requires task node: ${nodeId}`);
       return;
     }
-    if (getTaskExecutionKind(target) === "aggregate") {
-      errors.push(`task already expanded: ${nodeId}`);
-      return;
-    }
-    if (target.status && !["pending", "waiting_llm", "ready"].includes(String(target.status))) {
+    const alreadyAggregate = getTaskExecutionKind(target) === "aggregate";
+    const allowedStatuses = alreadyAggregate
+      ? ["pending", "waiting_llm", "ready", "blocked", "failed"]
+      : ["pending", "waiting_llm", "ready"];
+    if (target.status && !allowedStatuses.includes(String(target.status))) {
       errors.push(`task not expandable in status ${target.status}: ${nodeId}`);
       return;
     }
@@ -1118,7 +1222,10 @@ function applyPlanOperations(planInput = {}, operations = []) {
       return;
     }
 
-    const parentDeps = normalizeDependsOn(target.dependsOn);
+    const parentDeps = alreadyAggregate ? [] : normalizeDependsOn(target.dependsOn);
+    const existingChildCount = alreadyAggregate
+      ? nodes.filter((n) => n && n.parentTaskId === nodeId).length
+      : 0;
     const childIds = [];
     let seqPrev = null;
     children.forEach((child, index) => {
@@ -1129,11 +1236,11 @@ function applyPlanOperations(planInput = {}, operations = []) {
         dependsOn: Array.from(new Set(deps)),
         parentTaskId: nodeId,
         generated: true,
-        displayOrder: index,
+        displayOrder: existingChildCount + index,
         createdSeq: nextSeq,
         status: "pending",
         attempt: 0,
-      }, `${nodeId}_c${index + 1}`);
+      }, `${nodeId}_c${existingChildCount + index + 1}`);
       nextSeq += 1;
       if (findIndex(normalized.id) >= 0) {
         errors.push(`duplicate node id while expanding: ${normalized.id}`);
@@ -1145,27 +1252,55 @@ function applyPlanOperations(planInput = {}, operations = []) {
     });
     if (errors.length > 0) return;
 
-    const sinks = strategy === "sequence"
+    const newSinks = strategy === "sequence"
       ? (childIds.length ? [childIds[childIds.length - 1]] : [])
       : childIds.slice();
+
+    let nextDeps = newSinks;
+    if (alreadyAggregate) {
+      const byId = new Map(nodes.map((n) => [n.id, n]));
+      const existingDeps = normalizeDependsOn(target.dependsOn).filter((depId) => {
+        if (!op.replaceFailed) return true;
+        const dep = byId.get(depId);
+        return !dep || !["failed", "blocked", "cancelled"].includes(String(dep.status || ""));
+      });
+      nextDeps = Array.from(new Set(existingDeps.concat(newSinks)));
+    }
 
     nodes[idx] = {
       ...target,
       type: "task",
       execution: { kind: "aggregate" },
-      dependsOn: sinks,
+      dependsOn: nextDeps,
       status: "pending",
       result: null,
       error: "",
     };
+    reconcileBlockedNodes(nodes);
   }
 
   for (const op of ops) {
     if (!op || typeof op !== "object") continue;
-    const type = String(op.op || op.type || "").trim().toLowerCase();
-    if (type === "add_node" && op.node) {
+    const type = String(op.op || op.type || op.action || "").trim().toLowerCase();
+    if (type === "add_node") {
+      const rawNode = op.node && typeof op.node === "object"
+        ? op.node
+        : (op.id || op.tool || op.title || op.objective || op.content ? op : null);
+      if (!rawNode) {
+        errors.push("add_node requires node");
+        continue;
+      }
+      const afterDeps = Array.isArray(op.after)
+        ? op.after.map((d) => String(d || "").trim()).filter(Boolean)
+        : (op.after ? [String(op.after).trim()] : []);
+      const parentTaskId = String(rawNode.parentTaskId || op.parentTaskId || "").trim();
+      const mergedDeps = Array.from(new Set(
+        normalizeDependsOn(rawNode.dependsOn || rawNode.depends_on).concat(afterDeps),
+      ));
       const node = normalizePlanNode({
-        ...op.node,
+        ...rawNode,
+        dependsOn: mergedDeps,
+        parentTaskId,
         status: "pending",
         createdSeq: nextSeq,
         attempt: 0,
@@ -1180,6 +1315,157 @@ function applyPlanOperations(planInput = {}, operations = []) {
         node.execution = { kind: "inline_llm" };
       }
       nodes.push(node);
+      if (parentTaskId) {
+        const parentIdx = findIndex(parentTaskId);
+        if (parentIdx >= 0 && isAggregateTask(nodes[parentIdx])) {
+          const parentNode = nodes[parentIdx];
+          if (!["running", "succeeded"].includes(String(parentNode.status || ""))) {
+            nodes[parentIdx] = {
+              ...parentNode,
+              dependsOn: Array.from(new Set(normalizeDependsOn(parentNode.dependsOn).concat([node.id]))),
+              status: parentNode.status === "blocked" ? "pending" : parentNode.status,
+              error: parentNode.status === "blocked" ? "" : parentNode.error,
+            };
+          }
+        }
+      }
+      const beforeTargets = Array.isArray(op.before)
+        ? op.before.map((d) => String(d || "").trim()).filter(Boolean)
+        : (op.before ? [String(op.before).trim()] : []);
+      for (const beforeId of beforeTargets) {
+        const bIdx = findIndex(beforeId);
+        if (bIdx < 0) continue;
+        const bNode = nodes[bIdx];
+        if (!["pending", "waiting_llm", "ready", "blocked"].includes(String(bNode.status || "pending"))) {
+          continue;
+        }
+        nodes[bIdx] = {
+          ...bNode,
+          dependsOn: Array.from(new Set(normalizeDependsOn(bNode.dependsOn).concat([node.id]))),
+        };
+      }
+      continue;
+    }
+    if (type === "update_node") {
+      const nodeId = String(op.nodeId || (op.node && op.node.id) || "").trim();
+      const idx = findIndex(nodeId);
+      if (idx < 0) {
+        errors.push(`update_node target missing: ${nodeId}`);
+        continue;
+      }
+      const existing = nodes[idx];
+      const existingStatus = String(existing.status || "pending");
+      if (["running", "succeeded"].includes(existingStatus)) {
+        errors.push(`cannot update ${nodeId} in status ${existingStatus}`);
+        continue;
+      }
+      const changes = (op.changes && typeof op.changes === "object" && !Array.isArray(op.changes))
+        ? op.changes
+        : ((op.patch && typeof op.patch === "object" && !Array.isArray(op.patch))
+          ? op.patch
+          : ((op.node && typeof op.node === "object" && !Array.isArray(op.node)) ? op.node : op));
+      const updatedSource = {
+        ...existing,
+        id: existing.id,
+        type: existing.type,
+      };
+      if (Object.hasOwn(changes, "title")) updatedSource.title = changes.title;
+      if (Object.hasOwn(changes, "content")) {
+        updatedSource.content = changes.content;
+        if (!Object.hasOwn(changes, "objective")) updatedSource.objective = changes.content;
+      }
+      if (Object.hasOwn(changes, "objective")) {
+        updatedSource.objective = changes.objective;
+        if (!Object.hasOwn(changes, "content")) updatedSource.content = changes.objective;
+      }
+      if (Object.hasOwn(changes, "description") && !Object.hasOwn(changes, "content") && !Object.hasOwn(changes, "objective")) {
+        updatedSource.content = changes.description;
+        updatedSource.objective = changes.description;
+      }
+      if (Object.hasOwn(changes, "successCriteria") || Object.hasOwn(changes, "success_criteria")) {
+        updatedSource.successCriteria = changes.successCriteria || changes.success_criteria;
+      }
+      if (Object.hasOwn(changes, "execution") && existing.type === "task") {
+        updatedSource.execution = changes.execution;
+      }
+      if (Object.hasOwn(changes, "tool") && existing.type === "tool") {
+        updatedSource.tool = changes.tool;
+      }
+      if (Object.hasOwn(changes, "args") && existing.type === "tool") {
+        updatedSource.args = changes.args && typeof changes.args === "object" ? changes.args : {};
+      }
+      if (Object.hasOwn(changes, "inputs") && existing.type === "task") {
+        updatedSource.inputs = changes.inputs && typeof changes.inputs === "object" ? changes.inputs : {};
+      }
+      if (Object.hasOwn(changes, "dependsOn") || Object.hasOwn(changes, "depends_on")) {
+        updatedSource.dependsOn = changes.dependsOn || changes.depends_on;
+      }
+      if (Object.hasOwn(changes, "reason") && existing.type === "checkpoint") {
+        updatedSource.reason = changes.reason;
+      }
+      const normalized = normalizePlanNode(updatedSource, existing.id);
+      if (normalized.type === "task" && getTaskExecutionKind(normalized) === "aggregate" && !isAggregateTask(existing)) {
+        normalized.execution = existing.execution || { kind: "inline_llm" };
+      }
+      const repairedTool = existingStatus === "failed"
+        && (Object.hasOwn(changes, "args") || Object.hasOwn(changes, "tool") || op.reset === true);
+      const rewiredBlocked = existingStatus === "blocked"
+        && (Object.hasOwn(changes, "dependsOn") || Object.hasOwn(changes, "depends_on") || op.reset === true);
+      const nextStatus = (repairedTool || rewiredBlocked || op.reset === true)
+        ? "pending"
+        : existingStatus;
+      nodes[idx] = {
+        ...existing,
+        ...normalized,
+        status: nextStatus,
+        error: nextStatus === "pending" ? "" : (existing.error || ""),
+        result: nextStatus === "pending" ? null : (existing.result || null),
+        lease: nextStatus === "pending" ? null : (existing.lease || null),
+        createdSeq: existing.createdSeq,
+        displayOrder: existing.displayOrder,
+        generated: existing.generated,
+        parentTaskId: existing.parentTaskId,
+      };
+      if (nextStatus === "pending") reconcileBlockedNodes(nodes);
+      continue;
+    }
+    if (type === "remove_node") {
+      const nodeId = String(op.nodeId || (op.node && op.node.id) || "").trim();
+      const idx = findIndex(nodeId);
+      if (idx < 0) {
+        errors.push(`remove_node target missing: ${nodeId}`);
+        continue;
+      }
+      const existing = nodes[idx];
+      const existingStatus = String(existing.status || "pending");
+      if (["running", "succeeded"].includes(existingStatus)) {
+        errors.push(`cannot remove ${nodeId} in status ${existingStatus}`);
+        continue;
+      }
+      nodes.splice(idx, 1);
+      for (let i = 0; i < nodes.length; i += 1) {
+        const currentDeps = normalizeDependsOn(nodes[i].dependsOn);
+        if (currentDeps.includes(nodeId)) {
+          nodes[i] = {
+            ...nodes[i],
+            dependsOn: currentDeps.filter((dep) => dep !== nodeId),
+          };
+        }
+      }
+      reconcileBlockedNodes(nodes);
+      continue;
+    }
+    if (type === "update_plan" || type === "update_objective") {
+      if (typeof op.objective === "string") {
+        plan.objective = op.objective.trim();
+      } else if (typeof op.title === "string") {
+        plan.objective = op.title.trim();
+      }
+      if (typeof op.failurePolicy === "string") {
+        plan.failurePolicy = op.failurePolicy.trim().toLowerCase() === "fail_fast"
+          ? "fail_fast"
+          : "continue_independent";
+      }
       continue;
     }
     if (type === "expand" || type === "expand_node") {
@@ -1187,7 +1473,7 @@ function applyPlanOperations(planInput = {}, operations = []) {
       continue;
     }
     if (type === "replace_node") {
-      errors.push("replace_node is disabled in v1; use expand_node or add_node");
+      errors.push("replace_node is disabled; use update_node, remove_node, expand_node, or add_node");
       continue;
     }
     if (type === "add_dependency") {
@@ -1196,7 +1482,7 @@ function applyPlanOperations(planInput = {}, operations = []) {
       const idx = findIndex(nodeId);
       if (idx < 0 || !dep) continue;
       const node = nodes[idx];
-      if (node.status && !["pending", "waiting_llm", "ready"].includes(String(node.status))) {
+      if (node.status && !["pending", "waiting_llm", "ready", "blocked", "failed"].includes(String(node.status))) {
         errors.push(`cannot modify dependencies of ${nodeId} in status ${node.status}`);
         continue;
       }
@@ -1204,6 +1490,7 @@ function applyPlanOperations(planInput = {}, operations = []) {
         ...node,
         dependsOn: Array.from(new Set(normalizeDependsOn(node.dependsOn).concat([dep]))),
       };
+      reconcileBlockedNodes(nodes);
       continue;
     }
     if (type === "remove_dependency") {
@@ -1212,7 +1499,7 @@ function applyPlanOperations(planInput = {}, operations = []) {
       const idx = findIndex(nodeId);
       if (idx < 0 || !dep) continue;
       const node = nodes[idx];
-      if (node.status && !["pending", "waiting_llm", "ready"].includes(String(node.status))) {
+      if (node.status && !["pending", "waiting_llm", "ready", "blocked", "failed"].includes(String(node.status))) {
         errors.push(`cannot modify dependencies of ${nodeId} in status ${node.status}`);
         continue;
       }
@@ -1220,16 +1507,17 @@ function applyPlanOperations(planInput = {}, operations = []) {
         ...node,
         dependsOn: normalizeDependsOn(node.dependsOn).filter((item) => item !== dep),
       };
+      reconcileBlockedNodes(nodes);
       continue;
     }
-    if (type === "complete_task" || type === "skip_node" || type === "cancel_subtree") {
+    if (type === "complete_task" || type === "skip_node" || type === "cancel_subtree" || type === "retry_node" || type === "fail_node") {
       errors.push(
         `${type} is a control action; use plan_graph operation=control (not patch)`,
       );
       continue;
     }
     if (type === "set_status") {
-      errors.push("set_status is removed; use control complete_task / skip_node / cancel_subtree");
+      errors.push("set_status is removed; use control complete_task / retry_node / skip_node / fail_node / cancel_subtree");
       continue;
     }
   }
@@ -1237,6 +1525,7 @@ function applyPlanOperations(planInput = {}, operations = []) {
   return {
     id: plan.id,
     objective: plan.objective,
+    failurePolicy: plan.failurePolicy,
     nodes,
     errors,
   };
@@ -1253,7 +1542,7 @@ function applyControlNodeAction(planGraph = null, action = {}) {
       errors: [{ code: "GRAPH_MISSING", message: "plan graph missing" }],
     };
   }
-  const op = String(action.op || action.type || "").trim().toLowerCase();
+  const op = String(action.op || action.type || action.action || "").trim().toLowerCase();
   const nodes = planGraph.nodes;
   const findIndex = (id) => nodes.findIndex((node) => node && node.id === id);
   const errors = [];
@@ -1313,7 +1602,7 @@ function applyControlNodeAction(planGraph = null, action = {}) {
       };
     }
     const node = nodes[idx];
-    if (node.status && !["pending", "waiting_llm", "ready"].includes(String(node.status))) {
+    if (node.status && !["pending", "waiting_llm", "ready", "failed", "blocked"].includes(String(node.status))) {
       return {
         ok: false,
         errors: [{
@@ -1322,7 +1611,71 @@ function applyControlNodeAction(planGraph = null, action = {}) {
         }],
       };
     }
-    nodes[idx] = { ...node, status: "skipped", error: String(action.reason || "skipped") };
+    nodes[idx] = {
+      ...node,
+      status: "skipped",
+      lease: null,
+      error: String(action.reason || "skipped"),
+    };
+    reconcileBlockedNodes(nodes);
+  } else if (op === "retry_node") {
+    const nodeId = String(action.nodeId || "").trim();
+    const idx = findIndex(nodeId);
+    if (idx < 0) {
+      return {
+        ok: false,
+        errors: [{ code: "NODE_NOT_FOUND", message: `retry_node target missing: ${nodeId}` }],
+      };
+    }
+    const node = nodes[idx];
+    if (node.status && !["failed", "blocked", "cancelled", "skipped"].includes(String(node.status))) {
+      return {
+        ok: false,
+        errors: [{
+          code: "BAD_STATUS",
+          message: `cannot retry ${nodeId} in status ${node.status}`,
+        }],
+      };
+    }
+    const nextArgs = (node.type === "tool" && action.args && typeof action.args === "object" && !Array.isArray(action.args))
+      ? { ...(node.args || {}), ...cloneJson(action.args) }
+      : node.args;
+    nodes[idx] = {
+      ...node,
+      ...(node.type === "tool" ? { args: nextArgs } : {}),
+      status: "pending",
+      result: null,
+      error: "",
+      lease: null,
+    };
+    reconcileBlockedNodes(nodes);
+  } else if (op === "fail_node") {
+    const nodeId = String(action.nodeId || "").trim();
+    const idx = findIndex(nodeId);
+    if (idx < 0) {
+      return {
+        ok: false,
+        errors: [{ code: "NODE_NOT_FOUND", message: `fail_node target missing: ${nodeId}` }],
+      };
+    }
+    const node = nodes[idx];
+    if (node.status && !["pending", "waiting_llm", "ready", "blocked"].includes(String(node.status))) {
+      return {
+        ok: false,
+        errors: [{
+          code: "BAD_STATUS",
+          message: `cannot fail ${nodeId} in status ${node.status}`,
+        }],
+      };
+    }
+    const reason = String(action.reason || "failed");
+    nodes[idx] = {
+      ...node,
+      status: "failed",
+      lease: null,
+      error: reason,
+    };
+    blockDependents(new Map(nodes.map((n) => [n.id, n])), nodeId);
   } else if (op === "cancel_subtree") {
     const nodeId = String(action.nodeId || "").trim();
     const idx = findIndex(nodeId);
@@ -1364,7 +1717,16 @@ function applyControlNodeAction(planGraph = null, action = {}) {
   planGraph.stateRevision = (Number(planGraph.stateRevision) || 0) + 1;
   const waiting = planGraph.waitingFor;
   const touchId = String(action.nodeId || "").trim();
-  if (waiting && touchId && String(waiting.id || "") === touchId) {
+  const clearWaiting = Boolean(
+    waiting && (
+      (touchId && String(waiting.id || "") === touchId)
+      || (waiting.type === "failures" && (
+        !nodes.some((n) => n && n.status === "failed")
+        || (Array.isArray(waiting.nodes) && waiting.nodes.some((entry) => entry && entry.id === touchId))
+      ))
+    ),
+  );
+  if (clearWaiting) {
     planGraph.waitingFor = null;
     planGraph.lastStoppedAt = "";
     planGraph.lastYieldReason = "";
@@ -1383,17 +1745,21 @@ module.exports = {
   NODE_STATUSES,
   TOOL_ALIASES,
   SIDE_EFFECT_TOOLS,
+  CODE_LITERAL_ARG_KEYS_BY_TOOL,
   createPlanId,
+  deriveConcisePlanTitle,
   normalizePlanNode,
   normalizePlanGraph,
   planGraphFromExecutionSegment,
   compilePlanGraph,
   resolveValue,
+  resolveToolArgs,
   resolveRefToken,
   resolveStructuredRef,
   executePlanGraph,
   applyPlanOperations,
   applyControlNodeAction,
+  reconcileBlockedNodes,
   flattenPlanNodes,
   rewriteGroupDependencies,
   detectCycles,
@@ -1407,4 +1773,5 @@ module.exports = {
   summarizeGraph,
   resolveToolName,
   collectRefsFromValue,
+  collectRefsFromToolArgs,
 };

@@ -90,7 +90,26 @@ function createInternalCodingThread(options = {}) {
       if (!result?.streamed && result?.summary) push({ type: "text_delta", delta: result.summary });
       if (hasPendingUserInteraction(state.executionState)) {
         const { getPendingUserInteraction } = require("./context/userInteraction");
-        push({ type: "interaction", lines: formatInteractionPromptLines(getPendingUserInteraction(state.executionState), { cols: 80 }) });
+        const pendingInteraction = getPendingUserInteraction(state.executionState);
+        push({
+          type: "interaction",
+          interaction: pendingInteraction
+            ? {
+              id: String(pendingInteraction.id || ""),
+              kind: String(pendingInteraction.kind || "chat"),
+              prompt: String(pendingInteraction.prompt || ""),
+              options: Array.isArray(pendingInteraction.options)
+                ? pendingInteraction.options.map((opt) => ({
+                  key: String(opt?.key || ""),
+                  label: String(opt?.label || ""),
+                  ...(opt?.description ? { description: String(opt.description) } : {}),
+                }))
+                : [],
+              allowFreeChat: pendingInteraction.allowFreeChat !== false,
+            }
+            : null,
+          lines: formatInteractionPromptLines(pendingInteraction, { cols: 80 }),
+        });
       }
       if (!options.runTask) agent.persistSessionState(state);
       publishPlan();

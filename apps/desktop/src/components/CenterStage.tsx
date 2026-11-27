@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
+  ArrowsLeftRight,
   ArrowUp,
   ArrowsOutSimple,
   BellSimple,
@@ -11,13 +12,17 @@ import { useWorkspace } from "../store/workspaceStore";
 import { isTauriEnvironment, ufooBridge } from "../bridge/ufooClient";
 import type {
   ComposerAttachment,
+  PendingInteraction,
   PermissionMode,
+  QueuedMessageItem,
   WindowMode,
   WorkflowEdge,
   WorkflowNodeGeometry,
   WorkerSummary,
 } from "../types";
 import { TranscriptStream } from "./TranscriptStream";
+import { QueuedMessagesTray } from "./QueuedMessagesTray";
+import { AskInteractionDock } from "./AskInteractionDock";
 import { ModelEffortPicker, PermissionPicker } from "./ModelEffortPicker";
 import { BrandIcon, buildProjectUcodeColorMap } from "./BrandIcon";
 import { LayoutModeIcon, LeftSidebarIcon, NavBackIcon, NavForwardIcon, RightSidebarIcon } from "./WindowChromeIcons";
@@ -59,8 +64,8 @@ function ComposerActionButton({
       type="button"
       disabled={disabled}
       onClick={showStop ? onStop : onSend}
-      title={showStop ? "Stop current turn" : "Send"}
-      aria-label={showStop ? "Stop current turn" : "Send"}
+      title={showStop ? "Stop current turn" : busy ? "Queue follow-up (Enter) · ⌥⏎ to send now" : "Send"}
+      aria-label={showStop ? "Stop current turn" : busy ? "Queue follow-up" : "Send"}
       className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border backdrop-blur-md transition-all ${
         showStop
           ? "border-rose-400/28 bg-gradient-to-b from-rose-500/28 to-rose-800/35 text-rose-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.2),inset_0_-1px_0_rgba(0,0,0,0.28),0_2px_8px_rgba(0,0,0,0.35)] hover:border-rose-400/45 hover:from-rose-500/38 hover:to-rose-800/45 hover:text-rose-100 active:scale-95 cursor-pointer"
@@ -149,6 +154,8 @@ function WorkerComposer({
   busy,
   external = false,
   compact = false,
+  pendingInteraction = null,
+  onOpenFile,
 }: {
   agentId: string;
   agentType?: string;
@@ -159,13 +166,28 @@ function WorkerComposer({
   busy?: boolean;
   external?: boolean;
   compact?: boolean;
+  pendingInteraction?: PendingInteraction | null;
+  onOpenFile?: (path: string) => void;
 }) {
-  const { state, dispatch, submitWorkerInput, stageAttachments, cancelWorkerTurn } = useWorkspace();
+  const {
+    state,
+    dispatch,
+    submitWorkerInput,
+    removeQueuedMessage,
+    clearQueuedMessages,
+    sendQueuedMessageNow,
+    stageAttachments,
+    cancelWorkerTurn,
+  } = useWorkspace();
   const draft = state.localPaneDrafts[agentId]?.text ?? "";
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [stagingFiles, setStagingFiles] = useState(false);
   const [htmlDragging, setHtmlDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const workerQueue = !external
+    ? state.queuedMessages.workers[agentId] || { items: [], paused: false }
+    : { items: [], paused: false };
 
   useEffect(() => {
     setAttachments([]);
@@ -213,16 +235,72 @@ function WorkerComposer({
     });
   };
 
-  const handleSubmit = async () => {
+  const handleSubmit = async (forceSend = false) => {
     const trimmed = draft.trim();
     if (!trimmed && attachments.length === 0) return;
     const pendingAttachments = attachments;
     setAttachments([]);
-    await submitWorkerInput(agentId, trimmed, pendingAttachments);
+    await submitWorkerInput(agentId, trimmed, pendingAttachments, {
+      forceSend: forceSend || Boolean(pendingInteraction),
+    });
+  };
+
+  const handleInteractionOptionRespond = async (answer: string) => {
+    const trimmed = String(answer || "").trim();
+    if (!trimmed) return;
+    await submitWorkerInput(agentId, trimmed, [], { forceSend: true });
+  };
+
+  const interactionKind = String(pendingInteraction?.kind || "").toLowerCase();
+  const hasChoiceOptions =
+    Boolean(pendingInteraction) &&
+    interactionKind !== "approval" &&
+    Array.isArray(pendingInteraction?.options) &&
+    pendingInteraction!.options!.length > 0;
+  const composerRingClass = pendingInteraction
+    ? interactionKind === "approval"
+      ? "border-amber-400/30 focus-within:border-amber-400/50"
+      : "border-sky-400/30 focus-within:border-sky-400/50"
+    : "border-white/[0.09] focus-within:border-white/[0.2]";
+
+  const handleEditQueued = async (item: QueuedMessageItem) => {
+    const removed = await removeQueuedMessage("worker", item.id, agentId);
+    if (!removed) return;
+    const nextText = draft.trim()
+      ? `${removed.text}\n${draft}`
+      : removed.text;
+    handleChange(nextText);
+    if (Array.isArray(removed.attachments) && removed.attachments.length > 0) {
+      setAttachments((prev) => [...removed.attachments, ...prev]);
+    }
+    window.requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(nextText.length, nextText.length);
+    });
   };
 
   return (
     <div className={`${compact ? "px-3 pb-3 pt-1" : "px-3 pb-2.5 md:px-6 md:pb-4 pt-1"} bg-transparent`}>
+      <AskInteractionDock
+        interaction={pendingInteraction}
+        compact={compact}
+        canDismiss={false}
+        onRespond={(ans) => handleInteractionOptionRespond(ans)}
+        onFocusInput={() => textareaRef.current?.focus()}
+        onOpenFile={onOpenFile}
+      />
+      <QueuedMessagesTray
+        items={workerQueue.items}
+        paused={workerQueue.paused}
+        busy={Boolean(busy && !external)}
+        compact={compact}
+        onSendNow={(id) => void sendQueuedMessageNow("worker", id, agentId)}
+        onEdit={(item) => void handleEditQueued(item)}
+        onRemove={(id) => void removeQueuedMessage("worker", id, agentId)}
+        onClearAll={() => void clearQueuedMessages("worker", agentId)}
+      />
       <div
         onDragOver={(e) => {
           if (e.dataTransfer?.types?.includes("Files")) {
@@ -242,7 +320,7 @@ function WorkerComposer({
             void attachFileList(e.dataTransfer.files);
           }
         }}
-        className={`relative ${compact ? "" : "mx-auto max-w-3xl"} rounded-2xl border border-white/[0.09] bg-zinc-900/90 p-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] focus-within:border-white/[0.2] transition-colors`}
+        className={`relative ${compact ? "" : "mx-auto max-w-3xl"} rounded-2xl border ${composerRingClass} bg-zinc-900/90 p-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] transition-colors`}
       >
         <DropFilesOverlay visible={isTauriDragging || htmlDragging} />
         <input
@@ -263,6 +341,7 @@ function WorkerComposer({
           onRemove={(id) => setAttachments((prev) => prev.filter((item) => item.id !== id))}
         />
         <textarea
+          ref={textareaRef}
           rows={compact ? 2 : 3}
           value={draft}
           onChange={(e) => handleChange(e.target.value)}
@@ -277,12 +356,20 @@ function WorkerComposer({
             if (e.nativeEvent.isComposing || e.keyCode === 229) return;
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              void handleSubmit();
+              void handleSubmit(Boolean(e.altKey));
             }
           }}
           placeholder={
-            external
+            pendingInteraction
+              ? hasChoiceOptions
+                ? `Or type a custom reply for ${label}…`
+                : interactionKind === "approval"
+                ? `Optional note or instructions for ${label}…`
+                : `Reply to ${label}'s question…`
+              : external
               ? `Send bus message to @${label}…`
+              : busy
+              ? `Queue a follow-up for ${label}… (Enter to queue, ⌥⏎ to send now)`
               : `Message ${label} directly, or drop images & files…`
           }
           className="w-full resize-none bg-transparent px-2 py-1 text-[13px] leading-relaxed text-zinc-100 placeholder:text-zinc-500 focus:outline-none"
@@ -345,8 +432,13 @@ function MainComposer({
     dispatch,
     submitMainInput,
     submitWorkerInput,
+    removeQueuedMessage,
+    clearQueuedMessages,
+    sendQueuedMessageNow,
     stageAttachments,
     cancelWorkerTurn,
+    respondInteraction,
+    openDocInInspector,
     setWindowMode,
     selectSideWorker,
     notifyToast,
@@ -556,7 +648,52 @@ function MainComposer({
     applyInputProgrammatically(nextText, nextText.length);
   };
 
-  const handleSend = async () => {
+  const isTargetedSideInternal = Boolean(
+    targetedWorker &&
+      targetedWorker.internal &&
+      (state.windowMode === "side" || state.windowMode === "multi")
+  );
+  const activeQueueScope: "main" | "worker" = isTargetedSideInternal ? "worker" : "main";
+  const activeQueueAgentId = isTargetedSideInternal && targetedWorker ? targetedWorker.id : "";
+  const activeQueue = !targetedWorker
+    ? state.queuedMessages.main
+    : isTargetedSideInternal && targetedWorker
+    ? state.queuedMessages.workers[targetedWorker.id] || { items: [], paused: false }
+    : { items: [], paused: false };
+
+  const activePendingInteraction: PendingInteraction | null = !targetedWorker
+    ? state.pendingInteraction
+    : isTargetedSideInternal && targetedWorker
+    ? state.paneFrames[targetedWorker.id]?.pending_interaction || null
+    : null;
+  const activeInteractionKind = String(activePendingInteraction?.kind || "").toLowerCase();
+  const activeInteractionIsChoice =
+    Boolean(activePendingInteraction) &&
+    activeInteractionKind !== "approval" &&
+    Array.isArray(activePendingInteraction?.options) &&
+    activePendingInteraction!.options!.length > 0;
+  const mainComposerRingClass = activePendingInteraction
+    ? activeInteractionKind === "approval"
+      ? "border-amber-400/30 focus-within:border-amber-400/50"
+      : "border-sky-400/30 focus-within:border-sky-400/50"
+    : "border-white/[0.09] focus-within:border-white/[0.2]";
+
+  const handleDockInteractionRespond = async (
+    answer: string,
+    cancelled = false,
+    dismissAll = false
+  ) => {
+    if (isTargetedSideInternal && targetedWorker) {
+      const trimmed = String(answer || "").trim();
+      if (!trimmed) return;
+      await submitWorkerInput(targetedWorker.id, trimmed, [], { forceSend: true });
+      return;
+    }
+    if (!state.pendingInteraction && !dismissAll) return;
+    await respondInteraction(state.pendingInteraction?.id || "", answer, cancelled, dismissAll);
+  };
+
+  const handleSend = async (forceSend = false) => {
     const trimmed = input.trim();
     if (!trimmed && attachments.length === 0) return;
     const pendingAttachments = attachments;
@@ -569,15 +706,34 @@ function MainComposer({
       await runSlashCommand(trimmed);
       return;
     }
-    if (
-      targetedWorker &&
-      targetedWorker.internal &&
-      (state.windowMode === "side" || state.windowMode === "multi")
-    ) {
-      await submitWorkerInput(targetedWorker.id, trimmed, pendingAttachments);
+    if (isTargetedSideInternal && targetedWorker) {
+      await submitWorkerInput(targetedWorker.id, trimmed, pendingAttachments, {
+        forceSend: forceSend || Boolean(activePendingInteraction),
+      });
       return;
     }
-    await submitMainInput(trimmed, pendingAttachments);
+    if (
+      !targetedWorker &&
+      state.pendingInteraction &&
+      state.pendingInteraction.allowFreeChat !== false &&
+      pendingAttachments.length === 0
+    ) {
+      await respondInteraction(state.pendingInteraction.id, trimmed, false, false);
+      return;
+    }
+    await submitMainInput(trimmed, pendingAttachments, { forceSend });
+  };
+
+  const handleEditQueued = async (item: QueuedMessageItem) => {
+    const removed = await removeQueuedMessage(activeQueueScope, item.id, activeQueueAgentId);
+    if (!removed) return;
+    const nextText = input.trim()
+      ? `${removed.text}\n${input}`
+      : removed.text;
+    applyInputProgrammatically(nextText, nextText.length);
+    if (Array.isArray(removed.attachments) && removed.attachments.length > 0) {
+      setAttachments((prev) => [...removed.attachments, ...prev]);
+    }
   };
 
   const handleNewConversation = async () => {
@@ -786,6 +942,29 @@ function MainComposer({
           }}
         />
 
+        {/* Pending ask / choice / approval card docked directly above composer */}
+        <AskInteractionDock
+          interaction={activePendingInteraction}
+          sourceLabel={isTargetedSideInternal && targetedWorker ? targetedWorker.label : ""}
+          canDismiss={!isTargetedSideInternal}
+          onRespond={(ans, cancelled, dismissAll) =>
+            handleDockInteractionRespond(ans, cancelled, dismissAll)
+          }
+          onFocusInput={() => textareaRef.current?.focus()}
+          onOpenFile={(p) => void openDocInInspector(p)}
+        />
+
+        {/* Queued follow-up messages tray (docked seamlessly above composer) */}
+        <QueuedMessagesTray
+          items={activeQueue.items}
+          paused={activeQueue.paused}
+          busy={Boolean(targetBusy)}
+          onSendNow={(id) => void sendQueuedMessageNow(activeQueueScope, id, activeQueueAgentId)}
+          onEdit={(item) => void handleEditQueued(item)}
+          onRemove={(id) => void removeQueuedMessage(activeQueueScope, id, activeQueueAgentId)}
+          onClearAll={() => void clearQueuedMessages(activeQueueScope, activeQueueAgentId)}
+        />
+
         <div
           onDragOver={(e) => {
             if (e.dataTransfer?.types?.includes("Files")) {
@@ -805,7 +984,7 @@ function MainComposer({
               void attachFileList(e.dataTransfer.files);
             }
           }}
-          className="relative rounded-2xl border border-white/[0.09] bg-zinc-900/90 p-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] focus-within:border-white/[0.2] transition-colors"
+          className={`relative rounded-2xl border ${mainComposerRingClass} bg-zinc-900/90 p-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] transition-colors`}
         >
           <DropFilesOverlay visible={isTauriDragging || htmlDragging} />
           <input
@@ -881,16 +1060,30 @@ function MainComposer({
 
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                void handleSend();
+                void handleSend(Boolean(e.altKey));
               }
             }}
             placeholder={
-              state.scope === "controller"
+              activePendingInteraction
+                ? activeInteractionIsChoice
+                  ? isTargetedSideInternal && targetedWorker
+                    ? `Or type a custom reply for ${targetedWorker.label}…`
+                    : "Or type a custom reply…"
+                  : activeInteractionKind === "approval"
+                  ? "Optional note or instructions…"
+                  : isTargetedSideInternal && targetedWorker
+                  ? `Reply to ${targetedWorker.label}'s question…`
+                  : "Reply to question…"
+                : state.scope === "controller"
                 ? "Ask UFOO to route across projects, or type / for commands…"
                 : targetedWorker
                 ? targetedWorker.external
                   ? `Send bus message to @${targetedWorker.label}…`
+                  : targetBusy
+                  ? `Queue a follow-up for ${targetedWorker.label}… (Enter to queue, ⌥⏎ to send now)`
                   : `Message ${targetedWorker.label} directly, or type / for commands…`
+                : targetBusy
+                ? "Queue a follow-up for ufoo… (Enter to queue, ⌥⏎ to send now)"
                 : "Ask ufoo, type / for commands, or @ to mention an agent…"
             }
             className="w-full resize-none bg-transparent px-2 py-1 text-[13.5px] leading-relaxed text-zinc-100 placeholder:text-zinc-500 focus:outline-none"
@@ -1005,6 +1198,7 @@ export function CenterStage() {
     goForward,
     selectProjectMain,
     selectWorkerView,
+    submitWorkerInput,
     setWindowMode,
     selectSideWorker,
     openDocInInspector,
@@ -1047,16 +1241,6 @@ export function CenterStage() {
     }
     return internalWorkers[0] || null;
   }, [internalWorkers, state.sideAgentId]);
-
-  const handleRespondInteraction = async (answer: string, cancelled = false, dismissAll = false) => {
-    if (!state.pendingInteraction && !dismissAll) return;
-    await ufooBridge.sendCommand("interaction.respond", {
-      id: state.pendingInteraction?.id || "",
-      text: answer,
-      cancelled,
-      ...(dismissAll ? { dismiss_all: true } : {}),
-    });
-  };
 
   const handleClearMain = async () => {
     const res = await ufooBridge.sendCommand<{ ok?: boolean; error?: string }>("chat.clear", {});
@@ -1480,16 +1664,22 @@ export function CenterStage() {
               />
             )}
 
-            {/* Mid-Thread Cross-Engine Handoff on Single-Worker View */}
+            {/* Mid-Thread Cross-Engine Handoff on Single-Worker View (icon-only) */}
             {state.scope === "project" && isWorkerSingle && !isExternalWorker && (
               <div className="relative">
                 <button
                   type="button"
                   onClick={() => setHandoffMenuOpen((v) => !v)}
-                  title="Hand off this thread & worktree to another engine"
-                  className="rounded-lg border border-white/[0.09] bg-white/[0.04] px-2.5 py-1 text-[11.5px] font-medium text-zinc-200 hover:bg-white/[0.09] transition-colors cursor-pointer"
+                  title="Hand off to another engine"
+                  aria-label="Hand off to another engine"
+                  aria-expanded={handoffMenuOpen}
+                  className={`flex h-7 w-7 items-center justify-center rounded-lg transition-colors cursor-pointer ${
+                    handoffMenuOpen
+                      ? "bg-white/[0.1] text-zinc-100"
+                      : "text-zinc-400 hover:bg-white/[0.07] hover:text-zinc-100"
+                  }`}
                 >
-                  Hand off
+                  <ArrowsLeftRight size={15} />
                 </button>
                 {handoffMenuOpen && (
                   <div className="absolute right-0 top-full mt-1.5 z-40 w-48 rounded-xl border border-white/[0.1] bg-zinc-900 p-1 shadow-2xl">
@@ -1528,6 +1718,12 @@ export function CenterStage() {
             <TranscriptStream
               entries={state.workerSingleFrame?.entries || []}
               planLines={state.workerSingleFrame?.plan || []}
+              planItems={state.workerSingleFrame?.plan_items || []}
+              pendingInteraction={
+                state.workerSingleFrame?.pending_interaction ||
+                state.paneFrames[state.stageTarget.agentId]?.pending_interaction ||
+                null
+              }
               busy={Boolean(state.workerSingleFrame?.busy)}
               statusText={state.workerSingleFrame?.status || ""}
               changedFiles={state.workerSingleFrame?.changed_files || []}
@@ -1558,6 +1754,12 @@ export function CenterStage() {
               permissionMode={state.workerSingleFrame?.permission_mode || selectedWorkerMeta?.permission_mode || state.settings.permission_mode || "auto_edit"}
               busy={Boolean(state.workerSingleFrame?.busy)}
               external={isExternalWorker}
+              pendingInteraction={
+                state.workerSingleFrame?.pending_interaction ||
+                state.paneFrames[state.stageTarget.agentId]?.pending_interaction ||
+                null
+              }
+              onOpenFile={(p) => void openDocInInspector(p)}
             />
           </div>
         ) : (
@@ -1565,6 +1767,7 @@ export function CenterStage() {
             <TranscriptStream
               entries={state.entries}
               planLines={state.planLines}
+              planItems={state.planItems}
               pendingInteraction={state.pendingInteraction}
               busy={state.busy}
               statusText={state.statusText}
@@ -1572,7 +1775,6 @@ export function CenterStage() {
               defaultSpeakerBrand="ufoo"
               workerBrandMap={workerBrandMap}
               workerColorMap={workerColorMap}
-              onRespondInteraction={(ans, c, all) => void handleRespondInteraction(ans, c, all)}
               onOpenFile={(p) => void openDocInInspector(p)}
               onInspectWorkerInSide={(id) =>
                 isSplitLayout ? void selectSideWorker(id) : void setWindowMode("side", id)
@@ -1668,6 +1870,8 @@ export function CenterStage() {
               <TranscriptStream
                 entries={activeSideFrame?.entries || []}
                 planLines={activeSideFrame?.plan || []}
+                planItems={activeSideFrame?.plan_items || []}
+                pendingInteraction={activeSideFrame?.pending_interaction || null}
                 busy={Boolean(activeSideFrame?.busy || activeSideWorker.activity_state === "working")}
                 statusText={activeSideFrame?.status || activeSideWorker.activity_detail || ""}
                 changedFiles={activeSideFrame?.changed_files || []}
@@ -1683,6 +1887,36 @@ export function CenterStage() {
                 compact
                 emptyHint="What do you want to do now?"
               />
+              {activeSideFrame?.pending_interaction &&
+                state.targetAgent !== activeSideWorker.id && (
+                  <div className="px-3 pb-2 pt-1">
+                    <AskInteractionDock
+                      interaction={activeSideFrame.pending_interaction}
+                      sourceLabel={activeSideWorker.label}
+                      compact
+                      canDismiss={false}
+                      onRespond={async (ans) => {
+                        const trimmed = String(ans || "").trim();
+                        if (!trimmed) return;
+                        await submitWorkerInput(activeSideWorker.id, trimmed, [], {
+                          forceSend: true,
+                        });
+                      }}
+                      onFocusInput={() => {
+                        dispatch({
+                          type: "SET_TARGET_AGENT",
+                          agentId: activeSideWorker.id,
+                          prefix: `›@${activeSideWorker.label} `,
+                        });
+                        void ufooBridge.sendCommand("agent.select", {
+                          agent_id: activeSideWorker.id,
+                          label: activeSideWorker.label,
+                        });
+                      }}
+                      onOpenFile={(p) => void openDocInInspector(p)}
+                    />
+                  </div>
+                )}
             </div>
           ) : (
             <div className="flex flex-1 flex-col items-center justify-center p-8 text-center">

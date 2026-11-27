@@ -67,6 +67,7 @@ const {
   readAgentSurfaceEvents,
   createAgentSurfaceReader,
   createAgentSurfacePublisher,
+  resolveAgentLineageIds,
 } = require("../coordination/history/agentSurface");
 const { listReports } = require("../coordination/report/store");
 const { getUfooPaths } = require("../coordination/state/paths");
@@ -258,8 +259,9 @@ function rawHistoryToEntries(rows, speakerIndex = null) {
   const KINDS = new Set([
     "system", "user", "assistant", "error", "agent", "report",
     "thinking", "tool", "spacer", "meta", "bus", "success", "banner",
+    "plan",
   ]);
-  return list.map((row, index) => {
+  const mapped = list.map((row, index) => {
     const source = row && typeof row === "object" ? row : { text: row };
     const meta = source.meta && typeof source.meta === "object" ? source.meta : {};
     const sourceType = String(source.sourceType || source.type || source.kind || "system");
@@ -269,6 +271,35 @@ function rawHistoryToEntries(rows, speakerIndex = null) {
       : KINDS.has(sourceType) ? sourceType : "system";
     let text = stripTags(source.text || source.content || "");
     let speaker = String(source.speaker || meta.speaker || "");
+    let targetId = String(source.target_id || meta.target_id || "").trim();
+    let targetLabel = String(source.target_label || meta.target_label || "").trim();
+    let targetType = String(source.target_type || meta.target_type || "").trim();
+    if (kind === "user") {
+      const directMatch = text.match(/^(?:›\s+)?@([a-zA-Z0-9][a-zA-Z0-9_.:-]{0,63})\s+([\s\S]+)$/);
+      if (directMatch) {
+        const mentionToken = directMatch[1].trim();
+        const hit = speakerIndex && typeof speakerIndex.get === "function"
+          ? speakerIndex.get(mentionToken.toLowerCase())
+          : null;
+        if (targetLabel || hit) {
+          if (!targetId && hit?.id) targetId = hit.id;
+          if (!targetType && hit?.type) targetType = hit.type;
+          if (!targetLabel) targetLabel = hit?.label || mentionToken;
+          text = directMatch[2];
+        }
+      }
+      if ((targetLabel || targetId) && speakerIndex && typeof speakerIndex.get === "function") {
+        const hit = speakerIndex.get((targetLabel || targetId).toLowerCase())
+          || (targetId ? speakerIndex.get(targetId.toLowerCase()) : null);
+        if (hit) {
+          if (!targetId && hit.id) targetId = hit.id;
+          if (!targetType && hit.type) targetType = hit.type;
+          if (hit.label && (!targetLabel || targetLabel.includes(":"))) {
+            targetLabel = hit.label;
+          }
+        }
+      }
+    }
     if (streamed) {
       const match = text.match(/^([^\n]+?): ([\s\S]*)$/);
       if (match) {
@@ -303,11 +334,37 @@ function rawHistoryToEntries(rows, speakerIndex = null) {
       speaker,
       ...(senderId ? { sender_id: senderId } : {}),
       ...(senderType ? { sender_type: senderType } : {}),
+      ...(targetId ? { target_id: targetId } : {}),
+      ...(targetLabel ? { target_label: targetLabel } : {}),
+      ...(targetType ? { target_type: targetType } : {}),
       detail: stripTags(source.detail || source.expanded_text || meta.detail || meta.expanded_text || ""),
       expanded: false,
       ts: source.ts || "",
     };
   });
+
+  // Drop legacy duplicate "ufoo · <same body>" bus echoes immediately following a direct @agent user send.
+  const deduped = [];
+  for (const item of mapped) {
+    const prev = deduped[deduped.length - 1];
+    if (
+      prev
+      && prev.kind === "user"
+      && prev.target_label
+      && (item.kind === "bus" || item.kind === "system")
+    ) {
+      const m = String(item.text || "").match(/^(?:ufoo(?:-agent)?)\s*·\s+([\s\S]+)$/i);
+      const prevBody = String(prev.text || "").replace(/^›\s+/, "").trim();
+      const echoBody = m
+        ? m[1].trim()
+        : (/^ufoo(?:-agent)?$/i.test(String(item.speaker || "")) ? String(item.text || "").trim() : "");
+      if (prevBody && echoBody && echoBody === prevBody) {
+        continue;
+      }
+    }
+    deduped.push(item);
+  }
+  return deduped;
 }
 
 function resolveProviderForWorkerType(workerType, config = {}) {
@@ -486,6 +543,10 @@ async function startDesktopUiHost(options = {}) {
   let daemonCoordinator = null;
   let daemonConnectionState = "reconnecting";
   let activeProjectRoot = controllerRoot;
+  let activeStatusSyncedRoot = "";
+  let pendingSwitchRoot = "";
+  let pendingSwitchStatus = null;
+  let projectSwitchSeq = 0;
   let globalScope = "controller";
   let multiSession = null;
   let stageTarget = { kind: "project_main", agentId: "" };
@@ -494,6 +555,262 @@ async function startDesktopUiHost(options = {}) {
   const dismissedInteractions = new Map();
   const DISMISSED_INTERACTION_TTL_MS = 20000;
   let lastPublishedInteractionKey = "";
+
+  // Host-owned outbound message queues per session target (main / worker).
+  // Follow-up prompts submitted while an agent is busy wait here instead of
+  // being prematurely appended into the live transcript history.
+  const queuedMessageBuckets = new Map();
+  const mainBusyByRoot = new Map();
+  const activeMainTaskRunIdByRoot = new Map();
+  const queueDrainTimers = new Map();
+
+  function queueBucketKey(root, scope, agentId = "") {
+    const normRoot = safeCanonicalRoot(root || activeProjectRoot) || String(root || activeProjectRoot || "");
+    if (scope === "worker" && agentId) return `${normRoot}::worker::${String(agentId).trim()}`;
+    return `${normRoot}::main`;
+  }
+
+  function getOrCreateQueueBucket(root, scope, agentId = "") {
+    const key = queueBucketKey(root, scope, agentId);
+    let bucket = queuedMessageBuckets.get(key);
+    if (!bucket) {
+      bucket = { paused: false, draining: false, items: [] };
+      queuedMessageBuckets.set(key, bucket);
+    }
+    return bucket;
+  }
+
+  function serializeQueueBucket(bucket) {
+    if (!bucket) return { items: [], paused: false };
+    return {
+      paused: Boolean(bucket.paused),
+      items: bucket.items.map((item) => ({
+        id: item.id,
+        text: item.text,
+        attachments: Array.isArray(item.attachments) ? item.attachments : [],
+        created_at: item.created_at,
+      })),
+    };
+  }
+
+  function buildQueueSnapshotForProject(root = activeProjectRoot) {
+    const normRoot = safeCanonicalRoot(root) || String(root || "");
+    const mainKey = `${normRoot}::main`;
+    const workerPrefix = `${normRoot}::worker::`;
+    const workers = {};
+    for (const [key, bucket] of queuedMessageBuckets.entries()) {
+      if (!key.startsWith(workerPrefix)) continue;
+      if (!bucket.items.length && !bucket.paused) continue;
+      const agentId = key.slice(workerPrefix.length);
+      if (agentId) workers[agentId] = serializeQueueBucket(bucket);
+    }
+    return {
+      project_root: root,
+      main: serializeQueueBucket(queuedMessageBuckets.get(mainKey)),
+      workers,
+    };
+  }
+
+  function publishQueueSnapshot(root = activeProjectRoot) {
+    if (safeCanonicalRoot(root) !== safeCanonicalRoot(activeProjectRoot)) return;
+    publish("queue.snapshot", buildQueueSnapshotForProject(activeProjectRoot));
+  }
+
+  function setMainBusyState(root, busy, taskRunId = undefined) {
+    const normRoot = safeCanonicalRoot(root || activeProjectRoot) || String(root || activeProjectRoot || "");
+    mainBusyByRoot.set(normRoot, Boolean(busy));
+    if (taskRunId !== undefined) {
+      if (taskRunId) activeMainTaskRunIdByRoot.set(normRoot, String(taskRunId));
+      else activeMainTaskRunIdByRoot.delete(normRoot);
+    } else if (!busy) {
+      activeMainTaskRunIdByRoot.delete(normRoot);
+    }
+  }
+
+  function isMainBusy(root = activeProjectRoot) {
+    const normRoot = safeCanonicalRoot(root) || String(root || "");
+    if (mainBusyByRoot.has(normRoot)) return Boolean(mainBusyByRoot.get(normRoot));
+    if (safeCanonicalRoot(root) === safeCanonicalRoot(activeProjectRoot) && controller?.session?.pending) {
+      return true;
+    }
+    return false;
+  }
+
+  function isWorkerWaitingReply(agentId) {
+    const id = String(agentId || "").trim();
+    if (!id) return false;
+    const meta = controller.session.metaMap.get(id) || {};
+    if (String(meta.activity_state || "").toLowerCase() === "waiting_input") return true;
+    const standaloneSnap = standaloneSurfaces.get(id)?.surface?.snapshot?.();
+    if (standaloneSnap && /^Waiting for reply/i.test(String(standaloneSnap.status || ""))) return true;
+    const paneSnap = multiSession?.getPaneSnapshot?.(id);
+    if (paneSnap && /^Waiting for reply/i.test(String(paneSnap.status || ""))) return true;
+    return false;
+  }
+
+  function isWorkerBusy(agentId) {
+    const id = String(agentId || "").trim();
+    if (!id) return false;
+    if (isWorkerWaitingReply(id)) return false;
+    const meta = controller.session.metaMap.get(id) || {};
+    if (String(meta.activity_state || "").toLowerCase() === "working") return true;
+    const standaloneSnap = standaloneSurfaces.get(id)?.surface?.snapshot?.();
+    if (standaloneSnap && standaloneSnap.busy) return true;
+    const paneSnap = multiSession?.getPaneSnapshot?.(id);
+    if (paneSnap && paneSnap.busy) return true;
+    return false;
+  }
+
+  function enqueueQueuedMessage(root, scope, agentId, text, attachments = []) {
+    const bucket = getOrCreateQueueBucket(root, scope, agentId);
+    const item = {
+      id: `q-${crypto.randomUUID().slice(0, 8)}`,
+      text: String(text || ""),
+      attachments: normalizeAttachmentList(attachments),
+      created_at: new Date().toISOString(),
+    };
+    bucket.items.push(item);
+    publishQueueSnapshot(root);
+    return item;
+  }
+
+  function clearQueueBucket(root, scope, agentId = "") {
+    const key = queueBucketKey(root, scope, agentId);
+    const bucket = queuedMessageBuckets.get(key);
+    if (!bucket) return 0;
+    const count = bucket.items.length;
+    bucket.items.length = 0;
+    bucket.paused = false;
+    queuedMessageBuckets.delete(key);
+    publishQueueSnapshot(root);
+    return count;
+  }
+
+  function pauseQueueIfNonEmpty(root, scope, agentId = "") {
+    const key = queueBucketKey(root, scope, agentId);
+    const bucket = queuedMessageBuckets.get(key);
+    if (!bucket || bucket.items.length === 0) return;
+    bucket.paused = true;
+    publishQueueSnapshot(root);
+  }
+
+  function formatWorkerDisplayEcho(rawMsg, attachments = []) {
+    const list = normalizeAttachmentList(attachments);
+    if (list.length === 0) return String(rawMsg || "");
+    const tags = list.map((att) => `[${att.kind === "image" ? "image" : "file"}: ${att.name}]`).join(" ");
+    const trimmed = String(rawMsg || "").trim();
+    return trimmed ? `${trimmed}\n${tags}` : tags;
+  }
+
+  function dispatchWorkerMessageNow(workerId, text, attachments = []) {
+    const id = String(workerId || "").trim();
+    const list = normalizeAttachmentList(attachments);
+    const effectiveMsg = formatAttachmentPromptSummary(text, list);
+    const echoMsg = formatWorkerDisplayEcho(text, list);
+    if (isInternalChild(id)) {
+      if (standaloneSurfaces.has(id) || (stageTarget.kind === "worker_single" && stageTarget.agentId === id)) {
+        const holder = ensureStandaloneSurface(id);
+        if (echoMsg) {
+          holder.surface.apply("transcript.append", { kind: "user", text: echoMsg, sender_kind: "user" });
+        }
+        holder.surface.accept({ type: "task_submitted", message: effectiveMsg });
+      }
+      if (multiSession && multiSession.listInternalAgentIds?.().includes(id)) {
+        if (echoMsg) {
+          multiSession.acceptEvent(id, { type: "task_started", message: echoMsg, source: "ufoo-desktop-worker" });
+        }
+        multiSession.acceptEvent(id, { type: "task_submitted", message: effectiveMsg });
+        multiSession.publishFrames();
+      }
+    }
+    daemonSend({
+      type: IPC_REQUEST_TYPES.BUS_SEND,
+      request_id: `worker-send-${crypto.randomUUID()}`,
+      target: id,
+      message: effectiveMsg,
+      ...(list.length > 0 ? { attachments: list } : {}),
+      injection_mode: "immediate",
+      source: "ufoo-desktop-worker",
+    });
+    if (stageTarget.kind === "worker_single" && stageTarget.agentId === id) {
+      publishStandaloneWorkerFrame(id);
+    }
+  }
+
+  async function dispatchMainMessageNow(text, attachments = []) {
+    const list = normalizeAttachmentList(attachments);
+    setMainBusyState(activeProjectRoot, true);
+    publish("status.set", { text: "Thinking…", busy: true });
+    const beforeSubmit = mainSubmissionRev;
+    await controller.submitInput(text, { attachments: list });
+    if (beforeSubmit === mainSubmissionRev) {
+      setMainBusyState(activeProjectRoot, false);
+      publish("status.set", { text: "ready", busy: false });
+    }
+  }
+
+  function scheduleQueueDrain(key, fn, delayMs = 80) {
+    const existing = queueDrainTimers.get(key);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      queueDrainTimers.delete(key);
+      Promise.resolve(fn()).catch(() => {});
+    }, delayMs);
+    if (typeof timer.unref === "function") timer.unref();
+    queueDrainTimers.set(key, timer);
+  }
+
+  function drainWorkerQueue(root, agentId) {
+    if (safeCanonicalRoot(root) !== safeCanonicalRoot(activeProjectRoot)) return false;
+    const key = queueBucketKey(root, "worker", agentId);
+    const bucket = queuedMessageBuckets.get(key);
+    if (!bucket || bucket.draining || bucket.paused || bucket.items.length === 0) return false;
+    if (!isInternalChild(agentId) || isWorkerBusy(agentId) || isWorkerWaitingReply(agentId)) return false;
+    bucket.draining = true;
+    try {
+      const next = bucket.items.shift();
+      if (!next) return false;
+      if (bucket.items.length === 0) queuedMessageBuckets.delete(key);
+      publishQueueSnapshot(root);
+      dispatchWorkerMessageNow(agentId, next.text, next.attachments);
+      return true;
+    } finally {
+      bucket.draining = false;
+    }
+  }
+
+  async function drainMainQueue(root) {
+    if (safeCanonicalRoot(root) !== safeCanonicalRoot(activeProjectRoot)) return false;
+    const key = queueBucketKey(root, "main");
+    const bucket = queuedMessageBuckets.get(key);
+    if (!bucket || bucket.draining || bucket.paused || bucket.items.length === 0) return false;
+    if (isMainBusy(root) || getActivePendingInteraction() || controller.session.pending?.disambiguate) return false;
+    bucket.draining = true;
+    try {
+      const next = bucket.items.shift();
+      if (!next) return false;
+      if (bucket.items.length === 0) queuedMessageBuckets.delete(key);
+      publishQueueSnapshot(root);
+      await dispatchMainMessageNow(next.text, next.attachments);
+      return true;
+    } finally {
+      bucket.draining = false;
+    }
+  }
+
+  function scheduleDrainWorkerQueue(root, agentId, delayMs = 90) {
+    const key = queueBucketKey(root, "worker", agentId);
+    const bucket = queuedMessageBuckets.get(key);
+    if (!bucket || bucket.paused || bucket.items.length === 0) return;
+    scheduleQueueDrain(key, () => drainWorkerQueue(root, agentId), delayMs);
+  }
+
+  function scheduleDrainMainQueue(root, delayMs = 90) {
+    const key = queueBucketKey(root, "main");
+    const bucket = queuedMessageBuckets.get(key);
+    if (!bucket || bucket.paused || bucket.items.length === 0) return;
+    scheduleQueueDrain(key, () => drainMainQueue(root), delayMs);
+  }
 
   function isDismissedInteraction(id) {
     if (!id) return false;
@@ -689,22 +1006,26 @@ async function startDesktopUiHost(options = {}) {
     });
   }
 
-  function appendLocal(kind, text, speaker = "") {
+  function appendLocal(kind, text, speakerOrMeta = "") {
     const raw = String(text == null ? "" : text);
+    const meta = speakerOrMeta && typeof speakerOrMeta === "object"
+      ? { ...speakerOrMeta }
+      : { speaker: String(speakerOrMeta || "") };
+    const speaker = String(meta.speaker || "");
     const { appendChatHistory, shouldSkipChatHistoryEntry } = require("../app/chat/historyStore");
-    if (shouldSkipChatHistoryEntry(kind, raw, { speaker })) {
+    if (shouldSkipChatHistoryEntry(kind, raw, meta)) {
       const statusSummary = stripTags(raw).replace(/^ufoo(?:-agent)?\s*·\s*/i, "").trim();
       if (statusSummary) publish("status.set", { text: statusSummary, busy: false });
       return null;
     }
     const speakerIndex = buildProjectSpeakerIndex(activeProjectRoot, controller.session.metaMap);
     const entry = {
-      ...rawHistoryToEntries([{ kind, text: raw, speaker, ts: new Date().toISOString() }], speakerIndex)[0],
+      ...rawHistoryToEntries([{ kind, text: raw, speaker, meta, ts: new Date().toISOString() }], speakerIndex)[0],
       id: `live-${++entrySeq}`,
     };
     publish("transcript.append", entry);
     try {
-      appendChatHistory(activeProjectRoot, kind, raw, { speaker }, historyOptions());
+      appendChatHistory(activeProjectRoot, kind, raw, meta, historyOptions());
     } catch {
       // best-effort persistence
     }
@@ -1111,7 +1432,12 @@ async function startDesktopUiHost(options = {}) {
     const projects = rawProjects.map((row) => {
       const isCurrent = row.root === activeProjectRoot && globalScope === "project";
       const dormant = inspectDormantProjectSummary(row.root);
-      const rawWorkers = isCurrent ? buildActiveProjectWorkerRows() : dormant.workers;
+      const hasLiveStatus = isCurrent && activeStatusSyncedRoot === row.root;
+      const rawWorkers = hasLiveStatus
+        ? buildActiveProjectWorkerRows()
+        : (isCurrent && controller.session.agents.length > 0
+          ? buildActiveProjectWorkerRows()
+          : dormant.workers);
       const archivedEntries = (archive.sessions || []).filter(({ root }) => safeCanonicalRoot(root) === row.root);
       const archivedIds = new Set(archivedEntries.map(({ id }) => id));
 
@@ -1200,17 +1526,19 @@ async function startDesktopUiHost(options = {}) {
             || String(diskMeta?.worktree_branch || "")
             || stored?.worktreeBranch
             || "";
+          const isRecoverable = Boolean(rec || diskMeta?.provider_session_id);
           return {
             id,
             label,
             type,
             archived_at: stored?.archivedAt || "",
             worktree_branch: worktreeBranch,
-            recoverable: Boolean(rec || diskMeta?.provider_session_id),
+            recoverable: isRecoverable,
             active: Boolean(live),
             internal: stored !== undefined ? Boolean(stored.internal) : Boolean(live ? live.internal : isInternalAgentMeta(diskMeta)),
           };
         })
+        .filter((item) => item.recoverable)
         .sort((a, b) => String(b.archived_at || "").localeCompare(String(a.archived_at || "")));
 
       return {
@@ -1261,14 +1589,21 @@ async function startDesktopUiHost(options = {}) {
   function ensureStandaloneSurface(agentId) {
     if (!standaloneSurfaces.has(agentId)) {
       const surface = createAgentSurface({ rawMarkdown: true });
+      const meta = resolveAgentMeta(activeProjectRoot, agentId) || null;
+      const lineageIds = resolveAgentLineageIds(activeProjectRoot, agentId, meta);
       const initial = loadInternalAgentTranscript(activeProjectRoot, agentId, {
         maxEvents: 300,
         maxEntries: 300,
+        lineageIds,
       });
       if (initial.length) {
         surface.apply("transcript.reset", { entries: initial });
       }
-      const events = readAgentSurfaceEvents(activeProjectRoot, [agentId]);
+      const events = readAgentSurfaceEvents(
+        activeProjectRoot,
+        lineageIds.length ? lineageIds : [agentId],
+        6 * 1024 * 1024,
+      );
       let maxSeq = 0;
       if (events.length) {
         surface.apply("transcript.reset", { entries: [] });
@@ -1289,7 +1624,11 @@ async function startDesktopUiHost(options = {}) {
     const numSeq = Number(seq) || 0;
     if (numSeq > 0 && numSeq <= holder.seq) return false;
     if (numSeq > 0) holder.seq = numSeq;
-    return holder.surface.accept(surfaceEvent || {});
+    const changed = holder.surface.accept(surfaceEvent || {});
+    if (surfaceEvent && surfaceEvent.type === "task_completed") {
+      scheduleDrainWorkerQueue(activeProjectRoot, agentId);
+    }
+    return changed;
   }
 
   function pollStandaloneWorkerSurface() {
@@ -1422,9 +1761,11 @@ async function startDesktopUiHost(options = {}) {
           };
         }),
         status: snap.status || String(meta.activity_state || "ready"),
-        busy: Boolean(snap.busy || meta.activity_state === "working"),
+        busy: snap.pending_interaction ? false : Boolean(snap.busy || meta.activity_state === "working"),
         usage: snap.usage || "",
         plan: snap.plan || [],
+        plan_items: snap.plan_items || [],
+        pending_interaction: snap.pending_interaction || null,
         changed_files: sessionChanged,
         activity_detail: sanitizeUiActivityDetail(meta.activity_detail),
         group_id: String(meta.group_id || ""),
@@ -1438,9 +1779,11 @@ async function startDesktopUiHost(options = {}) {
       };
     }
 
+    const externalLineage = resolveAgentLineageIds(activeProjectRoot, id, meta);
     const entries = loadInternalAgentTranscript(activeProjectRoot, id, {
       maxEvents: 400,
       maxEntries: 300,
+      lineageIds: externalLineage,
     }).map((e) => {
       const senderInfo = e.sender_id ? resolveSenderInfo(e.sender_id, e.sender_kind) : null;
       return senderInfo ? { ...e, ...senderInfo } : e;
@@ -1459,6 +1802,8 @@ async function startDesktopUiHost(options = {}) {
       busy: meta.activity_state === "working",
       usage: "",
       plan: [],
+      plan_items: [],
+      pending_interaction: null,
       activity_detail: sanitizeUiActivityDetail(meta.activity_detail),
       host_name: String(meta.host_name || meta.launch_mode || "terminal"),
       launch_mode: String(meta.launch_mode || "external"),
@@ -1557,16 +1902,50 @@ async function startDesktopUiHost(options = {}) {
     },
   });
 
+  function seedSessionAgentsFromDisk(root) {
+    controller.session.agents = [];
+    controller.session.metaMap.clear();
+    controller.session.labelMap.clear();
+    try {
+      const { agentsFile } = getUfooPaths(root);
+      if (!fs.existsSync(agentsFile)) return;
+      const data = loadAgentsData(agentsFile) || {};
+      const nextAgents = [];
+      for (const [id, meta] of Object.entries(data.agents || {})) {
+        if (!meta || meta.status !== "active") continue;
+        if (id === "ufoo-agent" || id.endsWith(":ufoo-agent") || meta.agent_type === "ufoo-agent") continue;
+        if (isRecentlyDeletedSession(root, id)) continue;
+        const pid = Number.parseInt(meta.pid, 10);
+        const alive = meta.mcp_bridge === true || !pid || isAgentPidAlive(pid);
+        if (!alive) continue;
+        nextAgents.push(id);
+        controller.session.metaMap.set(id, { id, ...meta });
+        const label = String(meta.display_nickname || meta.nickname || id);
+        controller.session.labelMap.set(id, label);
+      }
+      controller.session.agents = nextAgents;
+    } catch {
+      // ignore disk seed errors; live STATUS will reconcile
+    }
+  }
+
   async function switchToProjectRoot(targetRoot, switchOpts = {}) {
     const root = canonicalProjectRoot(String(targetRoot || "").trim());
     const archived = desktopArchive.read().projects.some((item) => item.root === root);
     if (archived && !switchOpts.restoreArchived) {
       return { ok: false, error: "This folder is archived. Add it again to restore it." };
     }
+    const switchSeq = ++projectSwitchSeq;
+    pendingSwitchRoot = root;
+    pendingSwitchStatus = null;
+
     if (!fs.existsSync(getUfooPaths(root).ufooDir)) {
       const repoRoot = path.join(__dirname, "..", "..");
       const init = new env.UfooInit(repoRoot);
       await init.init({ targets: "context,bus", project: root });
+      if (switchSeq !== projectSwitchSeq) {
+        return { ok: true, superseded: true, project_root: activeProjectRoot };
+      }
     }
     upsertProjectRuntime({
       projectRoot: root,
@@ -1594,14 +1973,26 @@ async function startDesktopUiHost(options = {}) {
         transformRequest: (request) => routeDaemonRequest(targetEndpoint, request),
         autoStart: true,
       });
+      if (switchSeq !== projectSwitchSeq) {
+        return { ok: true, superseded: true, project_root: activeProjectRoot };
+      }
       if (!res || res.ok !== true) {
+        pendingSwitchRoot = "";
+        pendingSwitchStatus = null;
         return res || { ok: false, error: "switch failed" };
       }
     }
 
     if (archived) desktopArchive.restoreProject(root);
+    const bufferedStatus = pendingSwitchStatus && pendingSwitchStatus.root === safeCanonicalRoot(root)
+      ? pendingSwitchStatus.data
+      : null;
+    pendingSwitchRoot = "";
+    pendingSwitchStatus = null;
+
     activeProjectRoot = root;
     globalScope = root === controllerRoot ? "controller" : "project";
+    activeStatusSyncedRoot = "";
     const rawSwitchAgentId = String(switchOpts.agentId || "").trim();
     const normalizedSwitchAgentId = rawSwitchAgentId && rawSwitchAgentId !== "main" ? rawSwitchAgentId : "";
     stageTarget = normalizedSwitchAgentId
@@ -1610,17 +2001,34 @@ async function startDesktopUiHost(options = {}) {
 
     Object.assign(settings, loadConfig(activeProjectRoot) || {});
     controller.session.targetAgent = null;
-    controller.session.agents = [];
-    controller.session.metaMap.clear();
-    controller.session.labelMap.clear();
     controller.session.footer = "";
 
-    await refreshRecoverableForActiveProject();
-    controller.requestDaemonStatus();
+    if (bufferedStatus) {
+      activeStatusSyncedRoot = safeCanonicalRoot(root);
+      controller.applyStatus(bufferedStatus);
+    } else {
+      // Seed immediately from disk so live workers (e.g. ucode-3) never flicker
+      // away while waiting for the first daemon STATUS round-trip.
+      seedSessionAgentsFromDisk(root);
+      try {
+        daemonSend({ type: IPC_REQUEST_TYPES.STATUS });
+      } catch {
+        controller.requestDaemonStatus();
+      }
+    }
+
     publish("app.snapshot", buildSnapshot());
     publishProjectsTree();
     publishWorkflowSnapshot(true);
     publishRightInspectorAll();
+
+    // Refresh recoverable sessions asynchronously so a slow daemon never stalls
+    // project switching or blanks out active workers.
+    void refreshRecoverableForActiveProject().then(() => {
+      if (switchSeq === projectSwitchSeq && safeCanonicalRoot(activeProjectRoot) === safeCanonicalRoot(root)) {
+        publishProjectsTree();
+      }
+    });
 
     if (switchOpts.windowMode && ["main", "side", "multi"].includes(switchOpts.windowMode) && stageTarget.kind === "project_main") {
       changeWindowLayout(switchOpts.windowMode);
@@ -1631,6 +2039,9 @@ async function startDesktopUiHost(options = {}) {
   }
 
   async function switchToControllerRoot() {
+    const switchSeq = ++projectSwitchSeq;
+    pendingSwitchRoot = controllerRoot;
+    pendingSwitchStatus = null;
     if (multiSession) multiSession.stop({ clearDrafts: false });
     clearAllPendingInteractionsLocal();
     stageTarget = { kind: "project_main", agentId: "" };
@@ -1645,9 +2056,19 @@ async function startDesktopUiHost(options = {}) {
           : controllerEndpoint.projectRoot,
         transformRequest: (request) => routeDaemonRequest(controllerEndpoint, request),
       });
-      if (!res || res.ok !== true) return res || { ok: false, error: "switch to controller failed" };
+      if (switchSeq !== projectSwitchSeq) {
+        return { ok: true, superseded: true, project_root: activeProjectRoot };
+      }
+      if (!res || res.ok !== true) {
+        pendingSwitchRoot = "";
+        pendingSwitchStatus = null;
+        return res || { ok: false, error: "switch to controller failed" };
+      }
     }
+    pendingSwitchRoot = "";
+    pendingSwitchStatus = null;
     activeProjectRoot = controllerRoot;
+    activeStatusSyncedRoot = "";
     globalScope = "controller";
     controller.session.targetAgent = null;
     controller.session.agents = [];
@@ -1681,7 +2102,29 @@ async function startDesktopUiHost(options = {}) {
           : kind === "user" ? "user"
             : kind === "assistant" ? "assistant"
               : "system";
-        appendLocal(normalized, stripTags(text));
+        const rawText = String(text == null ? "" : text);
+        const directMatch = normalized === "user"
+          ? rawText.match(/^›\s+\{magenta-fg\}@([^\s{]+)\{\/magenta-fg\}\s+([\s\S]+)$/)
+          : null;
+        if (directMatch) {
+          const targetToken = directMatch[1].trim();
+          const targetId = controller.resolveAgentId(targetToken) || "";
+          const targetMeta = targetId ? resolveAgentMeta(activeProjectRoot, targetId) : null;
+          const targetLabel = targetId ? getAgentLabel(targetId) : targetToken;
+          const targetType = String(
+            targetMeta?.agent_type
+            || targetMeta?.type
+            || (targetId.includes(":") ? targetId.split(":")[0] : "")
+            || ""
+          ).trim();
+          appendLocal("user", stripTags(rawText), {
+            target_id: targetId || targetToken,
+            target_label: targetLabel,
+            ...(targetType ? { target_type: targetType } : {}),
+          });
+          return;
+        }
+        appendLocal(normalized, stripTags(rawText));
       },
       setStatus: (text, opts = {}) => publish("status.set", {
         text: stripTags(text || "ready"),
@@ -1751,6 +2194,7 @@ async function startDesktopUiHost(options = {}) {
         if (action.publisher && isInternalChild(action.publisher)) return;
         if (action.type === "stream/begin") {
           tools.beginScope();
+          setMainBusyState(activeProjectRoot, true);
           const speaker = String(action.publisher || "");
           const id = `stream-${speaker || "agent"}-${Date.now()}`;
           streamIds.set(speaker, id);
@@ -1777,7 +2221,9 @@ async function startDesktopUiHost(options = {}) {
             streamIds.delete(key);
             streamLabels.delete(key);
           }
+          setMainBusyState(activeProjectRoot, false);
           publish("status.set", { text: "ready", busy: false });
+          scheduleDrainMainQueue(activeProjectRoot);
           if (globalScope === "project") {
             try {
               publish("workspace.context.snapshot", handleWorkspaceContext(activeProjectRoot, { operation: "snapshot" }));
@@ -1800,13 +2246,18 @@ async function startDesktopUiHost(options = {}) {
     projectRoot: controllerRoot,
     getActiveAgents: () => [...controller.session.metaMap.keys()],
     getAgentMeta: (id) => controller.session.metaMap.get(id) || {},
-    resolvePaneOptions: (agentId) => ({
-      mode: "internal",
-      initialEntries: loadInternalAgentTranscript(activeProjectRoot, agentId, {
-        maxEvents: 250,
-        maxEntries: 250,
-      }),
-    }),
+    resolvePaneOptions: (agentId) => {
+      const meta = resolveAgentMeta(activeProjectRoot, agentId) || null;
+      const lineageIds = resolveAgentLineageIds(activeProjectRoot, agentId, meta);
+      return {
+        mode: "internal",
+        initialEntries: loadInternalAgentTranscript(activeProjectRoot, agentId, {
+          maxEvents: 250,
+          maxEntries: 250,
+          lineageIds,
+        }),
+      };
+    },
     onInternalSubmit: (agentId, message) => {
       const requestId = `pane-send-${crypto.randomUUID()}`;
       internalSubmissions.set(requestId, { agentId, message, projectRoot: activeProjectRoot });
@@ -1869,7 +2320,7 @@ async function startDesktopUiHost(options = {}) {
     const settingsSnap = buildSettingsSnapshot(loadConfig(activeProjectRoot) || settings);
     const tree = buildProjectsTreePayload();
     const activeNode = tree.projects.find((p) => p.active);
-    const mainBusy = Boolean(controller.session.pending || activeNode?.mainBusy);
+    const mainBusy = Boolean(isMainBusy(activeProjectRoot) || controller.session.pending || activeNode?.mainBusy);
     return {
       status: mainBusy ? "Thinking…" : "ready",
       busy: mainBusy,
@@ -1891,6 +2342,7 @@ async function startDesktopUiHost(options = {}) {
       stage_target: { ...stageTarget },
       pending_interaction: getActivePendingInteraction(),
       pending_interactions: getAllPendingInteractions(),
+      queued_messages: buildQueueSnapshotForProject(activeProjectRoot),
       projects: tree.projects,
       workflow: globalScope === "project"
         ? getWorkflowSnapshot(activeProjectRoot)
@@ -2101,20 +2553,30 @@ async function startDesktopUiHost(options = {}) {
         const internal = meta ? isInternalAgentMeta(meta) : true;
 
         const stopped = await stopInternalWorkerForSession(root, id, meta);
+        const latestDiskMeta = readDiskAgentMeta(root, id);
+        const isRecoverable = Boolean(
+          recItem
+          || meta?.provider_session_id
+          || latestDiskMeta?.provider_session_id
+        );
         sessionPrefs.setPinned(root, id, false);
-        sessionPrefs.setArchivedMeta(root, id, {
-          label,
-          type: workerType,
-          archivedAt: new Date().toISOString(),
-          worktreeBranch,
-          internal,
-        });
+        if (isRecoverable) {
+          sessionPrefs.setArchivedMeta(root, id, {
+            label,
+            type: workerType,
+            archivedAt: new Date().toISOString(),
+            worktreeBranch,
+            internal,
+          });
+        } else {
+          sessionPrefs.clearArchivedMeta(root, id);
+        }
         desktopArchive.archiveSession(root, id);
         if (activeProjectRoot === root && stageTarget.kind === "worker_single" && stageTarget.agentId === id) {
           changeWindowLayout("main");
         }
         publishProjectsTree({ force: true });
-        return { ok: true, stopped };
+        return { ok: true, stopped, recoverable: isRecoverable };
       }
 
       if (name === "session.unarchive") {
@@ -2337,6 +2799,8 @@ async function startDesktopUiHost(options = {}) {
         }
         controller.session.runtimeSessionId = nextConversationId;
         controller.session.pending = null;
+        setMainBusyState(activeProjectRoot, false);
+        clearQueueBucket(activeProjectRoot, "main");
         streamIds.clear();
         streamLabels.clear();
         clearChatHistory(activeProjectRoot, historyOptions());
@@ -2374,6 +2838,7 @@ async function startDesktopUiHost(options = {}) {
         }
         const holder = ensureStandaloneSurface(agentId);
         holder.surface.accept({ type: "surface_cleared" });
+        clearQueueBucket(activeProjectRoot, "worker", agentId);
         if (multiSession && typeof multiSession.clearPane === "function") {
           multiSession.clearPane(agentId);
         }
@@ -2511,60 +2976,62 @@ async function startDesktopUiHost(options = {}) {
 
       if (name === "multi.raw") {
         const attachments = normalizeAttachmentList(payload.attachments || []);
-        const formatWorkerEcho = (rawMsg) => {
-          if (attachments.length === 0) return rawMsg;
-          const tags = attachments.map((att) => `[${att.kind === "image" ? "image" : "file"}: ${att.name}]`).join(" ");
-          return rawMsg.trim() ? `${rawMsg.trim()}\n${tags}` : tags;
-        };
+        const forceSend = payload.force_send === true;
         if (stageTarget.kind === "worker_single" && payload.agent_id === stageTarget.agentId) {
           const id = stageTarget.agentId;
           const text = String(payload.input ?? "");
           const rev = Number(payload.input_revision) || 0;
           standaloneDrafts.set(id, { text: payload.submit ? "" : text, revision: rev });
           if (payload.submit && (text.trim() || attachments.length > 0)) {
-            const effectiveMsg = formatAttachmentPromptSummary(text, attachments);
-            const echoMsg = formatWorkerEcho(text);
-            const holder = isInternalChild(id)
-              ? ensureStandaloneSurface(id)
-              : null;
-            if (holder && echoMsg) {
-              holder.surface.apply("transcript.append", { kind: "user", text: echoMsg, sender_kind: "user" });
-              holder.surface.accept({ type: "task_submitted", message: effectiveMsg });
+            const existingBucket = queuedMessageBuckets.get(queueBucketKey(activeProjectRoot, "worker", id));
+            const shouldQueue = !forceSend
+              && isInternalChild(id)
+              && !isWorkerWaitingReply(id)
+              && (isWorkerBusy(id) || Boolean(existingBucket && existingBucket.items.length > 0));
+            if (shouldQueue) {
+              const queued = enqueueQueuedMessage(activeProjectRoot, "worker", id, text, attachments);
+              publishStandaloneWorkerFrame(id);
+              return { ok: true, queued: true, queue_id: queued.id, input_revision: rev };
             }
-            daemonSend({
-              type: IPC_REQUEST_TYPES.BUS_SEND,
-              request_id: `worker-send-${crypto.randomUUID()}`,
-              target: id,
-              message: effectiveMsg,
-              ...(attachments.length > 0 ? { attachments } : {}),
-              injection_mode: "immediate",
-              source: "ufoo-desktop-worker",
-            });
+            if (forceSend && isInternalChild(id) && isWorkerBusy(id)) {
+              const { cancelInternalTask } = require("../agents/internal/taskControl");
+              await Promise.resolve(cancelInternalTask(activeProjectRoot, id)).catch(() => {});
+              await new Promise((resolve) => setTimeout(resolve, 140));
+            }
+            dispatchWorkerMessageNow(id, text, attachments);
+            return { ok: true, input_revision: rev };
           }
           publishStandaloneWorkerFrame(id);
           return { ok: true, input_revision: rev };
         }
-        if (payload.submit === true && attachments.length > 0) {
+        if (payload.submit === true) {
           const id = String(payload.agent_id || "").trim();
           const text = String(payload.input ?? "");
-          const effectiveMsg = formatAttachmentPromptSummary(text, attachments);
-          const echoMsg = formatWorkerEcho(text);
-          if (id) {
-            if (echoMsg) {
-              multiSession.acceptEvent(id, { type: "task_started", message: echoMsg, source: "ufoo-desktop-worker" });
+          if (id && (text.trim() || attachments.length > 0) && isInternalChild(id)) {
+            const existingBucket = queuedMessageBuckets.get(queueBucketKey(activeProjectRoot, "worker", id));
+            const shouldQueue = !forceSend
+              && !isWorkerWaitingReply(id)
+              && (isWorkerBusy(id) || Boolean(existingBucket && existingBucket.items.length > 0));
+            if (shouldQueue) {
+              const queued = enqueueQueuedMessage(activeProjectRoot, "worker", id, text, attachments);
+              multiSession.handleRaw({
+                agent_id: id,
+                input: "",
+                cursor: 0,
+                input_revision: Number(payload.input_revision) || 0,
+                submit: false,
+              });
+              return { ok: true, queued: true, queue_id: queued.id, agent_id: id, input_revision: Number(payload.input_revision) || 0 };
             }
-            multiSession.acceptEvent(id, { type: "task_submitted", message: effectiveMsg });
-            multiSession.publishFrames();
-            daemonSend({
-              type: IPC_REQUEST_TYPES.BUS_SEND,
-              request_id: `worker-send-${crypto.randomUUID()}`,
-              target: id,
-              message: effectiveMsg,
-              attachments,
-              injection_mode: "immediate",
-              source: "ufoo-desktop-worker",
-            });
-            return { ok: true, agent_id: id, input_revision: Number(payload.input_revision) || 0 };
+            if (attachments.length > 0 || forceSend) {
+              if (forceSend && isWorkerBusy(id)) {
+                const { cancelInternalTask } = require("../agents/internal/taskControl");
+                await Promise.resolve(cancelInternalTask(activeProjectRoot, id)).catch(() => {});
+                await new Promise((resolve) => setTimeout(resolve, 140));
+              }
+              dispatchWorkerMessageNow(id, text, attachments);
+              return { ok: true, agent_id: id, input_revision: Number(payload.input_revision) || 0 };
+            }
           }
         }
         return multiSession.handleRaw(payload);
@@ -2572,6 +3039,7 @@ async function startDesktopUiHost(options = {}) {
 
       if (name === "multi.cancel" || (name === "task.cancel" && payload.agent_id)) {
         const agentId = String(payload.agent_id || payload.agentId || "").trim();
+        if (agentId) pauseQueueIfNonEmpty(activeProjectRoot, "worker", agentId);
         if (agentId && isInternalAgentMeta(controller.session.metaMap.get(agentId))) {
           const { cancelInternalTask } = require("../agents/internal/taskControl");
           await Promise.resolve(cancelInternalTask(activeProjectRoot, agentId)).catch(() => {});
@@ -2581,16 +3049,87 @@ async function startDesktopUiHost(options = {}) {
       }
 
       if (name === "task.cancel") {
-        if (payload.task_run_id) {
+        const normRoot = safeCanonicalRoot(activeProjectRoot) || activeProjectRoot;
+        const cancelRunId = String(payload.task_run_id || activeMainTaskRunIdByRoot.get(normRoot) || "").trim();
+        if (cancelRunId) {
           daemonSend({
             type: IPC_REQUEST_TYPES.AGENT_RUNTIME,
             operation: "cancel",
-            task_run_id: String(payload.task_run_id),
+            task_run_id: cancelRunId,
           });
         }
+        setMainBusyState(activeProjectRoot, false);
+        pauseQueueIfNonEmpty(activeProjectRoot, "main");
         publish("status.set", { text: "cancel requested", busy: false });
         publish("stream.done", { id: "cancel" });
         return { ok: true };
+      }
+
+      if (name === "queue.remove") {
+        const scope = payload.scope === "worker" ? "worker" : "main";
+        const agentId = scope === "worker" ? String(payload.agent_id || payload.agentId || "").trim() : "";
+        const id = String(payload.id || "").trim();
+        if (!id) return { ok: false, error: "queue item id required" };
+        const key = queueBucketKey(activeProjectRoot, scope, agentId);
+        const bucket = queuedMessageBuckets.get(key);
+        if (!bucket) return { ok: true, removed: null };
+        const idx = bucket.items.findIndex((item) => item.id === id);
+        if (idx < 0) return { ok: true, removed: null };
+        const [removed] = bucket.items.splice(idx, 1);
+        if (bucket.items.length === 0) queuedMessageBuckets.delete(key);
+        publishQueueSnapshot(activeProjectRoot);
+        return { ok: true, removed };
+      }
+
+      if (name === "queue.clear") {
+        const scope = payload.scope === "worker" ? "worker" : "main";
+        const agentId = scope === "worker" ? String(payload.agent_id || payload.agentId || "").trim() : "";
+        const cleared = clearQueueBucket(activeProjectRoot, scope, agentId);
+        return { ok: true, cleared };
+      }
+
+      if (name === "queue.send_now") {
+        const scope = payload.scope === "worker" ? "worker" : "main";
+        const agentId = scope === "worker" ? String(payload.agent_id || payload.agentId || "").trim() : "";
+        const id = String(payload.id || "").trim();
+        const key = queueBucketKey(activeProjectRoot, scope, agentId);
+        const bucket = queuedMessageBuckets.get(key);
+        if (!bucket || bucket.items.length === 0) {
+          return { ok: false, error: "queue is empty" };
+        }
+        const idx = id ? bucket.items.findIndex((item) => item.id === id) : 0;
+        if (idx < 0) return { ok: false, error: "queue item not found" };
+        const [item] = bucket.items.splice(idx, 1);
+        bucket.paused = false;
+        if (bucket.items.length === 0) queuedMessageBuckets.delete(key);
+        publishQueueSnapshot(activeProjectRoot);
+
+        if (scope === "worker" && agentId) {
+          if (isInternalChild(agentId) && isWorkerBusy(agentId)) {
+            const { cancelInternalTask } = require("../agents/internal/taskControl");
+            await Promise.resolve(cancelInternalTask(activeProjectRoot, agentId)).catch(() => {});
+            await new Promise((resolve) => setTimeout(resolve, 140));
+          }
+          dispatchWorkerMessageNow(agentId, item.text, item.attachments);
+          return { ok: true, dispatched: item.id, scope: "worker", agent_id: agentId };
+        }
+
+        if (isMainBusy(activeProjectRoot)) {
+          const normRoot = safeCanonicalRoot(activeProjectRoot) || activeProjectRoot;
+          const cancelRunId = String(activeMainTaskRunIdByRoot.get(normRoot) || "").trim();
+          if (cancelRunId) {
+            daemonSend({
+              type: IPC_REQUEST_TYPES.AGENT_RUNTIME,
+              operation: "cancel",
+              task_run_id: cancelRunId,
+            });
+          }
+          setMainBusyState(activeProjectRoot, false);
+          publish("stream.done", { id: "cancel" });
+          await new Promise((resolve) => setTimeout(resolve, 140));
+        }
+        await dispatchMainMessageNow(item.text, item.attachments);
+        return { ok: true, dispatched: item.id, scope: "main" };
       }
 
       if (name === "worker.launch") {
@@ -2631,7 +3170,8 @@ async function startDesktopUiHost(options = {}) {
       if (name === "worker.resume") {
         const targetId = String(payload.id || payload.target || "").trim();
         if (!targetId) return { ok: false, error: "Recoverable worker or group ID required" };
-        await controller.submitInput(`/resume ${targetId}`);
+        daemonSend({ type: IPC_REQUEST_TYPES.RESUME_AGENTS, target: targetId, internal_only: true });
+        controller.requestDaemonStatus();
         await refreshRecoverableForActiveProject();
         publishProjectsTree();
         return { ok: true, resumed: targetId };
@@ -3330,30 +3870,27 @@ async function startDesktopUiHost(options = {}) {
       if (name === "input.submit") {
         const text = String(payload.text || "");
         const attachments = normalizeAttachmentList(payload.attachments || []);
+        const forceSend = payload.force_send === true;
         if (stageTarget.kind === "worker_single" && stageTarget.agentId && !text.trimStart().startsWith("/")) {
           const workerId = stageTarget.agentId;
           if (!text.trim() && attachments.length === 0) return { ok: true, routed: "empty" };
-          const effectiveMsg = formatAttachmentPromptSummary(text, attachments);
-          const tags = attachments.map((att) => `[${att.kind === "image" ? "image" : "file"}: ${att.name}]`).join(" ");
-          const echoMsg = attachments.length > 0 ? (text.trim() ? `${text.trim()}\n${tags}` : tags) : text;
           standaloneDrafts.set(workerId, { text: "", revision: (standaloneDrafts.get(workerId)?.revision || 0) + 1 });
-          if (isInternalChild(workerId)) {
-            const holder = ensureStandaloneSurface(workerId);
-            if (echoMsg) {
-              holder.surface.apply("transcript.append", { kind: "user", text: echoMsg, sender_kind: "user" });
-            }
-            holder.surface.accept({ type: "task_submitted", message: effectiveMsg });
+          const existingBucket = queuedMessageBuckets.get(queueBucketKey(activeProjectRoot, "worker", workerId));
+          const shouldQueue = !forceSend
+            && isInternalChild(workerId)
+            && !isWorkerWaitingReply(workerId)
+            && (isWorkerBusy(workerId) || Boolean(existingBucket && existingBucket.items.length > 0));
+          if (shouldQueue) {
+            const queued = enqueueQueuedMessage(activeProjectRoot, "worker", workerId, text, attachments);
+            publishStandaloneWorkerFrame(workerId);
+            return { ok: true, routed: "queued", queued: true, queue_id: queued.id, agent_id: workerId };
           }
-          daemonSend({
-            type: IPC_REQUEST_TYPES.BUS_SEND,
-            request_id: `worker-submit-${crypto.randomUUID()}`,
-            target: workerId,
-            message: effectiveMsg,
-            ...(attachments.length > 0 ? { attachments } : {}),
-            injection_mode: "immediate",
-            source: "ufoo-desktop-worker",
-          });
-          publishStandaloneWorkerFrame(workerId);
+          if (forceSend && isInternalChild(workerId) && isWorkerBusy(workerId)) {
+            const { cancelInternalTask } = require("../agents/internal/taskControl");
+            await Promise.resolve(cancelInternalTask(activeProjectRoot, workerId)).catch(() => {});
+            await new Promise((resolve) => setTimeout(resolve, 140));
+          }
+          dispatchWorkerMessageNow(workerId, text, attachments);
           return { ok: true, routed: "worker", agent_id: workerId };
         }
 
@@ -3364,13 +3901,46 @@ async function startDesktopUiHost(options = {}) {
         );
         if (!routing.ok) return routing;
         controller.session.targetAgent = routing.target;
-        const isMainChatTurn = !routing.target && !text.trimStart().startsWith("/") && !text.trimStart().startsWith("!");
+        const trimmedStart = text.trimStart();
+        const atMentionMatch = trimmedStart.match(/^@([^\s]+)/);
+        const isDirectAtMention = Boolean(atMentionMatch && controller.resolveAgentId(atMentionMatch[1]));
+        const isMainChatTurn = !routing.target
+          && !trimmedStart.startsWith("/")
+          && !trimmedStart.startsWith("!")
+          && !isDirectAtMention;
+        const mainBucket = queuedMessageBuckets.get(queueBucketKey(activeProjectRoot, "main"));
+        const shouldQueueMain = isMainChatTurn
+          && (text.trim() || attachments.length > 0)
+          && !forceSend
+          && !getActivePendingInteraction()
+          && !controller.session.pending?.disambiguate
+          && (isMainBusy(activeProjectRoot) || Boolean(mainBucket && mainBucket.items.length > 0));
+        if (shouldQueueMain) {
+          const queued = enqueueQueuedMessage(activeProjectRoot, "main", "", text, attachments);
+          return { ok: true, routed: "queued", queued: true, queue_id: queued.id };
+        }
         if (isMainChatTurn && (text.trim() || attachments.length > 0)) {
+          if (forceSend && isMainBusy(activeProjectRoot)) {
+            const normRoot = safeCanonicalRoot(activeProjectRoot) || activeProjectRoot;
+            const cancelRunId = String(activeMainTaskRunIdByRoot.get(normRoot) || "").trim();
+            if (cancelRunId) {
+              daemonSend({
+                type: IPC_REQUEST_TYPES.AGENT_RUNTIME,
+                operation: "cancel",
+                task_run_id: cancelRunId,
+              });
+            }
+            setMainBusyState(activeProjectRoot, false);
+            publish("stream.done", { id: "cancel" });
+            await new Promise((resolve) => setTimeout(resolve, 140));
+          }
+          setMainBusyState(activeProjectRoot, true);
           publish("status.set", { text: "Thinking…", busy: true });
         }
         const beforeSubmit = mainSubmissionRev;
         await controller.submitInput(text, { attachments });
         if (!routing.target && beforeSubmit === mainSubmissionRev) {
+          setMainBusyState(activeProjectRoot, false);
           publish("status.set", { text: "ready", busy: false });
         }
         return { ok: true, routed: (text.trim() || attachments.length > 0) ? "submit" : "empty" };
@@ -3395,6 +3965,7 @@ async function startDesktopUiHost(options = {}) {
       const type = String(event.type || "");
       const runId = String(event.taskRunId || "main");
       if (type === "request.accepted" || type === "task.started" || type === "model.started") {
+        setMainBusyState(activeProjectRoot, true, event.taskRunId || undefined);
         publish("status.set", { text: "Thinking…", busy: true });
         return;
       }
@@ -3448,10 +4019,14 @@ async function startDesktopUiHost(options = {}) {
         return;
       }
       if (["task.completed", "task.failed", "task.cancelled", "task.paused", "task.interrupted"].includes(type)) {
+        setMainBusyState(activeProjectRoot, false);
         publish("status.set", {
           text: type === "task.paused" ? "Waiting for reply…" : "ready",
           busy: false,
         });
+        if (type === "task.completed") {
+          scheduleDrainMainQueue(activeProjectRoot);
+        }
       }
     },
     onInteractionRequest: (interaction) => {
@@ -3484,6 +4059,11 @@ async function startDesktopUiHost(options = {}) {
     },
     renderScreen: () => {},
     updateDashboard: (data) => {
+      const statusRoot = data && (data.projectRoot || data.project_root);
+      const normStatusRoot = statusRoot ? safeCanonicalRoot(statusRoot) : "";
+      const normActiveRoot = safeCanonicalRoot(activeProjectRoot);
+      if (normStatusRoot && normStatusRoot !== normActiveRoot) return;
+      activeStatusSyncedRoot = normActiveRoot;
       controller.applyStatus(data);
       const payload = buildDashboardPublishPayload(controller, data);
       publish("agents.snapshot", {
@@ -3504,6 +4084,15 @@ async function startDesktopUiHost(options = {}) {
       publishWorkflowSnapshot();
       if (stageTarget.kind === "worker_single" && stageTarget.agentId) {
         publishStandaloneWorkerFrame(stageTarget.agentId);
+      }
+      const normRoot = safeCanonicalRoot(activeProjectRoot) || activeProjectRoot;
+      const workerPrefix = `${normRoot}::worker::`;
+      for (const [qKey, bucket] of queuedMessageBuckets.entries()) {
+        if (!qKey.startsWith(workerPrefix) || bucket.paused || bucket.items.length === 0) continue;
+        const wId = qKey.slice(workerPrefix.length);
+        if (wId && !isWorkerBusy(wId) && !isWorkerWaitingReply(wId)) {
+          scheduleDrainWorkerQueue(activeProjectRoot, wId);
+        }
       }
     },
     requestStatus: () => controller.requestDaemonStatus(),
@@ -3572,7 +4161,14 @@ async function startDesktopUiHost(options = {}) {
       }
       if (msg.type === IPC_RESPONSE_TYPES.STATUS) {
         const root = msg.data && (msg.data.projectRoot || msg.data.project_root);
-        if (root && safeCanonicalRoot(root) !== safeCanonicalRoot(activeProjectRoot)) return;
+        const normMsgRoot = root ? safeCanonicalRoot(root) : "";
+        const normActive = safeCanonicalRoot(activeProjectRoot);
+        if (normMsgRoot && normMsgRoot !== normActive) {
+          if (pendingSwitchRoot && typeof msg.data?.phase !== "string" && normMsgRoot === safeCanonicalRoot(pendingSwitchRoot)) {
+            pendingSwitchStatus = { root: normMsgRoot, data: msg.data };
+          }
+          return;
+        }
       }
       if (msg.type === IPC_RESPONSE_TYPES.BUS) {
         const busEvt = msg.data || {};
@@ -3616,16 +4212,31 @@ async function startDesktopUiHost(options = {}) {
         } catch {
           // ignore mirror errors
         }
-        if (msg.data?.event === "agent_surface") return;
+        if (msg.data?.event === "agent_surface") {
+          if (msg.data?.data?.surface?.type === "task_completed" && msg.data?.publisher) {
+            scheduleDrainWorkerQueue(activeProjectRoot, String(msg.data.publisher));
+          }
+          return;
+        }
+        if (busEvt.event === "activity_state_changed") {
+          const actAgent = String(busEvt.subscriber || busEvt.publisher || "").trim();
+          const actState = String(busEvt.state || busEvt.activity_state || "").trim().toLowerCase();
+          if (actAgent && (actState === "idle" || actState === "ready")) {
+            scheduleDrainWorkerQueue(activeProjectRoot, actAgent);
+          }
+        }
         const busSource = String(busEvt.source || busEvt.data?.source || "").trim();
-        // Direct UI submissions to a worker pane belong strictly to that worker's
-        // surface — never echo them as "ufoo-agent · ..." in the main ufoo transcript.
+        // Direct UI submissions to a worker pane (or @agent sends from main chat)
+        // belong to the user bubble / worker surface — never echo them back as a
+        // duplicate "ufoo · ..." bubble in the main ufoo transcript.
         if ([
           "ufoo-desktop",
           "ufoo-desktop-worker",
           "ufoo-desktop-handoff",
           "rust-multi-window",
           "chat-internal-agent-view",
+          "chat-direct",
+          "chat-agent-view",
         ].includes(busSource)) {
           return;
         }
@@ -3751,6 +4362,8 @@ async function startDesktopUiHost(options = {}) {
   async function close() {
     clearInterval(standalonePollTimer);
     clearInterval(treePollTimer);
+    for (const timer of queueDrainTimers.values()) clearTimeout(timer);
+    queueDrainTimers.clear();
     if (remoteBridge) await remoteBridge.close().catch(() => {});
     if (handoffServer) await handoffServer.close().catch(() => {});
     if (multiSession?.isActive()) {

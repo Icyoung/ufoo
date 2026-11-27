@@ -676,7 +676,9 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
       expect(updatedFrame?.payload?.thinking_level).toBe("high");
       expect(updatedFrame?.payload?.permission_mode).toBe("supervised");
 
-      // Direct submit inside Worker Single View renders local user bubble and never leaks into ufoo main transcript
+      // Direct submit inside Worker Single View while worker is working queues cleanly
+      // instead of injecting prematurely into transcript; send_now dispatches it and
+      // never leaks into ufoo main transcript.
       const mainCountBeforeWorkerSend = envelopes.filter((e) => e.name === "transcript.append").length;
       client.write(encodeMessage(createEnvelope({
         kind: "command",
@@ -692,6 +694,24 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
       })));
       const wSendRes = await waitForEnvelope((e) => e.kind === "result" && e.request_id === "cmd-wsend");
       expect(wSendRes?.payload?.ok).toBe(true);
+      expect(wSendRes?.payload?.queued).toBe(true);
+      const afterQueueFrame = envelopes.filter((e) => e.name === "worker.view.frame" && e.payload.agent_id === "ucode:a1b2c3d4").at(-1);
+      expect(afterQueueFrame?.payload?.entries?.some((e) => e.kind === "user" && e.text === "hello ucode directly")).toBe(false);
+      const qSnap = envelopes.filter((e) => e.name === "queue.snapshot").at(-1);
+      expect(qSnap?.payload?.workers?.["ucode:a1b2c3d4"]?.items?.[0]?.text).toBe("hello ucode directly");
+
+      client.write(encodeMessage(createEnvelope({
+        kind: "command",
+        name: "queue.send_now",
+        requestId: "cmd-wsend-now",
+        payload: {
+          scope: "worker",
+          agent_id: "ucode:a1b2c3d4",
+          id: wSendRes.payload.queue_id,
+        },
+      })));
+      const wSendNowRes = await waitForEnvelope((e) => e.kind === "result" && e.request_id === "cmd-wsend-now");
+      expect(wSendNowRes?.payload?.ok).toBe(true);
       const afterSendFrame = envelopes.filter((e) => e.name === "worker.view.frame" && e.payload.agent_id === "ucode:a1b2c3d4").at(-1);
       expect(afterSendFrame?.payload?.entries?.some((e) => e.kind === "user" && e.text === "hello ucode directly")).toBe(true);
       await new Promise((resolve) => setTimeout(resolve, 60));
@@ -711,6 +731,7 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
             nickname: "ucode-1",
             status: "active",
             launch_mode: "internal",
+            provider_session_id: "ucode-sess-a1b2c3d4",
             model: "gpt-6.1-sol",
             thinking_level: "medium",
             permission_mode: "auto_edit",
@@ -739,7 +760,7 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
         kind: "command",
         name: "multi.raw",
         requestId: "cmd-trigger-status",
-        payload: { agent_id: "ucode:a1b2c3d4", input: "status ping", submit: true },
+        payload: { agent_id: "ucode:a1b2c3d4", input: "status ping", submit: true, force_send: true },
       })));
       await waitForEnvelope((e) => e.kind === "result" && e.request_id === "cmd-trigger-status");
       await waitForEnvelope((e, idx) => idx >= beforeStatusRefresh && e.name === "agents.snapshot");
@@ -777,9 +798,11 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
       expect(envelopes.some((e) => e.name === "transcript.reset" && Array.isArray(e.payload.entries) && e.payload.entries.length === 0)).toBe(true);
 
       const latestTree = () => envelopes.filter((e) => e.name === "projects.tree").at(-1).payload;
+      let archiveSeq = 0;
       const archiveCommand = async (name, payload) => {
-        client.write(encodeMessage(createEnvelope({ kind: "command", name, requestId: name, payload })));
-        const result = await waitForEnvelope((e) => e.kind === "result" && e.request_id === name);
+        const reqId = `${name}-${++archiveSeq}`;
+        client.write(encodeMessage(createEnvelope({ kind: "command", name, requestId: reqId, payload })));
+        const result = await waitForEnvelope((e) => e.kind === "result" && e.request_id === reqId);
         expect(result.payload).toMatchObject({ ok: true });
       };
       const root = fs.realpathSync(projectDir);
@@ -791,6 +814,11 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
       const pinnedWorkers = latestTree().projects.find((p) => p.root === root).workers;
       expect(pinnedWorkers[0].id).toBe("cursor:99887766");
       expect(pinnedWorkers[0].pinned).toBe(true);
+
+      // Simulate a new saved turn on ucode:a1b2c3d4 after worker.clear so archiving preserves it as recoverable
+      const agentsData = JSON.parse(fs.readFileSync(agentsFile, "utf8"));
+      agentsData.agents["ucode:a1b2c3d4"].provider_session_id = "ucode-sess-after-clear";
+      fs.writeFileSync(agentsFile, JSON.stringify(agentsData), "utf8");
 
       await archiveCommand("session.archive", { root, session_id: "ucode:a1b2c3d4" });
       expect(latestTree().stage_target.kind).toBe("project_main");
@@ -816,6 +844,11 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
       await archiveCommand("session.delete", { root, session_id: "ucode:a1b2c3d4" });
       expect(latestTree().projects.find((p) => p.root === root).workers.map((w) => w.id)).not.toContain("ucode:a1b2c3d4");
       expect(latestTree().projects.find((p) => p.root === root).archived.map((a) => a.id)).not.toContain("ucode:a1b2c3d4");
+
+      // Archiving an unrecoverable session (no provider_session_id) hides it without leaving a dead entry in archived
+      await archiveCommand("session.archive", { root, session_id: "cursor:99887766" });
+      expect(latestTree().projects.find((p) => p.root === root).workers.map((w) => w.id)).not.toContain("cursor:99887766");
+      expect(latestTree().projects.find((p) => p.root === root).archived.map((a) => a.id)).not.toContain("cursor:99887766");
 
       await archiveCommand("project.archive", { root });
       expect(latestTree().scope).toBe("controller");
@@ -1114,4 +1147,453 @@ describe("Desktop GUI Phase 0 Core & Shared UI Host", () => {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   }, 15000);
+
+  test("rawHistoryToEntries strips @target from direct user sends, populates target metadata, and deduplicates legacy ufoo bus echo", () => {
+    const { rawHistoryToEntries } = require("../../../src/ui/desktopUiHost");
+    const speakerIndex = new Map([
+      ["ufoo", { id: "ufoo-agent", type: "ufoo" }],
+      ["ucode-5", { id: "ucode:5", type: "ucode", label: "ucode-5" }],
+      ["ucode:5", { id: "ucode:5", type: "ucode", label: "ucode-5" }],
+    ]);
+
+    const entries = rawHistoryToEntries([
+      { kind: "user", text: "› @ucode-5 再试下 应该可以读了" },
+      { kind: "bus", text: "ufoo · 再试下 应该可以读了" },
+      { kind: "user", text: "› @Override is a Kotlin annotation" },
+    ], speakerIndex);
+
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({
+      kind: "user",
+      text: "再试下 应该可以读了",
+      target_id: "ucode:5",
+      target_label: "ucode-5",
+      target_type: "ucode",
+    });
+    expect(entries[1]).toMatchObject({
+      kind: "user",
+      text: "› @Override is a Kotlin annotation",
+    });
+    expect(entries[1].target_label).toBeUndefined();
+  });
+
+  test("queues follow-ups while main ufoo is busy instead of injecting into transcript, supports remove/clear, and auto-drains on task.completed", async () => {
+    const tmp = makeTempDir("ufoo-queue-host-");
+    const controllerDir = path.join(tmp, "controller");
+    const projectDir = path.join(tmp, "demo-proj");
+    fs.mkdirSync(controllerDir, { recursive: true });
+    fs.mkdirSync(projectDir, { recursive: true });
+    const uiSock = path.join(tmp, "ui.sock");
+    const handoffSock = path.join(tmp, "handoff.sock");
+    const daemonSock = path.join(tmp, "daemon.sock");
+    const daemonSockets = new Set();
+    const receivedPrompts = [];
+
+    const fakeDaemon = net.createServer((sock) => {
+      daemonSockets.add(sock);
+      sock.on("close", () => daemonSockets.delete(sock));
+      let buf = "";
+      sock.on("data", (chunk) => {
+        buf += chunk.toString("utf8");
+        const lines = buf.split("\n");
+        buf = lines.pop() || "";
+        for (const line of lines.filter(Boolean)) {
+          const req = JSON.parse(line);
+          if (req.type === "status") {
+            sock.write(`${JSON.stringify({
+              type: "status",
+              data: { agents: {}, activeCount: 0, cron: { tasks: [] } },
+            })}\n`);
+          } else if (req.type === "prompt") {
+            receivedPrompts.push(req);
+            const runId = `run-${receivedPrompts.length}`;
+            sock.write(`${JSON.stringify({
+              type: "runtime_event",
+              data: {
+                type: "task.started",
+                agentId: "ufoo-agent",
+                projectRoot: projectDir,
+                sessionId: "main-default",
+                sequence: receivedPrompts.length * 10 + 1,
+                taskRunId: runId,
+              },
+            })}\n`);
+          }
+        }
+      });
+    });
+    await new Promise((resolve) => fakeDaemon.listen(daemonSock, resolve));
+
+    const prevControllerEnv = process.env.UFOO_GLOBAL_CONTROLLER_ROOT;
+    process.env.UFOO_GLOBAL_CONTROLLER_ROOT = controllerDir;
+    let hostHandle = null;
+    try {
+      fs.mkdirSync(path.join(controllerDir, ".ufoo", "run"), { recursive: true });
+      fs.symlinkSync(daemonSock, path.join(controllerDir, ".ufoo", "run", "ufoo.sock"));
+
+      hostHandle = await startDesktopUiHost({
+        controllerRoot: controllerDir,
+        initialProjectRoot: projectDir,
+        socketPath: uiSock,
+        authToken: "queue-secret",
+        handoffSocketPath: handoffSock,
+        isRunning: () => true,
+        stopDaemon: () => {},
+        startDaemon: () => {},
+      });
+
+      const client = net.createConnection(uiSock);
+      await new Promise((resolve) => client.once("connect", resolve));
+      const envelopes = [];
+      let rawBuf = "";
+      client.on("data", (chunk) => {
+        rawBuf += chunk.toString("utf8");
+        const lines = rawBuf.split("\n");
+        rawBuf = lines.pop() || "";
+        for (const line of lines.filter(Boolean)) envelopes.push(JSON.parse(line));
+      });
+      const waitFor = (pred, timeoutMs = 4000) => new Promise((resolve, reject) => {
+        const start = Date.now();
+        const tick = () => {
+          const hit = envelopes.find(pred);
+          if (hit) return resolve(hit);
+          if (Date.now() - start > timeoutMs) return reject(new Error("timeout"));
+          setTimeout(tick, 20);
+        };
+        tick();
+      });
+
+      client.write(encodeMessage(createEnvelope({ kind: "hello", name: "hello", payload: { auth_token: "queue-secret" } })));
+      await waitFor((e) => e.kind === "welcome");
+
+      // Select demo project
+      client.write(encodeMessage(createEnvelope({
+        kind: "command",
+        name: "project.select",
+        requestId: "sel-1",
+        payload: { root: projectDir },
+      })));
+      await waitFor((e) => e.kind === "result" && e.request_id === "sel-1");
+
+      // 1. First prompt dispatches immediately while idle
+      client.write(encodeMessage(createEnvelope({
+        kind: "command",
+        name: "input.submit",
+        requestId: "sub-1",
+        payload: { text: "First task" },
+      })));
+      const res1 = await waitFor((e) => e.kind === "result" && e.request_id === "sub-1");
+      expect(res1.payload.routed).toBe("submit");
+      await waitFor(() => receivedPrompts.length === 1);
+
+      // 2. Follow-ups while busy MUST queue instead of injecting into transcript or dispatching PROMPT
+      client.write(encodeMessage(createEnvelope({
+        kind: "command",
+        name: "input.submit",
+        requestId: "sub-2",
+        payload: { text: "Queued second" },
+      })));
+      const res2 = await waitFor((e) => e.kind === "result" && e.request_id === "sub-2");
+      expect(res2.payload.routed).toBe("queued");
+      expect(res2.payload.queued).toBe(true);
+
+      client.write(encodeMessage(createEnvelope({
+        kind: "command",
+        name: "input.submit",
+        requestId: "sub-3",
+        payload: { text: "Queued third" },
+      })));
+      const res3 = await waitFor((e) => e.kind === "result" && e.request_id === "sub-3");
+      expect(res3.payload.routed).toBe("queued");
+
+      expect(receivedPrompts).toHaveLength(1);
+      const userTranscriptsBefore = envelopes.filter(
+        (e) => e.name === "transcript.append" && e.payload?.kind === "user"
+      );
+      expect(userTranscriptsBefore.some((e) => e.payload.text.includes("Queued second"))).toBe(false);
+      expect(userTranscriptsBefore.some((e) => e.payload.text.includes("Queued third"))).toBe(false);
+
+      // 3. Remove "Queued second" cleanly (Edit/Remove flow)
+      client.write(encodeMessage(createEnvelope({
+        kind: "command",
+        name: "queue.remove",
+        requestId: "rm-2",
+        payload: { scope: "main", id: res2.payload.queue_id },
+      })));
+      const rmRes = await waitFor((e) => e.kind === "result" && e.request_id === "rm-2");
+      expect(rmRes.payload.ok).toBe(true);
+      expect(rmRes.payload.removed?.text).toBe("Queued second");
+
+      // 4. Completing turn 1 automatically drains "Queued third" into PROMPT and transcript
+      for (const sock of daemonSockets) {
+        sock.write(`${JSON.stringify({
+          type: "runtime_event",
+          data: {
+            type: "task.completed",
+            agentId: "ufoo-agent",
+            projectRoot: projectDir,
+            sessionId: "main-default",
+            sequence: 15,
+            taskRunId: "run-1",
+            result: { text: "First done" },
+          },
+        })}\n`);
+      }
+
+      await waitFor(() => receivedPrompts.length === 2, 4000);
+      expect(receivedPrompts[1].text).toBe("Queued third");
+      const drainedTranscript = await waitFor(
+        (e) => e.name === "transcript.append" && e.payload?.kind === "user" && e.payload.text.includes("Queued third"),
+        4000
+      );
+      expect(drainedTranscript).toBeTruthy();
+
+      client.destroy();
+    } finally {
+      if (prevControllerEnv === undefined) delete process.env.UFOO_GLOBAL_CONTROLLER_ROOT;
+      else process.env.UFOO_GLOBAL_CONTROLLER_ROOT = prevControllerEnv;
+      if (hostHandle) await hostHandle.close();
+      await new Promise((resolve) => fakeDaemon.close(resolve));
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  test("switching projects never blanks live workers even if daemon STATUS is delayed", async () => {
+    const tmp = makeTempDir("ufoo-dswitch-");
+    const projectA = path.join(tmp, "proj-a");
+    const projectB = path.join(tmp, "proj-b");
+    fs.mkdirSync(path.join(projectA, ".ufoo", "agent"), { recursive: true });
+    fs.mkdirSync(path.join(projectB, ".ufoo", "agent"), { recursive: true });
+    fs.writeFileSync(path.join(projectA, ".ufoo", "agent", "all-agents.json"), JSON.stringify({
+      schema_version: 1,
+      agents: {},
+    }), "utf8");
+    fs.writeFileSync(path.join(projectB, ".ufoo", "agent", "all-agents.json"), JSON.stringify({
+      schema_version: 1,
+      agents: {
+        "ucode:7988e2ff": {
+          agent_type: "ucode",
+          nickname: "ucode-3",
+          status: "active",
+          launch_mode: "internal",
+          pid: process.pid,
+          activity_state: "working",
+        },
+      },
+    }), "utf8");
+
+    const daemonSock = path.join(tmp, "daemon.sock");
+    const pendingTimers = new Set();
+    const realB = fs.realpathSync(projectB);
+    const fakeDaemon = net.createServer((socket) => {
+      socket.on("error", () => {});
+      let buf = "";
+      socket.on("data", (chunk) => {
+        buf += chunk.toString("utf8");
+        let idx;
+        while ((idx = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, idx).trim();
+          buf = buf.slice(idx + 1);
+          if (!line) continue;
+          const req = JSON.parse(line);
+          if (req.type === "status") {
+            const targetRoot = req.project_root || projectA;
+            // Deliberately delay STATUS for projectB (simulating a busy daemon)
+            const delayMs = targetRoot === realB ? 350 : 0;
+            const timer = setTimeout(() => {
+              pendingTimers.delete(timer);
+              if (socket.destroyed || !socket.writable) return;
+              const isB = targetRoot === realB;
+              try {
+                socket.write(`${JSON.stringify({
+                  type: "status",
+                  data: {
+                    projectRoot: targetRoot,
+                    active: isB ? ["ucode:7988e2ff"] : [],
+                    active_meta: isB
+                      ? [{
+                          id: "ucode:7988e2ff",
+                          nickname: "ucode-3",
+                          agent_type: "ucode",
+                          launch_mode: "internal",
+                          activity_state: "working",
+                        }]
+                      : [],
+                  },
+                })}\n`);
+              } catch {
+                // ignore closed test socket
+              }
+            }, delayMs);
+            pendingTimers.add(timer);
+          } else if (req.type === "list_recoverable_agents") {
+            try {
+              socket.write(`${JSON.stringify({
+                type: "response",
+                data: { recoverable: { recoverable: [], groups: [] } },
+              })}\n`);
+            } catch {
+              // ignore closed test socket
+            }
+          }
+        }
+      });
+    });
+    await new Promise((resolve) => fakeDaemon.listen(daemonSock, resolve));
+
+    const controllerDir = path.join(tmp, "controller");
+    fs.mkdirSync(path.join(controllerDir, ".ufoo", "run"), { recursive: true });
+    fs.symlinkSync(daemonSock, path.join(controllerDir, ".ufoo", "run", "ufoo.sock"));
+    const uiSock = path.join(tmp, "ui.sock");
+    const prevControllerEnv = process.env.UFOO_GLOBAL_CONTROLLER_ROOT;
+    process.env.UFOO_GLOBAL_CONTROLLER_ROOT = controllerDir;
+
+    let hostHandle = null;
+    try {
+      hostHandle = await startDesktopUiHost({
+        controllerRoot: controllerDir,
+        initialProjectRoot: projectA,
+        socketPath: uiSock,
+        authToken: "switch-token-1234",
+        enableHandoffServer: false,
+        enableRemoteBridge: false,
+        isRunning: () => true,
+        startDaemon: () => {},
+      });
+
+      const envelopes = [];
+      const client = net.createConnection(uiSock);
+      await new Promise((resolve) => client.once("connect", resolve));
+      let buffer = "";
+      client.on("data", (chunk) => {
+        buffer += chunk.toString("utf8");
+        let idx;
+        while ((idx = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 1);
+          const decoded = decodeMessage(line);
+          if (decoded.ok) envelopes.push(decoded.envelope);
+        }
+      });
+      const waitFor = async (pred, timeoutMs = 3000) => {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+          const hit = envelopes.find(pred);
+          if (hit) return hit;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        throw new Error("Timed out waiting for envelope");
+      };
+
+      client.write(encodeMessage(createEnvelope({
+        kind: "hello",
+        payload: { auth_token: "switch-token-1234", capabilities: [DESKTOP_HOST_CAPABILITY] },
+      })));
+      await waitFor((e) => e.name === "projects.tree");
+
+      const startIdx = envelopes.length;
+      client.write(encodeMessage(createEnvelope({
+        kind: "command",
+        name: "worker.focus_view",
+        requestId: "switch-b",
+        payload: { root: realB, agent_id: "ucode:7988e2ff" },
+      })));
+      const swRes = await waitFor((e) => e.kind === "result" && e.request_id === "switch-b");
+      expect(swRes.payload.ok).toBe(true);
+
+      // Wait until the delayed STATUS also arrives
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      const treeEventsAfterSwitch = envelopes
+        .slice(startIdx)
+        .filter((e) => e.name === "projects.tree" || e.name === "app.snapshot");
+      expect(treeEventsAfterSwitch.length).toBeGreaterThan(0);
+
+      // Every single snapshot/tree emitted during and after the switch MUST include ucode:7988e2ff (zero flicker!)
+      for (const env of treeEventsAfterSwitch) {
+        const nodeB = (env.payload?.projects || []).find((p) => p.root === realB);
+        expect(nodeB).toBeTruthy();
+        expect((nodeB.workers || []).map((w) => w.id)).toContain("ucode:7988e2ff");
+      }
+
+      client.destroy();
+    } finally {
+      for (const timer of pendingTimers) clearTimeout(timer);
+      pendingTimers.clear();
+      if (prevControllerEnv === undefined) delete process.env.UFOO_GLOBAL_CONTROLLER_ROOT;
+      else process.env.UFOO_GLOBAL_CONTROLLER_ROOT = prevControllerEnv;
+      if (hostHandle) await hostHandle.close();
+      await new Promise((resolve) => fakeDaemon.close(resolve));
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 15000);
+
+  test("resumed internal worker replays prior subscriber lineage history via previous_subscriber_ids and ucode runtime log", async () => {
+    const tmp = makeTempDir("ufoo-lineage-");
+    const { getUfooPaths } = require("../../../src/coordination/state/paths");
+    const { resolveAgentLineageIds, readAgentSurfaceEvents } = require("../../../src/coordination/history/agentSurface");
+    const { createAgentSurface } = require("../../../src/ui/agentSurface");
+
+    try {
+      const paths = getUfooPaths(tmp);
+      fs.mkdirSync(path.dirname(paths.agentsFile), { recursive: true });
+      fs.mkdirSync(paths.busEventsDir, { recursive: true });
+      const runtimeDir = path.join(paths.ufooDir, "agent", "ucode", "runtimes", "ucode-sess-1");
+      fs.mkdirSync(runtimeDir, { recursive: true });
+
+      // Resumed worker metadata with new subscriber_id but same provider_session_id
+      fs.writeFileSync(paths.agentsFile, JSON.stringify({
+        agents: {
+          "ucode:new11111": {
+            status: "active",
+            pid: process.pid,
+            agent_type: "ucode",
+            nickname: "ucode-3",
+            launch_mode: "internal",
+            provider_session_id: "ucode-sess-1",
+            previous_subscriber_id: "ucode:mid22222",
+            previous_subscriber_ids: ["ucode:mid22222"],
+          },
+        },
+      }), "utf8");
+
+      // Earlier subscriber ID recorded in durable ucode runtime events.jsonl
+      fs.writeFileSync(
+        path.join(runtimeDir, "events.jsonl"),
+        JSON.stringify({ agentId: "ucode:old00000", sessionId: "ucode-sess-1", type: "turn.started" }) + "\n",
+        "utf8",
+      );
+
+      // Historical agent_surface events published under prior subscriber IDs
+      const dayFile = path.join(paths.busEventsDir, "2026-11-27.jsonl");
+      fs.writeFileSync(dayFile, [
+        JSON.stringify({
+          seq: 10,
+          event: "agent_surface",
+          publisher: "ucode:old00000",
+          data: { subscriber: "ucode:old00000", surface: { type: "task_started", task_id: "t1", message: "Audit F04" } },
+        }),
+        JSON.stringify({
+          seq: 11,
+          event: "agent_surface",
+          publisher: "ucode:mid22222",
+          data: { subscriber: "ucode:mid22222", surface: { type: "text_delta", delta: "F04 fixed and verified." } },
+        }),
+      ].join("\n") + "\n", "utf8");
+
+      const lineage = resolveAgentLineageIds(tmp, "ucode:new11111");
+      expect(lineage).toEqual(expect.arrayContaining(["ucode:new11111", "ucode:mid22222", "ucode:old00000"]));
+
+      const events = readAgentSurfaceEvents(tmp, lineage);
+      expect(events).toHaveLength(2);
+      const surface = createAgentSurface({ rawMarkdown: true });
+      for (const evt of events) surface.accept(evt.data.surface);
+      const snap = surface.snapshot();
+      expect(snap.entries.map((e) => e.kind)).toEqual(["user", "assistant"]);
+      expect(snap.entries[0].text).toContain("Audit F04");
+      expect(snap.entries[1].text).toContain("F04 fixed and verified.");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });

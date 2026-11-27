@@ -278,4 +278,56 @@ describe("chat daemonConnection", () => {
     connection.markExit();
     connection.close();
   });
+
+  test("switchConnection does not replay another project's runtime cursors onto the new socket", async () => {
+    const first = new FakeClient();
+    const second = new FakeClient();
+    const { connection, connectClient } = createHarness({
+      transformRequest: (request) => ({ ...request, project_root: "/project/a" }),
+    });
+    connectClient.mockResolvedValueOnce(first);
+
+    await connection.connect();
+    first.emit(
+      "data",
+      JSON.stringify({
+        type: "runtime_event",
+        data: { type: "message.delta", projectRoot: "/project/a", sessionId: "main", sequence: 7, text: "hi" },
+      }) + "\n"
+    );
+
+    await connection.switchConnection({
+      connectClient: async () => second,
+      callRequestStatus: false,
+      transformRequest: (request) => ({ ...request, project_root: "/project/b" }),
+    });
+
+    const replays = second.writes.map(JSON.parse).filter((req) => req.operation === "events");
+    expect(replays).toHaveLength(0);
+    connection.markExit();
+    connection.close();
+  });
+
+  test("preserves multi-byte UTF-8 JSON frames split mid-character across socket chunks", async () => {
+    const client = new FakeClient();
+    const { connection, connectClient, handleMessage } = createHarness();
+    connectClient.mockResolvedValueOnce(client);
+
+    await connection.connect();
+    const payload = Buffer.from(
+      JSON.stringify({ type: "status", data: { projectRoot: "/project/a", note: "中文测试状态同步" } }) + "\n",
+      "utf8"
+    );
+    // Split right in the middle of a 3-byte UTF-8 Chinese character
+    const splitAt = payload.indexOf(Buffer.from("中", "utf8")) + 1;
+    client.emit("data", payload.subarray(0, splitAt));
+    client.emit("data", payload.subarray(splitAt));
+
+    expect(handleMessage).toHaveBeenCalledWith({
+      type: "status",
+      data: { projectRoot: "/project/a", note: "中文测试状态同步" },
+    });
+    connection.markExit();
+    connection.close();
+  });
 });

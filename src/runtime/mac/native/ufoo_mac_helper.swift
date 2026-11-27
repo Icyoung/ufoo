@@ -371,30 +371,13 @@ private final class AgentCursorView: NSView {
   }
 }
 
-private final class HighlightFrameView: NSView {
-  override var isOpaque: Bool { false }
-  override func draw(_ dirtyRect: NSRect) {
-    let inset = bounds.insetBy(dx: 2, dy: 2)
-    guard inset.width > 2, inset.height > 2 else { return }
-    let accent = AgentMouseTheme.orange
-    let path = NSBezierPath(roundedRect: inset, xRadius: 6, yRadius: 6)
-    accent.withAlphaComponent(0.10).setFill()
-    path.fill()
-    accent.withAlphaComponent(0.92).setStroke()
-    path.lineWidth = 2.2
-    path.stroke()
-  }
-}
-
 final class AgentHudController {
   var enabled: Bool = true
   var agentName: String = "ufoo"
 
   private var cursorWindow: NSWindow?
   private var cursorView: AgentCursorView?
-  private var highlightWindow: NSWindow?
   private var idleHideWorkItem: DispatchWorkItem?
-  private var highlightHideWorkItem: DispatchWorkItem?
   private var rippleTimer: Timer?
   private let canvasSize = NSSize(width: 112, height: 112)
 
@@ -418,26 +401,6 @@ final class AgentHudController {
     win.contentView = view
     cursorWindow = win
     cursorView = view
-  }
-
-  private func ensureHighlightWindowOnMain() {
-    if highlightWindow != nil { return }
-    let win = NSWindow(
-      contentRect: NSRect(x: 0, y: 0, width: 60, height: 30),
-      styleMask: .borderless,
-      backing: .buffered,
-      defer: false
-    )
-    win.isReleasedWhenClosed = false
-    win.isOpaque = false
-    win.backgroundColor = .clear
-    win.hasShadow = false
-    win.ignoresMouseEvents = true
-    win.level = .screenSaver
-    win.sharingType = .none
-    win.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
-    win.contentView = HighlightFrameView(frame: NSRect(x: 0, y: 0, width: 60, height: 30))
-    highlightWindow = win
   }
 
   func updateCursor(cgPoint: CGPoint, actionLabel: String = "", mode: String = "normal", idleHideAfter: Double = 3.2) {
@@ -492,26 +455,6 @@ final class AgentHudController {
     cursorView?.needsDisplay = true
   }
 
-  func flashHighlight(cgRect: CGRect, duration: Double = 0.65) {
-    guard enabled, cgRect.width > 2, cgRect.height > 2 else { return }
-    DispatchQueue.main.async { [weak self] in
-      guard let self = self, self.enabled else { return }
-      self.ensureHighlightWindowOnMain()
-      guard let win = self.highlightWindow else { return }
-      let nsRect = cgRectToNS(cgRect).insetBy(dx: -4, dy: -4)
-      win.setFrame(nsRect, display: true)
-      win.contentView?.needsDisplay = true
-      win.alphaValue = 1.0
-      win.orderFrontRegardless()
-      self.highlightHideWorkItem?.cancel()
-      let item = DispatchWorkItem { [weak self] in
-        self?.highlightWindow?.orderOut(nil)
-      }
-      self.highlightHideWorkItem = item
-      DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: item)
-    }
-  }
-
   func showTakeoverPaused() {
     hideImmediatelySync()
   }
@@ -520,16 +463,12 @@ final class AgentHudController {
     if Thread.isMainThread {
       stopRippleOnMain()
       idleHideWorkItem?.cancel()
-      highlightHideWorkItem?.cancel()
       cursorWindow?.orderOut(nil)
-      highlightWindow?.orderOut(nil)
     } else {
       DispatchQueue.main.sync {
         self.stopRippleOnMain()
         self.idleHideWorkItem?.cancel()
-        self.highlightHideWorkItem?.cancel()
         self.cursorWindow?.orderOut(nil)
-        self.highlightWindow?.orderOut(nil)
       }
     }
   }
@@ -1346,7 +1285,13 @@ final class MacAutomationEngine {
     }
 
     if let frame = axFrame(elem), frame.width > 1, frame.height > 1 {
-      hud.flashHighlight(cgRect: frame)
+      let target = CGPoint(x: frame.midX, y: frame.midY)
+      glideVisualCursor(to: target, actionLabel: axAction)
+      if ["press", "confirm", "cancel", "pick", "show_menu", "increment", "decrement"].contains(axAction) {
+        hud.pulseClick(cgPoint: target, actionLabel: axAction, rightClick: axAction == "show_menu", doubleClick: false)
+      } else {
+        hud.updateCursor(cgPoint: target, actionLabel: axAction)
+      }
     }
 
     let err: AXError
@@ -1668,6 +1613,30 @@ final class MacAutomationEngine {
     ev.flags = cleanFlags
     ev.setIntegerValueField(.eventSourceUserData, value: UFOO_EVENT_TAG)
     ev.postToPid(target.pid)
+  }
+
+  private func glideVisualCursor(to target: CGPoint, actionLabel: String = "", durationMs: Int = 115) {
+    guard hud.enabled else {
+      agentPoint = target
+      return
+    }
+    let start = agentPoint ?? target
+    let dist = hypot(target.x - start.x, target.y - start.y)
+    let steps = dist < 4 ? 1 : max(4, min(12, Int((dist / 50.0).rounded()) + 4))
+    let stepSleep = Double(max(16, durationMs)) / 1000.0 / Double(steps)
+    for i in 1...steps {
+      let t = CGFloat(i) / CGFloat(steps)
+      let eased = 1.0 - pow(1.0 - t, 3.0)
+      let pt = CGPoint(
+        x: start.x + (target.x - start.x) * eased,
+        y: start.y + (target.y - start.y) * eased
+      )
+      hud.updateCursor(cgPoint: pt, actionLabel: actionLabel)
+      agentPoint = pt
+      if i < steps {
+        Thread.sleep(forTimeInterval: stepSleep)
+      }
+    }
   }
 
   private func glideCursor(to target: CGPoint, eventType: CGEventType = .mouseMoved, button: CGMouseButton = .left, actionLabel: String = "Move", durationMs: Int = 135, flags: CGEventFlags = []) throws {

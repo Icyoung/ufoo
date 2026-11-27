@@ -162,7 +162,7 @@ function createCommandExecutor(options = {}) {
     : (text) => logMessage("status", text);
 
   async function handleDoctorCommand() {
-    logMessage("system", "{white-fg}⚙{/white-fg} Running health check...");
+    statusMsg("{white-fg}⚙{/white-fg} Running health check...");
 
     await withCapturedConsole(
       {
@@ -298,7 +298,7 @@ function createCommandExecutor(options = {}) {
   }
 
   async function handleInitCommand(args = []) {
-    logMessage("system", "{white-fg}⚙{/white-fg} Initializing ufoo workspace...");
+    statusMsg("{white-fg}⚙{/white-fg} Initializing ufoo workspace...");
 
     await withCapturedConsole(
       {
@@ -521,7 +521,7 @@ function createCommandExecutor(options = {}) {
   }
 
   async function handleCtxCommand(args = []) {
-    logMessage("system", "{white-fg}⚙{/white-fg} Running context check...");
+    statusMsg("{white-fg}⚙{/white-fg} Running context check...");
 
     await withCapturedConsole(
       {
@@ -572,9 +572,9 @@ function createCommandExecutor(options = {}) {
             }
           } else if (subcommand === "install") {
             const target = args[1] || "all";
-            logMessage("system", `{white-fg}⚙{/white-fg} Installing skills: ${target}...`);
+            statusMsg(`{white-fg}⚙{/white-fg} Installing skills: ${target}...`);
             await skills.install(target);
-            logMessage("system", "{white-fg}✓{/white-fg} Skills installed");
+            statusMsg("{white-fg}✓{/white-fg} Skills installed");
           } else {
             logMessage("error", "{white-fg}✗{/white-fg} Unknown skills command. Use: list, install");
           }
@@ -778,7 +778,7 @@ function createCommandExecutor(options = {}) {
     }
     const target = args[0] || "";
     const label = target ? ` (${target})` : "";
-    logMessage("system", `{white-fg}⚙{/white-fg} Resuming agents${label}...`);
+    statusMsg(`{white-fg}⚙{/white-fg} Resuming agents${label}...`);
     send({ type: IPC_REQUEST_TYPES.RESUME_AGENTS, target, internal_only: true });
     schedule(requestStatus, 1000);
   }
@@ -837,7 +837,7 @@ function createCommandExecutor(options = {}) {
         logMessage("error", "{white-fg}✗{/white-fg} Usage: /project switch <index|path>");
         return;
       }
-      logMessage("system", `{white-fg}⚙{/white-fg} Switching project: ${escapeBlessed(target)}`);
+      statusMsg(`{white-fg}⚙{/white-fg} Switching project: ${escapeBlessed(target)}`);
       const result = await Promise.resolve(switchProject({ target }));
       if (!result || result.ok !== true) {
         const reason = result && result.error ? String(result.error) : "switch failed";
@@ -845,7 +845,7 @@ function createCommandExecutor(options = {}) {
         return;
       }
       const nextRoot = result.project_root || result.projectRoot || "";
-      logMessage("system", `{white-fg}✓{/white-fg} Switched project: ${escapeBlessed(nextRoot)}`);
+      statusMsg(`{white-fg}✓{/white-fg} Switched project: ${escapeBlessed(nextRoot)}`);
       return;
     }
 
@@ -862,7 +862,7 @@ function createCommandExecutor(options = {}) {
       logMessage("error", "{white-fg}✗{/white-fg} Usage: /open <path>");
       return;
     }
-    logMessage("system", `{white-fg}⚙{/white-fg} Opening project: ${escapeBlessed(target)}`);
+    statusMsg(`{white-fg}⚙{/white-fg} Opening project: ${escapeBlessed(target)}`);
     const result = await Promise.resolve(switchProject({ target }));
     if (!result || result.ok !== true) {
       const reason = result && result.error ? String(result.error) : "open failed";
@@ -870,7 +870,7 @@ function createCommandExecutor(options = {}) {
       return;
     }
     const nextRoot = result.project_root || result.projectRoot || "";
-    logMessage("system", `{white-fg}✓{/white-fg} Opened project: ${escapeBlessed(nextRoot)}`);
+    statusMsg(`{white-fg}✓{/white-fg} Opened project: ${escapeBlessed(nextRoot)}`);
   }
 
   function parseKeyValueArgs(args = []) {
@@ -1753,7 +1753,7 @@ function createCommandExecutor(options = {}) {
         if (typeof options.openDesktopApp === "function") {
           const res = await options.openDesktopApp(args);
           if (res && res.ok) {
-            logMessage("system", `{white-fg}✓{/white-fg} Handed off to Ufoo Desktop (${escapeBlessed(res.url || "")})`);
+            statusMsg(`{white-fg}✓{/white-fg} Handed off to Ufoo Desktop (${escapeBlessed(res.url || "")})`);
           } else {
             logMessage("error", `{white-fg}✗{/white-fg} ${escapeBlessed((res && res.error) || "Failed to open Ufoo Desktop")}`);
           }
@@ -1766,7 +1766,7 @@ function createCommandExecutor(options = {}) {
             projectRoot: activeRoot || projectRoot,
             target: args[0] || "main",
           });
-          if (res.ok) logMessage("system", `{white-fg}✓{/white-fg} Handed off to Ufoo Desktop (${escapeBlessed(res.url)})`);
+          if (res.ok) statusMsg(`{white-fg}✓{/white-fg} Handed off to Ufoo Desktop (${escapeBlessed(res.url)})`);
           else logMessage("error", `{white-fg}✗{/white-fg} ${escapeBlessed(res.error)}`);
         }
         return true;

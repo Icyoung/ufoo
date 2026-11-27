@@ -39,15 +39,25 @@ function readMatchingEventsFromFileReverse(filePath, aliases, limit) {
   }
 }
 
-function buildAgentAliases(agentId = "", agents = {}) {
+function buildAgentAliases(agentId = "", agents = {}, lineageIds = []) {
   const aliases = new Set();
   const id = String(agentId || "").trim();
   if (!id) return aliases;
   aliases.add(id);
+  for (const extra of Array.isArray(lineageIds) ? lineageIds : []) {
+    const clean = String(extra || "").trim();
+    if (clean) aliases.add(clean);
+  }
   const meta = agents && agents[id] ? agents[id] : null;
   if (meta) {
-    for (const key of ["nickname", "scoped_nickname", "display_nickname"]) {
+    for (const key of ["nickname", "scoped_nickname", "display_nickname", "previous_subscriber_id"]) {
       if (meta[key]) aliases.add(String(meta[key]));
+    }
+    if (Array.isArray(meta.previous_subscriber_ids)) {
+      for (const prev of meta.previous_subscriber_ids) {
+        const clean = String(prev || "").trim();
+        if (clean) aliases.add(clean);
+      }
     }
   }
   return aliases;
@@ -190,7 +200,7 @@ function loadInternalAgentTranscript(projectRoot, agentId, options = {}) {
   }
   const groupMemberIndex = loadGroupMemberIndex(paths.groupsDir);
 
-  const aliases = buildAgentAliases(agentId, agents);
+  const aliases = buildAgentAliases(agentId, agents, options.lineageIds);
   if (aliases.size === 0) return [];
 
   let files = [];

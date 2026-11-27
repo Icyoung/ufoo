@@ -725,6 +725,14 @@ async function spawnInternalAgent(
     // Daemon 预先在 bus 中注册
     bus.loadBusData();
     const replaceAgentId = typeof options.replaceAgentId === "string" ? options.replaceAgentId.trim() : "";
+    const replacedMeta = replaceAgentId && bus.busData.agents && bus.busData.agents[replaceAgentId]
+      ? bus.busData.agents[replaceAgentId]
+      : null;
+    const previousSubscriberIds = Array.from(new Set([
+      ...(Array.isArray(replacedMeta?.previous_subscriber_ids) ? replacedMeta.previous_subscriber_ids : []),
+      ...(replacedMeta?.previous_subscriber_id ? [replacedMeta.previous_subscriber_id] : []),
+      ...(replaceAgentId && replaceAgentId !== subscriberId ? [replaceAgentId] : []),
+    ].map((id) => String(id || "").trim()).filter(Boolean)));
     if (replaceAgentId && bus.busData.agents && bus.busData.agents[replaceAgentId]) {
       delete bus.busData.agents[replaceAgentId];
       bus.saveBusData();
@@ -783,6 +791,12 @@ async function spawnInternalAgent(
         bus.busData.agents[subscriberId].worktree_root = "";
         bus.busData.agents[subscriberId].worktree_branch = "";
         bus.busData.agents[subscriberId].permission_mode = effectivePermissionMode;
+        if (replaceAgentId && replaceAgentId !== subscriberId) {
+          bus.busData.agents[subscriberId].previous_subscriber_id = replaceAgentId;
+        }
+        if (previousSubscriberIds.length > 0) {
+          bus.busData.agents[subscriberId].previous_subscriber_ids = previousSubscriberIds;
+        }
       }
       bus.saveBusData();
     } catch {

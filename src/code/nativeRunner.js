@@ -24,6 +24,7 @@ const { createTurnIndexStore } = require("../agents/runtime/context/turnIndexSto
 const { buildDeterministicTurnRecord, backfillMissingTurns, createAsyncTurnEnricher } = require("../agents/runtime/context/turnAnalyzer");
 const { createTopicSelector } = require("../agents/runtime/context/topicSelector");
 const { createSlidingWindowManager } = require("../agents/runtime/context/slidingWindowManager");
+const { userInstruction } = require("../agents/runtime/context/contextBudget");
 const { createRuntimeStore } = require("../agents/runtime/context/runtimeStore");
 const { normalizeTraceContext } = require("../agents/runtime/protocol/traceContext");
 const { runAuxiliaryModelRequest } = require("../agents/runtime/protocol/auxiliaryModelRequest");
@@ -56,6 +57,37 @@ function createGuards({ signal = null, timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS } =
     budgetMs,
     deadlineAt: startedAt + budgetMs,
   };
+}
+
+function resolveResumedTurnBoundary({ turnIndexStore = null, effectiveTurnId = "", nonSystemBase = [] } = {}) {
+  const maxOffset = Array.isArray(nonSystemBase) ? nonSystemBase.length : 0;
+  const isValidOffset = (value) => Number.isInteger(value) && value >= 0 && value <= maxOffset;
+  if (turnIndexStore) {
+    try {
+      const existingTurn = effectiveTurnId ? turnIndexStore.getTurn(effectiveTurnId) : null;
+      if (existingTurn && isValidOffset(existingTurn.historyOffset)) {
+        return { offset: existingTurn.historyOffset, turnId: effectiveTurnId };
+      }
+      const turns = turnIndexStore.listTurns();
+      for (let i = turns.length - 1; i >= 0; i -= 1) {
+        const candidate = turns[i];
+        if (candidate && candidate.outcome === "paused" && isValidOffset(candidate.historyOffset)) {
+          return {
+            offset: candidate.historyOffset,
+            turnId: String(candidate.turnId || effectiveTurnId).trim() || effectiveTurnId,
+          };
+        }
+      }
+    } catch {
+      // Fall through to transcript boundary inspection.
+    }
+  }
+  for (let i = maxOffset - 1; i >= 0; i -= 1) {
+    if (userInstruction(nonSystemBase[i])) {
+      return { offset: i, turnId: effectiveTurnId };
+    }
+  }
+  return { offset: 0, turnId: effectiveTurnId };
 }
 
 function resolveDurableTurnSlice(resultObj = {}, { preTurnOffset = 0, resume = false, promptText = "" } = {}) {
@@ -193,7 +225,7 @@ async function runNativeAgentTask({
   ids.traceId ||= ids.taskId;
   ids.requestId ||= ids.taskRunId;
   ids.attemptId ||= `attempt-${randomUUID()}`;
-  const effectiveTurnId = String(logicalTurnId || ids.taskRunId).trim();
+  let effectiveTurnId = String(logicalTurnId || ids.taskRunId).trim();
   const requestKind = runtimeContext.requestKind || (runtimeContext.taskRunId ? "unknown" : "user");
   const observation = createRuntimeStore({ workspaceRoot, namespace: "ucode", sessionId: nextSessionId, redact: redactSecrets });
   const observationWarnings = [];
@@ -269,14 +301,15 @@ async function runNativeAgentTask({
     const baseMessages = Array.isArray(messages) ? messages : [];
     const nonSystemBase = baseMessages.filter((m) => m && m.role !== "system");
     if (Number.isInteger(restoredTurnOffset) && restoredTurnOffset >= 0) {
-      preTurnOffset = restoredTurnOffset;
+      preTurnOffset = Math.min(restoredTurnOffset, nonSystemBase.length);
     } else if (resume) {
-      try {
-        const existingTurn = turnIndexStore.getTurn(effectiveTurnId);
-        preTurnOffset = existingTurn && Number.isInteger(existingTurn.historyOffset) ? existingTurn.historyOffset : 0;
-      } catch {
-        preTurnOffset = 0;
-      }
+      const recoveredBoundary = resolveResumedTurnBoundary({
+        turnIndexStore,
+        effectiveTurnId,
+        nonSystemBase,
+      });
+      preTurnOffset = recoveredBoundary.offset;
+      if (recoveredBoundary.turnId) effectiveTurnId = recoveredBoundary.turnId;
     } else {
       preTurnOffset = nonSystemBase.length;
     }
@@ -498,6 +531,8 @@ async function runNativeAgentTask({
       streamed: Boolean(runResult.streamed) && typeof onStreamDelta === "function",
       waitingUserInteraction: Boolean(runResult.waitingUserInteraction),
       interactionId: runResult.interactionId || "",
+      logicalTurnId: effectiveTurnId,
+      historyOffset: preTurnOffset,
       protocolLedger: runResult.protocolLedger || null,
       ...(observationWarnings.length ? { observationWarnings } : {}),
     };
@@ -567,6 +602,7 @@ module.exports = {
   runCoreToolAsync,
   createPermissionAuthorizer,
   appendAnswerToolResult,
+  resolveResumedTurnBoundary,
   resolveRuntimeConfig,
   resolveCompletionUrl,
   resolveResponsesUrl,

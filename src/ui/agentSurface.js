@@ -3,7 +3,13 @@
 // Presentation state shared by the standalone coding TUI and embedded agents.
 // Providers supply events; this module owns no model, process or terminal.
 const fmt = require("./format");
-const { toolStatus, statusForAgentPhase, planLinesFromItems } = require("./agentPresentation");
+const {
+  toolStatus,
+  statusForAgentPhase,
+  normalizePlanItems,
+  parsePlanItemsFromLines,
+  planLinesFromItems,
+} = require("./agentPresentation");
 
 const FILE_MUTATION_TOOL_RE = /^(?:apply_patch|edit|write|multiedit|notebookedit|edit_file|write_file|write_to_file|replace_in_file|replace_file_content|multi_replace_file_content|create_file|delete_file|multi_edit|patch_file|modify_file)$/i;
 
@@ -103,6 +109,102 @@ function eventTime(event) {
   return Number.isFinite(event?.observed_at) ? event.observed_at : Date.now();
 }
 
+function parseStructuredInteraction(event = {}, fallbackId = "interaction") {
+  if (event && event.interaction && typeof event.interaction === "object") {
+    const src = event.interaction;
+    const prompt = String(src.prompt || src.question || "").trim();
+    const kind = String(src.kind || "chat").trim().toLowerCase() || "chat";
+    const options = Array.isArray(src.options)
+      ? src.options
+        .filter(Boolean)
+        .map((opt, idx) => ({
+          key: String(opt.key || idx + 1).trim(),
+          label: String(opt.label || opt.text || opt.key || "").trim(),
+          ...(opt.description ? { description: String(opt.description).trim() } : {}),
+        }))
+        .filter((opt) => opt.label)
+      : [];
+    if (prompt || options.length > 0) {
+      return {
+        id: String(src.id || fallbackId).trim() || fallbackId,
+        kind,
+        prompt,
+        options,
+        allowFreeChat: src.allowFreeChat !== false,
+      };
+    }
+  }
+
+  const rawLines = Array.isArray(event?.lines) ? event.lines.map((l) => String(l ?? "")) : [];
+  if (rawLines.length === 0) return null;
+
+  let kind = "chat";
+  const promptChunks = [];
+  const options = [];
+  let allowFreeChat = true;
+  let inOptions = false;
+
+  for (let i = 0; i < rawLines.length; i += 1) {
+    const line = rawLines[i];
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (/^\(type your reply\)$/i.test(trimmed)) continue;
+    if (/^or type a free-text reply$/i.test(trimmed)) {
+      allowFreeChat = true;
+      continue;
+    }
+
+    if (i === 0) {
+      const headMatch = trimmed.match(/^(Approval|Choice|Question):\s*([\s\S]*)$/i);
+      if (headMatch) {
+        const tag = headMatch[1].toLowerCase();
+        kind = tag === "approval" ? "approval" : (tag === "choice" ? "choice" : "chat");
+        if (headMatch[2]) promptChunks.push(headMatch[2]);
+        continue;
+      }
+    }
+
+    if (/^\[yes\]\s+Yes\s+\[no\]\s+No/i.test(trimmed)) {
+      kind = "approval";
+      inOptions = true;
+      if (options.length === 0) {
+        options.push({ key: "yes", label: "Yes" }, { key: "no", label: "No" });
+      }
+      continue;
+    }
+
+    const optMatch = trimmed.match(/^\[([^\]]+)\]\s+(.+)$/);
+    if (optMatch) {
+      inOptions = true;
+      if (kind === "chat") kind = "choice";
+      options.push({ key: optMatch[1].trim(), label: optMatch[2].trim() });
+      continue;
+    }
+
+    if (!inOptions) {
+      // Unwrap wrapLabeledBlock's exact character slices (continuation lines start with "  ")
+      if (line.startsWith("  ") && promptChunks.length > 0) {
+        promptChunks.push(line.slice(2));
+      } else {
+        promptChunks.push(promptChunks.length > 0 ? ` ${trimmed}` : trimmed);
+      }
+    }
+  }
+
+  const prompt = promptChunks.join("").replace(/\s+\n/g, "\n").trim();
+  if (!prompt && options.length === 0) return null;
+  if (kind === "approval" && options.length === 0) {
+    options.push({ key: "yes", label: "Yes" }, { key: "no", label: "No" });
+  }
+  return {
+    id: fallbackId,
+    kind,
+    prompt,
+    options,
+    allowFreeChat,
+  };
+}
+
 function createAgentSurface(options = {}) {
   const maxEntries = options.maxEntries || 1000;
   const maxText = options.maxText || 256000;
@@ -115,7 +217,10 @@ function createAgentSurface(options = {}) {
   let busy = false;
   let usage = "";
   let plan = [];
+  let planItems = [];
+  let activePlanEntryId = "";
   let idlePlanHint = "";
+  let pendingInteraction = null;
   let revision = 0;
   let startedAt = 0;
   let waiting = false;
@@ -142,7 +247,12 @@ function createAgentSurface(options = {}) {
   }
 
   function presentEntry(row) {
-    if (rawMarkdown || !["assistant", "thinking"].includes(row.kind) || /\x1b\[/.test(row.text)) return { ...row };
+    if (rawMarkdown || !["assistant", "thinking"].includes(row.kind) || /\x1b\[/.test(row.text)) {
+      return {
+        ...row,
+        ...(Array.isArray(row.plan_items) ? { plan_items: row.plan_items.map((item) => ({ ...item })) } : {}),
+      };
+    }
     let cached = renderedEntries.get(row);
     if (!cached || cached.source !== row.text) {
       cached = { source: row.text, text: fmt.renderLogLinesWithMarkdownAnsi(row.text, { inCodeBlock: false }).join("\n") };
@@ -256,6 +366,67 @@ function createAgentSurface(options = {}) {
     } else if (name === "plan.set") {
       plan = (payload.lines || []).map(String);
       idlePlanHint = String(payload.idle_hint || "");
+      const structuredItems = Array.isArray(payload.items) && payload.items.length > 0
+        ? normalizePlanItems(payload.items)
+        : (Array.isArray(payload.entries) && payload.entries.length > 0
+          ? normalizePlanItems(payload.entries)
+          : (plan.length > 0 ? parsePlanItemsFromLines(plan) : []));
+      planItems = structuredItems;
+      if (rawMarkdown) {
+        if (structuredItems.length > 0) {
+          const planId = String(payload.plan_id || "").trim();
+          const isChildPlanId = /^child_/.test(planId);
+          const hasExplicitItems = Array.isArray(payload.items) && payload.items.length > 0;
+          const legacyRawFailedWhileTaskLoopRunning = !hasExplicitItems
+            && !planId
+            && plan.some((l) => /TaskLoop\s+(?:writing|running|starting|working)\b/i.test(String(l)))
+            && plan.some((l) => /[✗✘]/.test(String(l)));
+          const activeRow = activePlanEntryId
+            ? entries.find((r) => r.id === activePlanEntryId && r.kind === "plan")
+            : null;
+          const turnParentPlanRow = (activeRow && activeRow.plan_id && !/^child_/.test(activeRow.plan_id))
+            ? activeRow
+            : [...entries].reverse().find(
+              (r) => r.kind === "plan" && r.turn_id === turn && r.plan_id && !/^child_/.test(r.plan_id),
+            );
+          const turnAnyPlanRow = activeRow
+            || [...entries].reverse().find((r) => r.kind === "plan" && r.turn_id === turn);
+          // Never spawn a second card for an internal TaskLoop child graph when a
+          // primary plan card already exists in this turn, and never let a legacy
+          // worker's transient TaskLoop child-failure flash overwrite an active card.
+          if (
+            !(isChildPlanId && turnParentPlanRow)
+            && !(legacyRawFailedWhileTaskLoopRunning && turnAnyPlanRow)
+          ) {
+            const cardId = planId
+              ? `${turn}-plan-${planId}`
+              : (activePlanEntryId && activePlanEntryId.startsWith(`${turn}-plan-`)
+                ? activePlanEntryId
+                : `${turn}-plan-default`);
+            const row = entry(cardId, "plan");
+            row.turn_id = turn;
+            if (planId) row.plan_id = planId;
+            const planTitle = String(payload.objective || payload.title || "").trim();
+            if (planTitle) row.plan_title = planTitle;
+            row.plan_items = structuredItems;
+            row.text = planLinesFromItems(structuredItems).join("\n");
+            activePlanEntryId = cardId;
+          }
+        } else if (payload.completed_plan && Array.isArray(payload.completed_plan.items) && payload.completed_plan.items.length > 0) {
+          const finalItems = normalizePlanItems(payload.completed_plan.items);
+          const completedId = String(payload.completed_plan.plan_id || "").trim();
+          const targetRow = (completedId
+            ? [...entries].reverse().find((r) => r.kind === "plan" && r.plan_id === completedId)
+            : null)
+            || (activePlanEntryId ? entries.find((r) => r.id === activePlanEntryId) : null)
+            || [...entries].reverse().find((r) => r.kind === "plan" && r.turn_id === turn);
+          if (targetRow && finalItems.length > 0) {
+            targetRow.plan_items = finalItems;
+            targetRow.text = planLinesFromItems(finalItems).join("\n");
+          }
+          activePlanEntryId = "";
+        }
+      }
     } else {
       return false;
     }
@@ -272,7 +443,10 @@ function createAgentSurface(options = {}) {
       submitted.length = 0;
       background.clear();
       plan = [];
+      planItems = [];
+      activePlanEntryId = "";
       idlePlanHint = "";
+      pendingInteraction = null;
       usage = "";
       contextUsage = "";
       runningTask = false;
@@ -286,6 +460,7 @@ function createAgentSurface(options = {}) {
     if (type === "task_submitted") {
       submitted.push({ message: String(event.message || ""), at: Date.now() });
       waiting = false;
+      pendingInteraction = null;
       if (!busy) {
         activityOwnsStatus = false;
         startedAt = Date.now();
@@ -306,9 +481,11 @@ function createAgentSurface(options = {}) {
       activityOwnsStatus = false;
       runningTask = true;
       waiting = false;
+      pendingInteraction = null;
       startedAt = 0;
       turn = String(event.task_id || `turn-${++sequence}`);
       segment = 0;
+      activePlanEntryId = "";
       tools.clear();
       const message = String(event.message || "");
       const last = entries[entries.length - 1];
@@ -342,7 +519,15 @@ function createAgentSurface(options = {}) {
       contextUsage = String(event.meter?.label || "");
       return apply("usage.set", { text: contextUsage });
     }
-    if (type === "plan") return apply("plan.set", { ...event, lines: event.lines || planLinesFromItems(event.items || []) });
+    if (type === "plan") {
+      const rawItems = Array.isArray(event.items) ? event.items : (Array.isArray(event.entries) ? event.entries : []);
+      const normalized = rawItems.length > 0 ? normalizePlanItems(rawItems) : [];
+      return apply("plan.set", {
+        ...event,
+        ...(normalized.length > 0 ? { items: normalized } : {}),
+        lines: event.lines || planLinesFromItems(normalized),
+      });
+    }
     if (type === "background_task") {
       const id = String(event.task_id || "");
       if (!id) return false;
@@ -380,7 +565,12 @@ function createAgentSurface(options = {}) {
       status = toolStatus(name);
       busy = true;
       if (["plan", "TodoWrite", "update_plan"].includes(name)) {
-        apply("plan.set", { lines: planLinesFromItems(args.items || args.todos || args.plan || []) });
+        const rawItems = args.items || args.todos || args.plan || args.entries || [];
+        const normalized = normalizePlanItems(rawItems);
+        apply("plan.set", {
+          items: normalized,
+          lines: planLinesFromItems(normalized),
+        });
       }
       return apply("tool.start", {
         id,
@@ -412,7 +602,7 @@ function createAgentSurface(options = {}) {
       tools.set(id, tool);
       recordChangedFiles(outChanges);
       const isError = Boolean(event.is_error || (Number.isFinite(event.exitCode) && event.exitCode !== 0));
-      if (isError && !tool.summary.startsWith("• Failed: ")) tool.summary = tool.summary.replace(/^• /, "• Failed: ");
+      if (!rawMarkdown && isError && !tool.summary.startsWith("• Failed: ")) tool.summary = tool.summary.replace(/^• /, "• Failed: ");
       const exit = Number.isFinite(event.exitCode) && event.exitCode !== 0 ? `\n[exit ${event.exitCode}]` : "";
       const detailHeader = tool.headerContext || tool.summary.replace(/^• /, "");
       const detail = [detailHeader, tool.output + exit].filter(Boolean).join("\n");
@@ -446,6 +636,12 @@ function createAgentSurface(options = {}) {
       waiting = true;
       status = "Waiting for reply…";
       busy = false;
+      const parsed = parseStructuredInteraction(event, `${turn}-interaction`);
+      pendingInteraction = parsed;
+      if (rawMarkdown && parsed) {
+        bound();
+        return true;
+      }
       return apply("transcript.append", { id: `${turn}-interaction`, kind: "system", text: (event.lines || []).join("\n") });
     }
     if (type === "usage") {
@@ -462,6 +658,7 @@ function createAgentSurface(options = {}) {
         activityOwnsStatus = true;
         runningTask = true;
         waiting = false;
+        pendingInteraction = null;
         if (!startedAt) startedAt = Number(event.started_at) || Date.now();
         const detail = String(event.detail || "");
         const text = detail.startsWith("tool ") ? toolStatus(detail.slice(5))
@@ -500,6 +697,8 @@ function createAgentSurface(options = {}) {
       busy,
       usage,
       plan: plan.slice(),
+      plan_items: planItems.map((item) => ({ ...item })),
+      pending_interaction: pendingInteraction ? { ...pendingInteraction, options: (pendingInteraction.options || []).map((o) => ({ ...o })) } : null,
       changed_files: [...changedFiles.values()],
       revision,
       started_at: startedAt,

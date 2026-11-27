@@ -224,6 +224,14 @@ export interface SessionChangedFile {
   deletions?: number;
 }
 
+export type PlanItemStatus = "pending" | "in_progress" | "completed" | "failed" | "skipped";
+
+export interface PlanItem {
+  id?: string;
+  title: string;
+  status: PlanItemStatus;
+}
+
 export interface TranscriptEntry {
   id: string;
   kind: string;
@@ -233,6 +241,12 @@ export interface TranscriptEntry {
   sender_label?: string;
   sender_type?: string;
   sender_kind?: "user" | "peer" | "coordinator" | string;
+  target_id?: string;
+  target_label?: string;
+  target_type?: string;
+  plan_id?: string;
+  plan_title?: string;
+  plan_items?: PlanItem[];
   detail?: string;
   expanded?: boolean;
   streaming?: boolean;
@@ -270,6 +284,8 @@ export interface MultiPaneFrame {
   busy: boolean;
   usage?: string;
   plan?: string[];
+  plan_items?: PlanItem[];
+  pending_interaction?: PendingInteraction | null;
   changed_files?: SessionChangedFile[];
   revision?: number;
   activity_detail?: string;
@@ -302,6 +318,8 @@ export interface WorkerViewFrame {
   busy: boolean;
   usage: string;
   plan: string[];
+  plan_items?: PlanItem[];
+  pending_interaction?: PendingInteraction | null;
   changed_files?: SessionChangedFile[];
   activity_detail: string;
   group_id?: string;
@@ -477,6 +495,24 @@ export interface ComposerAttachment {
   media_type: string;
   bytes: number;
   preview_data_url?: string;
+}
+
+export interface QueuedMessageItem {
+  id: string;
+  text: string;
+  attachments: ComposerAttachment[];
+  created_at: string;
+}
+
+export interface QueuedMessageBucket {
+  items: QueuedMessageItem[];
+  paused: boolean;
+}
+
+export interface QueuedMessagesSnapshot {
+  project_root: string;
+  main: QueuedMessageBucket;
+  workers: Record<string, QueuedMessageBucket>;
 }
 
 export interface SettingsSnapshot {

@@ -17,7 +17,10 @@ import type {
   OnboardingProbeState,
   PendingInteraction,
   PermissionMode,
+  PlanItem,
   ProjectTreeNode,
+  QueuedMessageItem,
+  QueuedMessagesSnapshot,
   RemotePairingState,
   RemoteStatusSnapshot,
   RightInspectorTab,
@@ -76,6 +79,8 @@ export interface WorkspaceState {
   pendingInteraction: PendingInteraction | null;
   pendingInteractions: PendingInteraction[];
   planLines: string[];
+  planItems: PlanItem[];
+  queuedMessages: QueuedMessagesSnapshot;
   windowMode: WindowMode;
   sideAgentId: string;
   focusedPaneAgentId: string;
@@ -144,6 +149,8 @@ const initialState: WorkspaceState = {
   pendingInteraction: null,
   pendingInteractions: [],
   planLines: [],
+  planItems: [],
+  queuedMessages: { project_root: "", main: { items: [], paused: false }, workers: {} },
   windowMode: "main",
   sideAgentId: "",
   focusedPaneAgentId: "",
@@ -507,6 +514,22 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
           settings: payload.settings || state.settings,
           pendingInteraction: nextHead,
           pendingInteractions: nextQueue,
+          queuedMessages:
+            payload.queued_messages && typeof payload.queued_messages === "object"
+              ? {
+                  project_root: String(payload.queued_messages.project_root || nextActiveRoot),
+                  main: {
+                    items: Array.isArray(payload.queued_messages.main?.items) ? payload.queued_messages.main.items : [],
+                    paused: Boolean(payload.queued_messages.main?.paused),
+                  },
+                  workers:
+                    payload.queued_messages.workers && typeof payload.queued_messages.workers === "object"
+                      ? payload.queued_messages.workers
+                      : {},
+                }
+              : switchedProject
+              ? { project_root: nextActiveRoot, main: { items: [], paused: false }, workers: {} }
+              : state.queuedMessages,
           cronTasks: Array.isArray(payload.cron) ? payload.cron : state.cronTasks,
           windowMode: (win.mode as WindowMode) || "main",
           projects: Array.isArray(payload.projects) ? payload.projects : state.projects,
@@ -720,7 +743,27 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
         return { ...state, pendingInteraction: null, pendingInteractions: [] };
       }
       if (name === "plan.set") {
-        return { ...state, planLines: Array.isArray(payload.lines) ? payload.lines : [] };
+        return {
+          ...state,
+          planLines: Array.isArray(payload.lines) ? payload.lines : [],
+          planItems: Array.isArray(payload.items) ? (payload.items as PlanItem[]) : [],
+        };
+      }
+      if (name === "queue.snapshot") {
+        return {
+          ...state,
+          queuedMessages: {
+            project_root: String(payload.project_root || state.activeRoot),
+            main: {
+              items: Array.isArray(payload.main?.items) ? payload.main.items : [],
+              paused: Boolean(payload.main?.paused),
+            },
+            workers:
+              payload.workers && typeof payload.workers === "object"
+                ? payload.workers
+                : {},
+          },
+        };
       }
       if (name === "settings.snapshot") {
         return { ...state, settings: { ...state.settings, ...payload } };
@@ -828,8 +871,24 @@ interface WorkspaceContextValue {
   selectWorkerView: (root: string, agentId: string) => Promise<void>;
   setWindowMode: (mode: WindowMode, agentId?: string) => Promise<void>;
   selectSideWorker: (agentId: string) => Promise<void>;
-  submitMainInput: (text: string, attachments?: ComposerAttachment[]) => Promise<void>;
-  submitWorkerInput: (agentId: string, text: string, attachments?: ComposerAttachment[]) => Promise<void>;
+  submitMainInput: (
+    text: string,
+    attachments?: ComposerAttachment[],
+    options?: { forceSend?: boolean }
+  ) => Promise<void>;
+  submitWorkerInput: (
+    agentId: string,
+    text: string,
+    attachments?: ComposerAttachment[],
+    options?: { forceSend?: boolean }
+  ) => Promise<void>;
+  removeQueuedMessage: (
+    scope: "main" | "worker",
+    id: string,
+    agentId?: string
+  ) => Promise<QueuedMessageItem | null>;
+  clearQueuedMessages: (scope: "main" | "worker", agentId?: string) => Promise<void>;
+  sendQueuedMessageNow: (scope: "main" | "worker", id?: string, agentId?: string) => Promise<void>;
   stageAttachments: (input: {
     paths?: string[];
     uploads?: Array<{ name: string; data_base64: string; media_type?: string }>;
@@ -1019,28 +1078,41 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   );
 
   const submitMainInput = useCallback(
-    async (text: string, attachments?: ComposerAttachment[]) => {
+    async (text: string, attachments?: ComposerAttachment[], options?: { forceSend?: boolean }) => {
       const trimmed = text.trimStart();
       const isSlashCommand = trimmed.startsWith("/");
       const isShellCommand = trimmed.startsWith("!");
       const isAtMention = trimmed.startsWith("@");
       const target = isSlashCommand ? "" : state.targetAgent || "";
       const wireAttachments = stripAttachmentPreviews(attachments);
-      if (!isSlashCommand && !isShellCommand && !isAtMention && !target && (trimmed || wireAttachments.length > 0)) {
+      if (
+        !state.busy &&
+        !isSlashCommand &&
+        !isShellCommand &&
+        !isAtMention &&
+        !target &&
+        (trimmed || wireAttachments.length > 0)
+      ) {
         dispatch({ type: "SET_MAIN_BUSY_OPTIMISTIC", busy: true, statusText: "Thinking…" });
       }
       await ufooBridge.sendCommand("input.submit", {
         text,
         ...(wireAttachments.length > 0 ? { attachments: wireAttachments } : {}),
+        ...(options?.forceSend ? { force_send: true } : {}),
         target_agent: target,
         input_target: target ? "agent" : "main",
       });
     },
-    [state.targetAgent]
+    [state.targetAgent, state.busy]
   );
 
   const submitWorkerInput = useCallback(
-    async (agentId: string, text: string, attachments?: ComposerAttachment[]) => {
+    async (
+      agentId: string,
+      text: string,
+      attachments?: ComposerAttachment[],
+      options?: { forceSend?: boolean }
+    ) => {
       const prev = state.localPaneDrafts[agentId] || { text: "", rev: 0 };
       const nextRev = prev.rev + 1;
       const wireAttachments = stripAttachmentPreviews(attachments);
@@ -1049,12 +1121,49 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
         agent_id: agentId,
         input: text,
         ...(wireAttachments.length > 0 ? { attachments: wireAttachments } : {}),
+        ...(options?.forceSend ? { force_send: true } : {}),
         cursor: text.length,
         input_revision: nextRev,
         submit: true,
       });
     },
     [state.localPaneDrafts]
+  );
+
+  const removeQueuedMessage = useCallback(
+    async (scope: "main" | "worker", id: string, agentId = ""): Promise<QueuedMessageItem | null> => {
+      try {
+        const res = await ufooBridge.sendCommand<{ ok?: boolean; removed?: QueuedMessageItem | null }>(
+          "queue.remove",
+          { scope, id, ...(scope === "worker" && agentId ? { agent_id: agentId } : {}) }
+        );
+        return res?.removed || null;
+      } catch {
+        return null;
+      }
+    },
+    []
+  );
+
+  const clearQueuedMessages = useCallback(
+    async (scope: "main" | "worker", agentId = "") => {
+      await ufooBridge.sendCommand("queue.clear", {
+        scope,
+        ...(scope === "worker" && agentId ? { agent_id: agentId } : {}),
+      });
+    },
+    []
+  );
+
+  const sendQueuedMessageNow = useCallback(
+    async (scope: "main" | "worker", id = "", agentId = "") => {
+      await ufooBridge.sendCommand("queue.send_now", {
+        scope,
+        ...(id ? { id } : {}),
+        ...(scope === "worker" && agentId ? { agent_id: agentId } : {}),
+      });
+    },
+    []
   );
 
   const cancelWorkerTurn = useCallback(async (agentId: string) => {
@@ -1163,6 +1272,9 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       selectSideWorker,
       submitMainInput,
       submitWorkerInput,
+      removeQueuedMessage,
+      clearQueuedMessages,
+      sendQueuedMessageNow,
       stageAttachments,
       cancelWorkerTurn,
       openDocInInspector,
@@ -1187,6 +1299,9 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       selectSideWorker,
       submitMainInput,
       submitWorkerInput,
+      removeQueuedMessage,
+      clearQueuedMessages,
+      sendQueuedMessageNow,
       stageAttachments,
       cancelWorkerTurn,
       openDocInInspector,

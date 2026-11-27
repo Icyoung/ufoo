@@ -99,6 +99,9 @@ const COMMAND_NAMES = Object.freeze([
   "remote.pair.create",
   "remote.devices.list",
   "remote.devices.revoke",
+  "queue.remove",
+  "queue.clear",
+  "queue.send_now",
 ]);
 
 const EVENT_NAMES = Object.freeze([
@@ -146,6 +149,7 @@ const EVENT_NAMES = Object.freeze([
   "workflow.pulse",
   "handoff.state",
   "remote.status",
+  "queue.snapshot",
 ]);
 
 function createEnvelope({

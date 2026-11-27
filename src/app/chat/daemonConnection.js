@@ -1,5 +1,6 @@
 const { IPC_REQUEST_TYPES, IPC_RESPONSE_TYPES } = require("../../runtime/contracts/eventContract");
 const { randomUUID } = require("crypto");
+const { StringDecoder } = require("string_decoder");
 
 function createDaemonConnection(options = {}) {
   const {
@@ -183,8 +184,9 @@ function createDaemonConnection(options = {}) {
     connectionLostNotified = false;
     notifyConnectionState("connected");
     let buffer = "";
+    const decoder = new StringDecoder("utf8");
     client.on("data", (data) => {
-      buffer += data.toString("utf8");
+      buffer += typeof data === "string" ? data : decoder.write(data);
       const lines = buffer.split(/\r?\n/);
       buffer = lines.pop() || "";
       for (const line of lines.filter((l) => l.trim())) {
@@ -210,7 +212,18 @@ function createDaemonConnection(options = {}) {
     client.on("close", handleDisconnect);
     client.on("error", handleDisconnect);
     runtimeReplays.clear(); replayByScope.clear();
-    for (const cursor of runtimeCursors.values()) requestReplay(cursor);
+    const targetProjectRoot = (() => {
+      try {
+        const routed = transformRequest({ type: IPC_REQUEST_TYPES.STATUS }) || {};
+        return String(routed.project_root || routed.projectRoot || "").trim();
+      } catch {
+        return "";
+      }
+    })();
+    for (const cursor of runtimeCursors.values()) {
+      if (targetProjectRoot && cursor.projectRoot && cursor.projectRoot !== targetProjectRoot) continue;
+      requestReplay(cursor);
+    }
     flushPendingRequests();
   }
 

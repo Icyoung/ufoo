@@ -504,4 +504,280 @@ describe("plan_graph control-plane tool", () => {
     const diagnose = compiled.nodes.find((n) => n.id === "diagnose");
     expect(diagnose.dependsOn).toEqual(["inspect"]);
   });
+
+  test("preserves code and shell ${...} literals in edit/write/bash args without false UNKNOWN_OUTPUT_REFERENCE", () => {
+    const executionState = emptyExecutionState();
+    const seenArgs = {};
+    const result = runPlanGraphCommand({
+      operation: "create",
+      graph: {
+        objective: "Apply Kotlin & shell updates",
+        nodes: [
+          {
+            id: "edit_kt",
+            type: "tool",
+            tool: "edit",
+            args: {
+              path: "Main.kt",
+              find: 'log("coin=${state.selectedTradingCoin} subs=${subs.size}")',
+              replace: 'log("coin=${it.symbol} key=${request.key}")',
+            },
+          },
+          {
+            id: "write_kt",
+            type: "tool",
+            tool: "write",
+            args: {
+              path: "Helper.kt",
+              content: 'val msg = "item=${item.id}"',
+            },
+          },
+          {
+            id: "run_sh",
+            type: "tool",
+            tool: "bash",
+            args: {
+              command: 'ls -lt ${TMPDIR:-/tmp} && echo "${unknown.var}"',
+            },
+          },
+        ],
+      },
+    }, {
+      executionState,
+      autoAdvance: true,
+      runTool: ({ stepId, args }) => {
+        seenArgs[stepId] = args;
+        return { ok: true, summary: `${stepId} ok` };
+      },
+    });
+
+    expect(result.status).toBe("accepted");
+    expect(result.planCompleted).toBe(true);
+    expect(seenArgs.edit_kt.find).toBe('log("coin=${state.selectedTradingCoin} subs=${subs.size}")');
+    expect(seenArgs.edit_kt.replace).toBe('log("coin=${it.symbol} key=${request.key}")');
+    expect(seenArgs.write_kt.content).toBe('val msg = "item=${item.id}"');
+    expect(seenArgs.run_sh.command).toBe('ls -lt ${TMPDIR:-/tmp} && echo "${unknown.var}"');
+  });
+
+  test("recovers failed tool nodes via retry_node, skip_node (with action alias), blocked dep edits, and aggregate re-expand", () => {
+    const executionState = emptyExecutionState();
+    let failOnce = true;
+    const runTool = jest.fn(({ stepId, args }) => {
+      if (stepId === "audit" && failOnce) {
+        failOnce = false;
+        return { ok: false, error: `ENOENT: ${args.path}` };
+      }
+      return { ok: true, summary: `${stepId} ok (${args.path || args.command || ""})` };
+    });
+
+    runPlanGraphCommand({
+      operation: "create",
+      graph: {
+        objective: "Audit and fix",
+        nodes: [
+          { id: "root", type: "task", title: "Audit files", content: "Read report and prepare fix" },
+        ],
+      },
+    }, { executionState, autoAdvance: true, runTool });
+
+    const expanded = runPlanGraphCommand({
+      operation: "patch",
+      operations: [{
+        op: "expand_node",
+        nodeId: "root",
+        children: [
+          { id: "audit", type: "tool", tool: "read", args: { path: "/bad/report.txt" } },
+          { id: "review", type: "task", title: "Review report", dependsOn: ["audit"] },
+        ],
+      }],
+    }, { executionState, autoAdvance: true, runTool });
+    expect(expanded.status).toBe("accepted");
+    expect(executionState.planGraph.nodes.find((n) => n.id === "audit").status).toBe("failed");
+    expect(executionState.planGraph.nodes.find((n) => n.id === "review").status).toBe("blocked");
+
+    // 1) retry_node with corrected args re-executes audit and unblocks review -> waiting_llm
+    const retried = runPlanGraphCommand({
+      operation: "control",
+      actions: [{ action: "retry_node", nodeId: "audit", args: { path: "good/report.txt" } }],
+    }, { executionState, autoAdvance: true, runTool });
+    expect(retried.status).toBe("accepted");
+    expect(executionState.planGraph.nodes.find((n) => n.id === "audit").status).toBe("succeeded");
+    expect(executionState.planGraph.nodes.find((n) => n.id === "review").status).toBe("waiting_llm");
+
+    // 2) expand_node on an already-expanded aggregate task appends new children cleanly
+    const reExpanded = runPlanGraphCommand({
+      operation: "patch",
+      operations: [{
+        op: "expand_node",
+        nodeId: "root",
+        children: [
+          { id: "extra_check", type: "tool", tool: "bash", args: { command: "git status" } },
+        ],
+      }],
+    }, { executionState, autoAdvance: true, runTool });
+    expect(reExpanded.status).toBe("accepted");
+    expect(executionState.planGraph.nodes.find((n) => n.id === "extra_check").status).toBe("succeeded");
+
+    // 3) skip_node works on failed nodes (via action alias) and unblocks downstream blocked nodes
+    const state2 = emptyExecutionState();
+    runPlanGraphCommand({
+      operation: "create",
+      graph: {
+        objective: "Skip failed tool",
+        nodes: [
+          { id: "bad", type: "tool", tool: "read", args: { path: "missing.txt" } },
+          { id: "next", type: "task", title: "Continue anyway", dependsOn: ["bad"] },
+        ],
+      },
+    }, { executionState: state2, autoAdvance: true, runTool: () => ({ ok: false, error: "ENOENT" }) });
+    expect(state2.planGraph.nodes.find((n) => n.id === "next").status).toBe("blocked");
+
+    const skipped = runPlanGraphCommand({
+      operation: "control",
+      actions: [{ action: "skip_node", nodeId: "bad", reason: "optional file" }],
+    }, { executionState: state2, autoAdvance: true, runTool: () => ({ ok: true }) });
+    expect(skipped.status).toBe("accepted");
+    expect(state2.planGraph.nodes.find((n) => n.id === "bad").status).toBe("skipped");
+    expect(state2.planGraph.nodes.find((n) => n.id === "next").status).toBe("waiting_llm");
+
+    // 4) remove_dependency works on blocked nodes and resets them to pending
+    const state3 = emptyExecutionState();
+    runPlanGraphCommand({
+      operation: "create",
+      graph: {
+        objective: "Rewire blocked node",
+        nodes: [
+          { id: "bad", type: "tool", tool: "read", args: { path: "missing.txt" } },
+          { id: "next", type: "task", title: "Rewired step", dependsOn: ["bad"] },
+        ],
+      },
+    }, { executionState: state3, autoAdvance: true, runTool: () => ({ ok: false, error: "ENOENT" }) });
+    const rewired = runPlanGraphCommand({
+      operation: "patch",
+      operations: [{ op: "remove_dependency", nodeId: "next", dep: "bad" }],
+    }, { executionState: state3, autoAdvance: true, runTool: () => ({ ok: true }) });
+    expect(rewired.status).toBe("accepted");
+    expect(state3.planGraph.nodes.find((n) => n.id === "next").status).toBe("waiting_llm");
+  });
+
+  test("supports dynamic plan edits (add_node after/before, update_node, remove_node), title/content separation, and archived inspect", () => {
+    const executionState = emptyExecutionState();
+    const longContent = "在 .ufoo/worktrees/demo 读取 AGENTS.md 与 report.txt，检查工作区现状并接续 F04。追踪 SearchViewModel、RxWsClient 与 Futures2Repo；保留 F01-F03，中文汇报。";
+    const created = runPlanGraphCommand({
+      operation: "create",
+      graph: {
+        objective: "Ship performance fixes",
+        nodes: [
+          { id: "s1", type: "task", title: "Fix F04 quotes", content: longContent },
+          { id: "s2", type: "task", content: longContent, dependsOn: ["s1"] },
+        ],
+      },
+    }, { executionState, autoAdvance: false });
+    expect(created.status).toBe("accepted");
+    const s1 = executionState.planGraph.nodes.find((n) => n.id === "s1");
+    const s2 = executionState.planGraph.nodes.find((n) => n.id === "s2");
+    expect(s1.title).toBe("Fix F04 quotes");
+    expect(s1.content).toBe(longContent);
+    expect(s2.title.length).toBeLessThanOrEqual(72);
+    expect(s2.content).toBe(longContent);
+
+    // Dynamically edit s2 title/content, append s3 after s2, and insert s1b between s1 and s2
+    const patched = runPlanGraphCommand({
+      operation: "patch",
+      operations: [
+        { op: "update_node", nodeId: "s2", title: "Fix F05 depth channel", content: "Cap Channel buffer and add replay tests" },
+        { op: "add_node", after: "s1", before: "s2", node: { id: "s1b", type: "task", title: "Verify F04 replay" } },
+        { op: "add_node", after: "s2", node: { id: "s3", type: "task", title: "Run final build" } },
+      ],
+    }, { executionState, autoAdvance: false });
+    expect(patched.status).toBe("accepted");
+    expect(executionState.planGraph.nodes.find((n) => n.id === "s2").title).toBe("Fix F05 depth channel");
+    expect(executionState.planGraph.nodes.find((n) => n.id === "s2").dependsOn).toContain("s1b");
+    expect(executionState.planGraph.nodes.find((n) => n.id === "s3").dependsOn).toEqual(["s2"]);
+
+    // Dynamically remove s1b and confirm s2 dependency is cleaned
+    const removed = runPlanGraphCommand({
+      operation: "patch",
+      operations: [{ op: "remove_node", nodeId: "s1b" }],
+    }, { executionState, autoAdvance: false });
+    expect(removed.status).toBe("accepted");
+    expect(removed.nodesRemoved).toEqual(["s1b"]);
+    expect(executionState.planGraph.nodes.find((n) => n.id === "s1b")).toBeUndefined();
+    expect(executionState.planGraph.nodes.find((n) => n.id === "s2").dependsOn).toEqual(["s1"]);
+
+    // Archive via cancel_graph and verify inspect still returns archived graph with archived:true
+    const oldId = created.graphId;
+    runPlanGraphCommand({ operation: "cancel_graph" }, { executionState });
+    const archivedInspect = runPlanGraphCommand({ operation: "inspect", graphId: oldId }, { executionState });
+    expect(archivedInspect.status).toBe("accepted");
+    expect(archivedInspect.archived).toBe(true);
+    expect(archivedInspect.graphId).toBe(oldId);
+
+    // Missing graphId returns GRAPH_NOT_FOUND with availableGraphIds hint
+    const missing = runPlanGraphCommand({ operation: "patch", graphId: "plan_nonexistent", operations: [] }, { executionState });
+    expect(missing.status).toBe("rejected");
+    expect(missing.errors[0].code).toBe("GRAPH_NOT_FOUND");
+    expect(Array.isArray(missing.errors[0].availableGraphIds)).toBe(true);
+  });
+
+  test("child TaskLoop patch does not recurse revisions or corrupt child nodes when parent graph is replaced", () => {
+    const { startTask } = require("../../../src/code/runtime/taskControl");
+    const executionState = emptyExecutionState();
+    runPlanGraphCommand({
+      operation: "create",
+      graph: {
+        objective: "Parent plan",
+        nodes: [{ id: "startup", type: "task", title: "Fix startup", execution: { kind: "task_loop" } }],
+      },
+    }, { executionState, autoAdvance: false });
+
+    const started = startTask(executionState, {
+      nodeId: "startup",
+      runTool: () => ({ ok: true }),
+      processImmediately: true,
+    });
+    expect(started.ok).toBe(true);
+
+    // Expand child root with a tool node having the SAME id ("startup") as the parent task node
+    const p1 = runPlanGraphCommand({
+      operation: "patch",
+      graphId: started.childGraphId,
+      operations: [{
+        op: "expand_node",
+        nodeId: "root",
+        children: [{ id: "startup", type: "tool", tool: "edit", args: { path: "A.kt", find: "a", replace: "b" } }],
+      }],
+    }, {
+      executionState,
+      autoAdvance: true,
+      runTool: () => ({ ok: true, summary: "edit ok" }),
+    });
+    expect(p1.status).toBe("accepted");
+    // No recursive specRevision storm (must stay 1 after a single patch)
+    expect(p1.commandRevision).toBe(1);
+
+    // Replace the primary plan while child TaskRun is still active; subsequent child patches
+    // must NOT overwrite the succeeded child tool node `startup` to `running` / lease expired.
+    runPlanGraphCommand({
+      operation: "create",
+      graph: { objective: "Unrelated new plan", nodes: [{ id: "other", type: "task", title: "Other" }] },
+    }, { executionState, autoAdvance: false });
+
+    const p2 = runPlanGraphCommand({
+      operation: "patch",
+      graphId: started.childGraphId,
+      operations: [{
+        op: "add_node",
+        node: { id: "check", type: "tool", tool: "bash", args: { command: "echo ok" } },
+      }],
+    }, {
+      executionState,
+      autoAdvance: true,
+      runTool: () => ({ ok: true, summary: "bash ok" }),
+    });
+    expect(p2.status).toBe("accepted");
+    expect(p2.advance.failedNodes).toEqual([]);
+    const childGraph = executionState.graphs[started.childGraphId];
+    expect(childGraph.nodes.find((n) => n.id === "startup").status).toBe("succeeded");
+  });
 });

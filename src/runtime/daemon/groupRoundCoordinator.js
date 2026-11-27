@@ -104,6 +104,26 @@ function loadActiveGroupsAndAgents(projectRoot) {
     files = [];
   }
 
+  const activeCache = new Map();
+  const isAgentActive = (subId, meta) => {
+    if (!subId || !meta) return false;
+    if (activeCache.has(subId)) return activeCache.get(subId);
+    const alive = isMetaActive(meta);
+    activeCache.set(subId, alive);
+    return alive;
+  };
+
+  // Pre-index active agents that explicitly carry a group_id once (O(agents))
+  // instead of scanning every agent and spawning `ps` once per group file.
+  const activeAgentsByGroupId = new Map();
+  for (const [subId, meta] of Object.entries(agents)) {
+    const gid = asTrimmed(meta?.group_id);
+    if (!gid) continue;
+    if (!isAgentActive(subId, meta)) continue;
+    if (!activeAgentsByGroupId.has(gid)) activeAgentsByGroupId.set(gid, []);
+    activeAgentsByGroupId.get(gid).push([subId, meta]);
+  }
+
   for (const file of files) {
     let runtime = null;
     try {
@@ -125,7 +145,7 @@ function loadActiveGroupsAndAgents(projectRoot) {
       const subId = asTrimmed(row?.subscriber_id);
       if (!subId || seen.has(subId)) continue;
       const meta = agents[subId];
-      if (!isMetaActive(meta)) continue;
+      if (!isAgentActive(subId, meta)) continue;
       seen.add(subId);
       const nickname = asTrimmed(meta?.display_nickname || meta?.nickname || row?.nickname || row?.template_agent_id || subId);
       const role = asTrimmed(row?.role || row?.template_agent_id || meta?.role || "");
@@ -134,9 +154,8 @@ function loadActiveGroupsAndAgents(projectRoot) {
     }
 
     // Include any active agents whose agentsStore meta directly tags this group_id
-    for (const [subId, meta] of Object.entries(agents)) {
-      if (seen.has(subId) || !isMetaActive(meta)) continue;
-      if (asTrimmed(meta.group_id) !== groupId) continue;
+    for (const [subId, meta] of activeAgentsByGroupId.get(groupId) || []) {
+      if (seen.has(subId)) continue;
       seen.add(subId);
       const nickname = asTrimmed(meta.display_nickname || meta.nickname || subId);
       const role = asTrimmed(meta.role || "");
@@ -630,6 +649,17 @@ function createGroupRoundCoordinator({
     }
   }
 
+  let notifyTimer = null;
+
+  function scheduleNotify() {
+    if (stopped || notifyTimer) return;
+    notifyTimer = setTimeout(() => {
+      notifyTimer = null;
+      try { tick(); } catch (err) { log(`group round coordinator notify error: ${err?.message || String(err)}`); }
+    }, 100);
+    notifyTimer.unref?.();
+  }
+
   function tick() {
     if (stopped) return;
     if (!initialized) {
@@ -639,9 +669,9 @@ function createGroupRoundCoordinator({
         return;
       }
     }
-    const snapshot = loadActiveGroupsAndAgents(projectRoot);
     const events = readIncrementalBusEvents();
     if (events.length === 0 && !hasActiveRounds()) return;
+    const snapshot = loadActiveGroupsAndAgents(projectRoot);
     for (const evt of events) applyEvent(evt, snapshot);
     evaluateAllGroups(snapshot);
   }
@@ -694,6 +724,10 @@ function createGroupRoundCoordinator({
       clearInterval(pollTimer);
       pollTimer = null;
     }
+    if (notifyTimer) {
+      clearTimeout(notifyTimer);
+      notifyTimer = null;
+    }
     for (const state of roundStates.values()) {
       clearSettleTimer(state);
     }
@@ -704,7 +738,7 @@ function createGroupRoundCoordinator({
     start,
     stop,
     tick,
-    notify: tick,
+    notify: scheduleNotify,
     hasActiveRounds,
     isMemberInBusyGroup,
   });

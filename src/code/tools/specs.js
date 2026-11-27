@@ -209,13 +209,22 @@ function buildCoreToolSpecs() {
             },
             graph: {
               type: "object",
-              description: 'Full graph for create (objective + nodes). Tool nodes use {id,type:"tool",tool,args:{...}}; tool parameters belong in args. group is input sugar only.',
+              description: [
+                'Full graph for create (objective + nodes).',
+                'Task nodes use {id,type:"task",title:"<concise UI heading, ~4-12 words>",content:"<detailed instructions/criteria>",dependsOn?,execution?};',
+                'always keep `title` short for the plan card UI and put detailed instructions in `content` (or `objective`).',
+                'Tool nodes use {id,type:"tool",tool,args:{...}}; tool parameters belong in args. group is input sugar only.',
+              ].join(" "),
             },
             operations: {
               type: "array",
               description: [
-                "Patch ops only: add_node, expand_node, add_dependency, remove_dependency.",
-                "Status actions (complete_task, skip_node, cancel_subtree) belong under control.actions.",
+                "Dynamic plan spec operations: add_node (append a step; supports optional after/before/parentTaskId),",
+                "update_node (modify title/content/args/dependsOn on non-running/non-succeeded nodes),",
+                "remove_node (delete an obsolete non-running/non-succeeded node),",
+                "expand_node (expand a task or append children to an aggregate task),",
+                "add_dependency, remove_dependency, update_plan (update objective).",
+                "Status actions (complete_task, retry_node, skip_node, fail_node, cancel_subtree) belong under control.actions.",
                 'Tool children use {id,type:"tool",tool:"read",args:{path:"AGENTS.md"}}. Use args, not arguments.',
               ].join(" "),
               items: { type: "object" },
@@ -223,9 +232,12 @@ function buildCoreToolSpecs() {
             actions: {
               type: "array",
               description: [
-                "Control actions: start_task, cancel_task, fail_task, complete_task, skip_node, cancel_subtree.",
+                "Control actions: start_task, cancel_task, fail_task, complete_task, retry_node, skip_node, fail_node, cancel_subtree.",
                 "complete_task with taskRunId finishes a TaskLoop TaskRun;",
                 "complete_task with nodeId finishes a waiting_llm inline task owned by the graph owner.",
+                "retry_node resets a failed/blocked node (with optional updated args) and unblocks dependents;",
+                "skip_node skips a pending/failed/blocked node and unblocks dependents;",
+                "fail_node explicitly marks a task failed when moving on.",
               ].join(" "),
               items: { type: "object" },
             },

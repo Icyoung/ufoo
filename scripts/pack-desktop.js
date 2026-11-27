@@ -164,7 +164,7 @@ function main(argv = process.argv.slice(2)) {
 
   if (argv.includes("--stage-only")) return;
 
-  runChecked("cargo", ["build", "-p", "ufoo-desktop", "--release"]);
+  runChecked("cargo", ["build", "-p", "ufoo-desktop", "--release", "--features", "tauri/custom-protocol"]);
   console.log("[pack-desktop] build complete: target/release/Ufoo");
 }
 

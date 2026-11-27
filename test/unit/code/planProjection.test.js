@@ -320,4 +320,102 @@ describe("planProjection", () => {
     expect(payload.lines).toEqual([]);
     expect(payload.summary).toBe("");
   });
+
+  test("does not leak child TaskLoop graph or prematurely mark active step failed on transient tool error", () => {
+    const { startTask } = require("../../../src/code/runtime/taskControl");
+    const { buildPlanSetPayload } = require("../../../src/ui/agentPresentation");
+    const executionState = emptyExecutionState();
+
+    const created = runPlanGraphCommand({
+      operation: "create",
+      graph: {
+        objective: "Perf fixes",
+        nodes: [
+          {
+            id: "f04",
+            type: "task",
+            title: "Fix F04 quotes fan-out",
+            content: "Very long detailed instructions for F04 that should stay out of the UI heading.",
+            execution: { kind: "task_loop" },
+          },
+          {
+            id: "f05",
+            type: "task",
+            title: "Fix F05 depth channel",
+            dependsOn: ["f04"],
+            execution: { kind: "task_loop" },
+          },
+        ],
+      },
+    }, { executionState, autoAdvance: false });
+
+    const started = startTask(executionState, {
+      nodeId: "f04",
+      runTool: () => ({ ok: true }),
+      processImmediately: true,
+    });
+    expect(started.ok).toBe(true);
+
+    // Simulate a tool callback firing buildPlanSetPayload WHILE executionState.planGraph
+    // is temporarily pointing at the child graph during a failing child tool execution.
+    let midToolPayload = null;
+    runPlanGraphCommand({
+      operation: "patch",
+      graphId: started.childGraphId,
+      operations: [{
+        op: "expand_node",
+        nodeId: "root",
+        children: [{ id: "bad_read", type: "tool", tool: "read", args: { path: "/tmp/missing.txt" } }],
+      }],
+    }, {
+      executionState,
+      autoAdvance: true,
+      runTool: () => {
+        midToolPayload = buildPlanSetPayload(executionState);
+        return { ok: false, error: "ENOENT" };
+      },
+    });
+
+    // Mid-tool payload MUST project the parent plan (2 items, parent plan_id), NEVER child_...
+    expect(midToolPayload.visible).toBe(true);
+    expect(midToolPayload.plan_id).toBe(created.graphId);
+    expect(midToolPayload.items).toEqual([
+      { id: "f04", title: "Fix F04 quotes fan-out", status: "in_progress" },
+      { id: "f05", title: "Fix F05 depth channel", status: "pending" },
+    ]);
+
+    // For a direct aggregate task in a primary plan: a transient child tool error puts the
+    // parent task into `blocked` while awaiting model recovery -> UI keeps it `in_progress`
+    // until explicitly failed, moved past, or plan terminal.
+    const state2 = emptyExecutionState();
+    runPlanGraphCommand({
+      operation: "create",
+      graph: {
+        objective: "Direct plan",
+        nodes: [
+          { id: "step1", type: "task", title: "Read audit report" },
+          { id: "step2", type: "task", title: "Apply patch", dependsOn: ["step1"] },
+        ],
+      },
+    }, { executionState: state2, autoAdvance: false });
+    runPlanGraphCommand({
+      operation: "patch",
+      operations: [{
+        op: "expand_node",
+        nodeId: "step1",
+        children: [{ id: "r1", type: "tool", tool: "read", args: { path: "missing.txt" } }],
+      }],
+    }, { executionState: state2, autoAdvance: true, runTool: () => ({ ok: false, error: "ENOENT" }) });
+
+    // Still recovering step1 (step2 not started yet) -> step1 stays in_progress, unstarted step2 stays pending
+    const duringRecovery = buildPlanSetPayload(state2);
+    expect(duringRecovery.items.find((i) => i.id === "step1").status).toBe("in_progress");
+    expect(duringRecovery.items.find((i) => i.id === "step2").status).toBe("pending");
+
+    // Once step2 starts (model moved on while step1 stayed blocked) -> step1 becomes failed
+    state2.planGraph.nodes.find((n) => n.id === "step2").status = "waiting_llm";
+    const afterMovingOn = buildPlanSetPayload(state2);
+    expect(afterMovingOn.items.find((i) => i.id === "step1").status).toBe("failed");
+    expect(afterMovingOn.items.find((i) => i.id === "step2").status).toBe("in_progress");
+  });
 });

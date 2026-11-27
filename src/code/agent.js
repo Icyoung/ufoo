@@ -44,6 +44,7 @@ const {
   buildContinuationUserPrompt,
   clearUserPrompts,
 } = require("./context/userNudge");
+const { hasPendingUserInteraction } = require("./context/userInteraction");
 const {
   runUbusCommand,
   parseBusCheckOutput,
@@ -761,14 +762,24 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
         onPhase,
         onContextUsage: applyContextMeter,
         contextPolicy: state.contextPolicy || {},
+        authorizeTool: options.authorizeTool || state.authorizeTool || null,
       });
 
       if (decomposedResult.ok) {
         cliRes = {
           ok: true,
           output: decomposedResult.summary,
+          finalText: decomposedResult.finalText,
           sessionId: state.sessionId,
           turnItems: decomposedResult.turnItems,
+          executionState: decomposedResult.executionState || null,
+          waitingUserInteraction: Boolean(decomposedResult.waitingUserInteraction),
+          interactionId: decomposedResult.interactionId || "",
+          logicalTurnId: decomposedResult.logicalTurnId || "",
+          historyOffset: Number.isInteger(decomposedResult.historyOffset) ? decomposedResult.historyOffset : null,
+          streamed: Boolean(decomposedResult.streamed),
+          usage: decomposedResult.usage || null,
+          contextMeter: decomposedResult.contextMeter || null,
         };
       } else {
         cliRes = {
@@ -878,11 +889,13 @@ async function runNaturalLanguageTask(task = "", state = {}, options = {}) {
     if (cliRes && cliRes.contextMeter) {
       applyContextMeter(cliRes.contextMeter);
     }
-    if (cliRes && cliRes.waitingUserInteraction) {
-      state.pendingLogicalTurnId = turnId;
-      state.pendingTurnHistoryOffset = Array.isArray(assembled.messages)
-        ? assembled.messages.filter((m) => m && m.role !== "system").length
-        : 0;
+    if ((cliRes && cliRes.waitingUserInteraction) || hasPendingUserInteraction(state.executionState)) {
+      state.pendingLogicalTurnId = String((cliRes && cliRes.logicalTurnId) || turnId).trim();
+      state.pendingTurnHistoryOffset = Number.isInteger(cliRes && cliRes.historyOffset)
+        ? cliRes.historyOffset
+        : (Array.isArray(assembled.messages)
+          ? assembled.messages.filter((m) => m && m.role !== "system").length
+          : 0);
       return {
         ok: true,
         summary: resolvedSummary || "Waiting for your reply",
@@ -1266,7 +1279,10 @@ async function resumeAfterUserInteraction(answerText = "", state = {}, options =
     resume: true,
   });
 
-  if (cliRes && !cliRes.waitingUserInteraction) {
+  if (cliRes && cliRes.waitingUserInteraction) {
+    if (cliRes.logicalTurnId) state.pendingLogicalTurnId = String(cliRes.logicalTurnId).trim();
+    if (Number.isInteger(cliRes.historyOffset)) state.pendingTurnHistoryOffset = cliRes.historyOffset;
+  } else if (cliRes && !cliRes.waitingUserInteraction) {
     state.pendingLogicalTurnId = "";
     state.pendingTurnHistoryOffset = null;
   }

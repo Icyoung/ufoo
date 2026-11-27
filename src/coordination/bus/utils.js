@@ -62,23 +62,37 @@ function isPidAlive(pid) {
   }
 }
 
+const PID_COMMAND_CACHE_TTL_MS = 2000;
+const PID_COMMAND_CACHE_MAX = 512;
+const pidCommandCache = new Map();
+
 /**
  * 获取进程命令名（用于校验 PID 是否仍属于 agent 进程）
  */
 function getPidCommand(pid) {
   if (!pid || pid === 0) return "";
+  const now = Date.now();
+  const cached = pidCommandCache.get(pid);
+  if (cached && now - cached.ts < PID_COMMAND_CACHE_TTL_MS) {
+    return cached.cmd;
+  }
+  let cmd = "";
   try {
     const res = spawnSync("ps", ["-p", String(pid), "-o", "comm="], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     });
     if (res.status === 0) {
-      return (res.stdout || "").trim();
+      cmd = (res.stdout || "").trim();
     }
   } catch {
     // ignore
   }
-  return "";
+  if (pidCommandCache.size >= PID_COMMAND_CACHE_MAX) {
+    pidCommandCache.clear();
+  }
+  pidCommandCache.set(pid, { cmd, ts: now });
+  return cmd;
 }
 
 /**

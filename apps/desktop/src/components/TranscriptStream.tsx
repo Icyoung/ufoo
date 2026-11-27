@@ -1,8 +1,9 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { CaretDown, CaretRight, CaretUp, Check, Copy, Eraser, FileText, Image as ImageIcon, X } from "@phosphor-icons/react";
-import type { PendingInteraction, SessionChangedFile, TranscriptEntry } from "../types";
+import { CaretDown, CaretRight, CaretUp, Check, Copy, Eraser, FileText, Image as ImageIcon } from "@phosphor-icons/react";
+import type { PendingInteraction, PlanItem, PlanItemStatus, SessionChangedFile, TranscriptEntry } from "../types";
 import { BrandIcon } from "./BrandIcon";
+import { DotGridLoader } from "./DotGridLoader";
 import { MarkdownBlock } from "./MarkdownBlock";
 
 const ufooWatermarkSrc = new URL("../assets/ufoo-watermark.png", import.meta.url).href;
@@ -10,8 +11,8 @@ const ufooWatermarkSrc = new URL("../assets/ufoo-watermark.png", import.meta.url
 interface TranscriptStreamProps {
   entries: TranscriptEntry[];
   planLines?: string[];
+  planItems?: PlanItem[];
   pendingInteraction?: PendingInteraction | null;
-  onRespondInteraction?: (answer: string, cancelled?: boolean, dismissAll?: boolean) => void;
   onOpenFile?: (path: string) => void;
   onInspectWorkerInSide?: (agentHint: string) => void;
   onClearConversation?: () => Promise<void> | void;
@@ -53,11 +54,12 @@ function cleanToolSummary(raw: string): string {
   let text = String(raw || "")
     .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
     .replace(/^\s*•\s*/, "")
+    .replace(/^Failed:\s*/i, "")
     .replace(/\s*\(Ctrl\+O expand\)\s*$/i, "")
     .trim();
   // Unwrap noisy shell wrappers like `/bin/zsh -lc '...'` or `/bin/bash -lc "..."`
   const shellMatch = text.match(
-    /^((?:Failed:\s*)?(?:Ran|Run|Bash|Exec)\s+)(?:\/usr\/bin\/env\s+)?(?:\/bin\/|\/usr\/bin\/)?(?:zsh|bash|sh)\s+-(?:lc|cl|c)\s+([\s\S]+)$/i
+    /^((?:Ran|Run|Bash|Exec)\s+)(?:\/usr\/bin\/env\s+)?(?:\/bin\/|\/usr\/bin\/)?(?:zsh|bash|sh)\s+-(?:lc|cl|c)\s+([\s\S]+)$/i
   );
   if (shellMatch) {
     let inner = shellMatch[2].trim();
@@ -76,6 +78,193 @@ function cleanToolSummary(raw: string): string {
 
 function stripAnsi(raw: string): string {
   return String(raw || "").replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
+}
+
+function isPlanBookkeepingTool(entry: TranscriptEntry): boolean {
+  if (entry.kind !== "tool") return false;
+  const summary = cleanToolSummary(entry.text);
+  if (entry.tool_status === "error" || /^failed:/i.test(summary)) return false;
+  const toolName = String(entry.tool_name || "").trim().toLowerCase();
+  if (toolName === "plan_graph" || toolName === "plan" || toolName === "todowrite" || toolName === "update_plan") {
+    return true;
+  }
+  return /^(?:plan graph|update plan|updating plan|todowrite)$/i.test(summary);
+}
+
+function parsePlanLinesFallback(lines: string[]): PlanItem[] {
+  const cleaned = (Array.isArray(lines) ? lines : [])
+    .map((line) => stripAnsi(line).trim())
+    .filter(Boolean);
+  if (cleaned.length === 0) return [];
+  const hasRunningTaskLoop = cleaned.some((line) => /^TaskLoop\s+(?:writing|running|starting|working)\b/i.test(line));
+  const parsed: PlanItem[] = [];
+  for (const line of cleaned) {
+    if (/^Plan\b(?:\s*·|\s*\()/i.test(line)) continue;
+    if (/^TaskLoop\b/i.test(line)) continue;
+    if (/^…\s*\+\d+\s+more\b/i.test(line)) continue;
+    if (/^graphId=/i.test(line)) continue;
+    const upcomingMatch = line.match(/^接下来\s*·\s*(.+)$/);
+    if (upcomingMatch) {
+      for (const part of upcomingMatch[1].split(/\s*·\s*/)) {
+        const title = part.trim();
+        if (title) parsed.push({ title, status: "pending" });
+      }
+      continue;
+    }
+    const markMatch = line.match(/^(?:[├└─\s]*)(✓|✔|→|▶|●|◐|○|✗|✘|⊘)\s+(?:\d+\s+)?(.+)$/);
+    if (markMatch) {
+      const mark = markMatch[1];
+      const title = markMatch[2].trim();
+      if (!title) continue;
+      let status: PlanItemStatus = "pending";
+      if (mark === "✓" || mark === "✔") status = "completed";
+      else if (mark === "→" || mark === "▶" || mark === "●" || mark === "◐") status = "in_progress";
+      else if (mark === "✗" || mark === "✘") status = "failed";
+      else if (mark === "⊘") status = "skipped";
+      parsed.push({ title, status });
+    }
+  }
+  if (hasRunningTaskLoop && parsed.length > 0 && !parsed.some((item) => item.status === "in_progress")) {
+    const firstPending = parsed.find((item) => item.status === "pending");
+    if (firstPending) firstPending.status = "in_progress";
+  }
+  return parsed;
+}
+
+function PlanStepStatusIcon({ status, isLive }: { status: PlanItemStatus; isLive: boolean }) {
+  if (status === "in_progress") {
+    return <DotGridLoader size="sm" active={isLive} label="In progress" />;
+  }
+  if (status === "completed") {
+    return (
+      <svg
+        width="15"
+        height="15"
+        viewBox="0 0 16 16"
+        fill="none"
+        aria-label="Completed"
+        className="shrink-0"
+      >
+        <circle cx="8" cy="8" r="6.5" className="fill-emerald-400/12 stroke-emerald-400/85" strokeWidth="1.3" />
+        <path
+          d="M5.1 8.2L7.1 10.2L10.9 6.1"
+          className="stroke-emerald-400"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    );
+  }
+  if (status === "failed") {
+    return (
+      <svg
+        width="15"
+        height="15"
+        viewBox="0 0 16 16"
+        fill="none"
+        aria-label="Failed"
+        className="shrink-0"
+      >
+        <circle cx="8" cy="8" r="6.5" className="fill-rose-400/10 stroke-rose-400/85" strokeWidth="1.3" />
+        <path
+          d="M5.75 5.75L10.25 10.25M10.25 5.75L5.75 10.25"
+          className="stroke-rose-400"
+          strokeWidth="1.45"
+          strokeLinecap="round"
+        />
+      </svg>
+    );
+  }
+  if (status === "skipped") {
+    return (
+      <svg
+        width="15"
+        height="15"
+        viewBox="0 0 16 16"
+        fill="none"
+        aria-label="Skipped"
+        className="shrink-0"
+      >
+        <circle cx="8" cy="8" r="6.5" className="stroke-zinc-600" strokeWidth="1.3" />
+        <path d="M5.5 8H10.5" className="stroke-zinc-600" strokeWidth="1.4" strokeLinecap="round" />
+      </svg>
+    );
+  }
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 16 16"
+      fill="none"
+      aria-label="Pending"
+      className="shrink-0"
+    >
+      <circle cx="8" cy="8" r="6.5" className="stroke-zinc-500/80" strokeWidth="1.3" />
+    </svg>
+  );
+}
+
+const DEFAULT_VISIBLE_PLAN_ITEMS = 8;
+
+function PlanCard({
+  items,
+  isLive,
+}: {
+  items: PlanItem[];
+  isLive: boolean;
+}) {
+  const [showAll, setShowAll] = useState(false);
+  if (!items || items.length === 0) return null;
+
+  const visible = showAll ? items : items.slice(0, DEFAULT_VISIBLE_PLAN_ITEMS);
+  const hiddenCount = Math.max(0, items.length - visible.length);
+
+  return (
+    <div className="my-2 rounded-xl border border-white/[0.08] bg-[#111114]/90 px-4 py-3">
+      <ul className="space-y-2.5">
+        {visible.map((item, idx) => {
+          const status = item.status || "pending";
+          const textClass =
+            status === "in_progress"
+              ? "font-medium text-zinc-100"
+              : status === "completed"
+              ? "text-zinc-400"
+              : status === "skipped"
+              ? "text-zinc-500 line-through"
+              : "text-zinc-200";
+          return (
+            <li key={item.id || `${idx}-${item.title}`} className="flex items-start gap-3">
+              <span className="mt-[3px] flex h-4 w-4 shrink-0 items-center justify-center">
+                <PlanStepStatusIcon status={status} isLive={isLive} />
+              </span>
+              <span className={`min-w-0 flex-1 text-[13.5px] leading-[1.45] selectable-text ${textClass}`}>
+                {item.title}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+      {hiddenCount > 0 && (
+        <button
+          type="button"
+          onClick={() => setShowAll(true)}
+          className="mt-2.5 pl-7 text-[11.5px] text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
+        >
+          Show {hiddenCount} more {hiddenCount === 1 ? "step" : "steps"}
+        </button>
+      )}
+      {showAll && items.length > DEFAULT_VISIBLE_PLAN_ITEMS && (
+        <button
+          type="button"
+          onClick={() => setShowAll(false)}
+          className="mt-2.5 pl-7 text-[11.5px] text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
+        >
+          Show less
+        </button>
+      )}
+    </div>
+  );
 }
 
 function splitFileDisplay(relPath: string): { name: string; dir: string } {
@@ -131,15 +320,6 @@ function describeClusterSummary(items: TranscriptEntry[]): string {
   return parts.length > 0 ? `${lead} · ${parts.join(", ")}` : lead;
 }
 
-function Spinner({ className = "h-3 w-3" }: { className?: string }) {
-  return (
-    <span
-      aria-hidden="true"
-      className={`inline-block shrink-0 animate-spin rounded-full border-[1.5px] border-zinc-400 border-t-transparent ${className}`}
-    />
-  );
-}
-
 function ActivityStepRow({
   entry,
   onOpenFile,
@@ -151,6 +331,7 @@ function ActivityStepRow({
 
   if (entry.kind === "thinking") {
     const preview = stripAnsi(entry.text || "").replace(/\s+/g, " ").trim();
+    const isThinkingLive = Boolean(entry.streaming);
     return (
       <div className="text-[11.5px]">
         <button
@@ -159,8 +340,21 @@ function ActivityStepRow({
           className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200 transition-colors cursor-pointer"
         >
           {open ? <CaretDown size={10} className="shrink-0 text-zinc-500" /> : <CaretRight size={10} className="shrink-0 text-zinc-500" />}
-          <span className="font-medium text-zinc-400 shrink-0">Thought</span>
-          {!open && preview && <span className="truncate text-zinc-500">{preview.slice(0, 96)}</span>}
+          {isThinkingLive ? (
+            <span className="min-w-0 max-w-full truncate agy-text-shimmer">
+              <span className="font-medium">Thinking</span>
+              {!open && preview ? ` ${preview.slice(0, 96)}` : ""}
+            </span>
+          ) : (
+            <>
+              <span className="font-medium shrink-0 text-zinc-400">Thought</span>
+              {!open && preview && (
+                <span className="truncate text-zinc-500">
+                  {preview.slice(0, 96)}
+                </span>
+              )}
+            </>
+          )}
         </button>
         {open && preview && (
           <div className="ml-4 mt-1 mb-1.5 rounded-lg border border-white/[0.05] bg-black/25 px-2.5 py-2 font-mono text-[11px] leading-relaxed text-zinc-400 whitespace-pre-wrap selectable-text">
@@ -175,7 +369,6 @@ function ActivityStepRow({
   const detail = stripAnsi(entry.detail || "").trim();
   const hasDetail = detail.length > 0 && detail !== summary;
   const isRunning = entry.tool_status === "running";
-  const isError = entry.tool_status === "error" || /^failed:/i.test(summary);
 
   return (
     <div className="text-[11.5px]">
@@ -186,19 +379,17 @@ function ActivityStepRow({
           hasDetail ? "hover:bg-white/[0.04] cursor-pointer" : "cursor-default"
         }`}
       >
-        {isRunning ? (
-          <Spinner className="h-2.5 w-2.5" />
-        ) : isError ? (
-          <X size={11} weight="bold" className="shrink-0 text-rose-400" />
-        ) : (
+        {isRunning ? null : (
           <Check size={11} weight="bold" className="shrink-0 text-zinc-500" />
         )}
-        <span
-          className={`min-w-0 flex-1 truncate font-mono text-[11.5px] ${
-            isRunning ? "text-zinc-100" : isError ? "text-rose-300" : "text-zinc-400"
-          }`}
-        >
-          {summary}
+        <span className="min-w-0 flex-1 overflow-hidden font-mono text-[11.5px]">
+          <span
+            className={`inline-block max-w-full truncate align-bottom ${
+              isRunning ? "agy-text-shimmer" : "text-zinc-400"
+            }`}
+          >
+            {summary}
+          </span>
         </span>
         {hasDetail && (
           <span className="shrink-0 text-zinc-600">
@@ -231,7 +422,6 @@ function ActivityCluster({
   const runningTool = [...tools].reverse().find((t) => t.tool_status === "running");
   const latestTool = runningTool || tools[tools.length - 1] || null;
   const latestItem = runningTool || items[items.length - 1];
-  const errorCount = tools.filter((t) => t.tool_status === "error" || /^failed:/i.test(cleanToolSummary(t.text))).length;
 
   const liveHeadline = (() => {
     if (latestTool) return cleanToolSummary(latestTool.text);
@@ -250,36 +440,28 @@ function ActivityCluster({
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
-          className="flex w-full items-center justify-between gap-2 rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-left transition-colors hover:bg-white/[0.05] cursor-pointer"
+          className="group flex max-w-full items-center gap-2 py-1 text-left text-[12.5px] text-zinc-400 hover:text-zinc-200 transition-colors cursor-pointer"
         >
-          <div className="flex min-w-0 flex-1 items-center gap-2">
-            <Spinner className="h-3 w-3" />
-            <span className="truncate font-mono text-[12px] text-zinc-200">{liveHeadline}</span>
-          </div>
-          <div className="flex shrink-0 items-center gap-1.5 text-[11px] text-zinc-500">
-            {tools.length > 0 && (
-              <span className="font-mono">
-                {tools.length} {tools.length === 1 ? "step" : "steps"}
-              </span>
-            )}
+          <span className="inline-block min-w-0 max-w-full truncate agy-text-shimmer">{liveHeadline}</span>
+          {tools.length > 0 && (
+            <span className="shrink-0 font-mono text-[11.5px] text-zinc-500">
+              {tools.length} {tools.length === 1 ? "step" : "steps"}
+            </span>
+          )}
+          <span className="shrink-0 text-zinc-500 group-hover:text-zinc-300">
             {expanded ? <CaretDown size={11} /> : <CaretRight size={11} />}
-          </div>
+          </span>
         </button>
       ) : (
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
-          className="group inline-flex max-w-full items-center gap-1.5 rounded-lg border border-white/[0.06] bg-white/[0.02] px-2.5 py-1 text-left text-[11.5px] text-zinc-400 hover:border-white/[0.11] hover:bg-white/[0.05] hover:text-zinc-200 transition-colors cursor-pointer"
+          className="group inline-flex max-w-full items-center gap-1.5 py-0.5 text-left text-[12px] text-zinc-500 hover:text-zinc-200 transition-colors cursor-pointer"
         >
-          {expanded ? (
-            <CaretDown size={11} className="shrink-0 text-zinc-400" />
-          ) : (
-            <CaretRight size={11} className="shrink-0 text-zinc-400" />
-          )}
-          <span className="truncate font-mono">{completedSummary}</span>
-          {errorCount > 0 && (
-            <span className="shrink-0 text-[11px] text-rose-400">· {errorCount} failed</span>
-          )}
+          <span className="truncate">{completedSummary}</span>
+          <span className="shrink-0 text-zinc-600 group-hover:text-zinc-300">
+            {expanded ? <CaretDown size={11} /> : <CaretRight size={11} />}
+          </span>
         </button>
       )}
 
@@ -360,180 +542,6 @@ function TurnFilesEditedCard({
           Show {hiddenCount} more {hiddenCount === 1 ? "file" : "files"}
         </button>
       )}
-    </div>
-  );
-}
-
-function InteractionCard({
-  interaction,
-  onRespond,
-  onOpenFile,
-}: {
-  interaction: PendingInteraction;
-  onRespond?: (answer: string, cancelled?: boolean, dismissAll?: boolean) => void;
-  onOpenFile?: (path: string) => void;
-}) {
-  const [customReply, setCustomReply] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-
-  useEffect(() => {
-    setCustomReply("");
-    setSubmitting(false);
-  }, [interaction.id]);
-
-  const submitAnswer = (answer: string, cancelled = false, dismissAll = false) => {
-    if (submitting) return;
-    setSubmitting(true);
-    onRespond?.(answer, cancelled, dismissAll);
-  };
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (submitting) return;
-      if (e.key === "Escape") {
-        e.preventDefault();
-        submitAnswer("", true);
-        return;
-      }
-      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-        e.preventDefault();
-        if (customReply.trim()) {
-          const text = customReply.trim();
-          setCustomReply("");
-          submitAnswer(text, false);
-        } else if (interaction.options && interaction.options.length > 0) {
-          submitAnswer(interaction.options[0].key, false);
-        }
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [interaction.id, interaction.options, customReply, submitting]);
-
-  const kind = String(interaction.kind || "").toLowerCase();
-  const heading =
-    kind === "approval"
-      ? "Approval needed"
-      : kind === "choice"
-      ? "Input needed"
-      : kind === "settings"
-      ? "Configure"
-      : "Waiting for reply";
-  const dismissLabel = kind === "approval" ? "Decline" : "Dismiss";
-  const queueCount = Number(interaction.queue_count) || 1;
-  const options = Array.isArray(interaction.options) ? interaction.options : [];
-  const allowFreeChat = interaction.allowFreeChat !== false;
-
-  return (
-    <div className="my-3 overflow-hidden rounded-xl border border-white/[0.1] bg-[#141417]">
-      <div className="flex items-center justify-between gap-2 border-b border-white/[0.06] bg-white/[0.02] px-3.5 py-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="text-[12px] font-medium text-zinc-200">{heading}</span>
-          {queueCount > 1 && (
-            <span className="rounded-md border border-white/[0.08] bg-white/[0.04] px-1.5 py-0.5 font-mono text-[10px] text-zinc-400">
-              1 / {queueCount}
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          {queueCount > 1 && (
-            <button
-              type="button"
-              disabled={submitting}
-              onClick={() => submitAnswer("", true, true)}
-              className="text-[11px] text-zinc-500 hover:text-zinc-200 disabled:opacity-40 transition-colors cursor-pointer"
-            >
-              Dismiss all ({queueCount})
-            </button>
-          )}
-          <span className="font-mono text-[10px] text-zinc-600 select-none">
-            ⌘⏎ · Esc
-          </span>
-          <button
-            type="button"
-            disabled={submitting}
-            onClick={() => submitAnswer("", true)}
-            title={dismissLabel}
-            aria-label={dismissLabel}
-            className="flex h-5 w-5 items-center justify-center rounded-md text-zinc-500 hover:bg-white/[0.07] hover:text-zinc-200 disabled:opacity-40 transition-colors cursor-pointer"
-          >
-            <X size={12} />
-          </button>
-        </div>
-      </div>
-
-      <div className="space-y-3 px-3.5 py-3">
-        <div className="text-[13px] leading-relaxed text-zinc-200 selectable-text">
-          <MarkdownBlock text={interaction.prompt} onOpenFile={onOpenFile} />
-        </div>
-
-        {options.length > 0 && (
-          <div className="flex flex-wrap gap-1.5">
-            {options.map((opt, idx) => (
-              <button
-                key={opt.key}
-                type="button"
-                disabled={submitting}
-                onClick={() => submitAnswer(opt.key, false)}
-                className={`rounded-lg px-3 py-1.5 text-[12px] font-medium transition-colors disabled:opacity-40 cursor-pointer ${
-                  idx === 0
-                    ? "bg-zinc-100 text-zinc-950 hover:bg-white"
-                    : "border border-white/[0.1] bg-white/[0.04] text-zinc-200 hover:bg-white/[0.09]"
-                }`}
-              >
-                <span className={`font-mono mr-1.5 ${idx === 0 ? "text-zinc-500" : "text-zinc-500"}`}>
-                  {opt.key}.
-                </span>
-                {opt.label}
-              </button>
-            ))}
-          </div>
-        )}
-
-        <div className="flex items-center gap-2">
-          {allowFreeChat && (
-            <input
-              type="text"
-              disabled={submitting}
-              value={customReply}
-              onChange={(e) => setCustomReply(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.metaKey && !e.ctrlKey && customReply.trim()) {
-                  const text = customReply.trim();
-                  setCustomReply("");
-                  submitAnswer(text, false);
-                }
-              }}
-              placeholder={options.length > 0 ? "Or type a reply…" : "Type your reply…"}
-              className="flex-1 rounded-lg border border-white/[0.08] bg-black/30 px-3 py-1.5 text-[12.5px] text-zinc-100 placeholder:text-zinc-500 focus:border-white/[0.2] focus:outline-none disabled:opacity-40"
-            />
-          )}
-          <button
-            type="button"
-            disabled={submitting}
-            onClick={() => submitAnswer("", true)}
-            className="rounded-lg border border-white/[0.08] bg-transparent px-2.5 py-1.5 text-[12px] text-zinc-400 hover:bg-white/[0.06] hover:text-zinc-200 disabled:opacity-40 transition-colors cursor-pointer"
-          >
-            {dismissLabel}
-          </button>
-          {allowFreeChat && (
-            <button
-              type="button"
-              disabled={submitting || !customReply.trim()}
-              onClick={() => {
-                if (customReply.trim()) {
-                  const text = customReply.trim();
-                  setCustomReply("");
-                  submitAnswer(text, false);
-                }
-              }}
-              className="rounded-lg bg-zinc-100 px-3 py-1.5 text-[12px] font-medium text-zinc-950 hover:bg-white disabled:opacity-35 transition-colors cursor-pointer"
-            >
-              Reply
-            </button>
-          )}
-        </div>
-      </div>
     </div>
   );
 }
@@ -721,7 +729,7 @@ function PeerAgentStackCard({
         <div className="mb-1 flex items-center gap-1.5 text-[11.5px] font-medium text-zinc-400">
           <BrandIcon brand={brand} color={color} size={14} />
           <span>{only.speakerLabel}</span>
-          {only.streaming && <Spinner className="h-2.5 w-2.5" />}
+          {only.streaming && <DotGridLoader size="xs" />}
         </div>
         {only.bodyText && (
           <div className="pl-0.5">
@@ -827,7 +835,7 @@ function PeerAgentStackCard({
             <span className="truncate text-[12.5px] font-semibold text-zinc-100">
               {latest.speakerLabel}
             </span>
-            {latest.streaming && <Spinner className="h-2.5 w-2.5" />}
+            {latest.streaming && <DotGridLoader size="xs" />}
             <span className="truncate text-[11.5px] text-zinc-500">
               {otherAgentsCount > 0
                 ? `+${otherAgentsCount} ${otherAgentsCount === 1 ? "agent" : "agents"} · ${items.length} updates`
@@ -872,7 +880,7 @@ function PeerAgentStackCard({
                   <span className="truncate text-[12px] font-semibold text-zinc-200">
                     {item.speakerLabel}
                   </span>
-                  {item.streaming && <Spinner className="h-2.5 w-2.5" />}
+                  {item.streaming && <DotGridLoader size="xs" />}
                 </div>
                 {item.bodyText && (
                   <div className="pl-7 text-[13px] leading-relaxed">
@@ -896,6 +904,7 @@ function PeerAgentStackCard({
 
 type StreamBlock =
   | { type: "entry"; entry: TranscriptEntry }
+  | { type: "plan"; id: string; title?: string; items: PlanItem[] }
   | { type: "cluster"; id: string; items: TranscriptEntry[] }
   | { type: "peer_cluster"; id: string; items: PeerAgentMessage[] };
 
@@ -909,7 +918,8 @@ interface ConversationTurn {
 function groupConversationTurns(
   entries: TranscriptEntry[],
   sessionFallbackFiles: SessionChangedFile[],
-  defaultSpeakerNorm = ""
+  defaultSpeakerNorm = "",
+  fallbackPlanItems: PlanItem[] = []
 ): ConversationTurn[] {
   const turns: ConversationTurn[] = [];
   let current: ConversationTurn | null = null;
@@ -956,9 +966,27 @@ function groupConversationTurns(
       startTurn(null, idx);
     }
 
+    if (entry.kind === "plan") {
+      const items = Array.isArray(entry.plan_items) && entry.plan_items.length > 0
+        ? entry.plan_items
+        : parsePlanLinesFallback(String(entry.text || "").split("\n"));
+      if (items.length > 0) {
+        current!.blocks.push({
+          type: "plan",
+          id: entry.id,
+          title: entry.plan_title,
+          items,
+        });
+      }
+      return;
+    }
+
     if (entry.kind === "thinking" || entry.kind === "tool") {
       if (entry.changed_files && entry.changed_files.length > 0) {
         addTurnFiles(entry.changed_files);
+      }
+      if (isPlanBookkeepingTool(entry)) {
+        return;
       }
       const prev = current!.blocks[current!.blocks.length - 1];
       if (prev && prev.type === "cluster") {
@@ -1001,6 +1029,30 @@ function groupConversationTurns(
       }
     }
     lastTurn.editedFiles = [...map.values()];
+  }
+
+  // If a live plan exists on frame metadata without an inline plan entry in the
+  // latest turn (e.g. main chat plan.set or legacy frame), render it inline
+  // above the trailing tool cluster instead of a top sticky bar.
+  if (Array.isArray(fallbackPlanItems) && fallbackPlanItems.length > 0) {
+    if (turns.length === 0) {
+      startTurn(null, 0);
+    }
+    const lastTurn = turns[turns.length - 1];
+    const hasInlinePlan = lastTurn.blocks.some((b) => b.type === "plan");
+    if (!hasInlinePlan) {
+      const planBlock: StreamBlock = {
+        type: "plan",
+        id: `${lastTurn.id}-fallback-plan`,
+        items: fallbackPlanItems,
+      };
+      const lastBlockIdx = lastTurn.blocks.length - 1;
+      if (lastBlockIdx >= 0 && lastTurn.blocks[lastBlockIdx].type === "cluster") {
+        lastTurn.blocks.splice(lastBlockIdx, 0, planBlock);
+      } else {
+        lastTurn.blocks.push(planBlock);
+      }
+    }
   }
 
   return turns;
@@ -1123,8 +1175,8 @@ function TranscriptContextMenu({
 export function TranscriptStream({
   entries,
   planLines = [],
+  planItems = [],
   pendingInteraction = null,
-  onRespondInteraction,
   onOpenFile,
   onClearConversation,
   busy = false,
@@ -1169,9 +1221,13 @@ export function TranscriptStream({
   const defaultSpeakerNorm = normalizeSpeakerDisplay(defaultSpeaker).toLowerCase();
   const bottomRef = useRef<HTMLDivElement>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const fallbackPlanItems = useMemo(
+    () => (Array.isArray(planItems) && planItems.length > 0 ? planItems : parsePlanLinesFallback(planLines)),
+    [planItems, planLines]
+  );
   const turns = useMemo(
-    () => groupConversationTurns(entries, changedFiles, defaultSpeakerNorm),
-    [entries, changedFiles, defaultSpeakerNorm]
+    () => groupConversationTurns(entries, changedFiles, defaultSpeakerNorm, fallbackPlanItems),
+    [entries, changedFiles, defaultSpeakerNorm, fallbackPlanItems]
   );
   const isEmpty = turns.length === 0 && !pendingInteraction && !busy;
   const friendlyPrompt = emptyHint || emptySubtitle || "What do you want to do now?";
@@ -1215,21 +1271,6 @@ export function TranscriptStream({
       onContextMenu={handleContextMenu}
       className={`flex-1 overflow-y-auto ${isEmpty ? "flex flex-col" : ""}`}
     >
-      {planLines.length > 0 && (
-        <div className="sticky top-0 z-10 border-b border-white/[0.06] bg-zinc-950/90 backdrop-blur-md px-4 py-2">
-          <div className="flex items-center gap-2 text-[11.5px] font-medium text-zinc-400 mb-1">
-            <span>Active Plan</span>
-          </div>
-          <div className="flex flex-wrap gap-x-4 gap-y-1">
-            {planLines.map((line, i) => (
-              <span key={i} className="font-mono text-[11.5px] text-zinc-300">
-                {line}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
       {isEmpty ? (
         <div
           className={`flex flex-1 flex-col items-center justify-center px-6 text-center select-none ${
@@ -1328,13 +1369,42 @@ export function TranscriptStream({
                   }
 
                   const cleanUserBody = bodyText.replace(/^›\s+/, "");
+                  let directTargetLabel = normalizeSpeakerDisplay(turn.userEntry.target_label || "");
+                  let directTargetId = String(turn.userEntry.target_id || "").trim();
+                  let directTargetType = String(turn.userEntry.target_type || "").trim();
+                  let displayUserBody = cleanUserBody;
+
+                  const leadingMention = cleanUserBody.match(/^@([a-zA-Z0-9][a-zA-Z0-9_.:-]{0,63})\s+([\s\S]+)$/);
+                  if (leadingMention) {
+                    const mentionToken = leadingMention[1].trim();
+                    const knownBrand = workerBrandMap[mentionToken] || workerBrandMap[mentionToken.toLowerCase()];
+                    if (directTargetLabel || knownBrand) {
+                      if (!directTargetLabel) directTargetLabel = normalizeSpeakerDisplay(mentionToken) || mentionToken;
+                      if (!directTargetType && knownBrand) directTargetType = knownBrand;
+                      displayUserBody = leadingMention[2];
+                    }
+                  }
+
+                  const directTargetBrand = directTargetLabel
+                    ? resolveSpeakerBrand(directTargetLabel, directTargetType)
+                    : "";
+                  const directTargetColor = directTargetLabel
+                    ? resolveSpeakerColor(directTargetLabel, directTargetId)
+                    : "";
 
                   return (
-                    <div className="flex justify-end pt-1">
+                    <div className="flex flex-col items-end pt-1">
+                      {directTargetLabel && (
+                        <div className="mb-1 mr-1 flex items-center gap-1.5 text-[11.5px] font-medium text-zinc-400 select-none">
+                          <span className="text-zinc-500">to</span>
+                          <BrandIcon brand={directTargetBrand} color={directTargetColor} size={13} />
+                          <span className="text-zinc-300">{directTargetLabel}</span>
+                        </div>
+                      )}
                       <div className="max-w-[85%] rounded-2xl rounded-br-md border border-white/[0.08] bg-zinc-800/85 px-4 py-2.5 text-[13.5px] leading-relaxed text-zinc-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] selectable-text">
-                        {cleanUserBody && <div className="whitespace-pre-wrap">{cleanUserBody}</div>}
+                        {displayUserBody && <div className="whitespace-pre-wrap">{displayUserBody}</div>}
                         {parsedAtts.length > 0 && (
-                          <div className={`flex flex-wrap gap-1.5 ${cleanUserBody ? "mt-2" : ""}`}>
+                          <div className={`flex flex-wrap gap-1.5 ${displayUserBody ? "mt-2" : ""}`}>
                             {parsedAtts.map((att, idx) => (
                               <span
                                 key={`${att.name}-${idx}`}
@@ -1356,6 +1426,16 @@ export function TranscriptStream({
                 })()}
 
                 {turn.blocks.map((block, blockIndex) => {
+                  if (block.type === "plan") {
+                    return (
+                      <PlanCard
+                        key={block.id}
+                        items={block.items}
+                        isLive={turnIsLive}
+                      />
+                    );
+                  }
+
                   if (block.type === "cluster") {
                     const isVeryLastBlock = isLastTurn && blockIndex === turn.blocks.length - 1;
                     const clusterHasRunning = block.items.some((item) => item.tool_status === "running");
@@ -1442,7 +1522,7 @@ export function TranscriptStream({
                         <div className="mb-1 flex items-center gap-1.5 text-[11.5px] font-medium text-zinc-400">
                           <BrandIcon brand={speakerBrand} color={speakerColor} size={14} />
                           <span>{speakerLabel}</span>
-                          {entry.streaming && <Spinner className="h-2.5 w-2.5" />}
+                          {entry.streaming && <DotGridLoader size="xs" />}
                         </div>
                       )}
                       <div className="pl-0.5">
@@ -1461,21 +1541,13 @@ export function TranscriptStream({
           })}
 
           {busy && !lastBlockIsLiveCluster && !pendingInteraction && (
-            <div className="flex items-center gap-2 pt-1 text-[12px] text-zinc-400 select-none">
-              <Spinner className="h-3 w-3" />
-              <span className="truncate">
+            <div className="flex items-center gap-2 pt-1 text-[12px] select-none">
+              <span className="inline-block max-w-full truncate agy-text-shimmer">
                 {statusText && statusText !== "ready" ? statusText : "Thinking…"}
               </span>
             </div>
           )}
 
-          {pendingInteraction && (
-            <InteractionCard
-              interaction={pendingInteraction}
-              onRespond={onRespondInteraction}
-              onOpenFile={onOpenFile}
-            />
-          )}
           <div ref={bottomRef} className="h-2" />
         </div>
       )}

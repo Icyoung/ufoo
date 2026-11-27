@@ -206,4 +206,64 @@ describe("context eviction regressions", () => {
     expect(store.getTurn("pending")).toBeNull();
     expect(backfillMissingTurns({ store, runtimeEvents: events })).toEqual([]);
   });
+
+  test("recovers the paused turn boundary on interaction resume instead of falling back to offset 0", async () => {
+    const { resolveResumedTurnBoundary } = require("../../../src/code/nativeRunner");
+    const store = makeStore();
+    const history = [];
+    for (let i = 0; i < 6; i += 1) {
+      const start = history.length;
+      history.push({ role: "user", content: `turn_${i}` }, { role: "assistant", content: "B".repeat(5000) });
+      store.upsertTurn({
+        turnId: `segment-${i}`,
+        turnIndex: i,
+        historyOffset: start,
+        historyEnd: history.length,
+        outcome: "completed",
+      });
+    }
+    const pausedStart = history.length;
+    history.push(
+      { role: "user", content: "run device check" },
+      { role: "assistant", tool_calls: [{ id: "ask1", type: "function", function: { name: "ask_user", arguments: "{\"prompt\":\"unlock?\"}" } }] },
+    );
+    store.upsertTurn({
+      turnId: "segment-paused",
+      turnIndex: 6,
+      historyOffset: pausedStart,
+      historyEnd: history.length,
+      outcome: "paused",
+    });
+    const resumedMessages = [
+      ...history,
+      { role: "tool", tool_call_id: "ask1", content: "{\"text\":\"use simulator\"}" },
+    ];
+
+    // Mismatched turnId (e.g. legacy snapshot or decomposed segment pause) must recover the paused turn boundary, not 0.
+    const recovered = resolveResumedTurnBoundary({
+      turnIndexStore: store,
+      effectiveTurnId: "turn_fresh_mismatched",
+      nonSystemBase: resumedMessages,
+    });
+    expect(recovered).toEqual({ offset: pausedStart, turnId: "segment-paused" });
+
+    // With the recovered boundary, slidingWindowManager evicts old turns cleanly instead of throwing context_budget_exceeded.
+    const manager = createSlidingWindowManager({ turnIndexStore: store, policy: { contextWindowTokens: 8000 } });
+    const projected = await manager.prepare({
+      messages: resumedMessages,
+      historyOffset: recovered.offset,
+      turnId: recovered.turnId,
+      resume: true,
+    });
+    expect(projected.meta.evictionLevel).toBeGreaterThanOrEqual(1);
+    expect(projected.estimatedTokens).toBeLessThanOrEqual(8000);
+
+    // Without turnIndexStore, fallback locates the last real user instruction (ignoring tool_result), not offset 0.
+    const fallback = resolveResumedTurnBoundary({
+      turnIndexStore: null,
+      effectiveTurnId: "turn_fresh_mismatched",
+      nonSystemBase: resumedMessages,
+    });
+    expect(fallback).toEqual({ offset: pausedStart, turnId: "turn_fresh_mismatched" });
+  });
 });

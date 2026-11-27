@@ -105,4 +105,35 @@ describe("chat history replay", () => {
     expect(loaded[0].text).toBe("› Please fix the login bug");
     expect(loaded[1].text).toBe("Fixed token refresh in auth.js");
   });
+
+  test("gear/status lifecycle noise (resuming, launching, closing, switching, daemon, config) is excluded while real messages remain", () => {
+    const file = path.join(root, ".ufoo", "chat", "history.jsonl");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, [
+      JSON.stringify({ ts: "2026-11-27T10:00:00.000Z", type: "system", text: "{white-fg}⚙{/white-fg} Resuming agents (ucode:ab85fb82)...", meta: {} }),
+      JSON.stringify({ ts: "2026-11-27T10:00:01.000Z", type: "system", text: "{white-fg}⚙{/white-fg} Launching claude...", meta: {} }),
+      JSON.stringify({ ts: "2026-11-27T10:00:02.000Z", type: "status", text: "{white-fg}⚙{/white-fg} Closing claude-1...", meta: {} }),
+      JSON.stringify({ ts: "2026-11-27T10:00:03.000Z", type: "status", text: "{white-fg}✓{/white-fg} {escape}delivered to codex-2{/escape}", meta: {} }),
+      JSON.stringify({ ts: "2026-11-27T10:00:04.000Z", type: "status", text: "{white-fg}✓{/white-fg} {escape}codex-2 done{/escape}", meta: {} }),
+      JSON.stringify({ ts: "2026-11-27T10:00:05.000Z", type: "system", text: "{white-fg}⚙{/white-fg} Switching project: /Users/icy/Code/Neptune", meta: {} }),
+      JSON.stringify({ ts: "2026-11-27T10:00:06.000Z", type: "system", text: "{white-fg}✓{/white-fg} Switched project: /Users/icy/Code/Neptune", meta: {} }),
+      JSON.stringify({ ts: "2026-11-27T10:00:07.000Z", type: "system", text: "{white-fg}⚙{/white-fg} Opening project: /Users/icy/Code/ufoo", meta: {} }),
+      JSON.stringify({ ts: "2026-11-27T10:00:08.000Z", type: "system", text: "{white-fg}✓{/white-fg} Handed off to Ufoo Desktop (ufoo://open)", meta: {} }),
+      JSON.stringify({ ts: "2026-11-27T10:00:09.000Z", type: "system", text: "{white-fg}✓{/white-fg} ufoo-agent config updated", meta: {} }),
+      JSON.stringify({ ts: "2026-11-27T10:00:10.000Z", type: "system", text: "{white-fg}ufoo{/white-fg} {gray-fg}·{/gray-fg} Task queued for: ucode-3", meta: {} }),
+      JSON.stringify({ ts: "2026-11-27T10:00:11.000Z", type: "user", text: "{white-fg}→{/white-fg} {escape}/daemon restart{/escape}", meta: {} }),
+      JSON.stringify({ ts: "2026-11-27T10:00:12.000Z", type: "bus", text: "{gray-fg}↔{/gray-fg} {gray-fg}{escape}ufoo-agent{/escape}{/gray-fg}: ", meta: {} }),
+      JSON.stringify({ ts: "2026-11-27T10:01:00.000Z", type: "user", text: "› Run the simulator smoke test", meta: {} }),
+      JSON.stringify({ ts: "2026-11-27T10:01:05.000Z", type: "assistant", text: "Starting the simulator now and verifying all flows.", meta: { speaker: "ufoo" } }),
+    ].join("\n") + "\n", "utf8");
+
+    appendChatHistory(root, "system", "{white-fg}⚙{/white-fg} Resuming agents (ucode:ab85fb82)...");
+    appendChatHistory(root, "status", "{gray-fg}⚙{/gray-fg} Restarting daemon...");
+    appendChatHistory(root, "system", "{white-fg}✓{/white-fg} Message sent to ucode-3");
+
+    const loaded = loadChatHistory(root);
+    expect(loaded).toHaveLength(2);
+    expect(loaded[0].text).toBe("› Run the simulator smoke test");
+    expect(loaded[1].text).toBe("Starting the simulator now and verifying all flows.");
+  });
 });

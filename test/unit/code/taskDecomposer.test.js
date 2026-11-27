@@ -544,6 +544,39 @@ Let me verify this`,
       expect(onProgress).toHaveBeenCalled();
     });
 
+    it("pauses immediately on waitingUserInteraction and propagates turn resume metadata", async () => {
+      const pausedState = { pendingUserInteraction: { id: "ui_123", kind: "chat", prompt: "Unlock phone?" } };
+      runNativeAgentTask.mockResolvedValueOnce({
+        ok: true,
+        output: "Waiting for user",
+        waitingUserInteraction: true,
+        interactionId: "ui_123",
+        executionState: pausedState,
+        logicalTurnId: "segment-paused-1",
+        historyOffset: 983,
+        turnItems: [{ role: "assistant", content: "asking user" }],
+        streamed: false,
+      });
+
+      const sessionState = { executionState: {} };
+      const result = await runDecomposedTask({
+        task: "fix the device bug",
+        workspaceRoot: "/tmp",
+        provider: "codex",
+        model: "gpt-6.2-sol",
+        state: sessionState,
+      });
+
+      expect(runNativeAgentTask).toHaveBeenCalledTimes(1);
+      expect(result.ok).toBe(true);
+      expect(result.waitingUserInteraction).toBe(true);
+      expect(result.interactionId).toBe("ui_123");
+      expect(result.logicalTurnId).toBe("segment-paused-1");
+      expect(result.historyOffset).toBe(983);
+      expect(result.executionState).toBe(pausedState);
+      expect(sessionState.executionState).toBe(pausedState);
+    });
+
     it("returns the step error when onProgress throws on the failure path", async () => {
       runNativeAgentTask.mockRejectedValue(new Error("network error"));
       const onProgress = jest.fn(() => {

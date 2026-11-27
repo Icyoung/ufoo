@@ -275,3 +275,200 @@ test("classifies incoming peer, coordinator, and direct user senders and normali
   expect(tools[2].text).toBe("• Grep HttpTimeout · shared/src");
   expect(tools[3].text).toBe("• Report Status done · Audit complete");
 });
+
+test("rawMarkdown upserts inline plan card in-place, preserves completed state, and strips legacy ANSI lines", () => {
+  const view = createAgentSurface({ rawMarkdown: true });
+  view.accept({ type: "task_started", task_id: "t-plan", message: "audit report" });
+
+  // Initial structured plan update
+  view.accept({
+    type: "plan",
+    plan_id: "pg-1",
+    objective: "Audit report",
+    items: [
+      { id: "n1", title: "Inspect report", status: "in_progress" },
+      { id: "n2", title: "Apply fixes", status: "pending" },
+    ],
+  });
+  let planRows = view.snapshot().entries.filter((e) => e.kind === "plan");
+  expect(planRows).toHaveLength(1);
+  expect(planRows[0].plan_items).toEqual([
+    { id: "n1", title: "Inspect report", status: "in_progress" },
+    { id: "n2", title: "Apply fixes", status: "pending" },
+  ]);
+
+  // Tool calls interleaved while plan runs, followed by completed_plan archival
+  view.accept({ type: "tool_call", toolCallId: "r1", name: "read", args: { path: "report.txt" } });
+  view.accept({ type: "tool_result", toolCallId: "r1", output: "ok" });
+  view.accept({
+    type: "plan",
+    visible: false,
+    lines: [],
+    items: [],
+    completed_plan: {
+      plan_id: "pg-1",
+      objective: "Audit report",
+      reason: "graph_terminal",
+      items: [
+        { id: "n1", title: "Inspect report", status: "completed" },
+        { id: "n2", title: "Apply fixes", status: "completed" },
+      ],
+    },
+  });
+
+  // Still a single inline plan card in-place, now showing all completed items
+  planRows = view.snapshot().entries.filter((e) => e.kind === "plan");
+  expect(planRows).toHaveLength(1);
+  expect(planRows[0].plan_items.map((i) => i.status)).toEqual(["completed", "completed"]);
+
+  // Legacy ANSI plan lines (e.g. replayed from older logs) parse cleanly without ANSI escapes
+  view.accept({ type: "task_started", task_id: "t-legacy", message: "fix" });
+  view.accept({
+    type: "plan",
+    lines: [
+      "\x1b[1m\x1b[97mPlan\x1b[39m\x1b[22m · 0/1",
+      "○ Read report and fix issues",
+      "TaskLoop writing",
+    ],
+  });
+  const legacyPlan = view.snapshot().entries.filter((e) => e.kind === "plan").at(-1);
+  expect(legacyPlan.plan_items).toEqual([
+    { title: "Read report and fix issues", status: "in_progress" },
+  ]);
+
+  // ACP plan event using `entries` instead of `items`
+  view.accept({ type: "task_started", task_id: "t-acp", message: "acp plan" });
+  view.accept({
+    type: "plan",
+    entries: [
+      { content: "Check API", status: "completed" },
+      { content: "Run tests", status: "in_progress" },
+    ],
+  });
+  const acpPlan = view.snapshot().entries.filter((e) => e.kind === "plan").at(-1);
+  expect(acpPlan.plan_items).toEqual([
+    { title: "Check API", status: "completed" },
+    { title: "Run tests", status: "in_progress" },
+  ]);
+
+  // Defense-in-depth: leaked child_* TaskLoop plan events must NOT spawn a second red card
+  // when a primary plan card already exists in the same turn.
+  view.accept({ type: "task_started", task_id: "t-no-dup", message: "run f04/f05" });
+  view.accept({
+    type: "plan",
+    plan_id: "plan_parent_1",
+    items: [
+      { id: "f04", title: "Fix F04 quotes", status: "in_progress" },
+      { id: "f05", title: "Fix F05 depth", status: "pending" },
+    ],
+  });
+  view.accept({
+    type: "plan",
+    plan_id: "child_abc123",
+    items: [
+      { id: "root", title: "Fix F04 quotes", status: "failed" },
+    ],
+  });
+  const turnPlans = view.snapshot().entries.filter((e) => e.kind === "plan" && e.turn_id === "t-no-dup");
+  expect(turnPlans).toHaveLength(1);
+  expect(turnPlans[0].plan_id).toBe("plan_parent_1");
+  expect(turnPlans[0].plan_items[0].status).toBe("in_progress");
+
+  // Legacy workers emitting ANSI `✗ ...` + `TaskLoop writing` during an active ReAct turn
+  // must NOT overwrite an active plan card with a red failed item or leaked child text.
+  view.accept({ type: "task_started", task_id: "t-legacy-flash", message: "continue" });
+  view.accept({
+    type: "plan",
+    lines: ["\x1b[1mPlan\x1b[22m · 0/1", "→ 联合验收", "TaskLoop writing"],
+  });
+  view.accept({
+    type: "plan",
+    lines: ["\x1b[1mPlan\x1b[22m · 0/1", "✗ 在 .ufoo/worktrees/group-build-lane…", "TaskLoop writing"],
+  });
+  const legacyTurnPlans = view.snapshot().entries.filter((e) => e.kind === "plan" && e.turn_id === "t-legacy-flash");
+  expect(legacyTurnPlans).toHaveLength(1);
+  expect(legacyTurnPlans[0].plan_items).toEqual([{ title: "联合验收", status: "in_progress" }]);
+});
+
+test("rawMarkdown parses structured and legacy interaction prompts into pending_interaction without raw system boxes", () => {
+  const view = createAgentSurface({ rawMarkdown: true });
+  view.accept({ type: "task_started", task_id: "t-ask", message: "verify on device" });
+
+  // Legacy wrapped Question: lines (including mid-word split like Androi\n  d)
+  view.accept({
+    type: "interaction",
+    lines: [
+      "Question: 请解锁 iPhone 并保持亮屏；Androi",
+      "  d 当前只有模拟器。",
+      "  (type your reply)",
+    ],
+  });
+  let snap = view.snapshot();
+  expect(snap.busy).toBe(false);
+  expect(snap.entries.filter((e) => e.kind === "system")).toHaveLength(0);
+  expect(snap.pending_interaction).toMatchObject({
+    kind: "chat",
+    prompt: "请解锁 iPhone 并保持亮屏；Android 当前只有模拟器。",
+    options: [],
+    allowFreeChat: true,
+  });
+
+  // Replying clears pending_interaction immediately
+  view.accept({ type: "task_submitted", message: "就用模拟器验收吧" });
+  expect(view.snapshot().pending_interaction).toBeNull();
+
+  // Structured choice interaction preserves options & descriptions
+  view.accept({ type: "task_started", task_id: "t-choice", message: "choose env" });
+  view.accept({
+    type: "interaction",
+    interaction: {
+      id: "ui_choice_1",
+      kind: "choice",
+      prompt: "Which target should I verify?",
+      options: [
+        { key: "1", label: "iOS Simulator", description: "iPhone 17 Pro (iOS 26.2)" },
+        { key: "2", label: "Android Emulator" },
+      ],
+      allowFreeChat: true,
+    },
+    lines: ["Choice: Which target should I verify?", "  [1] iOS Simulator", "  [2] Android Emulator"],
+  });
+  snap = view.snapshot();
+  expect(snap.pending_interaction).toEqual({
+    id: "ui_choice_1",
+    kind: "choice",
+    prompt: "Which target should I verify?",
+    options: [
+      { key: "1", label: "iOS Simulator", description: "iPhone 17 Pro (iOS 26.2)" },
+      { key: "2", label: "Android Emulator" },
+    ],
+    allowFreeChat: true,
+  });
+
+  // Legacy Choice: lines without structured interaction object still parse options
+  view.accept({
+    type: "interaction",
+    lines: [
+      "Choice: Pick a deployment mode",
+      "  [fast] Fast smoke check",
+      "  [full] Full device regression",
+      "  (reply with option number/key, or type a message)",
+    ],
+  });
+  snap = view.snapshot();
+  expect(snap.pending_interaction).toMatchObject({
+    kind: "choice",
+    prompt: "Pick a deployment mode",
+    options: [
+      { key: "fast", label: "Fast smoke check" },
+      { key: "full", label: "Full device regression" },
+    ],
+    allowFreeChat: true,
+  });
+
+  // Legacy TUI (rawMarkdown: false) still appends the system lines for terminal rendering
+  const tui = createAgentSurface({ rawMarkdown: false });
+  tui.accept({ type: "task_started", task_id: "t-tui", message: "run" });
+  tui.accept({ type: "interaction", lines: ["Question: Ready?", "  (type your reply)"] });
+  expect(tui.snapshot().entries.some((e) => e.kind === "system" && e.text.includes("Question: Ready?"))).toBe(true);
+});

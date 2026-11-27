@@ -205,4 +205,42 @@ describe("groupRoundCoordinator", () => {
     await wait(100);
     expect(settled).toHaveLength(1);
   });
+
+  test("skips group directory scans when idle and avoids O(groups * agents) liveness probes", () => {
+    // Seed 25 non-stopped historical groups and a live solo worker without a group_id
+    for (let i = 0; i < 25; i += 1) {
+      fs.writeFileSync(path.join(fixture.paths.groupsDir, `hist-group-${i}.json`), JSON.stringify({
+        group_id: `hist-group-${i}`,
+        status: "running",
+        members: [{ nickname: `old-${i}`, subscriber_id: `ucode:dead000${i}` }],
+      }));
+    }
+    fs.writeFileSync(fixture.paths.agentsFile, JSON.stringify({
+      agents: {
+        "ucode:solo9999": {
+          nickname: "ucode-3",
+          status: "active",
+          pid: process.pid,
+          activity_state: "working",
+        },
+      },
+    }));
+
+    const readdirSpy = jest.spyOn(fs, "readdirSync");
+    try {
+      coordinator = createGroupRoundCoordinator({
+        projectRoot: fixture.root,
+        pollIntervalMs: 0,
+      });
+      coordinator.start();
+      readdirSpy.mockClear();
+
+      // Idle tick with no new bus events and no active rounds must NOT read groups dir at all
+      coordinator.tick();
+      const groupReadsWhenIdle = readdirSpy.mock.calls.filter(([dir]) => dir === fixture.paths.groupsDir);
+      expect(groupReadsWhenIdle).toHaveLength(0);
+    } finally {
+      readdirSpy.mockRestore();
+    }
+  });
 });

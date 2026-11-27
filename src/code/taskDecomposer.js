@@ -168,6 +168,7 @@ async function runDecomposedTask({
   onPhase = null,
   onContextUsage = null,
   contextPolicy = {},
+  authorizeTool = null,
   timeoutMs,
 }) {
   const budgetMs = resolveTaskTimeoutMs(timeoutMs ?? state?.timeoutMs);
@@ -232,6 +233,8 @@ async function runDecomposedTask({
         workspaceRoot,
         provider,
         model,
+        permissionMode: state?.permissionMode || "",
+        authorizeTool: authorizeTool || state?.authorizeTool || null,
         prompt: stepPrompt,
         systemPrompt: stepSystemPrompt,
         systemBlocks: stepSystemBlocks,
@@ -239,6 +242,7 @@ async function runDecomposedTask({
         sessionId,
         timeoutMs: remainingMs,
         maxToolCalls: state ? state.maxToolCalls : undefined,
+        executionState: state?.executionState || null,
         onToolEvent,
         runtimeContext: inherited.taskRunId ? { ...inherited, parentTaskRunId: inherited.taskRunId,
           taskRunId: `segment-${randomUUID()}`, requestId: `${inherited.requestId || "step"}:${step.id}`, attemptId: `attempt-${randomUUID()}` } : inherited,
@@ -255,6 +259,10 @@ async function runDecomposedTask({
           ? (persisted) => recordToolCallInSession(state, persisted, workspaceRoot)
           : null,
       });
+
+      if (stepResult && stepResult.executionState && state && typeof state === "object") {
+        state.executionState = stepResult.executionState;
+      }
 
       if (stepResult && Array.isArray(stepResult.turnItems)) {
         turnItems.push(...stepResult.turnItems);
@@ -273,6 +281,27 @@ async function runDecomposedTask({
         name: step.name,
         success: stepResult.ok,
       });
+
+      // Pause decomposition immediately when a step requests user interaction so
+      // the caller preserves pendingLogicalTurnId, pendingTurnHistoryOffset, and
+      // executionState for resumeAfterUserInteraction.
+      if (stepResult && stepResult.waitingUserInteraction) {
+        return {
+          ok: true,
+          summary: String(stepResult.output || "").trim() || compileSummary(results),
+          finalText: stepResult.finalText,
+          results,
+          turnItems,
+          waitingUserInteraction: true,
+          interactionId: stepResult.interactionId || "",
+          executionState: stepResult.executionState || (state && state.executionState) || null,
+          logicalTurnId: stepResult.logicalTurnId || "",
+          historyOffset: Number.isInteger(stepResult.historyOffset) ? stepResult.historyOffset : null,
+          streamed: Boolean(stepResult.streamed),
+          usage: stepResult.usage || null,
+          contextMeter: stepResult.contextMeter || null,
+        };
+      }
 
       // Early exit if solution found
       if (shouldEarlyExitStep(step, stepResult)) {
@@ -319,12 +348,18 @@ async function runDecomposedTask({
 
   // Compile final summary
   const summary = compileSummary(results);
+  const lastStepResult = results.length ? results[results.length - 1].result : null;
 
   return {
     ok: true,
     summary,
     results,
     turnItems,
+    ...(results.length === 1 && typeof lastStepResult?.finalText === "string" ? { finalText: lastStepResult.finalText } : {}),
+    ...(lastStepResult?.executionState ? { executionState: lastStepResult.executionState } : {}),
+    ...(lastStepResult?.usage ? { usage: lastStepResult.usage } : {}),
+    ...(lastStepResult?.contextMeter ? { contextMeter: lastStepResult.contextMeter } : {}),
+    streamed: results.some((item) => Boolean(item?.result?.streamed)),
   };
 }
 

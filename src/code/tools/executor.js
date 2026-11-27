@@ -151,6 +151,14 @@ function runCoreToolUnlocked({
       });
     } else {
       syncInteractionFromPlanGraph(result.executionState || state);
+      emitToolEvent(onToolEvent, {
+        tool: "plan_graph",
+        phase: "end",
+        args: safeArgs,
+        result: result.modelPayload,
+        error: "",
+        origin,
+      });
     }
     return {
       ...result.modelPayload,

@@ -26,6 +26,7 @@ import {
 } from "@phosphor-icons/react";
 import type { CompletionItem, WorkerSummary } from "../types";
 import { BrandIcon } from "./BrandIcon";
+import { DotGridLoader } from "./DotGridLoader";
 
 export type CommandCategory = "Agents & Workflows" | "Session & View" | "Workspace & Tools";
 export type MenuActionKind = "drill" | "execute" | "fill" | "mention";
@@ -1352,7 +1353,7 @@ export function ComposerCommandMenu({
       <div ref={listRef} className="max-h-[300px] overflow-y-auto p-1.5">
         {menu.needsDynamicFetch && menu.items.length === 0 ? (
           <div className="flex items-center justify-center gap-2 py-7 text-[12px] text-zinc-400">
-            <span className="h-3 w-3 animate-spin rounded-full border-[1.5px] border-zinc-500 border-t-zinc-200" />
+            <DotGridLoader size="sm" colorClass="bg-zinc-300" />
             <span>Loading available options…</span>
           </div>
         ) : menu.items.length === 0 ? (

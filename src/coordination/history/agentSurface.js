@@ -56,6 +56,90 @@ function createAgentSurfacePublisher(projectRoot, subscriber) {
   return { enqueue, flush: () => { drain(); return pending; } };
 }
 
+function resolveAgentLineageIds(projectRoot, agentId, meta = null) {
+  const canonical = String(agentId || "").trim();
+  if (!canonical) return [];
+  const ids = new Set([canonical]);
+  const root = String(projectRoot || "").trim();
+  if (!root) return [...ids];
+
+  const paths = getUfooPaths(root);
+  let diskMeta = null;
+  try {
+    if (paths.agentsFile && fs.existsSync(paths.agentsFile)) {
+      const parsed = JSON.parse(fs.readFileSync(paths.agentsFile, "utf8"));
+      diskMeta = parsed?.agents?.[canonical] || null;
+    }
+  } catch {
+    diskMeta = null;
+  }
+
+  const combined = { ...(diskMeta || {}), ...(meta && typeof meta === "object" ? meta : {}) };
+  for (const prev of [
+    combined.previous_subscriber_id,
+    ...(Array.isArray(combined.previous_subscriber_ids) ? combined.previous_subscriber_ids : []),
+  ]) {
+    const clean = String(prev || "").trim();
+    if (clean) ids.add(clean);
+  }
+
+  const providerSessionId = String(combined.provider_session_id || combined.session_id || "").trim();
+
+  // Check group member records for prior subscriber IDs across resumes
+  try {
+    if (paths.groupsDir && fs.existsSync(paths.groupsDir)) {
+      for (const name of fs.readdirSync(paths.groupsDir)) {
+        if (!name.endsWith(".json")) continue;
+        let parsed = null;
+        try {
+          parsed = JSON.parse(fs.readFileSync(path.join(paths.groupsDir, name), "utf8"));
+        } catch {
+          continue;
+        }
+        for (const member of Array.isArray(parsed?.members) ? parsed.members : []) {
+          if (!member || typeof member !== "object") continue;
+          const memberIds = [
+            member.subscriber_id,
+            member.previous_subscriber_id,
+            member.bootstrapped_subscriber_id,
+            ...(Array.isArray(member.previous_subscriber_ids) ? member.previous_subscriber_ids : []),
+            ...(Array.isArray(member.launch?.subscriber_ids) ? member.launch.subscriber_ids : []),
+          ].map((item) => String(item || "").trim()).filter(Boolean);
+          const sessionMatch = providerSessionId
+            && String(member.provider_session_id || "").trim() === providerSessionId;
+          if (sessionMatch || memberIds.includes(canonical)) {
+            for (const item of memberIds) ids.add(item);
+          }
+        }
+      }
+    }
+  } catch {
+    // ignore group scan errors
+  }
+
+  // For resumed ucode sessions (including sessions resumed before previous_subscriber_ids
+  // persistence was added), recover prior subscriber IDs from the durable runtime event log.
+  if (providerSessionId && !providerSessionId.includes("/") && !providerSessionId.includes("\\")) {
+    try {
+      const runtimeEventsPath = path.join(paths.ufooDir, "agent", "ucode", "runtimes", providerSessionId, "events.jsonl");
+      if (fs.existsSync(runtimeEventsPath)) {
+        const raw = fs.readFileSync(runtimeEventsPath, "utf8");
+        const re = /"agentId"\s*:\s*"([^"]+)"/g;
+        let match = re.exec(raw);
+        while (match) {
+          const found = String(match[1] || "").trim();
+          if (found) ids.add(found);
+          match = re.exec(raw);
+        }
+      }
+    } catch {
+      // ignore runtime event scan errors
+    }
+  }
+
+  return [...ids];
+}
+
 function readAgentSurfaceEvents(projectRoot, agentIds, maxBytes = 2 * 1024 * 1024) {
   const accepted = new Set(agentIds);
   const dir = getUfooPaths(projectRoot).busEventsDir;
@@ -74,6 +158,7 @@ function readAgentSurfaceEvents(projectRoot, agentIds, maxBytes = 2 * 1024 * 102
       const lines = buffer.toString("utf8").split("\n");
       if (start) lines.shift();
       for (const line of lines) {
+        if (!line || !line.includes('"agent_surface"')) continue;
         try {
           const event = JSON.parse(line);
           if (event.event === "agent_surface" && accepted.has(event.publisher) && event.data?.surface?.type) events.push(event);
@@ -144,4 +229,9 @@ function createAgentSurfaceReader(projectRoot, maxBytes = 2 * 1024 * 1024) {
   };
 }
 
-module.exports = { createAgentSurfacePublisher, readAgentSurfaceEvents, createAgentSurfaceReader };
+module.exports = {
+  createAgentSurfacePublisher,
+  readAgentSurfaceEvents,
+  createAgentSurfaceReader,
+  resolveAgentLineageIds,
+};

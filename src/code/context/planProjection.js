@@ -6,6 +6,7 @@
  */
 
 const { projectPlanView } = require("./planGraphService");
+const { deriveConcisePlanTitle } = require("./planGraph");
 const { listActiveWritingTaskRuns } = require("../runtime/taskRun");
 const { hasActiveWriteLease } = require("../runtime/workspaceLease");
 
@@ -49,7 +50,16 @@ function nodeTitle(node = null) {
   if (node.type === "tool") {
     return node.tool ? `${node.id}:${node.tool}` : (node.title || node.id);
   }
-  return String(node.title || node.objective || node.id || "").trim();
+  const explicitTitle = String(node.title || "").trim();
+  const content = String(node.content || node.objective || "").trim();
+  if (explicitTitle) {
+    if ((explicitTitle.length > 96 || explicitTitle.includes("\n")) && (!content || explicitTitle === content)) {
+      return deriveConcisePlanTitle(explicitTitle, 72);
+    }
+    return explicitTitle.replace(/\s+/g, " ");
+  }
+  if (content) return deriveConcisePlanTitle(content, 72);
+  return String(node.id || "").trim();
 }
 
 function executionKind(node = null) {
@@ -549,9 +559,35 @@ function buildPlanUiProjection(executionState = null, options = {}) {
   const isTerminalGraph = String(rawPg.lastYieldReason || "").trim().toLowerCase() === "graph_terminal"
     && !rawPg.waitingFor
     && activeRuns.length === 0;
-  let pg = (isChildGraph || isTerminalGraph) ? {} : rawPg;
-  if (!pg.graphId && activeRuns.length > 0 && activeRuns[0].childGraphId && state.graphs && state.graphs[activeRuns[0].childGraphId]) {
-    pg = state.graphs[activeRuns[0].childGraphId];
+  let pg = {};
+  if (isChildGraph) {
+    // When executionState.planGraph temporarily points at a child TaskLoop graph,
+    // keep projecting its parent agent_loop plan rather than leaking the child graph.
+    const parentId = String(rawPg.parentGraphId || "").trim();
+    const parentGraph = parentId && state.graphs && state.graphs[parentId]
+      ? state.graphs[parentId]
+      : null;
+    if (parentGraph && parentGraph.graphId) {
+      pg = parentGraph;
+    }
+  } else if (!isTerminalGraph) {
+    pg = rawPg;
+  }
+  if (!pg.graphId && activeRuns.length > 0) {
+    const parentRun = activeRuns.find(
+      (run) => run && run.parentGraphId && state.graphs && state.graphs[run.parentGraphId],
+    );
+    if (parentRun) {
+      pg = state.graphs[parentRun.parentGraphId];
+    } else {
+      // Standalone TaskRun (no parent plan): show its child graph roadmap.
+      const standaloneRun = activeRuns.find(
+        (run) => run && !run.parentGraphId && run.childGraphId && state.graphs && state.graphs[run.childGraphId],
+      );
+      if (standaloneRun) {
+        pg = state.graphs[standaloneRun.childGraphId];
+      }
+    }
   }
   const view = projectPlanView(pg);
   const taskNodes = view.filter((node) => node && node.type === "task" && !node.generated);
@@ -669,6 +705,8 @@ function buildPlanUiProjection(executionState = null, options = {}) {
     hasPlan,
     visible,
     bandMode,
+    graphId: String(pg.graphId || ""),
+    planGraph: hasPlan ? pg : null,
     objective: String(pg.objective || "").trim(),
     progress,
     focus,

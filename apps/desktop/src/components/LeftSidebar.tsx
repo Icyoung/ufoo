@@ -24,6 +24,7 @@ import { isTauriEnvironment, ufooBridge } from "../bridge/ufooClient";
 import type { ArchivedSessionItem, ProjectTreeNode } from "../types";
 import { WORKER_AGENTS } from "../workerAgents";
 import { BrandIcon, buildProjectUcodeColorMap } from "./BrandIcon";
+import { DotGridLoader } from "./DotGridLoader";
 import { LeftSidebarIcon, NavBackIcon, NavForwardIcon } from "./WindowChromeIcons";
 
 const menuItemClassName =
@@ -91,7 +92,8 @@ function computeMenuPosition(
 interface SessionMenuState {
   sessionId: string;
   label: string;
-  section: "active" | "recoverable" | "archived";
+  section: "active" | "archived";
+  archiveSource?: "archived" | "recoverable";
   pinned: boolean;
   recoverable: boolean;
   worktreeBranch: string;
@@ -107,7 +109,6 @@ interface DeleteConfirmState {
 function ProjectGroup({ project }: { project: ProjectTreeNode }) {
   const { state, selectProjectMain, selectWorkerView, notifyToast } = useWorkspace();
   const [expanded, setExpanded] = useState(true);
-  const [showRecov, setShowRecov] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
 
   // Project folder launch menu
@@ -227,6 +228,41 @@ function ProjectGroup({ project }: { project: ProjectTreeNode }) {
       : "";
 
   const archivedList: ArchivedSessionItem[] = Array.isArray(project.archived) ? project.archived : [];
+  const resumableArchived = useMemo(() => {
+    const merged: Array<{
+      id: string;
+      label: string;
+      type: string;
+      worktree_branch: string;
+      source: "archived" | "recoverable";
+    }> = [];
+    const seen = new Set<string>();
+    for (const item of archivedList) {
+      if (item.recoverable === false) continue;
+      if (seen.has(item.id)) continue;
+      seen.add(item.id);
+      merged.push({
+        id: item.id,
+        label: item.label || item.id,
+        type: item.type || item.id,
+        worktree_branch: item.worktree_branch || "",
+        source: "archived",
+      });
+    }
+    for (const rec of project.recoverable || []) {
+      if (seen.has(rec.id)) continue;
+      seen.add(rec.id);
+      merged.push({
+        id: rec.id,
+        label: rec.label || rec.id,
+        type: rec.type || rec.id,
+        worktree_branch: "",
+        source: "recoverable",
+      });
+    }
+    return merged;
+  }, [archivedList, project.recoverable]);
+
   const ucodeColorMap = useMemo(
     () => buildProjectUcodeColorMap(project.root, project.workers, archivedList),
     [project.root, project.workers, archivedList]
@@ -318,12 +354,14 @@ function ProjectGroup({ project }: { project: ProjectTreeNode }) {
   const handleSessionArchive = async (sessionId: string) => {
     setSessionMenu(null);
     try {
-      const res = await ufooBridge.sendCommand<{ ok: boolean; stopped?: boolean; error?: string }>(
-        "session.archive",
-        { root: project.root, session_id: sessionId }
-      );
+      const res = await ufooBridge.sendCommand<{
+        ok: boolean;
+        stopped?: boolean;
+        recoverable?: boolean;
+        error?: string;
+      }>("session.archive", { root: project.root, session_id: sessionId });
       if (!res?.ok) throw new Error(res?.error || "Archive failed");
-      notifyToast("Session archived");
+      notifyToast(res.recoverable === false ? "Session closed" : "Session archived");
     } catch (error) {
       notifyToast(error instanceof Error ? error.message : String(error));
     }
@@ -408,7 +446,7 @@ function ProjectGroup({ project }: { project: ProjectTreeNode }) {
     }
   };
 
-  const hasSubItems = project.workers.length > 0 || project.recoverable.length > 0 || archivedList.length > 0;
+  const hasSubItems = project.workers.length > 0 || resumableArchived.length > 0;
 
   return (
     <div className="mb-1.5">
@@ -448,7 +486,7 @@ function ProjectGroup({ project }: { project: ProjectTreeNode }) {
             />
           )}
           {project.mainBusy && !project.waitingUser && (
-            <span className="inline-block h-2.5 w-2.5 shrink-0 animate-spin rounded-full border-[1.5px] border-zinc-400 border-t-transparent" />
+            <DotGridLoader size="xs" colorClass="bg-zinc-300" />
           )}
         </div>
 
@@ -541,11 +579,6 @@ function ProjectGroup({ project }: { project: ProjectTreeNode }) {
             document.body
           )}
         </div>
-        {project.branch && (
-          <div className="col-span-2 col-start-2 row-start-2 flex min-w-0 items-center font-mono text-[10.5px] text-zinc-500">
-            <span className="truncate" title={project.branch}>{project.branch}</span>
-          </div>
-        )}
       </div>
 
       {/* Level 2: Worker Sessions under this Project */}
@@ -681,35 +714,39 @@ function ProjectGroup({ project }: { project: ProjectTreeNode }) {
             );
           })}
 
-          {project.recoverable.length > 0 && (
+          {resumableArchived.length > 0 && (
             <div className="pt-1">
               <button
                 type="button"
-                onClick={() => setShowRecov(!showRecov)}
+                onClick={() => setShowArchived(!showArchived)}
                 className="flex w-full items-center gap-1.5 px-2 py-1 text-[11px] text-zinc-500 hover:text-zinc-300 cursor-pointer"
               >
-                {showRecov ? <CaretDown size={10} /> : <CaretRight size={10} />}
-                <span>Recoverable ({project.recoverable.length})</span>
+                {showArchived ? <CaretDown size={10} /> : <CaretRight size={10} />}
+                <span>Archived ({resumableArchived.length})</span>
               </button>
-              {showRecov && (
+              {showArchived && (
                 <div className="space-y-0.5 pl-2 pt-0.5">
-                  {project.recoverable.map((rec) => {
-                    const recLabel = rec.label || rec.id;
-                    const isMenuOpen = sessionMenu?.sessionId === rec.id;
-                    const isRenaming = renamingId === rec.id;
+                  {resumableArchived.map((item) => {
+                    const isMenuOpen = sessionMenu?.sessionId === item.id;
+                    const isRenaming = renamingId === item.id;
+                    const resumeAction = () => {
+                      if (item.source === "archived") void handleSessionUnarchive(item.id);
+                      else void handleResume(item.id);
+                    };
                     return (
                       <div
-                        key={rec.id}
+                        key={item.id}
                         onContextMenu={(e) =>
                           openSessionMenu(
                             e,
                             {
-                              sessionId: rec.id,
-                              label: recLabel,
-                              section: "recoverable",
+                              sessionId: item.id,
+                              label: item.label,
+                              section: "archived",
+                              archiveSource: item.source,
                               pinned: false,
                               recoverable: true,
-                              worktreeBranch: "",
+                              worktreeBranch: item.worktree_branch,
                             },
                             true
                           )
@@ -724,133 +761,43 @@ function ProjectGroup({ project }: { project: ProjectTreeNode }) {
                               value={renameDraft}
                               onClick={(e) => e.stopPropagation()}
                               onChange={(e) => setRenameDraft(e.target.value)}
-                              onBlur={() => void commitInlineRename(rec.id, recLabel)}
+                              onBlur={() => void commitInlineRename(item.id, item.label)}
                               onKeyDown={(e) => {
                                 if (e.key === "Enter") {
                                   e.preventDefault();
-                                  void commitInlineRename(rec.id, recLabel);
+                                  void commitInlineRename(item.id, item.label);
                                 } else if (e.key === "Escape") {
                                   e.preventDefault();
                                   setRenamingId("");
                                 }
                               }}
-                              aria-label="Rename session"
+                              aria-label="Rename archived session"
                               className="w-full rounded border border-blue-400/50 bg-zinc-950 px-1.5 py-0.5 text-[11.5px] text-white focus:outline-none"
                             />
                           </div>
                         ) : (
                           <button
                             type="button"
-                            onClick={() => void handleResume(rec.id)}
+                            onClick={resumeAction}
+                            title={`Resume ${item.label}`}
                             className="flex min-w-0 flex-1 items-center justify-between gap-2 px-2 py-1 text-left text-[11.5px] cursor-pointer"
                           >
                             <span className="flex min-w-0 items-center gap-1.5">
-                              {!rec.id.startsWith("group:") && (
-                                <BrandIcon
-                                  brand={rec.type || rec.id}
-                                  color={ucodeColorMap[rec.id]}
-                                  size={13}
-                                />
+                              {!item.id.startsWith("group:") && (
+                                <span className="opacity-75 shrink-0">
+                                  <BrandIcon
+                                    brand={item.type}
+                                    color={ucodeColorMap[item.id]}
+                                    size={13}
+                                  />
+                                </span>
                               )}
-                              <span className="truncate font-mono">{recLabel}</span>
+                              <span className="truncate font-mono">{item.label}</span>
                             </span>
-                            <span className="shrink-0 text-[10px] text-blue-400">Resume</span>
+                            <span className="shrink-0 text-[10px] text-blue-400 opacity-0 group-hover:opacity-100 transition-opacity">
+                              Resume
+                            </span>
                           </button>
-                        )}
-                        {!isRenaming && (
-                          <button
-                            type="button"
-                            aria-expanded={isMenuOpen}
-                            aria-label={`Session options for ${recLabel}`}
-                            title="Session options"
-                            onClick={(e) =>
-                              openSessionMenu(e, {
-                                sessionId: rec.id,
-                                label: recLabel,
-                                section: "recoverable",
-                                pinned: false,
-                                recoverable: true,
-                                worktreeBranch: "",
-                              })
-                            }
-                            className={`mr-1 flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-zinc-400 hover:bg-white/[0.1] hover:text-white cursor-pointer ${
-                              isMenuOpen
-                                ? "opacity-100 bg-white/[0.1] text-white"
-                                : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-                            }`}
-                          >
-                            <DotsThree size={15} weight="bold" />
-                          </button>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          )}
-
-          {archivedList.length > 0 && (
-            <div className="pt-1">
-              <button
-                type="button"
-                onClick={() => setShowArchived(!showArchived)}
-                className="flex w-full items-center gap-1.5 px-2 py-1 text-[11px] text-zinc-500 hover:text-zinc-300 cursor-pointer"
-              >
-                {showArchived ? <CaretDown size={10} /> : <CaretRight size={10} />}
-                <span>Archived ({archivedList.length})</span>
-              </button>
-              {showArchived && (
-                <div className="space-y-0.5 pl-2 pt-0.5">
-                  {archivedList.map((item) => {
-                    const isMenuOpen = sessionMenu?.sessionId === item.id;
-                    const isRenaming = renamingId === item.id;
-                    return (
-                      <div
-                        key={item.id}
-                        onContextMenu={(e) =>
-                          openSessionMenu(
-                            e,
-                            {
-                              sessionId: item.id,
-                              label: item.label,
-                              section: "archived",
-                              pinned: false,
-                              recoverable: Boolean(item.recoverable),
-                              worktreeBranch: item.worktree_branch || "",
-                            },
-                            true
-                          )
-                        }
-                        className="group flex items-center gap-1.5 rounded-md px-2 py-1 text-zinc-500 hover:bg-white/[0.04] hover:text-zinc-300"
-                      >
-                        <span className="opacity-65 shrink-0">
-                          <BrandIcon brand={item.type} color={ucodeColorMap[item.id]} size={13} />
-                        </span>
-                        {isRenaming ? (
-                          <input
-                            ref={renameInputRef}
-                            type="text"
-                            value={renameDraft}
-                            onClick={(e) => e.stopPropagation()}
-                            onChange={(e) => setRenameDraft(e.target.value)}
-                            onBlur={() => void commitInlineRename(item.id, item.label)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") {
-                                e.preventDefault();
-                                void commitInlineRename(item.id, item.label);
-                              } else if (e.key === "Escape") {
-                                e.preventDefault();
-                                setRenamingId("");
-                              }
-                            }}
-                            aria-label="Rename archived session"
-                            className="flex-1 min-w-0 rounded border border-blue-400/50 bg-zinc-950 px-1.5 py-0.5 text-[11.5px] text-white focus:outline-none"
-                          />
-                        ) : (
-                          <span className="min-w-0 flex-1 truncate text-[11.5px]">
-                            {item.label}
-                          </span>
                         )}
                         {!isRenaming && (
                           <button
@@ -863,12 +810,13 @@ function ProjectGroup({ project }: { project: ProjectTreeNode }) {
                                 sessionId: item.id,
                                 label: item.label,
                                 section: "archived",
+                                archiveSource: item.source,
                                 pinned: false,
-                                recoverable: Boolean(item.recoverable),
-                                worktreeBranch: item.worktree_branch || "",
+                                recoverable: true,
+                                worktreeBranch: item.worktree_branch,
                               })
                             }
-                            className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-zinc-400 hover:bg-white/[0.1] hover:text-white cursor-pointer ${
+                            className={`mr-1 flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-zinc-400 hover:bg-white/[0.1] hover:text-white cursor-pointer ${
                               isMenuOpen
                                 ? "opacity-100 bg-white/[0.1] text-white"
                                 : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
@@ -927,11 +875,17 @@ function ProjectGroup({ project }: { project: ProjectTreeNode }) {
           {sessionMenu.section === "archived" ? (
             <button
               type="button"
-              onClick={() => void handleSessionUnarchive(sessionMenu.sessionId)}
+              onClick={() => {
+                const sid = sessionMenu.sessionId;
+                const src = sessionMenu.archiveSource;
+                setSessionMenu(null);
+                if (src === "recoverable") void handleResume(sid);
+                else void handleSessionUnarchive(sid);
+              }}
               className={menuItemClassName}
             >
               <ArrowCounterClockwise size={13} className="shrink-0 text-zinc-400" />
-              <span>{sessionMenu.recoverable ? "Unarchive & Resume" : "Unarchive"}</span>
+              <span>Resume</span>
             </button>
           ) : (
             <button

@@ -18,6 +18,7 @@ import {
 } from "../bridge/ufooClient";
 import { formatPairCode } from "../bridge/remoteCrypto";
 import { BrandIcon } from "./BrandIcon";
+import { DotGridLoader } from "./DotGridLoader";
 
 export function RemoteConnectScreen() {
   const { state, notifyToast } = useWorkspace();
@@ -144,7 +145,7 @@ export function RemoteConnectScreen() {
                   {state.remotePairingState === "error" ? (
                     <WifiHigh size={18} />
                   ) : (
-                    <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-blue-400 border-t-transparent" />
+                    <DotGridLoader size="md" colorClass="bg-blue-400" label="Reconnecting" />
                   )}
                 </div>
                 <div className="min-w-0 flex-1">
@@ -186,7 +187,7 @@ export function RemoteConnectScreen() {
           ) : isPairing ? (
             <div className="flex flex-col items-center py-6 text-center space-y-3">
               <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-blue-400/25 bg-blue-500/10">
-                <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-blue-400 border-t-transparent" />
+                <DotGridLoader size="lg" colorClass="bg-blue-400" label="Pairing" />
               </div>
               <div className="space-y-1">
                 <div className="text-[14px] font-semibold text-zinc-100">

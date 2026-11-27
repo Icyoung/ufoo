@@ -524,10 +524,12 @@ describe("chat commandExecutor", () => {
     expect(logs.some((entry) => entry.text.includes("/resume list has been removed"))).toBe(true);
   });
 
-  test.each(["ucode:old", "group:dev-team"])("resume forwards selected %s and enforces internal scope", async (target) => {
-    const { executor, options } = createHarness({ internalOnly: true });
+  test.each(["ucode:old", "group:dev-team"])("resume forwards selected %s and enforces internal scope without polluting chat log", async (target) => {
+    const { executor, options, logs } = createHarness({ internalOnly: true });
     await executor.handleResumeCommand([target]);
     expect(options.send).toHaveBeenCalledWith({ type: "resume_agents", target, internal_only: true });
+    expect(logs.some((entry) => entry.text.includes("Resuming agents"))).toBe(false);
+    expect(options.resolveStatusLine).toHaveBeenCalledWith(expect.stringContaining("Resuming agents"));
   });
 
   test("handleCronCommand creates cron task with interval/targets/prompt", async () => {
@@ -796,7 +798,8 @@ describe("chat commandExecutor", () => {
     expect(options.switchProject).toHaveBeenCalledWith({ target: "2" });
     expect(logs.some((entry) => entry.text.includes("Projects:"))).toBe(true);
     expect(logs.some((entry) => entry.text.includes("Current:"))).toBe(true);
-    expect(logs.some((entry) => entry.text.includes("Switched project:"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("Switched project:"))).toBe(false);
+    expect(options.resolveStatusLine).toHaveBeenCalledWith(expect.stringContaining("Switched project:"));
   });
 
   test("handleProjectCommand list hides global controller row in global mode", async () => {
@@ -854,7 +857,8 @@ describe("chat commandExecutor", () => {
     await executor.handleOpenCommand(["/tmp/project", "with", "space"]);
 
     expect(options.switchProject).toHaveBeenCalledWith({ target: "/tmp/project with space" });
-    expect(logs.some((entry) => entry.text.includes("Opened project:"))).toBe(true);
+    expect(logs.some((entry) => entry.text.includes("Opened project:"))).toBe(false);
+    expect(options.resolveStatusLine).toHaveBeenCalledWith(expect.stringContaining("Opened project:"));
   });
 
   test("executeCommand routes /project", async () => {

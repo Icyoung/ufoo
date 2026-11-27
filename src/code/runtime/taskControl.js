@@ -54,7 +54,7 @@ function dependenciesSatisfied(parent = null, node = null) {
   const unmet = [];
   for (const depId of node.dependsOn || []) {
     const dep = byId.get(depId);
-    if (!dep || dep.status !== "succeeded") {
+    if (!dep || (dep.status !== "succeeded" && dep.status !== "skipped")) {
       unmet.push({ id: depId, status: dep ? dep.status : "missing" });
     }
   }
@@ -179,7 +179,7 @@ function startTask(executionState = null, {
       : { kind: "task_loop" },
   };
 
-  const objective = node.objective || node.title || id;
+  const objective = node.content || node.objective || node.title || id;
   const run = createTaskRun({
     kind: "graph_node",
     parentGraphId: parent.graphId || "",
@@ -193,6 +193,7 @@ function startTask(executionState = null, {
     parentNodeId: id,
     taskRunId: run.id,
     objective,
+    title: node.title || "",
   });
   run.childGraphId = child.graphId;
   putTaskRun(executionState, run);
@@ -266,6 +267,7 @@ function startStandaloneTask(executionState = null, {
     parentNodeId: "",
     taskRunId: run.id,
     objective: goal,
+    title: String(title || "").trim(),
   });
   run.childGraphId = child.graphId;
   putTaskRun(executionState, run);
@@ -585,6 +587,70 @@ function cancelSubtree(executionState = null, {
   return payload;
 }
 
+function retryNode(executionState = null, {
+  nodeId = "",
+  args = null,
+  commandId = "",
+} = {}) {
+  const cached = getCachedControlCommand(executionState, commandId);
+  if (cached) return { ...cached, idempotentReplay: true };
+
+  ensureGraphs(executionState);
+  const applied = applyControlNodeAction(executionState.planGraph, {
+    op: "retry_node",
+    nodeId,
+    args,
+  });
+  if (!applied.ok) {
+    return {
+      status: "rejected",
+      ok: false,
+      errors: applied.errors || [{ code: "RETRY_REJECTED", message: "retry_node rejected" }],
+    };
+  }
+  const payload = {
+    status: "accepted",
+    ok: true,
+    nodeId,
+    parentNodeStatus: "pending",
+    stateRevision: Number(executionState.planGraph.stateRevision) || 0,
+  };
+  cacheControlCommand(executionState, commandId, payload);
+  return payload;
+}
+
+function failNode(executionState = null, {
+  nodeId = "",
+  reason = "",
+  commandId = "",
+} = {}) {
+  const cached = getCachedControlCommand(executionState, commandId);
+  if (cached) return { ...cached, idempotentReplay: true };
+
+  ensureGraphs(executionState);
+  const applied = applyControlNodeAction(executionState.planGraph, {
+    op: "fail_node",
+    nodeId,
+    reason,
+  });
+  if (!applied.ok) {
+    return {
+      status: "rejected",
+      ok: false,
+      errors: applied.errors || [{ code: "FAIL_NODE_REJECTED", message: "fail_node rejected" }],
+    };
+  }
+  const payload = {
+    status: "accepted",
+    ok: true,
+    nodeId,
+    parentNodeStatus: "failed",
+    stateRevision: Number(executionState.planGraph.stateRevision) || 0,
+  };
+  cacheControlCommand(executionState, commandId, payload);
+  return payload;
+}
+
 function runControlActions(executionState = null, {
   actions = [],
   commandId = "",
@@ -594,7 +660,7 @@ function runControlActions(executionState = null, {
   const list = Array.isArray(actions) ? actions : [];
   const results = [];
   for (const action of list) {
-    const op = String(action && action.op || "").trim().toLowerCase();
+    const op = String(action && (action.op || action.type || action.action) || "").trim().toLowerCase();
     if (op === "start_task") {
       results.push(startTask(executionState, {
         nodeId: action.nodeId,
@@ -641,6 +707,18 @@ function runControlActions(executionState = null, {
         reason: action.reason,
         commandId: commandId && list.length === 1 ? commandId : `${commandId}:${op}:${action.nodeId}`,
       }));
+    } else if (op === "retry_node") {
+      results.push(retryNode(executionState, {
+        nodeId: action.nodeId,
+        args: action.args,
+        commandId: commandId && list.length === 1 ? commandId : `${commandId}:${op}:${action.nodeId}`,
+      }));
+    } else if (op === "fail_node") {
+      results.push(failNode(executionState, {
+        nodeId: action.nodeId,
+        reason: action.reason,
+        commandId: commandId && list.length === 1 ? commandId : `${commandId}:${op}:${action.nodeId}`,
+      }));
     } else if (op === "cancel_subtree") {
       results.push(cancelSubtree(executionState, {
         nodeId: action.nodeId,
@@ -683,6 +761,8 @@ module.exports = {
   completeTaskFromLoop,
   completeInlineTask,
   skipNode,
+  retryNode,
+  failNode,
   cancelSubtree,
   runControlActions,
   dependenciesSatisfied,

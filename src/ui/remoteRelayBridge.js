@@ -799,6 +799,7 @@ function createRemoteRelayBridge({
     if (prev) {
       try {
         prev.removeAllListeners();
+        prev.on("error", () => {});
         prev.terminate();
       } catch {
         // ignore

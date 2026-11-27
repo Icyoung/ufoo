@@ -22,7 +22,11 @@ const { getUfooPaths } = require("../coordination/state/paths");
 const { isInternalAgentMeta } = require("../runtime/contracts/agentMode");
 const { createPaneManager } = require("../app/chat/multiWindow/paneManager");
 const { createAgentSurface } = require("./agentSurface");
-const { readAgentSurfaceEvents, createAgentSurfaceReader } = require("../coordination/history/agentSurface");
+const {
+  readAgentSurfaceEvents,
+  createAgentSurfaceReader,
+  resolveAgentLineageIds,
+} = require("../coordination/history/agentSurface");
 
 const DEFAULT_COLS = 40;
 const DEFAULT_ROWS = 12;
@@ -192,13 +196,29 @@ function createRustMultiSession(options = {}) {
     const ids = listInternalAgentIds().filter((id) => !replayedAgents.has(id));
     const root = getProjectRoot();
     if (!root || !ids.length) return;
-    const events = readAgentSurfaceEvents(root, ids);
-    for (const id of new Set(events.map((event) => event.publisher))) {
-      const view = surfaceFor(id);
+    const ownerByPublisher = new Map();
+    const allIds = new Set();
+    for (const id of ids) {
+      const lineage = resolveAgentLineageIds(root, id, getAgentMeta ? getAgentMeta(id) : null);
+      for (const candidate of lineage.length ? lineage : [id]) {
+        allIds.add(candidate);
+        if (!ownerByPublisher.has(candidate) || candidate === id) {
+          ownerByPublisher.set(candidate, id);
+        }
+      }
+    }
+    const events = readAgentSurfaceEvents(root, [...allIds]);
+    const resetOwners = new Set();
+    for (const event of events) {
+      const ownerId = ownerByPublisher.get(event.publisher) || event.publisher;
+      if (resetOwners.has(ownerId)) continue;
+      resetOwners.add(ownerId);
+      const view = surfaceFor(ownerId);
       if (view && !view.structured) view.surface.apply("transcript.reset", { entries: [] });
     }
     for (const event of events) {
-      acceptEvent(event.publisher, event.data.surface, event.seq);
+      const ownerId = ownerByPublisher.get(event.publisher) || event.publisher;
+      acceptEvent(ownerId, event.data.surface, event.seq);
     }
     for (const id of ids) replayedAgents.add(id);
   }
@@ -355,6 +375,8 @@ function createRustMultiSession(options = {}) {
       busy: view.busy,
       usage: view.usage,
       plan: view.plan,
+      plan_items: view.plan_items || [],
+      pending_interaction: view.pending_interaction || null,
       changed_files: changedFiles,
       revision: view.revision,
       started_at: view.started_at,
@@ -777,6 +799,7 @@ function createRustMultiSession(options = {}) {
     listInternalAgentIds,
     acceptEvent,
     publishFrames,
+    getPaneSnapshot: (id) => surfaces.get(id)?.surface?.snapshot?.() || null,
     hasStructuredEvents: (id) => Boolean(surfaces.get(id)?.structured),
     handleExpand,
   };

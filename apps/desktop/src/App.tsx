@@ -16,6 +16,7 @@ import { CommandPalette } from "./components/CommandPalette";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { RemoteConnectScreen } from "./components/RemoteConnectScreen";
 import { ApprovalInbox } from "./components/ApprovalInbox";
+import { DotGridLoader } from "./components/DotGridLoader";
 import type { MobileTab } from "./types";
 
 class AppErrorBoundary extends Component<
@@ -225,7 +226,7 @@ function WorkbenchShell() {
               {activeMobileTitle}
             </span>
             {state.busy && (
-              <span className="inline-block h-2.5 w-2.5 shrink-0 animate-spin rounded-full border-[1.5px] border-blue-400 border-t-transparent" />
+              <DotGridLoader size="xs" colorClass="bg-blue-400" />
             )}
           </div>
         </div>
