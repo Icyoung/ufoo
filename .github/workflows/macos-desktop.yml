@@ -205,7 +205,7 @@ jobs:
           test -x "$RT_DIR/bin/node"
           test -x "$RT_DIR/bin/ufoo-tui"
           test -f "$RT_DIR/ufoo-core/src/ui/desktopUiHostCli.js"
-          "$RT_DIR/bin/node" -e "require('$RT_DIR/ufoo-core/src/ui/desktopUiHost'); console.log('desktopUiHost ok')"
+          "$RT_DIR/bin/node" -e "require(require('path').resolve(process.argv[1])); console.log('desktopUiHost ok'); process.exit(0)" "$RT_DIR/ufoo-core/src/ui/desktopUiHost.js"
 
           # Ad-hoc sign bundled executables and app bundle when Apple Developer cert is not configured
           if [[ "$HAS_APPLE_CERT" != "true" ]]; then
