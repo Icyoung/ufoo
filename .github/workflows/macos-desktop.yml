@@ -140,7 +140,7 @@ jobs:
               exit 1
             fi
           fi
-          node -e '
+          VERSION="$PKG_VERSION" node -e '
             const fs = require("fs");
             const p = "crates/ufoo-desktop/tauri.conf.json";
             const cfg = JSON.parse(fs.readFileSync(p, "utf8"));
@@ -193,6 +193,12 @@ jobs:
           if [[ ! -d "$APP_PATH" ]]; then
             echo "Ufoo.app bundle not found" >&2
             find target crates/ufoo-desktop/target -maxdepth 5 -name "Ufoo.app" 2>/dev/null || true
+            exit 1
+          fi
+
+          APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Contents/Info.plist")"
+          if [[ "$APP_VERSION" != "$VERSION" ]]; then
+            echo "Bundle version $APP_VERSION does not match package.json version $VERSION" >&2
             exit 1
           fi
 
