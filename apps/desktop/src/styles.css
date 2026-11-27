@@ -40,6 +40,12 @@
   }
 }
 
+.chat-composer-input {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 20px;
+}
+
 .selectable-text {
   user-select: text;
 }

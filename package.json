@@ -1,6 +1,6 @@
 {
   "name": "u-foo",
-  "version": "5.1.0",
+  "version": "5.1.1",
   "description": "Multi-Agent Workspace Control Plane & Collaborative Coding Runtime (SDK + ACP + MCP).",
   "license": "SEE LICENSE IN LICENSE",
   "homepage": "https://ufoo.dev",
@@ -57,10 +57,10 @@
     "test:coverage": "jest --coverage"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.295",
-    "@anthropic-ai/sdk": "^0.132.1",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.332",
+    "@anthropic-ai/sdk": "^1.14.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
-    "@openai/codex-sdk": "^0.162.0",
+    "@openai/codex-sdk": "^0.172.0",
     "chalk": "^4.1.2",
     "commander": "^13.1.0",
     "gray-matter": "^4.0.3",

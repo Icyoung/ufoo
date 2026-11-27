@@ -283,7 +283,7 @@ function WorkerComposer({
   };
 
   return (
-    <div className={`${compact ? "px-3 pb-3 pt-1" : "px-3 pb-2.5 md:px-6 md:pb-4 pt-1"} bg-transparent`}>
+    <div className={`${compact ? "px-3 pb-3 pt-1" : "px-3 pb-2.5 md:px-5 md:pb-4 pt-1"} bg-transparent`}>
       <AskInteractionDock
         interaction={pendingInteraction}
         compact={compact}
@@ -321,7 +321,7 @@ function WorkerComposer({
             void attachFileList(e.dataTransfer.files);
           }
         }}
-        className={`relative ${compact ? "" : "mx-auto max-w-3xl"} rounded-2xl border ${composerRingClass} bg-zinc-900/90 p-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] transition-colors`}
+        className={`relative ${compact ? "" : "mx-auto max-w-3xl"} rounded-2xl border ${composerRingClass} bg-zinc-900/90 p-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] transition-colors`}
       >
         <DropFilesOverlay visible={isTauriDragging || htmlDragging} />
         <input
@@ -373,9 +373,9 @@ function WorkerComposer({
               ? `Queue a follow-up for ${label}… (Enter to queue, ⌥⏎ to send now)`
               : `Message ${label} directly, or drop images & files…`
           }
-          className="w-full resize-none bg-transparent px-2 py-1 text-[13px] leading-relaxed text-zinc-100 placeholder:text-zinc-500 focus:outline-none"
+          className="chat-composer-input w-full resize-none bg-transparent px-2 py-1 text-zinc-100 placeholder:text-zinc-500 focus:outline-none"
         />
-        <div className="mt-1 flex flex-nowrap items-center justify-between gap-1.5 px-1.5">
+        <div className="mt-1.5 flex flex-nowrap items-center justify-between gap-1.5 px-1.5">
           <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
             <button
               type="button"
@@ -441,10 +441,11 @@ function MainComposer({
     respondInteraction,
     openDocInInspector,
     setWindowMode,
-    selectSideWorker,
     notifyToast,
   } = useWorkspace();
-  const [input, setInput] = useState("");
+  const draftKey = `main:${state.activeRoot}`;
+  const input = state.localPaneDrafts[draftKey]?.text || "";
+  const setInput = (text: string) => dispatch({ type: "UPDATE_LOCAL_PANE_DRAFT", agentId: draftKey, text });
   const [cursorPos, setCursorPos] = useState(0);
   const [activeMenuIndex, setActiveMenuIndex] = useState(0);
   const [menuDismissed, setMenuDismissed] = useState(false);
@@ -573,26 +574,6 @@ function MainComposer({
     setActiveMenuIndex(0);
     requestDynamicCompletionsIfNeeded(nextVal);
     focusTextareaAt(nextCursor);
-  };
-
-  const handleSelectTarget = (worker: WorkerSummary | null) => {
-    if (!worker) {
-      dispatch({ type: "SET_TARGET_AGENT", agentId: "", prefix: "› " });
-      void ufooBridge.sendCommand("agent.select", { agent_id: "" });
-      return;
-    }
-    dispatch({
-      type: "SET_TARGET_AGENT",
-      agentId: worker.id,
-      prefix: `›@${worker.label} `,
-    });
-    void ufooBridge.sendCommand("agent.select", {
-      agent_id: worker.id,
-      label: worker.label,
-    });
-    if (state.windowMode === "side" && worker.internal) {
-      void selectSideWorker(worker.id);
-    }
   };
 
   const handleTextChange = (val: string, selPos?: number) => {
@@ -876,56 +857,6 @@ function MainComposer({
   return (
     <div className="bg-[#0c0c0e] px-3 pb-2.5 md:px-5 md:pb-4 pt-1">
       <div ref={composerBoxRef} className="relative mx-auto max-w-3xl">
-        {/* Unified Session / Agent Target Strip above the Composer (only when 1+ workers exist) */}
-        {state.scope === "project" && workers.length > 0 && (
-          <div className="mb-2 flex items-center gap-1 overflow-x-auto pb-0.5">
-            <button
-              type="button"
-              onClick={() => handleSelectTarget(null)}
-              className={`inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-[12px] font-medium transition-colors cursor-pointer ${
-                !targetedWorker
-                  ? "border-white/[0.12] bg-white/[0.1] text-white"
-                  : "border-transparent text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200"
-              }`}
-            >
-              <BrandIcon brand="ufoo" size={13} />
-              <span>ufoo</span>
-              {state.busy && (
-                <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-zinc-300 animate-pulse" />
-              )}
-            </button>
-
-            {workers.map((w) => {
-              const selected = targetedWorker?.id === w.id;
-              const working = Boolean(state.paneFrames[w.id]?.busy || w.activity_state === "working");
-              return (
-                <button
-                  key={w.id}
-                  type="button"
-                  onClick={() => handleSelectTarget(w)}
-                  title={w.label}
-                  className={`inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-[12px] font-medium transition-colors cursor-pointer ${
-                    selected
-                      ? "border-white/[0.12] bg-white/[0.1] text-white"
-                      : "border-transparent text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200"
-                  }`}
-                >
-                  <BrandIcon brand={w.type} color={workerColorMap[w.id]} size={13} />
-                  <span className="font-mono truncate max-w-[132px]">{w.label}</span>
-                  {w.external && (
-                    <span className="rounded bg-white/[0.06] px-1 font-mono text-[9px] text-zinc-400">
-                      MCP
-                    </span>
-                  )}
-                  {working && (
-                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400 animate-pulse" />
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        )}
-
         {/* Friendly Desktop Command & @Mention Palette */}
         {state.scope === "project" && !targetedWorker && <BackgroundTaskStrip key={state.activeRoot} tasks={state.backgroundTasks} />}
         <ComposerCommandMenu
@@ -1088,7 +1019,7 @@ function MainComposer({
                 ? "Queue a follow-up for ufoo… (Enter to queue, ⌥⏎ to send now)"
                 : "Ask ufoo, type / for commands, or @ to mention an agent…"
             }
-            className="w-full resize-none bg-transparent px-2 py-1 text-[13.5px] leading-relaxed text-zinc-100 placeholder:text-zinc-500 focus:outline-none"
+            className="chat-composer-input w-full resize-none bg-transparent px-2 py-1 text-zinc-100 placeholder:text-zinc-500 focus:outline-none"
           />
 
           <div ref={toolbarRef} className="mt-1.5 flex flex-nowrap items-center justify-between gap-2 px-1.5">
@@ -1235,6 +1166,26 @@ export function CenterStage() {
       state.workerSingleFrame?.agent_id === state.stageTarget.agentId && state.workerSingleFrame.external
     )
   );
+
+  const groupMembers = state.workflowSnapshot.project_root === state.activeRoot && isWorkerSingle
+    ? state.workflowSnapshot.groups.find(group => group.member_ids.includes(state.stageTarget.agentId))?.member_ids
+    : undefined;
+  const belongsToSelectedGroup = (worker: WorkerSummary) => Boolean(
+    groupMembers?.includes(worker.id) || (selectedWorkerMeta?.group_id && worker.group_id === selectedWorkerMeta.group_id)
+  );
+  const stripWorkers = isWorkerSingle && (groupMembers || selectedWorkerMeta?.group_id)
+    ? [...workers.filter(belongsToSelectedGroup), ...workers.filter(worker => !belongsToSelectedGroup(worker))]
+    : workers;
+  const stripRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const strip = stripRef.current;
+    const selected = strip?.querySelector<HTMLElement>('[aria-pressed="true"]');
+    if (!strip || !selected) return;
+    const bounds = strip.getBoundingClientRect();
+    const button = selected.getBoundingClientRect();
+    if (button.left < bounds.left) strip.scrollLeft += button.left - bounds.left;
+    else if (button.right > bounds.right) strip.scrollLeft += button.right - bounds.right;
+  }, [state.activeRoot, state.stageTarget.agentId, workers.length, groupMembers, selectedWorkerMeta?.group_id]);
 
   const activeSideWorker = useMemo(() => {
     if (state.sideAgentId) {
@@ -1497,6 +1448,59 @@ export function CenterStage() {
     return queueCount + waitingOthers;
   }, [state.pendingInteractions, state.pendingInteraction, state.projects, state.activeRoot]);
 
+  const conversationStrip = state.scope === "project" && workers.length > 0 && (
+    <div className="shrink-0 px-3 pt-1 md:px-5">
+      <div ref={stripRef} role="group" aria-label="Switch conversation" className="mx-auto flex w-full max-w-3xl items-center gap-1 overflow-x-auto pb-0.5">
+        <button
+          type="button"
+          aria-pressed={!isWorkerSingle && !state.targetAgent}
+          onClick={() => void selectProjectMain(state.activeRoot)}
+          className={`inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-[12px] font-medium transition-colors cursor-pointer ${
+            !isWorkerSingle && !state.targetAgent
+              ? "border-white/[0.12] bg-white/[0.1] text-white"
+              : "border-transparent text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200"
+          }`}
+        >
+          <BrandIcon brand="ufoo" size={13} />
+          <span>ufoo</span>
+          {state.busy && (
+            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-zinc-300 animate-pulse" />
+          )}
+        </button>
+
+        {stripWorkers.map((w) => {
+          const selected = isWorkerSingle ? state.stageTarget.agentId === w.id : state.targetAgent === w.id;
+          const working = Boolean(state.paneFrames[w.id]?.busy || w.activity_state === "working");
+          return (
+            <button
+              key={w.id}
+              type="button"
+              aria-pressed={selected}
+              onClick={() => void selectWorkerView(state.activeRoot, w.id)}
+              title={w.label}
+              className={`inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-[12px] font-medium transition-colors cursor-pointer ${
+                selected
+                  ? "border-white/[0.12] bg-white/[0.1] text-white"
+                  : "border-transparent text-zinc-400 hover:bg-white/[0.05] hover:text-zinc-200"
+              }`}
+            >
+              <BrandIcon brand={w.type} color={workerColorMap[w.id]} size={13} />
+              <span className="font-mono truncate max-w-[132px]">{w.label}</span>
+              {w.external && (
+                <span className="rounded bg-white/[0.06] px-1 font-mono text-[9px] text-zinc-400">
+                  MCP
+                </span>
+              )}
+              {working && (
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400 animate-pulse" />
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+
   const renderRightSidebarToggle = () => (
     <button
       type="button"
@@ -1688,7 +1692,7 @@ export function CenterStage() {
         {/* Primary Column Body */}
         {isWorkerSingle ? (
           <div className="flex flex-1 min-h-0 flex-col">
-            <TranscriptStream
+            <TranscriptStream key={state.stageTarget.agentId}
               entries={state.workerSingleFrame?.entries || []}
               planLines={state.workerSingleFrame?.plan || []}
               planItems={state.workerSingleFrame?.plan_items || []}
@@ -1718,7 +1722,9 @@ export function CenterStage() {
               emptyHint="What do you want to do now?"
             />
 
+            {conversationStrip}
             <WorkerComposer
+              key={state.stageTarget.agentId}
               agentId={state.stageTarget.agentId}
               agentType={state.workerSingleFrame?.type || selectedWorkerMeta?.type || "worker"}
               label={state.workerSingleFrame?.label || selectedWorkerMeta?.label || state.stageTarget.agentId}
@@ -1755,6 +1761,7 @@ export function CenterStage() {
               onClearConversation={() => void handleClearMain()}
               compact={isSplitLayout}
             />
+            {conversationStrip}
             <MainComposer workers={workers} workerColorMap={workerColorMap} />
           </div>
         )}

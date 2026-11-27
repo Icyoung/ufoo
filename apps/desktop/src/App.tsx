@@ -1,10 +1,6 @@
 import React, { Component, useEffect, useMemo } from "react";
 import {
   ArrowLeft,
-  BellSimple,
-  ChatCircleDots,
-  GearSix,
-  GitDiff,
   List,
 } from "@phosphor-icons/react";
 import { WorkspaceProvider, useWorkspace } from "./store/workspaceStore";
@@ -18,7 +14,7 @@ import { OnboardingWizard } from "./components/OnboardingWizard";
 import { RemoteConnectScreen } from "./components/RemoteConnectScreen";
 import { ApprovalInbox } from "./components/ApprovalInbox";
 import { BrandIcon } from "./components/BrandIcon";
-import type { MobileTab } from "./types";
+import { RightSidebarIcon } from "./components/WindowChromeIcons";
 
 class AppErrorBoundary extends Component<
   { children: React.ReactNode },
@@ -162,16 +158,6 @@ function WorkbenchShell() {
   const mobileWorker = currentProject?.workers.find(worker => worker.id === mobileWorkerId);
   const projectTitle = currentProject?.label || "Workspace";
 
-  const totalAttentionCount = useMemo(() => {
-    const queueCount = state.pendingInteractions.length || (state.pendingInteraction ? 1 : 0);
-    const waitingOthers = state.projects.filter(
-      (p) => p.waitingUser && p.root !== state.activeRoot
-    ).length;
-    return queueCount + waitingOthers;
-  }, [state.pendingInteractions, state.pendingInteraction, state.projects, state.activeRoot]);
-
-  const changedFilesCount = state.changesSnapshot?.files.length || 0;
-
   const showRemoteConnect =
     !isTauriEnvironment() &&
     (state.transportMode === "unpaired" ||
@@ -194,19 +180,8 @@ function WorkbenchShell() {
     );
   }
 
-  const mobileTabs: Array<{
-    id: MobileTab;
-    label: string;
-    badge?: number;
-    badgeTone?: "amber" | "blue";
-  }> = [
-    { id: "inbox", label: "Inbox", badge: totalAttentionCount, badgeTone: "amber" },
-    { id: "chat", label: "Chat" },
-    { id: "changes", label: "Changes", badge: changedFilesCount, badgeTone: "blue" },
-  ];
-
   return (
-    <div className="relative flex h-[100dvh] w-full flex-col md:flex-row overflow-hidden bg-[#0c0c0e] md:bg-transparent text-zinc-100">
+    <div className="relative flex h-[100dvh] w-full pb-[env(safe-area-inset-bottom)] md:pb-0 flex-col md:flex-row overflow-hidden bg-[#0c0c0e] md:bg-transparent text-zinc-100">
       {/* Compact Mobile Top Bar (< md only) */}
       <header className="flex md:hidden shrink-0 items-center justify-between gap-2 border-b border-white/[0.07] bg-zinc-950/95 px-2.5 py-2 safe-top backdrop-blur-xl">
         <div className="flex min-w-0 items-center gap-2">
@@ -245,11 +220,12 @@ function WorkbenchShell() {
         <div className="flex shrink-0 items-center gap-1.5">
           <button
             type="button"
-            onClick={() => dispatch({ type: "SET_SETTINGS_MODAL", open: true, tab: "general" })}
-            aria-label="Settings"
+            onClick={() => dispatch({ type: "SET_MOBILE_TAB", tab: state.mobileTab === "changes" ? "chat" : "changes" })}
+            aria-label={state.mobileTab === "changes" ? "Back to chat" : "Open workspace inspector"}
+            aria-expanded={state.mobileTab === "changes"}
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-zinc-400 hover:bg-white/[0.08] hover:text-white transition-colors cursor-pointer"
           >
-            <GearSix size={18} />
+            <RightSidebarIcon active={state.mobileTab === "changes"} />
           </button>
         </div>
       </header>
@@ -304,49 +280,6 @@ function WorkbenchShell() {
         )}
       </div>
 
-      {/* Mobile Bottom Tab Bar (< md only) */}
-      <nav
-        aria-label="Mobile Navigation"
-        className="flex md:hidden shrink-0 items-stretch border-t border-white/[0.08] bg-zinc-950/95 px-2 pt-1.5 pb-1.5 safe-bottom backdrop-blur-xl"
-      >
-        {mobileTabs.map(({ id, label, badge, badgeTone }) => {
-          const active = state.mobileTab === id;
-          return (
-            <button
-              key={id}
-              type="button"
-              onClick={() => dispatch({ type: "SET_MOBILE_TAB", tab: id })}
-              aria-current={active ? "page" : undefined}
-              className={`relative flex flex-1 flex-col items-center justify-center gap-0.5 rounded-xl py-1.5 text-[11px] font-medium transition-colors cursor-pointer ${
-                active ? "bg-white/[0.08] text-white" : "text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              <span className="relative inline-flex items-center justify-center">
-                {id === "inbox" ? (
-                  <BellSimple size={19} weight={active ? "fill" : "regular"} />
-                ) : id === "chat" ? (
-                  <ChatCircleDots size={19} weight={active ? "fill" : "regular"} />
-                ) : (
-                  <GitDiff size={19} weight={active ? "fill" : "regular"} />
-                )}
-                {typeof badge === "number" && badge > 0 && (
-                  <span
-                    className={`absolute -right-2.5 -top-1.5 min-w-[16px] rounded-full px-1 py-[1px] text-center font-mono text-[9.5px] font-bold leading-tight ${
-                      badgeTone === "amber"
-                        ? "bg-amber-400 text-zinc-950"
-                        : "bg-blue-500 text-white"
-                    }`}
-                  >
-                    {badge > 99 ? "99+" : badge}
-                  </span>
-                )}
-              </span>
-              <span>{label}</span>
-            </button>
-          );
-        })}
-      </nav>
-
       {/* Desktop Quick Approval Inbox Modal */}
       {state.approvalInboxOpen && (
         <div
@@ -369,7 +302,7 @@ function WorkbenchShell() {
       <OnboardingWizard />
 
       {state.toastMessage && (
-        <div className="fixed bottom-20 md:bottom-5 right-4 md:right-5 z-50 rounded-xl border border-white/[0.12] bg-zinc-900/95 px-3.5 py-2 text-[12px] text-zinc-100 shadow-2xl backdrop-blur-xl">
+        <div className="fixed bottom-5 right-4 md:right-5 z-50 rounded-xl border border-white/[0.12] bg-zinc-900/95 px-3.5 py-2 text-[12px] text-zinc-100 shadow-2xl backdrop-blur-xl">
           {state.toastMessage}
         </div>
       )}

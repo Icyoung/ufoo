@@ -391,7 +391,7 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
         scope: nextScope,
         activeRoot: nextRoot,
         stageTarget: action.target,
-        ...(action.target.kind === "project_main" ? { workerSingleFrame: null } : {}),
+        workerSingleFrame: action.target.agentId === state.workerSingleFrame?.agent_id ? state.workerSingleFrame : null,
         navPendingKey: "",
         navPendingUntil: 0,
       });
@@ -1016,6 +1016,8 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const selectProjectMain = useCallback(async (root: string) => {
+    dispatch({ type: "SET_MOBILE_TAB", tab: "chat" });
+    dispatch({ type: "SET_TARGET_AGENT", agentId: "", prefix: "› " });
     dispatch({ type: "SET_MOBILE_DRAWER", open: false });
     dispatch({
       type: "SET_STAGE_TARGET_OPTIMISTIC",
@@ -1180,6 +1182,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
 
   const openDocInInspector = useCallback(async (filePath: string) => {
     dispatch({ type: "SET_RIGHT_TAB", tab: "docs" });
+    if (window.matchMedia("(max-width: 767px)").matches) dispatch({ type: "SET_MOBILE_TAB", tab: "changes" });
     await ufooBridge.sendCommand("workspace.docs", { filePath });
   }, []);
 
