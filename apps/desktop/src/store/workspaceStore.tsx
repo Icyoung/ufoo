@@ -236,6 +236,12 @@ function navEntryKey(entry: NavHistoryEntry | null): string {
   return `project:${entry.root}:main`;
 }
 
+function frameForTarget(state: WorkspaceState, root: string, target: StageTarget) {
+  const frame = state.workerSingleFrame;
+  return target.kind === "worker_single" && frame?.agent_id === target.agentId && frame.project_root === root
+    ? frame : null;
+}
+
 function withNavHistory(nextState: WorkspaceState): WorkspaceState {
   const entry = buildNavEntry(nextState.scope, nextState.activeRoot, nextState.stageTarget);
   if (!entry) return nextState;
@@ -391,7 +397,8 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
         scope: nextScope,
         activeRoot: nextRoot,
         stageTarget: action.target,
-        workerSingleFrame: action.target.agentId === state.workerSingleFrame?.agent_id ? state.workerSingleFrame : null,
+        workerSingleFrame: frameForTarget(state, nextRoot, action.target),
+        ...(nextRoot !== state.activeRoot ? { entries: [] } : {}),
         navPendingKey: "",
         navPendingUntil: 0,
       });
@@ -412,7 +419,8 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
         scope: target.scope,
         activeRoot: target.scope === "controller" ? state.controllerRoot : target.root,
         stageTarget: target.stageTarget,
-        ...(target.stageTarget.kind === "project_main" ? { workerSingleFrame: null } : {}),
+        workerSingleFrame: frameForTarget(state, target.root, target.stageTarget),
+        ...(target.root !== state.activeRoot ? { entries: [] } : {}),
       };
     }
     case "SET_WINDOW_MODE_OPTIMISTIC":
@@ -463,6 +471,14 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
           statusText: "ready",
         };
       }
+      const projectId = action.envelope.scope?.project_id;
+      if (name.startsWith("transcript.") && projectId && projectId !== state.activeRoot) return state;
+      if (state.navPendingKey && Date.now() < state.navPendingUntil && payload.stage_target &&
+          (name === "projects.tree" || name === "app.snapshot" || name === "handoff.state")) {
+        const root = payload.active_root || payload.project_root || state.activeRoot;
+        const scope = payload.scope || state.scope;
+        if (navEntryKey(buildNavEntry(scope, root, payload.stage_target)) !== state.navPendingKey) return state;
+      }
       if (name === "host.connection") {
         const raw = String(payload.state || (payload.connected ? "connected" : "reconnecting"));
         const nextConn: ConnectionState =
@@ -512,7 +528,7 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
           scope: payload.scope === "project" ? "project" : "controller",
           stageTarget: nextStageTarget,
           ...(switchedProject ? { targetAgent: "", promptPrefix: "› ", paneFrames: {} } : {}),
-          ...(nextStageTarget.kind === "project_main" ? { workerSingleFrame: null } : {}),
+          workerSingleFrame: frameForTarget(state, nextActiveRoot, nextStageTarget),
           entries: Array.isArray(payload.entries) ? payload.entries : state.entries,
           settings: payload.settings || state.settings,
           pendingInteraction: nextHead,
@@ -559,6 +575,8 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
           controllerRoot: String(payload.controller_root || state.controllerRoot),
           activeRoot: String(payload.active_root || state.activeRoot),
           scope: payload.scope === "project" ? "project" : "controller",
+          workerSingleFrame: frameForTarget(state, payload.active_root || state.activeRoot, payload.stage_target || state.stageTarget),
+          ...(payload.active_root && payload.active_root !== state.activeRoot ? { entries: [] } : {}),
           stageTarget: payload.stage_target || state.stageTarget,
           projects: Array.isArray(payload.projects) ? payload.projects : state.projects,
         });
@@ -810,17 +828,16 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
       }
       if (name === "worker.view.frame") {
         const frame = payload as WorkerViewFrame;
-        return withNavHistory({
-          ...state,
-          ...(frame.project_root ? { activeRoot: frame.project_root, scope: "project" as const } : {}),
-          stageTarget: { kind: "worker_single", agentId: frame.agent_id },
-          workerSingleFrame: frame,
-        });
+        if (state.stageTarget.kind !== "worker_single" || state.stageTarget.agentId !== frame.agent_id ||
+            state.activeRoot !== frame.project_root) return state;
+        return { ...state, workerSingleFrame: frame };
       }
       if (name === "handoff.state") {
         return withNavHistory({
           ...state,
           activeRoot: String(payload.project_root || state.activeRoot),
+          workerSingleFrame: frameForTarget(state, payload.project_root || state.activeRoot, payload.stage_target || state.stageTarget),
+          ...(payload.project_root && payload.project_root !== state.activeRoot ? { entries: [] } : {}),
           stageTarget: payload.stage_target || state.stageTarget,
           windowMode: (payload.window_mode as WindowMode) || state.windowMode,
           ...(payload.doc_path ? { rightTab: "docs" as RightInspectorTab, rightInspectorOpen: true } : {}),

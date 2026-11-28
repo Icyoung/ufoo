@@ -1003,8 +1003,6 @@ async function startDesktopUiHost(options = {}) {
   const watchedInternalAgents = new Set();
   const standaloneSurfaces = new Map();
   const standaloneDrafts = new Map();
-  let standaloneReader = null;
-  let standaloneReaderRoot = "";
   let standalonePollTimer = null;
   let treePollTimer = null;
   const recoverableCache = new Map();
@@ -1716,23 +1714,21 @@ async function startDesktopUiHost(options = {}) {
     return changed;
   }
 
-  function pollStandaloneWorkerSurface() {
+  function pollStandaloneWorkerSurface(publishUpdates = true) {
     if (stageTarget.kind !== "worker_single" || !stageTarget.agentId) return;
     const agentId = stageTarget.agentId;
     const meta = controller.session.metaMap.get(agentId) || {};
     if (!isInternalAgentMeta(meta)) return;
 
-    if (standaloneReaderRoot !== activeProjectRoot || !standaloneReader) {
-      standaloneReaderRoot = activeProjectRoot;
-      standaloneReader = createAgentSurfaceReader(activeProjectRoot);
-    }
+    const holder = ensureStandaloneSurface(agentId);
+    holder.reader ||= createAgentSurfaceReader(activeProjectRoot);
     let dirty = false;
-    for (const evt of standaloneReader.read([agentId])) {
+    for (const evt of holder.reader.read([agentId])) {
       if (acceptStandaloneSurfaceEvent(agentId, evt.data?.surface, evt.seq)) {
         dirty = true;
       }
     }
-    if (dirty) publishStandaloneWorkerFrame(agentId);
+    if (dirty && publishUpdates) publishStandaloneWorkerFrame(agentId);
   }
 
   const worktreeChangesCache = new Map();
@@ -2042,7 +2038,6 @@ async function startDesktopUiHost(options = {}) {
 
     if (multiSession) multiSession.stop({ clearDrafts: false });
     standaloneSurfaces.clear();
-    standaloneReader = null;
     clearAllPendingInteractionsLocal();
 
     const targetEndpoint = resolveDaemonEndpoint(root, { controllerRoot });
@@ -2856,6 +2851,7 @@ async function startDesktopUiHost(options = {}) {
           return switchToProjectRoot(targetRoot, { agentId });
         }
         if (!agentId) {
+          controller.session.targetAgent = null;
           stageTarget = { kind: "project_main", agentId: "" };
           reconcileInternalWatches();
           publishProjectsTree();
@@ -2866,6 +2862,7 @@ async function startDesktopUiHost(options = {}) {
         stageTarget = { kind: "worker_single", agentId };
         reconcileInternalWatches();
         publishProjectsTree();
+        pollStandaloneWorkerSurface(false);
         const frame = publishStandaloneWorkerFrame(agentId);
         // Auto-sync Changes inspector to the worker's worktree if it owns one
         try {

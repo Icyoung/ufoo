@@ -1691,8 +1691,8 @@ export function CenterStage() {
 
         {/* Primary Column Body */}
         {isWorkerSingle ? (
-          <div className="flex flex-1 min-h-0 flex-col">
-            <TranscriptStream key={state.stageTarget.agentId}
+          <div key={JSON.stringify([state.activeRoot, state.stageTarget.agentId])} className="flex flex-1 min-h-0 flex-col">
+            <TranscriptStream
               entries={state.workerSingleFrame?.entries || []}
               planLines={state.workerSingleFrame?.plan || []}
               planItems={state.workerSingleFrame?.plan_items || []}
@@ -1724,7 +1724,6 @@ export function CenterStage() {
 
             {conversationStrip}
             <WorkerComposer
-              key={state.stageTarget.agentId}
               agentId={state.stageTarget.agentId}
               agentType={state.workerSingleFrame?.type || selectedWorkerMeta?.type || "worker"}
               label={state.workerSingleFrame?.label || selectedWorkerMeta?.label || state.stageTarget.agentId}

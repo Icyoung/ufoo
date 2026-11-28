@@ -1,6 +1,6 @@
 {
   "name": "u-foo",
-  "version": "5.1.1",
+  "version": "5.1.2",
   "description": "Multi-Agent Workspace Control Plane & Collaborative Coding Runtime (SDK + ACP + MCP).",
   "license": "SEE LICENSE IN LICENSE",
   "homepage": "https://ufoo.dev",
